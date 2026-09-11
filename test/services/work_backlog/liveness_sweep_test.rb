@@ -203,7 +203,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     started_row(started_at: (WorkBacklog::LivenessSweep::ALERT_AFTER + 2.days).ago)
     alerted = []
 
-    AlertService.stub(:raise_alert, ->(title, **kwargs) { alerted << [ title, kwargs ] }) do
+    ErrorReporter.stub(:report_message, ->(message, **kwargs) { alerted << [ message, kwargs ] }) do
       sweep(probes: { 1 => probe(references: []) })
     end
 
@@ -215,7 +215,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     started_row(started_at: 1.day.ago)
     alerted = []
 
-    AlertService.stub(:raise_alert, ->(*, **) { alerted << true }) do
+    ErrorReporter.stub(:report_message, ->(*, **) { alerted << true }) do
       sweep(probes: { 1 => probe(references: []) })
     end
 

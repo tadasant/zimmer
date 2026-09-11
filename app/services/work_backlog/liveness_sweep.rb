@@ -97,7 +97,9 @@ module WorkBacklog
     # the worst row observed had sat for 37 days.
     ALERT_AFTER = 7.days
 
-    ALERT_DEDUP_KEY = "work-backlog-stranded-rows"
+    # The fingerprint every occurrence of this alert shares, so the obs pipeline
+    # groups them into one issue rather than one per pass.
+    ALERT_FINGERPRINT = "work-backlog-stranded-rows"
 
     # What one pass found. `repos_failed` is separate from the outcome counts
     # because a repo nobody could read is a fault, where an `unknown` row might
@@ -222,24 +224,30 @@ module WorkBacklog
         result
       end
 
-      # The population cannot fix itself — nothing here puts an item back — so the
-      # alert is the thing that stops it growing unwatched. It fires on AGE rather
-      # than on count: a handful of rows awaiting triage is ordinary, and one that
-      # nobody has looked at for a week is the failure this sweep was written for.
+      # The population cannot fix itself — nothing here puts an item back — so this
+      # is the thing that stops it growing unwatched. It fires on AGE rather than
+      # on count: a handful of rows awaiting triage is ordinary, and one nobody has
+      # looked at for a week is the failure this sweep was written for.
+      #
+      # Through ErrorReporter rather than a Slack call of its own: operational
+      # alerts go to the obs pipeline since AlertService was retired (#189).
       def alert_if_overdue(result)
         age = result.oldest_stranded_age
         return if age.nil? || age < ALERT_AFTER
 
-        AlertService.raise_alert(
+        ErrorReporter.report_message(
           "Work backlog rows have been stranded for over #{ALERT_AFTER.inspect}",
-          details: "The oldest backlog row that has left `queued` without being resolved has been there " \
-                   "#{(age / 86_400.0).round(1)} days. Nothing re-queues these automatically — telling a " \
-                   "finished issue from one with a deliberate remainder needs a judgement per issue. Triage " \
-                   "them on Zimmer's Issues page under Stranded, or with `get_work_backlog` " \
-                   "`status: \"stranded\"`, and put the ones with work left back with " \
-                   "`append_work_backlog_item`.",
-          source: "WorkBacklog::LivenessSweep",
-          dedup_key: ALERT_DEDUP_KEY
+          context: {
+            oldest_stranded_days: (age / 86_400.0).round(1),
+            stranded_rows: WorkBacklogItem.stranded.count,
+            source: "WorkBacklog::LivenessSweep",
+            what_to_do: "Nothing re-queues these automatically — telling a finished issue from one " \
+                        "with a deliberate remainder needs a judgement per issue. Triage them on the " \
+                        "Issues page under Stranded, or with get_work_backlog status: \"stranded\", " \
+                        "and put the ones with work left back with append_work_backlog_item.",
+            fingerprint: ALERT_FINGERPRINT
+          },
+          level: :warning
         )
       end
     end
