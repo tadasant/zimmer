@@ -121,7 +121,8 @@ class Sessions::FollowUpGoalTest < ActiveSupport::TestCase
     {
       web_follow_up: "Goal updated for this follow-up",
       follow_up: "Goal updated from follow-up",
-      enqueued_message: "Goal updated from enqueued message"
+      enqueued_message: "Goal updated from enqueued message",
+      trigger_reuse: "Goal updated from the trigger fire"
     }.each do |source, expected|
       session = make_session(goal: "old")
 

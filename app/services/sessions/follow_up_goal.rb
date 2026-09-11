@@ -66,10 +66,12 @@ module Sessions
       # @param goal [String, nil] a normalized goal
       # @return [Boolean] true when the goal exceeds `Session::GOAL_MAX_LENGTH`
       #
-      # Every surface rejects an over-long goal *before* any branch mutates state, so
-      # it fails the same way whether the message is queued, interrupted in, or sent
+      # Every surface checks this *before* any branch mutates state, so an over-long
+      # goal fails the same way whether the message is queued, interrupted in, or sent
       # directly — and never after the prompt has already been delivered. Only the
-      # phrasing of the refusal is the surface's own.
+      # response is the surface's own: the four typed-follow-up surfaces refuse the
+      # whole request, while `Trigger#sync_goal!` has no requester to refuse and so
+      # skips the re-stamp, warns, and lets the fire carry on.
       def too_long?(goal)
         goal.present? && goal.to_s.length > Session::GOAL_MAX_LENGTH
       end

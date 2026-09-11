@@ -911,8 +911,10 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.create_session!(prompt: "Follow-up prompt")
 
     assert_equal "File at most 3 tech-debt issues", session.reload.goal
-    assert session.logs.exists?(content: "[Trigger##{@trigger.id}] Goal updated from the trigger fire"),
-      "Expected the re-stamp to be narrated in the session's log"
+    assert session.logs.exists?(
+      content: "[Trigger##{@trigger.id}] Goal updated from the trigger fire " \
+               "(was: \"File at most 5 tech-debt issues\")"
+    ), "Expected the re-stamp, and what it replaced, to be narrated in the session's log"
   end
 
   test "reuse fire with a blank trigger goal leaves the session goal alone" do
@@ -980,6 +982,61 @@ class TriggerTest < ActiveSupport::TestCase
     wake.create_session!(prompt: "Time to check on the PR")
 
     assert_equal "Hold the PR until the merge gate rates it", session.reload.goal
+  end
+
+  # The goal is configuration, not a property of this particular prompt, so it
+  # is re-stamped even on a fire that delivers nothing — same as the four
+  # artifact syncs beside it.
+  test "reuse fire re-stamps the goal even when the fire itself is dropped" do
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    @trigger.update!(goal: "File at most 5 tech-debt issues")
+    session = @trigger.create_session!(prompt: "Initial prompt")
+    # enqueue_messages off + a turn underway is the branch that drops the fire.
+    @trigger.update!(
+      reuse_session: true, enqueue_messages: false, last_session_id: session.id,
+      goal: "File at most 3 tech-debt issues"
+    )
+    session.update_column(:status, Session.statuses[:running])
+
+    assert_no_difference("session.enqueued_messages.count") do
+      @trigger.create_session!(prompt: "Dropped prompt")
+    end
+    assert @trigger.last_follow_up_dropped?, "Expected this fire to be dropped, not delivered"
+
+    assert_equal "File at most 3 tech-debt issues", session.reload.goal
+  end
+
+  # Nothing validates the length of a trigger's goal, and Session caps its own.
+  # A reuse-only trigger never touches the spawn path, so an unguarded re-stamp
+  # would raise on every fire forever instead of delivering the prompt.
+  test "reuse fire refuses to re-stamp a goal longer than the session cap" do
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = @trigger.create_session!(prompt: "Initial prompt")
+    session.update!(goal: "Keep the backlog groomed")
+    @trigger.update_column(:goal, "x" * (Session::GOAL_MAX_LENGTH + 1))
+    @trigger.update!(reuse_session: true, last_session_id: session.id)
+    session.update_column(:status, Session.statuses[:needs_input])
+
+    @trigger.create_session!(prompt: "Follow-up prompt")
+
+    assert_equal "Keep the backlog groomed", session.reload.goal
+    assert_equal :delivered, @trigger.last_follow_up_status,
+      "The fire must still deliver its prompt rather than raising on the over-long goal"
   end
 
   test "spawn path still stamps the trigger goal onto the new session" do

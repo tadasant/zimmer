@@ -149,6 +149,14 @@ running turn, or interrupted in; a blank one preserves the goal the session alre
 clearing it (see
 [the REST API reference](/extend/rest-api/#following-up-and-the-goal-that-rides-along)).
 
+**A `reuse_session` trigger is the one writer that is not a person typing.** Every fire re-stamps
+the trigger's own goal onto the session it reuses, so the trigger — not the session row — is the
+source of truth for a session a recurring trigger owns. That has an operator-visible edge: a goal
+changed on such a session through `change_goal` or the web **Goal** field is reverted on the trigger's
+next fire. Change it on the trigger instead. A trigger with a blank goal writes nothing, which is what
+keeps a per-session wake from erasing the goal of the session it wakes — see
+[what the fire re-stamps onto the reused session](/sessions/triggers/#what-the-fire-re-stamps-onto-the-reused-session).
+
 The column is validated on length only (`GOAL_MAX_LENGTH`). Any string is a legal goal.
 Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
 
@@ -183,12 +191,16 @@ that has already passed.
 Delivery is shared, and so is the rule for applying a *goal* that arrived alongside a follow-up
 prompt. It used to have four copies — the web controller, `Api::V1::SessionsController#follow_up`,
 the MCP tool's `direct_follow_up`, and `EnqueuedMessageProcessorService` — each writing its own
-wording of the same log line. All four now call `Sessions::FollowUpGoal`, which owns three things:
+wording of the same log line. All four now call `Sessions::FollowUpGoal`, and so does a fifth caller
+that arrives from a different direction: `Trigger#sync_goal!`, where nobody typed anything and the
+trigger's own column is being re-stamped onto the session it reuses. The service owns three things:
 
 - `normalize` — strip the input; blank becomes `nil`, so `""`, `"  "` and absent are one input.
 - `too_long?` — the `Session::GOAL_MAX_LENGTH` check every surface runs *before* any branch mutates
   state, so an over-long goal fails the same way whether the message is queued, interrupted in, or
-  sent directly. Only the phrasing of the refusal is the surface's own.
+  sent directly. Only the response is the surface's own: the four typed-follow-up surfaces refuse
+  the request, while the trigger fire has no requester to refuse, so it skips the re-stamp, warns,
+  and lets the fire deliver its prompt.
 - `apply!` — a non-blank goal that differs from the session's current goal overwrites it and logs
   that it did; a blank goal preserves whatever goal the session already has.
 
@@ -200,7 +212,7 @@ never a clear. Clearing a goal from those surfaces is its own operation: `PATCH
 
 The log wording stays per-source — a reader of a session's log wants to know whether the goal came
 in with a typed follow-up or off a message that had been sitting in the queue — but it lives in the
-service's `LOG_PHRASES`, so the four cannot drift apart again.
+service's `LOG_PHRASES`, so the callers cannot drift apart again.
 
 ## `needs_input` vs `archived`
 
