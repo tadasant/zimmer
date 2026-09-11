@@ -1088,7 +1088,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     assert_no_horizontal_overflow("health dashboard (outage)")
 
-    page.execute_script("document.evaluate(\"//h3[text()='Process Health']\", document, null, 9, null).singleNodeValue.scrollIntoView({ block: 'end' })")
+    page.execute_script("document.evaluate(\"//h3[text()='Process Health']\", document, null, 9, null).singleNodeValue.scrollIntoView()")
     page.save_screenshot("tmp/screenshots/health-outage-panels-375.png")
   end
 
@@ -1113,7 +1113,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     # Captured as PR evidence — scrolled to the panel, since a viewport screenshot
     # of a page this long otherwise shows only the header.
-    page.execute_script("document.evaluate(\"//h3[text()='Queued Job Maintenance']\", document, null, 9, null).singleNodeValue.scrollIntoView({ block: 'end' })")
+    page.execute_script("document.evaluate(\"//h3[text()='Queued Job Maintenance']\", document, null, 9, null).singleNodeValue.scrollIntoView()")
     page.save_screenshot("tmp/screenshots/health-queued-job-maintenance-375.png")
   end
 
@@ -1159,7 +1159,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     # Captured as PR evidence — scrolled to the panel, since a viewport screenshot
     # of a page this long otherwise shows only the header.
-    page.execute_script("document.evaluate(\"//h3[text()='Retry Budgets']\", document, null, 9, null).singleNodeValue.scrollIntoView({ block: 'end' })")
+    page.execute_script("document.evaluate(\"//h3[text()='Retry Budgets']\", document, null, 9, null).singleNodeValue.scrollIntoView()")
     page.save_screenshot("tmp/screenshots/health-retry-budgets-375.png")
   end
 

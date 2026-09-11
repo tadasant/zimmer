@@ -1179,24 +1179,25 @@ On the template path, three things are mitigated
 - **A value cannot rewrite the template.** Interpolation is a single pass, so a message that quotes
   `{{channel}}` or a title that quotes `{{labels}}` comes through as written instead of being
   expanded. Backslash sequences in a value stay literal instead of pasting template text into it.
-- **A template can hand the agent Slack IDs it can trust.** `{{channel_id}}`, `{{message_ts}}`,
-  `{{thread_ts}}` and `{{author_id}}` come from Slack's own fields, and render empty unless they
-  have Slack's ID shape, so the agent can be told where to reply without reading it out of the
-  message.
+- **A template can hand the agent Slack IDs it can trust.** When a Slack condition fires,
+  `{{channel_id}}`, `{{message_ts}}`, `{{thread_ts}}` and `{{author_id}}` come from Slack's own
+  fields, so the agent can be told where to reply without reading it out of the message. They render
+  empty unless they have Slack's ID shape. A manual fire supplies its own, and the shape check keeps
+  out prose, not a well-formed ID for the wrong channel.
 - **A template can fence untrusted text off.** `{{text|untrusted}}` renders the value between
   markers that carry a code drawn at random on every fire, with a note that it is data, not
   instructions. The text cannot close the fence early.
 
 What remains open:
 
-- **The agent can still do what the message says.** Fencing marks the text but does not neutralise
+- **The agent can still do what the message says.** Fencing marks the text but does not neutralize
   it. A well-formed hostile message can still argue a model into acting, and a trusted ID in the
   prompt is advice the agent can ignore. Nothing binds the IDs into the session's tools, so a
   session fired for one thread can still post to another. That binding is the
   [workflow](/sessions/workflows/) contract's job — a validated input, and trusted identifiers
   recorded where the model cannot rewrite them — and nothing fires a workflow in production yet.
-- **Both hardening features are opt-in.** An existing template renders exactly as before, with
-  `{{text}}` unfenced, until someone edits it.
+- **Both hardening features are opt-in.** An existing template gets the single pass, but its
+  `{{text}}` stays unfenced and it names no Slack ID until someone edits it.
 - **Some untrusted text never passes through a placeholder.** The GitHub poller's appended context
   block (title and body) and the Slack poller's note of coalesced messages are unfenced.
 - **Who can reach the agent is decided before any of this.** The only gate on who may fire a

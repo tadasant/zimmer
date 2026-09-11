@@ -246,8 +246,9 @@ module Mcp
             description: "Prompt template. Required for create. Placeholders: {{link}}, {{text}}, {{author}}, " \
                          "{{channel}}, {{time}}, {{date}}, {{event}}; for GitHub conditions {{repo}}, {{number}}, " \
                          "{{title}}, {{labels}}; for Slack conditions {{channel_id}}, {{message_ts}}, {{thread_ts}} " \
-                         "(the thread to reply into) and {{author_id}}. Those four Slack IDs come from Slack's own fields, " \
-                         "never from message text, and render empty unless they are in Slack's ID format. Write any " \
+                         "(the thread to reply into) and {{author_id}}. When a Slack condition fires, those four come " \
+                         "from Slack's own fields, never from message text; an invoke takes them from its caller. " \
+                         "Either way they render empty unless they are in Slack's ID format. Write any " \
                          "placeholder as {{name|untrusted}} to render it fenced off as outside input. See " \
                          "https://docs.zimmer.tadasant.com/sessions/triggers/#prompt-template-variables"
           },
