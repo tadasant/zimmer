@@ -23,9 +23,9 @@ class MockProcessManagerTest < ActiveSupport::TestCase
     pid2 = @manager.spawn("echo", "2")
     pid3 = @manager.spawn("echo", "3")
 
-    assert_equal 10000, pid1
-    assert_equal 10001, pid2
-    assert_equal 10002, pid3
+    assert_equal MockProcessManager::FIRST_PID, pid1
+    assert_equal MockProcessManager::FIRST_PID + 1, pid2
+    assert_equal MockProcessManager::FIRST_PID + 2, pid3
   end
 
   test "spawn calls spawn_hook if provided" do

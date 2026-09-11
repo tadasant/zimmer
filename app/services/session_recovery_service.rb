@@ -16,14 +16,14 @@
 # which runs in the same container as the process and can reliably check its status.
 #
 # NOTE: The force_terminate_hung_process path sends signals via
-# ProcessTerminationService, which only signals a pid it can prove is the process
-# recorded for this session (same boot, same PID namespace, same start time — see
-# AgentProcessLiveness). A pid recorded in another container comes back
-# :unverifiable and is left alone: from here we cannot tell whether it is running,
-# and signalling the number would reach whatever holds it in THIS namespace. In
-# production every job runs in the one worker container, so a foreign pid is one a
-# replaced worker recorded, and the container runtime took it down with that
-# container. Recovery carries on either way.
+# ProcessTerminationService, which matches the pid against the identity recorded
+# for this session (same boot, same PID namespace, same start time — see
+# AgentProcessLiveness) before signalling it. A pid recorded in another container
+# comes back :unverifiable and is left alone: from here we cannot tell whether it
+# is running, and signalling the number would reach whatever holds it in THIS
+# namespace. In production every job runs in the worker container, so a foreign
+# pid was recorded by a worker container that has been replaced — gone with it, or
+# still draining through a deploy's cutover. Recovery carries on either way.
 #
 # Usage:
 #   service = SessionRecoveryService.new(session)

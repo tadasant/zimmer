@@ -3414,7 +3414,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = mock_process_manager
 
     # Configure mock to simulate running process - spawn returns the PID
-    test_pid = mock_process_manager.spawn([ "test" ], {})  # This returns 10000
+    test_pid = mock_process_manager.spawn([ "test" ], {})  # MockProcessManager::FIRST_PID
 
     # Set up session with process_pid from the spawn
     @session.update!(

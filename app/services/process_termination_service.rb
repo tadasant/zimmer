@@ -31,15 +31,17 @@
 #     see is not one we handled.
 #   * same namespace, different start time  => :recycled. Nothing is sent: the
 #     process we spawned is gone, and the pid now belongs to a stranger.
-#   * same namespace, pid absent            => :already_dead, as before.
+#   * same namespace, pid absent            => :already_dead, with no signal.
 #   * same namespace, same start time       => the ladder below runs.
 #
-# A pid with no recorded identity (a caller that found it by scanning the host, a
-# session spawned before identities were recorded, a host with no `/proc`) cannot
-# be traced back to its spawn. It is pinned instead: the start time of whatever
-# holds the pid when termination begins. Either way the start time is re-checked
-# before every signal (#send_signal), so a pid that changes hands mid-ladder is
-# never signalled again and its group is never swept.
+# A pid with no usable recorded identity (a caller that found it by scanning the
+# host, a session spawned before identities were recorded, an identity captured
+# without a start time or for a different pid) cannot be traced back to its
+# spawn. It is pinned instead: the start time of whatever holds the pid when
+# termination begins. Either way the start time is re-checked before every signal
+# (#send_signal), so a pid that changes hands mid-ladder is never signalled again
+# and its group is never swept. A host with no `/proc` (macOS development) has
+# nothing to pin or compare, so there the ladder runs on `ps` and signal 0 alone.
 #
 # Usage:
 #   service = ProcessTerminationService.new(
@@ -262,7 +264,7 @@ class ProcessTerminationService
   #   :verified — the recorded identity matches the process holding the pid now
   #   :pinned   — nothing recorded to match; pinned to the process holding it now
   #   :unpinned — nothing recorded, and nothing here to pin (no `/proc`, or no such
-  #               process in it); the ladder runs as it always has
+  #               process in it); the ladder runs on `ps` and signal 0 alone
   #   :foreign  — recorded in another boot or PID namespace
   #   :recycled — recorded here, but the pid is held by a later process
   #   :gone     — recorded here, and nothing holds the pid

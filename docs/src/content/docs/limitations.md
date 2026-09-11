@@ -3141,21 +3141,34 @@ A recycled pid is therefore never signalled. A pid recorded in **another PID nam
 signalled either, and the service reports `:unverifiable` instead: it cannot see that process, so it
 does not know whether the process is running. It does not claim `:already_dead`.
 
-That is the honest answer, not a way to reach the process. Nothing routes a termination to the
-container that owns the pid. In production that costs nothing today: every job runs in the one
-`worker` container, so a foreign pid is one recorded by a worker container that has since been
-replaced, and the container runtime took that process down with it. It would start to matter if
-Zimmer ever ran agent processes in more than one live container at once. `SessionRecoveryService`
-then carries on with the restart regardless, so for a short while a session could have two agents
-running.
+That is the honest answer, not a way to reach the process. `ProcessTerminationService` has no way to
+hand a termination to the container that owns the pid. Two user actions already have one of their
+own: an interrupt from the web process hands the pid to the session's worker through
+`interrupt_terminate_pid`, and a pause flips the session's status, which the worker's monitoring
+loop acts on. A pause from the web process does call the service, and for a worker's pid it now gets
+`:unverifiable` and leaves the kill to the worker. It no longer signals whatever holds that number
+in `web`. The recovery paths run in the `worker` container in production, so a foreign pid there was
+recorded by a worker container that has been replaced. Usually the container runtime took that
+process down with the container. During a deploy's cutover the old worker can still be draining, and
+a session `SessionRecoveryService` restarts in that window can briefly have two agents running. The
+same is true of any future deployment that runs agents in more than one live container at once.
 
-A pid with **no recorded identity** is pinned to whatever holds it when termination starts, and
-re-checked before every signal. That protects the ladder from a pid that changes hands part-way
-through. It cannot show that the pinned process is the one the caller meant. The callers that reach
-this path are the orphan cleanup, whose pids come from a host scan made moments earlier, and
-sessions spawned before identities were recorded. Between the `/proc` read and the `kill` there is
-still a window of microseconds that only a pidfd would close, and Ruby's standard library does not
-expose one.
+A pid with **no usable recorded identity** — the orphan cleanup's pids, which come from a host scan
+made moments earlier, a session spawned before identities were recorded, or an identity captured
+without a start time or for a different pid — is pinned to whatever holds it when termination
+starts, and re-checked before every signal. That protects the ladder from a pid that changes hands
+part-way through. It cannot show that the pinned process is the one the caller meant. A host with
+**no `/proc`** (macOS development) has nothing to pin or compare, so there termination runs on `ps`
+and signal 0 alone, recycled pids included.
+
+The identity is written just after the spawn. A termination that runs in the gap, or after a failed
+write, compares the pid against the previous turn's identity. If the new process happened to get the
+same pid number, it is refused as `:recycled` or `:unverifiable`. Being this process's own child
+does not settle it, because every session's agent in a worker is that worker's child. So the gate
+does not trust child-ness over the recorded identity.
+
+Between the `/proc` read and the `kill` there is still a window of microseconds that only a pidfd
+would close, and Ruby's standard library does not expose one.
 
 Tracked in [#365](https://github.com/tadasant/zimmer/issues/365).
 
