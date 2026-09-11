@@ -11,8 +11,13 @@
 # be a key that can read every transcript in the instance, and a column the auth
 # check compares on is how that is made true by construction rather than by
 # asking the holder to be careful.
+#
+# `if_not_exists` because databases exist that already have this column and no
+# record of this migration: they were built by loading a `db/schema.rb` that
+# carried the column under a single `20260912120000` row standing in for the two
+# migrations that both claimed that version (#1163).
 class AddGrantToApiKeys < ActiveRecord::Migration[8.1]
   def change
-    add_column :api_keys, :grant, :string, null: false, default: "api"
+    add_column :api_keys, :grant, :string, null: false, default: "api", if_not_exists: true
   end
 end
