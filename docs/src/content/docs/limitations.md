@@ -961,8 +961,9 @@ What the token does not do:
   in the clone's generated MCP config. The session's own agent can read both. Every session also
   runs as the same Unix user on the same filesystem, so any other session's agent that goes looking
   in another clone, or in `/proc`, can read them too. An agent can therefore raise an approval prompt
-  on its own session, and on a neighbour's if it reads the neighbour's config. It cannot answer one,
-  because `respond` takes an API key. See
+  on its own session, and on a neighbour's if it reads the neighbour's config. An agent session's
+  environment also carries `SECRET_KEY_BASE` itself, and with that any agent can mint any session's
+  token outright. It cannot answer a prompt, because `respond` takes an API key. See
   [agents run unsandboxed on the app host](#agents-run-unsandboxed-on-the-app-host).
 - **It does not expire and cannot be revoked per session.** It is deterministic, so a session keeps
   the same URL for life. Rotating `SECRET_KEY_BASE` revokes every token at once. The deploy that

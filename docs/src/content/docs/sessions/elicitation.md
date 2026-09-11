@@ -169,7 +169,9 @@ declines that on its own.
 :::caution[The token keeps out the network, not the neighbours]
 Every session runs as the same Unix user on the same filesystem, and a session's token sits in its
 agent's environment and its clone's MCP config. An agent can raise a prompt on its own session. An
-agent that reads another clone's config can raise one on that session too. Neither can answer one.
+agent that reads another clone's config can raise one on that session too, and so can any agent using
+the `SECRET_KEY_BASE` its own environment carries, which mints any session's token. None of them can
+answer a prompt.
 
 An elicitation that ends unanswered leaves a `lost_elicitation` marker on the session. Its `summary`
 is the caller's own `tool_name` and `message`, rendered in Zimmer's voice. It is escaped, truncated
