@@ -179,7 +179,7 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
   end
 
   test "configured? stays a bare yes/no over auth_preflight" do
-    # GithubTriggerHealthCheckJob's no-baseline guard reads this, and must keep declining
+    # TriggerPollerLivenessCheckJob's no-baseline guard reads this, and must keep declining
     # to seed for every non-authenticated state — including the new ones.
     GithubSearchService.stubs(:auth_preflight)
       .returns(GithubSearchService::PreflightResult.new(GithubSearchService::PREFLIGHT_UNKNOWN, "503"))
@@ -191,7 +191,7 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
   end
 
   test "configured? leaves a breadcrumb when the preflight could not reach GitHub" do
-    # GithubTriggerHealthCheckJob's no-baseline path asks this and then simply returns, so
+    # TriggerPollerLivenessCheckJob's no-baseline path asks this and then simply returns, so
     # without this line a GitHub outage during exactly that window would leave no record —
     # the silence the four states exist to break.
     stub_auth_status(unreachable_json)
@@ -292,6 +292,41 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
       "incomplete_results" => incomplete,
       "items" => numbers.map { |n| { "number" => n, "repository_url" => "https://api.github.com/repos/owner/a" } }
     })
+  end
+
+  test "search_issues with a limit asks for a page of that size and stops after one request" do
+    # The freshness probe wants the newest issue of a query that matches thousands. Without
+    # a limit that is ten pages and a MAX_PAGES raise; with one it is a single request for
+    # a page of `limit`, whatever total_count says.
+    commands = []
+    BoundedSubprocess.expects(:run).once.with { |command, **| commands << command; true }
+      .returns([ search_payload(numbers: (1..10).to_a, total: 4_321), "", status(true) ])
+
+    items = GithubSearchService.search_issues("is:issue repo:owner/a", sort: "created", order: "desc", limit: 10)
+
+    assert_equal (1..10).to_a, items.map { |item| item["number"] }
+    assert_includes commands.first, "per_page=10"
+    assert_includes commands.first, "sort=created"
+    assert_includes commands.first, "order=desc"
+  end
+
+  test "search_issues with a limit never returns more than the limit" do
+    BoundedSubprocess.expects(:run).once
+      .returns([ search_payload(numbers: (1..5).to_a, total: 5), "", status(true) ])
+
+    items = GithubSearchService.search_issues("is:issue repo:owner/a", limit: 3)
+
+    assert_equal [ 1, 2, 3 ], items.map { |item| item["number"] }
+  end
+
+  test "search_issues without a limit still asks for full pages" do
+    commands = []
+    BoundedSubprocess.expects(:run).once.with { |command, **| commands << command; true }
+      .returns([ search_payload(numbers: [ 1 ]), "", status(true) ])
+
+    GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+
+    assert_includes commands.first, "per_page=#{GithubSearchService::PER_PAGE}"
   end
 
   test "search_issues re-fetches an incomplete page and returns the recovered, complete result" do

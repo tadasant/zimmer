@@ -2499,6 +2499,129 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_not @trigger.reload.bursting?
   end
 
+  # --- Liveness heartbeat (#525) ---------------------------------------------
+  #
+  # TriggerPollerLivenessCheckJob pages when this stamp goes stale, so the stamp
+  # has to mean "this sweep genuinely polled Slack" and nothing weaker. Each test
+  # below is one way a sweep can run without polling, and none of them may stamp.
+
+  def with_real_cache
+    original = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    yield
+  ensure
+    Rails.cache = original
+  end
+
+  test "a clean sweep that polled at least one condition stamps the heartbeat" do
+    with_real_cache do
+      SlackService.stubs(:configured?).returns(true)
+      job = SlackTriggerPollerJob.new
+      job.stubs(:process_condition)
+
+      job.perform_now
+
+      assert_not_nil PollerHeartbeat.last_at(:slack)
+      assert_in_delta Time.current.to_f, PollerHeartbeat.last_at(:slack).to_f, 5
+    end
+  end
+
+  test "a sweep with no enabled Slack conditions still stamps, so enabling one later does not page" do
+    with_real_cache do
+      SlackService.stubs(:configured?).returns(true)
+      TriggerCondition.slack.joins(:trigger).where(triggers: { status: "enabled" }).destroy_all
+
+      SlackTriggerPollerJob.perform_now
+
+      assert_not_nil PollerHeartbeat.last_at(:slack)
+    end
+  end
+
+  test "an unconfigured host never stamps" do
+    with_real_cache do
+      SlackService.stubs(:configured?).returns(false)
+
+      SlackTriggerPollerJob.perform_now
+
+      assert_nil PollerHeartbeat.raw(:slack)
+    end
+  end
+
+  test "a sweep in which every condition raised polled nobody and does not stamp" do
+    with_real_cache do
+      SlackService.stubs(:configured?).returns(true)
+      job = SlackTriggerPollerJob.new
+      job.stubs(:process_condition).raises(StandardError, "bad cursor")
+      ErrorReporter.stubs(:report_exception)
+
+      job.perform_now
+
+      assert_nil PollerHeartbeat.raw(:slack), "a sweep that completed no condition is not a poll"
+    end
+  end
+
+  test "a sweep aborted by a transient Slack failure is deferred and does not stamp" do
+    with_real_cache do
+      SlackService.stubs(:configured?).returns(true)
+      job = SlackTriggerPollerJob.new
+      job.stubs(:process_condition).raises(SlackService::TransientError, "Slack unreachable")
+      job.stubs(:retry_job)
+
+      job.perform_now
+
+      assert_nil PollerHeartbeat.raw(:slack)
+    end
+  end
+
+  test "a sweep whose every condition completed but whose fetches Slack threw away does not stamp" do
+    # The #522 shape, and the reason the stamp is not "the conditions completed": the
+    # per-unit rescues and #fetch_recent_history swallow a 429 so the sweep can finish
+    # its bookkeeping, so every condition returns normally from a sweep that polled
+    # nothing real. The poller's own record of that — @transient_error — is what keeps
+    # the heartbeat honest.
+    with_real_cache do
+      SlackService.stubs(:configured?).returns(true)
+      job = SlackTriggerPollerJob.new
+      job.define_singleton_method(:process_condition) do |_condition|
+        note_transient(SlackService::RateLimitedError.new("ratelimited", retry_after: nil))
+      end
+      job.expects(:retry_job).with(wait: 30)
+
+      job.perform_now
+
+      assert_nil PollerHeartbeat.raw(:slack), "a sweep Slack refused part of is deferred, not stamped"
+    end
+  end
+
+  test "one condition raising a non-transient error does not stop a sibling's clean poll from stamping" do
+    # The bar is at least ONE condition came back clean — a failing condition pages on
+    # its own, and its failure says nothing about whether the poller is alive.
+    with_real_cache do
+      SlackService.stubs(:configured?).returns(true)
+      job = SlackTriggerPollerJob.new
+      calls = 0
+      job.define_singleton_method(:process_condition) do |_condition|
+        calls += 1
+        raise StandardError, "bad cursor" if calls == 1
+      end
+      ErrorReporter.stubs(:report_exception)
+
+      job.perform_now
+
+      assert_operator calls, :>=, 2, "the fixtures carry more than one enabled Slack condition"
+      assert_not_nil PollerHeartbeat.raw(:slack)
+    end
+  end
+
+  test "a stamp that cannot be written does not fail the sweep" do
+    SlackService.stubs(:configured?).returns(true)
+    job = SlackTriggerPollerJob.new
+    job.stubs(:process_condition)
+    Rails.cache.stubs(:write).raises(Redis::CannotConnectError, "down")
+
+    assert_nothing_raised { job.perform_now }
+  end
+
   # --- Deferral on transient Slack failures (#77) ----------------------------
   #
   # This job is a `total_limit: 1` singleton, so while it runs it IS Slack

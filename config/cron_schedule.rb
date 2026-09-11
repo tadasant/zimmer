@@ -194,6 +194,12 @@ module CronSchedule
     # Slack trigger there it walks an empty relation and says nothing.
     # GithubTriggerHealthCheckJob, written to mirror this one for the other poller, has
     # always run on staging. Decided in tadasant/zimmer#686.
+    #
+    # The two *_trigger_health_check entries are the per-condition FRESHNESS half of the
+    # poller monitor (does each condition keep up with its feed?) and cost one upstream
+    # request per enabled condition per run, which is why they are hourly. The LIVENESS
+    # half (is each poller polling at all?) is trigger_poller_liveness_check below: a
+    # cache read, every five minutes, for both pollers at once.
     slack_trigger_health_check: {
       cron: "45 * * * *", # Every hour at minute 45 (offset from other hourly jobs)
       class: "SlackTriggerHealthCheckJob",
@@ -201,9 +207,17 @@ module CronSchedule
       environments: %i[production staging development]
     },
     github_trigger_health_check: {
-      cron: "*/5 * * * *", # Every 5 minutes — catches a silent poller freeze within ~15-20 min
+      cron: "35 * * * *", # Every hour at minute 35 (offset from other hourly jobs) — one search per condition
       class: "GithubTriggerHealthCheckJob",
-      description: "Alert when GitHub trigger polling has silently stopped succeeding",
+      description: "Detect GitHub trigger conditions that have silently stopped keeping up and alert",
+      environments: %i[production staging]
+    },
+    # Not in development: the GitHub poller is not scheduled there, so its heartbeat would
+    # be seeded on any box with a gh credential and then read as a stall every five minutes.
+    trigger_poller_liveness_check: {
+      cron: "*/5 * * * *", # Every 5 minutes — catches a silent poller freeze within a threshold plus one tick
+      class: "TriggerPollerLivenessCheckJob",
+      description: "Alert when the Slack or GitHub trigger poller has silently stopped polling",
       environments: %i[production staging]
     },
     schedule_trigger: {

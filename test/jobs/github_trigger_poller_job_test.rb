@@ -581,7 +581,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
 
   test "no preflight failure alerts, whatever its cause" do
     # Deliberate: a preflight failure is the TOTAL case, and the total case is reported
-    # by the stale heartbeat (GithubTriggerHealthCheckJob), exactly as #skip_incomplete_search
+    # by the stale heartbeat (TriggerPollerLivenessCheckJob), exactly as #skip_incomplete_search
     # reasons about a broadly degraded search API. Paging here would page for every blip
     # and would put an alert back on the path whose storm the early return exists to stop.
     [ GithubSearchService::PREFLIGHT_UNCONFIGURED,
@@ -1560,7 +1560,7 @@ end
 # The poller's per-condition rescue only alerts when a search RAISES. It cannot catch a
 # poller that stops running at all (hung subprocess, downed worker, held concurrency
 # slot) — no code runs, so nothing raises, and polling freezes in silence. The heartbeat
-# is the signal GithubTriggerHealthCheckJob reads to notice that silence.
+# is the signal TriggerPollerLivenessCheckJob reads to notice that silence.
 #
 # Its own class rather than a block in the suite above: the production cache is
 # null_store in test, so these need a real store swapped in, and that swap should not
@@ -1574,7 +1574,7 @@ class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
 
     @original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
-    Rails.cache.delete(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+    Rails.cache.delete(PollerHeartbeat.cache_key(:github))
   end
 
   teardown do
@@ -1582,7 +1582,7 @@ class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
   end
 
   def heartbeat
-    Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+    PollerHeartbeat.raw(:github)
   end
 
   # An item shaped like the search-API fields the poller actually reads.
@@ -1764,8 +1764,8 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
   test "a tick in which every condition hits an incomplete index does not record the heartbeat" do
     # The other half of the safety net, and why no extra machinery is needed for a broad
     # GitHub search outage: when nothing polls successfully the heartbeat is never stamped,
-    # so GithubTriggerHealthCheckJob pages on the stale value at its own threshold.
-    Rails.cache.delete(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+    # so TriggerPollerLivenessCheckJob pages on the stale value at its own threshold.
+    Rails.cache.delete(PollerHeartbeat.cache_key(:github))
 
     everything_incomplete = lambda do |query, **_opts|
       raise GithubSearchService::IncompleteResultsError,
@@ -1774,7 +1774,7 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
 
     GithubSearchService.stub(:search_issues, everything_incomplete) { GithubTriggerPollerJob.perform_now }
 
-    assert_nil Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY),
+    assert_nil PollerHeartbeat.raw(:github),
                "a sweep in which no condition polled successfully is not liveness"
   end
 
@@ -1840,7 +1840,7 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
     # The tick did real work: the item is in the seen-set and the heartbeat is stamped,
     # so the health check reads this as a living poller rather than a stalled one.
     assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items
-    assert_not_nil Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+    assert_not_nil PollerHeartbeat.raw(:github)
   end
 
   test "a 504 during a search that ends incomplete pages, rather than skipping quietly" do
@@ -1894,8 +1894,8 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
     assert_includes alerted.first.last, "Bad credentials"
     assert_includes alerted.first.last, "still failing after 3 attempts"
     # No condition polled cleanly, so this sweep is not liveness either — the stale
-    # heartbeat is what escalates a total outage, per GithubTriggerHealthCheckJob.
-    assert_nil Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+    # heartbeat is what escalates a total outage, per TriggerPollerLivenessCheckJob.
+    assert_nil PollerHeartbeat.raw(:github)
   end
 end
 
@@ -2019,11 +2019,11 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
   end
 
   test "a rate-limited sweep records no heartbeat, so a sustained limit still has its backstop" do
-    Rails.cache.delete(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+    Rails.cache.delete(PollerHeartbeat.cache_key(:github))
 
     poll
 
-    assert_nil Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY),
+    assert_nil PollerHeartbeat.raw(:github),
                "a sweep in which no condition polled successfully is not liveness"
   end
 
@@ -2031,7 +2031,7 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
     # The partial sweep: a rate limit met part-way through, rather than on the first
     # condition. What ran, ran — so the tick IS liveness and stamps the heartbeat — and
     # the WARN has to say how many conditions went unpolled behind it.
-    Rails.cache.delete(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+    Rails.cache.delete(PollerHeartbeat.cache_key(:github))
     calls = 0
     fake = lambda do |_query, **_opts|
       calls += 1
@@ -2046,7 +2046,7 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
     end.filter_map { |severity, message| message if severity == "WARN" && message.include?("rate-limited") }
 
     assert_equal 2, calls, "the limit must stop the sweep at the condition that met it"
-    assert_not_nil Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY),
+    assert_not_nil PollerHeartbeat.raw(:github),
                    "a condition polled cleanly before the limit, so this sweep is liveness"
     assert_equal 1, warns.length
     # Two enabled conditions and the limit on the second: nothing was left behind it, so

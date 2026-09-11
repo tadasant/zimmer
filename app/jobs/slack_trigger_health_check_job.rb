@@ -18,6 +18,13 @@
 # message materially newer than the condition's last_message_ts — old enough
 # that the once-a-minute poller should long since have caught it — the feed is
 # stalled and we raise an alert so a human can investigate before days pass.
+#
+# This is the per-condition FRESHNESS half of the Slack poller's monitor. The other half
+# — whether the poller is polling at all — is TriggerPollerLivenessCheckJob, reading the
+# heartbeat SlackTriggerPollerJob stamps on every sweep that genuinely polled Slack. The
+# two are separate jobs on separate cadences because they cost different things: this one
+# spends a Slack request per condition and runs hourly; that one reads a cache key and
+# runs every five minutes. GithubTriggerHealthCheckJob is this job's GitHub counterpart.
 class SlackTriggerHealthCheckJob < ApplicationJob
   queue_as :default
   include SingletonSweep

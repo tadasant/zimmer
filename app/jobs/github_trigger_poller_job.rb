@@ -72,7 +72,7 @@
 # A `github_issue` condition may also carry `exclude_labels` — an opt-out the issue's author
 # applies by opening it with one of those labels. It is expressed as a `-label:` negation in
 # the search itself, so an excluded issue is never seen, never fires, and never moves the
-# cursor. See #issue_query for the timing this implies.
+# cursor. See GithubTriggerSearch#issue_query for the timing this implies.
 #
 # In both cases state advances only for items that actually produced a session, so a
 # failure to create one leaves the item to be retried on the next tick rather than
@@ -95,6 +95,10 @@ class GithubTriggerPollerJob < ApplicationJob
     key: -> { "github_trigger_poller" },
     total_limit: 1
   )
+
+  # The searches and item readers, shared with GithubTriggerHealthCheckJob so the
+  # freshness probe asks GitHub exactly what the poller asks.
+  include GithubTriggerSearch
 
   # Bodies are pasted into the prompt verbatim. A pathological issue body should not
   # blow out the session's context before the agent has read its instructions.
@@ -121,7 +125,7 @@ class GithubTriggerPollerJob < ApplicationJob
   MAX_ALERTED_KEYS = 25
 
   # Liveness heartbeat. Each sweep that processes at least one condition successfully
-  # stamps this Rails.cache (Redis) key with the current time; GithubTriggerHealthCheckJob
+  # stamps PollerHeartbeat's :github key with the current time; TriggerPollerLivenessCheckJob
   # reads it and pages if it goes stale.
   #
   # The bar is "at least one condition came back clean", NOT "perform returned": the
@@ -136,14 +140,6 @@ class GithubTriggerPollerJob < ApplicationJob
   # github_issue condition's first tick, which baselines its cursor without searching. That
   # can stamp the heartbeat with no GitHub contact, but only for the single tick before the
   # cursor is set, so it costs at most a minute of detection latency.
-  HEARTBEAT_CACHE_KEY = "github_trigger_poller:last_successful_poll_at"
-
-  # Generous TTL so the key survives a multi-hour poller outage holding its LAST-success
-  # timestamp — that stale value is exactly what the health check needs to read to know
-  # polling has stopped. If the key instead expired mid-outage the check would see an
-  # absence it can't date and stay quiet. Well beyond any outage we expect to page on;
-  # a healthy poller rewrites it every minute.
-  HEARTBEAT_TTL = 7.days
 
   # How many consecutive ticks a condition may skip on an incomplete search index before
   # the skips stop being read as a transient and page.
@@ -295,7 +291,7 @@ class GithubTriggerPollerJob < ApplicationJob
     # Record the heartbeat only when the poller actually did work — see the constant's
     # comment for why a total-outage sweep (every condition rescued) must NOT count. A
     # rate limit met on the very first condition therefore stamps nothing, which is right:
-    # the sweep polled nobody, and GithubTriggerHealthCheckJob's stale-heartbeat page is
+    # the sweep polled nobody, and TriggerPollerLivenessCheckJob's stale-heartbeat page is
     # the backstop if #defer_rate_limited_sweep's streak alarm somehow does not fire.
     record_successful_poll if any_polled
   end
@@ -312,7 +308,7 @@ class GithubTriggerPollerJob < ApplicationJob
   # No alert fires from any of them, deliberately. A preflight failure is by
   # construction the TOTAL case, and this job already settled how the total case is
   # reported: nothing sets any_polled, so no heartbeat is stamped, and
-  # GithubTriggerHealthCheckJob pages on the stale heartbeat (see #skip_incomplete_search,
+  # TriggerPollerLivenessCheckJob pages on the stale heartbeat (see #skip_incomplete_search,
   # which reasons the same way about a broadly degraded search API — "no new machinery
   # needed for the total case"). Paging on the first :unknown tick would page for every
   # blip, and would put an alert back on exactly the path whose alert storm the early
@@ -336,12 +332,7 @@ class GithubTriggerPollerJob < ApplicationJob
   end
 
   def record_successful_poll
-    Rails.cache.write(HEARTBEAT_CACHE_KEY, Time.current.utc.iso8601, expires_in: HEARTBEAT_TTL)
-  rescue => e
-    # A cache write failure must never take down a poll that otherwise succeeded; the
-    # health check tolerates a missing/stale heartbeat (it seeds and skips) far better
-    # than the poll tolerates an exception here.
-    Rails.logger.warn "[GithubTriggerPollerJob] Failed to record poll heartbeat: #{e.message}"
+    PollerHeartbeat.stamp(:github)
   end
 
   # A search whose index timed out is refused exactly like any other short read — the
@@ -357,7 +348,7 @@ class GithubTriggerPollerJob < ApplicationJob
   #     consecutive-skip streak below crosses CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT
   #     and pages;
   #   - every condition at once (GitHub search broadly degraded): nothing sets any_polled,
-  #     so the heartbeat is never stamped, and GithubTriggerHealthCheckJob pages when it
+  #     so the heartbeat is never stamped, and TriggerPollerLivenessCheckJob pages when it
   #     goes stale — no new machinery needed for the total case.
   #
   # A cache that cannot be read degrades to "always quiet" rather than "always page": the
@@ -703,15 +694,6 @@ class GithubTriggerPollerJob < ApplicationJob
                       "#{condition.id} immediately (#{e.message}); the end-of-tick write is the fallback"
   end
 
-  def label_query(condition)
-    [
-      "is:open",
-      condition.github_pull_requests? ? "is:pr" : "is:issue",
-      GithubSearchService.repo_group(condition.github_repos),
-      GithubSearchService.label_group(condition.github_labels)
-    ].join(" ")
-  end
-
   # ── github_issue ────────────────────────────────────────────────────────────
 
   def process_new_issue_condition(condition)
@@ -934,32 +916,6 @@ class GithubTriggerPollerJob < ApplicationJob
     condition.github_repos.to_h { |repo| [ repo.to_s.downcase, baseline ] }
   end
 
-  # Whether this issue was opened before its repo joined the condition's scope. Keyed on
-  # `created_at`, which never changes, so an issue GitHub indexes long after the baseline
-  # is still judged by when it was OPENED — the property the baseline is a statement about.
-  def predates_repo_baseline?(item, baselines)
-    baseline = baselines[repo_of(item).to_s.downcase]
-
-    baseline.present? && item["created_at"].to_s < baseline.to_s
-  end
-
-  # The exclusion is applied by the SEARCH, not by filtering what comes back, so an
-  # excluded issue never enters the tick at all: it is not fired, and — because the
-  # cursor only ever advances past issues that fired — it does not drag the cursor
-  # forward either. An issue held back this way is simply never an event.
-  #
-  # The consequence worth knowing is that the label has to be there when GitHub indexes
-  # the issue, which in practice means at creation (`gh issue create --label …`). The
-  # poller ticks every minute, so a label added a minute later can lose the race.
-  def issue_query(condition, window_start)
-    [
-      "is:issue",
-      GithubSearchService.repo_group(condition.github_repos),
-      "created:>=#{window_start}",
-      GithubSearchService.exclude_label_terms(condition.github_exclude_labels)
-    ].reject(&:blank?).join(" ")
-  end
-
   # ── Firing ──────────────────────────────────────────────────────────────────
 
   # Creates the session for one item. Returns true only if a session was created, since
@@ -1107,26 +1063,6 @@ class GithubTriggerPollerJob < ApplicationJob
 
       #{body_of(item).presence || '(no description)'}
     TEXT
-  end
-
-  # ── Item helpers ────────────────────────────────────────────────────────────
-
-  # The search API identifies an item's repo only by its API URL:
-  # "https://api.github.com/repos/owner/name" -> "owner/name"
-  def repo_of(item)
-    item["repository_url"].to_s.split("/repos/").last.presence || "unknown/unknown"
-  end
-
-  def item_key(item)
-    "#{repo_of(item)}##{item['number']}"
-  end
-
-  def labels_for(item)
-    Array(item["labels"]).filter_map { |label| label["name"].presence }
-  end
-
-  def pull_request?(item)
-    item["pull_request"].present?
   end
 
   def body_of(item)

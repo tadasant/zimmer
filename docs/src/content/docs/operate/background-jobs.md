@@ -58,7 +58,7 @@ From `config.good_job.cron`:
 | 1m | `GithubTriggerPollerJob` | Poll GitHub for label-added and new-issue trigger conditions |
 | 1m | `FleetIdleCheckerJob` | Fire the `no_sessions_in_progress` trigger event once the deployment has had fewer turns on a worker than its configured ceiling — 3 by default; `waiting` sessions do not count, and neither does a turn waiting behind the `agents` worker pool or a `running` row asleep on its own future wake with nothing queued for it — for the whole of its configured stretch (5 minutes by default), with nothing parked on an outage and a pool that can serve. Idleness is a level, not an edge, so `FleetIdleMonitor` measures the stretch from the moment the fleet crossed *below* the ceiling — only reaching the ceiling again starts a new one — and paces repeat fires on a cooldown floor (60 minutes by default) the fleet cannot touch, because the session the fire spawns would otherwise re-qualify it by running. All three numbers are set from the **Backlog top-up** card on `/inference`. Production and staging only — the fire spawns a real session. See [Triggers](/sessions/triggers/#no_sessions_in_progress). |
 | 2m | `CliStatusRefreshJob` | Refresh the `gh` / `claude` / `codex` version and auth cache. Every check it runs must be free: an auth probe that reaches inference is a health check spending the pooled quota that gates real sessions ([#536](https://github.com/tadasant/zimmer/issues/536)) |
-| 5m | `GithubTriggerHealthCheckJob` | Alert when GitHub trigger polling has silently stopped succeeding |
+| 5m | `TriggerPollerLivenessCheckJob` | Alert when the Slack or GitHub trigger poller has silently stopped polling — the liveness half of [the poller monitor](#trigger-poll-liveness-and-freshness), read off the heartbeat each poller stamps (production and staging only: the GitHub poller is not scheduled in development, so its heartbeat would be seeded there and then read as a stall) |
 | 5m | `CleanupOrphanedSessionsJob` | Sessions marked `running` whose process is gone |
 | 5m | `RefreshRuntimeAuthTokensJob` | Refresh Anthropic/OpenAI OAuth tokens |
 | 5m | `CleanupExpiredElicitationsJob` | Expire elicitations + clear stranded blocks (leaving a banner that says the round-trip was lost) |
@@ -86,8 +86,9 @@ From `config.good_job.cron`:
 | hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions, reap deletion tombstones, and sweep the scratch/attachment directories of sessions whose row is gone |
 | hourly :17 | `AbandonedStatusSummaryForkSweepJob` | Archive a status-summary fork that was created and never given its summary prompt. Harvest is enqueued only from the `pause` / `fail` hooks, so every disposal route is keyed to a fork that *ran* — a fork created in `needs_input` whose generator run died before `deliver_follow_up!` reaches neither state, and one sat in that hole for seven days holding a repository clone ([#730](https://github.com/tadasant/zimmer/issues/730)). Reaping wrong is silent, so the predicate wants age **and** positive evidence: the fork marker (never an ordinary session), at rest in `needs_input` or `waiting`, older than `ABANDONED_AFTER` (6 hours), nothing in flight for it (no `running_job_id`, no `pending_follow_up_prompt`, and `PendingAgentTurns`' anti-join on unfinished `AgentSessionJob`s — a delayed turn leaves `running_job_id` blank), nothing queued for it in `enqueued_messages`, quiet by `updated_at` as well as old by `created_at`, not dormant on purpose (`StrandedSleepRescue::DORMANT_MARKERS`, the longer list) and not asleep on an armed wake, and a transcript holding nothing past the fork point. The dormant markers are load-bearing: a **spot-held** fork has had its prompt taken into custody and its `running_job_id` cleared, so it looks abandoned on every other signal while it is in fact waiting to run. `SCAN_LIMIT` (200) rows a sweep. It archives and nothing else: the source's abandoned claim is already `StatusSummaryBackstopJob`'s. See [The Status summary](/sessions/status-summary/#a-fork-that-never-got-its-turn). |
 | hourly :15 | `CleanupStaleTriggersJob` | Destroy dead one-time wake-up triggers — an archived target session, a wake a resume consumed without firing, or a schedule that has lapsed |
+| hourly :35 | `GithubTriggerHealthCheckJob` | Detect GitHub trigger conditions that silently stopped keeping up — the per-condition freshness half of [the poller monitor](#trigger-poll-liveness-and-freshness); one search per enabled condition per run (production and staging only) |
 | hourly :40 | `LiveCloneIntegrityJob` | Report, at `.error`, any live session whose clone directory has been deleted or stripped underneath it — see below |
-| hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing |
+| hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing — the per-condition freshness half for Slack |
 | daily 06:00 | `ClaudeCodeUpdateJob` | Update the Claude Code CLI to the latest version |
 | daily 08:00 | `MangledCloneReportJob` | One line saying how many clones the archive-side mass-deletion guard defused in the last day — see below |
 | — | `ZombieReaperJob`, `EmptyTrashJob`, `DockerCleanupJob`, `OrphanCloneFilesystemCleanupJob`, `OrphanTranscriptDirectoryCleanupJob`, `SystemHealthMonitorJob`, `CertExpiryMonitorJob`, `EgressHealthCheckJob` | cleanup and monitoring |
@@ -1243,7 +1244,7 @@ incident a request can stall with the TCP connection half-open: no response, no 
 `Open3.capture3` blocks the calling thread forever on that, and the three GitHub pollers are
 `queue_as :pollers` singletons with `total_limit: 1`, so one hung call holds the only slot and every
 later tick is a silent no-op enqueue. Unlike `GithubTriggerPollerJob`, which has
-`GithubTriggerHealthCheckJob` watching a heartbeat, **none of these three has a heartbeat or a
+`TriggerPollerLivenessCheckJob` watching a heartbeat, **none of these three has a heartbeat or a
 watchdog** — a hang in them was unbounded in both duration and detection
 ([#458](https://github.com/tadasant/zimmer/issues/458)).
 
@@ -1808,12 +1809,32 @@ cleanup lever during the incident it exists for. And they carry a stronger throt
 a mistaken repeat of the same call is refused by the count confirmation, because the scope now holds
 zero rows.
 
-## Trigger-poll liveness
+## Trigger-poll liveness and freshness
+
+A poller failing silently is the most expensive failure in this system, because nothing downstream
+complains — a trigger just never fires. There are two ways a poller goes silent, and they need two
+different signals, so every polled feed gets both:
+
+| Signal | Question it answers | Slack | GitHub | Cadence |
+| --- | --- | --- | --- | --- |
+| **Liveness** | Is the poller polling at all? | `TriggerPollerLivenessCheckJob` reads the heartbeat `SlackTriggerPollerJob` stamps | the same job reads the heartbeat `GithubTriggerPollerJob` stamps | every 5 minutes; a cache read |
+| **Freshness** | Is *this condition* keeping up with its feed? | `SlackTriggerHealthCheckJob` | `GithubTriggerHealthCheckJob` | hourly; one upstream request per enabled condition |
+
+Until [#525](https://github.com/tadasant/zimmer/issues/525) each feed had one of the two — GitHub
+had a heartbeat and no per-condition check, Slack had a per-condition check and no heartbeat — so
+each poller was monitored against exactly the incident that had happened to it. A single GitHub
+condition whose state stopped landing was masked by its siblings keeping the heartbeat fresh, and a
+total Slack-poller stall was invisible until a feed drifted three hours behind (and the check that
+would notice ran on the same worker). The liveness plumbing now has one implementation
+(`PollerHeartbeat`, one check job) and the freshness checks are the same shape on both sides.
+
+### Liveness: the heartbeat
 
 Both trigger pollers report from a per-condition `rescue` when a poll **raises** — an ERROR log
-record, which pages, plus a GlitchTip event. That only covers failures noisy enough to throw. It does not cover a poller that
-stops running at all — and with `total_limit: 1`, one wedged tick is enough: while it holds the only
-slot, every subsequent minute's enqueue is a silent no-op.
+record, which pages, plus a GlitchTip event. That only covers failures noisy enough to throw. It does
+not cover a poller that stops running at all — and with `total_limit: 1`, one wedged tick is enough:
+while it holds the only slot, every subsequent minute's enqueue is a silent no-op. Nor does it cover a
+poller that runs every minute and polls nothing.
 
 `GithubSearchService` shells out to `gh`, and during a GitHub REST incident a request can stall with
 the connection half-open — no response, no reset. An unbounded `Open3.capture3` blocks on that
@@ -1837,26 +1858,49 @@ merge gate) quietly stop firing. Two mechanisms close that:
   raises and pages exactly as one failure used to, with the attempt count in the message. A rate
   limit raises on the first attempt but does *not* page there — it raises `RateLimitedError`, which
   the poller absorbs; see below.
-- **A liveness check.** `GithubTriggerPollerJob` stamps a Redis heartbeat
-  (`HEARTBEAT_CACHE_KEY`) on every sweep that processes at least one condition successfully.
-  `GithubTriggerHealthCheckJob` reads it every 5 minutes and pages `#alerts` when it is older
-  than `STALE_THRESHOLD` (15m). It reports the same message every run, so a long outage is one
-  GlitchTip issue and one Grafana alert group rather than a notification per run. This is the GitHub
-  counterpart to `SlackTriggerHealthCheckJob`.
+- **A liveness check.** Each poller stamps a Redis heartbeat through `PollerHeartbeat`
+  (`stamp(:github)` / `stamp(:slack)`, one key per poller, `PollerHeartbeat::TTL` of 7 days so the
+  key holds its last-success time through an outage) on every sweep that genuinely polled its feed.
+  `TriggerPollerLivenessCheckJob` reads both every 5 minutes and pages `#alerts` when either is older
+  than its threshold — 15 minutes for GitHub, 30 for Slack. It reports the same message per poller
+  every run (*GitHub trigger polling stalled*, *Slack trigger polling stalled*), so a long outage is
+  one GlitchTip issue and one Grafana alert group rather than a notification per run.
 
-The heartbeat's bar is *"at least one condition came back clean"*, not *"`perform` returned"*: the
-per-condition `rescue` swallows errors so one bad condition can't abort the sweep, which means
-`perform` returns normally even in a total outage where nothing was polled. Requiring a real success
-is what separates a live poller (some condition worked — a failing one pages on its own) from a
-wedged or downed one.
+**Where each poller stamps is the load-bearing part.** A stamp that fires because "the sweep ran" is
+green through exactly the outages it exists to report, so each poller's bar is *"this sweep genuinely
+polled something"*:
 
-That bar does double duty for the one GitHub failure that is *refused but not an incident*. A search
-GitHub reports as `incomplete_results` is never accepted as complete (it would corrupt the label
-poller's seen-set), but it is transient: `GithubSearchService` re-runs the search twice, and if it is
-still short the poller skips that condition with a WARN instead of paging, because the next tick
-re-derives the whole seen-set anyway. A skipped condition does not stamp the heartbeat — so a broad
-search-index degradation that hits *every* condition still ages the heartbeat out and pages here,
-with no separate alarm needed. A single condition stuck on it pages on its own consecutive-skip
+- **GitHub:** *at least one condition came back clean*, not *`perform` returned*. The per-condition
+  `rescue` swallows errors so one bad condition can't abort the sweep, which means `perform` returns
+  normally even in a total outage where nothing was polled. Requiring a real success is what
+  separates a live poller (some condition worked — a failing one pages on its own) from a wedged or
+  downed one.
+- **Slack:** the same bar, *and* the sweep recorded no transient Slack failure. The Slack poller's
+  per-unit rescues (`#note_unit_failure`) and `#fetch_recent_history` deliberately swallow a 429 or a
+  network failure so the sweep can finish the batched cursor writes for units that already succeeded
+  — which means every condition returns normally from a sweep in which Slack refused every fetch.
+  That is [#522](https://github.com/tadasant/zimmer/issues/522)'s shape, *the poller kept running and
+  quietly processed nothing*, and a stamp keyed on the conditions completing would be green through
+  it. `@transient_error` is the poller's own record that Slack threw part of the sweep away: a sweep
+  that set it is deferred (see [the caution on rate limits](/sessions/triggers/#slack)) and
+  stamps nothing, and the deferred re-run stamps if it comes back clean. Under a sustained refusal no
+  sweep is ever clean; the deferral chain pages on its own after five backoffs, and the stale
+  heartbeat is the backstop for the chain not running at all.
+
+The Slack threshold is wider than GitHub's for exactly that chain: five deferrals of exponential
+backoff hold the singleton for roughly a quarter of an hour before the poller reports *Slack trigger
+poller deferred repeatedly*, and none of those sweeps stamps. A liveness threshold inside that window
+would page a second time for an outage the poller is already reporting; past it, a stale heartbeat
+means the chain itself is not running — the wedge, the dead worker — or that Slack has refused every
+sweep for two chains in a row.
+
+The GitHub bar does double duty for the one GitHub failure that is *refused but not an incident*. A
+search GitHub reports as `incomplete_results` is never accepted as complete (it would corrupt the
+label poller's seen-set), but it is transient: `GithubSearchService` re-runs the search twice, and if
+it is still short the poller skips that condition with a WARN instead of paging, because the next
+tick re-derives the whole seen-set anyway. A skipped condition does not stamp the heartbeat — so a
+broad search-index degradation that hits *every* condition still ages the heartbeat out and pages
+here, with no separate alarm needed. A single condition stuck on it pages on its own consecutive-skip
 streak (`GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT`, 5 ticks).
 
 A **GitHub rate limit** is refused-but-not-an-incident for the same reason and gets the same shape of
@@ -1867,28 +1911,80 @@ limit that outlasts `CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT` (5 sweeps) pages 
 *GitHub search API rate limit not clearing*, and a stale heartbeat backstops it either way. See
 [Rate-limit budget](/sessions/triggers/#rate-limit-budget), whose closing note covers this in full.
 
-Two placement details are load-bearing, and both are easy to get backwards:
+Three placement details are load-bearing, and all are easy to get backwards:
 
-- **The health check tests the `gh` credential only when there is no heartbeat yet.**
+- **The liveness check tests a credential only when there is no heartbeat yet.**
   `GithubSearchService.configured?` shells out to `gh auth status`, which is a *live API call*, so a
   GitHub outage makes it return `false`. Guarding the whole check on it would reproduce the original
   silence exactly: the poller stalls, the preflight fails, and nobody is paged. Once a heartbeat
-  exists the host has demonstrably polled GitHub, so a stale one is an incident whatever the
-  preflight now says — including when polling stopped *because* the credential was revoked. The
-  credential only decides whether a host with no baseline (staging) gets seeded. `configured?` stays
-  a bare yes/no for exactly this reason: it must decline to seed for *every* way of not
-  authenticating. The poller reads the richer `auth_preflight` instead, because "no credential", "a
-  credential GitHub refused" and "we could not ask" are the same decision but three different things
-  to tell a human — see [Triggers](/sessions/triggers/).
-- **A tick that finds no GitHub triggers still heartbeats.** Otherwise the key rots while there is
-  legitimately nothing to poll, and enabling a trigger flips the health check on against that stale
-  value — paging for a healthy poller. A tick skipped for a *missing credential* must not stamp,
-  though, or an outage would keep the heartbeat artificially fresh.
+  exists the host has demonstrably polled, so a stale one is an incident whatever the preflight now
+  says — including when polling stopped *because* the credential was revoked. The credential only
+  decides whether a host with no baseline (staging, for GitHub) gets seeded. `configured?` stays a
+  bare yes/no for exactly this reason: it must decline to seed for *every* way of not authenticating.
+  The poller reads the richer `auth_preflight` instead, because "no credential", "a credential GitHub
+  refused" and "we could not ask" are the same decision but three different things to tell a human —
+  see [Triggers](/sessions/triggers/). `SlackService.configured?` is an offline token-presence check
+  and cannot be failed by an outage, but it gates the same thing for the same reason: a host with no
+  Slack token never polls and must not be given a baseline to age.
+- **A tick that finds no enabled triggers still heartbeats**, on both pollers. Otherwise the key rots
+  while there is legitimately nothing to poll, and enabling a trigger flips the liveness check on
+  against that stale value — paging for a healthy poller. A tick skipped for a *missing credential*
+  must not stamp, though, or an outage would keep the heartbeat artificially fresh.
+- **A missing heartbeat is seeded, not paged on.** A fresh boot, a cache flush or a gap longer than
+  the TTL leaves an absence the check cannot date, so it writes a baseline and stays quiet; a genuine
+  stall is still caught one cycle later when the seed itself ages past the threshold. The Slack
+  heartbeat is new with #525, so every host takes this path once after that deploy. See
+  [the limitation](/limitations/#the-trigger-poll-liveness-alarm-depends-on-redis-and-fails-quiet).
 
-`GithubTriggerHealthCheckJob` runs on `default`, deliberately not `pollers`: a monitor must not run
+`TriggerPollerLivenessCheckJob` runs on `default`, deliberately not `pollers`: a monitor must not run
 on the queue it watches, or the outage it exists to report would starve it into silence too.
 `SystemHealthMonitorJob` documents the same rule inverted — it watches `default`, so it runs on
-`pollers`.
+`pollers`. [Cron freshness](#a-sweep-that-stops-is-noticed-cron-freshness) covers the neighbouring
+case from the other side — a poller key that has stopped *producing jobs* — and cannot see this one,
+because a sweep that runs every minute and polls nothing produces a job every minute.
+
+### Freshness: one condition at a time
+
+The heartbeat is stamped when *any* condition comes back clean, so it says nothing about one
+condition on its own: a condition polled every minute whose search is answered and whose state is
+never written keeps looking healthy for as long as its siblings keep the heartbeat fresh. The
+freshness checks close that, once an hour, by asking the upstream what the newest thing is and
+comparing it against what the poller recorded for that condition. Both are `default`-queue singletons
+(`SingletonSweep`) so overlapping cron ticks cannot stack, both log a failed probe at INFO rather than
+paging (the poller's own alerts say when a search is failing outright), and both report one stable
+message per feed (*Slack trigger feed stalled*, *GitHub trigger feed stalled*) with the condition and
+trigger ids in the context.
+
+- **`SlackTriggerHealthCheckJob`** — per enabled `new_message` condition (and a thread-scoped
+  `bot_mention`), the newest top-level message or thread reply Slack has versus the condition's
+  `last_message_ts`; a message more than `STALE_THRESHOLD_SECONDS` (3h) old that the poller never
+  processed is a stall. Fan-out conditions have no single feed to compare and are skipped — see
+  [Triggers](/sessions/triggers/#slack).
+- **`GithubTriggerHealthCheckJob`** — per enabled GitHub condition, the poller's own query (through
+  the `GithubTriggerSearch` concern both jobs include, so a difference between two queries can never
+  read as a stall), against the condition's recorded state, with a `STALE_THRESHOLD` of 3 hours:
+  - a **`github_issue`** condition keeps a `created_at` cursor. The probe is the query with no time
+    bound, newest first, one request for `NEWEST_ISSUES_PROBED` (10) items — a page of ten rather
+    than the poller's hundred, through `GithubSearchService.search_issues(limit:)`. The newest issue
+    the poller *would* fire on (not pre-baseline for its repo, not already fired at the cursor's
+    second) that is newer than the cursor and older than the threshold is a stall.
+  - a **`github_label`** condition keeps a seen-set. The probe is the query narrowed to
+    `updated:<=` the threshold ago: a label event moves `updated_at`, so every item returned has
+    carried its label for at least that long, and any of them the seen-set does not hold is an item
+    the poller has been shown on every tick for hours and never recorded. Keyed exactly as the poller
+    keys the seen-set — configured casing, one key per (item, watched label).
+
+  A trigger inside a burst it has already noticed, and a `skip_if_pending_session` trigger whose
+  pending session still carries the intent, leave their items unrecorded *on purpose* so they fire
+  for real later; both are excluded before a search is spent. A GitHub rate limit met mid-run ends
+  the run rather than spending more of the quota that caused it. The probe cannot see a query that
+  matches nothing — a renamed label, a repo the token lost — see
+  [the limitation](/limitations/#the-github-freshness-check-cannot-see-a-query-that-matches-nothing).
+
+**Cost.** One search per enabled GitHub condition per hour — today two — against the 30-per-minute
+search budget the poller spends its own N-per-minute from; the label probe returns at most the items
+labelled and untouched for three hours (one page on the merge gate), the issue probe one page of ten.
+Which is why it is hourly and the liveness check, a cache read, is not.
 
 ### What "queue backlog" counts
 
