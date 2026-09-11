@@ -1,0 +1,64 @@
+<%#
+  Goal check — what GoalCheck reads back about the session's goal: one line per
+  criterion the goal's catalog entry declares, each met / unmet / pending /
+  unknown against state Zimmer already records. Advisory: nothing acts on it.
+
+  Always expanded rather than a <details> disclosure. It is short (at most six
+  lines), and it is re-rendered by broadcast whenever a PR reading changes, which
+  would snap an opened disclosure shut under the reader.
+
+  A session whose goal is free text, or a catalog goal with no checks, renders a
+  hidden, empty target — an empty section would read as "checked", and a visible
+  empty child would draw a second divider in the panel group. The target stays in
+  the DOM so a goal change can broadcast the panel into it.
+
+  Local variables:
+    agent_session: Session
+%>
+<% check = GoalCheck.for(agent_session) %>
+<div id="session_<%= agent_session.id %>_goal_check" data-live-region="replace" class="<%= 'hidden' unless check %>">
+  <% if check %>
+    <%
+      verdict_classes = {
+        "met" => "bg-green-100 text-green-800",
+        "unmet" => "bg-red-100 text-red-800",
+        "pending" => "bg-yellow-100 text-yellow-800"
+      }
+      status_marks = {
+        "met" => [ "✓", "text-green-600", "Met" ],
+        "unmet" => [ "✗", "text-red-600", "Unmet" ],
+        "pending" => [ "…", "text-yellow-600", "Pending" ],
+        "unknown" => [ "?", "text-gray-400", "Unknown" ]
+      }
+    %>
+    <div class="px-4 sm:px-6 py-3" data-goal-check-verdict="<%= check.verdict %>">
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <svg class="h-4 w-4 flex-shrink-0 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span class="text-sm font-semibold text-gray-900">Goal check</span>
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium <%= verdict_classes.fetch(check.verdict) %>">
+          <%= check.verdict.capitalize %>
+        </span>
+        <span class="text-xs text-gray-500">
+          <%= check.met_count %> of <%= check.criteria.size %> met · <%= check.goal_name %><%= " · session still running" if check.provisional %>
+        </span>
+      </div>
+      <ul class="mt-2 space-y-1">
+        <% check.criteria.each do |criterion| %>
+          <% mark, mark_class, mark_label = status_marks.fetch(criterion.status) %>
+          <li class="flex items-start gap-2 text-xs text-gray-700" data-goal-check-criterion="<%= criterion.key %>" data-status="<%= criterion.status %>">
+            <span class="w-3 flex-shrink-0 text-center font-semibold <%= mark_class %>" aria-hidden="true"><%= mark %></span>
+            <span class="min-w-0 break-words">
+              <span class="sr-only"><%= mark_label %>: </span><%= criterion.label %>
+              <% if criterion.detail.present? %>
+                <span class="text-gray-500">— <%= criterion.detail %></span>
+              <% end %>
+            </span>
+          </li>
+        <% end %>
+      </ul>
+      <p class="mt-2 text-xs text-gray-400"><%= GoalCheck::NOT_CHECKED_NOTE %></p>
+    </div>
+  <% end %>
+</div>

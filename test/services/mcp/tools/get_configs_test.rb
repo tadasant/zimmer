@@ -26,6 +26,17 @@ class Mcp::Tools::GetConfigsTest < ActiveSupport::TestCase
     assert_includes result, "## MCP Servers"
   end
 
+  # The same list GET /configs carries, so an agent choosing a goal can see what
+  # Zimmer will read back about it.
+  test "lists each goal's checks" do
+    result = @tool.call({})
+
+    assert_includes result, "- **ID:** `open-reviewed-green-pr`"
+    assert_includes result, "- **Checks:** `pull_request_open`, `ci_green`, `verification_section`, " \
+                            "`verification_boxes_checked`, `ready_to_merge_label`"
+    assert_includes result, "- **Checks:** `no_pull_request`"
+  end
+
   test "lists runtime model catalogs for model discovery" do
     result = @tool.call({})
 

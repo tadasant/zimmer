@@ -62,13 +62,13 @@ class Mcp::Tools::ManageEnqueuedMessagesTest < ActiveSupport::TestCase
   end
 
   test "get returns the full message" do
-    message = @session.enqueued_messages.create!(content: "Full body", goal: "g", position: 1, status: "pending")
+    message = @session.enqueued_messages.create!(content: "Full body", goal: "a queued goal", position: 1, status: "pending")
 
     output = @tool.call("session_id" => @session.id, "action" => "get", "message_id" => message.id)
 
     assert_includes output, "## Enqueued Message ##{message.id}"
     assert_includes output, "- **Content:** Full body"
-    assert_includes output, "- **Goal:** g"
+    assert_includes output, "- **Goal:** a queued goal"
   end
 
   test "get without message_id raises" do
@@ -160,11 +160,11 @@ class Mcp::Tools::ManageEnqueuedMessagesTest < ActiveSupport::TestCase
   test "send_now stages a message and dispatches it immediately" do
     Sessions::InterruptService.any_instance.expects(:call).returns(Sessions::Result.new(success: true))
 
-    output = @tool.call("session_id" => @session.id, "action" => "send_now", "content" => "Urgent", "goal" => "g")
+    output = @tool.call("session_id" => @session.id, "action" => "send_now", "content" => "Urgent", "goal" => "a queued goal")
 
     message = @session.enqueued_messages.last
     assert_equal "Urgent", message.content
-    assert_equal "g", message.goal
+    assert_equal "a queued goal", message.goal
     assert_includes output, "## Message Sent Immediately"
     assert_includes output, "- **Result:** Follow-up prompt sent immediately"
   end

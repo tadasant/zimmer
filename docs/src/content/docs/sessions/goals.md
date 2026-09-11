@@ -1,6 +1,6 @@
 ---
 title: Goals and stop conditions
-description: What a goal is, the four that ship, and the honest truth about how weakly they are enforced.
+description: What a goal is, the four that ship, what Zimmer checks about them, and the honest truth that nothing enforces them.
 sidebar:
   order: 3
 ---
@@ -104,8 +104,8 @@ sequenceDiagram
     J->>G: GoalsConfig.find(goal)
     alt known goal id
         G-->>J: goal.description
-    else unknown string
-        Note over J: falls through as free text
+    else a sentence (free text)
+        Note over J: passed through verbatim
     end
     J->>J: build_prompt_with_goal
     Note over J: prompt + "The user has indicated the goal<br/>for this task is: {description}.<br/>Hand back control AS SOON as the goal<br/>is satisfied…"
@@ -113,25 +113,67 @@ sequenceDiagram
     J->>P: spawn with the concatenated prompt
 ```
 
-That is the entire mechanism. `AgentSessionJob#build_prompt_with_goal` resolves the goal id to
-its description (or passes an unknown string through verbatim as free text) and appends it to
-the prompt.
-
-:::danger[A goal has zero runtime enforcement]
-Nothing in Zimmer checks that CI actually went green. Nothing verifies a review happened. Nothing
-inspects the PR description for the `## Verification` section it demanded. The state machine's
-`pause` event fires when the CLI process exits, full stop — it does not ask whether the goal was
-met.
-
-The stop condition is enforced only by the LLM choosing to obey English.
-
-This is the single biggest gap between what Zimmer's docs (and its own goal text) promise and
-what the code does. Know this before you trust an autonomous session's "done."
-Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
-:::
+`AgentSessionJob#build_prompt_with_goal` resolves the goal id to its description (or passes a
+free-text goal through verbatim) and appends it to the prompt. That is how a goal reaches the
+agent: as English. What the agent does with it is still up to the agent.
 
 A blank base prompt short-circuits the whole thing — a guard against spawning an agent whose
 entire prompt is a bare goal string.
+
+## How a goal is checked
+
+The prompt is the request. The **goal check** is Zimmer reading back the parts of that request
+it can see for itself. Each goal in `config/goals.json` lists its `checks`, and `GoalCheck`
+evaluates them against state the session already records:
+
+| Check | Read from | Met when |
+| --- | --- | --- |
+| `pull_request_open` | the PRs `GithubPrUrlHook` saw the session open, and their polled status | a recorded PR is open or merged. A PR closed without merging does not count |
+| `ci_green` | `github_pull_request_ci_statuses` | CI on every live PR passes, or the PR has merged |
+| `verification_section` | the PR description | it has a heading that starts with "Verification" |
+| `verification_boxes_checked` | the PR description | the Verification section has at least one checked box, and the description has no unchecked box anywhere |
+| `ready_to_merge_label` | the PR's labels | `ready to merge` is applied, or the PR has merged |
+| `no_pull_request` | the recorded PRs | the session recorded none |
+
+The three PR goals use the first five checks. `codebase-question` uses `no_pull_request`, because
+it tells the agent not to open a PR at all.
+
+The PR description and labels come from the poll pass's existing `gh pr view` reading. `body` and
+`labels` were added to that call, so the check costs no extra GitHub calls. `Github::GoalFactsEvaluator`
+cuts the description down to the few facts the checks need and stores those, not the text. It
+skips what a reader of the rendered PR would not see: fenced code blocks and HTML comments. A PR
+template's commented-out checklist therefore counts for nothing.
+
+Each check answers `met`, `unmet`, `pending` (waiting on something that settles by itself, such
+as CI still running) or `unknown` (Zimmer has no reading that could decide it). The verdict is
+`unmet` if any check is unmet, `met` if every check is met, and `pending` otherwise. It is
+computed when read rather than stored, so it always matches the PR badge and never goes stale on
+its own. It shows up in three places:
+
+- the **Goal check** section on the session page, just under Status, repainted whenever a PR
+  reading changes
+- a `### Goal Check (advisory)` section in the MCP `get_session` output
+- `goal_check` on every session in the REST API (`null` for a free-text goal)
+
+A free-text goal gets no check, because there is nothing to check it against. Neither does a
+session with no goal.
+
+:::caution[A goal is checked, not enforced]
+The goal check is advisory, and nothing acts on it. An `unmet` verdict does not fail the session,
+stop it archiving, or send it another prompt. The `pause` event still fires when the CLI process
+exits, whatever the check says.
+
+That is on purpose. A check that misreads a PR (a repo with no CI, a renamed label, a checklist
+written some other way) would trap a finished session or block its archive, and the person who
+noticed would be the one whose work stalled. A report can be wrong without costing anything. Real
+sessions will show how often the check is wrong, and that has to be known before anything is
+allowed to depend on it.
+
+It also covers only what Zimmer can read. Whether a fresh-eyes review happened, whether the
+`open-pr` skill was used, whether the screenshots are real: none of that is visible from GitHub
+state, so it is still the agent's word. A `met` means "nothing Zimmer can see contradicts the
+goal", not "the goal was met". See [Limitations](/limitations/#a-goal-is-checked-not-enforced).
+:::
 
 ## Where a goal comes from
 
@@ -157,8 +199,24 @@ next fire. Change it on the trigger instead. A trigger with a blank goal writes 
 keeps a per-session wake from erasing the goal of the session it wakes — see
 [what the fire re-stamps onto the reused session](/sessions/triggers/#what-the-fire-re-stamps-onto-the-reused-session).
 
-The column is validated on length only (`GOAL_MAX_LENGTH`). Any string is a legal goal.
-Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
+**A goal is either a catalog id or a sentence.** A goal with no whitespace in it can only have
+been meant as an id, so it has to be one `config/goals.json` knows. Anything else is refused with
+the list of known ids, so a typo like `open-reviewd-green-pr` fails where it was typed instead of
+reaching the agent as its goal. The check is `GoalsConfig.unknown_id?`, and it runs wherever a
+goal is stored:
+
+- as a model validation (`goal_reference`) on `Session`, `Trigger` and `EnqueuedMessage`, which
+  covers `POST` and `PATCH /api/v1/sessions`, the web forms, the MCP `change_goal` action and the
+  trigger editors
+- as an early refusal on every follow-up surface (the REST and MCP `follow_up`, the web follow-up
+  form, the enqueued-message editor), before anything is written or delivered
+- in MCP `start_session`, before the id is swapped for its description
+
+It judges only a goal that is being **changed**. A session or trigger that already holds an id
+since retired from the catalog keeps working. Its other fields still save, its follow-ups still
+go through, and a trigger fire with such a goal spawns its session with no goal and logs why,
+the same way it drops an artifact the catalog no longer has. The column is also capped at
+`GOAL_MAX_LENGTH`.
 
 ## The heartbeat
 

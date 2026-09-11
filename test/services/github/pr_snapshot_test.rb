@@ -8,7 +8,7 @@ class Github::PrSnapshotTest < ActiveSupport::TestCase
 
   test "fetch asks for one PR object with every field the pass needs" do
     BoundedSubprocess.expects(:run)
-      .with([ "gh", "pr", "view", "42", "--repo", "owner/repo", "--json", "state,mergedAt,mergeable" ],
+      .with([ "gh", "pr", "view", "42", "--repo", "owner/repo", "--json", "state,mergedAt,mergeable,body,labels" ],
             timeout: Github::PrSnapshot::TIMEOUT)
       .returns([ { "state" => "OPEN", "mergedAt" => nil, "mergeable" => "MERGEABLE" }.to_json, "", fake_process_status ])
 
@@ -16,6 +16,30 @@ class Github::PrSnapshotTest < ActiveSupport::TestCase
 
     assert_equal "open", snapshot.status
     assert_equal false, snapshot.conflicting?
+  end
+
+  # `body` and `labels` ride the same call, for Github::GoalFactsEvaluator.
+  test "fetch reads the description and the label names" do
+    BoundedSubprocess.stubs(:run).returns([
+      {
+        "state" => "OPEN", "mergedAt" => nil, "mergeable" => "MERGEABLE",
+        "body" => "## Verification\n- [x] CI green",
+        "labels" => [ { "id" => "L1", "name" => "ready to merge", "color" => "0e8a16" }, { "name" => "bug" } ]
+      }.to_json,
+      "", fake_process_status
+    ])
+
+    snapshot = Github::PrSnapshot.fetch(REF)
+
+    assert_equal "## Verification\n- [x] CI green", snapshot.body
+    assert_equal [ "ready to merge", "bug" ], snapshot.labels
+  end
+
+  test "a reading built without a body says it has not read one" do
+    snapshot = build(state: "OPEN")
+
+    assert_nil snapshot.body
+    assert_equal [], snapshot.labels
   end
 
   # ---- status mapping (unchanged from the PR poller's own) ----

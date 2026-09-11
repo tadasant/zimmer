@@ -917,6 +917,39 @@ class TriggerTest < ActiveSupport::TestCase
     ), "Expected the re-stamp, and what it replaced, to be narrated in the session's log"
   end
 
+  # A trigger saved before unknown goal ids were refused, or whose id was later
+  # retired from config/goals.json, still carries one. Session refuses the same
+  # value, so passing it through would fail every fire. The fire goes ahead with no
+  # goal instead, on both paths.
+  test "a fire from a trigger holding an unknown goal id spawns without a goal" do
+    mock_agent_root = OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    @trigger.update_column(:goal, "retired-goal-id")
+
+    session = @trigger.create_session!(prompt: "Initial prompt")
+
+    assert session.persisted?
+    assert_nil session.goal
+  end
+
+  test "a reuse fire from a trigger holding an unknown goal id leaves the session goal alone" do
+    mock_agent_root = OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = @trigger.create_session!(prompt: "Initial prompt")
+    session.update!(goal: "open-reviewed-green-pr")
+    @trigger.update!(reuse_session: true, last_session_id: session.id)
+    @trigger.update_column(:goal, "retired-goal-id")
+    session.update_column(:status, Session.statuses[:needs_input])
+
+    @trigger.create_session!(prompt: "Follow-up prompt")
+
+    assert_equal "open-reviewed-green-pr", session.reload.goal
+  end
+
   test "reuse fire with a blank trigger goal leaves the session goal alone" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",

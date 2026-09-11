@@ -492,7 +492,80 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
     Github::PrPollPass.new.run
   end
 
+  # ---- the goal check, end to end ----
+  #
+  # A real pass over a real session, with only the `gh` subprocess faked: PrSnapshot
+  # reads the PR, PrStatusEvaluator reads its CI, GoalFactsEvaluator reads its
+  # description, and GoalCheck reads all three back off the session row. This is the
+  # path tadasant/zimmer#88 asked for — the goal checked rather than only requested.
+
+  FINISHED_BODY = <<~MD.freeze
+    Adds the thing.
+
+    ## Verification
+    - [x] CI green
+    - [x] tests added and passing
+  MD
+
+  test "a pass over a PR that meets its goal reads met" do
+    goal_session_with_pr("open-reviewed-green-pr")
+    fake_github(body: FINISHED_BODY, labels: [ "ready to merge" ], ci_buckets: %w[pass pass])
+
+    Github::PrPollPass.new.run
+
+    check = GoalCheck.for(@session_with_pr.reload)
+    assert_equal "met", check.verdict, check.criteria.map(&:to_h).inspect
+    assert_equal 5, check.met_count
+  end
+
+  test "a pass over a PR that falls short of its goal reads unmet, and says where" do
+    goal_session_with_pr("open-reviewed-green-pr")
+    fake_github(body: "Adds the thing.\n\n## Test plan\n- [ ] try it", labels: [], ci_buckets: %w[pass fail])
+
+    Github::PrPollPass.new.run
+
+    check = GoalCheck.for(@session_with_pr.reload)
+    assert_equal "unmet", check.verdict
+    assert_equal(
+      { "pull_request_open" => "met", "ci_green" => "unmet", "verification_section" => "unmet",
+        "verification_boxes_checked" => "unmet", "ready_to_merge_label" => "unmet" },
+      check.criteria.to_h { |c| [ c.key, c.status ] }
+    )
+  end
+
+  test "a pass records no description facts for a session with a free-text goal" do
+    goal_session_with_pr("Ship the fix and open a PR for it")
+    fake_github(body: FINISHED_BODY, labels: [], ci_buckets: %w[pass])
+
+    Github::PrPollPass.new.run
+
+    assert_nil GoalCheck.for(@session_with_pr.reload)
+    assert_nil @session_with_pr.custom_metadata["github_pull_request_goal_facts"]
+  end
+
   private
+
+  def goal_session_with_pr(goal)
+    active_session_tracking(PR_URL)
+    @session_with_pr.update!(goal: goal)
+    isolate
+    Github::MergeConflictEvaluator.any_instance.stubs(:evaluate)
+    Github::CommentEvaluator.any_instance.stubs(:evaluate)
+  end
+
+  # The two `gh` calls a pass makes for an open PR, answered the way GitHub would.
+  def fake_github(body:, labels:, ci_buckets:)
+    view = {
+      "state" => "OPEN", "mergedAt" => nil, "mergeable" => "MERGEABLE",
+      "body" => body, "labels" => labels.map { |name| { "name" => name } }
+    }.to_json
+    checks = ci_buckets.map { |bucket| { "bucket" => bucket, "state" => bucket.upcase } }.to_json
+
+    BoundedSubprocess.stubs(:run).with { |command, **| command[0, 3] == %w[gh pr view] }
+      .returns([ view, "", fake_process_status ])
+    BoundedSubprocess.stubs(:run).with { |command, **| command[0, 3] == %w[gh pr checks] }
+      .returns([ checks, "", fake_process_status ])
+  end
 
   # Restrict the sweep to the one fixture session, so `.never` and `.once`
   # expectations are about it rather than about whatever else the fixtures hold.

@@ -235,12 +235,14 @@
     <div class="flex-1 min-w-0 max-w-full mx-auto px-2 sm:px-6 lg:px-8 py-4 sm:py-8">
     <%# The session detail panel group: four sections in one card, divided rather
         than stacked, so they read as one system. Status is always expanded (it
-        is the at-a-glance surface); Session hierarchy, Human messages and
+        is the at-a-glance surface), and so is the Goal check under it when the
+        goal has one (see _goal_check_panel); Session hierarchy, Human messages and
         Transcript are <details> disclosures. Transcript is collapsed by default
         — on a long session it is thousands of rows, and the three panels above
         it are what a returning reader wants first. %>
     <div class="bg-white shadow rounded-lg mb-4 divide-y divide-gray-200" id="session_<%= @session.id %>_panels" data-session-panels>
     <%= render "sessions/status_panel", agent_session: @session %>
+    <%= render "sessions/goal_check_panel", agent_session: @session %>
 
     <%# Deferred: SessionHierarchy walks the family breadth-first, one query per
         level in each direction, and that walk is the majority of the queries a

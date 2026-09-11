@@ -80,13 +80,15 @@ on the PR — archiving itself if the PR merges, and staying in your queue if it
 
 The loop closes on external reality: a CI run or a review. The agent's own say-so doesn't count.
 
-:::caution[A goal is prompt text and nothing more]
+:::caution[A goal is checked, not enforced]
 This is worth being blunt about. `AgentSessionJob#build_prompt_with_goal` looks the goal up
-in `config/goals.json` and appends its description to the prompt string. That is the
-entire mechanism. There is no runtime enforcement: nothing checks that CI actually went
-green before the session pauses, and nothing stops an agent from declaring victory anyway.
-The stop condition is enforced only by the model choosing to obey English.
-See [Goals and stop conditions](/sessions/goals/).
+in `config/goals.json` and appends its description to the prompt string, and the agent decides
+when it is done. Zimmer does read back what it can: whether the PR is open, CI is green, the
+`## Verification` section is there with its boxes checked, and the `ready to merge` label is on.
+It shows that verdict on the session page. But nothing acts on it. Nothing stops an agent from
+declaring victory anyway, and a review happening is not something GitHub can show. The stop
+condition is enforced only by the model choosing to obey English.
+See [How a goal is checked](/sessions/goals/#how-a-goal-is-checked).
 :::
 
 What the loop produces is held to a stricter bar: it has to have run. Zimmer would rather have

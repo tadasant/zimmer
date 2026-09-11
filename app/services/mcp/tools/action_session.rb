@@ -368,6 +368,10 @@ module Mcp
         if Sessions::FollowUpGoal.too_long?(goal)
           raise ToolError, "goal is too long (maximum #{Session::GOAL_MAX_LENGTH} characters)"
         end
+        # Only a goal this follow-up changes is judged, like the model validation.
+        if goal != session.goal && GoalsConfig.unknown_id?(goal)
+          raise ToolError, GoalsConfig.unknown_id_message(goal)
+        end
 
         # The edge is recorded only after the message has actually landed — every
         # branch below raises rather than returning on failure, so an edge is
@@ -898,6 +902,9 @@ module Mcp
         goal = args["goal"].to_s.strip.presence
         if goal && goal.length > Session::GOAL_MAX_LENGTH
           raise ToolError, "Goal is too long (maximum #{Session::GOAL_MAX_LENGTH} characters)"
+        end
+        if goal != session.goal && GoalsConfig.unknown_id?(goal)
+          raise ToolError, GoalsConfig.unknown_id_message(goal)
         end
 
         old_goal = session.goal
