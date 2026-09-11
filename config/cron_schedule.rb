@@ -192,8 +192,8 @@ module CronSchedule
     # Postgres is a throwaway accessory on the droplet rather than a copy of production's
     # data -- so it can only ever report a feed staging itself polls, and with no enabled
     # Slack trigger there it walks an empty relation and says nothing.
-    # GithubTriggerHealthCheckJob, written to mirror this one for the other poller, has
-    # always run on staging. Decided in tadasant/zimmer#686.
+    # GithubTriggerHealthCheckJob, the same per-condition check for the other poller, runs
+    # on staging too. Decided in tadasant/zimmer#686.
     #
     # The two *_trigger_health_check entries are the per-condition FRESHNESS half of the
     # poller monitor (does each condition keep up with its feed?) and cost one upstream

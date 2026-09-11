@@ -31,7 +31,8 @@
 # cache. It cannot catch a query that matches nothing: a renamed label, a repo the token
 # lost access to, a scope edited into emptiness. Those return nothing to the poller and
 # nothing to this probe alike, and a condition with no matching items is indistinguishable
-# from a quiet one.
+# from a quiet one. Nor can it see a stalled labelled item that is still active — see
+# #check_label_condition. Both gaps miss a stall; neither invents one.
 #
 # Two ways a trigger legitimately holds an item unfired are excluded before any search is
 # spent: a trigger inside a burst it has already noticed, and a `skip_if_pending_session`
@@ -126,6 +127,11 @@ class GithubTriggerHealthCheckJob < ApplicationJob
     # it carries — for at least STALE_THRESHOLD, and the poller has been shown it on every
     # tick in between. Bounding the query this way also bounds the cost: the items that
     # can possibly be stalled, rather than the whole labelled set.
+    #
+    # The price is a blind spot, and it fails quiet: `updated_at` moves on ANY activity — a
+    # comment, a push, another label — so a stalled item that is still being worked on is
+    # excluded until it goes quiet for STALE_THRESHOLD. Seen-set membership alone could
+    # not tell a stall from a label added a minute ago, so the bound is the trade.
     cutoff = (Time.current - STALE_THRESHOLD).utc.iso8601
     query = "#{label_query(condition)} updated:<=#{cutoff}"
     items = GithubSearchService.search_issues(query, sort: "created", order: "asc")
