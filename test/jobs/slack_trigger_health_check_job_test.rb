@@ -117,9 +117,9 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
       .returns([ OpenStruct.new(ts: STALLED_TS, thread_ts: "1704000000.000000") ])
     SlackService.expects(:get_channel_history).never
 
-    AlertService.expects(:raise_alert).once.with do |title, opts|
-      title == "Slack trigger feed stalled" &&
-        opts[:details].include?("thread 1704000000.000000")
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      message == "Slack trigger feed stalled" &&
+        opts[:context][:details].include?("thread 1704000000.000000")
     end
 
     SlackTriggerHealthCheckJob.new.send(:check_condition, condition)
