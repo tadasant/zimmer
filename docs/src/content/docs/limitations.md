@@ -3162,25 +3162,43 @@ The scan that finds them walks the source tree once before the copy, skipping `.
 own clone, against a copy of the same tree that costs seconds. It never follows a symlinked
 directory, which both matches what the copy does with one and makes a symlink loop impossible.
 
-### Terminating a pid that is not this process's child falls back to a liveness check that lies
+### A process in another container cannot be terminated, only left alone
 
-`ProcessTerminationService` answers "is this still running?" with a non-blocking `wait`, which reaps
-as a side effect and so cannot be fooled by an exited child holding its own pid as a zombie. That
-answer is only available for a pid that is a child of **the process doing the asking**. For anything
-else `wait` raises `ECHILD` and the service falls back to `Process.kill(0, pid)`. That covers more
-than third-party processes: a session spawned by a previous worker process, a restarted container, or
-an earlier deploy is no longer anyone's child here, and recovering exactly those sessions is what
-`SessionRecoveryService` exists to do.
+`ProcessTerminationService` signals a pid only once it has matched it against the identity recorded
+at spawn — same boot, same PID namespace, same start time
+([How a process actually gets terminated](/sessions/lifecycle/#how-a-process-actually-gets-terminated)).
+A recycled pid is therefore never signalled. A pid recorded in **another PID namespace** is not
+signalled either, and the service reports `:unverifiable` instead: it cannot see that process, so it
+does not know whether the process is running. It does not claim `:already_dead`.
 
-Two things follow from that fallback. In a multi-container deploy each container has its own PID
-namespace, so signal 0 reports `ESRCH` for a process that is running perfectly well next door —
-`SessionRecoveryService` says so in its own header, and calls its `force_terminate_hung_process` path
-best-effort for exactly that reason: the signal may land nowhere, and the process is then the
-container runtime's problem. And within one namespace, a pid the OS has since recycled reads as
-alive; `process_info` compares uid and process state but never the command, so a recycled pid owned
-by the same user is indistinguishable from the agent that used to hold it.
+That is the honest answer, not a way to reach the process. `ProcessTerminationService` has no way to
+hand a termination to the container that owns the pid. Two user actions already have one of their
+own: an interrupt from the web process hands the pid to the session's worker through
+`interrupt_terminate_pid`, and a pause flips the session's status, which the worker's monitoring
+loop acts on. A pause from the web process does call the service, and for a worker's pid it now gets
+`:unverifiable` and leaves the kill to the worker. It no longer signals whatever holds that number
+in `web`. The recovery paths run in the `worker` container in production, so a foreign pid there was
+recorded by a worker container that has been replaced. Usually the container runtime took that
+process down with the container. During a deploy's cutover the old worker can still be draining, and
+a session `SessionRecoveryService` restarts in that window can briefly have two agents running. The
+same is true of any future deployment that runs agents in more than one live container at once.
 
-Routing termination to the container that owns the pid is the fix, and it is not written.
+A pid with **no usable recorded identity** — the orphan cleanup's pids, which come from a host scan
+made moments earlier, a session spawned before identities were recorded, or an identity captured
+without a start time or for a different pid — is pinned to whatever holds it when termination
+starts, and re-checked before every signal. That protects the ladder from a pid that changes hands
+part-way through. It cannot show that the pinned process is the one the caller meant. A host with
+**no `/proc`** (macOS development) has nothing to pin or compare, so there termination runs on `ps`
+and signal 0 alone, recycled pids included.
+
+The identity is written just after the spawn. A termination that runs in the gap, or after a failed
+write, compares the pid against the previous turn's identity. If the new process happened to get the
+same pid number, it is refused as `:recycled` or `:unverifiable`. Being this process's own child
+does not settle it, because every session's agent in a worker is that worker's child. So the gate
+does not trust child-ness over the recorded identity.
+
+Between the `/proc` read and the `kill` there is still a window of microseconds that only a pidfd
+would close, and Ruby's standard library does not expose one.
 
 Tracked in [#365](https://github.com/tadasant/zimmer/issues/365).
 

@@ -11,9 +11,9 @@
 #   manager = MockProcessManager.new
 #   manager.spawn_hook = ->(cmd, opts) { ... }  # Optional: customize spawn behavior
 #   pid = manager.spawn(["echo", "hello"])
-#   manager.spawned_processes  # => [{ pid: 10000, command: ["echo", "hello"], options: {} }]
+#   manager.spawned_processes  # => [{ pid: 5000000, command: ["echo", "hello"], options: {} }]
 #   manager.kill("TERM", pid)
-#   manager.killed_processes  # => [{ signal: "TERM", pid: 10000 }]
+#   manager.killed_processes  # => [{ signal: "TERM", pid: 5000000 }]
 #
 # To simulate specific process states:
 #   manager.set_process_state(pid, :zombie)  # Make process appear as zombie
@@ -28,11 +28,16 @@ class MockProcessManager < ProcessManager
   attr_accessor :spawn_hook, :wait_hook, :kill_hook, :getpgid_hook, :running_hook, :kill_group_hook
   attr_reader :spawned_processes, :killed_processes, :registry
 
+  # First pid handed out. Above Linux's PID_MAX_LIMIT (4,194,304), so no real
+  # process can ever hold a mock pid: code that reads `/proc/<pid>` or runs `ps`
+  # for one (ProcessTerminationService's provenance check, identity capture at
+  # spawn) always finds nothing, rather than a stranger that happens to share it.
+  FIRST_PID = 5_000_000
+
   def initialize
     @spawned_processes = []
     @killed_processes = []
-    # Start mock PIDs at 10000 to avoid conflicts with real system PIDs during tests
-    @next_pid = 10000
+    @next_pid = FIRST_PID
     @process_states = {}  # pid => :running, :zombie, :dead
     @process_uids = {}    # pid => uid
     @process_gids = {}    # pid => gid
