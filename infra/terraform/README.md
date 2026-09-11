@@ -125,10 +125,14 @@ this module can decline it without forking the file.
 It is create-time only. `monitoring` is `ForceNew` in the provider and DigitalOcean
 has no droplet action to enable it, so it is also under `ignore_changes`: without
 that, an apply against an existing droplet would **destroy and recreate** it, and
-both environments apply with `-auto-approve`. The trade-off is that an
-already-running droplet gets the agent only when it is rebuilt — DO's own remedy
-is a root shell running their install script, which this deployment has no clean
-path to. See [Known limitations](../../docs/src/content/docs/limitations.md) and
+both environments apply with `-auto-approve`. The trade-off is that Terraform
+never gives the agent to an already-running droplet. That droplet can only get it
+from a deploy-time converge: an idempotent step that installs `do-agent` over the
+deploy's root SSH, with pinned trust, only when its systemd unit is absent.
+Production's droplet predates `monitoring`, and its step belongs in the companion
+repo's production deploy. Staging needs none: no staging droplet in state predates
+`monitoring`, and `Deploy staging` creates each new one with it set. See
+[Known limitations](../../docs/src/content/docs/limitations.md) and
 [zimmer#651](https://github.com/tadasant/zimmer/issues/651).
 
 ### `node_exporter` (`node_exporter_enabled`, default `false`)

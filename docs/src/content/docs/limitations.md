@@ -52,41 +52,67 @@ and the session can recover; a wrong one is in the history forever. So the failu
 on purpose for a deployment that has not said who it is, and the boot log says so in one line naming
 both variables.
 
-### The DigitalOcean metrics agent reaches only a droplet Terraform creates, never one that exists
+### Terraform cannot give the DigitalOcean metrics agent to a droplet that already exists
 
 `digitalocean_droplet.zimmer` sets `monitoring = var.monitoring`, which defaults to `true`, so a
-droplet this module creates boots with DigitalOcean's metrics agent — CPU, memory, disk and load
-history, and the only metrics DO's own resource alert policies can evaluate. It is free.
+droplet this module creates is meant to boot with DigitalOcean's metrics agent — CPU, memory, disk
+and load history, and the only metrics DO's own resource alert policies can evaluate. It is free.
 
-It is also **create-time only**, and there is no second path. `monitoring` is `ForceNew` in the
-provider (the schema flag, in every 2.x release including the `~> 2.43` pin; the Update function has
-no `monitoring` branch), and DigitalOcean's API exposes no droplet action to enable it — the
-`droplet_action.type` enum runs `enable_backups` through `snapshot` with nothing for monitoring, and
-`godo`, the client the provider itself uses, has no method for it. So on a droplet that already
-exists, asking for the agent is a *destroy and recreate*. Both environments apply with
-`-auto-approve`, and the production apply owns the box every Zimmer session runs on. `monitoring`
-therefore sits in `ignore_changes` alongside `user_data`, which suppresses that diff and the
-replacement with it.
+It is also **create-time only**. `monitoring` is `ForceNew` in the provider (the schema flag, in
+every 2.x release including the `~> 2.43` pin; the Update function has no `monitoring` branch), and
+DigitalOcean's API exposes no droplet action to enable it — the `droplet_action.type` enum runs
+`enable_backups` through `snapshot` with nothing for monitoring, and `godo`, the client the provider
+itself uses, has no method for it. So on a droplet that already exists, asking for the agent is a
+*destroy and recreate*. Both environments apply with `-auto-approve`, and the production apply owns
+the box every Zimmer session runs on. `monitoring` therefore sits in `ignore_changes` alongside
+`user_data`, which suppresses that diff and the replacement with it.
 
-What is left for an existing droplet is DigitalOcean's own remedy: open a root shell on the box and
-run `curl -sSL https://repos.insights.digitalocean.com/install.sh | sudo bash`. **This deployment has
-no clean way to do that.** A root shell on production is the thing
-[Ops actions ship with the deploy](/operate/deploying/#ops-actions-ship-with-the-deploy) exists to
-rule out — the operator key is not authorized as root, and the DigitalOcean console fallback needs
-the root password that [has no converge path](#productions-forced-root-password-expiry-has-no-converge-path).
-So in practice the production droplet gets the agent when it is next rebuilt, and not before.
+**The production droplet predates `monitoring`, so it has no agent** until a deploy-time converge
+step installs one. That step belongs in the private companion repository's production deploy, where
+the production droplet is applied, and [#651](https://github.com/tadasant/zimmer/issues/651) tracks
+it. Until it runs, this is a departure from the rule that
+[ops actions ship with the deploy](/operate/deploying/#ops-actions-ship-with-the-deploy).
+DigitalOcean's own remedy is `curl -sSL https://repos.insights.digitalocean.com/install.sh | sudo
+bash` in a root shell, which a deploy nobody approves by hand must not run. The converge step must:
 
-That gap is a departure from this repo's own rule that an ops step must ship with the deploy, and it
-is tracked in [#651](https://github.com/tadasant/zimmer/issues/651) — the plausible fix is an
-idempotent deploy-time install over the root SSH access Kamal already holds. Adjacent, and different:
-`var.node_exporter_enabled` puts a `node_exporter` in cloud-init for an external monitoring plane,
-which is a different agent feeding a different consumer — and it inherits the same
-create-time-only limit, [below](#node_exporter-is-opt-in-and-reaches-only-a-rebuilt-droplet).
+- **Guard on the unit.** When `do-agent` is installed, enabled and active, do nothing and touch no
+  network. Install only when it is absent.
+- **Fail loudly, but after the cutover.** A converge that does not end with the unit `active` turns
+  the deploy run red, because a silent miss looks converged and reports nothing. It does not block
+  the release: a metrics agent that will not stay up must never stop a deploy or a rollback.
+- **Pin the content, not only the publisher.** Install one package checked against a pinned
+  SHA-256 before apt sees it. A signing key pinned by fingerprint is not enough. It pins who may
+  publish, not what gets installed, and the package's own `/etc/cron.daily/do-agent` job upgrades
+  it as root from DigitalOcean's repository wherever that repository is configured. Never pipe an
+  unpinned installer into root.
+- **Use access the deploy already holds.** cloud-init authorizes the deploy key for `root`, and both
+  deploys already run their other converge steps as `root` over SSH.
 
-Two smaller edges. `ignore_changes` also means Terraform will not turn the agent back off, or back on
-if someone disables it — both cheaper than a replace. And it is unconfirmed whether a hand-installed
-agent makes the API report `monitoring` in the droplet's `features[]`, which is what the provider
-reads; if it does not, config and state stay divergent forever, harmlessly.
+**Staging has no converge step, and needs none.** Its one long-lived droplet also predated
+`monitoring`; `Teardown staging` destroyed it on an idle night, so no staging droplet in state
+predates the attribute, and `Deploy staging` creates each new one through this module with
+`staging.tfvars.example` leaving `monitoring` at its default. An install branch there would never
+run, and a root install step that has never run does not belong in an auto-approved deploy.
+`test/infra/droplet_monitoring_test.rb` fails the build if staging starts turning `monitoring` off.
+
+Two things here have **never been runtime-verified**:
+
+- **That a droplet this module creates comes up with the agent.** Every droplet the module managed
+  when `monitoring` landed predated it, so the next droplet `Deploy staging` creates is the first
+  one to show it. The Graphs tab for that droplet in DO's console is the check. If it shows no agent
+  metrics, staging needs a converge step after all.
+- **Whether an agent installed after creation makes the API list `monitoring` in the droplet's
+  `features[]`**, which is where the provider reads the attribute back from. If it does, the next
+  refresh records `monitoring = true` and state matches config. If it does not, a converged droplet
+  stays `monitoring = false` in state for good. That is harmless under `ignore_changes`, but state is
+  then not where to check whether a droplet has the agent. The first converge against production
+  settles it.
+
+`ignore_changes` also means Terraform will not turn the agent back off, or back on if someone
+disables it — both cheaper than a replace. Adjacent, and different: `var.node_exporter_enabled` puts
+a `node_exporter` in cloud-init for an external monitoring plane. That is a different agent feeding
+a different consumer, and it inherits the same create-time-only limit,
+[below](#node_exporter-is-opt-in-and-reaches-only-a-rebuilt-droplet).
 
 The DO agent reports host metrics. App telemetry goes to the self-hosted OTLP stack — see
 [Observability](/operate/observability/).
