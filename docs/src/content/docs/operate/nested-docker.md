@@ -58,6 +58,14 @@ the worker**, so `.agent-containers/`'s `..:/app` resolves against the clone as 
 sees it, and the host accumulates nothing. No `zimmer-dev-*` stacks pile up on the host,
 which is most of what `DockerCleanupJob` exists to sweep.
 
+`DockerCleanupJob` itself runs in the worker (GoodJob's `execution_mode` is `:external`), so
+its `docker ps`, `docker compose … down` and prunes all act on the inner daemon — the one
+place a leaked dev stack can be. Zimmer's own deploy images are in the host daemon, which the
+job cannot see; `retain_containers` in `config/deploy.yml` bounds those. When the job cannot
+reach a daemon at all — the switch off, or the inner `dockerd` not up — discovery logs a
+`WARN` with `docker ps`'s exit status and stderr rather than reporting nothing to reap, so
+a reaper that is blind reads differently in the logs from one that found nothing.
+
 ## How it is wired
 
 Three pieces that only work together, which is why one variable arms all of them.

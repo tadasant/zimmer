@@ -403,8 +403,9 @@ jobs:
       # `docker ps -a` per host and skips any host where a container is present, and a
       # STOPPED container is present. That makes booting every time free -- and it also
       # means a `devdb` that stops is never revived by deploying again, which stranded
-      # sessions with no way back (#419): the Docker socket is mounted into the worker but
-      # the worker is not in its group (#409), so `bin/agent-dev` just fails its preflight.
+      # sessions with no way back (#419): no host Docker socket is mounted into the worker
+      # (#409; sessions only reach the nested daemon), so `bin/agent-dev` just fails its
+      # preflight.
       # So `devdb` is REBOOTED instead, which is safe only because it is the volume-less,
       # disposable accessory -- see the lines themselves for the scoping.
       # The image was built above, so --skip-push just pulls the existing tag.

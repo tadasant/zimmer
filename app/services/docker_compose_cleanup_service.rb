@@ -4,7 +4,8 @@
 #
 # When agent sessions use Docker containers (via .agent-containers/docker-compose.dev.yml),
 # archiving the session should tear down those containers, volumes, and networks.
-# Without this, Docker resources accumulate on the host.
+# Without this they accumulate in whichever daemon `docker` reaches: the worker's nested
+# daemon on a deployed Zimmer (docs/operate/nested-docker.md), the host's on a workstation.
 #
 # Assumes containers were started using the same compose file path, so the project
 # name (derived by Docker Compose from the directory) matches the running resources.
