@@ -76,8 +76,10 @@ class ExperimentalSettingsRegistry
   end
 
   # Settings backed by an AppSetting column, so they are always present. A Zimmer
-  # Extension can also be toggled here, but only once one is registered in
-  # BUILTIN_EXTENSION_CLASSES; these are the ones that need no registration at all.
+  # Extension can also be toggled here, but only once a name in
+  # BUILTIN_EXTENSION_CLASSES actually RESOLVES -- being listed there is not enough,
+  # since the registry skips a name whose class is absent from the build. These are
+  # the ones that need no registration at all.
   BUILT_INS = [
     Setting.new(
       key: "mcp_tool_search",

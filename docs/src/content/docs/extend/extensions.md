@@ -61,12 +61,32 @@ The other two mount points are Claude-specific by name (`ClaudePrintRunner`, and
 override is keyed by runtime).
 :::
 
-## What ships: the seam, and no extensions
+## What ships: the seam, and one name that resolves to nothing
 
-`BUILTIN_EXTENSION_CLASSES` is empty. The seam is live — the registry, the base class, the three
-mount points, and the Settings → Experimental rendering all work — but no extension is registered.
+`BUILTIN_EXTENSION_CLASSES` names exactly one class — `PtyTransportExtension` — and **that class's
+code is not in this repository, deliberately.** The seam is live: the registry, the base class, the
+three mount points, and the Settings → Experimental rendering all work. But in this build the name
+resolves to nothing, `register_builtins!` skips it, Settings → Experimental shows no extension, and
+every seam falls back to native.
 
-The one that used to ship was `McpToolSearchExtension` (id `mcp_tool_search`), whose only hook
+That is how the removability mechanism is meant to behave. Registration is a class *name*; whether
+a name resolves is a property of the tree the app was built from.
+
+`pty_transport` fulfils one-off headless inference — session titles, notification summaries,
+category inference — by driving the interactive Claude TUI inside a pseudo-terminal and scraping the
+transcript, instead of shelling out to `claude -p`. It can therefore fill the `usage` slot on
+`ClaudePrintRunner::Result`, which print mode cannot; today every caller of
+`HeadlessInferenceService` discards that slot, so the slot is there for a backend that can populate
+it rather than for a consumer that reads it. The technique depends on internal-only methods we do
+not publish, which `Zimmer::Extension`'s own docstring says in as many words, so its code lives
+outside this repository and reaches the deployment that has it as a
+[bind mount](#enable-install-remove) rather than as a merged directory.
+
+A standalone install of Zimmer therefore gets the native path for headless inference and gives up
+nothing observable: `NativeClaudePrintRunner` is the historically-proven backend, and it returns the
+same text for the same prompt.
+
+The extension that used to ship was `McpToolSearchExtension` (id `mcp_tool_search`), whose only hook
 returned `{"ENABLE_TOOL_SEARCH" => "true"}` for Claude Code. It is gone, because at the time it could
 never do its job: `.dockerignore` then excluded `/app/extensions/*/`, so the class did not exist in
 any built image, the registry skipped it, and the `ENABLE_TOOL_SEARCH=false` baseline always stood in
@@ -80,14 +100,17 @@ not — see [Extensions do ship in the image](/operate/deploying/#extensions-do-
 So the choice between an extension and an `AppSetting` column is back to being about what the thing
 *is*: an extension changes how Zimmer drives a runtime, a column is a value the app reads.
 
-:::danger[The old docs described a second extension that does not exist]
-`docs/AO_EXTENSIONS.md` described "the two built-in extensions" and documented `pty_transport` /
-`PtyTransportExtension` (bundling `PtyClaudeCliAdapter`, `PtyClaudePrintRunner`,
-`PtyClaudeRetryStrategy`) as shipping.
+:::caution[Don't vendor `app/extensions/pty_transport/` into this repository]
+The name is registered here and the code is withheld on purpose. Filling the gap in — the extension
+class, a PTY driver, or tests of either — publishes the technique the arrangement exists to keep
+private, and it falsifies what `BUILTIN_EXTENSION_CLASSES` claims about this build.
+`test/services/zimmer/extension_registry_test.rb` asserts that every built-in name is
+*unresolvable* here, so the first commit that lands such a directory fails CI and says why.
 
-No such directory or class exists in this repo. `pty_transport` survives only in code comments and in
-the (now deleted) docs. The old doc's "Verifying removability" section told you to rename
-`app/extensions/pty_transport/` — a directory that isn't there.
+The older docs got this backwards in the other direction: `docs/AO_EXTENSIONS.md` (now deleted)
+described `pty_transport` as *shipping*, bundling `PtyClaudeCliAdapter`, `PtyClaudePrintRunner` and
+`PtyClaudeRetryStrategy`, and its "Verifying removability" section told you to rename a directory
+that was never in this repo.
 :::
 
 ## Enable, install, remove
@@ -99,13 +122,33 @@ the (now deleted) docs. The old doc's "Verifying removability" section told you 
 AppSetting.first_or_create!.tap { |s| s.set_extension_enabled("my_thing", true) }.save!
 ```
 
-With no extension registered, that section of the page renders only the first-class experimental
-settings.
+In a build where no registered name resolves — this one — that section of the page renders only the
+first-class experimental settings.
 
-**Install** — there is nothing to install. `Dockerfile` blanket-copies the repository into `/rails`
-and nothing in `.dockerignore` takes `app/extensions/` back out, so an extension merged to `main` is
-in the next image and in every container that image starts. The only operating step is the toggle
-above.
+**Install** — for an extension whose code is *in the repository*, there is nothing to install.
+`Dockerfile` blanket-copies the repository into `/rails` and nothing in `.dockerignore` takes
+`app/extensions/` back out, so an extension merged to `main` is in the next image and in every
+container that image starts. The only operating step is the toggle above.
+
+An extension can also arrive from **outside** the image, which is how a deployment carries a private
+one. Production mounts it read-only over the directory Zeitwerk would have loaded it from:
+
+```yaml
+# config/deploy.production.yml
+volumes:
+  - /opt/zimmer/extensions/pty_transport:/rails/app/extensions/pty_transport:ro
+```
+
+Three things about that line are load-bearing. It mounts **the extension's own subdirectory**, never
+`/rails/app/extensions` — mounting the parent would shadow `app/extensions/CLAUDE.md` and the
+`image_canary/` directory that
+[the build guardrail](/operate/deploying/#extensions-do-ship-in-the-image) looks for. It is
+**read-only and on a persistent host path**, so it survives `kamal deploy`, unlike the writable
+container layer the deleted `install-extension.sh` wrote into. And a **missing or empty host
+directory is inert** — Docker creates the path, Zeitwerk finds no files, `safe_constantize` returns
+`nil`, and the registry skips the name — so the mount is safe to carry before anything populates it.
+Production eager-loads, so the files have to be present at container boot; populating the host
+directory is therefore picked up by a health-gated Kamal cutover, not by restarting a container.
 
 There used to be a `scripts/install-extension.sh`, which `docker cp`'d a directory into a running
 container and restarted it. It is deleted. It needed a shell on the production host — which
@@ -115,7 +158,8 @@ not a procedure to document — and whatever it installed was gone at the next d
 **Remove** — `rm -rf app/extensions/<id>/`. `ExtensionRegistry` resolves builtins with
 `safe_constantize` and skips anything that returns `nil`, so every seam falls back to native behavior.
 Leaving the dead name in `BUILTIN_EXTENSION_CLASSES` is harmless. *That* is the removability
-mechanism, and it's a good one.
+mechanism, and it's a good one — `PtyTransportExtension` is the standing proof, since the name has
+never resolved in this repository and the app has never noticed.
 
 :::note[Removability is a property of the source tree, not of the image]
 The two got conflated once, and it cost the seam its only extension. Deleting the directory from the

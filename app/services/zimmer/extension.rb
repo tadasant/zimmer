@@ -17,11 +17,19 @@ module Zimmer
   # Zimmer is being extracted from the monorepo as standalone OSS. Some features
   # (the PTY transport, in particular) depend on internal-only techniques we do
   # not want to publish. An extension is the seam that lets such a feature live
-  # entirely under app/extensions/<id>/ and be removed wholesale for the OSS
-  # build — delete the directory and everything still works, falling back to the
-  # native path. The core resolves extensions through Zimmer::ExtensionRegistry and
-  # never references a concrete extension class, so a missing extension is not an
-  # error: its hooks simply do not contribute.
+  # entirely under app/extensions/<id>/, separable from the core: the directory
+  # holds the whole feature, so an install either has it or does not, and one that
+  # does not still works, falling back to the native path. The core resolves
+  # extensions through Zimmer::ExtensionRegistry and never references a concrete
+  # extension class, so a missing extension is not an error: its hooks simply do
+  # not contribute.
+  #
+  # That separability is used in both directions. Deleting app/extensions/<id>/
+  # drops an in-repo extension with no core edit. And pty_transport — whose code is
+  # NOT in this repository at all — is delivered to production as a bind mount over
+  # app/extensions/pty_transport/, so the public tree never carries it while
+  # BUILTIN_EXTENSION_CLASSES can still name the class. See app/extensions/CLAUDE.md
+  # and docs/operate/deploying.md.
   #
   # == The contract ==
   #

@@ -2285,13 +2285,32 @@ the path, negations included — so the check exists, but it is on the Ruby side
 gates the published image. The first real extension in the tree closes the gap by giving the script
 something other than its own canary to find.
 
-It does not assert that a registered extension resolves and loads at boot, because there is no
-extension to assert it about — `BUILTIN_EXTENSION_CLASSES` is empty, and `app/extensions/` holds only
-`CLAUDE.md` and the marker directory the check keys on. The first extension added after
-[#91](https://github.com/tadasant/zimmer/issues/91) is the first one to exercise the path end to
-end. The class of failure still open is a Zeitwerk one — a file whose constant does not match the
-collapsed path, so `safe_constantize` returns `nil` and the registry skips it exactly as it would
-skip a deleted directory. Presence in the image no longer hides that; nothing else catches it either.
+It does not assert that a registered extension resolves and loads at boot, because there is still no
+extension *in this repository* to assert it about. `BUILTIN_EXTENSION_CLASSES` is no longer empty —
+it names `PtyTransportExtension` — but that extension's code is deliberately withheld from this repo
+and arrives in the deployment that has it as a
+[read-only bind mount](/extend/extensions/#enable-install-remove), so `app/extensions/` in the image holds only
+`CLAUDE.md` and the marker directory the check keys on. What the test suite pins here is the
+*negative*: `test/services/zimmer/extension_registry_test.rb` asserts that no built-in name resolves
+in this checkout and that `register_builtins!` therefore registers nothing, and
+`test/services/claude_print_runner_test.rb` asserts the seam falls back to `NativeClaudePrintRunner`
+with the real built-ins registered.
+
+The first extension **vendored into** `app/extensions/` after
+[#91](https://github.com/tadasant/zimmer/issues/91) is still the first one to exercise the positive
+path end to end. The class of failure open until then is a Zeitwerk one — a file whose constant does
+not match the collapsed path, so `safe_constantize` returns `nil` and the registry skips it exactly
+as it would skip a deleted directory. Presence in the image no longer hides that; nothing else
+catches it either.
+
+A **bind-mounted** extension fails differently, and in one respect better. `production.rb` sets
+`eager_load = true`, so a mounted file whose constant does not match its path raises
+`Zeitwerk::NameError` while the container boots: it never answers the health gate, kamal-proxy keeps
+the old container serving, and the deploy fails loudly rather than degrading. What stays quiet is
+the delivery itself — an empty, absent or wrongly-named host directory is indistinguishable from an
+extension that was never meant to be there. That is the same property that makes the mount safe to
+declare on every other host, so it is a trade rather than an oversight, but it does mean a broken
+sync leaves production silently on the native backend.
 
 ### The login flow screen-scrapes a TUI
 

@@ -31,6 +31,15 @@ write one — before adding or changing anything in this directory.
 6. **`image_canary/` is not an extension.** It holds no Ruby and registers
    nothing; it exists so the build can prove a subdirectory of this directory
    reached the image. Do not delete it and do not put a `.rb` file in it.
+7. **Never create `pty_transport/` here.** `BUILTIN_EXTENSION_CLASSES` names
+   `PtyTransportExtension`, and that class's code is withheld from this public
+   repository on purpose — it depends on internal-only techniques we do not
+   publish. Production mounts it read-only from a host directory at
+   `/rails/app/extensions/pty_transport` (`config/deploy.production.yml`);
+   here the name resolves to nothing and every seam stays native. Writing the
+   extension, a PTY driver, or tests of either into this directory publishes
+   the technique. `test/services/zimmer/extension_registry_test.rb` asserts
+   that no built-in name resolves in this repo, so such a commit fails CI.
 
 ## Tests
 
