@@ -4117,17 +4117,28 @@ sent on both call sites. Registering the URI is X's manual step and stays.
 
 ## UI
 
-All three are open issues:
+Open issues:
 
 - [#14](https://github.com/tadasant/zimmer/issues/14) Dashboard actions do full page reloads
   (restart/refresh/archive/pause explicitly opt out of Turbo). Lost scroll position, collapsed sections
   spring open, the drawer closes.
-- [#13](https://github.com/tadasant/zimmer/issues/13) Card drag-reorder doesn't persist. It
-  visually moves, then reverts on any reload.
 - [#15](https://github.com/tadasant/zimmer/issues/15) No per-card refresh — you must refresh the
   entire category.
 
 Also:
+
+- **Starred cards cannot be reordered.** The pinned **Starred** group sits outside the dashboard's
+  drag-and-drop controller and its cards have no grip bar, so it is always newest-first. Unstar a
+  card to place it; starring never loses the place it had in its section.
+- **A card dropped past the end of a full page lands on the next page.** Sections paginate at 50, and
+  a card dragged in from another section onto the bottom of a page that already holds 50 is placed
+  below the 50th — which, on reload, is the top of page 2. The right-click "Move to…" menu puts the
+  card at the top of the page of that section you have open instead, for exactly this reason.
+- **A page that a broadcast has added cards to is not the page the server would render.** A new
+  session is prepended to the Uncategorized grid whichever page of it you have open, and a deleted
+  category's cards are prepended the same way. Server-side they sit at the top of page 1. A drag
+  still places correctly — it anchors on the card below the drop — but that stray card itself moves
+  to page 1 on the next reload.
 
 - **Nothing in the web UI puts a session to sleep.** The "Pause Until" control that did — a time
   preset, a datetime picker, and a "Spot Queue" choice, on the session card, the detail header and

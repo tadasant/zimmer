@@ -114,17 +114,38 @@ class Api::V1::SessionsControllerSetCategoryTest < ActionDispatch::IntegrationTe
   end
 
   test "reorder moves a session between sections and places it" do
-    a = build_card(created_at: 3.hours.ago, category: @category)
-    b = build_card(created_at: 2.hours.ago, category: @category)
+    older = build_card(created_at: 3.hours.ago, category: @category)
+    newer = build_card(created_at: 2.hours.ago, category: @category)
     moved = build_card(created_at: 1.hour.ago)
 
+    # The category reads newer, older; the moved card goes between them.
     post reorder_api_v1_sessions_path,
-      params: { ids: [ a.id, moved.id, b.id ], category_id: @category.id, session_id: moved.id },
+      params: { ids: [ newer.id, moved.id, older.id ], category_id: @category.id, session_id: moved.id },
       headers: @headers
     assert_response :success
 
     assert_equal @category.id, moved.reload.category_id
-    assert_equal [ a.id, moved.id, b.id ], JSON.parse(response.body)["session_ids"]
+    assert_equal [ newer.id, moved.id, older.id ], JSON.parse(response.body)["session_ids"]
+  end
+
+  test "reorder resolves session_id by slug" do
+    resident = build_card(created_at: 2.hours.ago, category: @category)
+    moved = build_card(created_at: 1.hour.ago)
+    moved.update_column(:slug, "api-slugged-card")
+
+    post reorder_api_v1_sessions_path,
+      params: { ids: [ moved.id, resident.id ], category_id: @category.id, session_id: "api-slugged-card" },
+      headers: @headers
+    assert_response :success
+
+    assert_equal @category.id, moved.reload.category_id
+  end
+
+  test "reorder returns 404 for an unknown session_id" do
+    post reorder_api_v1_sessions_path,
+      params: { ids: [ @session.id ], session_id: "no-such-session" },
+      headers: @headers
+    assert_response :not_found
   end
 
   test "reorder returns 404 for an unknown category" do

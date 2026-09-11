@@ -51,7 +51,22 @@ class DashboardCardOrderTest < ApplicationSystemTestCase
   # binds `pointerdown`, and a synthetic MouseEvent never reaches it, so a scripted
   # "drag" would silently prove nothing. Selenium's Actions API does not scroll to its
   # target the way `click` does, so the grid is scrolled into view first.
+  # Stimulus controllers load asynchronously, so a card can be on the page before the
+  # Sortable that makes it draggable — and the controller that owns its menu — is.
+  def wait_for_drag_and_drop(source_id)
+    wait_until do
+      page.evaluate_script(<<~JS)
+        (() => {
+          const frame = document.getElementById(#{"session_#{source_id}".to_json})
+          const grid = frame && frame.closest("[data-category-dnd-target='list']")
+          return !!(grid && grid.sortableInstance)
+        })()
+      JS
+    end
+  end
+
   def drag_card_onto(source_id, target_id)
+    wait_for_drag_and_drop(source_id)
     page.execute_script(
       "document.getElementById(#{"session_#{source_id}".to_json}).scrollIntoView({ block: 'center' })"
     )
@@ -132,5 +147,27 @@ class DashboardCardOrderTest < ApplicationSystemTestCase
     assert_selector "#session_#{stray.id}"
     assert_equal [ stray.id.to_s, resident.id.to_s ], card_ids("category_grid_#{inbox.id}")
     assert_empty card_ids("sessions_grid")
+  end
+
+  test "the right-click move puts the card at the top of the destination, and it stays there" do
+    inbox = Category.create!(name: "Inbox")
+    older_resident = create_session(title: "Older resident", created_at: 3.hours.ago, category: inbox)
+    newer_resident = create_session(title: "Newer resident", created_at: 2.hours.ago, category: inbox)
+    stray = create_session(title: "Stray card", created_at: 1.hour.ago)
+
+    visit root_url
+    assert_selector "#session_#{stray.id}"
+    wait_for_drag_and_drop(stray.id)
+
+    find("#session_#{stray.id} .session-drag-handle").right_click
+    within("[data-category-dnd-target='menu']") { click_button "Move to Inbox" }
+
+    expected = [ stray.id, newer_resident.id, older_resident.id ].map(&:to_s)
+    assert_equal expected, card_ids("category_grid_#{inbox.id}")
+    wait_until { stray.reload.category_id == inbox.id }
+
+    visit root_url
+    assert_selector "#session_#{stray.id}"
+    assert_equal expected, card_ids("category_grid_#{inbox.id}")
   end
 end

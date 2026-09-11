@@ -242,10 +242,12 @@ export default class extends Controller {
     this.showMenu(event, items)
   }
 
-  // Move a card into a category via the menu: append its <turbo-frame> to the bottom
-  // of the destination grid, then persist that grid's order — the same write the drag
-  // path makes, so the card's landing spot survives a reload rather than only its
-  // category. Rejected writes put the frame back exactly where it was.
+  // Move a card into a category via the menu: put its <turbo-frame> at the top of the
+  // destination grid, then persist that grid's order — the same write the drag path
+  // makes, so the card's landing spot survives a reload rather than only its category.
+  // The top, not the bottom: the server places the card above the grid's first card,
+  // and a bottom drop onto a full page would push it onto the next page on reload.
+  // Rejected writes put the frame back where it was.
   moveCardTo(sessionId, categoryId) {
     const frame = document.getElementById(`session_${sessionId}`)
     const destination = this.listTargets.find((list) => (list.dataset.categoryId || "") === categoryId)
@@ -253,10 +255,16 @@ export default class extends Controller {
 
     const origin = frame.parentElement
     const reference = frame.nextElementSibling
-    destination.appendChild(frame)
+    destination.prepend(frame)
 
     this.persistCardOrder(destination, sessionId, () => {
-      if (origin) origin.insertBefore(frame, reference)
+      if (!origin) return
+      // A broadcast may have removed the old neighbour while the request was out.
+      if (reference && reference.parentNode === origin) {
+        origin.insertBefore(frame, reference)
+      } else {
+        origin.appendChild(frame)
+      }
     })
   }
 
@@ -377,11 +385,11 @@ export default class extends Controller {
     this.persistCardOrder(event.to, sessionId, () => this.revert(event))
   }
 
-  // POST one section's live top-to-bottom card order. The ids are the section's
-  // CURRENT PAGE, not its whole bucket — the server deals them back into the slots
-  // they already hold in the bucket's global order rather than reading the index in
-  // this list as the position, so a drag on page 2 cannot renumber page 1. See
-  // SessionCardOrder.
+  // POST one section's live top-to-bottom card order, naming the card that moved. The
+  // ids are the section's CURRENT PAGE as this browser holds it, not its whole bucket,
+  // so the server never reads an index in this list as a position: it places the moved
+  // card next to its neighbour here and moves nothing else, so a drag on page 2 cannot
+  // renumber page 1. See SessionCardOrder.
   persistCardOrder(list, movedSessionId, onFailure = null) {
     if (!this.hasReorderCardsUrlValue) return
 

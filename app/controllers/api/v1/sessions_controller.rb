@@ -1100,13 +1100,15 @@ class Api::V1::SessionsController < Api::BaseController
   #
   # Request body:
   #   - ids: Ordered array of session ids (top to bottom), as the section shows
-  #     them. This is one PAGE of a section, not the whole bucket — the cards are
-  #     dealt back into the slots they already hold in the bucket's global order,
-  #     so cards on other pages keep their positions.
+  #     them. This is one PAGE of a section, not the whole bucket, and a card that
+  #     is not named never moves — including cards on other pages.
   #   - category_id: The destination section. Omit, send null, or send
   #     "uncategorized" for the Uncategorized bucket.
-  #   - session_id: Optional. The card that moved between sections; its category
-  #     is reassigned before positions are written, so one request persists both.
+  #   - session_id: Optional id or slug of the card that moved. When given, only
+  #     that card moves — immediately above the card after it in `ids`, or below
+  #     the card before it when it is last. If it is in another category it is
+  #     moved into this one first, so one request persists both. Unknown → 404.
+  #     Without it, the cards in `ids` are rearranged among the slots they hold.
   #
   # Returns the destination bucket's full order.
   def reorder
@@ -1120,10 +1122,14 @@ class Api::V1::SessionsController < Api::BaseController
       end
     end
 
+    # By id or slug, and a miss is a 404 like every other session lookup, rather than
+    # a 200 that quietly skipped the move.
+    moved = Session.locate!(params[:session_id]) if params[:session_id].present?
+
     order = Session.reorder_cards!(
       params[:ids],
       category_id: category&.id,
-      moved_session_id: params[:session_id]
+      moved_session_id: moved&.id
     )
 
     render json: { category_id: category&.id, session_ids: order }
