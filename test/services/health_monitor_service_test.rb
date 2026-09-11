@@ -31,8 +31,48 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert report.key?(:sigterm_retry_health)
     assert report.key?(:api_error_retry_health)
     assert report.key?(:log_retention_health)
+    assert report.key?(:cron_health)
     assert report.key?(:overall_status)
     assert report.key?(:generated_at)
+  end
+
+  # === Cron freshness ===
+  #
+  # The rule itself is CronFreshness's and is tested there; these pin that the
+  # reading reaches the report every surface serves, and that it moves the headline.
+
+  test "cron_health says so when the environment schedules nothing" do
+    cron = @service.full_health_report[:cron_health]
+
+    assert cron[:status].healthy?
+    assert_equal "No cron schedule in this environment", cron[:status].message
+    assert_empty cron[:keys]
+  end
+
+  test "a stale cron key turns the whole report critical" do
+    GoodJob::CronEntry.stubs(:all).returns([ GoodJob::CronEntry.new(key: :sweep, cron: "*/5 * * * *", class: "PlaceholderJob") ])
+    GoodJob::Process.insert_all([
+      { id: SecureRandom.uuid, state: { cron_enabled: true }, created_at: 1.day.ago, updated_at: Time.current }
+    ])
+    at = 3.hours.ago
+    GoodJob::Job.insert_all([ { queue_name: "default", job_class: "PlaceholderJob", cron_key: "sweep", cron_at: at,
+                                created_at: at, updated_at: at, scheduled_at: at, finished_at: at + 1 } ])
+
+    report = @service.full_health_report
+
+    assert report[:cron_health][:status].critical?
+    assert_equal :stale, report[:cron_health][:keys].first[:state]
+    assert report[:overall_status].critical?
+  end
+
+  test "a cron freshness read that fails costs its own card, not the report" do
+    GoodJob::CronEntry.stubs(:all).raises(StandardError, "settings unreadable")
+
+    cron = @service.full_health_report[:cron_health]
+
+    assert cron[:status].warning?
+    assert_match(/Cron freshness could not be read: settings unreadable/, cron[:status].message)
+    assert_empty cron[:keys]
   end
 
   # === Log retention ===

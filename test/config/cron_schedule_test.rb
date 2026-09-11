@@ -236,6 +236,20 @@ class CronScheduleTest < ActiveSupport::TestCase
     end
   end
 
+  # An exemption from the cron-freshness page is an argument, not a flag: without the
+  # sentence, a reviewer has nothing to disagree with and the key goes unwatched quietly.
+  test "freshness_exempt is accepted with a reason, refused without one, and never reaches GoodJob" do
+    valid = { cron: "0 6 * * *", class: "ClaudeCodeUpdateJob", description: "d", environments: %i[production] }
+    exempt = valid.merge(freshness_exempt: "Runs only when an operator enables it in the dashboard")
+
+    assert_nothing_raised { CronSchedule.validate!({ ok: exempt }) }
+    assert_raises(RuntimeError) { CronSchedule.validate!({ broken: valid.merge(freshness_exempt: true) }) }
+    assert_raises(RuntimeError) { CronSchedule.validate!({ broken: valid.merge(freshness_exempt: "  ") }) }
+
+    assert_equal CronSchedule::GOOD_JOB_KEYS.to_set, CronSchedule.for(:production, { ok: exempt })[:ok].keys.to_set
+    assert_equal({ "ok" => exempt[:freshness_exempt] }, CronSchedule.freshness_exemptions({ ok: exempt, other: valid }))
+  end
+
   # --- cron syntax ---------------------------------------------------------------
   #
   # The seconds field is load-bearing. The heartbeat sweep and the GitHub PR poll pass are

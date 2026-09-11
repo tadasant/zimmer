@@ -193,6 +193,31 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_includes result, '"overall_status": "healthy"'
   end
 
+  # The answer to a "Cron schedule stale" page, for an agent with no route to /health:
+  # one line always, and each key that is behind with the reason it is behind.
+  test "cron freshness is one line when every key is on schedule, and names the keys behind otherwise" do
+    healthy = HealthMonitorService::HealthStatus.new(status: :healthy, message: "All 49 judged cron key(s) are enqueuing on schedule")
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "healthy", cron_health: { status: healthy, keys: [ { key: "zombie_reaper", state: :fresh } ] } }
+    )
+    assert_includes @tool.call({}), "- **Cron freshness:** All 49 judged cron key(s) are enqueuing on schedule"
+
+    stale = HealthMonitorService::HealthStatus.new(status: :critical, message: "Cron schedule stale: 1 key(s) stopped producing jobs (docker_cleanup)")
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "critical", cron_health: { status: stale, keys: [
+        { key: "docker_cleanup", state: :stale, reason: "Held by a run on maintenance that started 9h 0m ago" },
+        { key: "log_retention", state: :overdue, reason: "Its copy has waited 2h 0m for a worker on maintenance" },
+        { key: "zombie_reaper", state: :fresh }
+      ] } }
+    )
+    result = @tool.call({})
+
+    assert_includes result, "- **Cron freshness:** Cron schedule stale: 1 key(s) stopped producing jobs (docker_cleanup)"
+    assert_includes result, "  - `docker_cleanup` (stale): Held by a run on maintenance that started 9h 0m ago"
+    assert_includes result, "  - `log_retention` (overdue): Its copy has waited 2h 0m for a worker on maintenance"
+    refute_includes result, "`zombie_reaper`"
+  end
+
   # The other degraded shape: `queue_stats` is present but a single breakdown key
   # is missing from it. `format_breakdown` answers `unavailable` rather than
   # guessing — a key that never arrived and a queue that read as empty are

@@ -48,6 +48,7 @@ module Mcp
           *queue_recovery_mode_lines,
           *ready_backlog_lines(report),
           *in_flight_lines(report),
+          *cron_freshness_lines(report),
           "",
           "### Health Details",
           "```json",
@@ -141,6 +142,27 @@ module Mcp
             "#{HealthMonitorService.format_ages(stats[:oldest_claimed_age_seconds_by_queue])}",
           "- **Youngest execution by queue:** " \
             "#{HealthMonitorService.format_ages(stats[:youngest_claimed_age_seconds_by_queue])}"
+        ]
+      end
+
+      # Which cron keys have stopped producing jobs, and why — the answer to the
+      # "Cron schedule stale" page, and to "is sweep X still running?" without one.
+      #
+      # Always one line, like the queue recovery mode line: "every key on schedule" is
+      # an answer, and an absent line is not. The keys that are behind are listed with
+      # their reasons, including the `overdue` ones the page does not speak for, so an
+      # agent can tell a hung sweep from one queued behind a backlog. Every key's full
+      # reading is in `cron_health` in the JSON below.
+      def cron_freshness_lines(report)
+        cron = report[:cron_health] || {}
+        status = cron[:status]
+        return [] if status.nil?
+
+        behind = (cron[:keys] || []).select { |r| %i[stale overdue].include?(r[:state]) }
+
+        [
+          "- **Cron freshness:** #{status.message}",
+          *behind.map { |r| "  - `#{r[:key]}` (#{r[:state]}): #{r[:reason]}" }
         ]
       end
 

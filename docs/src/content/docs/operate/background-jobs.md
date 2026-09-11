@@ -1461,6 +1461,106 @@ key would block that chain behind the cron copy. `test/jobs/recurring_sweep_conc
 walks the production cron table and fails if an argument-less `default` sweep is left unguarded, so
 the next one added cannot quietly reopen the gap.
 
+### A sweep that stops is noticed: cron freshness
+
+Being a singleton has a cost. Before `SingletonSweep`, a sweep that wedged piled up ready copies and
+the backlog page fired, which is how the 2026-08-22 incident was found. With `total_limit: 1`, one
+unfinished row makes GoodJob refuse every later tick for that class, for ever, and the backlog stays
+flat. Nothing the queue gates measure moves, so the sweep just stops
+([#619](https://github.com/tadasant/zimmer/issues/619)). The same silence covers a key the cron
+manager is failing to enqueue at all. GoodJob reschedules the next tick before it enqueues the
+current one, so an enqueue that raises on every tick produces no row and nothing that pages.
+
+`CronFreshness` reads the one fact both share: the newest job each key produced, against when that
+key's own schedule says the next one was due. It is one lateral join for every key. It is not
+GoodJob's own `CronEntry.last_jobs_by_key`, which orders `cron_at DESC NULLS LAST`. The
+`(cron_key, cron_at)` index cannot serve that order, so Postgres sorts every retained row of every
+key: about 215 ms against fourteen days of rows (~320,000), on every `/health` refresh. Every cron
+tick sets `cron_at`, so the query drops the nulls, orders plain `DESC`, and each key becomes one
+backward index probe (about 1 ms for all 49).
+
+**The rule.** A key is behind once the tick it owes has been owed for longer than its grace:
+
+| Cadence | Grace | Why |
+| --- | --- | --- |
+| 30s to 15m | 30 minutes (`GRACE_FLOOR`) | a fast singleton that legitimately runs past a tick or two is not stopped |
+| 20m, 30m | 2 intervals (`GRACE_TICKS`): 40m, 60m | |
+| hourly and longer | 2 hours (`GRACE_CAP`) | a daily key has no legitimate way to miss its tick under a running cron manager, so two hours after 06:00 with nothing enqueued is already the answer |
+
+**A tick only counts if a cron manager was running to fire it.** GoodJob does not catch up the
+ticks a worker was down for, so a deploy spanning 06:00 would otherwise make every daily key a day
+late. So before a key is judged, the ticks it owes (the newest `WITNESS_PROBES`, 10) are checked
+for a **witness**: another configured key's cron row stamped with that exact fire time. The
+every-minute keys fire on every minute boundary, `ScheduleTriggerJob` among them, and it is not a
+singleton, so it is never refused. A tick the cron manager fired therefore has witnesses, and a
+tick that fell inside a deploy has none and is excused. The check is one index probe per key, and
+it runs only for a key already past its grace.
+
+This deliberately does **not** count from the worker's start. Deploys here are frequent, roughly
+every half hour on a busy day, so a clock restarted by each one would seldom run long enough to
+judge an hourly key, let alone a daily one. And a key whose enqueue fails on every tick keeps
+failing across deploys. Two lower bounds still apply:
+
+- **A key with no row at all** is counted from the start of the newest live worker that runs cron
+  (`good_job_processes`, plus a one-minute `CRON_STARTUP_SLACK`). That covers a fresh database, or
+  an entry the deploy just added. It is the newest worker rather than the oldest because, during a
+  cutover, the old worker is still registered and running the old schedule.
+- **Enabling or disabling any cron key in the GoodJob dashboard** is also a lower bound, taken from
+  the `good_job_settings` rows' `updated_at`. Re-enabling a key must not read the days it was
+  switched off as days it stopped.
+
+**What is holding it decides whether it pages.** A key past its grace is read by its newest row.
+When that row has finished, the unfinished copy holding the same concurrency key is read instead.
+A `perform_later` or a dashboard "run now" of a singleton takes the same slot a cron copy would, so
+GoodJob refuses every tick behind it. That copy is judged by the same rules, and the reason says it
+was enqueued outside cron.
+
+| Held by | State | Pages? |
+| --- | --- | --- |
+| nothing: the last job finished, no tick since produced one, and no other copy holds the slot | `stale` | yes. Cron is not enqueuing it: a class that no longer loads, or an enqueue that raises on every tick |
+| a copy waiting out retry backoff | `stale` | yes |
+| a copy still running, and running past its lane's `LANE_EXECUTION_CEILINGS` | `stale` | yes. The hung `perform` this exists for. The ceiling is the same one the [wedged-lane gate](#when-a-lane-is-wedged) uses for "a wedge rather than work" |
+| a copy still running, inside that ceiling | `overdue` | no |
+| a copy ready and waiting for a worker | `overdue` | no. A queue that is not draining is what the lane thresholds, the wedged-lane branch and the Grafana `not draining` rule page on, each sized for its lane (an `agents` job waiting hours is admission control). Paging here too would say it twice, and would page right after [queue recovery mode](#queue-recovery-mode) lifts, while the lanes it froze are still draining |
+
+Two readings are never judged: a key disabled in the GoodJob dashboard (`disabled`), and a key whose
+entry in `config/cron_schedule.rb` carries `freshness_exempt:`, whose value is the sentence saying why
+it may go silent for longer than its cadence (`exempt`). `CronSchedule.validate!` refuses the key
+without a sentence, and `for` strips it before GoodJob sees the entry. No entry needs one today.
+
+**The page.** `SystemHealthMonitorJob` reads `CronFreshness` on every run, and once a `stale` reading
+has held for `CONSECUTIVE_CRITICAL_TO_ALERT` (2) consecutive checks it logs an ERROR naming the keys,
+which trips `zimmer_backend_log_errors`, and sends a GlitchTip event titled **"Cron schedule
+stale"**. It keeps its own streak (`CRON_STREAK_CACHE_KEY`), so the backlog clearing never resets
+it, and vice versa. The streak is counted per key: one key stale on one check and a different key
+on the next is two unconfirmed readings, not a confirmed finding about the second. The fixed title keeps every firing in one GlitchTip issue, separate from the
+three backlog titles. While the backlog page is itself critical, a key held by a *running* copy is
+left to that page, because its in-flight breakdown already names the class holding the lane. It is
+held back, not dropped: the streak starts once the backlog clears. The job calls `CronFreshness`
+directly rather than the rescued health section, so a check that cannot read fails the job loudly
+instead of reading as "nothing stale".
+
+What fires it, and why each is real:
+
+- **A singleton `perform` that has not returned** past both its key's grace and its lane's ceiling.
+  Every tick for that class is being refused, and nothing will free it short of the run ending or
+  its worker exiting (a deploy restarts the worker).
+- **A key the cron manager is not producing.** Its last job finished and nothing holds its slot.
+  The ticks it owes are older than its grace, and other keys' rows show the cron manager fired
+  them.
+- **A copy enqueued outside cron** that is running past its lane's ceiling, or stuck retrying. It
+  holds the singleton slot exactly as a cron copy would.
+- **A copy stuck in retry backoff** for longer than its key's grace. It is failing, and the
+  singleton slot it holds refuses every tick until it stops.
+
+**Reading it without a page.** `HealthMonitorService#cron_health` carries every key's reading into the
+report behind `/health` (the **Cron Freshness** card), `GET /api/v1/health`, `get_system_health`
+(one `Cron freshness` line, plus each key that is behind with its reason) and
+`/health/export_diagnostics`. It moves `overall_status` too: `stale` is critical and `overdue` is
+a warning. These are served by the web process, so they still answer when the worker's cron
+manager is what stopped. That is the one shape a monitor enqueued by the same cron manager cannot
+report on itself; see [Limitations](/limitations/#a-cron-manager-that-stops-inside-a-live-worker-is-not-paged-on).
+
 ### Blocking inference waits in a lane; it does not retry for admission
 
 Every job that makes a **blocking one-shot inference call** uses `inference`:
@@ -1554,8 +1654,11 @@ a halt for a window that has already elapsed even if neither path has run yet.
 
 **It is loud.** A Slack alert on enter, extend and exit (the auto-exit says it was the TTL and not a
 person), an amber banner on every page, and a panel on `/health`. Note that halting `pollers` also
-halts `SystemHealthMonitorJob`, so the "Queue backlog critical" page stops firing while the mode is
-on — deliberate, since that backlog is now the operator's own doing.
+halts `SystemHealthMonitorJob`, so the "Queue backlog critical" and "Cron schedule stale" pages stop
+firing while the mode is on. That is deliberate, since the backlog is now the operator's own doing.
+The singleton copies the halt froze wait for a worker once it lifts, and [cron
+freshness](#a-sweep-that-stops-is-noticed-cron-freshness) reads a waiting copy as `overdue`, which
+never pages.
 
 **Surfaces.** `/health` (enter, extend, resume), `POST /api/v1/health/enter_queue_recovery_mode` and
 `exit_queue_recovery_mode`, and the MCP `action_health` actions `enter_queue_recovery_mode` /
@@ -2341,8 +2444,8 @@ Two consequences worth internalising before you add an alert:
 - **Message granularity decides grouping.** Keep ids out of the message and in the context
   when a burst should collapse into one page (a sweep that strands N queues, a catalog change
   that degrades N triggers); put the distinguishing value in the message only where two
-  incidents genuinely want separate issues — `SystemHealthMonitorJob`'s three titles are the
-  worked example, and `WorkerWedgeAlert` names the host.
+  incidents genuinely want separate issues — `SystemHealthMonitorJob`'s three backlog titles and
+  its "Cron schedule stale" are the worked example, and `WorkerWedgeAlert` names the host.
 
 ### The log snippet
 

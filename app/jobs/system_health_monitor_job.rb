@@ -37,6 +37,15 @@
 #    a 5-minute interval and re-pages every 4 hours, and a GlitchTip issue notifies
 #    at most once, so an incident that stays critical for hours does not page every
 #    run. Nothing in this process throttles any more.
+#
+# Cron freshness — the second thing it pages on (tadasant/zimmer#619). Most recurring
+# jobs are singletons, so a `perform` that hangs makes GoodJob refuse every later tick
+# for that class and the backlog stays flat: the gate above cannot see it. Each run
+# also reads CronFreshness and pages when a key has stopped producing jobs, under its
+# own title ("Cron schedule stale", so GlitchTip keeps it a separate issue from the
+# backlog pages) and its own streak (CRON_STREAK_CACHE_KEY, the same
+# CONSECUTIVE_CRITICAL_TO_ALERT confirmation). The two are independent: a healthy
+# backlog resets only its own streak.
 class SystemHealthMonitorJob < ApplicationJob
   queue_as :pollers
 
@@ -59,6 +68,12 @@ class SystemHealthMonitorJob < ApplicationJob
   STREAK_CACHE_KEY = "system_health_monitor:consecutive_critical_queue"
   STREAK_TTL = 1.hour
 
+  # The cron-freshness streak, `{ key => consecutive stale checks }`. Separate from the
+  # backlog's, so one condition clearing never resets the other's confirmation, and
+  # counted per key, so key A stale on one check and key B on the next is two readings
+  # of one check each rather than a confirmed finding about B.
+  CRON_STREAK_CACHE_KEY = "system_health_monitor:consecutive_stale_cron"
+
   def perform
     system_health = HealthMonitorService.new.system_health
 
@@ -69,9 +84,91 @@ class SystemHealthMonitorJob < ApplicationJob
       # its own fresh run of consecutive criticals before paging.
       Rails.cache.delete(STREAK_CACHE_KEY)
     end
+
+    check_cron_freshness(system_health)
   end
 
   private
+
+  # CronFreshness directly rather than HealthMonitorService#cron_health, which rescues
+  # a failed read into a warning for the dashboard. Here that rescue would turn a
+  # broken check into "nothing stale" — the silent failure this check exists to end —
+  # so an error fails the job instead, and a failed job is loud.
+  def check_cron_freshness(system_health)
+    report = CronFreshness.new.report
+    stale = pageable_stale_keys(report, system_health)
+
+    if stale.empty?
+      Rails.cache.delete(CRON_STREAK_CACHE_KEY)
+      return
+    end
+
+    previous = Rails.cache.read(CRON_STREAK_CACHE_KEY) || {}
+    streaks = stale.to_h { |r| [ r[:key], previous.fetch(r[:key], 0) + 1 ] }
+    Rails.cache.write(CRON_STREAK_CACHE_KEY, streaks, expires_in: STREAK_TTL)
+
+    confirmed = stale.select { |r| streaks[r[:key]] >= CONSECUTIVE_CRITICAL_TO_ALERT }
+    return if confirmed.empty?
+
+    # .error for the same reason as the backlog page: this line is what trips the
+    # Grafana rule. The keys go in the message because the message is all a phone
+    # shows; the GlitchTip title below stays fixed so every firing groups as one issue.
+    Rails.logger.error(
+      "[SystemHealthMonitorJob] Cron schedule stale: #{confirmed.map { |r| r[:key] }.join(', ')} " \
+      "stopped producing jobs (each stale on #{CONSECUTIVE_CRITICAL_TO_ALERT}+ consecutive checks)"
+    )
+
+    ErrorReporter.report_message(
+      "Cron schedule stale",
+      level: :error,
+      context: {
+        source: "SystemHealthMonitorJob",
+        details: build_cron_details(confirmed),
+        stale_keys: confirmed.map { |r| r[:key] },
+        consecutive_checks: streaks.slice(*confirmed.map { |r| r[:key] })
+      }
+    )
+  end
+
+  # The stale keys this page speaks for. While the backlog gate is itself critical, a
+  # key held by a RUNNING copy is left to that page: the lane it is running in is the
+  # one the backlog page is already describing, with its in-flight breakdown naming
+  # the job class, and a second page about the same held threads would say it twice.
+  # It is not dropped — once the backlog clears, this streak starts from there. A key
+  # nobody is enqueuing, or one whose copy keeps failing, is something the backlog
+  # gate cannot see at all, so it pages regardless.
+  def pageable_stale_keys(report, system_health)
+    stale = report[:keys].select { |r| r[:state] == :stale }
+    return stale unless system_health[:status].critical?
+
+    stale.reject { |r| r[:blocker] == :running }
+  end
+
+  def build_cron_details(stale)
+    [
+      "#{stale.size} scheduled key(s) have stopped producing jobs, each judged against its own cadence:",
+      "",
+      *stale.map { |r| "• #{r[:key]} (#{r[:job_class]}, `#{r[:cron]}`): #{r[:reason]}" },
+      "",
+      "A key is stale once the tick it owes is more than two of its own intervals late " \
+        "(never less than 30 minutes, never more than 2 hours), counting only ticks at which " \
+        "other keys show the cron manager was running. \"Held by a run\" is a perform that " \
+        "has not returned: the job is a singleton, so GoodJob refuses every tick while that " \
+        "one row is unfinished, and nothing frees it but the run ending or its worker " \
+        "process exiting — a deploy restarts the worker, and GoodJob reclaims the row. " \
+        "\"Enqueued outside cron\" is the same, for a copy a `perform_later` or a dashboard " \
+        "\"run now\" put in the slot. \"Keeps failing\" is a copy waiting out retry backoff; " \
+        "its error is on the row at /jobs. \"Nothing enqueued\" means the cron manager is " \
+        "not producing this key at all, with nothing holding its slot: a job class that no " \
+        "longer loads, or an enqueue that raises on every tick.",
+      "",
+      "Every key's reading is live under `cron_health` in the `get_system_health` MCP " \
+        "tool and on /health, including keys that are behind but not paged on (a copy " \
+        "waiting for a worker is the queue gates' to report). A key that may legitimately " \
+        "go silent for longer than its cadence is exempted with `freshness_exempt:` and a " \
+        "reason on its entry in config/cron_schedule.rb."
+    ].join("\n")
+  end
 
   def handle_critical(system_health)
     streak = Rails.cache.read(STREAK_CACHE_KEY).to_i + 1
