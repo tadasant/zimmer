@@ -173,7 +173,7 @@ class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
   # === Queue recovery mode ===
 
   test "enter_queue_recovery_mode halts the demand-side queues and says agents is still live" do
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
     GoodJob::Setting.delete_all
     AppSetting.delete_all
 
@@ -196,7 +196,7 @@ class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
   end
 
   test "exit_queue_recovery_mode resumes processing" do
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
     GoodJob::Setting.delete_all
     AppSetting.delete_all
     @tool.call("action" => "enter_queue_recovery_mode", "reason" => "x")
@@ -212,7 +212,7 @@ class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
   # The escape hatch, and above all the way back out of it, must not be gated by a
   # throttle that fails closed exactly when the cache is struggling.
   test "the queue recovery mode actions are not rate limited" do
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
     GoodJob::Setting.delete_all
     AppSetting.delete_all
     HealthActionCooldown.new(HealthActionCooldown.fingerprint("key_one")).record("cleanup_processes")

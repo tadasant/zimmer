@@ -144,10 +144,10 @@ class AlertSnippetTest < ActiveSupport::TestCase
 
   # === Hostile input must never cost the alert ===
   #
-  # AlertService#raise_alert wraps everything in a blanket rescue, so a snippet
-  # that raises doesn't degrade the alert — it deletes it. Raw stderr is the
-  # realistic source: BoundedSubprocess SIGKILLs the process group on deadline,
-  # so a captured buffer can end mid-character.
+  # Every caller assembles a snippet inside a rescue whose job is to report a
+  # failure, so a snippet that raises doesn't degrade the alert — it deletes it.
+  # Raw stderr is the realistic source: BoundedSubprocess SIGKILLs the process
+  # group on deadline, so a captured buffer can end mid-character.
 
   test "build handles a log blob with invalid UTF-8" do
     snippet = AlertSnippet.build("gh api search/issues failed: \xC3\x28 truncated")
@@ -277,9 +277,9 @@ class AlertSnippetTest < ActiveSupport::TestCase
   end
 
   test "build honors a custom max_chars" do
-    snippet = AlertSnippet.build("z" * 5000, max_chars: AlertSnippet::MAX_BATCHED_CHARS)
+    snippet = AlertSnippet.build("z" * 5000, max_chars: 500)
 
-    assert_operator snippet.length, :<=, AlertSnippet::MAX_BATCHED_CHARS
+    assert_operator snippet.length, :<=, 500
   end
 
   test "clamp is a no-op below the cap" do
@@ -292,19 +292,5 @@ class AlertSnippetTest < ActiveSupport::TestCase
     assert_operator clamped.length, :<=, 200
     assert_match(/… (\d+) characters elided …/, clamped)
     assert_operator clamped[/… (\d+) characters elided …/, 1].to_i, :>, 0
-  end
-
-  # === Fencing ===
-
-  test "fenced wraps in a code block" do
-    assert_equal "```\nboom\n```", AlertSnippet.fenced("boom")
-  end
-
-  test "fenced defangs an inner fence so the block cannot terminate early" do
-    fenced = AlertSnippet.fenced("before ``` after")
-
-    assert_not_includes fenced[4..-5], "```"
-    assert fenced.start_with?("```\n")
-    assert fenced.end_with?("\n```")
   end
 end

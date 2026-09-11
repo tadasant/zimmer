@@ -76,6 +76,19 @@ class SlackService
       slack_bot_token.present?
     end
 
+    # The operational alert channel, or nil when unconfigured.
+    #
+    # Zimmer does not post here — the obs pipeline does, through an incoming
+    # webhook that GlitchTip and Grafana hold (tadasant-internal `obs/`). This is
+    # a channel Zimmer has to RECOGNIZE rather than write to:
+    # SlackTriggerPollerJob excludes it from passive listening's
+    # channel-engagement signal, because a machine-posted page is a feed entry,
+    # not a conversation Zimmer should spawn a session per message about.
+    # @return [String, nil]
+    def alert_channel_id
+      SecretsLoader.get("ENG_ALERTS_SLACK_CHANNEL_ID") || ENV["ENG_ALERTS_SLACK_CHANNEL_ID"]
+    end
+
     # Get the bot's own user ID (cached for the lifetime of the process)
     # @return [String] the bot's Slack user ID
     def bot_user_id

@@ -28,7 +28,7 @@ class HealthControllerOperatorAuthTest < ActionDispatch::IntegrationTest
   setup do
     Log.any_instance.stubs(:broadcast_append_to_timeline)
     Session.any_instance.stubs(:broadcast_status_change)
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
 
     AppSetting.delete_all
     GoodJob::Setting.delete_all

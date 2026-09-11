@@ -67,12 +67,12 @@ module CatalogArtifactReferences
   # `alert_noun` is the singular as it reads in the alert's subject ("MCP
   # server(s) missing from the catalog", "catalog skill(s) missing from the
   # catalog"). They differ because the two sentences were written by different
-  # hands, and the dedup keys and alert titles they produce are load-bearing.
+  # hands, and the alert titles they produce are load-bearing.
   #
   # The config facade is held by NAME and constantized per call: the *Config
   # classes are autoloaded, and pinning the class object in a class_attribute
   # would keep a stale copy alive across a development reload.
-  Reference = Struct.new(:attribute, :config_name, :noun, :alert_noun, :dedup_noun, keyword_init: true) do
+  Reference = Struct.new(:attribute, :config_name, :noun, :alert_noun, keyword_init: true) do
     def config = config_name.constantize
     def heal_method = :"heal_stale_#{attribute}!"
     def resolvable_method = :"resolvable_#{attribute}"
@@ -97,15 +97,12 @@ module CatalogArtifactReferences
     # @param config [Class] the catalog facade — must answer `.all` and `.exists?`
     # @param noun [String] singular, as it reads in a validation error
     # @param alert_noun [String] singular, as it reads in a heal alert's subject
-    # @param dedup_noun [String] the segment of the heal alert's dedup_key;
-    #   defaults to the plural of `noun`
-    def catalog_reference(attribute, config:, noun:, alert_noun: noun, dedup_noun: nil)
+    def catalog_reference(attribute, config:, noun:, alert_noun: noun)
       reference = Reference.new(
         attribute: attribute.to_sym,
         config_name: config.name,
         noun: noun,
-        alert_noun: alert_noun,
-        dedup_noun: dedup_noun || noun.pluralize
+        alert_noun: alert_noun
       ).freeze
       self.catalog_artifact_references = (catalog_artifact_references + [ reference ]).freeze
 
@@ -226,10 +223,9 @@ module CatalogArtifactReferences
     resolvable = values - unresolvable
 
     # Logged on EVERY fire that finds one, not only the fire that announces it.
-    # The alert is throttled by design and can be swallowed outright (a shut-off
-    # alerter, a dedup window, AlertService's own rescue), so the WARN — shipped
-    # to the obs stack and queryable, but not a page — is what makes a trigger
-    # running degraded visible for as long as it is running degraded.
+    # The announcement below fires once per newly-unresolvable set, so the WARN —
+    # shipped to the obs stack and queryable, but not a page — is what makes a
+    # trigger running degraded visible for as long as it is running degraded.
     log_unresolved_catalog_reference(reference, unresolvable, resolvable) if unresolvable.any?
 
     # Called even when nothing is unresolvable: that is what clears the sidecar
@@ -308,35 +304,32 @@ module CatalogArtifactReferences
   def announce_unresolved_catalog_reference(reference, unresolvable:, resolvable:)
     label = catalog_reference_model_label
 
-    AlertService.raise_alert(
-      "#{label} degraded: #{reference.alert_noun}(s) missing from the catalog",
-      details: "#{label} *#{catalog_reference_display_name}* (ID: #{id}) references " \
-               "#{reference.alert_noun}(s) the catalog cannot resolve:\n" \
-               "• Unresolvable: #{unresolvable.join(', ')}\n" \
-               "• Still resolving: #{resolvable.empty? ? '(none)' : resolvable.join(', ')}\n\n" \
-               "The reference is KEPT on the #{label.downcase} — nothing has been deleted — and the " \
-               "sessions it spawns run without it until this is settled. If the #{reference.noun} was " \
-               "RENAMED, edit the #{label.downcase} to name its replacement; if it was DELETED, remove " \
-               "it. Restoring the name to the catalog also fixes it, on the next fire, with no edit.\n\n" \
-               "<#{AppUrl.base_url}/#{self.class.model_name.route_key}/#{id}|View #{label.downcase} in Zimmer>",
-      source: catalog_heal_alert_source || "#{self.class.name}#heal_catalog_references!",
-      dedup_key: catalog_reference_dedup_key(reference, unresolvable, label)
-    )
-  end
+    details = "#{label} #{catalog_reference_display_name} (ID: #{id}) references " \
+              "#{reference.alert_noun}(s) the catalog cannot resolve:\n" \
+              "• Unresolvable: #{unresolvable.join(', ')}\n" \
+              "• Still resolving: #{resolvable.empty? ? '(none)' : resolvable.join(', ')}\n\n" \
+              "The reference is KEPT on the #{label.downcase} — nothing has been deleted — and the " \
+              "sessions it spawns run without it until this is settled. If the #{reference.noun} was " \
+              "RENAMED, edit the #{label.downcase} to name its replacement; if it was DELETED, remove " \
+              "it. Restoring the name to the catalog also fixes it, on the next fire, with no edit.\n\n" \
+              "#{AppUrl.base_url}/#{self.class.model_name.route_key}/#{id}"
+    source = catalog_heal_alert_source || "#{self.class.name}#heal_catalog_references!"
 
-  # The alert's dedup key, keyed on the row AND on which names are unresolvable.
-  #
-  # AlertService throttles a repeated key for an hour, and the bookkeeping means
-  # this row only gets one shot at announcing each name — so a key that ignored
-  # the names would silently swallow the second of two artifacts that went
-  # missing within the same hour, and nothing would ever retry it. The set is
-  # stable state rather than per-occurrence noise (that distinction is the whole
-  # of AlertService#raise_alert's comment about snippets), so putting it in the
-  # key cannot produce the flood that rule exists to prevent: a set that has not
-  # changed does not reach here twice.
-  def catalog_reference_dedup_key(reference, unresolvable, label)
-    digest = Digest::SHA256.hexdigest(unresolvable.sort.join(","))[0, 8]
-    "#{label.downcase}_stale_#{reference.dedup_noun}_#{id}_#{digest}"
+    # .error, where the line above this method logs the same condition at .warn on
+    # every fire. The ERROR record is the page, and it is raised only on the fire
+    # that announces — the bookkeeping in #record_unresolved_catalog_references!
+    # makes that once per newly-unresolvable set.
+    Rails.logger.error("[#{source}] #{details}")
+    ErrorReporter.report_message(
+      "#{label} degraded: #{reference.alert_noun}(s) missing from the catalog",
+      level: :error,
+      context: {
+        source: source,
+        details: details,
+        record_id: id,
+        unresolvable: unresolvable.sort.join(", ")
+      }
+    )
   end
 
   # "Trigger", "Session" — how the model names itself in a heal alert.

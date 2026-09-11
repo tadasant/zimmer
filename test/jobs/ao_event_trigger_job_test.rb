@@ -1087,8 +1087,10 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     Trigger.any_instance.stubs(:create_session!).raises(boom)
 
     alerts = []
-    AlertService.stubs(:raise_alert).with do |title, **kwargs|
-      alerts << { title: title, **kwargs }
+    reported = []
+    ErrorReporter.stubs(:report_exception).with do |error, **kwargs|
+      reported << error
+      alerts << kwargs[:context]
       true
     end
 
@@ -1096,9 +1098,11 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
 
     assert_equal 1, alerts.size, "a failed state-change wake must page, not just log"
     assert_equal "AoEventTriggerJob", alerts.first[:source]
-    assert_equal "ao_event_trigger_#{@trigger.id}", alerts.first[:dedup_key],
-      "dedup must be per-trigger, matching ScheduleTriggerJob"
-    assert_same boom, alerts.first[:error]
+    assert_equal "State-change wake failed to fire", alerts.first[:title]
+    assert_equal @trigger.id, alerts.first[:trigger_id],
+      "the trigger rides in the context, matching ScheduleTriggerJob"
+    assert_same boom, reported.first,
+      "the exception itself is reported, so GlitchTip gets its backtrace"
     # Assert on text only the never-delivered branch produces. The watched and
     # transitioning session are the same record here, so asserting on the id
     # alone would pass even if the watched-session interpolation were nil.
@@ -1110,7 +1114,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
   test "a failing session-scoped wake parks the trigger as failed" do
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
 
     watched_session = Session.create!(
       status: :needs_input,
@@ -1142,7 +1146,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
   test "a parked session-scoped wake is skipped on a later transition until it is re-armed" do
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
 
     watched_session = Session.create!(
       status: :needs_input,
@@ -1193,8 +1197,8 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("transient blip"))
 
     alerts = []
-    AlertService.stubs(:raise_alert).with do |title, **kwargs|
-      alerts << { title: title, **kwargs }
+    ErrorReporter.stubs(:report_exception).with do |_error, **kwargs|
+      alerts << kwargs[:context]
       true
     end
 
@@ -1246,8 +1250,8 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     TriggerCondition.any_instance.stubs(:update!).raises(StandardError.new("bookkeeping blew up"))
 
     alerts = []
-    AlertService.stubs(:raise_alert).with do |title, **kwargs|
-      alerts << { title: title, **kwargs }
+    ErrorReporter.stubs(:report_exception).with do |_error, **kwargs|
+      alerts << kwargs[:context]
       true
     end
 
@@ -1286,8 +1290,8 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     Trigger.any_instance.stubs(:hold_wake_group!).raises(StandardError.new("sibling cleanup blew up"))
 
     alerts = []
-    AlertService.stubs(:raise_alert).with do |title, **kwargs|
-      alerts << { title: title, **kwargs }
+    ErrorReporter.stubs(:report_exception).with do |_error, **kwargs|
+      alerts << kwargs[:context]
       true
     end
 
@@ -1319,8 +1323,8 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     Trigger.any_instance.stubs(:mark_failed).returns(false)
 
     alerts = []
-    AlertService.stubs(:raise_alert).with do |title, **kwargs|
-      alerts << { title: title, **kwargs }
+    ErrorReporter.stubs(:report_exception).with do |_error, **kwargs|
+      alerts << kwargs[:context]
       true
     end
 
@@ -1372,7 +1376,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
         create_session_without_break!(**kwargs)
       end
     end
-    AlertService.stubs(:raise_alert).raises(StandardError.new("slack is down"))
+    ErrorReporter.stubs(:report_exception).raises(StandardError.new("glitchtip is down"))
 
     assert_difference("Session.count", 1, "the healthy trigger's wake must still fire") do
       assert_nothing_raised do
@@ -1394,7 +1398,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     session = Session.create!(
       status: :needs_input,

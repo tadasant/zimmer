@@ -13,15 +13,16 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
   end
 
   test "raises an alert naming the kind and carrying the unmatched output" do
-    AlertService.expects(:raise_alert).with do |title, opts|
-      assert_equal "Unclassified failure: process exit", title
-      assert_match(/exit code: 2/, opts[:details])
-      # The output travels as error:, which AlertService renders through
-      # AlertSnippet into its own fenced block — not pasted into details.
-      assert_match(/Some brand new error wording/, opts[:error])
-      assert_equal "ProcessLifecycleManager#handle_exit", opts[:source]
+    ErrorReporter.expects(:report_message).with do |message, opts|
+      assert_equal "Unclassified failure: process exit", message
+      assert_equal :error, opts[:level]
+      assert_match(/exit code: 2/, opts[:context][:details])
+      # The output travels through AlertSnippet in its own field — not pasted into
+      # the prose.
+      assert_match(/Some brand new error wording/, opts[:context][:unmatched_output])
+      assert_equal "ProcessLifecycleManager#handle_exit", opts[:context][:source]
       true
-    end.returns(true)
+    end
 
     UnclassifiedFailureReporter.report(
       kind: "process exit",
@@ -33,10 +34,10 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
   end
 
   test "links the session so an operator can open it from the alert" do
-    AlertService.expects(:raise_alert).with do |_title, opts|
-      assert_match(%r{/sessions/#{@session.id}}, opts[:details])
+    ErrorReporter.expects(:report_message).with do |_message, opts|
+      assert_match(%r{/sessions/#{@session.id}}, opts[:context][:details])
       true
-    end.returns(true)
+    end
 
     UnclassifiedFailureReporter.report(
       kind: "process exit", summary: "exit code: 2",
@@ -45,7 +46,7 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
   end
 
   test "works without a session or output" do
-    AlertService.expects(:raise_alert).returns(true)
+    ErrorReporter.expects(:report_message)
 
     assert_nothing_raised do
       UnclassifiedFailureReporter.report(kind: "process exit", summary: "exit code: 2", source: "Test")
@@ -53,42 +54,43 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
   end
 
   # The noise budget: a fleet-wide wave of the same unknown failure must collapse
-  # into one alert, not one per session. That only works if the dedup key ignores
-  # the session and keys on (kind, summary).
-  test "dedup key is identical for the same kind and summary across different sessions" do
+  # into one GlitchTip issue, not one per session. That only works if the reported
+  # message ignores the session and names (kind) alone, with the summary alongside.
+  test "the reported message is identical for the same kind across different sessions" do
     other = Session.create!(prompt: "Other", git_root: "https://github.com/test/repo.git", status: :running)
 
-    keys = []
-    AlertService.stubs(:raise_alert).with do |_title, opts|
-      keys << opts[:dedup_key]
+    messages = []
+    ErrorReporter.stubs(:report_message).with do |message, _opts|
+      messages << message
       true
-    end.returns(true)
+    end
 
     UnclassifiedFailureReporter.report(kind: "process exit", summary: "exit code: 2", source: "Test", session: @session)
     UnclassifiedFailureReporter.report(kind: "process exit", summary: "exit code: 2", source: "Test", session: other)
 
-    assert_equal 2, keys.size
-    assert_equal keys.first, keys.last
+    assert_equal 2, messages.size
+    assert_equal messages.first, messages.last
+    assert_no_match(/#{@session.id}/, messages.first)
   end
 
-  test "dedup key differs for a different failure mode so a new unknown still pages" do
-    keys = []
-    AlertService.stubs(:raise_alert).with do |_title, opts|
-      keys << opts[:dedup_key]
+  test "the summary rides in the context so a new failure mode is still distinguishable" do
+    summaries = []
+    ErrorReporter.stubs(:report_message).with do |_message, opts|
+      summaries << opts[:context][:summary]
       true
-    end.returns(true)
+    end
 
     UnclassifiedFailureReporter.report(kind: "process exit", summary: "exit code: 2", source: "Test")
     UnclassifiedFailureReporter.report(kind: "process exit", summary: "exit code: 137", source: "Test")
 
-    assert_not_equal keys.first, keys.last
+    assert_equal [ "exit code: 2", "exit code: 137" ], summaries
   end
 
-  test "truncates very long output so the alert stays inside Slack's block limits" do
-    AlertService.expects(:raise_alert).with do |_title, opts|
-      assert_operator opts[:details].length, :<, 3000
+  test "truncates very long output so one report cannot be dominated by it" do
+    ErrorReporter.expects(:report_message).with do |_message, opts|
+      assert_operator opts[:context][:unmatched_output].length, :<=, AlertSnippet::MAX_CHARS
       true
-    end.returns(true)
+    end
 
     UnclassifiedFailureReporter.report(
       kind: "process exit", summary: "exit code: 2", source: "Test",
@@ -99,7 +101,7 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
   # The whole point of the change: an unknown failure mode has to be greppable
   # in the logs, not just visible in Slack.
   test "logs loudly with the word unclassified and the unmatched output" do
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
 
     logged = nil
     Rails.logger.stubs(:error).with { |msg| logged = msg.to_s; true }
@@ -113,16 +115,16 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
     assert_match(/brand new wording/, logged)
   end
 
-  # This is the first path routing raw agent stderr and transcript text to Slack.
-  # Session logs already carry both, but they stay inside Zimmer's own UI. The
-  # output travels as `error:` so AlertSnippet redacts, clamps, and fences it —
-  # a second, weaker copy of that seam here would be the actual risk.
-  test "hands the unmatched output to AlertService as error: so it is redacted" do
+  # This is the first path routing raw agent stderr and transcript text out of the
+  # box. Session logs already carry both, but they stay inside Zimmer's own UI. The
+  # output travels through AlertSnippet so it is redacted and clamped — a second,
+  # weaker copy of that seam here would be the actual risk.
+  test "hands the unmatched output through AlertSnippet so it is redacted" do
     captured = nil
-    AlertService.stubs(:raise_alert).with do |_title, opts|
-      captured = opts[:error]
+    ErrorReporter.stubs(:report_message).with do |_message, opts|
+      captured = opts[:context][:unmatched_output]
       true
-    end.returns(true)
+    end
 
     UnclassifiedFailureReporter.report(
       kind: "process exit", summary: "exit code: 2", source: "Test",
@@ -130,18 +132,18 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
     )
 
     assert_equal "spawn failed: npx -y some-mcp", captured,
-      "the raw output must reach error:, not be pre-mangled into details"
+      "the raw output must reach its own field, not be pre-mangled into the prose"
   end
 
-  # The complement: the raw output must NOT also be pasted into `details`, or
-  # redaction would be bypassed for the copy that reaches Slack first.
+  # The complement: the raw output must NOT also be pasted into the prose, or
+  # redaction would be bypassed for that copy.
   test "does not paste the unmatched output into details" do
     token = "ghp_" + ("A" * 20)
     captured = nil
-    AlertService.stubs(:raise_alert).with do |_title, opts|
-      captured = opts[:details]
+    ErrorReporter.stubs(:report_message).with do |_message, opts|
+      captured = opts[:context][:details]
       true
-    end.returns(true)
+    end
 
     UnclassifiedFailureReporter.report(
       kind: "process exit", summary: "exit code: 2", source: "Test",
@@ -165,17 +167,17 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
 
   # Callers must not have to know that announcing a failure could itself fail.
   test "a failing alert never propagates out of report" do
-    AlertService.stubs(:raise_alert).raises(StandardError, "slack is on fire")
+    ErrorReporter.stubs(:report_message).raises(StandardError, "glitchtip is on fire")
 
     assert_nothing_raised do
       UnclassifiedFailureReporter.report(kind: "process exit", summary: "exit code: 2", source: "Test")
     end
   end
 
-  # A logger that blows up must not swallow the alert that follows it.
-  test "still alerts when the loud log itself fails" do
+  # A logger that blows up must not swallow the report beside it.
+  test "still reports when the loud log itself fails" do
     Rails.logger.stubs(:error).raises(StandardError, "logger is broken")
-    AlertService.expects(:raise_alert).returns(true)
+    ErrorReporter.expects(:report_message)
 
     assert_nothing_raised do
       UnclassifiedFailureReporter.report(kind: "process exit", summary: "exit code: 2", source: "Test")

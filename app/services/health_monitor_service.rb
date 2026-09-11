@@ -291,10 +291,9 @@ class HealthMonitorService
 
   # Structured result for health status
   # `code` is optional and nil for every status that does not need one. It exists so
-  # SystemHealthMonitorJob can throttle the two critical backlog shapes separately:
-  # they are different incidents with different responses, and collapsing them onto
-  # one dedup key means a starved-lane page silences a worker-wide stall for the
-  # rest of AlertService::DEDUP_WINDOW.
+  # SystemHealthMonitorJob can title the two critical backlog shapes separately:
+  # they are different incidents with different responses, and one title over both
+  # sends the responder looking for the wrong thing.
   HealthStatus = Struct.new(:status, :message, :code, keyword_init: true) do
     def healthy?
       status == :healthy
@@ -915,22 +914,20 @@ class HealthMonitorService
     results = { archived: [], failed: [] }
 
     # The sweep archives without consulting Sessions::ArchiveGuard, so every
-    # queue it strands pages — correctly, since nobody read those messages. What
-    # is not correct is one page per session: the stranded-queue alert dedups per
-    # session by design, so a sweep that catches N sessions with queues posts N
-    # alerts in one tick, and each of those spawns its own triage session. The
-    # batch keeps the count honest inside a single consolidated message.
-    AlertBatcher.with_batch do
-      sessions.find_each do |session|
-        begin
-          with_db_retry do
-            session.archive_actor = "Zimmer's stale-session sweep (untouched for #{older_than.inspect})"
-            session.archive! if session.may_archive?
-          end
-          results[:archived] << session.id
-        rescue => e
-          results[:failed] << { session_id: session.id, reason: e.message }
+    # queue it strands reports — correctly, since nobody read those messages. A
+    # sweep that catches N sessions with queues emits N ERROR records in one tick,
+    # each naming its own session; the collapsing into one page happens in the obs
+    # pipeline (Grafana groups by alertname, GlitchTip into one issue) rather than
+    # here.
+    sessions.find_each do |session|
+      begin
+        with_db_retry do
+          session.archive_actor = "Zimmer's stale-session sweep (untouched for #{older_than.inspect})"
+          session.archive! if session.may_archive?
         end
+        results[:archived] << session.id
+      rescue => e
+        results[:failed] << { session_id: session.id, reason: e.message }
       end
     end
 

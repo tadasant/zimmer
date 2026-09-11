@@ -65,9 +65,10 @@ module CronSchedule
   #
   # Development runs a deliberate subset: nothing that spends money or quota, and nothing
   # that reaps the deployed droplet's disk. Paging is not what decides it --
-  # AlertService::ALERTING_ENVIRONMENTS is production and staging, so a monitor scheduled
-  # in development cannot reach #eng-alerts. Where the reason for an omission is more
-  # specific than that, it is written on the entry.
+  # config/initializers/sentry.rb enables reporting in production and staging only, and
+  # the Grafana rule on Zimmer's ERROR records reads the deployed environments, so a
+  # monitor scheduled in development cannot reach #alerts. Where the reason for an
+  # omission is more specific than that, it is written on the entry.
   ENTRIES = {
     outcome_analysis_batch_pump: {
       cron: "* * * * *", # Every minute — the engine behind "Analyze All" concurrency
@@ -195,7 +196,7 @@ module CronSchedule
     github_trigger_health_check: {
       cron: "*/5 * * * *", # Every 5 minutes — catches a silent poller freeze within ~15-20 min
       class: "GithubTriggerHealthCheckJob",
-      description: "Alert #eng-alerts when GitHub trigger polling has silently stopped succeeding",
+      description: "Alert when GitHub trigger polling has silently stopped succeeding",
       environments: %i[production staging]
     },
     schedule_trigger: {
@@ -395,7 +396,7 @@ module CronSchedule
     system_health_monitor: {
       cron: "*/2 * * * *", # Every 2 minutes
       class: "SystemHealthMonitorJob",
-      description: "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)",
+      description: "Alert when the GoodJob queue backlog is critical (sustained across checks)",
       environments: %i[production staging development]
     },
     # Development is deliberate: a real per-minute outbound DNS probe on a developer's

@@ -169,9 +169,10 @@ class AoEventTriggerJobAccountTest < ActiveJob::TestCase
   # the failure this whole change exists to end.
   test "a fire that raises alerts and leaves the trigger enabled" do
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("spawn exploded"))
-    AlertService.expects(:raise_alert).with do |title, opts|
-      title == "State-change wake failed to fire" && opts[:details].include?(@account.email)
-    end.returns(true)
+    ErrorReporter.expects(:report_exception).with do |_error, opts|
+      opts[:context][:title] == "State-change wake failed to fire" &&
+        opts[:context][:details].include?(@account.email)
+    end
 
     assert_nothing_raised { AoEventTriggerJob.perform_now(EVENT, @account.id) }
 
@@ -184,7 +185,7 @@ class AoEventTriggerJobAccountTest < ActiveJob::TestCase
   test "an unspawnable session still reaches a human through the alert channel" do
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("no usable account in the pool"))
     alerted = false
-    AlertService.stubs(:raise_alert).with { |_t, _o| alerted = true }.returns(true)
+    ErrorReporter.stubs(:report_exception).with { |_e, _o| alerted = true }
 
     AoEventTriggerJob.perform_now(EVENT, @account.id)
 

@@ -679,17 +679,16 @@ a prompt telling it to DM the operator, name the account, and say that fixing it
 "Authenticate" on `/inference`.
 
 The indirection is the point, and it replaced a native DM that never arrived. That path was
-`ClaudeAccount` → `AccountReauthAlertJob` → `AccountReauthNotifier` → `AlertService.dm_operator` →
+`ClaudeAccount` → `AccountReauthAlertJob` → `AccountReauthNotifier` → an operator DM →
 `SlackService.send_dm`, and it had three distinct ways to fail — an unset `OPERATOR_SLACK_USER_ID`,
 a bot without the `im:write` scope `conversations.open` needs, and a dedup key stuck from an earlier
 failure — each of which degraded to one `.warn` line and a `false`. Nothing surfaced any of them:
-`AlertService.missing_configuration_details`, the boot-time health check, only ever checked the Slack
-token and the channel id, never `operator_user_id`. A deployment could report itself fully configured
-while dropping every DM it sent.
+the boot-time health check only ever looked at the Slack token and the channel id, never at the
+operator id. A deployment could report itself fully configured while dropping every DM it sent.
 
 A Trigger cannot rot the same way. The notification is a session with a transcript you can read at
 `/sessions`, its prompt tells the agent to fall back to the alerts channel and say so if the DM will
-not send, and a fire that raises pages `#eng-alerts` through `AoEventTriggerJob`'s existing failure
+not send, and a fire that raises pages `#alerts` through `AoEventTriggerJob`'s existing failure
 handling. The trigger itself is a row at `/triggers`: editable, disable-able, and visible as a thing
 that exists.
 

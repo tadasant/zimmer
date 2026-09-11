@@ -203,7 +203,7 @@ class Api::V1::HealthControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "entering halts the demand-side queues and leaves agents live" do
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
 
     post enter_queue_recovery_mode_api_v1_health_path,
       params: { reason: "trigger stampede", ttl_minutes: 30 },
@@ -223,7 +223,7 @@ class Api::V1::HealthControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "exiting resumes processing" do
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
     post enter_queue_recovery_mode_api_v1_health_path, params: { reason: "x" }, headers: @headers
 
     post exit_queue_recovery_mode_api_v1_health_path, headers: @headers
@@ -257,7 +257,7 @@ class Api::V1::HealthControllerTest < ActionDispatch::IntegrationTest
   # deliberately outside that cooldown: an overloaded instance is exactly when the
   # cache is least trustworthy, and that must not lock the way out.
   test "a null cache does not block entering or leaving queue recovery mode" do
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
     Rails.cache = ActiveSupport::Cache::NullStore.new
 
     post enter_queue_recovery_mode_api_v1_health_path, params: { reason: "x" }, headers: @headers

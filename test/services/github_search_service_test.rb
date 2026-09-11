@@ -385,7 +385,8 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
   # ── a failed request: retry the blip, still page for the outage ────────────
   #
   # #436. Any non-zero `gh` exit raised on the first attempt, and GithubTriggerPollerJob's
-  # per-condition rescue turns that straight into ERROR + AlertService — a page. Production
+  # per-condition rescue turns that straight into an ERROR record and a GlitchTip event
+  # — a page. Production
   # produced four distinct upstream failures in seven days (an incomplete index, a 401, a
   # truncated body, two 504s), every one of them cleared by the next tick, so every page
   # arrived at a system that had already healed. These pin the two halves of the fix: a
@@ -426,7 +427,7 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     )
     delays = []
     GithubSearchService.stubs(:sleep).with { |seconds| delays << seconds; true }
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     lines = capture_log_lines do
       items = GithubSearchService.search_issues("is:open is:pr repo:owner/a")

@@ -617,9 +617,9 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
       RuntimeAuthProvider::Result.new(ok: false, error: :stale)
     )
 
-    AlertService.expects(:raise_alert).with(
+    ErrorReporter.expects(:report_message).with(
       "Claude auth deadlocked: spent refresh token and a corrupt credentials file",
-      has_entries(source: "RefreshRuntimeAuthTokensJob")
+      has_entries(level: :error, context: has_entries(source: "RefreshRuntimeAuthTokensJob"))
     ).at_least_once
 
     RefreshRuntimeAuthTokensJob.perform_now
@@ -640,7 +640,7 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
       RuntimeAuthProvider::Result.new(ok: false, error: :stale)
     )
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     RefreshRuntimeAuthTokensJob.perform_now
   end
@@ -661,7 +661,7 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
       RuntimeAuthProvider::Result.new(ok: false, error: :stale)
     )
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     RefreshRuntimeAuthTokensJob.perform_now
   end

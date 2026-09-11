@@ -100,18 +100,18 @@ The key is not required, on purpose — failing the deploy would break staging f
 self-hoster that has not set the secret. And it cannot fail loudly at runtime either: ActiveSupport
 reads the key as `ENV["RAILS_MASTER_KEY"].presence` (`active_support/encrypted_file.rb`), so blank and
 unset are the same thing, `secrets_loader.rb` rescues the miss, and there is no `require_master_key`.
-The app boots, healthy, serving **no** `mcp_secrets` — Slack triggers and `AlertService` go quiet, and
-any MCP server with a `${VAR}` placeholder fails at session start. `deploy-staging.yml` emits a
+The app boots, healthy, serving **no** `mcp_secrets` — Slack triggers go quiet, and any MCP server
+with a `${VAR}` placeholder fails at session start. `deploy-staging.yml` emits a
 `::warning::` when the secret is empty, which is the only signal you get.
 
 Production is unaffected: its `.enc` is bind-mounted onto the droplet rather than committed, and
 `PROD_RAILS_MASTER_KEY` is mandatory in practice.
 
-The flip side, once the key *is* set: staging's `AlertService` and every monitor scheduled there
-start posting to the `ENG_ALERTS_SLACK_CHANNEL_ID` in `staging.yml.enc` — a real Slack channel that
-humans watch. Staging alerts say which environment they came from — a `[staging]` title tag, an
-`*Environment:* staging` context line, and the posting bot (*Zimmer (Staging)*) — but they land in
-the same feed as production's, so point staging at a different channel if that volume is unwelcome.
+Alerting is not part of the flip side: staging's monitors report through the obs pipeline, whose
+staging half reaches no Slack channel at all — `SENTRY_DSN_BACKEND` points at the
+`zimmer-backend-staging` GlitchTip project, which has no recipient, and the Grafana rule on Zimmer's
+error logs subtracts staging from the environments it counts. What `staging.yml.enc` still holds is
+the alert channel's **id**, which Zimmer reads only to recognize that channel, never to post to it.
 
 ### The release build's retry masks a flake
 
@@ -272,24 +272,25 @@ alone matches staging records identically to production ones. Zimmer emits the l
 cannot enforce that the alert rules on the other side filter by it. Those rules live in a separate
 repository.
 
-### Every agent-session clone carries the Slack bot token, the alert channel id, and the operator's user id
+### Every agent-session clone carries the Slack bot token and the alert channel id
 
 `AgentSessionJob#inject_secrets_to_env_file` writes `SecretsLoader.all` — the whole credential bundle
-— into each clone's `.env`, and that bundle includes `SLACK_BOT_TOKEN`,
-`ENG_ALERTS_SLACK_CHANNEL_ID` and `OPERATOR_SLACK_USER_ID`. Anything an agent runs inside its clone
-can therefore post to the real alert channel as the real bot, and — since the operator's user id
-travels with the token that can DM them — DM the operator directly. An agent's shell also has no `RAILS_ENV`, so a clone that boots Zimmer
-boots it as `development`.
+— into each clone's `.env`, and that bundle includes `SLACK_BOT_TOKEN` and
+`ENG_ALERTS_SLACK_CHANNEL_ID`. Anything an agent runs inside its clone can therefore post to the real
+alert channel as the real bot. Zimmer itself no longer posts there — its alerts go through the obs
+pipeline, gated on a DSN that `CliSpawnEnv` strips from every agent shell — but the token in the
+clone is still a token that can. An agent's shell also has no `RAILS_ENV`, so a clone that boots
+Zimmer boots it as `development`.
 
 That combination is what fired in [#272](https://github.com/tadasant/zimmer/issues/272): a clone
 registered development's cron table, probed the approval endpoint at `http://localhost:3000` where
-nothing was listening, and paged the production channel every five minutes. Every suppressor that
-should have capped it at one message is cache-backed and swallows its own failures, so an unreachable
-cache silently removed all of them at once.
-[Only the deployed environments may page](/operate/background-jobs/#who-is-allowed-to-page), which
-closes that path. But the gate is Zimmer's own restraint, exercised by code that happens to be
-Zimmer's; it is not a scope on the credential. The token is still in the file, and nothing stops other
-code from using it.
+nothing was listening, and paged the production channel every five minutes — every throttle that
+should have capped it at one message was cache-backed, and the clone could not reach the cache.
+[Only the deployed environments may page](/operate/background-jobs/#who-is-allowed-to-page), and
+that gate is now a DSN `CliSpawnEnv` strips from every agent shell rather than a throttle, so a
+clone has nothing to page *with*. But it is still Zimmer's own restraint, exercised by code that
+happens to be Zimmer's; it is not a scope on the credential. The token is still in the file, and
+nothing stops other code from using it.
 
 ### SSH hardening only reaches a droplet that is rebuilt
 
@@ -737,8 +738,8 @@ pages), but a Redis outage silences the alarm for as long as it lasts.
 
 This is the conservative trade: the alternative — paging on any missing key — turns every deploy and
 cache flush into a false page, and a liveness alarm nobody trusts is worse than one with a known
-hole. It fails quiet, not loud. The same Redis dependency already underlies `AlertService`'s dedup
-and `SystemHealthMonitorJob`'s streak, so a Redis outage degrades that whole family together.
+hole. It fails quiet, not loud. The same Redis dependency already underlies
+`SystemHealthMonitorJob`'s streak, so a Redis outage degrades that whole family together.
 
 ### The docs guardrail does not look in the image's `tmp/`
 
@@ -857,8 +858,8 @@ What the gate does buy is real, and it is the part `/supervisor` got in
 [#42](https://github.com/tadasant/zimmer/issues/42): there is no longer a door that needs *nothing*.
 Every surface that mutates now demands a credential, so the remaining exposure is a question about
 which credentials a session should hold — tracked separately — rather than an unauthenticated
-endpoint. Halting the demand-side queues also stays loud and self-healing whoever fires it: entry
-and extension alert synchronously (`defer_alert: false`), and the TTL auto-exits. The one thing to
+endpoint. Halting the demand-side queues also stays loud and self-healing whoever fires it: entry,
+extension and exit each emit their own page, and the TTL auto-exits. The one thing to
 know is that halting `pollers` also stops `SystemHealthMonitorJob`, so *backlog* alerting is quiet
 for the duration.
 
@@ -3702,7 +3703,7 @@ Three shapes of the same drop are not surfaced at all, each for a stated reason:
 
 - A **one-time `schedule`** whose fire succeeded and whose session then died is a real orphan, but the population is keyed on `Session#genesis` so that the predicate costs no query inside the `fail` transition — and a one-time schedule is indistinguishable from a recurring one without loading the trigger's conditions. A recurring schedule is excluded on purpose: its next tick *is* the retry.
 - A trigger's session that is **archived** rather than failed — force-archived by a human, or reaped — loses its work item identically and reports nothing. `archive` is a deliberate act far more often than `fail` is, so reporting on it would page for every tidy-up.
-- A failure that happens while the **alert channel itself** is down is logged by `AlertService` and otherwise lost. The stamp that marks a session as reported is written *after* the post rather than before, so the session stays eligible — but nothing re-runs the job, so in practice the only recovery is the session's timeline entry, which is written first.
+- A failure that happens while the **obs pipeline itself** is down leaves the ERROR record in the container log and nothing else. The stamp that marks a session as reported is written *after* the report rather than before, so the session stays eligible — but nothing re-runs the job, so in practice the only recovery is the session's timeline entry, which is written first.
 
 ### A stranded sleeper is rescued within ~20 minutes, not immediately
 

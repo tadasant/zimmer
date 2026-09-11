@@ -50,10 +50,10 @@ class OrphanedTriggerFireJobTest < ActiveSupport::TestCase
     session.update!(metadata: session.metadata.merge("failure_reason" => "process_failed"))
 
     alerted = nil
-    AlertService.stubs(:raise_alert).with do |title, opts|
-      alerted = [ title, opts[:details] ]
+    ErrorReporter.stubs(:report_message).with do |message, opts|
+      alerted = [ message, opts[:context][:details] ]
       true
-    end.returns(true)
+    end
 
     perform_enqueued_jobs(only: OrphanedTriggerFireJob) { session.fail! }
 
@@ -108,7 +108,7 @@ class OrphanedTriggerFireJobTest < ActiveSupport::TestCase
   # ── The job itself ────────────────────────────────────────────────────────
 
   test "the job is a no-op for a session that has since been deleted" do
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     assert_nothing_raised { OrphanedTriggerFireJob.perform_now(999_999) }
   end
@@ -117,7 +117,7 @@ class OrphanedTriggerFireJobTest < ActiveSupport::TestCase
     session = trigger_originated_session(status: :failed)
     session.update_column(:status, Session.statuses[:running])
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     OrphanedTriggerFireJob.perform_now(session.id)
     assert_nil session.reload.metadata[OrphanedTriggerFire::REPORTED_AT_KEY]

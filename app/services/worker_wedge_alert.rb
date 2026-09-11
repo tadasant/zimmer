@@ -1,7 +1,10 @@
 # frozen_string_literal: true
 
-# Turns an incident record from the host-side worker watchdog into a page in
-# #eng-alerts.
+# Turns an incident record from the host-side worker watchdog into a page.
+#
+# It reports through the obs pipeline like everything else: an ERROR log record
+# (which pages via the Grafana rule on Zimmer's error logs) plus a GlitchTip event
+# carrying the body.
 #
 # The watchdog (scripts/worker-watchdog.sh, installed as a systemd timer by
 # scripts/install-worker-watchdog.sh) detects a container Docker still reports as
@@ -30,12 +33,15 @@
 # ------------------------------
 # Two constraints meet here. Detection cannot live in the app, because Zimmer's cron
 # runs on GoodJob *in the worker* -- a job that watches the worker is a job that dies
-# with it. And the alert cannot live on the host, because the Slack credentials are in
-# Rails' encrypted credentials, not in anything a shell script on the droplet can read.
+# with it.
+#
+# And the alert cannot live on the host, because the obs credentials (the OTLP bearer
+# token, the GlitchTip DSN) are in the app's environment, not in anything a shell script
+# on the droplet reads.
 #
 # So detection runs on the host and delivery runs in the *web* container, which shares
-# the image, the credentials and the Redis dedup cache, and is untouched by the
-# worker's cgroup. The watchdog needs no new secret and Zimmer needs no new endpoint.
+# the image and the credentials and is untouched by the worker's cgroup. The watchdog
+# needs no new secret and Zimmer needs no new endpoint.
 #
 # ROBUSTNESS OVER PRECISION
 # -------------------------
@@ -47,11 +53,11 @@
 class WorkerWedgeAlert
   SOURCE = "zimmer-worker-watchdog"
 
-  # AlertService caps the details section at 2800 characters and truncates from the END,
-  # which is where the runbook link is. These bound the two fields that can be long (the
-  # OCI runtime error, and the recovery step list) so the framing around them can never
-  # be squeezed out -- including the longest framing, which is a live census explaining
-  # why a failed `docker exec` proves nothing. A test pins that worst case.
+  # These bound the two fields that can be long (the OCI runtime error, and the
+  # recovery step list) so the framing around them can never be squeezed out --
+  # including the longest framing, which is a live census explaining why a failed
+  # `docker exec` proves nothing, and the runbook link at the end. A test pins that
+  # worst case.
   MAX_ERROR_CHARS = 500
   MAX_STEPS_CHARS = 600
 
@@ -71,10 +77,10 @@ class WorkerWedgeAlert
   }.freeze
 
   RUNBOOK = "https://docs.zimmer.tadasant.com/operate/nested-docker/#when-the-worker-wedges"
-  ISSUE_502 = "<https://github.com/tadasant/zimmer/issues/502|#502>"
+  ISSUE_502 = "#502 (https://github.com/tadasant/zimmer/issues/502)"
 
   # @param payload [String] the watchdog's incident JSON, read from stdin
-  # @return [Boolean] whatever AlertService#raise_alert returns
+  # @return [Boolean] true once the incident has been recorded
   def self.report(payload)
     new(payload).report
   end
@@ -84,8 +90,21 @@ class WorkerWedgeAlert
     @data = parse
   end
 
+  # The ERROR record is the page: it ships to the obs stack over OTLP and trips the
+  # "any non-staging Zimmer ERROR record" Grafana rule, which is what reaches
+  # #alerts. The GlitchTip event carries the same body as structured context.
+  #
+  # The title names the host, so a wedge on one host does not group with a wedge on
+  # another — a handful of hosts is a handful of issues, which is the granularity a
+  # responder wants here.
   def report
-    AlertService.raise_alert(title, details: details, source: SOURCE, dedup_key: dedup_key)
+    Rails.logger.error("[#{SOURCE}] #{title}\n#{details}")
+    ErrorReporter.report_message(
+      title,
+      level: :error,
+      context: { source: SOURCE, details: details, host: host, container_id: container["id"].presence }
+    )
+    true
   end
 
   private
@@ -129,13 +148,6 @@ class WorkerWedgeAlert
     "Worker container wedged on #{host}"
   end
 
-  # Keyed to the container rather than to the host, so a wedge on a replacement
-  # container after a redeploy pages again instead of being swallowed by the previous
-  # one's throttle window. Falls back to the host when there is no id to key on.
-  def dedup_key
-    "worker_wedge:#{container["id"].presence || host}"
-  end
-
   def details
     return unparseable_details unless parsed?
     return absent_details if absent?
@@ -146,26 +158,26 @@ class WorkerWedgeAlert
       "",
       cause_sentence,
       "",
-      "*Host:* #{host}",
-      "*Container:* #{container["name"].presence || "?"} (`#{container["id"].presence || "?"}`)" \
+      "Host: #{host}",
+      "Container: #{container["name"].presence || "?"} (`#{container["id"].presence || "?"}`)" \
       "#{" under `#{container["runtime"]}`" if container["runtime"].present?}",
-      "*Detected:* #{data["detected_at"].presence || "?"}",
-      "*Docker state:* Running=#{container["running"].inspect}, " \
+      "Detected: #{data["detected_at"].presence || "?"}",
+      "Docker state: Running=#{container["running"].inspect}, " \
       "OOMKilled=#{container["oom_killed"].inspect}, RestartCount=#{container["restart_count"] || "?"}" \
       "#{", limit #{human_bytes(container["memory_limit_bytes"])}" if container["memory_limit_bytes"].to_i.positive?}",
-      "*Probe:* #{probe["consecutive_failures"] || "?"} consecutive `docker exec` failures " \
+      "Probe: #{probe["consecutive_failures"] || "?"} consecutive `docker exec` failures " \
       "(#{probe["timeout_seconds"] || "?"}s timeout)",
-      "*Cgroup:* #{census_summary}, oom_kill=#{oom_kill_summary}",
-      "*Recovery:* #{recovery_description}"
+      "Cgroup: #{census_summary}, oom_kill=#{oom_kill_summary}",
+      "Recovery: #{recovery_description}"
     ]
 
     if (steps = recovery["steps"].presence)
-      lines << "*Steps:* #{truncate(steps, MAX_STEPS_CHARS)}"
+      lines << "Steps: #{truncate(steps, MAX_STEPS_CHARS)}"
     end
 
     if (last_error = probe["last_error"].presence)
       lines << ""
-      lines << "*Last exec error:*"
+      lines << "Last exec error:"
       lines << "```#{truncate(last_error, MAX_ERROR_CHARS)}```"
     end
 
@@ -183,9 +195,9 @@ class WorkerWedgeAlert
 
       This is *not* the #502 cgroup-OOM wedge, and it is reversible: `docker unpause #{container["id"].presence || "<container>"}`. Nothing in Zimmer pauses a container on its own, so something or someone else did.
 
-      *Host:* #{host}
-      *Container:* #{container["name"].presence || "?"} (`#{container["id"].presence || "?"}`)
-      *Detected:* #{data["detected_at"].presence || "?"}
+      Host: #{host}
+      Container: #{container["name"].presence || "?"} (`#{container["id"].presence || "?"}`)
+      Detected: #{data["detected_at"].presence || "?"}
 
       The watchdog took no action: a paused container is never recovered automatically, because unpausing is a decision for whoever paused it.
     DETAILS
@@ -195,9 +207,9 @@ class WorkerWedgeAlert
     <<~DETAILS
       The worker container this watchdog reported wedged is no longer running at all — nothing matches its name on the host, so no jobs and no agent sessions are being executed. Every Zimmer cron job runs in the worker, so nothing else on this instance will notice.
 
-      *Host:* #{host}
-      *Container:* `#{container["id"].presence || "?"}` (last seen wedged)
-      *Detected:* #{data["detected_at"].presence || "?"}
+      Host: #{host}
+      Container: `#{container["id"].presence || "?"}` (last seen wedged)
+      Detected: #{data["detected_at"].presence || "?"}
 
       This needs a redeploy to bring a worker back. The watchdog will keep repeating this until one is running: #{RUNBOOK}
     DETAILS

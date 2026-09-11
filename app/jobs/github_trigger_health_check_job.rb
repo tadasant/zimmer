@@ -16,7 +16,7 @@
 # This job closes that gap, mirroring SlackTriggerHealthCheckJob for the Slack poller.
 # The poller stamps GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY every time a sweep polls
 # at least one condition successfully; this check reads that heartbeat and pages
-# #eng-alerts (via AlertService) when it goes stale — i.e. no GitHub poll has succeeded
+# #alerts (through the obs pipeline) when it goes stale — i.e. no GitHub poll has succeeded
 # in STALE_THRESHOLD. A heartbeat that keeps advancing means the poller is alive even
 # if individual conditions are erroring (those page on their own), so this fires only on
 # a genuine, total stall.
@@ -39,10 +39,6 @@ class GithubTriggerHealthCheckJob < ApplicationJob
   # beyond any transient blip or a slow multi-page search, yet tight enough to catch a
   # real freeze within the quarter-hour rather than the ~50 minutes the incident ran.
   STALE_THRESHOLD = 15.minutes
-
-  # Stable dedup key: one page per AlertService::DEDUP_WINDOW (1h) for as long as the
-  # stall persists, rather than a fresh page every run.
-  ALERT_DEDUP_KEY = "github_trigger_poller_stalled"
 
   def perform
     # With no enabled GitHub triggers the poller has nothing to poll, so its heartbeat
@@ -80,17 +76,21 @@ class GithubTriggerHealthCheckJob < ApplicationJob
     return if age < STALE_THRESHOLD
 
     minutes = (age / 60).round
-    Rails.logger.warn "[GithubTriggerHealthCheckJob] No successful GitHub trigger poll in ~#{minutes}m " \
-                      "(last success #{last_at}); alerting #eng-alerts."
-    AlertService.raise_alert(
+    # .error, not .warn: this line IS the page — the ERROR record is what reaches
+    # #alerts, and the stall does not self-resolve.
+    Rails.logger.error "[GithubTriggerHealthCheckJob] No successful GitHub trigger poll in ~#{minutes}m " \
+                       "(last success #{last_at})"
+    ErrorReporter.report_message(
       "GitHub trigger polling stalled",
-      details: "No GitHub trigger poll has completed successfully in ~#{minutes} minutes " \
-               "(last success #{last_at}). Label and issue triggers — including the `ready to merge` " \
-               "merge gate — are not firing. Likely causes: the `pollers` GoodJob worker is down, a " \
-               "`gh` call is hung against a degraded GitHub API, or GitHub is unreachable. Check the " \
-               "GoodJob dashboard (/jobs) and githubstatus.com.",
-      source: "GithubTriggerHealthCheckJob",
-      dedup_key: ALERT_DEDUP_KEY
+      level: :error,
+      context: {
+        source: "GithubTriggerHealthCheckJob",
+        details: "No GitHub trigger poll has completed successfully in ~#{minutes} minutes " \
+                 "(last success #{last_at}). Label and issue triggers — including the `ready to merge` " \
+                 "merge gate — are not firing. Likely causes: the `pollers` GoodJob worker is down, a " \
+                 "`gh` call is hung against a degraded GitHub API, or GitHub is unreachable. Check the " \
+                 "GoodJob dashboard (/jobs) and githubstatus.com."
+      }
     )
   end
 

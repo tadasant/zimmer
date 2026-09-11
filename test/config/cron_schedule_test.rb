@@ -29,7 +29,7 @@ class CronScheduleTest < ActiveSupport::TestCase
   # "It pages #eng-alerts" is not one of those reasons, and the schedule never treated it as
   # one: staging schedules GithubTriggerHealthCheckJob, SystemHealthMonitorJob,
   # ElicitationEndpointHealthCheckJob and both trigger pollers, all of which page that
-  # channel, tagged [staging] by AlertService#tagged_title (tadasant/zimmer#686).
+  # channel, tagged as staging by the reporting environment (tadasant/zimmer#686).
   #
   # Adding a row back is a conscious decision, not a way to silence the test below.
   NOT_ON_STAGING = {}.freeze
