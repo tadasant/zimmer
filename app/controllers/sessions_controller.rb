@@ -868,14 +868,28 @@ class SessionsController < ApplicationController
     #
     # This is the human twin of the MCP and REST refusals; see
     # Sessions::ArchiveGuard for why the discard is worth a speed bump.
-    refused = with_db_retry do
-      if ActiveModel::Type::Boolean.new.cast(params[:force])
-        nil
-      else
-        Sessions::ArchiveGuard.pending_messages(@session).presence
-      end
+    # The check and the transition share one row lock; see
+    # Sessions::ArchiveGuard.guarded_archive!.
+    #
+    # The block returns a sentinel rather than the transition's own value: AASM's
+    # bang event answers `false` when the underlying save fails, which `with_db_retry`
+    # also uses to mean "gave up retrying". Without the sentinel those two are one
+    # value, and the failed-save case would fall through to an implicit render.
+    refused = nil
+    result = with_db_retry do
+      Sessions::ArchiveGuard.guarded_archive!(
+        @session,
+        force: ActiveModel::Type::Boolean.new.cast(params[:force]),
+        actor: "a user in the web UI"
+      )
+      :archived
+    rescue Sessions::ArchiveGuard::Refused => e
+      refused = e.messages
+      :refused
     end
-    return if refused == false
+
+    # Only respond if the operation succeeded (not false from max retry handler)
+    return if result == false
 
     if refused
       respond_with_flash(
@@ -884,20 +898,6 @@ class SessionsController < ApplicationController
       )
       return
     end
-
-    # The block returns a sentinel rather than the transition's own value: AASM's
-    # bang event answers `false` when the underlying save fails, which `with_db_retry`
-    # also uses to mean "gave up retrying". Without the sentinel those two are one
-    # value, and the failed-save case would fall through to an implicit render.
-    result = with_db_retry do
-      @session.archive_actor = "a user in the web UI"
-      @session.archive_forced = ActiveModel::Type::Boolean.new.cast(params[:force])
-      @session.archive! if @session.may_archive?
-      :archived
-    end
-
-    # Only respond if the operation succeeded (not false from max retry handler)
-    return if result == false
 
     undo_notice = "Session moved to trash.|undo_archive|#{@session.id}"
 
@@ -1104,18 +1104,15 @@ class SessionsController < ApplicationController
         sessions.each do |session|
           next if session.archived?
 
-          # Skipped rather than forced: a bulk selection is not a claim to have
-          # read each session's queue, and there is no per-session confirmation
-          # to hang a force on. The count is reported so the skip is not silent,
-          # and archiving one of them individually offers the "Archive anyway".
-          if Sessions::ArchiveGuard.blocked?(session)
-            skipped_with_queue += 1
-            next
+          # Never forced: a bulk selection is not a claim to have read each
+          # session's queue, and there is no per-session confirmation to hang a
+          # force on. The count is reported so the skip is not silent, and
+          # archiving one of them individually offers the "Archive anyway".
+          if Sessions::ArchiveGuard.guarded_archive!(session, force: false, actor: "a user in the web UI (bulk action)")
+            archived_count += 1
           end
-
-          session.archive_actor = "a user in the web UI (bulk action)"
-          session.archive! if session.may_archive?
-          archived_count += 1
+        rescue Sessions::ArchiveGuard::Refused
+          skipped_with_queue += 1
         end
       end
     end
