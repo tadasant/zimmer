@@ -116,7 +116,8 @@ class OrphanedTriggerFire
   CONTEXT_BLOCK_URL_PATTERN = /^- \*\*URL:\*\*\s*(#{SUBJECT_URL_PATTERN})/
 
   # Raw runtime text carried by a failure, in the order a reader wants it. It
-  # travels as `error:`, never in `details:` — see #raise_alert.
+  # travels through AlertSnippet in a field of its own, never in the prose — see
+  # #report_orphaned_fire.
   RUNTIME_FAILURE_KEYS = %w[exit_status exception_message].freeze
 
   class << self
@@ -163,7 +164,7 @@ class OrphanedTriggerFire
 
       trigger = Trigger.find_by(id: session.metadata["trigger_id"])
       record_on_session(session, trigger)
-      raise_alert(session, trigger)
+      report_orphaned_fire(session, trigger)
 
       # Stamped AFTER the report, so a failure on the way here leaves the session
       # eligible rather than marked-as-reported over a message nobody got. See
@@ -213,7 +214,7 @@ class OrphanedTriggerFire
     # `UnclassifiedFailureReporter` makes the same call for the same reason. What
     # stays in the prose is `Session#failure_summary`, a closed `case` over
     # enumerated `failure_reason` values that never interpolates runtime output.
-    def raise_alert(session, trigger)
+    def report_orphaned_fire(session, trigger)
       details = alert_details(session, trigger)
 
       Rails.logger.error(

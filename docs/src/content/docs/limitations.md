@@ -1441,7 +1441,7 @@ account, and failed, with no log line saying rotation should have happened.
 The matching is still prose-based — that part has not changed, and a *mis*match (prose that hits the
 wrong pattern, as in that outage) still looks like an ordinary classification. What no longer happens
 silently is a **no**-match: when a session dies and not one classifier recognized it,
-`UnclassifiedFailureReporter` logs loudly and pages `#eng-alerts` with the unmatched stderr and
+`UnclassifiedFailureReporter` logs loudly and pages `#alerts` with the unmatched stderr and
 transcript text, so the next wording change surfaces as a Slack message rather than an
 archaeology session. The same reporter fires when a classifier and its recovery service disagree
 about the same exit.
@@ -1480,13 +1480,13 @@ others. A pool where *every* account is dead cannot spawn the session that would
 bound it rather than fix it: the seeded trigger is `priority` rather than the `spot` that `ao_event`
 derives, so the one session whose job is to report a dead pool is not itself gated behind a healthy
 account under quota; and when the spawn fails anyway, `AoEventTriggerJob#handle_fire_failure` raises
-an `#eng-alerts` post, which needs no account at all.
+an `#alerts` post, which needs no account at all.
 
 So the floor is a channel post rather than a DM. That is a real downgrade — a feed entry you scroll
 past instead of a nag aimed at the person who can fix it — but it is not silence, and it is strictly
-better than the native DM path it replaced, which failed silently for
-[three different configuration reasons](/operate/background-jobs/#when-an-alert-is-a-dm-instead-of-a-channel-post)
-none of which any health check looked at.
+better than the native DM path it replaced, which failed silently for three different
+configuration reasons — an unset `OPERATOR_SLACK_USER_ID`, a bot without the `im:write` scope
+`conversations.open` needs, and a stuck dedup key — none of which any health check looked at.
 
 ### Auth recovery can rotate away from an account that was fine
 
@@ -3697,7 +3697,7 @@ parks every pending wake at once and leaves you a list to clear by hand.
 
 ### A dropped trigger work item is surfaced, not re-dispatched
 
-A trigger fire is a one-shot event, and the session it creates is the only thing carrying it — the fire is spent the moment that session exists, deliberately, because the alternative is dispatching one event twice. So when that session reaches terminal `failed`, the work item is dropped and nothing will pick it up. Zimmer now says so: `OrphanedTriggerFire` writes an ERROR line on the session's timeline and raises an `#eng-alerts` alert naming the trigger, the session and the GitHub subject ([#632](https://github.com/tadasant/zimmer/issues/632)). It does **not** re-dispatch. The population includes the merge gate — the one mechanism authorized to merge without human sign-off — and the only after-the-fact guard against redoing work already done reads a clone the reaper may already have removed. So the recovery is still a human's or an agent's deliberate re-dispatch; what changed is that it now happens in minutes instead of after eleven hours.
+A trigger fire is a one-shot event, and the session it creates is the only thing carrying it — the fire is spent the moment that session exists, deliberately, because the alternative is dispatching one event twice. So when that session reaches terminal `failed`, the work item is dropped and nothing will pick it up. Zimmer now says so: `OrphanedTriggerFire` writes an ERROR line on the session's timeline and raises an `#alerts` alert naming the trigger, the session and the GitHub subject ([#632](https://github.com/tadasant/zimmer/issues/632)). It does **not** re-dispatch. The population includes the merge gate — the one mechanism authorized to merge without human sign-off — and the only after-the-fact guard against redoing work already done reads a clone the reaper may already have removed. So the recovery is still a human's or an agent's deliberate re-dispatch; what changed is that it now happens in minutes instead of after eleven hours.
 
 Three shapes of the same drop are not surfaced at all, each for a stated reason:
 
@@ -3938,7 +3938,7 @@ When GitHub's search index times out it returns `incomplete_results: true` with 
 Accepting that would corrupt the label poller's seen-set, so `GithubSearchService` re-runs the whole
 search (0.5s, then 1.5s) and, if it is still short, the poller skips that condition for the tick with
 a WARN. The next tick re-derives the whole seen-set, so this self-corrects — but for that minute the
-condition is not polled and its trigger does not fire, with nothing in `#eng-alerts` to say so. A
+condition is not polled and its trigger does not fire, with nothing in `#alerts` to say so. A
 label added and removed inside that window is never seen at all.
 
 The escalation for a degradation that does not clear is a per-condition consecutive-skip counter in
@@ -4026,7 +4026,7 @@ The two halves of the web control are gated differently, and the asymmetry is th
 ([#371](https://github.com/tadasant/zimmer/issues/371),
 [#312](https://github.com/tadasant/zimmer/issues/312)), because halting instance-wide job processing
 is a bigger lever than its neighbours on that page even though it is reversible, self-expiring and
-pages `#eng-alerts` on every transition. `exit_queue_recovery_mode` is behind nothing, deliberately:
+pages `#alerts` on every transition. `exit_queue_recovery_mode` is behind nothing, deliberately:
 the realm fails closed, so gating the exit would put a credential the deployment may never have set
 between an operator and the end of a halt. The REST and MCP equivalents of both require an API key as
 usual, and MCP additionally gates on the `health` tool group, which the `self_session` set injected

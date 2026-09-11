@@ -143,7 +143,7 @@ docker logs --tail 50 "$w"
 **Every session dies before the agent starts.** Almost always a secrets problem:
 - `STAGING_RAILS_MASTER_KEY` unset → `config/credentials/staging.yml.enc` stays
   encrypted → `SecretsLoader` serves nothing → any MCP server with a `${VAR}`
-  placeholder fails in `SecretsInterpolator`, and Slack/AlertService go quiet.
+  placeholder fails in `SecretsInterpolator`, and Slack triggers go quiet.
   The deploy **warns** rather than fails on this, so the run is green.
 - `STAGING_API_KEYS` empty → the derived self-session key is blank → the injected
   self-session MCP server 401s against Zimmer itself.

@@ -10,7 +10,7 @@
 #   - the `pollers` GoodJob worker is down, so no tick runs to raise anything;
 #   - the singleton concurrency slot is held, so every enqueue is a silent no-op.
 # In each case the poller stops advancing state — the merge/issue gates quietly go
-# dark — with not one line in #eng-alerts. That is exactly how the `ready to merge`
+# dark — with not one line in #alerts. That is exactly how the `ready to merge`
 # gate stalled for ~50 minutes unnoticed.
 #
 # This job closes that gap, mirroring SlackTriggerHealthCheckJob for the Slack poller.

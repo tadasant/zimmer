@@ -424,7 +424,7 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
 
     assert_includes details, "(truncated)"
-    assert_operator details.length, :<, DETAILS_CAP
+    assert_operator details.length, :<, WorkerWedgeAlert::MAX_DETAILS_CHARS
   end
 
   # The busiest framing is the longest one -- a live census spells out why `docker exec`
@@ -441,17 +441,11 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
 
     details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
 
-    assert_operator details.length, :<, DETAILS_CAP
+    assert_operator details.length, :<, WorkerWedgeAlert::MAX_DETAILS_CHARS
     assert_includes details, WorkerWedgeAlert::RUNBOOK
   end
 
   private
-
-  # The body a page may carry and still read as one message rather than a wall.
-  # Nothing enforces it at the boundary any more — the body travels as an ERROR log
-  # record and a GlitchTip `extra` — so the bound is the service's own, and these
-  # tests are what hold it.
-  DETAILS_CAP = 2800
 
   # Intercept the one call this service makes, and hand back what it was asked to send.
   def capture_alert

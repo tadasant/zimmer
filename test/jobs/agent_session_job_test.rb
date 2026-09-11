@@ -1880,7 +1880,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "the operator should be told where to add the missing secret")
 
     assert_empty @session.logs.where(level: "error"),
-      "an unresolved variable must not emit .error logs — it must not page #eng-alerts"
+      "an unresolved variable must not emit .error logs — it must not page #alerts"
   end
 
   # The follow-up/clone-recreation prepare! call site had no rescue at all, so a
@@ -1926,7 +1926,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "the root failure must not carry secret metadata"
     assert @session.logs.where(level: "warning").any? { |l| l.content.include?("agent root could not be resolved") }
     assert_empty @session.logs.where(level: "error"),
-      "an unresolvable root must not emit .error logs — it must not page #eng-alerts"
+      "an unresolvable root must not emit .error logs — it must not page #alerts"
   end
 
   # Regression for session 9563: when a regenerated .mcp.json carries fewer

@@ -187,7 +187,14 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
 
   # The one failure here that no timer resolves. Clearing the metadata would leave
   # the queue paused with nothing left that would ever lift it.
-  test "a failed unpause keeps the metadata so the backstop retries, and pages" do
+  #
+  # It pages through the ERROR record and NOT through GlitchTip, which is the one
+  # place these four alerts differ: this one re-reports on every retried exit —
+  # including the web backstop's, up to twice a minute — where the other three fire
+  # once per transition. Grafana collapses the records into one notification per
+  # group interval; an event per retry would put thousands behind one issue and
+  # notify no more often.
+  test "a failed unpause keeps the metadata so the backstop retries, and pages by log record" do
     QueueRecoveryMode.enter!(reason: "x")
     GoodJob.stubs(:unpause).with(queue: "pollers").raises(ActiveRecord::StatementInvalid, "boom")
     GoodJob.stubs(:unpause).with(queue: "triggers").returns(true)
@@ -195,12 +202,19 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
     GoodJob.stubs(:unpause).with(queue: "maintenance").returns(true)
     GoodJob.stubs(:unpause).with(queue: "default").returns(true)
 
-    alerts = capture_alerts { QueueRecoveryMode.exit! }
+    alerts = nil
+    entries = capture_log_entries do
+      alerts = capture_alerts { QueueRecoveryMode.exit! }
+    end
 
     assert QueueRecoveryMode.active?, "the mode must stay on record while a queue is still halted"
     assert_includes GoodJob.paused(:queues), "pollers"
-    assert_equal 1, alerts.size
-    assert_includes alerts.first[:title], "could NOT resume pollers"
+    assert_empty alerts, "a per-retry condition must not open a GlitchTip event on every retry"
+
+    stuck_errors = entries.select do |severity, message|
+      severity == "ERROR" && message.include?("could NOT resume pollers")
+    end
+    assert_equal 1, stuck_errors.size, "the ERROR record is the page, and it is emitted"
   end
 
   test "expire_if_due! reports false when a queue could not be unpaused" do

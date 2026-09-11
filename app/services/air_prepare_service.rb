@@ -25,7 +25,7 @@ class AirPrepareService
   # the resolved AIR catalog. Distinct from AirPrepareError so AgentSessionJob can
   # treat an unresolvable root as a graceful session failure (logged at WARN)
   # rather than letting an unhandled error bubble to ActiveJob and page
-  # #eng-alerts. The two causes are (1) a freshly-merged root whose definition
+  # #alerts. The two causes are (1) a freshly-merged root whose definition
   # hasn't propagated to this worker's AIR github cache yet — a self-resolving
   # propagation race, since CatalogRefreshJob runs `air update` only every 15 min
   # — and (2) a genuinely bad root name. Neither is broken-system behavior, so
@@ -40,7 +40,7 @@ class AirPrepareService
   # SecretsLoader does not carry — not broken-system behavior. Retrying never
   # helps and nothing is wrong server-side, so AgentSessionJob fails the session
   # gracefully at WARN rather than letting an unhandled error bubble to
-  # ActiveJob and page #eng-alerts. The fix is always operator-side: add the
+  # ActiveJob and page #alerts. The fix is always operator-side: add the
   # variable to Zimmer's `mcp_secrets` credentials, or stop selecting that server.
   # Carries the offending variable names so the failure message can tell the
   # operator exactly which secret to provision.
@@ -745,7 +745,7 @@ class AirPrepareService
   # bounded `air update`) and retry rather than failing. If the root is still
   # absent after a fresh catalog, it's a genuinely bad name — we raise
   # RootResolutionError (a graceful, non-paging failure) so AgentSessionJob can
-  # fail the session cleanly instead of letting it page #eng-alerts.
+  # fail the session cleanly instead of letting it page #alerts.
   #
   # An unresolved ${VAR} gets the same graceful treatment via
   # SecretResolutionError, but without the refresh-and-retry dance: a missing
@@ -792,7 +792,7 @@ class AirPrepareService
       # An unresolved ${VAR} is deterministic and operator-fixable: the selected
       # MCP server needs a secret Zimmer doesn't carry. Retrying and refreshing the
       # catalog are both pointless, so raise straight away — gracefully, so the
-      # job layer fails the session instead of crashing and paging #eng-alerts.
+      # job layer fails the session instead of crashing and paging #alerts.
       if unresolved_variables.any?
         Rails.logger.warn(
           "[AirPrepareService] AIR prepare could not resolve required variable(s) " \

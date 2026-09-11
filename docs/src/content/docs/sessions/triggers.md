@@ -1131,7 +1131,7 @@ history showed the fire, the PR showed a clean label and no comment, and no aler
 
 The `fail` transition now reports it. A failing session whose fire was genuinely *consumed* — a
 `github_label`, `github_issue`, `slack` or `ao_event` genesis, carrying a `trigger_id`, and not a
-burst notice — gets an ERROR line on its own timeline and an `#eng-alerts` alert naming the trigger,
+burst notice — gets an ERROR line on its own timeline and an `#alerts` alert naming the trigger,
 the session, the reason it died and the GitHub subject it was fired for, so the drop is
 re-dispatched deliberately in minutes rather than in hours. A recurring `schedule` and a
 `system_event` are excluded because they fire again on their own, and a manual Invoke because
@@ -1353,7 +1353,7 @@ session never receives a name the catalog does not know, and the trigger never l
 | The trigger row | Untouched. The name the operator wrote stays written. |
 | The session it spawns | Gets only the names the catalog resolves — a genuinely deleted artifact is dropped from the *session*, which is where dropping it is right. |
 | `unresolved_catalog_references` | Records which names are unresolvable and when each was first seen that way. Bookkeeping, so the alert fires **once** and not once per fire. |
-| The alert | One deduped `#eng-alerts` notice per artifact kind, naming what does not resolve, what still does, and the two repairs — remap a rename, remove a deletion. |
+| The alert | One `#alerts` notice per artifact kind, on the fire that first finds a given set unresolvable, naming what does not resolve, what still does, and the two repairs — remap a rename, remove a deletion. |
 
 The heal used to `update_column` the survivors instead. A catalog **rename** is indistinguishable
 from a deletion here — the old slug simply stops resolving — and renames are far the commoner of the

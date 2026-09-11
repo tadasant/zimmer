@@ -174,6 +174,46 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
     end
   end
 
+  # The production shape: every call site passes a StructuredLogger, whose #error
+  # writes the ERROR record AND routes to ErrorReporter. One emission, not two — a
+  # second explicit report here would open a second GlitchTip issue for one event.
+  test "a StructuredLogger caller emits exactly one report, through the logger" do
+    reports = capture_error_reports do |captured|
+      UnclassifiedFailureReporter.report(
+        kind: "process exit", summary: "exit code: 2", source: "Test", session: @session,
+        output: "brand new wording",
+        logger: StructuredLogger.new({ service: "ProcessLifecycleManager" })
+      )
+      assert_equal 1, captured.size, "one event must not open two issues"
+    end
+
+    report = reports.sole
+    assert_equal "Unclassified failure: process exit", report.message
+    assert_equal :error, report.level
+    assert_equal "exit code: 2", report.context[:summary]
+    assert_equal @session.id, report.context[:session_id]
+    assert_match(/brand new wording/, report.context[:unmatched_output])
+    assert_equal "ProcessLifecycleManager", report.context[:service],
+      "the logger's own context rides along, which is why the logger is passed at all"
+  end
+
+  # The details prose is one line, because it shares a formatted log line with the
+  # rest of the context. A multi-paragraph value would split one ERROR record into
+  # several lines that nothing reassembles.
+  test "the details prose is flattened to a single line" do
+    captured = nil
+    ErrorReporter.stubs(:report_message).with do |_message, opts|
+      captured = opts[:context][:details]
+      true
+    end
+
+    UnclassifiedFailureReporter.report(kind: "process exit", summary: "exit code: 2", source: "Test", session: @session)
+
+    assert captured
+    assert_not_includes captured, "\n"
+    assert_includes captured, "No classifier matched this process exit"
+  end
+
   # A logger that blows up must not swallow the report beside it.
   test "still reports when the loud log itself fails" do
     Rails.logger.stubs(:error).raises(StandardError, "logger is broken")

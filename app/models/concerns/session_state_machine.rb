@@ -1341,7 +1341,7 @@ module SessionStateMachine
   # and the only trace was a log line nobody reads.
   #
   # `alert: true` marks the failures that leave persistent state inconsistent
-  # with nothing else to reconcile them; those page #eng-alerts. `alert: false`
+  # with nothing else to reconcile them; those page #alerts. `alert: false`
   # marks the ones that are cosmetic, best-effort by design, or already covered
   # by a reconciling sweep — those stay log-only, because a second alert path to
   # an event that already self-heals is just noise. Each call site says which it
@@ -1363,7 +1363,7 @@ module SessionStateMachine
   #
   # @param operation [Symbol] the callback that failed — pass `__method__`
   # @param error [Exception] the swallowed error
-  # @param alert [Boolean] whether this failure also pages #eng-alerts
+  # @param alert [Boolean] whether this failure also pages #alerts
   def report_swallowed_side_effect(operation, error, alert:)
     if DatabaseTransactionState.aborted_by?(error)
       # Logged before the raise, not instead of it. Whether anything upstream
@@ -1383,26 +1383,35 @@ module SessionStateMachine
       )
       return unless alert
 
-      # Reported inline, inside the transition's own transaction. AASM runs `after`
-      # callbacks inside it, so anything that blocks here holds a transaction open
-      # on this row during precisely the incident — a sick database — where that
-      # hurts most. ErrorReporter makes no network round trip: it hands the event
-      # to the Sentry SDK's background worker, and is a hard no-op when the SDK is
-      # not initialized.
+      # Reported AFTER the transaction commits. AASM runs `after` callbacks inside
+      # the transition's own transaction, and the claim this event makes — "the
+      # transition completed with this side effect missing" — is only true once the
+      # transition has actually committed. The ERROR line above is unconditional, so
+      # a rolled-back transition still leaves a record; what is deferred is the
+      # structured event. after_all_transactions_commit runs the block immediately
+      # when no transaction is open, so nothing is deferred that doesn't need to be.
       #
       # The exception object itself, not a hand-copied `e.message`: the backtrace is
       # the high-signal part and it is sitting right here at the rescue.
-      ErrorReporter.report_exception(
-        error,
-        context: {
-          title: "Session state-machine side effect failed",
-          source: "SessionStateMachine##{operation}",
-          details: "`#{operation}` raised during a state transition and was swallowed, so the " \
-                   "transition completed with this side effect missing.",
-          session_id: id,
-          session_url: "#{AppUrl.base_url}/sessions/#{id}"
-        }
-      )
+      session_id = id
+      ActiveRecord.after_all_transactions_commit do
+        ErrorReporter.report_exception(
+          error,
+          context: {
+            title: "Session state-machine side effect failed",
+            source: "SessionStateMachine##{operation}",
+            details: "`#{operation}` raised during a state transition and was swallowed, so the " \
+                     "transition completed with this side effect missing.",
+            session_id: session_id,
+            session_url: "#{AppUrl.base_url}/sessions/#{session_id}"
+          }
+        )
+      rescue => reporting_error
+        # Runs post-commit, outside the outer rescue's reach.
+        Rails.logger.error(
+          "[SessionStateMachine] Failed to report swallowed side effect #{operation}: #{reporting_error.message}"
+        )
+      end
     rescue => reporting_error
       # Reporting must never become a new way for a transition to blow up. This
       # runs inside an AASM `after` block, so an exception escaping here would
@@ -1710,8 +1719,12 @@ module SessionStateMachine
   # HealthMonitorService#archive_old_sessions is the sweep that could make this
   # plural.
   #
-  # Reported inline: an AASM `after` callback runs inside the transition's own
-  # transaction, and ErrorReporter makes no network round trip inside it.
+  # Reported after the transition commits. Not for latency — ErrorReporter makes no
+  # network round trip — but because an AASM `after` callback runs inside the
+  # transition's own transaction, and a page saying N messages were stranded by an
+  # archive that then rolled back is a page about something that did not happen.
+  # after_all_transactions_commit runs the block immediately when no transaction is
+  # open, so nothing is deferred that does not need to be.
   def alert_on_stranded_enqueued_messages(stranded, suppressed: 0)
     # Guarded here rather than at the call site, so nothing can build a
     # zero-count page — the same self-guarding shape stranded_enqueued_messages_clause has.
@@ -1740,24 +1753,27 @@ module SessionStateMachine
               "answered no refusal from Sessions::ArchiveGuard.\n\n#{previews}#{footnote}\n\n" \
               "#{AppUrl.base_url}/sessions/#{session_id}"
 
-    Rails.logger.error(
-      "[SessionStateMachine] Queued messages stranded by an archive: session #{session_id}, " \
-      "#{count} message(s)"
-    )
-    ErrorReporter.report_message(
-      "Queued messages stranded by an archive",
-      level: :error,
-      context: {
-        source: "SessionStateMachine#strand_pending_enqueued_messages",
-        details: details,
-        session_id: session_id,
-        stranded_count: count
-      }
-    )
-  rescue => e
-    Rails.logger.error(
-      "[SessionStateMachine] Failed to alert on stranded messages for session #{session_id}: #{e.message}"
-    )
+    ActiveRecord.after_all_transactions_commit do
+      Rails.logger.error(
+        "[SessionStateMachine] Queued messages stranded by an archive: session #{session_id}, " \
+        "#{count} message(s)"
+      )
+      ErrorReporter.report_message(
+        "Queued messages stranded by an archive",
+        level: :error,
+        context: {
+          source: "SessionStateMachine#strand_pending_enqueued_messages",
+          details: details,
+          session_id: session_id,
+          stranded_count: count
+        }
+      )
+    rescue => e
+      # Runs post-commit, outside the outer rescue's reach.
+      Rails.logger.error(
+        "[SessionStateMachine] Failed to alert on stranded messages for session #{session_id}: #{e.message}"
+      )
+    end
   end
 
   # The ledger entry a strand leaves instead of a page.

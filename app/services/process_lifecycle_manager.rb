@@ -1663,10 +1663,10 @@ class ProcessLifecycleManager
 
     UnclassifiedFailureReporter.report(
       kind: "process exit",
-      # The runtime belongs in the summary because the summary IS the dedup key.
-      # Without it a routine failure on one runtime would hold the key for an
-      # hour and suppress a genuinely novel failure on another sharing its exit
-      # code.
+      # The runtime belongs in the summary because the summary is what separates
+      # one unknown failure mode from another. Without it a routine failure on one
+      # runtime reads identically to a genuinely novel failure on another that
+      # happens to share its exit code.
       summary: "#{runtime} session process died with #{error_msg} and no recovery classifier matched",
       source: "ProcessLifecycleManager#handle_exit",
       session: session,

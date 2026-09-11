@@ -52,7 +52,7 @@ class AlertSnippet
   REDACTED = "[REDACTED]"
 
   # Frames from installed gems / the Ruby stdlib. Not "unimportant" — just not
-  # the frames a reader of #eng-alerts can act on.
+  # the frames a reader of #alerts can act on.
   VENDOR_FRAME_PATTERN = %r{/(?:gems|vendor/bundle|rubygems|ruby/\d)/}
 
   # Secret shapes that can plausibly appear in a raw log line or an exception
@@ -94,9 +94,9 @@ class AlertSnippet
     rescue StandardError => e
       # Rendering the snippet must never cost the alert. A stderr blob that ends
       # mid-multibyte-character (BoundedSubprocess SIGKILLs the process group on
-      # deadline, so this happens) would otherwise raise here, hit raise_alert's
-      # blanket rescue, and drop the whole page — the GitHub-poller alert being
-      # the one that guards the merge gate.
+      # deadline, so this happens) would otherwise raise here, inside a rescue whose
+      # job is to report a failure, and take the report down with it — the
+      # GitHub-poller alert being the one that guards the merge gate.
       "(log snippet unavailable: #{e.class})"
     end
 

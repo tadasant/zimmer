@@ -53,11 +53,17 @@
 class WorkerWedgeAlert
   SOURCE = "zimmer-worker-watchdog"
 
+  # How long a body may get and still read as one message rather than a wall. Nothing
+  # downstream enforces it -- the body travels as an ERROR log record and a GlitchTip
+  # `extra` -- so this service owns its own bound, and a test pins the worst case
+  # against it.
+  MAX_DETAILS_CHARS = 2800
+
   # These bound the two fields that can be long (the OCI runtime error, and the
-  # recovery step list) so the framing around them can never be squeezed out --
-  # including the longest framing, which is a live census explaining why a failed
-  # `docker exec` proves nothing, and the runbook link at the end. A test pins that
-  # worst case.
+  # recovery step list) so the framing around them can never be squeezed out of
+  # MAX_DETAILS_CHARS -- including the longest framing, which is a live census
+  # explaining why a failed `docker exec` proves nothing, and the runbook link at the
+  # end.
   MAX_ERROR_CHARS = 500
   MAX_STEPS_CHARS = 600
 
