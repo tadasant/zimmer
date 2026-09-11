@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "application_system_test_case"
+require "mocha/minitest"
 
 class HealthDashboardTest < ApplicationSystemTestCase
   test "visiting the health dashboard" do
@@ -219,7 +220,7 @@ class HealthDashboardTest < ApplicationSystemTestCase
       assert_text(/is enqueuing now, but was silent/)
 
       find("summary", text: /Every key/).click
-      assert_selector "th", text: "Last 24 hours"
+      assert_selector "th", text: /last 24 hours/i # Tailwind `uppercase` transforms the visible text
 
       assert page.evaluate_script(
         "document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"

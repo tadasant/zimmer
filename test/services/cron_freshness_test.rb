@@ -430,15 +430,39 @@ class CronFreshnessTest < ActiveSupport::TestCase
     assert_not sweep[:stopped_in_window]
   end
 
-  test "a key switched off in the dashboard and back on is not read as having stopped" do
+  # GoodJob keeps every key's dashboard switch in one settings row, so its timestamp
+  # cannot say WHICH key was flipped. The live rule excuses on it because it pages;
+  # this never pages, so it does not, and a stop stays visible whoever toggled what.
+  test "a dashboard toggle on any key does not hide a stop, its own included" do
     ticking("sweep", every: 5.minutes, window: (NOW - 30.hours)..(NOW - 10.hours))
     ticking("sweep", every: 5.minutes, window: (NOW - 4.hours)..NOW)
+    ticking("other", every: 5.minutes, window: (NOW - 30.hours)..NOW)
+    GoodJob::Setting.cron_key_disable(:other)
+    GoodJob::Setting.cron_key_enable(:other)
+    GoodJob::Setting.update_all(updated_at: NOW - 5.hours)
+    entries = [ entry(:sweep, "*/5 * * * *"), entry(:other, "*/5 * * * *") ]
+
+    result = report(entries)
+    assert reading(result, :sweep)[:stopped_in_window], "another key's toggle says nothing about this one"
+    assert_not reading(result, :other)[:stopped_in_window]
+    assert_equal :fresh, reading(result, :sweep)[:state], "the live rule still takes the toggle as a lower bound"
+
     GoodJob::Setting.cron_key_disable(:sweep)
     GoodJob::Setting.cron_key_enable(:sweep)
     GoodJob::Setting.update_all(updated_at: NOW - 5.hours)
+    assert reading(report(entries), :sweep)[:stopped_in_window],
+           "switched off for six hours is still six hours of no ticks, and the sentence says stopped, not failed"
+  end
 
-    assert_not reading(report([ entry(:sweep, "*/5 * * * *") ]), :sweep)[:stopped_in_window],
-               "the silence began before the toggle, so the toggle is what explains it"
+  test "a key whose interval is longer than the window gets no history verdict" do
+    weekly = Time.new(2026, 9, 7, 6, 0, 0)
+    cron_row("weekly", enqueued: weekly, finished: weekly + 30)
+
+    result = reading(report([ entry(:weekly, "0 6 * * 1") ]), :weekly)
+
+    assert_equal 0, result[:ticks_in_window]
+    assert_nil result[:longest_gap_seconds]
+    assert_not result[:stopped_in_window]
   end
 
   # An outage stops every key at once. That is true and worth seeing, and it is also

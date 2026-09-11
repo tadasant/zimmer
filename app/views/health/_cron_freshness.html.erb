@@ -62,7 +62,7 @@
           <li class="text-xs text-gray-600 break-words">
             <span class="font-mono"><%= reading[:key] %></span> is enqueuing now, but was silent
             <%= HealthMonitorService.format_wait(reading[:longest_gap_seconds]) %>
-            until <%= reading[:gap_ended_at].utc.strftime("%Y-%m-%d %H:%M UTC") %>.
+            until <%= reading[:gap_ended_at]&.utc&.strftime("%Y-%m-%d %H:%M UTC") %>.
           </li>
         <% end %>
       </ul>

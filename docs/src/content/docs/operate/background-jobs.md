@@ -1581,8 +1581,11 @@ cadence without a second threshold to tune:
 | `0 6 * * *` | 24h + 2h | 24h, every day it has ever run | not a stop |
 | `0 6 * * *` | 24h + 2h | 48h, one tick missed | `stopped_in_window` |
 
-A silence that began before a key was last enabled or disabled in the GoodJob dashboard is not read
-as a stop, for the same reason the live rule has that bound.
+Unlike the live rule, a silence is **not** excused by a dashboard toggle. GoodJob keeps every key's
+switch in one settings row, so its timestamp says only that *some* key was flipped, and excusing on it
+would hide key A's real eight-hour stop because someone toggled key B in the meantime. A key an
+operator switched off for six hours and back on did stop producing ticks, and "stopped and recovered"
+is the true sentence about it; the live rule needs the excuse because it pages, and this never does.
 
 **It is reported, never paged.** The gap is over and the key recovered, so a page would be an alert
 about the past; the live rule above is what pages. The cost is one index range scan per key over one
@@ -1592,8 +1595,8 @@ fifty faults — true, and exactly what a post-mortem wants, which is why the su
 the worst `HISTORY_NAMES_IN_MESSAGE` (3) and counts the rest.
 
 **Reading it without a page.** `HealthMonitorService#cron_health` carries every key's reading into the
-report behind `/health` (the **Cron Freshness** card, whose per-key table has a **Last 24h** column and
-a line for each key that stopped and recovered), `GET /api/v1/health`, `get_system_health`
+report behind `/health` (the **Cron Freshness** card, whose per-key table has a **Last 24 hours** column
+and a line for each key that stopped and recovered), `GET /api/v1/health`, `get_system_health`
 (one `Cron freshness` line, plus each key that is behind with its reason and each key that stopped
 earlier in the window) and `/health/export_diagnostics`. It moves `overall_status` too: `stale` is critical and `overdue` is
 a warning. These are served by the web process, so they still answer when the worker's cron

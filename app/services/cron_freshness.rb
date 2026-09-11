@@ -110,6 +110,14 @@
 # pages. And a gap that lands on every key at the same instant is a worker outage
 # rather than a per-key fault — true, and worth seeing during a post-mortem, which
 # is the whole use.
+#
+# Two things it says that are true and not faults, both because the allowance is
+# taken from the schedule as it is NOW: a key an operator switched off in the
+# dashboard and back on did stop (see #stopped_in_window? for why that is not
+# excused), and a key whose cadence a deploy just tightened carries its old, wider
+# gaps for the next HISTORY_WINDOW and reads as stopped against the new allowance.
+# A key whose interval is longer than the window has at most one tick in it and
+# gets no verdict at all.
 class CronFreshness
   GRACE_TICKS = 2
   GRACE_FLOOR = 30.minutes
@@ -259,11 +267,16 @@ class CronFreshness
     first_at - seed
   end
 
-  # Keeps whichever of the two candidate silences is longer.
+  # Keeps whichever of the two candidate silences is longer. The three fields are set
+  # together and only here, so `longest_gap_seconds` present means both instants are
+  # too — the two surfaces that render a recovered key rely on that pairing.
   def widen(entry, seconds, ended_at)
-    return if seconds.nil? || (entry[:longest_gap_seconds] && entry[:longest_gap_seconds] >= seconds)
+    return if seconds.nil?
 
-    entry[:longest_gap_seconds] = seconds.round
+    seconds = seconds.round
+    return if entry[:longest_gap_seconds] && entry[:longest_gap_seconds] >= seconds
+
+    entry[:longest_gap_seconds] = seconds
     entry[:gap_ended_at] = ended_at
     entry[:gap_started_at] = ended_at - seconds
   end
@@ -339,15 +352,16 @@ class CronFreshness
   # Did the key's longest silence inside the window exceed one whole interval plus its
   # grace — the same allowance the live rule gives a due tick, measured against a gap?
   #
-  # A silence that starts before the last time a cron key was enabled or disabled in
-  # the GoodJob dashboard is not read as a stop, for the reason the live rule has the
-  # same bound: a key switched off for a day was not failing while it was off.
+  # Deliberately NOT excused by @toggled_at, unlike the live rule. GoodJob keeps every
+  # key's dashboard switch in one settings row, so that timestamp says only that SOME
+  # key was flipped, and excusing every silence older than it would hide key A's real
+  # eight-hour stop because someone toggled key B in the meantime. A key an operator
+  # switched off for six hours and back on did stop producing ticks, and "stopped and
+  # recovered" is the true sentence about it; the live rule needs the excuse because it
+  # pages, and this never does.
   def stopped_in_window?(reading, allowance)
     gap = reading[:longest_gap_seconds]
-    return false if gap.nil? || gap <= allowance
-    return false if @toggled_at && reading[:gap_started_at] && @toggled_at >= reading[:gap_started_at]
-
-    true
+    gap.present? && gap > allowance
   end
 
   # The fire times a key owes, newest first: after `after`, no later than `upto`, at
