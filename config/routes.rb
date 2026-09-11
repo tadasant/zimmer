@@ -192,6 +192,13 @@ Rails.application.routes.draw do
             post :interrupt
           end
         end
+
+        # Detach an uncle edge recorded in error (#299). DELETE only: edges are
+        # WRITTEN as a side effect of a queue/interrupt, by Sessions::RecordUncleEdge,
+        # which is where the acyclicity invariant lives — a create here would be a
+        # way round it. `:session_id` is the junior and `:uncle_id` the senior;
+        # direction is the whole content of the edge, so both are in the path.
+        resources :uncle_links, only: [ :destroy ], param: :uncle_id
       end
 
       # The gate decision ledger: what `pr-merge-gate` and `issue-work-gate` rated,
@@ -545,6 +552,12 @@ Rails.application.routes.draw do
         post :interrupt
       end
     end
+
+    # The hierarchy panel's detach control on an "also senior" chip (#299). Same
+    # shape as the REST twin: `:session_id` is the junior, `:uncle_id` the senior.
+    # Destroy only — a human has no way to WRITE an uncle edge from the browser
+    # and this does not give them one.
+    resources :uncle_links, only: [ :destroy ], param: :uncle_id
   end
 
   # Organizational categories for the sessions dashboard.

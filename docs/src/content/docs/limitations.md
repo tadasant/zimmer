@@ -3280,9 +3280,21 @@ Every surface — the detail UI, the per-turn prompt injection, and the MCP/REST
 uncle edge as a *claim* of seniority rather than a fact, so a reader weighing "who is senior here" is
 told what kind of assertion it is looking at.
 
-And an edge recorded in error can be removed: `/supervisor/session_uncle_links` lists every edge with
-its source and offers destroy. That is the operator escape hatch, not a product surface — there is no
-way to detach an edge from the app itself yet ([#299](https://github.com/tadasant/zimmer/issues/299)).
+And an edge recorded in error can be removed, from all three of the app's own surfaces
+([#299](https://github.com/tadasant/zimmer/issues/299)): the × on an "also senior" chip in the
+session-detail hierarchy panel, `action_session` → `remove_uncle`, and
+`DELETE /api/v1/sessions/:id/uncle_links/:uncle_id`. All three go through
+`Sessions::RemoveUncleEdge`, which removes exactly the one edge named — direction included, so a
+request that names the pair the wrong way round is refused with the direction that does exist rather
+than deleting the opposite claim — and writes the removal into both sessions' timelines with what
+recorded the edge and who detached it. `/supervisor/session_uncle_links` remains as the raw operator
+view of the table.
+
+What removal cannot do is undo the reading. An edge widens both hierarchies from the moment it is
+written, and every prompt built in between carried the other hierarchy's `elsewhere` entries;
+detaching it stops the widening from *now on* and does not unsay what was already injected. So the
+bound on a mistaken edge is how quickly someone notices it, which is why the edge is logged at both
+ends rather than only inferable from the graph.
 
 If the trust model ever needs this closed properly, the fix is a per-session credential (a token
 minted into each session's injected MCP config) rather than anything in the graph code.

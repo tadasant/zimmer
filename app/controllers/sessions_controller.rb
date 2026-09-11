@@ -7,6 +7,7 @@ class SessionsController < ApplicationController
   include PendingMessageDelivery
   include SessionTranscriptLookup
   include SpeculativeRequest
+  include TurboFlash
 
   # Pattern for validating temporary session IDs used for pre-session image uploads
   TEMP_SESSION_ID_PATTERN = /\Atemp_[a-f0-9\-]+\z/
@@ -909,38 +910,8 @@ class SessionsController < ApplicationController
   end
   private :archive_remove_streams
 
-  # A turbo_stream that replaces the layout's single #flash container with one
-  # message. Actions that answer a Turbo request with a stream instead of a
-  # redirect use this to deliver what the redirect's flash used to carry; the
-  # message is never written to the real `flash`, so it does not also reappear
-  # on the next full page load.
-  def flash_stream(notice: nil, alert: nil)
-    messages = {}
-    messages["notice"] = notice if notice.present?
-    messages["alert"] = alert if alert.present?
-
-    turbo_stream.replace("flash", partial: "shared/flash", locals: { messages: messages })
-  end
-  private :flash_stream
-
-  # The dashboard's mutating actions used to redirect purely to carry a flash:
-  # every card they touch already re-renders itself over the
-  # `sessions_index_individual` and `session_<id>_status` broadcast channels, so
-  # the round trip through a full page render was the only reason the UI blinked.
-  # Turbo clients get `streams` (usually just the flash) applied in place;
-  # non-Turbo clients — and the controller tests that assert on them — still get
-  # the original redirect.
-  def respond_with_flash(notice: nil, alert: nil, location:, streams: [])
-    respond_to do |format|
-      format.turbo_stream do
-        render turbo_stream: streams + [ flash_stream(notice: notice, alert: alert) ]
-      end
-      format.html do
-        redirect_to location, notice: notice, alert: alert
-      end
-    end
-  end
-  private :respond_with_flash
+  # `flash_stream` and `respond_with_flash` — used by the actions below and by
+  # UncleLinksController — live in TurboFlash, included above.
 
   def unarchive
     @session = find_session
