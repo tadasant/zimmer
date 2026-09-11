@@ -1,0 +1,15 @@
+<%# How this deployment's X consent will finish, read off the live redirect URI. %>
+<% redirect_uri = XOauthBootstrap.default_redirect_uri %>
+<p>
+  Zimmer sends you to X to approve <code><%= XOauthBootstrap::SCOPES %></code>, then exchanges the code X
+  returns for a refresh token. Nothing in the scope lets the token post publicly.
+</p>
+<% if XOauthBootstrap.manual_completion_required?(redirect_uri) %>
+  <p>
+    X will redirect to <code><%= redirect_uri %></code>, which Zimmer does not serve, so the page after
+    this one asks you to paste that URL back. Register <code><%= XOauthBootstrap.hosted_redirect_uri %></code>
+    on the X app and set <code><%= XOauthBootstrap::REDIRECT_URI_ENV %></code> to it to skip the paste.
+  </p>
+<% else %>
+  <p>X will redirect back to <code><%= redirect_uri %></code>, and the credential is stored there.</p>
+<% end %>
