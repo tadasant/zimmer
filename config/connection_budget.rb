@@ -274,6 +274,13 @@ module ConnectionBudget
 
   # The main thread, GoodJob's cron manager, and `db:prepare` at boot all issue queries
   # from outside the thread pools above.
+  #
+  # The two consumers differ by role but the count is the same, so one number covers
+  # both: in the WORKER it is the main thread plus GoodJob's cron manager; in the WEB
+  # process it is the main thread plus QueueLivenessSupervisor's watchdog thread, which
+  # checks a HealthMonitorService#system_health read out of the pool for a fraction of a
+  # second once a minute (config/initializers/queue_liveness_watchdog.rb, #427). The web
+  # runs no cron manager, so that slot is exactly the one the watchdog thread takes.
   PROCESS_OVERHEAD = 2
 
   # Tests need more slack: Rails' system-test Puma runs its own thread pool inside the

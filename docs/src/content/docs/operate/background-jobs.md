@@ -1952,8 +1952,9 @@ A stall confined to a single lane is left to the starved-lane branch, judged on 
 terms, which is the point of the overrides: an `agents` lane 150 deep and three hours old with every
 other lane empty is admission control, not an incident. The cost is that a lane with a relaxed
 threshold is tolerated for longer when it stalls alone. A worker that is *wholly* dead cannot be
-caught here at all — this monitor runs on the worker it watches — which is what the external Grafana
-rule is for.
+caught here at all — this monitor runs on the worker it watches — which is what the out-of-band
+[`QueueLivenessWatchdog`](#the-one-watchdog-that-runs-when-the-queue-does-not) in the web process is
+for.
 
 The per-lane thresholds are sized from each lane's thread count and its jobs' durations. Only the
 lanes that deviate from the original calibration are listed; anything absent — `default`, `pollers`,
@@ -2033,10 +2034,63 @@ Two things deliberately do **not** fire it:
 
 `SystemHealthMonitorJob` titles this page **"Nothing is executing"** rather than "Queue backlog
 critical", and throttles it under its own `execution_stalled` code. In a *total* outage that job
-cannot run either — it is on `pollers`, which is the hole the external Grafana rule covers — but
-`/health`, `GET /api/v1/health` and the MCP `get_system_health` tool are all served from `web` and
-report the condition correctly from the first minutes, which is what the ten-hour incident actually
-needed.
+cannot run either — it is on `pollers` — but `/health`, `GET /api/v1/health` and the MCP
+`get_system_health` tool are all served from `web` and report the condition correctly from the first
+minutes, which is what the ten-hour incident actually needed. What turns that correct-but-passive
+reading into an alert nobody has to be looking at is the out-of-band watchdog below.
+
+### The one watchdog that runs when the queue does not
+
+Every check above is a GoodJob job, and `SystemHealthMonitorJob` — the one that pages on
+`execution_stalled` — runs on `pollers`. So the exact outage it exists to report is the one that
+stops it: during the 2026-08-02 incident ([#426](https://github.com/tadasant/zimmer/issues/426)) the
+worker could not open a database connection, GoodJob executed nothing for ~10 hours, and every
+watchdog in `app/jobs/` was unrunnable for the same reason everything else was. Six sessions sat
+untouched; a user message went unanswered for 1h46m; what restored service was a human noticing and
+deploying. A watchdog that shares a failure domain with the thing it watches is not a watchdog
+([#427](https://github.com/tadasant/zimmer/issues/427)).
+
+`QueueLivenessWatchdog` is the answer to that, and the only health path that is **not** a job.
+`QueueLivenessSupervisor` runs it on a single background thread inside the **web (Puma) process** —
+started from `config/initializers/queue_liveness_watchdog.rb`, gated on `defined?(Rails::Server)` so
+it runs in `web` and nowhere else (not the worker, not rake/console/runner/an agent session). The web
+process is a separate process in a separate container from the worker; it stayed up through #426 and
+kept reaching the database (that is *why* `/health` read correctly the whole time). So a check driven
+from it does not depend on GoodJob executing anything.
+
+Every 60 seconds it calls the same `HealthMonitorService#system_health` the page is served from and
+pages on exactly one status: the critical `execution_stalled` code — the "is the queue executing
+anything at all?" question. It deliberately does **not** page on a deep backlog or a wedged lane:
+those are questions about an *alive* queue that `SystemHealthMonitorJob` can and does answer, so
+paging on them here too would double-page under ordinary saturation. The clean split is that this
+watchdog asks whether the queue is alive, and the worker's monitor asks whether the alive queue is
+healthy; in the total-outage case only this one can fire.
+
+It pages the same way `SystemHealthMonitorJob` does — an ERROR `Rails.logger` line (which trips the
+Grafana rule) plus an `ErrorReporter` GlitchTip event under the fixed title **"Queue executing
+nothing (out-of-band watchdog)"** — from the web process, which is the process whose logs were still
+flowing at ~36/min throughout #426. Hysteresis mirrors the monitor's: the stall must read critical on
+`CONSECUTIVE_STALLS_TO_ALERT` (2) consecutive checks before the first page, and a single healthy check
+resets the streak. The streak lives in memory on the one long-lived watchdog instance rather than in
+Redis — there is one thread, so no cross-process coordination is needed, and it keeps the watchdog
+dependent on nothing but the database it reads and the log pipeline it writes. Once confirmed it
+re-logs every tick while the stall persists, because the Grafana rule pages on *recent* ERROR
+records; GlitchTip dedupes the repeats to one issue.
+
+It respects a deliberate halt for the same reason the monitor does: queue recovery mode reports a
+stall it explains as a `warning` (`execution_stalled:paused`), not a `critical`, so gating on
+`critical?` excludes it. And it **alerts only** — it does not replace a worker or dispatch a deploy.
+Automated remediation of that kind is a materially bigger question (#427 names it); this stops at the
+out-of-band-observability half that matches Zimmer's existing model. A complementary Grafana rule over
+the same log stream — which lives in `tadasant-internal`, a different repo — remains a belt to this
+brace, but is no longer the *only* thing standing between a dead queue and a human noticing.
+
+What it does not cover: if the **database itself** is unreachable from the web process, the watchdog's
+own read fails — a different failure domain (`web` would also be failing its `/up` healthcheck). Even
+then it degrades loud, not silent: the failed read is logged at ERROR, which pages, rather than being
+swallowed. And it says nothing about the web process being down — that is what kamal-proxy's
+healthcheck and any external uptime probe are for. #427 is specifically about the queue being dead
+while the web is up.
 
 ### When a lane is wedged
 
