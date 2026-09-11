@@ -36,20 +36,36 @@
 # cannot still be going 24 hours later unless it is hung), so two hours after 06:00
 # with nothing enqueued is already the answer.
 #
-# The clock only runs while a cron manager is running. The due time is taken from the
-# later of the key's newest job and the moment the newest live cron-running worker
-# registered (plus CRON_STARTUP_SLACK). GoodJob does not catch up ticks a worker was
-# down for, so without that a deploy spanning 06:00 would make every daily key read as
-# a day late, and a key that has never run — a fresh database, or an entry the deploy
-# just added — would read as late since the epoch. Restarting the clock on a restart
-# loses nothing: a hung `perform` dies with its worker, and GoodJob reclaims the row.
+# A tick only counts against a key if a cron manager was running when it fell. GoodJob
+# does not catch up ticks a worker was down for, so a deploy spanning 06:00 would
+# otherwise make every daily key read as a day late. So before a key is judged, the
+# ticks it owes (the newest WITNESS_PROBES of them) are checked for a witness: another
+# key's cron row stamped with that exact fire time. The every-minute keys fire on every
+# minute boundary, so a tick at which the cron manager was up has witnesses, and a tick
+# that fell inside a deploy has none and is excused. This is deliberately NOT "count
+# from the worker's start": deploys here are frequent enough that a clock restarted on
+# every deploy would rarely run long enough to judge an hourly key, let alone a daily
+# one, and a key whose enqueue fails on every tick fails across deploys too.
+#
+# Two lower bounds still apply. A key with no row at all — a fresh database, an entry a
+# deploy just added — is counted from when the newest live cron-running worker
+# registered (plus CRON_STARTUP_SLACK), since only a worker carrying the entry can have
+# enqueued it. And no key is owed a tick from before the last time a cron key was
+# enabled or disabled in the GoodJob dashboard, so re-enabling one does not read the
+# days it was switched off as days it stopped.
 #
 # WHAT IS BEHIND IT, AND WHICH OF THOSE PAGES
 # -------------------------------------------
 # A key past its grace is read by what is holding it, from its newest row:
 #
-#   nothing      The newest row finished and no tick since has produced one. Cron is
-#                not enqueuing this key. Stale.
+#   nothing      The newest row finished, no tick since has produced one, and no other
+#                copy holds its singleton slot. Cron is not enqueuing this key. Stale.
+#
+# A singleton's slot can also be held by a copy enqueued outside cron — a
+# `perform_later`, a "run now" from the dashboard — which GoodJob counts against the
+# same `total_limit` and so refuses every tick behind it. When the newest tick has
+# finished, the unfinished copy with the same concurrency key is read instead, by the
+# same three rules below.
 #   retrying     Its copy keeps failing and is waiting out a backoff. Stale.
 #   running      Its copy has been executing since before the tick it owes. Stale once
 #                that run is also past its lane's HealthMonitorService::
@@ -76,6 +92,12 @@ class CronFreshness
   # scheduled a first tick. A tick that falls inside it may be missed without anything
   # being wrong.
   CRON_STARTUP_SLACK = 1.minute
+
+  # How many of the ticks a key owes are checked for a witness, newest first. Ten
+  # minute-boundaries is ten minutes of a running cron manager; ten daily ticks is ten
+  # days. Bounded so a thirty-second key silent for a week does not probe twenty
+  # thousand timestamps.
+  WITNESS_PROBES = 10
 
   # Worst first, which is the order every surface lists keys in.
   STATE_ORDER = %i[stale overdue disabled exempt fresh].freeze
@@ -109,6 +131,9 @@ class CronFreshness
 
     last_jobs = newest_tick_by_key
     enabled = GoodJob::Setting.cron_keys_enabled(@entries.map { |entry| [ entry.key, entry.enabled_by_default? ] })
+    @toggled_at = GoodJob::Setting.where(
+      key: [ GoodJob::Setting::CRON_KEYS_ENABLED, GoodJob::Setting::CRON_KEYS_DISABLED ]
+    ).maximum(:updated_at)
     paused = paused_items
 
     readings = @entries.map do |entry|
@@ -150,12 +175,13 @@ class CronFreshness
       job_class: entry.job_class.to_s,
       cron: entry.display_schedule.to_s,
       queue: job&.queue_name,
-      last_enqueued_at: job && (job.cron_at || job.created_at),
+      last_enqueued_at: job&.cron_at,
       due_at: nil,
       overdue_seconds: 0,
       grace_seconds: nil,
       blocker: nil,
       blocker_since: nil,
+      outside_cron: false,
       executions: job&.executions_count,
       paused: job.present? && paused_job?(job, paused),
       state: :fresh,
@@ -171,12 +197,18 @@ class CronFreshness
     schedule = Fugit.parse_cron(entry.display_schedule.to_s)
     return reading.merge(state: :exempt, reason: "A computed schedule has no fixed cadence to judge") if schedule.nil?
 
-    reference = [ reading[:last_enqueued_at], since + CRON_STARTUP_SLACK ].compact.max
+    reference = [ reading[:last_enqueued_at] || since + CRON_STARTUP_SLACK, @toggled_at ].compact.max
     due_at = next_fire(schedule, reference)
     interval = next_fire(schedule, due_at) - due_at
     grace = (interval * GRACE_TICKS).clamp(GRACE_FLOOR.to_f, GRACE_CAP.to_f)
-    blocker, blocker_since = blocker_of(job)
 
+    if @now - due_at >= grace
+      owed = owed_ticks(schedule, reference, @now - grace)
+      # No cron manager was running at any tick it owes: excused, and owed the next one.
+      due_at = next_fire(schedule, owed.first) unless witnessed?(reading[:key], owed)
+    end
+
+    blocker, blocker_since = blocker_of(job)
     reading.merge!(
       due_at: due_at,
       overdue_seconds: [ @now - due_at, 0 ].max.round,
@@ -186,8 +218,54 @@ class CronFreshness
     )
     return reading if @now - due_at < grace
 
+    if blocker.nil? && (holder = slot_holder(job))
+      holder_blocker, holder_since = blocker_of(holder)
+      reading.merge!(
+        blocker: holder_blocker, blocker_since: holder_since, outside_cron: true,
+        queue: holder.queue_name, executions: holder.executions_count, paused: paused_job?(holder, paused)
+      )
+    end
+
     state, reason = judge(reading)
     reading.merge(state: state, reason: reason)
+  end
+
+  # The fire times a key owes, newest first: after `after`, no later than `upto`, at
+  # most WITNESS_PROBES of them. Never empty when called, because the key's first owed
+  # tick is itself inside that window.
+  def owed_ticks(schedule, after, upto)
+    ticks = []
+    cursor = upto + 1
+    while ticks.size < WITNESS_PROBES
+      cursor = schedule.previous_time(cursor.to_time.getlocal).to_t
+      break if cursor <= after
+
+      ticks << cursor
+    end
+    ticks
+  end
+
+  # Was a cron manager running at any of these ticks? Another key's cron row stamped
+  # with the same fire time says it was. Restricted to the configured keys so each
+  # becomes an index probe on `(cron_key, cron_at)`. A schedule of one key has nothing
+  # to witness with, and is judged on its own rows.
+  def witnessed?(key, ticks)
+    others = @entries.map { |entry| entry.key.to_s } - [ key ]
+    return true if others.empty?
+
+    GoodJob::Job.where(cron_key: others, cron_at: ticks).exists?
+  end
+
+  # The unfinished copy holding a singleton's slot when the newest tick has already
+  # finished. Only a class whose concurrency limit applies at enqueue can have its tick
+  # refused; any other class's stray copies are not what is stopping the tick.
+  def slot_holder(job)
+    return nil if job.nil? || job.concurrency_key.blank?
+
+    config = job.job_class.to_s.safe_constantize.try(:good_job_concurrency_config) || {}
+    return nil unless config[:total_limit] || config[:enqueue_limit]
+
+    GoodJob::Job.where(concurrency_key: job.concurrency_key, finished_at: nil).order(:created_at).first
   end
 
   # What the newest row says is holding the key. Mirrors the populations
@@ -208,32 +286,34 @@ class CronFreshness
 
   def judge(reading)
     owed = "owed a job since #{stamp(reading[:due_at])}"
+    copy = reading[:outside_cron] ? "a copy enqueued outside cron" : "its copy"
+    run = reading[:outside_cron] ? "a run enqueued outside cron" : "a run"
 
     case reading[:blocker]
     when nil
       if reading[:last_enqueued_at]
         [ :stale, "Nothing enqueued since #{stamp(reading[:last_enqueued_at])}; #{owed}. " \
-                  "Its last job finished, so cron is not enqueuing this key" ]
+                  "Its last job finished and nothing holds its slot, so cron is not enqueuing this key" ]
       else
         [ :stale, "Never enqueued since the cron manager started; #{owed}" ]
       end
     when :retrying
-      [ :stale, "Its copy keeps failing (#{reading[:executions]} attempt(s)), next retry " \
+      [ :stale, "#{copy.upcase_first} keeps failing (#{reading[:executions]} attempt(s)), next retry " \
                 "#{stamp(reading[:blocker_since])}; every tick until then is refused. #{owed.upcase_first}" ]
     when :running
       running_for = @now - reading[:blocker_since]
       ceiling = HealthMonitorService::LANE_EXECUTION_CEILINGS.fetch(reading[:queue], 0)
       if running_for >= ceiling
-        [ :stale, "Held by a run on #{reading[:queue]} that started #{ago(running_for)} ago and has not " \
+        [ :stale, "Held by #{run} on #{reading[:queue]} that started #{ago(running_for)} ago and has not " \
                   "finished; every tick since has been refused. #{owed.upcase_first}" ]
       else
-        [ :overdue, "A run on #{reading[:queue]} has been going #{ago(running_for)}, inside the " \
+        [ :overdue, "#{run.upcase_first} on #{reading[:queue]} has been going #{ago(running_for)}, inside the " \
                     "#{ago(ceiling)} that lane allows; #{owed}" ]
       end
     when :waiting
       where = reading[:paused] ? "#{reading[:queue]}, which is paused" : reading[:queue]
-      [ :overdue, "Its copy has waited #{ago(@now - reading[:blocker_since])} for a worker on #{where}; " \
-                  "#{owed}. A queue that is not draining is the queue gates' to page on" ]
+      [ :overdue, "#{copy.upcase_first} has waited #{ago(@now - reading[:blocker_since])} for a worker on " \
+                  "#{where}; #{owed}. A queue that is not draining is the queue gates' to page on" ]
     end
   end
 

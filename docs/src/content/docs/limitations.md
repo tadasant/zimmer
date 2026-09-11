@@ -801,9 +801,15 @@ the collector and its rules live in `tadasant-internal`, not here.
 A daily key gets a two-hour grace after its fire time. GoodJob does not retry a cron enqueue, so a
 transient database error at exactly 06:00 means that day's job never runs, and the key pages at
 08:00 and stays stale until the next day's tick. The page is true (the job did not run that day),
-but nothing is wedged, and it clears only when the next tick lands. A narrower case reads the same
-way: a deploy whose new worker registers more than `CRON_STARTUP_SLACK` (one minute) before its cron
-manager schedules its first tick can miss a daily tick that falls inside the gap.
+but nothing is wedged, and it clears only when the next tick lands. The witness check does not
+excuse it, because the other keys enqueued fine at 06:00: the cron manager was running, and only
+this key's insert failed.
+
+Two blunter edges are in the safe direction. Enabling or disabling *any* cron key in the GoodJob
+dashboard resets every key's lower bound, since GoodJob keeps all the switches in one settings row.
+That delays every key's next possible finding by up to its grace. And an owed tick counts only if
+another configured key's row carries the same fire time, so a tick the cron manager fired while
+every other key's enqueue also failed is excused rather than counted.
 
 ### The docs guardrail does not look in the image's `tmp/`
 
