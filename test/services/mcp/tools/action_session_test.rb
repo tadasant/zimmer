@@ -640,6 +640,31 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       "the message is still going to be delivered, so it stays pending"
   end
 
+  # #1139, production session 16494: a held backstop wake was enqueued in the
+  # same second the woken turn self-archived, after the guard had read an empty
+  # queue and before the transition. It was stranded and paged. The enqueue is
+  # simulated just before the archive takes the session row lock — the last
+  # point an enqueuer holding that lock can have committed — and the archive
+  # must refuse it rather than strand it.
+  test "archive refuses a message enqueued as the archive takes its lock" do
+    session = sessions(:running)
+    session.define_singleton_method(:with_lock) do |*args, **kwargs, &block|
+      enqueued_messages.create!(content: "Backstop wake: re-poll child", position: 1, status: "pending")
+      super(*args, **kwargs, &block)
+    end
+    @tool.stubs(:find_session).returns(session)
+    ErrorReporter.expects(:report_message).never
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "archive", "session_id" => session.id, "acting_session_id" => session.id)
+    end
+
+    assert_match(/Cannot archive session #{session.id}/, error.message)
+    assert_includes error.message, "Backstop wake: re-poll child"
+    assert_equal "running", session.reload.status
+    assert_equal "pending", session.enqueued_messages.sole.status
+  end
+
   # `force` is what lets the refusal cover every state without turning it into a
   # trap, so it has to actually work — and the discard still has to be recorded.
   test "archive with force goes through and still records the discard" do

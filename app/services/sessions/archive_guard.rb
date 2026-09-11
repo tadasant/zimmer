@@ -29,7 +29,73 @@ module Sessions
   # reconsider. Their discards are still recorded by the retirement callback,
   # which runs on the transition itself and so covers every path.
   module ArchiveGuard
+    # Raised by guarded_archive! when messages are queued and the caller did not
+    # force. Carries them, so the surface can render its own refusal.
+    class Refused < StandardError
+      attr_reader :messages
+
+      def initialize(messages)
+        @messages = messages
+        super("#{messages.size} queued message(s) would be discarded")
+      end
+    end
+
     module_function
+
+    # Archive +session+ unless that would discard a queued message, with the
+    # check and the transition under one row lock.
+    #
+    # THE DEFECT THIS EXISTS FOR (#1139). Every surface used to read the queue
+    # unlocked and then call `archive!`. A wake that committed a pending row in
+    # between was neither refused nor delivered: the archive's retirement
+    # callback found it, stranded it, and paged. Production session 16494 hit it
+    # at 10:47:02Z on 2026-09-11, when a held backstop wake came due in the same
+    # second its woken turn self-archived.
+    #
+    # The lock is the session row, taken `FOR UPDATE`. That closes the window
+    # against every enqueuer, not only the ones that lock the session themselves
+    # (Trigger#follow_up_session!, EnqueuedMessageProcessorService): the insert's
+    # foreign-key check takes `FOR KEY SHARE` on the same row, which `FOR UPDATE`
+    # conflicts with. So an enqueue that committed first is read here and
+    # refused, and one that arrives later waits for the archive to commit and
+    # then meets an archived session.
+    #
+    # Held across `archive!` and its `after` callbacks, which run inside the
+    # transition's transaction and already held this row from the status
+    # `UPDATE` onwards. Taking it earlier adds no new lock ordering. The pages
+    # and triggers in those callbacks are deferred to after commit, so they fire
+    # once the lock is released.
+    #
+    # The block, if given, runs under the same lock after the queue check and
+    # before the transition. It is where a surface puts its other refusals —
+    # the live-turn one — so they cannot come ahead of this one: a caller told
+    # about the live turn first would send `force`, and `force` skips the queue
+    # check without ever showing the queue. Raise from it to refuse.
+    #
+    # @param session [Session] reloaded by the lock, so it reflects the row as
+    #   the transition sees it
+    # @param force [Boolean] the caller has read the queue and is discarding it
+    # @param actor [String] how the archive line names whoever asked
+    # @return [Boolean] true if it archived; false if, once the lock was held,
+    #   the session could no longer be archived (a concurrent archive won)
+    # @raise [Refused] when messages are queued and +force+ is false
+    def guarded_archive!(session, force:, actor:)
+      session.with_lock do
+        next false unless session.may_archive?
+
+        unless force
+          queued = pending_messages(session)
+          raise Refused, queued if queued.any?
+        end
+
+        yield if block_given?
+
+        session.archive_actor = actor
+        session.archive_forced = force
+        session.archive!
+        true
+      end
+    end
 
     # The messages an archive of +session+ would discard.
     #
