@@ -17,7 +17,7 @@
 # reads.
 #
 # So this reads the one fact both failures share: the newest job each key has produced
-# (`GoodJob::CronEntry.last_jobs_by_key`, one lateral join for every key), against when
+# (one lateral join for every key, served by the `(cron_key, cron_at)` index), against when
 # that key's own schedule says the next one was due.
 #
 # THE RULE
@@ -107,7 +107,7 @@ class CronFreshness
       return summary([], status(:unknown, "No live worker is running the cron schedule, so freshness cannot be judged"))
     end
 
-    last_jobs = GoodJob::CronEntry.last_jobs_by_key(@entries)
+    last_jobs = newest_tick_by_key
     enabled = GoodJob::Setting.cron_keys_enabled(@entries.map { |entry| [ entry.key, entry.enabled_by_default? ] })
     paused = paused_items
 
@@ -120,6 +120,29 @@ class CronFreshness
   end
 
   private
+
+  # The newest row each key's cron ticks produced: one lateral join, one row per key.
+  #
+  # GoodJob's own `CronEntry.last_jobs_by_key` is the same join ordered
+  # `cron_at DESC NULLS LAST`, which the `(cron_key, cron_at)` index cannot serve, so
+  # Postgres sorts every retained row of every key. At fourteen days of retention that
+  # is ~320,000 rows and ~215 ms, paid on every /health refresh and every monitor tick.
+  # Every cron tick sets `cron_at` (only a manual "run now" from the dashboard leaves
+  # it null, and that is not a tick), so this filters the nulls out and orders plain
+  # `DESC`, and each key becomes one backward index probe.
+  def newest_tick_by_key
+    keys = @entries.map { |entry| entry.key.to_s }
+    from = GoodJob::Job.sanitize_sql_array([ "unnest(ARRAY[?]::text[]) AS cron_keys(cron_key)", keys ])
+
+    GoodJob::Job.select("lateral_jobs.*").from(from).joins(<<~SQL.squish).index_by(&:cron_key)
+      CROSS JOIN LATERAL (
+        SELECT * FROM good_jobs
+        WHERE good_jobs.cron_key = cron_keys.cron_key AND good_jobs.cron_at IS NOT NULL
+        ORDER BY good_jobs.cron_at DESC
+        LIMIT 1
+      ) AS lateral_jobs
+    SQL
+  end
 
   def read(entry, job, since, enabled, paused)
     reading = {

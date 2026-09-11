@@ -160,6 +160,20 @@ class CronFreshnessTest < ActiveSupport::TestCase
     assert_match(/keeps failing \(6 attempt\(s\)\)/, retrying[:reason])
   end
 
+  # A "run now" from the GoodJob dashboard carries the cron key but no `cron_at`. It is
+  # not a tick, so it neither makes a stopped key look alive nor hides the last real one.
+  test "a manual run from the dashboard is not a tick" do
+    cron_row("sweep", enqueued: NOW - 2.hours, finished: NOW - 2.hours + 5)
+    GoodJob::Job.insert_all([ { queue_name: "default", job_class: "PlaceholderJob", cron_key: "sweep", cron_at: nil,
+                                created_at: NOW - 1.minute, updated_at: NOW - 1.minute, scheduled_at: NOW - 1.minute,
+                                finished_at: NOW - 1.minute + 2 } ])
+
+    sweep = reading(report([ entry(:sweep, "*/5 * * * *") ]), :sweep)
+
+    assert_equal :stale, sweep[:state]
+    assert_equal NOW - 2.hours, sweep[:last_enqueued_at]
+  end
+
   test "an exempted key is listed with its reason and never judged" do
     cron_row("rare", enqueued: NOW - 5.days, finished: NOW - 5.days + 1)
 
