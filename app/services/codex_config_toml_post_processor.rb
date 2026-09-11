@@ -137,7 +137,8 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
     entry["env_vars"] = forwarded | [ OPERATOR_SSH_KEY_PATH_VAR ]
   end
 
-  # Give every stdio server McpStartupTimeout's budget.
+  # Give every stdio server its MCP startup budget: what its catalog entry
+  # declares, or McpStartupTimeout's default when it declares nothing.
   #
   # Claude gets it from `MCP_TIMEOUT` on the agent process, which reaches every
   # server Claude spawns. Codex has no such variable: it reads a per-server
@@ -154,30 +155,52 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   # production droplet. The margin is under 2x, on the runtime where running out
   # of it means the server is dropped rather than merely slow.
   #
-  # Only stdio entries. An HTTP entry is a request to a server that is already
-  # running — for the auto-injected Zimmer entries, this very process — so it has
-  # no cold start to absorb, and widening the budget there would only lengthen
-  # the wait before a genuinely unreachable URL is reported.
+  # Codex is the one runtime where a SHORTER declared budget does what a catalog
+  # author means by it. `startup_timeout_sec` is scoped to the startup and the
+  # tool budget is a separate `tool_timeout_sec` (both are fields of
+  # `RawMcpServerConfig` in the pinned 0.146.0 binary), so a fast server
+  # declaring 15 fails fast here without capping its own tool calls — which is
+  # exactly what the same 15 would do on Pi, and why Pi only lengthens. Claude
+  # cannot shorten one server's at all
+  # ([#113](https://github.com/tadasant/zimmer/issues/113)).
   #
-  # An entry that already names a timeout keeps it, under either spelling. A
-  # `mcp.json` catalog entry cannot express one — AIR's server schema has no such
-  # field — so in practice this preserves a timeout a repo wrote into its own
-  # checked-in `.codex/config.toml`, which AIR merges around rather than
-  # replaces.
+  # The DEFAULT is written to stdio entries only. An HTTP entry is a request to a
+  # server that is already running — for the auto-injected Zimmer entries, this
+  # very process — so it has no cold start to absorb, and widening the budget
+  # there would only lengthen the wait before a genuinely unreachable URL is
+  # reported. A DECLARED value is honored on an HTTP entry too: the argument
+  # above is about what Zimmer should assume, and a catalog that names a number
+  # has stopped leaving it to Zimmer. A remote server whose OAuth leg is slow is
+  # the case the issue names.
+  #
+  # An entry that already names a timeout keeps it, under either spelling — a
+  # value a repo wrote into its own checked-in `.codex/config.toml`, which AIR
+  # merges around rather than replaces. That is a different source from the
+  # catalog field, and the local file wins, matching every other local-wins
+  # precedence in this pipeline. It is also why a clone prepared before a catalog
+  # declared a budget keeps the one it was prepared with: Zimmer's own earlier
+  # write is indistinguishable from a repo's.
   def apply_startup_timeouts!(servers)
+    # One catalog read for the whole config: this runs on the prepare path, and a
+    # lookup per entry would rebuild every catalog Server object per entry.
+    declared_seconds = McpStartupTimeout.declared_seconds_map(servers.keys)
+
     timed = servers.filter_map do |name, entry|
       next unless entry.is_a?(Hash)
-      next if entry["command"].blank?
       next if entry[STARTUP_TIMEOUT_KEY].present? || entry[DEPRECATED_STARTUP_TIMEOUT_KEY].present?
 
-      entry[STARTUP_TIMEOUT_KEY] = McpStartupTimeout::SECONDS
-      name
+      declared = declared_seconds[name]
+      # No cold start to absorb, and nothing declared: leave it to Codex.
+      next if declared.nil? && entry["command"].blank?
+
+      entry[STARTUP_TIMEOUT_KEY] = declared || McpStartupTimeout::SECONDS
+      "#{name}=#{entry[STARTUP_TIMEOUT_KEY]}s#{' (catalog)' if declared}"
     end
 
     return if timed.empty?
 
-    Rails.logger.info "[#{self.class.name}] Set #{STARTUP_TIMEOUT_KEY}=#{McpStartupTimeout::SECONDS} " \
-      "on #{timed.size} stdio MCP server(s): #{timed.join(', ')}."
+    Rails.logger.info "[#{self.class.name}] Set #{STARTUP_TIMEOUT_KEY} on #{timed.size} " \
+      "MCP server(s): #{timed.join(', ')}."
   end
 
   # Memoized across the entries of one post_process! run (the provisioner is idempotent

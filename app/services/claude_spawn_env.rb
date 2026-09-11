@@ -20,6 +20,11 @@ module ClaudeSpawnEnv
   # package downloads on cold starts; once cached, servers connect in <5s.
   # Shared with Codex and Pi through McpStartupTimeout so the three runtimes
   # cannot drift into giving the same cold clone different amounts of room.
+  #
+  # The budget a session gets when none of its catalog entries declares one of its
+  # own, and the floor under the value when one does: #configure_mcp_env spawns
+  # with the longest `startup_timeout_sec` any of the session's servers declares,
+  # or this, whichever is larger.
   MCP_TIMEOUT_MS = McpStartupTimeout::MILLISECONDS
 
   private
@@ -112,8 +117,9 @@ module ClaudeSpawnEnv
   # which would otherwise fail the server's `exec` with EACCES on every retry and
   # orphan the session for the life of the clone (zimmer#467).
   def configure_mcp_env(env_vars, working_dir)
-    env_vars["MCP_TIMEOUT"] = MCP_TIMEOUT_MS.to_s
-    @logger.info "Setting MCP_TIMEOUT=#{MCP_TIMEOUT_MS}ms for MCP server startup"
+    timeout_ms = McpStartupTimeout.ceiling_milliseconds(configured_mcp_server_names(working_dir))
+    env_vars["MCP_TIMEOUT"] = timeout_ms.to_s
+    @logger.info "Setting MCP_TIMEOUT=#{timeout_ms}ms for MCP server startup"
 
     npm_cache_dir = File.join(working_dir, ".npm-cache")
     FileUtils.mkdir_p(npm_cache_dir)
@@ -121,6 +127,36 @@ module ClaudeSpawnEnv
     @logger.info "Isolating npm cache to #{npm_cache_dir}"
 
     NpxBinExecutableGuard.repair!(working_directory: working_dir, logger: @logger)
+  end
+
+  # The names of the MCP servers this session will actually launch, read out of
+  # the `.mcp.json` the post-processor has already written — the same file Claude
+  # itself is about to read, so the set cannot drift from what the runtime brings
+  # up. A session whose config was never written (no MCP servers, or a resume
+  # before prepare) yields none, and the default applies.
+  #
+  # Why this is needed at all: `MCP_TIMEOUT` is one value for the whole Claude
+  # process, so the per-server budgets have to be collapsed into a single number
+  # before the spawn, and the collapse is a max (McpStartupTimeout.ceiling_seconds)
+  # so no server is given less room than its catalog entry asks for.
+  #
+  # Never fatal. An unreadable or malformed config costs the per-server budgets,
+  # not the session: the ceiling falls back to the default.
+  def configured_mcp_server_names(working_dir)
+    # `<working_dir>/.mcp.json` rather than the `mcp_config_path` the adapter was
+    # handed: `spawn_process` takes only the `has_mcp` boolean, and every caller
+    # that computes that path builds this exact one (AgentSessionJob,
+    # ProcessLifecycleManager). A caller that ever passed a different path would
+    # get the default budget rather than a wrong one.
+    path = File.join(working_dir.to_s, McpJsonConfigFormat::MCP_CONFIG_FILENAME)
+    return [] unless @file_system.exists?(path)
+
+    servers = JSON.parse(@file_system.read(path))[McpJsonConfigFormat::SERVERS_KEY]
+    servers.is_a?(Hash) ? servers.keys : []
+  rescue => e
+    @logger.warn "Could not read MCP server names from #{path}: #{e.class}: #{e.message}. " \
+      "Falling back to the default MCP startup timeout."
+    []
   end
 
   # Point the session at its own CLAUDE_CONFIG_DIR and hand it an access token,

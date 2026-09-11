@@ -23,6 +23,18 @@ class McpServerOptionsTest < ActiveSupport::TestCase
       "the picker shows the whole catalog in catalog order — omission is get_configs's remedy, not this one"
   end
 
+  # The one surface that answers "did the budget I declared in the catalog take
+  # effect?" without a shell on the box: the catalog entry is authored in another
+  # repository, a value Zimmer refuses is only a log line, and the config file it
+  # lands in sits inside a session clone.
+  test "carries the startup budget a catalog entry declares, and nil for the ones that declare none" do
+    options = with_mixed_availability_catalog { McpServerOptions.all }
+
+    assert_equal 20, option_for(options, "context7")[:startup_timeout_sec]
+    assert_nil option_for(options, "zimmer-self-session")[:startup_timeout_sec],
+      "nil is the catalog being silent, which is a different fact from asking for the default"
+  end
+
   test "a server whose required variable does not resolve is flagged, and the reason names the variable" do
     options = with_mixed_availability_catalog { McpServerOptions.all }
     option = option_for(options, "strad-secrets-staging-rw")

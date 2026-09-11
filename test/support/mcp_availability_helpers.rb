@@ -10,11 +10,14 @@
 # catalog here could not catch the two drifting apart.
 module McpAvailabilityHelpers
   # Two servers that work, one whose required `${VAR}` is not seeded, and one
-  # the catalog itself declares dead.
+  # the catalog itself declares dead. `context7` also declares a startup budget
+  # of its own, so the surfaces that carry `startup_timeout_sec` are exercised
+  # against an entry that names one and three that do not.
   AVAILABILITY_CATALOG = {
     "context7" => {
       "title" => "Context7", "description" => "Up-to-date library documentation lookup.",
-      "type" => "stdio", "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ]
+      "type" => "stdio", "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ],
+      "startup_timeout_sec" => 20
     },
     "zimmer-self-session" => {
       "title" => "Zimmer Self Session", "description" => "Zimmer's own session tools.",

@@ -26,6 +26,35 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert_includes server_names, "zimmer-self-session"
   end
 
+  # ---------------------------------------------------------------------------
+  # startup_timeout_sec — the per-server startup budget (#113)
+  # ---------------------------------------------------------------------------
+
+  test "a server declares no startup timeout unless the catalog says so" do
+    assert_nil ServersConfig.find("playwright-custom").startup_timeout_seconds,
+      "nothing in the catalog declares one today, and the flat default is what applies"
+  end
+
+  test "a declared startup timeout is read off the entry" do
+    server = ServersConfig::Server.new("acme", {
+      "type" => "stdio", "command" => "npx", "startup_timeout_sec" => 45
+    })
+
+    assert_equal 45, server.startup_timeout_seconds
+    assert_equal 45, server.to_h[:startup_timeout_sec]
+  end
+
+  test "an unusable declared startup timeout reads as no declaration at all" do
+    [ 1, 900, "45", 45.5 ].each do |value|
+      server = ServersConfig::Server.new("acme", {
+        "type" => "stdio", "command" => "npx", "startup_timeout_sec" => value
+      })
+
+      assert_nil server.startup_timeout_seconds, "#{value.inspect} should not be honored"
+      assert_nil server.to_h[:startup_timeout_sec]
+    end
+  end
+
   # Test finding servers
   test "should find server by name" do
     server = ServersConfig.find("playwright-custom")
