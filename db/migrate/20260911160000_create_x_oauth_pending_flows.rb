@@ -5,10 +5,9 @@
 # Between "send the operator to X's consent page" and "exchange the code X hands
 # back", the flow has to remember the PKCE code_verifier, the `state` it sent, the
 # redirect URI (X compares the one on the exchange with the one on the consent
-# request), and which XOauthCredential the result belongs to. The `x_oauth:*` rake
-# tasks kept that in a JSON file on the box, which is what made the flow need a
-# shell. This table is that file, moved into the database so the Supervisor
-# controller can run both legs.
+# request), and which XOauthCredential the result belongs to. Keeping it in the
+# database rather than on the box is what lets the Supervisor controller run both
+# legs with no shell involved.
 #
 # A row is short-lived and single-use: XOauthPendingFlow.claim! deletes it on the
 # first callback that names its state, and one past expires_at is refused.

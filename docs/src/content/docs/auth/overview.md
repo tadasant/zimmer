@@ -233,7 +233,7 @@ In `db/schema.rb`:
 - `claude_accounts.oauth_config` — plain `jsonb`, holding Anthropic and OpenAI access and refresh
   tokens
 - `x_oauth_credentials` — plain
-- `x_oauth_pending_flows.code_verifier` — plain, for the 30 minutes a consent is open
+- `x_oauth_pending_flows.code_verifier` — plain, until the consent is finished, replaced, or swept by the next start after its 30 minutes run out
 - `runtime_login_attempts.pasted_code` — plain `string`
 
 `XOauthCredential`'s own header admits it: *"access_token / refresh_token are stored as plain text…

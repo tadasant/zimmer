@@ -47,12 +47,15 @@ class XOauthPendingFlow < ApplicationRecord
   # @return [XOauthPendingFlow] the saved flow
   # @raise [ActiveRecord::RecordInvalid] when the identity is unusable
   def self.start!(account_key:, access_token_env_var:, redirect_uri: XOauthBootstrap.default_redirect_uri)
+    account_key = account_key.to_s.strip
+    access_token_env_var = access_token_env_var.to_s.strip
+
     transaction do
       expired.delete_all
       where(access_token_env_var: access_token_env_var).delete_all
       create!(
-        account_key: account_key.to_s.strip,
-        access_token_env_var: access_token_env_var.to_s.strip,
+        account_key: account_key,
+        access_token_env_var: access_token_env_var,
         redirect_uri: redirect_uri,
         state: XOauthBootstrap.generate_state,
         code_verifier: XOauthBootstrap.generate_verifier,
@@ -88,7 +91,8 @@ class XOauthPendingFlow < ApplicationRecord
   #
   # A bare code is refused on purpose. The state is what ties a code to the flow
   # whose verifier can redeem it, so the paste-back goes through the same claim as
-  # the hosted callback and cannot finish a flow the operator is not looking at.
+  # the hosted callback: the pasted URL's state picks the flow, and a state no live
+  # flow holds is refused.
   #
   # @return [Hash, nil] state:, code:, error:, error_description: — or nil when
   #   the value carries no state
@@ -113,7 +117,7 @@ class XOauthPendingFlow < ApplicationRecord
   end
 
   # True when X will send the operator somewhere Zimmer does not listen (the
-  # localhost URI the X app has registered today), so the redirect URL has to be
+  # localhost URI the X app has registered), so the redirect URL has to be
   # pasted back by hand. False when the redirect URI is Zimmer's own callback.
   def manual?
     XOauthBootstrap.manual_completion_required?(redirect_uri)
