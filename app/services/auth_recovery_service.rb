@@ -443,67 +443,44 @@ class AuthRecoveryService
   # @param retry_attempt [Integer] Current attempt number
   # @return [Symbol] :success, :exhausted, :unrecoverable, :aborted
   def spawn_and_verify_recovery(working_directory, retry_attempt)
-    abort_result = check_session_status(resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY)
-    return :aborted if abort_result == :aborted
+    respawn_and_verify(working_directory, retry_attempt, resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY) do
+      add_log("Resuming session after refreshing login identity", level: "info")
 
-    add_log("Resuming session after refreshing login identity", level: "info")
+      resume_for_recovery(working_directory, prompt: AutomatedPrompts::SYSTEM_RECOVERY)
+    end
+  end
 
-    system_prompt = OrchestratorSystemPromptBuilder.build(
-      session: session,
-      working_directory: session.working_directory
-    )
+  # The scaffold's rescue reads this to tell an intermediate failure from the
+  # final one. Not a RetryBudget: auth recovery counts CONSECUTIVE attempts and
+  # ages them out on a window, which is why it keeps its own constant.
+  def recovery_attempt_limit = MAX_RECOVERY_ATTEMPTS
 
-    spawn_result = cli_adapter.resume(
-      session_id: session.session_id,
-      prompt: AutomatedPrompts::SYSTEM_RECOVERY,
-      working_dir: working_directory,
-      append_system_prompt: system_prompt,
-      model: session.config&.dig("model"),
-      auto_compact_window: session.auto_compact_window
-    )
+  # Re-enter at execute_recovery rather than attempt_recovery: the auth error is
+  # already established, and re-running detection would read a transcript whose
+  # marker this attempt has already advanced. Bounded by the count check inside.
+  def next_recovery_attempt(working_directory)
+    execute_recovery(working_directory)
+  end
 
-    new_pid = spawn_result[:pid]
-
+  # Auth recovery means something weaker by a verified re-spawn than the other
+  # three services do, so it says so in its own words rather than taking the
+  # scaffold's sentence.
+  #
+  # Deliberately NOT a "recovery succeeded" signal, and deliberately NOT a
+  # reason to reset auth_recovery_count: the process surviving SUCCESS_THRESHOLD
+  # seconds only means it got as far as starting up. It may still be about to
+  # report the identical auth error on its first API call. The counter is aged
+  # out by CONSECUTIVE_WINDOW instead, so a re-spawn that fails the same way is
+  # the NEXT attempt, not a fresh first one. Returning :success here means only
+  # "monitoring can continue".
+  def log_respawn_verified(new_pid, retry_attempt)
     add_log(
-      "Spawned new CLI process with PID #{new_pid} for auth recovery attempt #{retry_attempt}",
+      "Auth recovery #{retry_attempt} re-spawned — " \
+        "process #{new_pid} running after #{SUCCESS_THRESHOLD}s, resuming monitoring",
       level: "info"
     )
-
-    with_db_retry do
-      session.record_agent_process!(new_pid)
-    end
-
-    if verify_process_running(new_pid, retry_attempt)
-      # Deliberately NOT a "recovery succeeded" signal, and deliberately NOT a
-      # reason to reset auth_recovery_count: the process surviving
-      # SUCCESS_THRESHOLD seconds only means it got as far as starting up. It
-      # may still be about to report the identical auth error on its first API
-      # call. The counter is aged out by CONSECUTIVE_WINDOW instead, so a
-      # re-spawn that fails the same way is the NEXT attempt, not a fresh first
-      # one. Returning :success here means only "monitoring can continue".
-      add_log(
-        "Auth recovery #{retry_attempt} re-spawned — process #{new_pid} running after #{SUCCESS_THRESHOLD}s, resuming monitoring",
-        level: "info"
-      )
-      log_buffer.flush
-      @logger.info("Auth recovery re-spawn verified running", retry_attempt: retry_attempt, new_pid: new_pid)
-      return :success
-    end
-
-    # Process died during verification — try again (bounded by the count check).
-    execute_recovery(working_directory)
-  rescue => e
-    if retry_attempt >= MAX_RECOVERY_ATTEMPTS
-      add_log("Error during auth recovery attempt #{retry_attempt}: #{e.message}", level: "error")
-      log_buffer.flush
-      @logger.error("Error during auth recovery", retry_attempt: retry_attempt, error: e.message, exception: e)
-      return :exhausted
-    end
-
-    add_log("Error during auth recovery attempt #{retry_attempt}: #{e.message}", level: "info")
     log_buffer.flush
-    @logger.info("Error during auth recovery (will retry)", retry_attempt: retry_attempt, error: e.message)
-    execute_recovery(working_directory)
+    @logger.info("Auth recovery re-spawn verified running", retry_attempt: retry_attempt, new_pid: new_pid)
   end
 
   # Advance the auth line marker to the current transcript length without
@@ -517,46 +494,5 @@ class AuthRecoveryService
     end
   rescue => e
     @logger.error("Error advancing auth line marker", error: e.message)
-  end
-
-  # Find the transcript file path for the session.
-  def find_transcript_path(working_directory)
-    source = TranscriptRuntime.source_for(session, file_system: file_system)
-    transcript_dir = source.transcript_directory(working_directory: working_directory)
-    return nil unless transcript_dir
-    return nil unless file_system.directory?(transcript_dir)
-
-    source.find_main_transcript(transcript_directory: transcript_dir, session: session)
-  rescue => e
-    @logger.error("Error finding transcript path", error: e.message)
-    nil
-  end
-
-  # Extract text content from a transcript message entry.
-  def extract_message_text(entry)
-    message = entry["message"]
-    return "" unless message.is_a?(Hash)
-
-    content = message["content"]
-    return "" unless content.is_a?(Array)
-
-    content.filter_map do |block|
-      block["text"] if block.is_a?(Hash) && block["type"] == "text"
-    end.join(" ")
-  end
-
-  # Get the current line count of the transcript file.
-  def get_transcript_line_count(working_directory)
-    transcript_path = find_transcript_path(working_directory)
-    return 0 unless transcript_path
-    return 0 unless file_system.exists?(transcript_path)
-
-    content = file_system.read(transcript_path)
-    return 0 if content.blank?
-
-    content.lines.count
-  rescue => e
-    @logger.error("Error getting transcript line count", error: e.message)
-    0
   end
 end

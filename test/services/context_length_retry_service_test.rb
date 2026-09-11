@@ -398,7 +398,7 @@ class ContextLengthRetryServiceTest < ActiveSupport::TestCase
     logs = @session.logs.reload
     log_contents = logs.map(&:content).join("\n")
 
-    assert_match(/Spawned Claude CLI process with PID 12345/, log_contents)
+    assert_match(/Spawned new agent process with PID 12345 for context length compact attempt 1/, log_contents)
   end
 
   # ============================================================================
