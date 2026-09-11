@@ -17,7 +17,11 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
     # First conflicting reading marks the PR suspected, NOT confirmed. The
     # confirmed-conflicts key is never written because nothing was confirmed.
     assert_nil @session_with_pr.custom_metadata["github_pull_request_merge_conflicts"]
-    assert_equal({ PR_URL => true }, @session_with_pr.custom_metadata["github_pull_request_merge_conflicts_suspected"])
+    # The marker records WHEN, not just THAT: the debounce is a duration, so the
+    # gap to the confirming reading has to be measurable from the marker itself.
+    suspected = @session_with_pr.custom_metadata["github_pull_request_merge_conflicts_suspected"]
+    assert_equal [ PR_URL ], suspected.keys
+    assert_in_delta Time.current, Time.zone.parse(suspected[PR_URL]), 5.seconds
 
     # No notification yet — a single (possibly stale/transient) reading must not nudge.
     refute @session_with_pr.logs.where("content LIKE ?", "%Merge conflict detected%").exists?,
@@ -26,12 +30,11 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
       "Should not enqueue a message on the first conflicting poll"
   end
 
-  test "evaluate confirms and notifies on the second consecutive conflicting poll" do
+  test "evaluate confirms and notifies on a conflicting poll a debounce interval later" do
     track(PR_URL, status: :running)
 
     evaluate(@session_with_pr, :conflicting) # first poll: suspect
-    @session_with_pr.reload
-    evaluate(@session_with_pr, :conflicting) # second poll: confirm + notify
+    evaluate_later(@session_with_pr, :conflicting) # a gap later: confirm + notify
 
     @session_with_pr.reload
     # Promoted to confirmed, suspected marker cleared.
@@ -51,8 +54,7 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
     # GitHub returns a stale/transient CONFLICTING on the first poll, then the real
     # (clean) state on the next poll.
     evaluate(@session_with_pr, :conflicting) # suspect
-    @session_with_pr.reload
-    evaluate(@session_with_pr, :clean) # clean → clears suspicion
+    evaluate_later(@session_with_pr, :clean) # clean → clears suspicion
 
     @session_with_pr.reload
     # Confirmed-conflicts key was never written (nothing confirmed); the
@@ -237,11 +239,111 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
   test "a persistent conflict notifies once, not once per poll" do
     track(PR_URL)
 
-    6.times { evaluate(@session_with_pr, :conflicting) }
+    evaluate(@session_with_pr, :conflicting)
+    5.times { evaluate_later(@session_with_pr, :conflicting) }
 
     assert_equal 1, @session_with_pr.reload.enqueued_messages.where(origin: "automated_merge_conflict").count,
       "one unresolved conflict is one notice"
     assert_equal 1, @session_with_pr.logs.where("content LIKE ?", "%Merge conflict detected%").count
+  end
+
+  # ---- the debounce is a DURATION, not a poll count (#1123) ----
+  #
+  # "Two consecutive polls" is only two minutes if whatever supplies the cadence
+  # actually ticks every two minutes. Github::PrPollPass caps an idle PR-holding
+  # session at 30 minutes and the evaluator's own gate rode PollBackoff's curve to
+  # its 24-hour floor, so for exactly the population a conflict notice is for the
+  # two readings were half an hour or a day apart. Stating the gap in seconds here
+  # is what makes the interval true at any cadence.
+
+  test "two conflicting readings inside the debounce gap do not confirm" do
+    track(PR_URL, status: :running)
+
+    evaluate(@session_with_pr, :conflicting)
+    travel 30.seconds
+    @session_with_pr.reload
+    evaluate(@session_with_pr, :conflicting)
+
+    @session_with_pr.reload
+    assert_nil @session_with_pr.custom_metadata["github_pull_request_merge_conflicts"],
+      "30 seconds is not the two minutes the debounce is tuned to"
+    refute @session_with_pr.enqueued_messages.pending.exists?
+  end
+
+  # The failure mode a naive "re-stamp the marker every poll" would introduce: a PR
+  # polled faster than the gap would restart its own debounce forever and never
+  # confirm at all — #1123 inverted.
+  test "a reading too soon to confirm leaves the suspicion timestamp alone" do
+    track(PR_URL, status: :running)
+
+    evaluate(@session_with_pr, :conflicting)
+    first_seen = @session_with_pr.reload.custom_metadata["github_pull_request_merge_conflicts_suspected"][PR_URL]
+
+    travel 30.seconds
+    @session_with_pr.reload
+    evaluate(@session_with_pr, :conflicting)
+
+    assert_equal first_seen,
+      @session_with_pr.reload.custom_metadata["github_pull_request_merge_conflicts_suspected"][PR_URL],
+      "an early reading must not restart the debounce"
+
+    # ...and the confirmation still lands a gap after the FIRST reading.
+    travel (Github::MergeConflictEvaluator::MIN_CONFIRMATION_GAP_SECONDS + 1).seconds
+    @session_with_pr.reload
+    evaluate(@session_with_pr, :conflicting)
+
+    assert_equal({ PR_URL => true },
+      @session_with_pr.reload.custom_metadata["github_pull_request_merge_conflicts"])
+  end
+
+  # The deploy that introduces timestamps finds `true` in every suspected marker in
+  # the fleet. Those were written by an earlier gated poll, so the reading in front
+  # of us really is the second one: confirm on it rather than suppressing a real
+  # conflict for a cycle.
+  test "a legacy boolean suspected marker still confirms" do
+    track(PR_URL, status: :running,
+      extra: { "github_pull_request_merge_conflicts_suspected" => { PR_URL => true } })
+
+    evaluate(@session_with_pr, :conflicting)
+
+    @session_with_pr.reload
+    assert_equal({ PR_URL => true }, @session_with_pr.custom_metadata["github_pull_request_merge_conflicts"])
+    assert @session_with_pr.enqueued_messages.pending.exists?
+  end
+
+  # ---- .fresh_suspicion?, which is what buys the confirming poll its cadence ----
+
+  test "fresh_suspicion? is true for a suspicion inside the window" do
+    track(PR_URL, extra: {
+      "github_pull_request_merge_conflicts_suspected" => { PR_URL => 1.minute.ago.utc.iso8601 }
+    })
+
+    assert Github::MergeConflictEvaluator.fresh_suspicion?(@session_with_pr)
+  end
+
+  test "fresh_suspicion? lapses past SUSPICION_FAST_POLL_WINDOW" do
+    stale = (Github::MergeConflictEvaluator::SUSPICION_FAST_POLL_WINDOW + 1.minute).ago.utc.iso8601
+    track(PR_URL, extra: { "github_pull_request_merge_conflicts_suspected" => { PR_URL => stale } })
+
+    refute Github::MergeConflictEvaluator.fresh_suspicion?(@session_with_pr),
+      "a suspicion nothing ever resolves must not pin a session at two-minute polling"
+  end
+
+  # The opposite fail-safe from #confirmable?, and deliberately so: an unknown age
+  # may buy one PR a confirmation, but it must not buy the fleet a fast cadence
+  # with no bound on it.
+  test "fresh_suspicion? is false for a marker with no readable timestamp" do
+    track(PR_URL, extra: { "github_pull_request_merge_conflicts_suspected" => { PR_URL => true } })
+    refute Github::MergeConflictEvaluator.fresh_suspicion?(@session_with_pr)
+
+    track(PR_URL, extra: { "github_pull_request_merge_conflicts_suspected" => { PR_URL => "not a time" } })
+    refute Github::MergeConflictEvaluator.fresh_suspicion?(@session_with_pr)
+  end
+
+  test "fresh_suspicion? is false when nothing is suspected" do
+    track(PR_URL)
+
+    refute Github::MergeConflictEvaluator.fresh_suspicion?(@session_with_pr)
   end
 
   private
@@ -264,6 +366,15 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
     refs = Github::PrRef.for_session(session)
     snapshots = refs.to_h { |pr_ref| [ pr_ref.url, snapshot_for(pr_ref, reading, state) ] }
     Github::MergeConflictEvaluator.new.evaluate(session, refs, snapshots)
+  end
+
+  # A later gated poll: far enough after the previous reading for the debounce's
+  # MIN_CONFIRMATION_GAP_SECONDS to have elapsed. `travel` without a block
+  # accumulates, so repeated calls walk the clock forward one gap at a time.
+  def evaluate_later(session, reading, state: "OPEN")
+    travel (Github::MergeConflictEvaluator::MIN_CONFIRMATION_GAP_SECONDS + 1).seconds
+    session.reload
+    evaluate(session, reading, state: state)
   end
 
   def snapshot_for(pr_ref, reading, state)

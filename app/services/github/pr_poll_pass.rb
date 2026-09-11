@@ -51,8 +51,20 @@ module Github
     #
     # Both stamps are written in the pass's single metadata write.
     #
-    # The pass's own gate is never looser than either of these at any point on
-    # PollBackoff's curve, so gating the pass cannot starve an evaluator.
+    # The pass's own gate USED TO BE never looser than either of these at any point
+    # on PollBackoff's curve, so gating the pass could not starve an evaluator. The
+    # cap below broke that in one direction and nothing noticed: past 24 hours of no
+    # user activity the pass polls a PR-holding session every 30 minutes while these
+    # inner gates ride the curve to its 24-hour floor — so the merge-conflict
+    # evaluator ran ONCE A DAY for exactly the population the conflict notice is for
+    # (tadasant/zimmer#1123). The merge-conflict gate therefore inherits the pass's
+    # own ceiling in #poll_session, which costs nothing: this evaluator takes no
+    # GitHub calls of its own, so running it on every pass the session has already
+    # earned is CPU and a conditional metadata write, not rate limit.
+    #
+    # The comment gate deliberately does NOT inherit it. Github::CommentEvaluator
+    # does spend `gh api` calls, so raising its cadence for every idle PR-holding
+    # session in the fleet is a rate-limit decision, not a free one.
     MERGE_CONFLICT_BACKOFF_KEY = "github_merge_conflict_poller"
     MERGE_CONFLICT_INTERVAL_SECONDS = 120
     COMMENT_BACKOFF_KEY = "github_comment_poller"
@@ -119,7 +131,11 @@ module Github
     # @param session [Session]
     # @return [void]
     def poll_session(session)
-      unless due?(session)
+      # One ceiling for the whole pass — the pass's own gate and the merge-conflict
+      # gate inside it now answer to the same number. See #max_poll_interval_for.
+      ceiling = max_poll_interval_for(session)
+
+      unless due?(session, ceiling)
         Rails.logger.info "[Github::PrPollPass] Skipping session #{session.id} (PollBackoff: stale user activity)"
         return
       end
@@ -139,7 +155,8 @@ module Github
         session,
         job_key: MERGE_CONFLICT_BACKOFF_KEY,
         base_interval: MERGE_CONFLICT_INTERVAL_SECONDS,
-        min_interval: MERGE_CONFLICT_INTERVAL_SECONDS
+        min_interval: MERGE_CONFLICT_INTERVAL_SECONDS,
+        max_interval: ceiling
       )
         stamped_keys << MERGE_CONFLICT_BACKOFF_KEY
         run_evaluator(session, "MergeConflictEvaluator") do
@@ -161,12 +178,12 @@ module Github
 
     # Whether this session has earned another pass. See PollBackoff for the curve, and
     # #max_poll_interval_for for the ceiling.
-    def due?(session)
+    def due?(session, ceiling)
       PollBackoff.should_poll?(
         session,
         job_key: POLL_BACKOFF_KEY,
         base_interval: BASE_POLL_INTERVAL_SECONDS,
-        max_interval: max_poll_interval_for(session)
+        max_interval: ceiling
       )
     end
 
@@ -178,6 +195,22 @@ module Github
     # a just-recorded PR from waiting up to a day to be seen as `open` — the
     # transition the merge announcement is conditioned on.
     def max_poll_interval_for(session)
+      # A PR this pass has already seen conflicting once, and has not yet confirmed,
+      # outranks every other consideration here — including the idle bound below.
+      #
+      # MergeConflictEvaluator's debounce needs a SECOND reading a couple of minutes
+      # after the first. Every other ceiling in this method is half an hour or more,
+      # so the confirming reading landed thirty minutes to a day late and any single
+      # clean reading in that gap reset the streak to zero. That is how a PR open
+      # since 2026-09-06 went five days without its session ever being told it had a
+      # conflict (tadasant/zimmer#1123).
+      #
+      # This cannot pin a session the way the idle bound guards against. A suspicion
+      # resolves on the very next gated evaluation — confirmed or cleared — and
+      # .fresh_suspicion? stops answering true after SUSPICION_FAST_POLL_WINDOW
+      # regardless, so the exemption is bounded at both ends.
+      return MERGE_CONFLICT_INTERVAL_SECONDS if MergeConflictEvaluator.fresh_suspicion?(session)
+
       return nil if session.unresolved_pr_urls.empty?
       return nil if Time.current - session.last_user_activity_at > AWAITING_PR_OUTCOME_MAX_IDLE
 
