@@ -637,6 +637,23 @@ Rails.application.routes.draw do
     # Destroy only — a human has no way to WRITE an uncle edge from the browser
     # and this does not give them one.
     resources :uncle_links, only: [ :destroy ], param: :uncle_id
+
+    # MCP App (`ui://`) fragments, keyed by the agent's own tool call. Only
+    # :show — there is nothing to create here, because the thing being shown is
+    # a tool call that already happened. `fragment` serves the untrusted HTML
+    # under its own CSP; `rpc` and `message` are the two halves of the host
+    # broker. See McpAppsController.
+    #
+    # The constraint is what lets a runtime's tool-call id carry a dot without
+    # Rails reading the tail of it as a format.
+    resources :mcp_apps, only: [ :show ], param: :tool_call_id,
+      constraints: { tool_call_id: %r{[^/]+} } do
+      member do
+        get :fragment
+        post :rpc
+        post :message
+      end
+    end
   end
 
   # Organizational categories for the sessions dashboard.

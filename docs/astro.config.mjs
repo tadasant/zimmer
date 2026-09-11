@@ -117,6 +117,7 @@ export default defineConfig({
           items: [
             { label: "The REST API", slug: "extend/rest-api" },
             { label: "Zimmer's MCP server", slug: "extend/mcp-server" },
+            { label: "MCP Apps (ui:// fragments)", slug: "extend/mcp-apps" },
             { label: "Adding an agent harness", slug: "extend/agent-harness" },
             { label: "Extensions", slug: "extend/extensions" },
             { label: "Transcript hooks", slug: "extend/transcript-hooks" },

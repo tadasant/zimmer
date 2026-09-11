@@ -32,6 +32,45 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "gpt-5.5", setting.default_model
   end
 
+  test "persists the MCP Apps master switch and its per-server allowlist" do
+    patch app_settings_path, params: {
+      app_setting: { mcp_apps_enabled: "1", mcp_apps_allowed_servers: [ "", "notion" ] }
+    }
+
+    assert_redirected_to settings_path
+    setting = AppSetting.current
+    assert setting.mcp_apps_enabled?
+    assert_equal [ "notion" ], setting.mcp_apps_allowed_servers
+  end
+
+  test "unticking every MCP Apps server stores an empty allowlist" do
+    AppSetting.create!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "notion" ])
+
+    patch app_settings_path, params: {
+      app_setting: { mcp_apps_enabled: "1", mcp_apps_allowed_servers: [ "" ] }
+    }
+
+    assert_empty AppSetting.current.mcp_apps_allowed_servers
+  end
+
+  test "an MCP Apps allowlist entry the catalog does not offer as remote is dropped" do
+    patch app_settings_path, params: {
+      app_setting: { mcp_apps_enabled: "1", mcp_apps_allowed_servers: [ "notion", "context7", "invented" ] }
+    }
+
+    assert_equal [ "notion" ], AppSetting.current.mcp_apps_allowed_servers
+  end
+
+  test "a form that does not carry the MCP Apps fields leaves them alone" do
+    AppSetting.create!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "notion" ])
+
+    patch app_settings_path, params: { app_setting: { default_runtime: "codex", default_model: "gpt-5.5" } }
+
+    setting = AppSetting.current
+    assert setting.mcp_apps_enabled?
+    assert_equal [ "notion" ], setting.mcp_apps_allowed_servers
+  end
+
   test "updates the existing singleton row rather than inserting a second" do
     AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
 

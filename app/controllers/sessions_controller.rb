@@ -4178,6 +4178,13 @@ class SessionsController < ApplicationController
     # events via OpenTranscript.blank_message?).
     return false if OpenTranscript.blank_message?(item)
 
+    # A tool call that renders an MCP App view is not tool noise: the view IS the
+    # result, and it is the one tool row a reader can act on. So it is in the
+    # `message` bucket at every filter level, which is the same answer
+    # _item.html.erb writes into data-filter-category for the client-side filter.
+    # See McpApps::TimelineTrigger.
+    return true if mcp_apps_trigger.panel_for(item)
+
     # Single source of truth for category mapping (also used by _item.html.erb's
     # data-filter-category and the client-side log_level_filter controller).
     category = OpenTranscript.filter_category(item)
@@ -4196,6 +4203,13 @@ class SessionsController < ApplicationController
       # verbose: everything is visible
       true
     end
+  end
+
+  # One MCP Apps trigger per request. Memoized because the filter asks it about
+  # every item in the transcript, and it is what holds the settings read and the
+  # per-server tool index for all of them.
+  def mcp_apps_trigger
+    @mcp_apps_trigger ||= McpApps::TimelineTrigger.new(@session)
   end
 
   # Format the session transcript for copying to clipboard

@@ -1,0 +1,66 @@
+<%# The MCP App panel, lazily loaded into the frame the timeline row left for it.
+
+    Three shapes, and the empty one is the common case: a tool whose server does
+    not give it a view renders an empty frame, which is a frame with no box, no
+    border and no explanation — there is nothing to explain, the tool simply is
+    not an app tool. The other two are a rendered fragment and a stated reason
+    why one could not be read. %>
+<%= turbo_frame_tag mcp_app_frame_id(@tool_call.tool_call_id) do %>
+  <% if @fragment_error.present? %>
+    <div class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
+      This tool declares an MCP App view, but it could not be read: <%= @fragment_error %>
+    </div>
+  <% elsif @entry&.view? %>
+    <div class="mt-3 rounded-lg border border-indigo-100 bg-white shadow-sm overflow-hidden"
+         data-controller="mcp-app-host"
+         data-mcp-app-host-fragment-url-value="<%= fragment_session_mcp_app_path(@session, @tool_call.tool_call_id, transcript_index: @tool_call.transcript_index) %>"
+         data-mcp-app-host-rpc-url-value="<%= rpc_session_mcp_app_path(@session, @tool_call.tool_call_id, transcript_index: @tool_call.transcript_index) %>"
+         data-mcp-app-host-message-url-value="<%= message_session_mcp_app_path(@session, @tool_call.tool_call_id, transcript_index: @tool_call.transcript_index) %>"
+         data-mcp-app-host-sandbox-value="<%= McpApps::ContentSecurityPolicy.iframe_sandbox %>"
+         data-mcp-app-host-tool-value="<%= @entry.to_tool.to_json %>"
+         data-mcp-app-host-tool-input-value="<%= @tool_call.arguments.to_json %>"
+         data-mcp-app-host-tool-result-value="<%= (@tool_call.result || {}).to_json %>"
+         data-mcp-app-host-has-result-value="<%= @tool_call.result.present? %>"
+         data-mcp-app-host-styles-value="<%= mcp_app_host_styles.to_json %>">
+      <div class="flex items-center justify-between gap-2 px-4 py-2 border-b border-gray-100 bg-indigo-50/60">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="inline-flex shrink-0 items-center rounded-full bg-indigo-600/10 px-2 py-0.5 text-[11px] font-semibold text-indigo-700">MCP App</span>
+          <span class="truncate text-xs font-medium text-gray-700">
+            <%= @tool_call.server_name %> · <code class="text-indigo-700"><%= @entry.name %></code>
+          </span>
+        </div>
+        <div class="flex shrink-0 items-center gap-2">
+          <span class="hidden sm:inline text-[11px] text-gray-500" data-mcp-app-host-target="status">loading…</span>
+          <button type="button"
+                  data-action="mcp-app-host#toggleFullscreen"
+                  data-mcp-app-host-target="fullscreenButton"
+                  class="rounded p-1 text-gray-400 hover:bg-white hover:text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                  title="Expand this app" aria-label="Expand this app">
+            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <%# overflow-x-auto, never overflow-hidden: a view that insists on being
+          wider than this column (the spec lets it) has to stay reachable, and
+          clipping it would put its right-hand end permanently off a phone. %>
+      <div class="w-full max-w-full overflow-x-auto" data-mcp-app-host-target="container">
+        <%# `src`, not `srcdoc`: a srcdoc document inherits this page's CSP and
+            this page's origin, so the fragment has to come from a URL of its own
+            for the sandbox and the per-fragment policy to mean anything. %>
+        <iframe data-mcp-app-host-target="frame"
+                title="MCP App view from <%= @tool_call.server_name %>"
+                class="block w-full border-0 bg-transparent"
+                style="height: 320px;"
+                referrerpolicy="no-referrer"
+                loading="lazy"></iframe>
+      </div>
+
+      <p class="px-4 py-1.5 text-[11px] text-gray-400 border-t border-gray-100">
+        Rendered by Zimmer from <code><%= @entry.resource_uri %></code>, sandboxed and fed the result this tool call already returned.
+      </p>
+    </div>
+  <% end %>
+<% end %>

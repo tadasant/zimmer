@@ -28,5 +28,10 @@ class SettingsController < ApplicationController
     # compares cohorts by, so a setting cannot be togglable here and invisible
     # there.
     @experimental_settings = ExperimentalSettingsRegistry.all
+
+    # The MCP Apps allowlist is a per-server opt-in, so the form has to offer the
+    # servers that COULD be opted in — the remote ones in the catalog. See
+    # McpApps::Policy for why a stdio server is not among them.
+    @mcp_apps_eligible_servers = McpApps::Policy.eligible_servers
   end
 end

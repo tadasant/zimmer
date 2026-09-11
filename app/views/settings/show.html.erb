@@ -163,6 +163,73 @@
         </div>
       </div>
 
+      <!-- MCP Apps Section -->
+      <div id="mcp-apps-settings" class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">MCP Apps</h2>
+          <p class="mt-1 text-sm text-gray-500">
+            When an agent calls an MCP tool that declares a <code>ui://</code> view, render that view
+            inline in the session transcript. The view is HTML written by whoever runs the MCP server
+            and it runs in your browser, sandboxed — so it is off by default, and each server has to be
+            named here before anything of its renders.
+          </p>
+        </div>
+        <div class="px-4 py-5 sm:px-6">
+          <%= form_with url: app_settings_path, method: :patch, data: { turbo: false } do %>
+            <label class="flex items-start gap-3">
+              <%# `id: nil` because the checkbox below already owns that DOM id —
+                  hidden_field_tag derives one from the name by default, and two
+                  elements answering to #app_setting_mcp_apps_enabled makes every
+                  selector for it ambiguous. %>
+              <%= hidden_field_tag "app_setting[mcp_apps_enabled]", "0", id: nil %>
+              <%= check_box_tag "app_setting[mcp_apps_enabled]", "1", @app_setting.mcp_apps_enabled?,
+                    id: "app_setting_mcp_apps_enabled",
+                    class: "mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" %>
+              <span class="min-w-0">
+                <span class="block text-sm font-medium text-gray-900">Render MCP App views</span>
+                <span class="block text-sm text-gray-500">
+                  The master switch. With it off nothing renders, whatever is ticked below.
+                </span>
+              </span>
+            </label>
+
+            <fieldset class="mt-5">
+              <legend class="text-sm font-medium text-gray-900">Servers allowed to render views</legend>
+              <p class="mt-1 text-sm text-gray-500">
+                Remote MCP servers from the catalog. A stdio server cannot be opted in — Zimmer reads a
+                fragment over the server's own HTTP endpoint, and there is none to read.
+              </p>
+              <%# The empty-array param is what makes unticking the last box mean
+                  "none", rather than "the field was not submitted". %>
+              <%= hidden_field_tag "app_setting[mcp_apps_allowed_servers][]", "", id: nil %>
+              <div class="mt-3 space-y-2">
+                <% if @mcp_apps_eligible_servers.any? %>
+                  <% @mcp_apps_eligible_servers.each do |server| %>
+                    <label class="flex items-start gap-3">
+                      <%= check_box_tag "app_setting[mcp_apps_allowed_servers][]", server.name,
+                            @app_setting.mcp_apps_allowed_servers.include?(server.name),
+                            id: "app_setting_mcp_apps_allowed_servers_#{server.name.parameterize(separator: '_')}",
+                            class: "mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" %>
+                      <span class="min-w-0">
+                        <span class="block text-sm font-medium text-gray-900 break-words"><%= server.title %></span>
+                        <span class="block text-xs text-gray-500 break-all"><%= server.url %></span>
+                      </span>
+                    </label>
+                  <% end %>
+                <% else %>
+                  <p class="text-sm text-gray-500">No remote MCP servers in the catalog.</p>
+                <% end %>
+              </div>
+            </fieldset>
+
+            <div class="mt-4">
+              <%= submit_tag "Save MCP Apps settings",
+                    class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 cursor-pointer" %>
+            </div>
+          <% end %>
+        </div>
+      </div>
+
       <!-- Notifications Section -->
       <div class="bg-white shadow-sm rounded-lg border border-gray-200">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
