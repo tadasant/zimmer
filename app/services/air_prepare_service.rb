@@ -497,6 +497,7 @@ class AirPrepareService
   # post-processor. After completion, #injected_mcp_servers contains names of
   # servers that were auto-injected (e.g. zimmer for subagent roots).
   def prepare!
+    write_env_file!
     run_air_prepare!
     post_processor.post_process!
     artifact_bridge.write!
@@ -511,6 +512,7 @@ class AirPrepareService
   # only thing that writes those to disk — gating it on the MCP branch would make
   # a hooks-only Pi session silently run no hooks.
   def ensure_baseline_mcp_config!
+    write_env_file!
     post_processor.ensure_baseline!
     artifact_bridge.write!
     write_system_prompt_file!
@@ -523,6 +525,41 @@ class AirPrepareService
   end
 
   private
+
+  # Rewrite the clone's `.env` with the secrets this session's CURRENT artifact
+  # selection asks for (SessionSecretScope), before AIR is allowed to fail.
+  #
+  # This runs here, rather than only where the clone is created, because a
+  # session's server list changes under it: `Sessions::UpdateCatalogSelection`
+  # persists a new `mcp_servers` and deliberately regenerates nothing, on the
+  # stated grounds that the next prepare will — its next turn, a restart, a fork
+  # or an unarchive, all four of which come through this service. Scoping the
+  # `.env` anywhere else would make it the one artifact of a session's config
+  # that a mid-life change does not reach, so a server removed for
+  # least-privilege reasons would leave its credential in the clone forever.
+  #
+  # Deliberately before `run_air_prepare!`: a prepare that raises
+  # RootResolutionError or SecretResolutionError still leaves the clone holding a
+  # correctly-scoped `.env` rather than whatever the previous selection wrote.
+  # A failure to write it is logged and swallowed: a clone that did not get its
+  # credentials refreshed is a degraded session, and a session that never starts
+  # because of a `.env` write is a dead one.
+  def write_env_file!
+    result = SessionEnvFile.write!(
+      session: session,
+      working_directory: working_directory,
+      file_system: file_system
+    )
+    return if result.nil?
+
+    # Names, never values — this line lands in the Rails log.
+    Rails.logger.info(
+      "[AirPrepareService] Scoped .env to #{result.key_names.size} of " \
+      "#{result.available_count} secret(s): #{result.summary}"
+    )
+  rescue StandardError => e
+    Rails.logger.warn "[AirPrepareService] Could not write the session .env: #{e.class}: #{e.message}"
+  end
 
   # Deliver the orchestrator system prompt to disk for runtimes that consume it
   # from a file rather than a CLI flag (Codex reads `AGENTS.md`; Claude appends it

@@ -680,7 +680,11 @@ Where this is **not** in force, and what it is not, is in
 
 Shared scrubbing (`CliSpawnEnv`):
 
-- Loads a per-clone `.env` file if present (1 MB cap).
+- Loads a per-clone `.env` file if present (1 MB cap). That file holds the secrets **this
+  session's own artifacts declare** — not the deployment's whole `mcp_secrets` bundle — and it is
+  rewritten on every prepare so it stays in step with the session's server list. The rule, and the
+  three ways back out of a narrowing, are in
+  [What reaches a session clone's `.env`](/operate/provisioning/#what-reaches-a-session-clones-env).
 - Clears inherited env vars — `DATABASE_*`, `RAILS_ENV`, `GEM_*`, `RUBY*`, and a sweep of
   everything prefixed `BUNDLE*`. Without this the agent would inherit Zimmer's own database
   credentials and Ruby toolchain. Four values are cleared for their own reasons:

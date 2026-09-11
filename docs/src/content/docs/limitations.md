@@ -338,25 +338,37 @@ alone matches staging records identically to production ones. Zimmer emits the l
 cannot enforce that the alert rules on the other side filter by it. Those rules live in a separate
 repository.
 
-### Every agent-session clone carries the Slack bot token and the alert channel id
+### A clone's `.env` is scoped to its artifacts, which is not the same as scoped to what it can reach
 
-`AgentSessionJob#inject_secrets_to_env_file` writes `SecretsLoader.all` — the whole credential bundle
-— into each clone's `.env`, and that bundle includes `SLACK_BOT_TOKEN` and
-`ENG_ALERTS_SLACK_CHANNEL_ID`. Anything an agent runs inside its clone can therefore post to the real
-alert channel as the real bot. Zimmer itself no longer posts there — its alerts go through the obs
-pipeline, gated on a DSN that `CliSpawnEnv` strips from every agent shell — but the token in the
-clone is still a token that can. An agent's shell also has no `RAILS_ENV`, so a clone that boots
-Zimmer boots it as `development`.
+A session clone's `.env` no longer carries the deployment's whole credential bundle. It carries the
+secrets that session's own MCP servers, skills and hooks declare — see
+[What reaches a session clone's `.env`](/operate/provisioning/#what-reaches-a-session-clones-env) — so a
+session provisioned with `grafana` holds `GRAFANA_SERVICE_ACCOUNT_TOKEN` and nothing else, and
+`SLACK_BOT_TOKEN` is absent from every clone whose session was not given a Slack server.
 
-That combination is what fired in [#272](https://github.com/tadasant/zimmer/issues/272): a clone
-registered development's cron table, probed the approval endpoint at `http://localhost:3000` where
-nothing was listening, and paged the production channel every five minutes — every throttle that
-should have capped it at one message was cache-backed, and the clone could not reach the cache.
-[Only the deployed environments may page](/operate/background-jobs/#who-is-allowed-to-page), and
-that gate is now a DSN `CliSpawnEnv` strips from every agent shell rather than a throttle, so a
-clone has nothing to page *with*. But it is still Zimmer's own restraint, exercised by code that
-happens to be Zimmer's; it is not a scope on the credential. The token is still in the file, and
-nothing stops other code from using it.
+Three things that scope does **not** claim:
+
+- **A session that *is* given a Slack server holds a live bot token**, and anything it runs can post,
+  edit or delete as the real bot in any channel the bot is in. Least privilege moved the question from
+  "every session" to "which sessions", it did not answer it. The answer is
+  [the inference that picks a session's servers](/air/mcp-servers/), which is a judgement call, not a
+  mechanism.
+- **The scope is derived from declarations, not from use.** A catalog entry that reads a credential it
+  does not name in `${VAR}` — or a skill that names one without a `$` — is invisible to it. Both fail
+  toward writing fewer keys, which is the right direction and still a gap between what an artifact
+  needs and what the rule can see.
+- **`CliSpawnEnv`'s denylist is still a denylist.** Everything else in the worker's own environment is
+  inherited verbatim by an agent process. Narrowing the `.env` narrows one channel.
+
+What it does close is [#372](https://github.com/tadasant/zimmer/issues/372)'s worked case. An agent's
+shell has no `RAILS_ENV`, so a clone that boots Zimmer boots it as `development`; in
+[#272](https://github.com/tadasant/zimmer/issues/272) such a clone registered development's cron table,
+probed the approval endpoint at `http://localhost:3000` where nothing was listening, and paged the
+production `#alerts` channel every five minutes — every throttle that should have capped it at one
+message was cache-backed, and the clone could not reach the cache. That needed two things: a Zimmer
+that would page, and a token to page with. The first is now a DSN `CliSpawnEnv` strips from every agent
+shell ([only the deployed environments may page](/operate/background-jobs/#who-is-allowed-to-page)); the
+second is now absent from the clone unless the session was given a Slack server.
 
 ### SSH hardening only reaches a droplet that is rebuilt
 
