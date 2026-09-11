@@ -8,9 +8,12 @@ class PluginsConfig
 
   # Plugin configuration object
   class Plugin
+    include ArtifactIdentity::Entry
+
     attr_reader :id, :title, :description, :version, :skills, :mcp_servers, :hooks, :keywords
 
     def initialize(id, config)
+      identify!(id, config)
       @id = id
       @title = config["title"] || id
       @description = config["description"]
@@ -24,6 +27,7 @@ class PluginsConfig
     def to_h
       {
         id: id,
+        qualified_name: qualified_name,
         title: title,
         description: description,
         version: version,
@@ -44,8 +48,10 @@ class PluginsConfig
       build_plugins
     end
 
+    # Accepts a canonical token, a fully-qualified `@scope/id`, or a bare short
+    # id that exactly one catalog contributes. See ArtifactIdentity.find.
     def find(id)
-      plugins_by_id[id]
+      ArtifactIdentity.find(all, id)
     end
 
     def find!(id)
@@ -70,10 +76,6 @@ class PluginsConfig
     end
 
     private
-
-    def plugins_by_id
-      all.index_by(&:id)
-    end
 
     def build_plugins
       AirCatalogService.entries_for(:plugins).map { |id, entry| Plugin.new(id, entry) }

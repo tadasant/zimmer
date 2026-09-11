@@ -63,6 +63,40 @@ class AirCatalogService
       @entries[type] || {}
     end
 
+    # The fully-qualified AIR ID `ref` names — what `air prepare` must be handed
+    # for an artifact whose bare short id AIR would reject as ambiguous.
+    #
+    # Falls back to the canonical token for a tree with no qualification
+    # recorded, which is what a CatalogSnapshot stored before this change holds.
+    #
+    # @return [String, nil] nil when the reference resolves to nothing
+    def qualified_id(type, ref)
+      ArtifactIdentity.qualified_id(entries_for(type), ref)
+    end
+
+    # How this artifact must be named TO THE AIR CLI.
+    #
+    # AIR resolves a bare shortname only when exactly one scope contributes it,
+    # so an artifact whose short id a second composed catalog also carries has to
+    # be named by its fully-qualified `@scope/id` — including the `@local` side,
+    # which Zimmer itself still addresses by the bare id (ArtifactIdentity).
+    #
+    # Everything else is passed through unchanged, which is every artifact in a
+    # single-scope catalog: the argv `air prepare` is handed stays exactly what
+    # it has always been, and qualification appears only where AIR needs it.
+    # An unresolvable reference is passed through too — an id the catalog does
+    # not know is `air prepare`'s to reject (or, for skills, already dropped by
+    # AirPrepareService#scrubbed_catalog_skills), and quietly swallowing it here
+    # would hide a failure this method does not own.
+    #
+    # @return [String] never nil — the caller always has something to pass
+    def air_reference(type, ref)
+      entries = entries_for(type)
+      return ref unless ArtifactIdentity.contested?(entries, ref)
+
+      ArtifactIdentity.qualified_id(entries, ref) || ref
+    end
+
     # Path to the base air.json file (set via Rails config). This is the
     # unpinned source; catalog pins are layered on top by effective_air_json_path.
     def air_json_path
@@ -690,12 +724,17 @@ class AirCatalogService
     end
 
     # Shape a raw `air resolve` parse into the type-keyed tree, dropping any
-    # non-hash entries defensively.
+    # non-hash entries defensively, and reduce AIR's qualified `@scope/id` keys
+    # to the canonical tokens the rest of Zimmer addresses artifacts by. See
+    # ArtifactIdentity for what a canonical token is and why the qualification
+    # is kept rather than thrown away at the CLI (zimmer#208).
     def normalize_parsed(parsed)
-      ARTIFACT_TYPES.index_with do |type|
+      tree = ARTIFACT_TYPES.index_with do |type|
         entries = parsed[type.to_s]
         entries.is_a?(Hash) ? entries.select { |_id, entry| entry.is_a?(Hash) } : {}
       end
+
+      ArtifactIdentity.canonicalize_tree(tree)
     end
 
     # Shape a persisted snapshot (jsonb, string-keyed at the top level) back into
@@ -713,20 +752,26 @@ class AirCatalogService
       raise CatalogError, "Invalid JSON from air resolve: #{e.message}"
     end
 
-    # Invoke `air resolve --json --no-scope --git-protocol https` with AIR_CONFIG
-    # pointing at the configured air.json. Returns stdout.
+    # Invoke `air resolve --json --git-protocol https` with AIR_CONFIG pointing
+    # at the configured air.json. Returns stdout.
     #
-    # `--no-scope` (AIR 0.1.1+) emits shortname-keyed output and rewrites
-    # qualified references inside entries back to bare IDs. Zimmer surfaces bare
-    # shortnames everywhere (UI, DB, Session.catalog_skills, agent root
-    # defaults), so this matches our internal model directly. AIR hard-fails
-    # the resolve if any cross-scope shortname collision exists; the resulting
-    # error surfaces as CatalogError below, which is the right outcome — the
-    # operator must drop one side via `air.json#exclude`.
+    # Deliberately WITHOUT `--no-scope`. That flag asks AIR for shortname-keyed
+    # output and rewrites qualified references inside entries back to bare IDs —
+    # which is only expressible in a single-scope universe, so AIR hard-fails
+    # the whole resolve the moment two composed catalogs contribute the same
+    # shortname. One legitimate collision (a local `slack` alongside
+    # `@reframe-systems/agentic-engineering/slack`) therefore took the ENTIRE
+    # catalog down to last-known-good until an operator dropped one side via
+    # `air.json#exclude` (zimmer#208).
+    #
+    # Resolving qualified makes that collision a warning on stderr and two
+    # distinct entries in the output. normalize_parsed reduces the qualified
+    # keys to canonical tokens (ArtifactIdentity), which is where the bare
+    # shortnames Zimmer stores and displays still come from.
     def run_air_resolve!
       ensure_air_cli!
 
-      stdout, stderr, status = capture_air(air_env, air_binary, "resolve", "--json", "--no-scope", "--git-protocol", "https")
+      stdout, stderr, status = capture_air(air_env, air_binary, "resolve", "--json", "--git-protocol", "https")
       unless SubprocessStatus.success?(status)
         raise CatalogError, "air resolve failed (#{SubprocessStatus.describe_failure(status)}): #{stderr.presence || stdout}"
       end

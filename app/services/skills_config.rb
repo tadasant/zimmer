@@ -8,9 +8,12 @@ class SkillsConfig
 
   # Skill configuration object
   class Skill
+    include ArtifactIdentity::Entry
+
     attr_reader :id, :name, :title, :description, :path, :category, :references, :user_invocable
 
     def initialize(name, config)
+      identify!(name, config)
       @id = config["id"] || name
       @name = name
       @title = config["title"] || name
@@ -32,6 +35,7 @@ class SkillsConfig
       {
         id: id,
         name: name,
+        qualified_name: qualified_name,
         title: title,
         description: description,
         category: category,
@@ -66,9 +70,11 @@ class SkillsConfig
       build_skills
     end
 
-    # Find a skill by name
+    # Find a skill by name — a canonical token, a fully-qualified `@scope/id`,
+    # or a bare short id exactly one catalog contributes. See
+    # ArtifactIdentity.find.
     def find(name)
-      skills_by_name[name]
+      ArtifactIdentity.find(all, name)
     end
 
     # Find a skill by name, raise error if not found
@@ -117,10 +123,6 @@ class SkillsConfig
     end
 
     private
-
-    def skills_by_name
-      all.index_by(&:name)
-    end
 
     def build_skills
       AirCatalogService.entries_for(:skills).map { |name, entry| Skill.new(name, entry) }

@@ -202,10 +202,34 @@ module Mcp
                          "Allowed agent roots: #{allowed.join(', ')}"
       end
 
-      unless allowed.include?(agent_root_name)
+      unless allowed_root_tokens(allowed).include?(canonical_root_token(agent_root_name))
         raise ToolError, "This MCP connection is restricted — agent root \"#{agent_root_name}\" is not permitted. " \
                          "Allowed agent roots: #{allowed.join(', ')}"
       end
+    end
+
+    # The allowlist and the caller's argument, compared as the same thing.
+    #
+    # A root has more than one spelling: its canonical token, its fully-qualified
+    # AIR `@scope/id`, and — when one catalog contributes the short id — the bare
+    # short id (see ArtifactIdentity). `allowed_agent_roots` is baked into a
+    # session's .mcp.json at spawn time and a caller reads root names out of
+    # `get_configs`, so the two normally agree; reducing both to the canonical
+    # token means a caller that writes the qualified form of a root it IS allowed
+    # to spawn is not refused over a spelling.
+    #
+    # This cannot widen the allowlist. Two roots sharing a short id reduce to two
+    # DIFFERENT tokens — the local one keeps the bare id, the other stays
+    # qualified — so an allowlist naming one never admits the other. A reference
+    # the catalog cannot resolve (an unknown root, or a catalog that would not
+    # load, which leaves AgentRootsConfig.all empty) falls back to the literal
+    # string, which is exactly today's behaviour and still fails closed.
+    def canonical_root_token(name)
+      AgentRootsConfig.find(name)&.name || name
+    end
+
+    def allowed_root_tokens(allowed)
+      Array(allowed).map { |name| canonical_root_token(name) }
     end
 
     # Permit when the connection allows ANY of `names` — for a root the app
@@ -219,7 +243,7 @@ module Mcp
       names = Array(names)
       raise ArgumentError, "enforce_any_allowed_root! needs at least one name" if names.empty?
       return unless context.restricted?
-      return if (names & context.allowed_agent_roots).any?
+      return if (names.map { |name| canonical_root_token(name) } & allowed_root_tokens(context.allowed_agent_roots)).any?
 
       raise ToolError, "This MCP connection is restricted — agent root " \
                        "#{names.map(&:inspect).join(' or ')} is not permitted. " \

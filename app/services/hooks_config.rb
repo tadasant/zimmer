@@ -8,9 +8,12 @@ class HooksConfig
 
   # Hook configuration object
   class Hook
+    include ArtifactIdentity::Entry
+
     attr_reader :id, :name, :title, :description, :path
 
     def initialize(name, config)
+      identify!(name, config)
       @id = name
       @name = name
       @title = config["title"] || name
@@ -28,6 +31,7 @@ class HooksConfig
       {
         id: id,
         name: name,
+        qualified_name: qualified_name,
         title: title,
         description: description
       }
@@ -43,8 +47,10 @@ class HooksConfig
       build_hooks
     end
 
+    # Accepts a canonical token, a fully-qualified `@scope/id`, or a bare short
+    # id that exactly one catalog contributes. See ArtifactIdentity.find.
     def find(name)
-      hooks_by_name[name]
+      ArtifactIdentity.find(all, name)
     end
 
     def find!(name)
@@ -69,10 +75,6 @@ class HooksConfig
     end
 
     private
-
-    def hooks_by_name
-      all.index_by(&:name)
-    end
 
     def build_hooks
       AirCatalogService.entries_for(:hooks).map { |name, entry| Hook.new(name, entry) }
