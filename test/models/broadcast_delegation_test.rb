@@ -211,7 +211,7 @@ class BroadcastDelegationTest < ActiveSupport::TestCase
     )
   end
 
-  test "broadcast_status_change fans out to the seven detail-page and ranked targets" do
+  test "broadcast_status_change fans out to the eight detail-page and ranked targets" do
     captured = capture_turbo_broadcasts { @session.send(:broadcast_status_change) }
 
     status = "session_#{@session.id}_status"
@@ -222,7 +222,8 @@ class BroadcastDelegationTest < ActiveSupport::TestCase
       [ :replace, status, "session_#{@session.id}_follow_up_form" ],
       [ :replace, status, "session_#{@session.id}_running_loader" ],
       [ :replace, status, "session_#{@session.id}_header_actions" ],
-      [ :replace, status, "session_#{@session.id}_metadata" ]
+      [ :replace, status, "session_#{@session.id}_metadata" ],
+      [ :replace, status, "session_#{@session.id}_goal_check" ]
     ], captured.map { |b| [ b.action, b.stream, b.target ] }
   end
 

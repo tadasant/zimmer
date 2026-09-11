@@ -95,8 +95,19 @@ module Sessions
       # @return [Boolean] true when the session's goal was written
       def apply!(session:, goal:, source:, clear_when_blank: false, also_update: {}, log_with: nil)
         phrase = LOG_PHRASES.fetch(source)
+        log = log_with || ->(content) { session.logs.create!(content: content, level: "info") }
 
-        changed = if clear_when_blank
+        # An id the catalog does not know is never written. Every surface a person
+        # types a goal into refuses one before it gets here, so what can still
+        # arrive is a message queued before that check existed, or one whose id was
+        # retired while it waited. Session would refuse the write, and failing the
+        # delivery over its goal is worse than delivering the prompt without it.
+        unknown = goal.present? && goal != session.goal && GoalsConfig.unknown_id?(goal)
+        log.call("Goal #{goal.inspect} not applied #{phrase}: it is not a known goal id") if unknown
+
+        changed = if unknown
+          false
+        elsif clear_when_blank
           goal != session.goal
         else
           goal.present? && goal != session.goal
@@ -106,14 +117,7 @@ module Sessions
         attributes[:goal] = goal if changed
         session.update!(attributes) if attributes.any?
 
-        if changed
-          content = "Goal #{goal.present? ? 'updated' : 'removed'} #{phrase}"
-          if log_with
-            log_with.call(content)
-          else
-            session.logs.create!(content: content, level: "info")
-          end
-        end
+        log.call("Goal #{goal.present? ? 'updated' : 'removed'} #{phrase}") if changed
 
         changed
       end

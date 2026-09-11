@@ -65,6 +65,29 @@ class Github::GoalFactsEvaluatorTest < ActiveSupport::TestCase
     assert_equal 1, result["verification_checked_boxes"], "a sibling heading ends the Verification section"
   end
 
+  test "GitHub's CRLF line endings and a box inside a blockquote are read the same" do
+    body = "## Verification\r\n- [x] CI green\r\n> - [ ] quoted, and still a checkbox\r\n"
+
+    assert_equal(
+      { "verification_section" => true, "verification_checked_boxes" => 1, "unchecked_boxes" => 1 },
+      facts(body)
+    )
+  end
+
+  test "a heading that leads with an emoji still names the section" do
+    assert_equal true, facts("## ✅ Verification\n- [x] ok\n")["verification_section"]
+    assert_equal false, facts("####### Verification\n")["verification_section"], "seven #s is not a heading"
+  end
+
+  test "a longer fence can quote a shorter one, and an unclosed comment hides the rest" do
+    body = "````\n```\n- [ ] inside the outer fence\n```\n````\n## Verification\n- [x] ok\n<!-- left open\n- [ ] hidden by GitHub\n"
+
+    assert_equal(
+      { "verification_section" => true, "verification_checked_boxes" => 1, "unchecked_boxes" => 0 },
+      facts(body)
+    )
+  end
+
   test "a description with no Verification heading says so" do
     assert_equal false, facts("Fixes the thing.\n\n- [x] done")["verification_section"]
   end

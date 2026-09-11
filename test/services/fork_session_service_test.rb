@@ -252,6 +252,19 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert_includes forked_log.content, "message 2"
   end
 
+  # A fork copies its source's goal rather than choosing one, so an id retired
+  # from the catalog (or one saved before unknown ids were refused) must not fail
+  # the fork. Status summaries fork the session they summarize, so this is also
+  # what keeps them working for such a session.
+  test "forks a session whose goal is an id the catalog no longer has" do
+    @source_session.update_column(:goal, "pr_merged")
+
+    result = ForkSessionService.call(source_session: @source_session.reload, message_index: 1, file_system: @mock_fs)
+
+    assert result.success?, result.error
+    assert_equal "pr_merged", result.forked_session.goal
+  end
+
   test "preserves subdirectory setting" do
     @source_session.update!(subdirectory: "packages/web")
     working_dir = File.join(@clone_path, "packages/web")

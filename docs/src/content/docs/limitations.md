@@ -4794,6 +4794,13 @@ Three things it does not do:
   Markdown task-list boxes. A repository with no CI reads `unknown` on `ci_green` forever, so its
   verdict never gets past `pending`. A session whose PR Zimmer never recorded (see the next entry)
   reads `unmet` on `pull_request_open` even if the PR exists.
+- **It recognises a goal stored as its description only while that text is unchanged.** MCP
+  `start_session` stores a goal's description, not its id, and `GoalsConfig.resolve` matches it
+  exactly. Edit a goal's description in `config/goals.json` and every session started with the old
+  text shows no goal check from then on, with nothing to say why.
+- **It only reads PRs the poll pass still visits.** A session archived before its PR's description
+  and labels were first read has none recorded, so its Verification and label checks read `unknown`
+  for good.
 
 ### PR ownership is a transcript heuristic, and both ways of being wrong are silent
 
