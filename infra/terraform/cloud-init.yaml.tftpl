@@ -325,6 +325,8 @@ runcmd:
   # `zimmer-caddy` is the name scripts/domain-cert.sh restarts after pushing a cert.
   # Caddy starts before kamal-proxy exists and simply 502s until the first deploy
   # boots it; restart: always makes that self-healing.
+  - docker rm -f zimmer-caddy 2>/dev/null || true
+  - docker run -d --name zimmer-caddy --restart always --network host -v /opt/zimmer/caddy/Caddyfile:/etc/caddy/Caddyfile:ro -v /opt/zimmer/certs:/certs:ro caddy:2
 %{ if node_exporter_enabled ~}
   # --- node_exporter (opt-in) ----------------------------------------------------
   # PINNED, not latest: node_exporter adds and re-shapes collectors between minor
@@ -349,5 +351,3 @@ runcmd:
     systemctl daemon-reload
     systemctl enable --now node_exporter.service
 %{ endif ~}
-  - docker rm -f zimmer-caddy 2>/dev/null || true
-  - docker run -d --name zimmer-caddy --restart always --network host -v /opt/zimmer/caddy/Caddyfile:/etc/caddy/Caddyfile:ro -v /opt/zimmer/certs:/certs:ro caddy:2
