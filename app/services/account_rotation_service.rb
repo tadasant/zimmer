@@ -522,20 +522,30 @@ class AccountRotationService
   # the candidate is promoted unvalidated. Reading a provider outage as "every
   # account is dead" would park every session on the instance at once.
   def usable_candidate?(account)
-    result = QuotaCheckService.check_with_token(account.claude_access_token)
+    probed_token = account.claude_access_token
+    result = QuotaCheckService.check_with_token(probed_token)
 
-    if !result.success? && !result.unreachable? && account.can_refresh_token?
+    # The repair refresh is spent once per recorded refusal, not once per spawn.
+    # A candidate that already carries one has been through this: the verdict is
+    # about the token in the row right now (writing a new one retires it), so the
+    # refresh that would have fixed a merely stale token has either already been
+    # taken or was never going to help. Without the guard, a pool whose only
+    # account has a working refresh endpoint and a dead subscription spends a
+    # single-use token on every session spawn, forever — the shape #242 is about,
+    # arrived at from a different direction.
+    if result.rejected? && account.can_refresh_token? && !account.credential_rejected?
       @logger.info("Candidate's token was refused, refreshing before deciding", email: account.email)
       account.refresh_token!
       account.reload
-      result = QuotaCheckService.check_with_token(account.claude_access_token)
+      probed_token = account.claude_access_token
+      result = QuotaCheckService.check_with_token(probed_token)
     end
 
     # The verdict this candidate was judged on, kept for the page that has to
     # explain the decision afterwards. Recorded here rather than at the first
     # probe above: a refusal we are about to try to repair with a refresh is not
     # a final answer about the account. See ClaudeAccount#record_credential_probe!.
-    account.record_credential_probe!(result)
+    account.record_credential_probe!(result, probed_token: probed_token)
 
     if result.success?
       snapshot = QuotaSnapshotService.save_snapshot(account, result, trigger: "bootstrap")
@@ -648,7 +658,7 @@ class AccountRotationService
     return unless token.present?
 
     result = QuotaCheckService.check_with_token(token)
-    account.record_credential_probe!(result)
+    account.record_credential_probe!(result, probed_token: token)
     return unless result.success?
 
     QuotaSnapshotService.save_snapshot(account, result, trigger: trigger)

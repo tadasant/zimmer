@@ -407,8 +407,9 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
   test "an account card says Anthropic refused its credentials" do
     account = claude_accounts(:primary)
     account.record_credential_probe!(
-      QuotaCheckService::Result.new(success: false, unreachable: false,
-        error_message: "No rate-limit headers in response (HTTP 401). Token may be expired or invalid.")
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401). Token may be expired or invalid."),
+      probed_token: account.claude_access_token
     )
 
     get inference_url
@@ -423,7 +424,8 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
   test "an account card reports a verified credential rather than a stored one" do
     account = claude_accounts(:primary)
     account.record_credential_probe!(
-      QuotaCheckService::Result.new(success: true, utilization_5h: 0.1, utilization_7d: 0.1)
+      QuotaCheckService::Result.new(success: true, status_code: 200, utilization_5h: 0.1, utilization_7d: 0.1),
+      probed_token: account.claude_access_token
     )
 
     get inference_url
@@ -1981,10 +1983,14 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
   # Every Claude account in the pool refused by Anthropic: the state that reads
   # "1 Active" on the grid and cannot serve a single session.
   def refuse_every_claude_account
-    refusal = QuotaCheckService::Result.new(success: false, unreachable: false,
+    refusal = QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
       error_message: "No rate-limit headers in response (HTTP 401).")
     ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).each do |account|
-      account.oauth_config.present? ? account.record_credential_probe!(refusal) : account.update!(status: :needs_reauth)
+      if account.claude_access_token.present?
+        account.record_credential_probe!(refusal, probed_token: account.claude_access_token)
+      else
+        account.update!(status: :needs_reauth)
+      end
     end
   end
 end

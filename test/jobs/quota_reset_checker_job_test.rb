@@ -18,6 +18,21 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     assert account.reload.active?
   end
 
+  test "records what its probe learned about the account's stored token (#239)" do
+    account = claude_accounts(:exceeded)
+    claude_account_quota_snapshots(:exceeded_snapshot).update!(reset_5h: 2.hours.from_now, utilization_5h: 1.0)
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401).")
+    )
+    ClaudeAccount.any_instance.stubs(:refresh_token!).returns(false)
+
+    QuotaResetCheckerJob.perform_now
+
+    assert_equal :rejected, account.reload.credential_state,
+      "the 15-minute sweep already probes these accounts; the operator should not have to guess why one is stuck"
+  end
+
   test "does not restore account when reset_5h is in the future and utilization is at 100%" do
     account = claude_accounts(:exceeded)
     snapshot = claude_account_quota_snapshots(:exceeded_snapshot)

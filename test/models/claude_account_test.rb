@@ -2308,7 +2308,7 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     account.update_columns(updated_at: 2.days.ago)
     before = account.reload.updated_at
 
-    assert_equal :verified, account.record_credential_probe!(honored_probe)
+    assert_equal :verified, account.record_credential_probe!(honored_probe, probed_token: account.claude_access_token)
 
     account.reload
     assert_equal :verified, account.credential_state
@@ -2320,7 +2320,7 @@ class ClaudeAccountTest < ActiveSupport::TestCase
   test "record_credential_probe! records a refusal and its reason" do
     account = claude_accounts(:primary)
 
-    assert_equal :rejected, account.record_credential_probe!(refused_probe)
+    assert_equal :rejected, account.record_credential_probe!(refused_probe, probed_token: account.claude_access_token)
 
     account.reload
     assert_equal :rejected, account.credential_state
@@ -2331,7 +2331,7 @@ class ClaudeAccountTest < ActiveSupport::TestCase
   test "record_credential_probe! records nothing when Anthropic could not be reached" do
     account = claude_accounts(:primary)
 
-    assert_nil account.record_credential_probe!(unreachable_probe)
+    assert_nil account.record_credential_probe!(unreachable_probe, probed_token: account.claude_access_token)
 
     account.reload
     assert_equal :unverified, account.credential_state
@@ -2342,18 +2342,18 @@ class ClaudeAccountTest < ActiveSupport::TestCase
   test "the newer verdict wins in both directions" do
     account = claude_accounts(:primary)
 
-    account.record_credential_probe!(refused_probe)
-    account.record_credential_probe!(honored_probe)
+    record_refusal(account)
+    record_success(account)
     assert_equal :verified, account.reload.credential_state,
       "an account that started answering again must not stay condemned"
 
-    account.record_credential_probe!(refused_probe)
+    record_refusal(account)
     assert_equal :rejected, account.reload.credential_state
   end
 
   test "storing a different access token retires the verdict" do
     account = claude_accounts(:primary)
-    account.record_credential_probe!(refused_probe)
+    record_refusal(account)
     assert account.reload.credential_rejected?
 
     config = account.oauth_config.deep_dup
@@ -2367,11 +2367,61 @@ class ClaudeAccountTest < ActiveSupport::TestCase
 
   test "a save that leaves the access token alone keeps the verdict" do
     account = claude_accounts(:primary)
-    account.record_credential_probe!(honored_probe)
+    record_success(account)
 
     account.update!(priority: 9)
 
     assert_equal :verified, account.reload.credential_state
+  end
+
+  test "an answered failure that is not about authentication records nothing" do
+    account = claude_accounts(:primary)
+
+    # A 400 for a model id Anthropic retired, a 404 on a moved endpoint, a proxy
+    # that strips the rate-limit headers: real failures, none of them evidence
+    # that this credential is dead. Recording them would empty the pool within
+    # two sweeps of an Anthropic-side change.
+    assert_nil account.record_credential_probe!(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 400,
+        error_message: "No rate-limit headers in response (HTTP 400)."),
+      probed_token: account.claude_access_token
+    )
+
+    assert_equal :unverified, account.reload.credential_state
+  end
+
+  test "a verdict is discarded when the stored token moved while the probe was in flight" do
+    account = claude_accounts(:primary)
+    stale_token = account.claude_access_token
+    config = account.oauth_config.deep_dup
+    config["credentials_json"]["claudeAiOauth"]["accessToken"] = "rotated-mid-probe"
+    account.update!(oauth_config: config)
+
+    assert_nil account.record_credential_probe!(refused_probe, probed_token: stale_token)
+
+    assert_equal :unverified, account.reload.credential_state,
+      "a 401 about the token we sent must not be persisted as a refusal of the one that replaced it"
+  end
+
+  test "a blank token is never recorded as an Anthropic refusal" do
+    account = claude_accounts(:unconfigured)
+
+    assert_nil account.record_credential_probe!(
+      QuotaCheckService::Result.new(success: false, unreachable: false, error_message: "Token is blank"),
+      probed_token: nil
+    )
+
+    assert_equal :none, account.reload.credential_state
+  end
+
+  test "a verification clears the refusal reason it replaces" do
+    account = claude_accounts(:primary)
+    record_refusal(account)
+    assert account.reload.credential_rejection_reason.present?
+
+    record_success(account)
+
+    assert_nil account.reload.credential_rejection_reason
   end
 
   test "serviceable_for excludes an account whose stored token Anthropic refused" do
@@ -2379,7 +2429,7 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     primary = claude_accounts(:primary)
     assert ClaudeAccount.any_serviceable_for?(ClaudeAuthProvider::RUNTIME)
 
-    primary.record_credential_probe!(refused_probe)
+    record_refusal(primary)
 
     assert_not ClaudeAccount.any_serviceable_for?(ClaudeAuthProvider::RUNTIME),
       "an `active` account whose token 401s cannot serve a session — this is the 2026-07-31 state"
@@ -2389,7 +2439,7 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).where.not(id: claude_accounts(:primary).id).destroy_all
     primary = claude_accounts(:primary)
 
-    primary.record_credential_probe!(unreachable_probe)
+    primary.record_credential_probe!(unreachable_probe, probed_token: primary.claude_access_token)
 
     assert ClaudeAccount.any_serviceable_for?(ClaudeAuthProvider::RUNTIME),
       "reading a provider blip as a dead pool would park every session on the instance at once"
@@ -2398,7 +2448,7 @@ class ClaudeAccountTest < ActiveSupport::TestCase
   test "a refused account is serviceable again as soon as a refresh replaces the token" do
     ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).where.not(id: claude_accounts(:primary).id).destroy_all
     primary = claude_accounts(:primary)
-    primary.record_credential_probe!(refused_probe)
+    record_refusal(primary)
     assert_not ClaudeAccount.any_serviceable_for?(ClaudeAuthProvider::RUNTIME)
 
     config = primary.oauth_config.deep_dup
@@ -2418,7 +2468,6 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     assert_includes ClaudeAccount.serviceable_for(CodexAuthProvider::RUNTIME), codex
   end
 
-
   def with_claude_account_fs
     tmpdir = Dir.mktmpdir
     original_cred_path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
@@ -2437,14 +2486,22 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, original_json_path)
   end
 
+  def record_refusal(account)
+    account.record_credential_probe!(refused_probe, probed_token: account.claude_access_token)
+  end
+
+  def record_success(account)
+    account.record_credential_probe!(honored_probe, probed_token: account.claude_access_token)
+  end
+
   # QuotaCheckService results, in the three shapes the pool distinguishes.
   def honored_probe
-    QuotaCheckService::Result.new(success: true, utilization_5h: 0.2, utilization_7d: 0.1,
+    QuotaCheckService::Result.new(success: true, status_code: 200, utilization_5h: 0.2, utilization_7d: 0.1,
       status_5h: "allowed", status_7d: "allowed")
   end
 
   def refused_probe
-    QuotaCheckService::Result.new(success: false, unreachable: false,
+    QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
       error_message: "No rate-limit headers in response (HTTP 401). Token may be expired or invalid.")
   end
 

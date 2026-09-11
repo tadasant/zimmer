@@ -84,7 +84,7 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
   # headers. This is the only shape that condemns a credential.
   def rejected_probe
     QuotaCheckService::Result.new(
-      success: false, unreachable: false,
+      success: false, unreachable: false, status_code: 401,
       error_message: "No rate-limit headers in response (HTTP 401). Token may be expired or invalid."
     )
   end
@@ -846,7 +846,7 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     # anybody presenting it to Anthropic.
     primary = claude_accounts(:primary)
     secondary = claude_accounts(:secondary)
-    primary.record_credential_probe!(rejected_probe)
+    primary.record_credential_probe!(rejected_probe, probed_token: primary.claude_access_token)
     reject_token(primary)
     fail_refresh_with(503)
 
@@ -861,7 +861,7 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     # way through is what decides. An account whose token started working again —
     # a refresh landed, a human re-authenticated — comes straight back.
     primary = claude_accounts(:primary)
-    primary.record_credential_probe!(rejected_probe)
+    primary.record_credential_probe!(rejected_probe, probed_token: primary.claude_access_token)
 
     assert_equal primary, @service.ensure_active_account!
     assert_equal :verified, primary.reload.credential_state
@@ -870,7 +870,8 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
   test "ensure_active_account! keeps a current account whose probe merely could not reach Anthropic" do
     primary = claude_accounts(:primary)
     primary.record_credential_probe!(
-      QuotaCheckService::Result.new(success: false, unreachable: true, error_message: "timeout")
+      QuotaCheckService::Result.new(success: false, unreachable: true, error_message: "timeout"),
+      probed_token: primary.claude_access_token
     )
 
     assert_equal primary, @service.ensure_active_account!,

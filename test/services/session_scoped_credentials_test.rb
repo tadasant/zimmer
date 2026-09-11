@@ -52,7 +52,9 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
     secondary = claude_accounts(:secondary)
     # Unreachable, so the probe is a no-op rather than a verdict: this test is
     # about activate! touching no filesystem, not about credential state.
-    QuotaCheckService.stubs(:check_with_token).returns(stub(success?: false, unreachable?: true, error_message: "skip"))
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, unreachable: true, error_message: "skip")
+    )
 
     with_setting(true) do
       AccountRotationService.new.activate!(secondary, snapshot_trigger: "manual_switch")
@@ -76,8 +78,9 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
     primary = claude_accounts(:primary)
     primary.update!(is_current: true, status: :active)
     primary.record_credential_probe!(
-      QuotaCheckService::Result.new(success: false, unreachable: false,
-        error_message: "No rate-limit headers in response (HTTP 401).")
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401)."),
+      probed_token: primary.claude_access_token
     )
     # The live re-probe agrees with the recorded verdict: this token is dead.
     QuotaCheckService.stubs(:check_with_token).returns(

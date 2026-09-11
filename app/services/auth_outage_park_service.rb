@@ -528,13 +528,28 @@ class AuthOutageParkService
     end
   end
 
-  # A digest of the credentials that can serve this runtime right now: every
-  # available account's id paired with a digest of its stored oauth_config.
+  # A digest of what can serve this runtime right now: every available account's
+  # id, a digest of its stored oauth_config, and whether its stored token is one
+  # Anthropic has refused.
   #
   # Content-addressed rather than an `updated_at` comparison. updated_at churns
   # for things that are not credential changes at all — a rotation stamping
   # last_rotated_to_at, a quota_hit_count bump, a filesystem sync that adopts an
   # identical config — and every one of those would read as "the pool changed".
+  #
+  # The refusal flag is in there because a credential verdict is the one way this
+  # pool can go from unserviceable to serviceable WITHOUT a credential write: an
+  # account whose stored token Anthropic refused leaves `.serviceable_for` with
+  # its oauth_config untouched, and a later probe that succeeds puts it back the
+  # same way (#239). On oauth_config alone the two states hash identically, so a
+  # park taken during the refusal would never see the pool change and its
+  # sessions would sleep until a human resumed them.
+  #
+  # The flag, not the timestamps behind it, and that is the same
+  # content-addressing argument as above: `credential_verified_at` is rewritten
+  # every time ClaudeUsageSamplerJob probes the serving account — every 15
+  # minutes, with nothing about the pool having changed — and hashing it would
+  # wake every parked session on each sweep.
   #
   # Salted with the app's secret so the stored digest cannot be used offline to
   # confirm a guessed token: the fingerprint lives in session metadata, which
@@ -543,7 +558,7 @@ class AuthOutageParkService
   # @return [String, nil] nil if the pool could not be read at all
   def self.pool_fingerprint(runtime)
     parts = RuntimeAuthProvider.for(runtime).accounts.available.map do |account|
-      "#{account.id}:#{Digest::SHA256.hexdigest(account.oauth_config.to_json)}"
+      "#{account.id}:#{Digest::SHA256.hexdigest(account.oauth_config.to_json)}:#{account.credential_rejected?}"
     end
 
     OpenSSL::HMAC.hexdigest("SHA256", Rails.application.secret_key_base.to_s, parts.sort.join("|"))

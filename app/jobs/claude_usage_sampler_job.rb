@@ -159,7 +159,7 @@ class ClaudeUsageSamplerJob < ApplicationJob
     # source of truth about whether a stored token still works. Recording costs
     # nothing beyond the probe already taken; an unreachable Anthropic records
     # nothing at all. See ClaudeAccount#record_credential_probe!.
-    account.record_credential_probe!(result)
+    account.record_credential_probe!(result, probed_token: token)
     unless result.success?
       Rails.logger.info("[ClaudeUsageSamplerJob] Quota probe failed for #{account.email}: #{result.error_message}")
       return false
