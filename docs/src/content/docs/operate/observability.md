@@ -355,19 +355,20 @@ the engine's `:load_config_initializers`, and sets up the main Zeitwerk autoload
 constant referenced from an initializer body therefore raises
 `NameError: uninitialized constant` — every time, not intermittently.
 
-Defining this list under `app/` broke every production deploy: Kamal's `db:prepare`
-pre-deploy command aborted on the `NameError`, the new container never passed its health
+Defining this list under `app/` broke every production deploy: the image entrypoint's
+`bin/rails db:prepare` aborted on the `NameError`, the new container never passed its health
 check, and Kamal rolled back. Nothing caught it before the deploy, because the whole
 `Sentry.init` block is gated on `SENTRY_DSN_BACKEND` and no development, test or CI process
 sets one — the initializer's body never ran outside a deployed environment.
 
 `test/initializers/production_boot_test.rb` is what pins it: it boots a real
 `RAILS_ENV=production` subprocess with a dummy DSN set and asserts `initialize!` completes,
-that no initializer raised `uninitialized constant`, that the SDK comes out allowing exactly
+that its output carries no `uninitialized constant`, that the SDK comes out allowing exactly
 `production` and `staging`, and that `obs_reporting_health_check.rb` — the other reader of the
 list, and one that swallows its own exceptions — logged the line it only logs on success.
-It points the database at a closed port, so it can never touch a real one and asserts the same
-thing everywhere it runs. An in-process test cannot stand in for it: the suite runs inside an
+It points the database and Redis at a closed port and clears `DATABASE_URL`, so it can never
+touch a real one and asserts the same thing everywhere it runs, and it kills a boot that has not
+finished in two minutes rather than let it hold a CI runner. An in-process test cannot stand in for it: the suite runs inside an
 already-booted app, where every `app/` constant is loadable and the boot order under test has
 already happened.
 

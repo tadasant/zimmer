@@ -28,9 +28,9 @@ if ENV["SENTRY_DSN_BACKEND"].present?
 
     # Only these environments may send. Any other Rails.env (test, development,
     # or an ad-hoc one) drops events at the client, DSN present or not.
-    # `AlertingEnvironments::ALL` names the same list for the boot-time check in
-    # obs_reporting_health_check.rb; test/initializers/sentry_test.rb pins that the
-    # two agree.
+    # `AlertingEnvironments::ALL` is the same list obs_reporting_health_check.rb reads
+    # at boot. test/initializers/sentry_test.rb pins the SDK's resolved value, and
+    # test/initializers/production_boot_test.rb pins it from a real production boot.
     #
     # It is defined in config/alerting_environments.rb, which config/application.rb
     # require_relatives, and NOT in app/ — initializers run before Rails sets up the

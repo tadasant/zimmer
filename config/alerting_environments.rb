@@ -14,8 +14,9 @@
 #
 # That is not theoretical either. [#1121](https://github.com/tadasant/zimmer/pull/1121)
 # shipped the list as `ErrorReporter::ALERTING_ENVIRONMENTS` in
-# `app/services/error_reporter.rb` and broke every production deploy: `db:prepare` aborted,
-# the container never became healthy, and Kamal rolled back. `development` and `test` saw
+# `app/services/error_reporter.rb` and broke every production deploy: the image
+# entrypoint's `bin/rails db:prepare` aborted, the container never became healthy, and
+# Kamal rolled back. `development` and `test` saw
 # none of it, because the whole `Sentry.init` block is gated on `SENTRY_DSN_BACKEND` and
 # those environments do not set it.
 #
@@ -26,12 +27,13 @@
 #
 # WHAT IT PROTECTS
 # ----------------
-# Zimmer runs its agent sessions inside the production container, so every agent-session
-# shell inherits production's `SENTRY_DSN_BACKEND`. Gating on the DSN's presence therefore
-# cannot keep a `RAILS_ENV=test bin/rails` in an agent's clone from paging the production
-# alert channel — the DSN really is there. This allowlist is what holds, because it holds
-# even when the production DSN genuinely is present
-# ([#176](https://github.com/tadasant/zimmer/issues/176)).
+# Zimmer runs its agent sessions inside the production container, whose environment
+# carries production's `SENTRY_DSN_BACKEND`. `CliSpawnEnv` strips it from agent-session
+# child processes, but anything that still sees the container's environment — and a
+# `RAILS_ENV=test bin/rails` in an agent's clone once did — would initialize the SDK
+# against the production DSN. Gating on the DSN's presence cannot stop that, because the
+# DSN really is there. This allowlist is what holds, because it holds even when the
+# production DSN genuinely is present ([#176](https://github.com/tadasant/zimmer/issues/176)).
 module AlertingEnvironments
   # Frozen so nothing can widen it at runtime.
   ALL = %w[production staging].freeze

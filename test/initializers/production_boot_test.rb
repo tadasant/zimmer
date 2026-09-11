@@ -25,9 +25,9 @@ require "open3"
 # [#1121](https://github.com/tadasant/zimmer/pull/1121) shipped — `config/initializers/
 # sentry.rb` reading `ErrorReporter::ALERTING_ENVIRONMENTS` — and because the whole
 # `Sentry.init` block is gated on SENTRY_DSN_BACKEND, which development, test and CI never
-# set, nothing outside a deployed environment ran the line. Kamal's `db:prepare` pre-deploy
-# command aborted, the new container never passed its health check, and every
-# `Deploy production` run rolled back.
+# set, nothing outside a deployed environment ran the line. The image entrypoint's
+# `bin/rails db:prepare` aborted, the new container never passed its health check, and
+# Kamal rolled back every `Deploy production` run.
 #
 # So: the DSN is set here, because that is the gate that hid the bug.
 #
@@ -60,12 +60,19 @@ class ProductionBootTest < ActiveSupport::TestCase
          "initialized=\#{Sentry.initialized?}"
   RUBY
 
-  # One boot serves every case here — it costs a few seconds, and nothing in it is
-  # per-case state.
+  # Memoized so a re-run within one process does not boot twice.
   def self.boot_output
     @boot_output ||= begin
       env = {
         "RAILS_ENV" => "production",
+        # Nothing inherited from the parent may decide where this boot connects or
+        # what it reads, or the result depends on the machine it runs on.
+        # DATABASE_URL in particular is merged over database.yml, so a stray one would
+        # point a production-environment boot at a real database.
+        "DATABASE_URL" => nil,
+        "REDIS_URL" => "redis://127.0.0.1:1",
+        "AIR_CONFIG" => nil,
+        "RAILS_MASTER_KEY" => nil,
         "SENTRY_DSN_BACKEND" => FAKE_DSN,
         "OTEL_LOGS_EXPORTER_ENDPOINT" => FAKE_OTLP_ENDPOINT,
         # Makes the `after_initialize` blocks that are gated on "server or worker
@@ -82,7 +89,8 @@ class ProductionBootTest < ActiveSupport::TestCase
         # environment inside a CI runner that has a live Postgres of its own), and it
         # asserts the same thing wherever it runs instead of depending on whether some
         # `zimmer_production` database happens to exist. Boot must not need a database:
-        # Kamal runs this boot to execute db:prepare, before any schema is loaded.
+        # the image entrypoint runs this boot to execute db:prepare, before any schema
+        # is loaded.
         "DATABASE_HOST" => "127.0.0.1",
         "DATABASE_PORT" => "1",
         "DATABASE_SSLMODE" => "disable",
@@ -90,8 +98,27 @@ class ProductionBootTest < ActiveSupport::TestCase
         "RAILS_LOG_LEVEL" => "info"
       }
 
-      output, status = Open3.capture2e(env, RbConfig.ruby, "-e", PROBE, chdir: Rails.root.to_s)
-      [ output, status ]
+      run_with_deadline(env)
+    end
+  end
+
+  # A clean boot takes well under ten seconds. The deadline is what keeps a boot that
+  # blocks — an initializer doing unbounded network I/O, a firewall that drops rather
+  # than refuses port 1 — from holding a CI runner until the job's six-hour default.
+  BOOT_DEADLINE_SECONDS = 120
+
+  def self.run_with_deadline(env)
+    Open3.popen2e(env, RbConfig.ruby, "-e", PROBE, chdir: Rails.root.to_s) do |stdin, out, wait_thr|
+      stdin.close
+      reader = Thread.new { out.read }
+
+      unless wait_thr.join(BOOT_DEADLINE_SECONDS)
+        Process.kill("KILL", wait_thr.pid)
+        wait_thr.join
+        return [ "#{reader.value}\n[boot probe killed after #{BOOT_DEADLINE_SECONDS}s]", wait_thr.value ]
+      end
+
+      [ reader.value, wait_thr.value ]
     end
   end
 
@@ -107,29 +134,29 @@ class ProductionBootTest < ActiveSupport::TestCase
     lines.size > 30 ? "#{head}… (#{lines.size - 30} more lines)" : head
   end
 
-  test "the app boots in the production environment with SENTRY_DSN_BACKEND present" do
-    assert @status.success?,
-      "RAILS_ENV=production boot failed (exit #{@status.exitstatus}). " \
-      "This is the deploy failing — Kamal's db:prepare runs this same boot.\n#{excerpt}"
-    assert_includes @output, "BOOT_OK", "initialize! did not complete\n#{excerpt}"
-  end
-
-  test "no initializer reaches for a constant the autoloader has not set up yet" do
-    refute_match(/NameError: uninitialized constant/, @output,
+  # One test, not four: Rails parallelizes by test method, so each case would pay for
+  # its own boot in whichever worker picked it up. The assertions run in the order a
+  # failure is most useful to read.
+  test "the app boots in production with SENTRY_DSN_BACKEND set, and alerting resolves its allowlist" do
+    # Ruby prints an uncaught exception as "<location>: uninitialized constant Foo
+    # (NameError)", and rake as "NameError: uninitialized constant Foo" — match the part
+    # both share.
+    refute_match(/uninitialized constant/, @output,
       "an initializer referenced an autoloaded app/ constant; initializers run before " \
       "Rails::Application::Finisher's :setup_main_autoloader\n#{excerpt}")
-  end
 
-  test "the SDK comes out of a real boot allowing exactly production and staging" do
+    assert @status.success?,
+      "RAILS_ENV=production boot failed (#{@status}). This is the deploy failing — the " \
+      "image entrypoint's db:prepare runs this same boot.\n#{excerpt}"
+    assert_includes @output, "BOOT_OK", "initialize! did not complete\n#{excerpt}"
+
     assert_includes @output, 'enabled_environments=["production", "staging"]',
       "the environment allowlist is what keeps an agent session's RAILS_ENV=test run " \
-      "from paging #alerts on the production DSN it inherits (zimmer#176)\n#{excerpt}"
+      "from paging #alerts on the production DSN (zimmer#176)\n#{excerpt}"
     assert_includes @output, "initialized=true", "the SDK did not initialize\n#{excerpt}"
-  end
 
-  test "the boot-time obs health check resolves the same list, in the same boot" do
-    # It rescues everything and logs a warning, so a NameError in there would be
-    # silent — assert on the line it prints when it resolved the list cleanly.
+    # The health check rescues everything and logs a warning, so a NameError in there
+    # would be silent — assert on the line it prints only when it resolved the list.
     assert_includes @output, "[ObsReportingHealthCheck] Alerting is configured in production.",
       "the health check did not complete; a constant it could not resolve would be " \
       "swallowed by its own rescue\n#{excerpt}"
