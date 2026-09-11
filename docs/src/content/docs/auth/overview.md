@@ -61,7 +61,8 @@ end
 
 **`/supervisor`**, because the Administrate admin panel renders `claude_accounts` (whose
 `oauth_config` JSONB holds plaintext access and refresh tokens), `mcp_oauth_credentials`,
-`x_oauth_credentials`, and `runtime_login_attempts` as *editable* resources.
+`x_oauth_credentials`, and `runtime_login_attempts` as *editable* resources. It is also where the X
+consent flow runs, so minting an X credential takes the operator credential on every leg.
 
 **The mutating `POST /health/*` actions** — `cleanup_processes`, `retry_sessions`, `archive_old`,
 `enter_queue_recovery_mode` and `run_post_deploy_tasks` — because they terminate processes, rewrite
@@ -176,7 +177,11 @@ A completely separate system: `McpOauthCredential` + `McpOauthPendingFlow`, doin
 discovery, RFC 7591 dynamic client registration, and PKCE — then writing the resulting tokens into
 the CLI's own credential file so the agent's MCP client picks them up.
 
-→ [MCP server OAuth](/auth/mcp-oauth/)
+X (Twitter) is the exception: its token is an `XOauthCredential` row, vended as an env var, and
+minted by a consent flow that runs from `/supervisor` behind the operator realm.
+
+→ [MCP server OAuth](/auth/mcp-oauth/), and [X (Twitter) is minted from
+`/supervisor`](/auth/mcp-oauth/#x-twitter-is-minted-from-supervisor)
 
 ## Prefer remote MCP servers to long-lived API tokens
 
@@ -228,6 +233,7 @@ In `db/schema.rb`:
 - `claude_accounts.oauth_config` — plain `jsonb`, holding Anthropic and OpenAI access and refresh
   tokens
 - `x_oauth_credentials` — plain
+- `x_oauth_pending_flows.code_verifier` — plain, until the consent is finished, replaced, or swept by the next start after its 30 minutes run out
 - `runtime_login_attempts.pasted_code` — plain `string`
 
 `XOauthCredential`'s own header admits it: *"access_token / refresh_token are stored as plain text…
@@ -299,7 +305,7 @@ provider would have rotated the single-use refresh token, and only then would th
 | `APP_HOST` | The MCP OAuth **redirect URI**. Defaults to `localhost:3000`, and picks `http` iff the host string contains "localhost". |
 | `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_oauth_clients`, `mcp_secrets`) |
 | `X_OAUTH_CLIENT_ID` / `_SECRET` | X/Twitter token vending |
-| `X_OAUTH_REDIRECT_URI` | The callback `XOauthBootstrap` sends on both the consent request and the token exchange. Defaults to `http://localhost:8080/callback`; whatever you set must already be registered on the X app. |
+| `X_OAUTH_REDIRECT_URI` | Where X sends the operator after consent, on both the consent request and the token exchange. Defaults to `http://localhost:8080/callback`, where nothing listens, so the operator pastes the redirect URL back into `/supervisor`. Set it to `https://<APP_HOST>/supervisor/x_oauth/callback` and the flow finishes on its own. Whatever you set must already be registered on the X app. See [X (Twitter) is minted from `/supervisor`](/auth/mcp-oauth/#x-twitter-is-minted-from-supervisor). |
 | `ANTHROPIC_API_KEY` | Local dev, when not using OAuth |
 
 :::caution[`APP_HOST` unset breaks every MCP OAuth flow]

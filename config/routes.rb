@@ -101,6 +101,16 @@ Rails.application.routes.draw do
     # linked to a person, which used to require an env var and a deploy.
     resources :users
     resources :x_oauth_credentials
+    # The X OAuth consent flow that mints and re-mints an XOauthCredential (#852).
+    # Under /supervisor so every leg, the callback included, sits behind the
+    # operator realm the fleet's own sessions do not hold.
+    get "x_oauth/authorize", to: "x_oauth_authorizations#new", as: :new_x_oauth_authorization
+    post "x_oauth/authorize", to: "x_oauth_authorizations#create", as: :x_oauth_authorization
+    get "x_oauth/callback", to: "x_oauth_authorizations#callback", as: :x_oauth_callback
+    post "x_oauth/complete", to: "x_oauth_authorizations#complete", as: :x_oauth_complete
+    # Read-only plus destroy: a pending flow is only ever written by the consent
+    # flow above, and destroying one cancels that consent.
+    resources :x_oauth_pending_flows, only: [ :index, :show, :destroy ]
 
     root to: "sessions#index"
   end

@@ -4312,16 +4312,21 @@ on a dated snapshot in the catalog and on a Claude model version in any Ruby lit
 Tracked in [#85](https://github.com/tadasant/zimmer/issues/85), which stays open for the
 runtime-configurable half.
 
-### The `X_OAUTH` bootstrap callback must be registered with X by hand
+### The X consent finishes by paste until its callback is registered with X by hand
 
-`XOauthBootstrap` sends `X_OAUTH_REDIRECT_URI` on both the consent request and the token exchange,
-falling back to `http://localhost:8080/callback` (the URI already registered on the `ao-x-mcp-server`
-app). X compares the two, so the value has to reach both call sites — it does — and it has to already
-exist on your X app. **Registering it is a manual step on X's developer portal**; there is no API for
-it, so setting the variable to an unregistered URI fails at consent time with an opaque error.
+The X consent flow runs from `/supervisor`
+([how](/auth/mcp-oauth/#x-twitter-is-minted-from-supervisor)), and it can finish on its own only when
+X redirects to Zimmer's callback, `https://<APP_HOST>/supervisor/x_oauth/callback`. X accepts only
+redirect URIs registered on the X app, and the one the `ao-x-mcp-server` app has registered is
+`http://localhost:8080/callback`. So that is the default for `X_OAUTH_REDIRECT_URI`, and on that
+default the operator's browser lands on a page nothing serves and the operator pastes its URL back
+into the panel.
 
-Fixed in [#104](https://github.com/tadasant/zimmer/issues/104) as far as code reaches: the variable is
-sent on both call sites. Registering the URI is X's manual step and stays.
+**Registering the hosted callback is a manual step on X's developer portal**; there is no API for it.
+Once it is registered, setting `X_OAUTH_REDIRECT_URI` to it removes the paste. Setting the variable to
+an unregistered URI fails at X's consent screen with an opaque error. `XOauthBootstrap` sends the
+variable on both the consent request and the token exchange, as X requires
+([#104](https://github.com/tadasant/zimmer/issues/104)).
 
 ---
 
