@@ -72,6 +72,18 @@ catalog look far smaller than it is.
 `requires_oauth` marks the Codex models that only work with a ChatGPT login. No Claude Code or Pi
 model sets it true.
 
+`messages_api_id` is the model's id on Anthropic's `POST /v1/messages`, and only `haiku` sets it
+(`claude-haiku-4-5`). The quota probe is the one caller that hits that endpoint directly
+(`QuotaCheckService::PROBE_MODEL`, via `ModelCatalog.messages_api_id_for`; see
+[Agent harness credentials](/auth/harness/)). The endpoint answers the bare CLI alias `haiku` with a
+400, so the CLI id cannot double as the API id. The field holds the endpoint's floating alias, never a
+dated snapshot.
+
+The catalog is the only place a versioned Claude model id is written. `ModelCatalogTest` fails on a
+dated snapshot anywhere in the catalog, on a `claude_code` id that `ClaudeModelConfigurationAudit`
+would call a version pin, and on a Claude model-version string literal anywhere in `app/`, `config/`
+or `lib/` outside `model_catalog.rb`. So a model id added somewhere else fails CI until it moves here.
+
 ## Credentials
 
 Claude Code and Codex share a shape: `ClaudeAccount` rows, one marked current per runtime, tokens

@@ -10,19 +10,14 @@ class QuotaCheckService
   # this beta opt-in header on every Anthropic request. Anthropic rejects OAuth
   # tokens supplied via the x-api-key header with HTTP 401 "invalid x-api-key".
   OAUTH_BETA = "oauth-2025-04-20"
-  # The Messages API's floating alias for Haiku 4.5, never a dated snapshot. The
-  # probe only needs *a* cheap model to read rate-limit headers off, and a
-  # snapshot pin is the thing ClaudeModelConfigurationAudit exists to warn every
-  # other caller against (#85).
-  #
-  # Not the bare CLI alias. `ClaudeModelConfigurationAudit::CONCRETE_CLAUDE_MODEL`
-  # matches this string, because that audit reads ANTHROPIC_MODEL and
-  # ~/.claude/settings.json — surfaces where the Claude Code CLI accepts bare
-  # `opus`/`sonnet`/`haiku`. This constant is a `POST /v1/messages` model id, and
-  # that endpoint rejects the bare form; `claude-haiku-4-5` is the floating alias
-  # there. The audit never scans this file, so the two do not conflict in
-  # practice — but do not "fix" this to `haiku` and turn every probe into a 400.
-  PROBE_MODEL = "claude-haiku-4-5"
+  # The probe only needs *a* cheap model to read rate-limit headers off, so it
+  # uses the catalog's Haiku. The id sent is that entry's `messages_api_id` —
+  # the Messages API's floating alias, which ModelCatalog owns and its tests keep
+  # from being a dated snapshot (#85). Not the bare CLI alias `haiku`:
+  # `POST /v1/messages` answers that with a 400, which would turn every probe
+  # into a failure that reads like a quota problem.
+  PROBE_CATALOG_MODEL = "haiku"
+  PROBE_MODEL = ModelCatalog.messages_api_id_for(PROBE_CATALOG_MODEL)
   REQUEST_TIMEOUT = 10
 
   Result = Struct.new(

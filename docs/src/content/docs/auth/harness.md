@@ -797,7 +797,8 @@ human intervened ([#239](https://github.com/tadasant/zimmer/issues/239)).
 
 It now walks the pool in priority order and takes the first candidate that is not capped and whose
 token Anthropic actually honours. The probe is `QuotaCheckService#check_with_token`, **not**
-`refresh_token!`: it reads the rate-limit headers off a one-token request, so it can be run over
+`refresh_token!`: it reads the rate-limit headers off a one-token request (on the catalog's Haiku —
+see [Models](/sessions/runtimes/#models)), so it can be run over
 candidates that may be skipped without spending a single-use refresh token. A candidate Anthropic
 *refuses* is refreshed once and probed again — a stale access token is the one refusal a refresh can
 fix — so the single-use token is spent only where it might help, never on a candidate whose
