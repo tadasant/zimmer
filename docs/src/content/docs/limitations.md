@@ -1168,15 +1168,44 @@ on a workspace wider than your circle of trust.
 ### Triggers make the agent a trusted courier for untrusted input
 
 [Issue #18](https://github.com/tadasant/zimmer/issues/18): there is nothing between "Slack event
-arrived" and "agent running" except a `gsub` on a `prompt_template`. Untrusted Slack text is
-interpolated into the prompt, and the agent is then trusted to act on identifiers it read out of that
-text. No validation, no trusted identifiers.
+arrived" and "agent running" except interpolation into a `prompt_template`. Untrusted Slack text
+goes into the prompt, and the agent then acts with every tool its session carries, on whatever it
+concludes from that text. There is no input validation, and nothing binds the agent to the
+conversation it was fired for.
 
-The [workflow](/sessions/workflows/) contract is the start of the answer — a validated input, and
-trusted identifiers recorded where the model cannot rewrite them — but nothing fires a workflow in
-production yet, so this is still true of every trigger that runs.
+On the template path, three things are mitigated
+([Prompt template variables](/sessions/triggers/#prompt-template-variables)):
 
-Tracked in [#50](https://github.com/tadasant/zimmer/issues/50).
+- **A value cannot rewrite the template.** Interpolation is a single pass, so a message that quotes
+  `{{channel}}` or a title that quotes `{{labels}}` comes through as written instead of being
+  expanded. Backslash sequences in a value stay literal instead of pasting template text into it.
+- **A template can hand the agent Slack IDs it can trust.** `{{channel_id}}`, `{{message_ts}}`,
+  `{{thread_ts}}` and `{{author_id}}` come from Slack's own fields, and render empty unless they
+  have Slack's ID shape, so the agent can be told where to reply without reading it out of the
+  message.
+- **A template can fence untrusted text off.** `{{text|untrusted}}` renders the value between
+  markers that carry a code drawn at random on every fire, with a note that it is data, not
+  instructions. The text cannot close the fence early.
+
+What remains open:
+
+- **The agent can still do what the message says.** Fencing marks the text but does not neutralise
+  it. A well-formed hostile message can still argue a model into acting, and a trusted ID in the
+  prompt is advice the agent can ignore. Nothing binds the IDs into the session's tools, so a
+  session fired for one thread can still post to another. That binding is the
+  [workflow](/sessions/workflows/) contract's job — a validated input, and trusted identifiers
+  recorded where the model cannot rewrite them — and nothing fires a workflow in production yet.
+- **Both hardening features are opt-in.** An existing template renders exactly as before, with
+  `{{text}}` unfenced, until someone edits it.
+- **Some untrusted text never passes through a placeholder.** The GitHub poller's appended context
+  block (title and body) and the Slack poller's note of coalesced messages are unfenced.
+- **Who can reach the agent is decided before any of this.** The only gate on who may fire a
+  `bot_mention`, `dm_message` or passive-listening trigger is the
+  [Slack allowlist](/sessions/triggers/#who-may-trigger-a-bot_mention-a-dm_message-or-a-passive-listener),
+  and it defaults to the whole workspace.
+
+Tracked in [#50](https://github.com/tadasant/zimmer/issues/50), with the mechanism in
+[#18](https://github.com/tadasant/zimmer/issues/18).
 
 ### Quoted PR comment context is allowlisted; the diff hunk is not
 
