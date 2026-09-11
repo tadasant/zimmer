@@ -5,47 +5,54 @@ require "mocha/minitest"
 
 # The credential-ownership rearchitecture from issue #618, across the pieces that
 # have to agree for it to mean anything: nothing writes a subscription token to
-# the shared filesystem, MCP tokens are read and written per session, re-auth is
-# a DB write, and the health surface describes the store sessions actually use.
+# the filesystem at all, MCP tokens are read and written per session, re-auth is
+# one DB write, and the health surface describes the store sessions actually use.
 #
-# Every test asserts the setting ON and the setting OFF, because the off path is
-# the rollback and a rollback that quietly changed behaviour would not be one.
+# There is no setting and no off path any more. `~/.claude/.credentials.json` is
+# not a rollback, it is a file nothing reads — so these tests assert the
+# behaviour unconditionally, and several of them assert that a home directory
+# left entirely untouched is the outcome.
 class SessionScopedCredentialsTest < ActiveSupport::TestCase
   setup do
     @config_base = Dir.mktmpdir("claude-config-base")
     @claude_home = Dir.mktmpdir("claude-home")
     ENV["CLAUDE_SESSION_CONFIG_DIR"] = @config_base
-    @original_credentials_path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
-    @original_claude_json_path = ClaudeAuthProvider::CLAUDE_JSON_PATH
-    swap_const(:CREDENTIALS_JSON_PATH, File.join(@claude_home, ".credentials.json"))
-    swap_const(:CLAUDE_JSON_PATH, File.join(@claude_home, ".claude.json"))
+    # Nothing under test should write here. Pointing the transcript root at a
+    # temp dir keeps the `projects/` symlink out of the real ~/.claude, and
+    # makes "the home directory is untouched" an assertion rather than a hope.
+    ClaudeTranscriptSource.stubs(:projects_root).returns(File.join(@claude_home, "projects"))
   end
 
   teardown do
-    swap_const(:CREDENTIALS_JSON_PATH, @original_credentials_path)
-    swap_const(:CLAUDE_JSON_PATH, @original_claude_json_path)
     ENV.delete("CLAUDE_SESSION_CONFIG_DIR")
     FileUtils.rm_rf(@config_base)
     FileUtils.rm_rf(@claude_home)
   end
 
-  # ── the filesystem stops being written ────────────────────────────────
+  # ── the filesystem is never written ───────────────────────────────────
 
-  test "write_config! refuses to put a subscription token on the shared filesystem" do
-    with_setting(true) do
-      AccountRotationService.new.write_config!(claude_accounts(:primary))
-
-      refute File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH),
-        "no session reads this file any more; writing a refresh token to it is the hazard being removed"
-    end
+  test "AccountRotationService has no filesystem write path left" do
+    refute AccountRotationService.instance_methods(false).include?(:write_config!),
+      "write_config! was the one method that could put a subscription refresh token on disk"
+    refute AccountRotationService.private_instance_methods(false).include?(:sync_current_tokens)
+    refute AccountRotationService.private_instance_methods(false).include?(:capture_outgoing_filesystem_tokens)
+    refute AccountRotationService.private_instance_methods(false).include?(:bootstrap_owner_marker)
   end
 
-  test "with the setting off, write_config! still writes the shared filesystem" do
-    with_setting(false) do
-      AccountRotationService.new.write_config!(claude_accounts(:primary))
-
-      assert File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
+  test "ClaudeAccount has no shared-credentials machinery left" do
+    %i[
+      sync_tokens_from_filesystem! write_credentials_to_filesystem!
+      backfill_identity_from_filesystem!
+    ].each do |gone|
+      refute ClaudeAccount.new.respond_to?(gone, true), "ClaudeAccount##{gone} should be deleted"
     end
+
+    %i[credentials_owner_email write_credentials_owner_marker! filesystem_identity_email].each do |gone|
+      refute ClaudeAccount.respond_to?(gone), "ClaudeAccount.#{gone} should be deleted"
+    end
+
+    refute ClaudeAuthProvider.respond_to?(:credentials_owner_path),
+      "the .ao-credentials-owner.json marker has no referent without a shared file"
   end
 
   test "activate! is a DB write and a snapshot, with no filesystem step" do
@@ -56,22 +63,18 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
       QuotaCheckService::Result.new(success: false, unreachable: true, error_message: "skip")
     )
 
-    with_setting(true) do
-      AccountRotationService.new.activate!(secondary, snapshot_trigger: "manual_switch")
+    AccountRotationService.new.activate!(secondary, snapshot_trigger: "manual_switch")
 
-      assert secondary.reload.is_current?
-      refute File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
-    end
+    assert secondary.reload.is_current?
+    assert_empty Dir.children(@claude_home)
   end
 
   test "ensure_active_account! keeps a healthy current account without touching the filesystem" do
     primary = claude_accounts(:primary)
     primary.update!(is_current: true, status: :active)
 
-    with_setting(true) do
-      assert_equal primary, AccountRotationService.new.ensure_active_account!
-      refute File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
-    end
+    assert_equal primary, AccountRotationService.new.ensure_active_account!
+    assert_empty Dir.children(@claude_home)
   end
 
   test "ensure_active_account! drops a current account whose stored token Anthropic refused" do
@@ -93,13 +96,17 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
         error_message: "No rate-limit headers in response (HTTP 401)."))
     ClaudeAccount.any_instance.stubs(:refresh_token!).returns(false)
 
-    with_setting(true) do
-      promoted = AccountRotationService.new.ensure_active_account!
+    promoted = AccountRotationService.new.ensure_active_account!
 
-      assert_not_equal primary, promoted,
-        "under session-scoped credentials the stored token IS what the session is handed"
-      assert promoted.present?
-    end
+    assert_not_equal primary, promoted,
+      "the stored token IS what the session is handed, so a recorded refusal is about it"
+    assert promoted.present?
+  end
+
+  test "ensure_active_account! answers nil when the pool holds nothing usable" do
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).update_all(oauth_config: {}, is_current: false)
+
+    assert_nil AccountRotationService.new.ensure_active_account!
   end
 
   # ── MCP OAuth moves with the session ──────────────────────────────────
@@ -107,148 +114,98 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
   test "the MCP credential writer targets the session's own config dir" do
     session = sessions(:active_session)
 
-    with_setting(true) do
-      writer = ClaudeMcpCredentialWriter.for_session(session)
+    writer = ClaudeMcpCredentialWriter.for_session(session)
 
-      assert_equal ClaudeSessionConfigDirectory.credentials_path_for(session.id), writer.credentials_path
-    end
+    assert_equal ClaudeSessionConfigDirectory.credentials_path_for(session.id), writer.credentials_path
   end
 
-  test "with the setting off, the MCP credential writer targets the host-global file" do
-    with_setting(false) do
-      writer = ClaudeMcpCredentialWriter.for_session(sessions(:active_session))
-
-      assert_equal ClaudeMcpCredentialWriter::CLAUDE_CREDENTIALS_PATH, writer.credentials_path
-    end
+  test "there is no host-global MCP credential writer to build" do
+    assert_raises(ArgumentError) { ClaudeMcpCredentialWriter.new }
+    assert_nil ClaudeMcpCredentialWriter.for_session(Object.new),
+      "a caller with no session id has no per-session store to write into"
+    assert ClaudeMcpCredentialWriter.session_scoped_store?
   end
 
   # A rotated MCP token lands in the session's file and is read back from there.
   # This is the smaller instance of the same sync problem, and it is what makes
   # the remaining credentials file harmless: it holds mcpOAuth and nothing else.
   test "a token written for one session is invisible to another session's store" do
-    with_setting(true) do
-      one = ClaudeMcpCredentialWriter.for_session(sessions(:active_session))
-      one.stubs(:macos?).returns(false)
-      one.write!(working_directory: @config_base, credentials: [ resolved_credential ])
+    one = ClaudeMcpCredentialWriter.for_session(sessions(:active_session))
+    one.stubs(:macos?).returns(false)
+    one.write!(working_directory: @config_base, credentials: [ resolved_credential ])
 
-      two = ClaudeMcpCredentialWriter.new(
-        credentials_path: ClaudeSessionConfigDirectory.credentials_path_for(999_999)
-      )
-      two.stubs(:macos?).returns(false)
+    two = ClaudeMcpCredentialWriter.new(
+      credentials_path: ClaudeSessionConfigDirectory.credentials_path_for(999_999)
+    )
+    two.stubs(:macos?).returns(false)
 
-      assert_equal "access-token-xyz", one.read_runtime_credentials["notion|abc123"].access_token
-      assert_empty two.read_runtime_credentials
-    end
+    assert_equal "access-token-xyz", one.read_runtime_credentials["notion|abc123"].access_token
+    assert_empty two.read_runtime_credentials
   end
 
   test "the session's credentials file never gains a claudeAiOauth block from Zimmer" do
     session = sessions(:active_session)
 
-    with_setting(true) do
-      writer = ClaudeMcpCredentialWriter.for_session(session)
-      writer.stubs(:macos?).returns(false)
-      writer.write!(working_directory: @config_base, credentials: [ resolved_credential ])
+    writer = ClaudeMcpCredentialWriter.for_session(session)
+    writer.stubs(:macos?).returns(false)
+    writer.write!(working_directory: @config_base, credentials: [ resolved_credential ])
 
-      data = JSON.parse(File.read(writer.credentials_path))
-      assert_equal [ "mcpOAuth" ], data.keys
-    end
+    data = JSON.parse(File.read(writer.credentials_path))
+    assert_equal [ "mcpOAuth" ], data.keys
   end
 
-  # ── the refresh path stops reconciling against the shared file ────────
+  test "the cron MCP sweep skips Claude Code, whose store is per session" do
+    reconcilers = RefreshMcpOauthTokensJob.new.send(:runtime_reconcilers)
 
-  # The regression the fresh-eyes review caught. #lost_refresh_race? re-synced
-  # from the shared file on every rejected refresh, and with the setting on that
-  # file is a stale artifact rather than a racer: pulling it back would overwrite
-  # the DB's live pair with a superseded one and then report the account healthy —
-  # the 2026-08-22 shape, through the one path the setting was meant to close.
-  test "a rejected refresh does not pull the stale shared file back over the DB" do
+    refute_includes reconcilers.map { |writer, _| writer.class }, ClaudeMcpCredentialWriter,
+      "there is no single Claude store for a session-less sweep to read"
+  end
+
+  # ── the refresh path never reconciles against a file ──────────────────
+
+  # The regression an earlier fresh-eyes review caught. #lost_refresh_race? used
+  # to re-sync from the shared file on every rejected refresh; pulling that file
+  # back would overwrite the DB's live pair with a superseded one and then report
+  # the account healthy — the 2026-08-22 shape, through the one path this work
+  # was meant to close.
+  test "a rejected refresh consults no filesystem at all" do
     account = claude_accounts(:primary)
     account.update!(is_current: true)
 
-    with_setting(true) do
-      ClaudeAccount.any_instance.expects(:sync_tokens_from_filesystem!).never
+    account.send(:lost_refresh_race?, "some-presented-value")
 
-      account.send(:lost_refresh_race?, "some-presented-value")
-    end
+    assert_empty Dir.children(@claude_home)
   end
 
-  test "with the setting off, a rejected refresh still re-syncs from the shared file" do
+  test "a refresh presents the DB token captured by re-auth" do
+    account = claude_accounts(:secondary)
+
+    capture_login!(account)
+    sent_refresh_token = stub_successful_refresh!
+
+    assert account.refresh_token!
+    assert_equal "fresh-refresh", sent_refresh_token.call,
+      "the row is the only store; nothing may overwrite a completed login"
+  end
+
+  test "a successful refresh of the current account writes nothing to disk" do
     account = claude_accounts(:primary)
     account.update!(is_current: true)
+    stub_successful_refresh!
 
-    with_setting(false) do
-      ClaudeAccount.any_instance.expects(:sync_tokens_from_filesystem!).at_least_once
-
-      account.send(:lost_refresh_race?, "some-presented-value")
-    end
+    assert account.refresh_token!
+    assert_equal "rotated-refresh", account.reload.claude_refresh_token
+    assert_empty Dir.children(@claude_home)
   end
 
-  test "a refresh uses the DB token captured by re-auth instead of the stale shared file" do
-    account = claude_accounts(:secondary)
-    write_shared_subscription_credentials!(account, refresh_token: "stale-shared-refresh")
+  # ── the sweep reads no filesystem back ────────────────────────────────
 
-    with_setting(true) do
-      capture_login!(account)
-      sent_refresh_token = stub_successful_refresh!
+  test "Claude implements neither filesystem dispatcher hook" do
+    provider = ClaudeAuthProvider.new
 
-      assert account.refresh_token!
-      assert_equal "fresh-refresh", sent_refresh_token.call,
-        "the shared file is a rollback artifact and must not overwrite a completed login"
-    end
-  end
-
-  test "with the setting off, a refresh still adopts a CLI-rotated shared token" do
-    account = claude_accounts(:secondary)
-    write_shared_subscription_credentials!(account, refresh_token: "cli-rotated-refresh")
-
-    with_setting(false) do
-      capture_login!(account)
-      sent_refresh_token = stub_successful_refresh!
-
-      assert account.refresh_token!
-      assert_equal "cli-rotated-refresh", sent_refresh_token.call,
-      "shared-file mode must retain the rollback path that adopts CLI rotations"
-    end
-  end
-
-  test "the filesystem sync boundary refuses stale shared tokens when the setting is on" do
-    account = claude_accounts(:secondary)
-    db_refresh_token = account.claude_refresh_token
-    write_shared_subscription_credentials!(account, refresh_token: "stale-shared-refresh")
-
-    with_setting(true) do
-      assert_equal :session_scoped, account.sync_tokens_from_filesystem!
-      assert_equal db_refresh_token, account.reload.claude_refresh_token
-    end
-  end
-
-  test "with the setting off, the filesystem sync boundary still adopts shared tokens" do
-    account = claude_accounts(:secondary)
-    write_shared_subscription_credentials!(account, refresh_token: "cli-rotated-refresh")
-
-    with_setting(false) do
-      assert_equal :synced, account.sync_tokens_from_filesystem!
-      assert_equal "cli-rotated-refresh", account.reload.claude_refresh_token
-    end
-  end
-
-  # ── the sweep stops reading the filesystem back ───────────────────────
-
-  test "the auth sweep does not sync the current account's tokens off the filesystem" do
-    claude_accounts(:primary).update!(is_current: true)
-
-    with_setting(true) do
-      ClaudeAccount.any_instance.expects(:sync_tokens_from_filesystem!).never
-
-      assert_nil ClaudeAuthProvider.new.sync_current_account_tokens!
-    end
-  end
-
-  test "Claude no longer reconciles a filesystem identity into the DB at all" do
-    # The base hook's no-op is the behaviour, on or off: adopting an identity off
-    # a container-local file is what let a container replacement change which
-    # account production ran under (#618, addendum B).
-    assert_nil ClaudeAuthProvider.new.reconcile_filesystem_identity!
+    assert_nil provider.sync_current_account_tokens!
+    assert_nil provider.reconcile_filesystem_identity!
+    refute ClaudeAuthProvider.instance_methods(false).include?(:sync_current_account_tokens!)
   end
 
   # ── re-auth is one write ──────────────────────────────────────────────
@@ -257,25 +214,10 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
     account = claude_accounts(:primary)
     account.update!(is_current: true)
 
-    with_setting(true) do
-      AccountRotationService.any_instance.expects(:write_config!).never
+    capture_login!(account)
 
-      capture_login!(account)
-
-      assert_equal "fresh-access", account.reload.claude_access_token
-      refute File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
-    end
-  end
-
-  test "with the setting off, capturing a login for the current account still writes the filesystem" do
-    account = claude_accounts(:primary)
-    account.update!(is_current: true)
-
-    with_setting(false) do
-      AccountRotationService.any_instance.expects(:write_config!).with(account, force: true).once
-
-      capture_login!(account)
-    end
+    assert_equal "fresh-access", account.reload.claude_access_token
+    assert_empty Dir.children(@claude_home)
   end
 
   # ── the health surface describes the store in use ─────────────────────
@@ -283,59 +225,44 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
   test "health reports the DB as the credential store, naming the current account" do
     claude_accounts(:primary).update!(is_current: true, status: :active)
 
-    with_setting(true) do
-      status = ClaudeCredentialHealth.status
+    status = ClaudeCredentialHealth.status
 
-      assert_equal :ok, status.state
-      assert_equal "tadas@tadasant.com", status.owner_email
-      assert_match(/authenticate from the database/, status.detail)
-    end
+    assert_equal :ok, status.state
+    assert_equal "tadas@tadasant.com", status.owner_email
+    assert_match(/authenticate from the database/, status.detail)
   end
 
   test "health reports corrupt when the current account's stored tokens are unusable" do
     claude_accounts(:primary).update!(is_current: true, oauth_config: { "credentials_json" => {} })
 
-    with_setting(true) do
-      status = ClaudeCredentialHealth.status
+    status = ClaudeCredentialHealth.status
 
-      assert_equal :corrupt, status.state
-      assert_match(/Re-authenticate/, status.detail)
-    end
+    assert_equal :corrupt, status.state
+    assert_match(/Re-authenticate/, status.detail)
   end
 
   test "health reports absent when nothing is current yet" do
     ClaudeAccount.update_all(is_current: false)
 
-    with_setting(true) do
-      assert_equal :absent, ClaudeCredentialHealth.status.state
-    end
+    assert_equal :absent, ClaudeCredentialHealth.status.state
   end
 
-  test "self-heal has nothing to repair when there is no shared file in play" do
-    # A corrupt shared file would still be on disk after a rollback, and rewriting
-    # it every five minutes while nothing reads it is noise, not a repair.
-    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH,
-      JSON.generate("claudeAiOauth" => { "accessToken" => "", "refreshToken" => "" }))
+  test "health offers no self-heal, because a DB row is the bottom of the stack" do
+    refute ClaudeCredentialHealth.respond_to?(:self_heal!),
+      "a corrupt file could be rewritten from the DB; a corrupt row needs a human"
+  end
 
-    with_setting(true) do
-      outcome, detail = ClaudeCredentialHealth.self_heal!
+  # ── the setting is retired ────────────────────────────────────────────
 
-      assert_equal :skipped, outcome
-      assert_match(/no shared file to repair/, detail)
-    end
+  test "the experimental toggle is gone from the registry and the model" do
+    assert_nil ExperimentalSettingsRegistry.find("session_scoped_credentials")
+    refute_includes ExperimentalSettingsRegistry.keys, "session_scoped_credentials"
+    refute AppSetting.respond_to?(:session_scoped_credentials_enabled?)
+    refute_includes AppSetting.column_names, "session_scoped_credentials_enabled",
+      "phase 1 of the two-phase drop hides the column from the model"
   end
 
   private
-
-  def with_setting(enabled)
-    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(enabled)
-    yield
-  end
-
-  def swap_const(name, value)
-    ClaudeAuthProvider.send(:remove_const, name)
-    ClaudeAuthProvider.const_set(name, value)
-  end
 
   def resolved_credential
     ResolvedMcpCredential.new(
@@ -349,17 +276,6 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
       scope: nil,
       headers: {}
     )
-  end
-
-  def write_shared_subscription_credentials!(account, refresh_token:)
-    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate(
-      "claudeAiOauth" => {
-        "accessToken" => "access-for-#{refresh_token}",
-        "refreshToken" => refresh_token,
-        "expiresAt" => ((Time.current + 1.hour).to_f * 1000).to_i
-      }
-    ))
-    ClaudeAccount.write_credentials_owner_marker!(account.email)
   end
 
   def stub_successful_refresh!

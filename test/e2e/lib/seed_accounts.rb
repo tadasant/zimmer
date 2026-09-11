@@ -95,9 +95,9 @@ accounts.each_with_index do |acct, idx|
   puts "Created account #{acct[:email]} (priority: #{acct[:priority]}, current: #{idx == 0})"
 end
 
-# Write the first account's credentials to the filesystem
-# so that AccountRotationService.ensure_active_account! sees it
+# Nothing is written to the filesystem. A Claude session is spawned with the
+# DB-current account's access token in CLAUDE_CODE_OAUTH_TOKEN and its own
+# CLAUDE_CONFIG_DIR, so seeding the row IS seeding the credential (issue #618).
 first_account = ClaudeAccount.find_by(priority: 0)
-AccountRotationService.new.write_config!(first_account)
-puts "\nWrote credentials for #{first_account.email} to filesystem"
+puts "\nCurrent account: #{first_account.email} (sessions read its token from the DB)"
 puts "Total accounts: #{ClaudeAccount.count}"

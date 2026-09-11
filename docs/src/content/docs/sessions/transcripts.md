@@ -195,7 +195,8 @@ tailing, the same as scrolling up does.
 ## Secret redaction
 
 Zimmer hands its agents real credentials. MCP `${VAR}` values are interpolated into `.mcp.json`
-inside the clone, OAuth tokens live in `~/.claude/.credentials.json`, `git` pushes over an
+inside the clone, a Claude session's OAuth access token is in its environment as
+`CLAUDE_CODE_OAUTH_TOKEN` and its MCP tokens in its own `.credentials.json`, `git` pushes over an
 authenticated remote. An agent that `cat`s one of those files, echoes an environment variable, or
 pastes a `curl -H "Authorization: Bearer …"` into its own reasoning puts that credential in the
 transcript — and the transcript is stored, rendered, and downloadable through the

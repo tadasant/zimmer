@@ -48,46 +48,27 @@ class ClaudeSessionConfigDirectoryTest < ActiveSupport::TestCase
 
   # --- active_for? ---------------------------------------------------------
 
-  # One predicate, because MCP injection and the spawn env have to reach the same
-  # answer: injection runs first, and a disagreement puts a session's mcpOAuth map
-  # in a directory the CLI is never pointed at.
-  test "active_for? is false with the setting off" do
-    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
-    claude_accounts(:primary).update!(is_current: true)
-
-    assert_not ClaudeSessionConfigDirectory.active_for?(886)
-  end
-
-  test "active_for? is true with the setting on and a current account holding a token" do
-    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
-    claude_accounts(:primary).update!(is_current: true)
-
+  # Every Claude session gets its own config dir — the mode is unconditional
+  # (issue #618) — so the only thing left to check is that there is a session id
+  # to key one on. That is not vestigial: ClaudeMcpCredentialWriter.for_session
+  # is reached from contract tests and MCP paths holding session doubles with no
+  # id, and a session-less caller has no per-session store to write into.
+  test "active_for? is true for any session id and false without one" do
     assert ClaudeSessionConfigDirectory.active_for?(886)
-  end
-
-  test "active_for? is false for a session-less spawn" do
-    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
-    claude_accounts(:primary).update!(is_current: true)
+    assert ClaudeSessionConfigDirectory.active_for?("886")
 
     assert_not ClaudeSessionConfigDirectory.active_for?(nil)
+    assert_not ClaudeSessionConfigDirectory.active_for?("")
   end
 
-  # The fail-open case ClaudeSpawnEnv relies on: with nothing to hand the session,
-  # both it and the MCP writer must fall back to the shared file together.
-  test "active_for? is false when no current account holds an access token" do
-    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+  # It says nothing about whether the POOL can serve a token. The two questions
+  # used to be one, because the spawn env fell back to the shared file when the
+  # pool was empty. There is no fallback now — ClaudeSpawnEnv raises — so a
+  # config dir resolved for a spawn that then fails costs nothing.
+  test "active_for? does not consult the account pool" do
     ClaudeAccount.update_all(is_current: false)
 
-    assert_not ClaudeSessionConfigDirectory.active_for?(886)
-
-    claude_accounts(:primary).update!(is_current: true, oauth_config: {})
-    assert_not ClaudeSessionConfigDirectory.active_for?(886)
-  end
-
-  test "active_for? degrades to false rather than raising on the spawn path" do
-    AppSetting.stubs(:session_scoped_credentials_enabled?).raises(StandardError.new("db down"))
-
-    assert_nothing_raised { assert_not ClaudeSessionConfigDirectory.active_for?(886) }
+    assert ClaudeSessionConfigDirectory.active_for?(886)
   end
 
   # --- path_for / credentials_path_for -------------------------------------
@@ -212,21 +193,14 @@ class ClaudeSessionConfigDirectoryTest < ActiveSupport::TestCase
     end
   end
 
-  # Point both the config base and the shared ~/.claude at temp dirs, so nothing
-  # here can touch a real credentials file or transcript tree.
+  # Point both the config base and the shared transcript tree at temp dirs, so
+  # nothing here can touch a real ~/.claude.
   def with_relocated_dirs
     Dir.mktmpdir("claude-config-base") do |config_base|
       Dir.mktmpdir("claude-home") do |claude_home|
         ENV["CLAUDE_SESSION_CONFIG_DIR"] = config_base
-        original = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
-        ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
-        ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, File.join(claude_home, ".credentials.json"))
-        begin
-          yield config_base, claude_home
-        ensure
-          ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
-          ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, original)
-        end
+        ClaudeTranscriptSource.stubs(:projects_root).returns(File.join(claude_home, "projects"))
+        yield config_base, claude_home
       end
     end
   end

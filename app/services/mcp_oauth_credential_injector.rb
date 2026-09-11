@@ -153,8 +153,11 @@ class McpOauthCredentialInjector
   # the Authorize button. Removing the entry leaves nothing to adopt.
   #
   # Every runtime, not just this session's: the credential row is runtime-agnostic
-  # and the stores are host-global, so a copy left in the other runtime's store
-  # resurrects the row the next time a session spawns there. Each runtime's key is
+  # and the Codex and Pi stores are host-global, so a copy left in another
+  # runtime's store resurrects the row the next time a session spawns there.
+  # Claude's store is this session's own directory, so for Claude the only copy
+  # this can reach is this session's — see the limitation on revocation and
+  # already-running sessions in docs/limitations.md. Each runtime's key is
   # asked of its own writer — Codex hashes its key differently from Claude (and
   # from the DB's), so a shared key would silently miss.
   #
@@ -171,11 +174,21 @@ class McpOauthCredentialInjector
     return [] if server_configs.empty?
 
     RuntimeRegistry.mcp_credential_writer_classes.flat_map do |writer_class|
-      # `.for_session`, not `.new`: this instance HAS a session, and under
-      # session-scoped credentials the copy that matters is the one in that
-      # session's own store. Every other runtime's `.for_session` is `.new`, so
-      # the loop is unchanged for them.
+      # A session-scoped store belongs to one session of one runtime. Asking
+      # Claude's writer to delete from a Codex session's "Claude store" would
+      # only create an empty config dir for a session that never had one.
+      if writer_class.session_scoped_store? && writer_class != session.runtime.mcp_credential_writer_class
+        next []
+      end
+
+      # `.for_session`, not `.new`: this instance HAS a session, and for Claude
+      # Code the copy that matters is the one in that session's own store. Every
+      # other runtime's `.for_session` is `.new`, so the loop is unchanged for
+      # them. It can answer nil for a session with no id to key a store on, and
+      # a runtime with no store for this session has nothing to delete from it.
       writer = writer_class.for_session(session)
+      next [] unless writer
+
       keys = server_configs.map { |name, config| writer.credential_key_for(name, config) }
       writer.delete_credentials(keys)
     end
@@ -349,10 +362,11 @@ class McpOauthCredentialInjector
   # ClaudeMcpCredentialWriter; Codex sessions get CodexMcpCredentialWriter.
   #
   # Built through `.for_session` rather than `.new` because "which credential
-  # store" is a per-session question on Claude Code under session-scoped
-  # credentials: the session's own CLAUDE_CONFIG_DIR is what the CLI reads its
-  # mcpOAuth map from, and where it writes a token it rotated mid-session back
-  # to. Every other runtime's `.for_session` is `.new`.
+  # store" is a per-session question on Claude Code: the session's own
+  # CLAUDE_CONFIG_DIR is what the CLI reads its mcpOAuth map from, and where it
+  # writes a token it rotated mid-session back to (issue #618). Every other
+  # runtime's `.for_session` is `.new`. It may answer nil, which #credential_store?
+  # reads the same way it reads a runtime with no writer class at all.
   # The runtime's credential writer, or nil for a runtime that has no store
   # Zimmer writes. Memoized through `defined?` rather than `||=` so a legitimate
   # nil is cached once instead of re-resolved on every call.

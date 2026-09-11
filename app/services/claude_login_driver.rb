@@ -94,26 +94,16 @@ class ClaudeLoginDriver < RuntimeLoginDriver
     # records nothing and the row reads "stored, unverified", which is the truth.
     account.record_credential_probe!(probe, probed_token: captured_token)
 
-    # Writing only the DB row is what made a successful re-auth of the CURRENT
-    # account a no-op: the live ~/.claude/.credentials.json every session reads
-    # kept the broken tokens, so the UI said "authenticated" while every
-    # transcript said "Not logged in · Please run /login". The account whose
-    # credentials are live is precisely the one most likely to need repairing,
-    # so it is the one the capture has to reach. See issue #618, holes 2 and 3.
-    #
-    # force: — the pair the human just minted is newer than anything on disk by
-    # construction, so the backwards-write guard must not treat the file it is
-    # replacing as the live copy.
-    #
-    # Under session-scoped credentials the whole branch falls away, and with it
-    # the class of bug it was written to fix: re-auth becomes scratch login →
-    # validate → write the DB → done, and the next session to spawn reads the new
-    # token out of the row. There is no second store for the update to fail to
-    # reach, and no separate Switch step to make it take.
-    if account.is_current? && !AppSetting.session_scoped_credentials_enabled?
-      AccountRotationService.new.write_config!(account, force: true)
-      Rails.logger.info "[ClaudeLoginDriver] Wrote freshly captured credentials for the current account #{account.email} to the filesystem"
-    end
+    # The row above is the whole capture, including for the account that is
+    # CURRENT. That used to be the trap: writing only the DB made a successful
+    # re-auth of the current account a no-op, because the live
+    # ~/.claude/.credentials.json every session read kept the broken tokens and
+    # the UI said "authenticated" while every transcript said "Not logged in ·
+    # Please run /login" (issue #618, holes 2 and 3). With the shared file gone,
+    # re-auth is scratch login → validate → write the DB → done: there is no
+    # second store for the update to fail to reach, no separate Switch step to
+    # make it take, and the next session to spawn reads the new token out of the
+    # row.
 
     # A human just re-authenticated this account, which is the only signal that
     # actually retires the needs_reauth nag. Release the alert throttle here rather

@@ -764,9 +764,9 @@ class HealthMonitorService
     }
   end
 
-  # Agent-runtime authentication health: is the worker's shared Claude
-  # credentials file usable, and does the pool have an account that can serve a
-  # session?
+  # Agent-runtime authentication health: does the current Claude account hold a
+  # credential a session can be spawned with, and does the pool have an account
+  # that can serve one?
   #
   # A corrupt credentials file used to be invisible here. It logged 126 WARN
   # lines an hour and appeared on no surface at all, so the 2026-08-22 outage was
@@ -826,19 +826,9 @@ class HealthMonitorService
 
     {
       status: status,
-      # Which store the card is describing. Under session-scoped credentials the
-      # answer to "can a session authenticate" is a DB row, not a file on the
-      # worker, and a card that still said "Worker credentials file" would be
-      # pointing at something no session reads.
-      session_scoped_credentials: AppSetting.session_scoped_credentials_enabled?,
       credentials_state: credentials.state,
       credentials_detail: credentials.detail,
       credentials_owner: credentials.owner_email,
-      # What the self-heal path would do about it right now. Only asked when the
-      # file is actually corrupt, because it is the one state that has a repair —
-      # and the operator needs the REASON a repair is declined, not a promise
-      # that one is coming. See issue #618, hole 5.
-      repair_outlook: credentials.corrupt? ? repair_outlook : nil,
       available_accounts: available,
       serviceable_accounts: serviceable,
       needs_reauth_accounts: needs_reauth,
@@ -848,25 +838,14 @@ class HealthMonitorService
   rescue => e
     {
       status: HealthStatus.new(status: :warning, message: "Auth health could not be read: #{e.message}"),
-      session_scoped_credentials: false,
       credentials_state: :unknown,
       credentials_detail: e.message,
       credentials_owner: nil,
-      repair_outlook: nil,
       available_accounts: nil,
       serviceable_accounts: nil,
       needs_reauth_accounts: nil,
       checked_at: Time.current
     }
-  end
-
-  # A read-only dry run of the credential repair: the same decision
-  # ClaudeCredentialHealth.self_heal! is about to make on the next sweep, minus
-  # the write. `:healed` means the sweep will fix it; anything else carries the
-  # reason it will not, which is the part an operator has to act on.
-  def repair_outlook
-    outcome, detail = ClaudeCredentialHealth.self_heal!(dry_run: true)
-    { outcome: outcome, detail: detail }
   end
 
   # Clean up orphaned processes

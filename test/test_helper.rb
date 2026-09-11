@@ -83,6 +83,19 @@ AUTO_REQUIRED_SUPPORT_FILES.each { |f| require f }
 # swapped in and never put back". See test/support/cache_isolation_guard.rb.
 CacheIsolationGuard.capture!
 
+# Keep every Claude per-session config dir the suite creates out of the real
+# `~/.zimmer/claude-config`, once for the whole run and before parallelize()
+# forks. Every Claude spawn — and every MCP credential write for a Claude
+# session — resolves `ClaudeSessionConfigDirectory` for the session's id (issue
+# #618), so a test that drives the real adapter, injector or spawn env without
+# relocating it would write into the durable volume; on a shared worker a fixture
+# id can collide with a live production session's, and the write would land in
+# that session's own store. The per-test relocations in the auth suites still
+# stand — this is the floor under them, not a replacement.
+#
+# `||=`, so a run that sets it deliberately keeps its own.
+ENV["CLAUDE_SESSION_CONFIG_DIR"] ||= Dir.mktmpdir("zimmer-test-claude-config")
+
 # Pre-install the AIR CLI and pre-warm the AirCatalogService cache once at test
 # boot, before parallelize() forks workers. Two reasons:
 #   1. 32 parallel workers would otherwise race to install on the same

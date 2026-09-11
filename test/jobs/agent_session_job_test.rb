@@ -988,9 +988,9 @@ class AgentSessionJobTest < ActiveJob::TestCase
   #
   # This test drives the REAL OAuth injector + REAL ClaudeMcpCredentialWriter
   # through the reused-clone spawn path and asserts the freshly-authorized
-  # credential is written to the on-disk credential store. Only external
+  # credential is written to the session's own credential store. Only external
   # boundaries are stubbed: the MCP server catalog lookup (ServersConfig), the
-  # filesystem/process adapters, and the credentials file path.
+  # filesystem/process adapters, and the config-directory base.
   test "reusing an existing clone writes freshly-authorized OAuth credentials to the on-disk store before spawning" do
     # Real catalog server (the exact server from the incident) — no stubbing of
     # the catalog lookup; the injector reads the live ServersConfig entry.
@@ -1040,9 +1040,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       [ pid, MockProcessManager::MockStatus.new(0) ]
     end
 
-    creds_file = File.join(@test_tmpdir, "claude_credentials.json")
-
-    with_claude_credentials_path(creds_file) do
+    with_claude_credentials_path do |creds_file|
       TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
         mock_poller = Object.new
         def mock_poller.poll_and_broadcast; end
@@ -1058,17 +1056,17 @@ class AgentSessionJobTest < ActiveJob::TestCase
           job.perform(@session.id)
         end
       end
-    end
 
-    # The real injector wrote the fresh credential to the on-disk store on the
-    # reused-clone path — this is the bug fix. Before the fix this file was
-    # never written on the reuse path and the CLI read a stale token.
-    assert File.exist?(creds_file), "Credentials file must be written on the reused-clone path"
-    written = JSON.parse(File.read(creds_file))
-    entry = written.dig("mcpOAuth", credential_key)
-    refute_nil entry, "On-disk store must contain the reused-clone session's MCP OAuth entry"
-    assert_equal "fresh-access-token-xyz", entry["accessToken"],
-      "On-disk store must carry the freshly-authorized access token, not a stale one"
+      # The real injector wrote the fresh credential to the session's store on the
+      # reused-clone path — this is the bug fix. Before the fix this file was
+      # never written on the reuse path and the CLI read a stale token.
+      assert File.exist?(creds_file), "Credentials file must be written on the reused-clone path"
+      written = JSON.parse(File.read(creds_file))
+      entry = written.dig("mcpOAuth", credential_key)
+      refute_nil entry, "On-disk store must contain the reused-clone session's MCP OAuth entry"
+      assert_equal "fresh-access-token-xyz", entry["accessToken"],
+        "On-disk store must carry the freshly-authorized access token, not a stale one"
+    end
 
     # And the gate cleared, so the spawn proceeded.
     assert_equal 1, mock_cli_adapter.executed_commands.length,
@@ -12279,17 +12277,17 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
   end
 
-  # Swaps the frozen credentials-path constant to a temp file for the duration
-  # of the block so tests never touch the real ~/.claude/.credentials.json.
-  def with_claude_credentials_path(path)
-    klass = ClaudeMcpCredentialWriter
-    original = klass::CLAUDE_CREDENTIALS_PATH
-    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
-    klass.const_set(:CLAUDE_CREDENTIALS_PATH, path)
-    yield
+  # Points the per-session Claude config dirs at a temp base for the duration of
+  # the block, so a test that drives the real MCP credential writer never touches
+  # the real ~/.claude. Yields the path this session's store resolves to.
+  def with_claude_credentials_path
+    original = ENV["CLAUDE_SESSION_CONFIG_DIR"]
+    base = Dir.mktmpdir("claude-config-base")
+    ENV["CLAUDE_SESSION_CONFIG_DIR"] = base
+    yield ClaudeSessionConfigDirectory.credentials_path_for(@session.id)
   ensure
-    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
-    klass.const_set(:CLAUDE_CREDENTIALS_PATH, original)
+    ENV["CLAUDE_SESSION_CONFIG_DIR"] = original
+    FileUtils.rm_rf(base) if base
   end
 
   # Recovery resumes the session with running_job_id nil and enqueues this job.

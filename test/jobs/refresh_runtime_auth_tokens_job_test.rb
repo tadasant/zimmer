@@ -6,20 +6,12 @@ require "mocha/minitest"
 class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
   setup do
     @tmpdir = Dir.mktmpdir
-    @original_claude_json = ClaudeAuthProvider::CLAUDE_JSON_PATH
-    @original_credentials_json = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
     @original_codex_home = CodexAuthProvider::CODEX_HOME
     @original_codex_auth_json = CodexAuthProvider::AUTH_JSON_PATH
 
-    # Redirect filesystem paths to temp dir to prevent cross-test pollution.
-    # Without this, refresh_token! writes to the real ~/.claude/.credentials.json
-    # (because primary is is_current: true), and sync_tokens_from_filesystem!
-    # reads stale tokens back in subsequent tests.
-    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, File.join(@tmpdir, "claude.json"))
-    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, File.join(@tmpdir, ".credentials.json"))
-
+    # Claude needs no path redirection: the sweep reads and writes no credential
+    # file for it at all (issue #618).
+    #
     # The dispatcher fans out across every registered runtime, so each run also
     # drives the Codex provider. Redirect ~/.codex too so its filesystem
     # reconciliation hooks never touch the runner's real home directory.
@@ -38,35 +30,13 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
       end
     end
 
-    # Prevent filesystem sync from reading real ~/.claude.json and
-    # ~/.claude/.credentials.json on the CI runner. Without this stub,
-    # sync_current_account_tokens overwrites fixture tokens and expiry
-    # with values from the runner's filesystem, causing with_lock reloads
-    # to see corrupted state and skip the refresh path entirely.
-    # Dedicated sync tests (below) override this stub as needed.
-    ClaudeAccount.any_instance.stubs(:sync_tokens_from_filesystem!)
-    # Same protection for the Codex sync path (reads ~/.codex/auth.json).
+    # The Codex sync path still reads ~/.codex/auth.json; keep it off the
+    # runner's real home directory.
     ClaudeAccount.any_instance.stubs(:sync_codex_tokens_from_filesystem!)
   end
 
   teardown do
     FileUtils.rm_rf(@tmpdir)
-    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, @original_claude_json)
-    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, @original_credentials_json)
-    CodexAuthProvider.send(:remove_const, :CODEX_HOME)
-    CodexAuthProvider.const_set(:CODEX_HOME, @original_codex_home)
-    CodexAuthProvider.send(:remove_const, :AUTH_JSON_PATH)
-    CodexAuthProvider.const_set(:AUTH_JSON_PATH, @original_codex_auth_json)
-  end
-
-  teardown do
-    FileUtils.rm_rf(@tmpdir)
-    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, @original_claude_json)
-    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, @original_credentials_json)
     CodexAuthProvider.send(:remove_const, :CODEX_HOME)
     CodexAuthProvider.const_set(:CODEX_HOME, @original_codex_home)
     CodexAuthProvider.send(:remove_const, :AUTH_JSON_PATH)
@@ -343,27 +313,6 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
     assert_not_equal "new-access-token", tertiary.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken")
   end
 
-  # Filesystem sync tests (Fix 6)
-
-  test "syncs filesystem tokens for current account before refreshing" do
-    primary = claude_accounts(:primary) # is_current: true
-    set_expiring_soon!(primary, 10.minutes)
-
-    # Stub sync to verify it's called
-    sync_called = false
-    ClaudeAccount.any_instance.stubs(:sync_tokens_from_filesystem!).with do
-      sync_called = true
-      true
-    end
-
-    successful_response = stub_successful_response
-    Net::HTTP.any_instance.stubs(:request).returns(successful_response)
-
-    RefreshRuntimeAuthTokensJob.perform_now
-
-    assert sync_called, "Job should sync filesystem tokens for current account"
-  end
-
   # Auto-recovery tests (Fix 5)
 
   test "attempts recovery of needs_reauth accounts with valid refresh token" do
@@ -578,64 +527,20 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
     }.to_json)
     response
   end
-  # ── issue #618, holes 5 and 6 ────────────────────────────────────────
+  # ── issue #618 ───────────────────────────────────────────────────────
 
-  test "the sweep repairs a corrupt credentials file from the DB before reading it" do
-    primary = claude_accounts(:primary)
-    ClaudeAccount.write_credentials_owner_marker!(primary.email)
-    FileUtils.mkdir_p(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
-    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH,
-      JSON.generate({ "claudeAiOauth" => { "accessToken" => "", "refreshToken" => "", "expiresAt" => 0 } }))
-
-    RefreshRuntimeAuthTokensJob.perform_now
-
-    on_disk = JSON.parse(File.read(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
-    assert_equal primary.oauth_config.dig("credentials_json", "claudeAiOauth", "refreshToken"),
-      on_disk.dig("claudeAiOauth", "refreshToken"),
-      "a corrupt credentials file must be rewritten from the DB rather than logged about forever"
-  end
-
-  test "a spent refresh token plus a sync wedged on corruption escalates instead of waiting for another sweep" do
+  # The `:stale` handler waits for the next sweep rather than replaying a value
+  # the vendor has already refused. That wait used to carry a liveness assumption
+  # it could not meet — it waited on a filesystem sync a corrupt shared file made
+  # permanently impossible, which is the metronome that ran for three hours on
+  # 2026-08-22. There is no such sync now, so a stale refresh is a plain wait the
+  # strike counter bounds, and it does not page anyone.
+  test "a stale refresh waits for the next sweep without escalating" do
     primary = claude_accounts(:primary)
     config = primary.oauth_config.deep_dup
     config["credentials_json"]["claudeAiOauth"]["expiresAt"] = ((Time.current + 1.minute).to_f * 1000).to_i
     primary.update_columns(oauth_config: config)
 
-    # Both halves of the deadlock: the file stays corrupt (self-heal cannot fix
-    # it because the DB copy is broken too) and the refresh is rejected as stale.
-    ClaudeAccount.write_credentials_owner_marker!(primary.email)
-    FileUtils.mkdir_p(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
-    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH,
-      JSON.generate({ "claudeAiOauth" => { "accessToken" => "", "refreshToken" => "", "expiresAt" => 0 } }))
-    ClaudeCredentialHealth.stubs(:self_heal!).returns([ :skipped, "stored credentials have already been rejected as spent" ])
-    # The file-level setup stubs sync_tokens_from_filesystem! to nil so unrelated
-    # tests don't read the real worker's credentials. This test is specifically
-    # about what the sync REPORTS, so it has to say.
-    ClaudeAccount.any_instance.stubs(:sync_tokens_from_filesystem!).returns(:corrupt)
-
-    ClaudeAuthProvider.any_instance.stubs(:refresh!).returns(
-      RuntimeAuthProvider::Result.new(ok: false, error: :stale)
-    )
-
-    ErrorReporter.expects(:report_message).with(
-      "Claude auth deadlocked: spent refresh token and a corrupt credentials file",
-      has_entries(level: :error, context: has_entries(source: "RefreshRuntimeAuthTokensJob"))
-    ).at_least_once
-
-    RefreshRuntimeAuthTokensJob.perform_now
-  end
-
-  test "a plain stale refresh with a healthy credentials file does not escalate" do
-    primary = claude_accounts(:primary)
-    config = primary.oauth_config.deep_dup
-    config["credentials_json"]["claudeAiOauth"]["expiresAt"] = ((Time.current + 1.minute).to_f * 1000).to_i
-    primary.update_columns(oauth_config: config)
-
-    ClaudeAccount.write_credentials_owner_marker!(primary.email)
-    FileUtils.mkdir_p(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
-    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate(config["credentials_json"]))
-
-    ClaudeAccount.any_instance.stubs(:sync_tokens_from_filesystem!).returns(:synced)
     ClaudeAuthProvider.any_instance.stubs(:refresh!).returns(
       RuntimeAuthProvider::Result.new(ok: false, error: :stale)
     )
@@ -644,25 +549,14 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
 
     RefreshRuntimeAuthTokensJob.perform_now
   end
-  test "a stale refresh on a NON-current account does not claim the credentials file is why" do
-    # sync_outcome describes the current account's sync only. A non-current
-    # account is never synced from that file, so a corrupt file says nothing
-    # about why its refresh was rejected.
-    secondary = claude_accounts(:secondary)
-    config = secondary.oauth_config.deep_dup
-    config["credentials_json"]["claudeAiOauth"]["expiresAt"] = ((Time.current + 1.minute).to_f * 1000).to_i
-    secondary.update_columns(oauth_config: config)
-    assert_not secondary.is_current?
 
-    ClaudeAccount.write_credentials_owner_marker!(claude_accounts(:primary).email)
-    ClaudeCredentialHealth.stubs(:self_heal!).returns([ :skipped, "stored credentials have already been rejected as spent" ])
-    ClaudeAccount.any_instance.stubs(:sync_tokens_from_filesystem!).returns(:corrupt)
-    ClaudeAuthProvider.any_instance.stubs(:refresh!).returns(
-      RuntimeAuthProvider::Result.new(ok: false, error: :stale)
-    )
+  test "the sweep asks Claude for neither filesystem hook's work" do
+    # Both are the base class's inherited no-ops: Claude implements neither, so
+    # the sweep reads nothing off disk for it and writes nothing back.
+    refute ClaudeAuthProvider.instance_methods(false).include?(:sync_current_account_tokens!)
+    refute ClaudeAuthProvider.instance_methods(false).include?(:reconcile_filesystem_identity!)
 
-    ErrorReporter.expects(:report_message).never
-
-    RefreshRuntimeAuthTokensJob.perform_now
+    assert_nil ClaudeAuthProvider.new.sync_current_account_tokens!
+    assert_nil ClaudeAuthProvider.new.reconcile_filesystem_identity!
   end
 end

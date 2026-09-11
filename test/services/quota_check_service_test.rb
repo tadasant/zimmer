@@ -6,13 +6,9 @@ require "mocha/minitest"
 class QuotaCheckServiceTest < ActiveSupport::TestCase
   setup do
     @service = QuotaCheckService.new
-    @credentials = {
-      "claudeAiOauth" => {
-        "accessToken" => "sk-ant-oat01-test-token",
-        "subscriptionType" => "max",
-        "rateLimitTier" => "default_claude_max_20x"
-      }
-    }
+    # The token is always passed in, and always comes from a ClaudeAccount row:
+    # there is no filesystem-reading variant of this probe (issue #618).
+    @access_token = "sk-ant-oat01-test-token"
     @profile_response_body = {
       "account" => { "email" => "test@example.com" },
       "organization" => {
@@ -35,8 +31,6 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
   end
 
   test "the quota probe sends the catalog's Messages API id as the model" do
-    stub_credentials
-
     profile_resp = stub_http_response(200, body: @profile_response_body)
     quota_resp = stub_http_response(200, headers: {})
     sent_model = nil
@@ -49,77 +43,31 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
       .with { |req| req.path.include?("messages") && (sent_model = JSON.parse(req.body)["model"]) }
       .returns(quota_resp)
 
-    @service.check
+    @service.check_with_token(@access_token)
 
     assert_equal ModelCatalog.messages_api_id_for(QuotaCheckService::PROBE_CATALOG_MODEL), sent_model
     assert_equal "claude-haiku-4-5", sent_model
   end
 
-  test "returns error when credentials file does not exist" do
-    File.stubs(:exist?).with(QuotaCheckService::CREDENTIALS_PATH).returns(false)
-
-    result = @service.check
-
-    assert_not result.success?
-    assert_match(/No credentials file found/, result.error_message)
-  end
-
-  test "returns error when credentials file has no claudeAiOauth key" do
-    File.stubs(:exist?).with(QuotaCheckService::CREDENTIALS_PATH).returns(true)
-    File.stubs(:read).with(QuotaCheckService::CREDENTIALS_PATH).returns('{"other": "data"}')
-
-    result = @service.check
-
-    assert_not result.success?
-    assert_match(/No Claude AI OAuth credentials/, result.error_message)
-  end
-
-  test "returns error when credentials file is invalid JSON" do
-    File.stubs(:exist?).with(QuotaCheckService::CREDENTIALS_PATH).returns(true)
-    File.stubs(:read).with(QuotaCheckService::CREDENTIALS_PATH).returns("not json")
-
-    result = @service.check
-
-    assert_not result.success?
-    assert_match(/Failed to parse credentials/, result.error_message)
-  end
-
-  test "returns error when access token is missing" do
-    creds = { "claudeAiOauth" => { "subscriptionType" => "max" } }
-    File.stubs(:exist?).with(QuotaCheckService::CREDENTIALS_PATH).returns(true)
-    File.stubs(:read).with(QuotaCheckService::CREDENTIALS_PATH).returns(creds.to_json)
-
-    result = @service.check
-
-    assert_not result.success?
-    assert_match(/No access token found/, result.error_message)
-  end
-
   test "returns error on network timeout" do
-    stub_credentials
-
     Net::HTTP.any_instance.stubs(:request).raises(Net::ReadTimeout.new("read timeout"))
 
-    result = @service.check
+    result = @service.check_with_token(@access_token)
 
     assert_not result.success?
     assert_match(/timed out/, result.error_message)
   end
 
   test "returns error on connection refused" do
-    stub_credentials
-
     Net::HTTP.any_instance.stubs(:request).raises(Errno::ECONNREFUSED.new("connection refused"))
 
-    result = @service.check
+    result = @service.check_with_token(@access_token)
 
     assert_not result.success?
     assert_match(/Cannot reach Anthropic API/, result.error_message)
   end
 
   test "returns error when response has no rate limit headers" do
-    stub_credentials
-
     profile_resp = stub_http_response(200, body: @profile_response_body)
     quota_resp = stub_http_response(200, headers: {})
 
@@ -128,15 +76,13 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
     Net::HTTP.any_instance.stubs(:request)
       .with { |req| req.path.include?("messages") }.returns(quota_resp)
 
-    result = @service.check
+    result = @service.check_with_token(@access_token)
 
     assert_not result.success?
     assert_match(/No rate-limit headers/, result.error_message)
   end
 
   test "parses rate limit headers on successful response" do
-    stub_credentials
-
     profile_resp = stub_http_response(200, body: @profile_response_body)
 
     headers = {
@@ -156,7 +102,7 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
     Net::HTTP.any_instance.stubs(:request)
       .with { |req| req.path.include?("messages") }.returns(quota_resp)
 
-    result = @service.check
+    result = @service.check_with_token(@access_token)
 
     assert result.success?
     assert_in_delta 0.42, result.utilization_5h
@@ -172,8 +118,6 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
   end
 
   test "handles profile API failure gracefully" do
-    stub_credentials
-
     profile_resp = stub_http_response(401, body: '{"error":"unauthorized"}')
 
     headers = {
@@ -187,7 +131,7 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
     Net::HTTP.any_instance.stubs(:request)
       .with { |req| req.path.include?("messages") }.returns(quota_resp)
 
-    result = @service.check
+    result = @service.check_with_token(@access_token)
 
     assert result.success?
     assert_nil result.email
@@ -376,11 +320,6 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
   end
 
   private
-
-  def stub_credentials
-    File.stubs(:exist?).with(QuotaCheckService::CREDENTIALS_PATH).returns(true)
-    File.stubs(:read).with(QuotaCheckService::CREDENTIALS_PATH).returns(@credentials.to_json)
-  end
 
   # Wire both legs of a probe: the profile lookup always succeeds, the quota call
   # returns whatever the test is exercising.

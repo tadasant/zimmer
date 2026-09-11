@@ -7,11 +7,11 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
   setup do
     @working_directory = Dir.mktmpdir("claude-mcp-writer-test")
     @credentials_file = File.join(@working_directory, ".credentials.json")
-    # The path is injected, not stubbed. Swapping CLAUDE_CREDENTIALS_PATH could
-    # only ever relocate a read that happened to resolve the constant at call
-    # time — miss one and the test reads (and rewrites) the developer's real
-    # ~/.claude/.credentials.json. Handing the writer its path makes that
-    # impossible rather than unlikely.
+    # The path is injected and required — there is no host-global default to
+    # forget to relocate (issue #618). A constant that a read resolved at call
+    # time could be missed, and then the test would read (and rewrite) the
+    # developer's real ~/.claude/.credentials.json. Handing the writer its path
+    # makes that impossible rather than unlikely.
     @writer = ClaudeMcpCredentialWriter.new(credentials_path: @credentials_file)
     # Keep tests deterministic across platforms: never touch the real Keychain.
     @writer.stubs(:macos?).returns(false)

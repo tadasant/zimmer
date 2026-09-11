@@ -1,24 +1,28 @@
 # frozen_string_literal: true
 
-# AuthWarmupService — write each runtime's DB-current login identity to disk at
-# worker boot, before GoodJob starts consuming jobs.
+# AuthWarmupService — settle each runtime's DB-current login identity at worker
+# boot, before GoodJob starts consuming jobs.
 #
-# Zimmer maintains a pool of login accounts per runtime (Claude, Codex) and writes
-# the active account's credentials to the runtime's canonical filesystem location
-# (~/.claude.json + ~/.claude/.credentials.json for Claude, ~/.codex/auth.json for
-# Codex) LAZILY — on the first session that runs on a worker container. On a
-# deploy or any worker recreation, the new container's overlay filesystem starts
-# without those identity files, so GoodJob can begin pulling AgentSessionJobs
-# before the first session has written them. Those early sessions then fail with
-# "Not logged in / Please run /login" until the lazy write happens.
+# Zimmer maintains a pool of login accounts per runtime, and what "settling" one
+# means differs by runtime:
 #
-# This service closes that cold-start gap. The worker's boot command runs it (via
-# the `auth:warm_boot` rake task) BEFORE `good_job start`, so the DB-current
-# identity is on disk for every runtime before any job is consumed. Each runtime's
-# warm-up delegates to the same RuntimeAuthProvider#inject_for_session!
-# reconciliation the per-spawn path uses, so boot warm-up and steady-state share
-# one identity-write seam (and one set of invariants — owner marker, completeness
-# guard).
+#   * Codex writes the active account's credentials to ~/.codex/auth.json, and it
+#     does so LAZILY — on the first session that runs on a worker container. On a
+#     deploy or any worker recreation, the new container's overlay filesystem
+#     starts without that file, so GoodJob can begin pulling AgentSessionJobs
+#     before the first session has written it. Those early sessions then fail with
+#     "Not logged in / Please run /login" until the lazy write happens.
+#   * Claude Code writes nothing (issue #618). Every session is spawned with its
+#     own CLAUDE_CONFIG_DIR and the current account's access token, so there is no
+#     cold-start file gap — but there IS a cold-start POOL question, and it now
+#     matters more rather than less: a spawn with no usable current account fails
+#     outright instead of falling back to a file. Settling the pool on boot is
+#     what makes sure it does not have to.
+#
+# The worker's boot command runs this (via the `auth:warm_boot` rake task) BEFORE
+# `good_job start`. Each runtime's warm-up delegates to the same
+# RuntimeAuthProvider#inject_for_session! the per-spawn path uses, so boot
+# warm-up and steady state share one seam and one set of invariants.
 #
 # It is best-effort and resilient: a failure to warm one runtime (no account in
 # the pool, a transient token-refresh error) is logged and does NOT block the
@@ -53,7 +57,7 @@ class AuthWarmupService
   # one runtime's problem can't abort the boot sequence for the others.
   def warm(provider)
     # Boot warm-up has no session/working-directory context; pass nil explicitly.
-    # inject_for_session! reconciles disk against the DB-current account regardless.
+    # Neither runtime's implementation uses them.
     account = provider.inject_for_session!(nil, nil)
 
     if account

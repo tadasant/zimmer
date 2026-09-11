@@ -390,7 +390,7 @@ What that mode does not need is the point of it:
 
 | | Fork | One-shot |
 | --- | --- | --- |
-| Login-pool account | yes — parks when the pool is empty | no; runs against the ambient credentials |
+| Login-pool account | yes — parks when the pool is empty | no account *slot*; runs `claude -p` on the current account's access token (`ClaudeHeadlessCredentials`) without joining the pool's rotation |
 | Clone copy | yes, a full repository | none |
 | MCP servers | booted | none |
 | Cost | an agent turn | one small-model completion |

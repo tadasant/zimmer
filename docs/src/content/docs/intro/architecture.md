@@ -33,7 +33,7 @@ flowchart TB
 
     subgraph host["Host filesystem"]
         CLONE["~/.zimmer/clones/&lt;session&gt;/<br/>git clone · .mcp.json · .claude/skills/ · .pi/skills/"]
-        CRED["~/.claude/.credentials.json<br/>~/.codex/auth.json<br/>(Pi: a provider key in the env)"]
+        CRED["~/.zimmer/claude-config/&lt;session&gt;/ (Claude: mcpOAuth only)<br/>~/.codex/auth.json<br/>(Pi: a provider key in the env)"]
     end
 
     subgraph proc["Agent subprocess"]
@@ -106,9 +106,11 @@ must exist before boot.
 **Redis** is the Rails cache only. There is no Redis-backed queue — GoodJob uses Postgres.
 
 **The filesystem** is load-bearing. Clones live in
-`~/.zimmer/clones/`. Agent credentials live in `~/.claude/.credentials.json` and
-`~/.codex/auth.json`, and are read by the CLI, written by Zimmer, and *also* rewritten by the
-CLI behind Zimmer's back. See [Agent harness credentials](/auth/harness/). Pi holds no
+`~/.zimmer/clones/`. A Claude Code session's subscription credential is a database row, handed to
+the process as `CLAUDE_CODE_OAUTH_TOKEN` at spawn — no file holds it; the session's own
+`~/.zimmer/claude-config/<session>/` carries only its MCP OAuth map. Codex credentials live in
+`~/.codex/auth.json`, read by the CLI, written by Zimmer, and *also* rewritten by the CLI behind
+Zimmer's back. See [Agent harness credentials](/auth/harness/). Pi holds no
 Zimmer-written *harness* credential — it reads a provider key out of its process environment — so
 `~/.pi/agent` (a named volume) carries its own settings plus the MCP OAuth tokens Zimmer stages
 there for it.
@@ -143,7 +145,7 @@ sequenceDiagram
         J->>S: fail! (failure_reason = oauth_required)
         Note over U: UI shows "Authorize" buttons
     end
-    J->>Au: inject_for_session! (write ~/.claude/.credentials.json)
+    J->>Au: inject_for_session! (settle the current account; Codex writes auth.json)
     J->>J: OrchestratorSystemPromptBuilder.build
     J->>P: spawn(claude --dangerously-skip-permissions …<br/>pgroup: true, stderr → claude_stderr.log)
     P-->>J: pid

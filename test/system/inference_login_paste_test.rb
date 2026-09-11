@@ -21,23 +21,6 @@ require "application_system_test_case"
 # held-open CLI). It fails on the pre-fix poller (the form is torn out from under
 # the paste/click) and passes once redundant re-renders are skipped.
 class InferenceLoginPasteTest < ApplicationSystemTestCase
-  setup do
-    # InferenceController#show reconciles the worker's ~/.claude credential files on
-    # render. Point those paths at an empty tmp dir so the page render performs no
-    # real filesystem work and reconcile is a clean no-op during the test.
-    @login_tmpdir = Dir.mktmpdir
-    @orig_claude_json = ClaudeAuthProvider::CLAUDE_JSON_PATH
-    @orig_credentials_json = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
-    stub_claude_path(:CLAUDE_JSON_PATH, File.join(@login_tmpdir, "claude.json"))
-    stub_claude_path(:CREDENTIALS_JSON_PATH, File.join(@login_tmpdir, ".credentials.json"))
-  end
-
-  teardown do
-    stub_claude_path(:CLAUDE_JSON_PATH, @orig_claude_json)
-    stub_claude_path(:CREDENTIALS_JSON_PATH, @orig_credentials_json)
-    FileUtils.remove_entry(@login_tmpdir) if @login_tmpdir && File.directory?(@login_tmpdir)
-  end
-
   test "pasted authorization code reaches the backend when Submit is clicked across live poller ticks" do
     account = claude_accounts(:unconfigured)
     attempt = account.runtime_login_attempts.create!(
@@ -127,10 +110,5 @@ class InferenceLoginPasteTest < ApplicationSystemTestCase
       flunk "expected pasted_code to reach the backend, got #{attempt.pasted_code.inspect}" if Time.now > deadline
       sleep 0.2
     end
-  end
-
-  def stub_claude_path(const, value)
-    ClaudeAuthProvider.send(:remove_const, const)
-    ClaudeAuthProvider.const_set(const, value)
   end
 end

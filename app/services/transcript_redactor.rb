@@ -8,9 +8,9 @@ require "digest"
 #
 # A transcript is a verbatim recording of everything an agent read, printed and
 # was told. Zimmer hands its agents real credentials — MCP `${VAR}` values are
-# interpolated into `.mcp.json` inside the clone, OAuth tokens are written to
-# `~/.claude/.credentials.json`, `git` speaks to GitHub over an authenticated
-# remote. An agent that `cat`s any of those files, echoes an environment
+# interpolated into `.mcp.json` inside the clone, the Claude OAuth access token
+# sits in the environment as CLAUDE_CODE_OAUTH_TOKEN, `git` speaks to GitHub over
+# an authenticated remote. An agent that `cat`s any of those files, echoes an environment
 # variable, or pastes a `curl -H "Authorization: Bearer ..."` into its own
 # reasoning puts that credential into the transcript, and the transcript is
 # persisted (`sessions.transcript`, `subagent_transcripts.transcript`), served
@@ -169,9 +169,10 @@ module TranscriptRedactor
   # specific labels come before the generic `ENV_SECRET` catch so a redaction is
   # labelled with what it actually was.
   PATTERNS = [
-    # Anthropic OAuth access/refresh tokens. What ClaudeAccount#oauth_config and
-    # ~/.claude/.credentials.json hold; an agent debugging its own auth prints
-    # these. Listed before the generic Anthropic key so the label stays precise.
+    # Anthropic OAuth access/refresh tokens. What ClaudeAccount#oauth_config holds
+    # and what a session receives as CLAUDE_CODE_OAUTH_TOKEN; an agent debugging
+    # its own auth prints these. Listed before the generic Anthropic key so the
+    # label stays precise.
     pattern("ANTHROPIC_OAUTH_TOKEN", /#{TOKEN_START}sk-ant-(?:oat|ort)\d{2}-[A-Za-z0-9_\-]{16,}/o),
     pattern("ANTHROPIC_API_KEY", /#{TOKEN_START}sk-ant-[A-Za-z0-9_\-]{20,}/o),
     # OpenAI / Codex. Runs after the Anthropic patterns, which share the `sk-`

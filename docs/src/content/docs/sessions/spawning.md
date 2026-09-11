@@ -746,13 +746,18 @@ one and each per-server root an isolated server was given
 ([MCP servers](/air/mcp-servers/#timeouts-and-caching)). The MCP servers themselves do not depend on
 inheriting that variable: each `npx` entry carries its own copy, written into the config file.
 
-With [session-scoped credentials](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain)
-on, Claude also sets `CLAUDE_CONFIG_DIR` — a durable per-session directory at
+Claude always sets `CLAUDE_CONFIG_DIR` — a durable per-session directory at
 `~/.zimmer/claude-config/<session_id>`, alongside the scratch dir and reaped on the same schedule —
-and `CLAUDE_CODE_OAUTH_TOKEN`, the current account's subscription **access** token. The child gets
-no refresh token, so it cannot rotate the subscription chain. Both are omitted when the setting is
-off, and omitted together when the pool has no current account holding a token, in which case the
-session reads the shared `~/.claude/.credentials.json` as before.
+and `CLAUDE_CODE_OAUTH_TOKEN`, the current account's subscription **access** token
+([the DB owns the chain](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain)). The
+child gets no refresh token, so it cannot rotate the subscription chain, and it reads no shared
+credentials file: there is none. When the pool has no current account holding a token the spawn
+**fails** rather than proceeding without one — `ClaudeSpawnEnv::MissingCredentialsError`, reported
+by `ProcessLifecycleManager` as a spawn failure that fails the session with
+`failure_reason: spawn_failed` and names the account that came up empty. The same two variables
+reach every other `claude` process Zimmer starts — print-mode inference for titles and summaries
+goes through `ClaudeHeadlessCredentials` — so no `claude` invocation inherits the worker's own
+environment for its credentials.
 
 Codex adds `RUST_LOG=warn,rmcp=info` and `CODEX_HOME`.
 

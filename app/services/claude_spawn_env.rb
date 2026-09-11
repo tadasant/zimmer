@@ -16,6 +16,11 @@
 module ClaudeSpawnEnv
   include CliSpawnEnv
 
+  # No Claude account is current, or the current one holds no access token, so
+  # there is nothing to hand the child. Raised rather than swallowed: see
+  # #apply_session_scoped_credentials.
+  class MissingCredentialsError < StandardError; end
+
   # MCP server startup timeout in milliseconds. 3 minutes allows time for npm
   # package downloads on cold starts; once cached, servers connect in <5s.
   # Shared with Codex and Pi through McpStartupTimeout so the three runtimes
@@ -74,14 +79,13 @@ module ClaudeSpawnEnv
     # context override this via auto_compact_window.
     env_vars["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = auto_compact_window.to_s
 
-    # Issue #618's credential-ownership rearchitecture, behind the
-    # session-scoped-credentials setting. When it is on, this REPLACES the shared
-    # ~/.claude/.credentials.json as the session's credential source; when it is
-    # off, nothing here fires and the session reads the shared file exactly as
-    # before, which is what makes the setting a rollback.
+    # Issue #618's credential-ownership rearchitecture. This IS the session's
+    # credential source — there is no shared ~/.claude/.credentials.json behind
+    # it any more — so it raises rather than falling back when the pool has
+    # nothing to hand over.
     apply_session_scoped_credentials(env_vars)
 
-    inject_api_key_from_credentials(env_vars)
+    inject_api_key_for_custom_base_url(env_vars)
     configure_mcp_env(env_vars, working_dir) if has_mcp
 
     # Let enabled Zimmer Extensions contribute/override env vars. Merged over the
@@ -167,8 +171,8 @@ module ClaudeSpawnEnv
   # Two variables, and both halves matter:
   #
   #   CLAUDE_CONFIG_DIR       moves the credential store out of the host-global
-  #                           file every other session shares. Measured on CLI
-  #                           2.1.241: a session run this way writes a
+  #                           file every other session used to share. Measured on
+  #                           CLI 2.1.241: a session run this way writes a
   #                           `.credentials.json` containing `mcpOAuth` and
   #                           nothing else — there is no `claudeAiOauth` block on
   #                           disk for anyone to move backwards over.
@@ -178,53 +182,56 @@ module ClaudeSpawnEnv
   #                           0.09h over 42,971 runs), so a token fixed at spawn
   #                           needs no mid-process re-seeding.
   #
-  # Fails OPEN, deliberately. Without a current account, or without a stored
-  # access token on it, this leaves both variables unset and the session falls
-  # back to the shared file — the same place it would have read from with the
-  # setting off. Refusing the spawn instead would turn a momentarily empty pool
-  # into a hard failure on a path that already has its own recovery. That
-  # condition lives in ClaudeSessionConfigDirectory.active_for? rather than here,
-  # because MCP credential injection has to reach the same answer before the
-  # spawn env is built — see the comment there.
+  # Fails CLOSED. This used to fall back to the shared credentials file when the
+  # pool had nothing to offer, which was the right call while that file was still
+  # a live rollback. It is not one now: nothing writes it, so falling back would
+  # point the child at a fossil and every turn would come back "Not logged in ·
+  # Please run /login" with nothing in the log to say why. Raising instead makes
+  # ProcessLifecycleManager refuse the spawn: the session fails with
+  # `failure_reason: spawn_failed` and a session-log line naming the account that
+  # came up empty, rather than running and being unable to think. The adapters
+  # let this error through unwrapped and the lifecycle manager logs it at .warn,
+  # because an empty pool is a configuration state already surfaced on /health
+  # and by the needs_reauth alert, not a runtime fault to page on per attempt.
   #
   # Relies on the including adapter exposing `@zimmer_session_id`.
+  #
+  # @raise [MissingCredentialsError] when there is no session to key a config dir
+  #   on, or no current account holding an access token
   def apply_session_scoped_credentials(env_vars)
-    unless ClaudeSessionConfigDirectory.active_for?(@zimmer_session_id)
-      record_spawn_credentials(session_scoped: false)
-      return env_vars
+    # ProcessLifecycleManager sets this from the session it was built for, so in
+    # production it is always present. Saying so beats letting
+    # ClaudeSessionConfigDirectory answer with a bare "session_id is required"
+    # four frames down.
+    if @zimmer_session_id.blank?
+      raise MissingCredentialsError,
+        "Cannot spawn Claude Code without a Zimmer session id: its credentials live in a per-session " \
+        "CLAUDE_CONFIG_DIR keyed on that id"
     end
 
     account = ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)
     token = account&.claude_access_token
+
     if token.blank?
-      # active_for? just saw one, so this is a rotation landing between the two
-      # reads. Fall back rather than hand the child a config dir with no token.
-      @logger.warn "The current Claude account lost its access token between the gate and the spawn; " \
-        "falling back to the shared credentials file for this spawn"
-      record_spawn_credentials(account: account, session_scoped: false)
-      return env_vars
+      # Nothing is recorded: no process is about to start, so there is no spawn
+      # identity to stamp on the session.
+      raise MissingCredentialsError,
+        "No Claude account in the pool holds a usable access token#{account ? " (current: #{account.email})" : ""} — " \
+        "authenticate one from /inference"
     end
 
     config_dir = ClaudeSessionConfigDirectory.ensure_for(@zimmer_session_id)
     env_vars["CLAUDE_CONFIG_DIR"] = config_dir
     env_vars["CLAUDE_CODE_OAUTH_TOKEN"] = token
-    record_spawn_credentials(account: account, session_scoped: true)
+    record_spawn_credentials(account: account)
     @logger.info "Set CLAUDE_CONFIG_DIR=#{config_dir} and CLAUDE_CODE_OAUTH_TOKEN (session-scoped credentials)"
-    env_vars
-  rescue => e
-    @logger.warn "Failed to apply session-scoped credentials: #{e.message}"
-    env_vars.delete("CLAUDE_CONFIG_DIR")
-    env_vars.delete("CLAUDE_CODE_OAUTH_TOKEN")
-    record_spawn_credentials(account: account, session_scoped: false)
     env_vars
   end
 
-  def record_spawn_credentials(account: nil, session_scoped:)
-    account ||= ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)
+  def record_spawn_credentials(account:)
     AuthRecoveryCoordinator.record_spawn_credentials!(
       session_id: @zimmer_session_id,
-      account: account,
-      session_scoped: session_scoped
+      account: account
     )
   rescue => e
     # This is recovery observability, not a prerequisite for starting the child.
@@ -232,29 +239,26 @@ module ClaudeSpawnEnv
     @logger.info "Could not record Claude spawn credentials: #{e.message}"
   end
 
-  # When ANTHROPIC_BASE_URL is set (e.g., pointing to a mock API for testing),
-  # read the current OAuth access token from ~/.claude/.credentials.json and pass
-  # it as ANTHROPIC_API_KEY to the Claude binary. This ensures the binary uses
-  # the correct account identity after account rotation, where the credentials
-  # file is updated but the parent process's env var would be stale.
+  # When ANTHROPIC_BASE_URL is set (e.g. pointing at a mock API for testing),
+  # pass the same access token the session runs on as ANTHROPIC_API_KEY, so a
+  # mock that authenticates by header sees the identity the pool actually
+  # selected rather than whatever the parent process was started with.
   #
-  # In production (no ANTHROPIC_BASE_URL), this is a no-op — the binary uses
-  # its own OAuth flow to authenticate.
-  def inject_api_key_from_credentials(env_vars)
+  # Reads it back out of `env_vars` rather than from a file: that value is the
+  # one truth about which credential this child gets, and
+  # #apply_session_scoped_credentials has already raised if there is none. Its
+  # predecessor read ~/.claude/.credentials.json, a file nothing writes any more.
+  #
+  # In production (no ANTHROPIC_BASE_URL) this is a no-op — the binary
+  # authenticates from CLAUDE_CODE_OAUTH_TOKEN.
+  def inject_api_key_for_custom_base_url(env_vars)
     base_url = env_vars["ANTHROPIC_BASE_URL"] || ENV["ANTHROPIC_BASE_URL"]
     return unless base_url.present?
 
-    home = ENV["HOME"] || Dir.home
-    credentials_path = File.join(home, ".claude", ".credentials.json")
-    return unless @file_system.exists?(credentials_path)
+    token = env_vars["CLAUDE_CODE_OAUTH_TOKEN"]
+    return if token.blank?
 
-    data = JSON.parse(@file_system.read(credentials_path))
-    token = data.dig("claudeAiOauth", "accessToken")
-    if token.present?
-      env_vars["ANTHROPIC_API_KEY"] = token
-      @logger.info "Injected ANTHROPIC_API_KEY from credentials (custom ANTHROPIC_BASE_URL is set)"
-    end
-  rescue => e
-    @logger.warn "Failed to inject API key from credentials: #{e.message}"
+    env_vars["ANTHROPIC_API_KEY"] = token
+    @logger.info "Injected ANTHROPIC_API_KEY from the session's access token (custom ANTHROPIC_BASE_URL is set)"
   end
 end
