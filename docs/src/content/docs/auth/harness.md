@@ -63,9 +63,16 @@ resolves it from the `${VAR}` chain into the spawn environment at each spawn. Se
 [Runtimes](/sessions/runtimes/#credentials) and [How the key reaches a Pi
 session](/operate/secrets-parameter-store/#how-the-key-reaches-a-pi-session).
 
-One consequence is worth carrying forward: `#pool_exhausted?` is permanently true for Pi, so a Pi
+Two consequences are worth carrying forward. `#pool_exhausted?` is permanently true for Pi, so a Pi
 session's [status summary](/sessions/status-summary/) is always produced by a headless completion
-rather than by forking the session.
+rather than by forking the session. And **a Pi 401 or 403 is terminal, not recoverable**:
+`PiRetryStrategy#auth_recovery_needed?` is `false` by design, because the recovery on the other side
+of it is "rewrite the active account's credentials and rotate to the next account" and Pi has
+neither. `PiTurnError` classifies such a turn `:auth_terminal`, which fails the session naming the
+provider's own wording — a truthful end, where routing it here would park a human in front of a pool
+that does not exist. The same reasoning makes a Pi quota refusal a bounded retry-then-fail rather
+than the quota park the pooled runtimes get; see [Known
+limitations](/limitations/#pi-retries-a-transient-provider-failure-auth-and-context-length-are-terminal).
 
 ## Session-scoped credentials: the DB owns the chain
 

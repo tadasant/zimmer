@@ -4191,19 +4191,21 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     assert_match(/not_applicable/, alert[1][:details])
   end
 
-  # The largest noise risk in the change. PiRetryStrategy classifies nothing, so
-  # an ordinary Pi failure ALWAYS reaches the unclassified branch — that is its
-  # documented design, not news. Paging on it would be a standing hourly alert
-  # for expected behavior. (Codex classifies its exits from the error it records,
-  # #54, so an unclassified Codex exit does page — see CodexRecoveryEndToEndTest.)
+  # The noise guard, exercised against the mechanism rather than a runtime.
+  #
+  # A runtime whose strategy classifies nothing reaches the unclassified branch on
+  # EVERY ordinary failure, so paging there would be a standing hourly alert for
+  # expected behavior. **No shipped runtime answers false today** — Claude, Codex
+  # (#54) and Pi (#856) all classify their exits from evidence — so the double
+  # below is the only thing that can hold this branch down, and it is what the
+  # next uncharacterized runtime will look like on the day it lands.
   test "a runtime whose strategy classifies nothing logs but does not page" do
-    @session.update!(agent_runtime: "pi")
-    @mock_cli_adapter.stubs(:retry_strategy).returns(
-      PiRetryStrategy.new(
-        cli_adapter: @mock_cli_adapter, session: @session, file_system: @mock_file_system,
-        process_manager: @mock_process_manager, rate_limit_tracker: nil, logger: Rails.logger
-      )
+    strategy = PiRetryStrategy.new(
+      cli_adapter: @mock_cli_adapter, session: @session, file_system: @mock_file_system,
+      process_manager: @mock_process_manager, rate_limit_tracker: nil, logger: Rails.logger
     )
+    strategy.define_singleton_method(:classifies_exits?) { false }
+    @mock_cli_adapter.stubs(:retry_strategy).returns(strategy)
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     ErrorReporter.expects(:report_message).never
 
@@ -4213,6 +4215,28 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     decision = manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
 
     assert_equal :failed, decision.action, "the session still fails — only the page is withheld"
+  end
+
+  # The converse, and the reason the flip in #856 was worth making: a Pi exit that
+  # no classifier claims now DOES page, because Pi's classifiers answer from the
+  # error Pi itself recorded. (The full ladder is in PiRecoveryEndToEndTest.)
+  test "a Pi exit no classifier claims pages, now that Pi classifies its exits" do
+    @session.update!(agent_runtime: "pi")
+    @mock_cli_adapter.stubs(:retry_strategy).returns(
+      PiRetryStrategy.new(
+        cli_adapter: @mock_cli_adapter, session: @session, file_system: @mock_file_system,
+        process_manager: @mock_process_manager, rate_limit_tracker: nil, logger: Rails.logger
+      )
+    )
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    ErrorReporter.expects(:report_message).at_least_once
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, manager.handle_exit(
+      MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone"
+    ).action
   end
 
   # The summary is what distinguishes one unknown failure mode from another, so it
