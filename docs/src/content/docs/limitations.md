@@ -54,7 +54,8 @@ both variables.
 
 ### The DigitalOcean metrics agent reaches only a droplet Terraform creates, never one that exists
 
-`digitalocean_droplet.zimmer` sets `monitoring = true`, so a droplet this module creates boots with
+`digitalocean_droplet.zimmer` sets `monitoring = var.monitoring`, which defaults to `true`, so a
+droplet this module creates boots with
 DigitalOcean's metrics agent — CPU, memory, disk and load history, and the only metrics DO's own
 resource alert policies can evaluate. It is free.
 
@@ -79,8 +80,9 @@ So in practice the production droplet gets the agent when it is next rebuilt, an
 That gap is a departure from this repo's own rule that an ops step must ship with the deploy, and it
 is tracked in [#651](https://github.com/tadasant/zimmer/issues/651) — the plausible fix is an
 idempotent deploy-time install over the root SSH access Kamal already holds. Adjacent, and different:
-[#442](https://github.com/tadasant/zimmer/issues/442) wants a `node_exporter` in cloud-init for an
-external monitoring plane, which is a different agent feeding a different consumer.
+`var.node_exporter_enabled` puts a `node_exporter` in cloud-init for an external monitoring plane,
+which is a different agent feeding a different consumer — and it inherits the same
+create-time-only limit, [below](#node_exporter-is-opt-in-and-reaches-only-a-rebuilt-droplet).
 
 Two smaller edges. `ignore_changes` also means Terraform will not turn the agent back off, or back on
 if someone disables it — both cheaper than a replace. And it is unconfirmed whether a hand-installed
@@ -89,6 +91,29 @@ reads; if it does not, config and state stay divergent forever, harmlessly.
 
 The DO agent reports host metrics. App telemetry goes to the self-hosted OTLP stack — see
 [Observability](/operate/observability/).
+
+### `node_exporter` is opt-in, and reaches only a rebuilt droplet
+
+`var.node_exporter_enabled` (default `false`) makes cloud-init install a pinned Prometheus
+`node_exporter` as a systemd unit, bound to the droplet's tailnet address on `:9100`. It is the host
+telemetry a self-hosted monitoring plane can scrape, in the conventional `node_*` metric names, for a
+deployment that wants more than DigitalOcean's console shows.
+
+It is **create-time only**, for the same reason [the deploy key and the Caddyfile
+are](#user_data-is-frozen-so-the-deploy-key-and-the-caddyfile-cant-be-updated-in-place): it rides
+`user_data`, which is under `ignore_changes`. Set it to `true` against a running droplet and
+`terraform plan` reports no change at all — no error, no warning, and no exporter. What applies it is a
+droplet rebuild (`recreate_droplet: true` on the staging deploy, or `terraform taint
+digitalocean_droplet.zimmer`), or installing the binary and the unit on the live box by hand over
+Tailscale SSH — which on production is the access [no agent session
+has](#an-agent-sessions-ssh-key-is-root-on-every-host-it-can-reach-and-no-session-is-scoped).
+
+Two consequences worth stating. **The scraper has to be on the tailnet**: the bind is a single 100.x
+address, and the DigitalOcean firewall opens no public TCP, so there is no route to `:9100` from
+anywhere else — by design, and it is why enabling this needs no firewall change. And the version is
+**pinned** in `cloud-init.yaml.tftpl` with its checksum, because node_exporter reshapes collectors
+between minor releases and that moves metric cardinality under whatever is scraping it; bumping it
+means editing both, and then rebuilding a droplet to deliver it.
 
 ### RAILS_MASTER_KEY is optional on staging, and silently degrades when absent
 

@@ -91,6 +91,73 @@ write_files:
     permissions: "0644"
     content: ${ssh_host_ed25519_key_pub}
 %{ endif ~}
+%{ if node_exporter_enabled ~}
+  # node_exporter, opt-in (var.node_exporter_enabled). A Prometheus-style host
+  # metrics endpoint -- node_cpu_seconds_total, node_memory_*, node_filesystem_*,
+  # node_load* -- for a scraper that already speaks the conventional `node_*` names.
+  # Deliberately node_exporter and not the OpenTelemetry Collector's `hostmetrics`
+  # receiver: hostmetrics emits `system.cpu.*`-style names, so every dashboard and
+  # alert rule written against standard Prometheus host metrics would have to be
+  # rewritten. One extra binary is the cheaper half of that trade.
+  #
+  # BOUND TO THE TAILNET, NEVER 0.0.0.0. The DO firewall admits exactly one inbound
+  # rule (UDP 41641, Tailscale) and no public TCP at all, so a 0.0.0.0 bind is not
+  # reachable from the internet TODAY -- but it would be the moment anyone adds a TCP
+  # rule, and the bind is the part that does not depend on remembering that. Binding
+  # the tailnet address instead needs no firewall change, which is the point.
+  - path: /usr/local/bin/zimmer-node-exporter
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      # Resolve the tailnet address at START time, not when this file is written. The
+      # 100.x address is assigned by the Tailscale control plane at `tailscale up`, so
+      # it does not exist at render time and cannot be baked into the unit.
+      #
+      # Read from the interface (netlink) rather than from `tailscale ip`: this runs as
+      # an unprivileged user, and the interface is readable by anyone while the
+      # tailscaled LocalAPI socket is a permission question we do not need to have.
+      set -eu
+      addr=""
+      i=0
+      while [ "$i" -lt 60 ]; do
+        addr=$(ip -4 -o addr show dev tailscale0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+        [ -n "$addr" ] && break
+        i=$((i + 1))
+        sleep 2
+      done
+      if [ -z "$addr" ]; then
+        echo "zimmer-node-exporter: tailscale0 has no IPv4 address after 120s" >&2
+        exit 1
+      fi
+      exec /usr/local/bin/node_exporter --web.listen-address="$addr:9100"
+  - path: /etc/systemd/system/node_exporter.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Prometheus node_exporter (tailnet-bound)
+      Documentation=https://github.com/prometheus/node_exporter
+      After=network-online.target tailscaled.service
+      Wants=network-online.target
+      # The wrapper gives up after two minutes without a tailnet address. systemd's
+      # default start limit (5 starts in 10s) would then mark the unit failed for
+      # good, so a slow tailnet join would cost the exporter until someone noticed.
+      # No limit + Restart=always means it keeps trying instead.
+      StartLimitIntervalSec=0
+
+      [Service]
+      User=node_exporter
+      Group=node_exporter
+      ExecStart=/usr/local/bin/zimmer-node-exporter
+      Restart=always
+      RestartSec=5
+      NoNewPrivileges=true
+      ProtectHome=yes
+      ProtectSystem=strict
+      PrivateTmp=true
+
+      [Install]
+      WantedBy=multi-user.target
+%{ endif ~}
   # Caddy is the edge: it owns :80 and (with a domain) :443, and reverse-proxies to
   # kamal-proxy on :8080. kamal-proxy still does the health-gated zero-downtime
   # container swap behind it -- it just cannot own :80/:443 itself, because it binds
@@ -157,7 +224,15 @@ runcmd:
   - curl -fsSL -o /tmp/sysbox.deb https://downloads.nestybox.com/sysbox/releases/v0.7.0/sysbox-ce_0.7.0-0.linux_amd64.deb
   - apt-get install -y /tmp/sysbox.deb || true
   - rm -f /tmp/sysbox.deb
-  - jq --indent 4 '.runtimes |= (. // {}) + {"sysbox-runc": {"path": "/usr/bin/sysbox-runc"}} | .features |= (. // {}) + {"time-namespaces": false}' /etc/docker/daemon.json > /tmp/dj.json 2>/dev/null || echo '{"runtimes":{"sysbox-runc":{"path":"/usr/bin/sysbox-runc"}},"features":{"time-namespaces":false}}' > /tmp/dj.json
+  # A BLOCK SCALAR, not a plain one, and that is load-bearing: the jq filter below
+  # contains `": "` (a colon and a space), which in a YAML plain scalar starts an
+  # implicit mapping key. As `- jq ...` this line does not parse, and a cloud-config
+  # that does not parse is not partially applied -- cloud-init runs NONE of this file,
+  # so the droplet comes up with no Docker and no Tailscale, i.e. unreachable. `|`
+  # makes the content literal. test/infra/cloud_init_template_test.rb parses the
+  # rendered template both ways so this cannot come back.
+  - |
+    jq --indent 4 '.runtimes |= (. // {}) + {"sysbox-runc": {"path": "/usr/bin/sysbox-runc"}} | .features |= (. // {}) + {"time-namespaces": false}' /etc/docker/daemon.json > /tmp/dj.json 2>/dev/null || echo '{"runtimes":{"sysbox-runc":{"path":"/usr/bin/sysbox-runc"}},"features":{"time-namespaces":false}}' > /tmp/dj.json
   - install -m 0644 /tmp/dj.json /etc/docker/daemon.json && rm -f /tmp/dj.json
   - systemctl enable --now sysbox-mgr sysbox-fs || true
   - systemctl restart docker
@@ -250,5 +325,29 @@ runcmd:
   # `zimmer-caddy` is the name scripts/domain-cert.sh restarts after pushing a cert.
   # Caddy starts before kamal-proxy exists and simply 502s until the first deploy
   # boots it; restart: always makes that self-healing.
+%{ if node_exporter_enabled ~}
+  # --- node_exporter (opt-in) ----------------------------------------------------
+  # PINNED, not latest: node_exporter adds and re-shapes collectors between minor
+  # releases, which moves metric cardinality under whatever is scraping it. Bump the
+  # version and the checksum together -- they are one fact, and `set -e` plus
+  # `sha256sum -c` means a mismatch aborts BEFORE anything is installed.
+  #
+  # Runs after `tailscale up` above, so tailscale0 normally exists by the time the
+  # unit starts; the wrapper waits for it anyway, because cloud-init ordering says
+  # nothing about when the control plane hands out an address.
+  - |
+    set -eu
+    ver=1.12.1
+    sha=b51d8a76aa2a9156a55d501aca6276fae09e262259a5e4e831d2c2222f084e63
+    tarball=node_exporter-$ver.linux-amd64.tar.gz
+    curl -fsSL -o "/tmp/$tarball" "https://github.com/prometheus/node_exporter/releases/download/v$ver/$tarball"
+    echo "$sha  /tmp/$tarball" | sha256sum -c -
+    tar -xzf "/tmp/$tarball" -C /tmp
+    install -m 0755 "/tmp/node_exporter-$ver.linux-amd64/node_exporter" /usr/local/bin/node_exporter
+    rm -rf "/tmp/$tarball" "/tmp/node_exporter-$ver.linux-amd64"
+    id -u node_exporter >/dev/null 2>&1 || useradd --system --user-group --no-create-home --shell /usr/sbin/nologin node_exporter
+    systemctl daemon-reload
+    systemctl enable --now node_exporter.service
+%{ endif ~}
   - docker rm -f zimmer-caddy 2>/dev/null || true
   - docker run -d --name zimmer-caddy --restart always --network host -v /opt/zimmer/caddy/Caddyfile:/etc/caddy/Caddyfile:ro -v /opt/zimmer/certs:/certs:ro caddy:2
