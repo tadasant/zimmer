@@ -370,9 +370,10 @@ policy that shares its row, not in the base set, and never in `self_session`: a 
 name `settings` to get the write, and `settings_readonly` gets the read alone. `zimmer-settings`
 and `zimmer-settings-readonly` (mcp.json) are the catalog entries that name them, and no root
 carries either by default. The usual caveat holds — a scoping boundary, not an authorization one —
-so the property that does not depend on the caller is the record: every write, from this tool or
-from `/settings`, leaves an `[AppSettings]` WARN line naming the surface, the action and the calling
-session, and every value that moved.
+so the property that does not depend on the caller is the record: every change, from this tool or
+from `/settings`, leaves an `[AppSettings]` WARN line naming the surface (for the tool, also the
+action and the calling session) and every value that moved. A call that sets a value to what it
+already is changes nothing, writes no line, and says so.
 
 `get_session_provenance` returns those same two sections on their own, for one `session_id`, with
 every entry it lists rendered in full — it exists to serve that record and nothing else, so it has no

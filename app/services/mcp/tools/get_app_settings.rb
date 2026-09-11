@@ -18,20 +18,23 @@ module Mcp
         Reports, for each setting, its current value and whether that is the shipped default or an
         operator override:
 
-        - **Session defaults** — the global base runtime and model. A session gets these only when
-          nothing more specific names one: no `agent_runtime`/`model` passed when it is created, and
-          no `default_runtime`/`default_model` on its agent root in roots.json. A model that is not
-          valid for the runtime a session resolves to is never handed to it; that session gets its
-          runtime's own default instead. One gap: a `start_session` call with NO `agent_root` skips
-          these and gets Claude Code. Lists the valid runtimes and each runtime's models.
+        - **Session defaults** — the global base runtime and model, the bottom of the fallback chain.
+          Each half resolves on its own: a new session gets the global runtime when neither its
+          creator (`agent_runtime`) nor its agent root (`default_runtime` in roots.json) names one,
+          and the global model when neither names a model valid for the runtime it ends up on. A
+          global model that is not valid for that runtime is never handed to it; the session gets
+          its runtime's own default instead. Lists the valid runtimes and each runtime's models.
         - **Experimental settings** — every toggle under Settings → Experimental, by key: MCP tool
           search, session-scoped Claude credentials, and any registered experimental Zimmer
           Extension (`extension.<id>`). Each is also recorded on every session as it runs, which is
           what the Costs page compares cohorts by.
 
         Change them with `action_app_settings`. The session defaults apply to sessions created after
-        the change. The experimental toggles are read when a session's agent process is spawned, so a
-        turn already running keeps what it started with.
+        the change. MCP tool search and experimental extensions are read when a session's agent
+        process is spawned, so a turn already running keeps what it started with. Session-scoped
+        credentials is the exception: the credential sync, account rotation and auth recovery read it
+        live, so flipping it changes how the shared credentials file is maintained at once, for
+        running sessions too.
 
         Not here: the spot/priority policy and backlog top-up, which live on the same row but are
         read with `get_spot_policy`.
@@ -63,8 +66,8 @@ module Mcp
         [
           "### Session defaults",
           "",
-          "Used only when neither the session's creator nor its agent root names a runtime or model " \
-          "(a `start_session` call with no `agent_root` skips these).",
+          "The bottom of the fallback chain, each half on its own: used when neither the session's " \
+          "creator nor its agent root names a runtime (or a model valid for its runtime).",
           "",
           "- **Runtime:** `#{runtime}` (#{RuntimeRegistry.label_for(runtime)}) — " \
           "#{setting.default_runtime.present? ? "operator override" : "shipped default, no override set"}",

@@ -15,9 +15,17 @@ class Mcp::Tools::AppSettingsTest < ActiveSupport::TestCase
     def title = "Fake experiment"
   end
 
+  # Registered but not experimental: the page renders no toggle for it, so the
+  # tool has no key for it either.
+  class FakeStableExtension < Zimmer::Extension
+    def id = "fake_stable"
+    def experimental? = false
+  end
+
   setup do
     AppSetting.delete_all
     Zimmer::ExtensionRegistry.register(FakeExperimentExtension.new)
+    Zimmer::ExtensionRegistry.register(FakeStableExtension.new)
     @context = Mcp::Context.new(base_url: "http://test.host")
   end
 
@@ -118,6 +126,26 @@ class Mcp::Tools::AppSettingsTest < ActiveSupport::TestCase
     assert_nil setting.default_model
   end
 
+  test "set_session_defaults clears only the model, keeping the runtime" do
+    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
+
+    action(action: "set_session_defaults", model: "")
+
+    setting = AppSetting.current
+    assert_equal "codex", setting.default_runtime
+    assert_nil setting.default_model
+  end
+
+  test "set_session_defaults that moves nothing says so and writes no audit line" do
+    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
+
+    result = nil
+    entries = capture_log_entries { result = action(action: "set_session_defaults", runtime: "codex", model: "gpt-5.5") }
+
+    assert_equal "Session defaults unchanged: runtime `codex` (override), model `gpt-5.5` (override).", result
+    assert_empty entries.select { |_severity, message| message.include?("[AppSettings]") }
+  end
+
   # The model's validation, reached through the tool: the pair the Settings form
   # refuses is refused here, and nothing is written.
   test "set_session_defaults refuses a model the runtime cannot run, and saves nothing" do
@@ -181,6 +209,32 @@ class Mcp::Tools::AppSettingsTest < ActiveSupport::TestCase
 
     assert AppSetting.current.extension_enabled?("fake_experiment")
     assert_includes result, "Fake experiment (`extension.fake_experiment`) is now **on** (was off"
+  end
+
+  test "set_experimental_setting on an extension leaves every other extension's stored state alone" do
+    AppSetting.create!(extension_states: { "some_other_extension" => true })
+
+    action(action: "set_experimental_setting", setting: "extension.fake_experiment", enabled: true)
+
+    assert_equal({ "some_other_extension" => true, "fake_experiment" => true }, AppSetting.current.extension_states)
+  end
+
+  test "set_experimental_setting refuses a registered extension the page renders no toggle for" do
+    error = assert_raises(Mcp::ToolError) do
+      action(action: "set_experimental_setting", setting: "extension.fake_stable", enabled: true)
+    end
+
+    assert_match(/Unknown experimental setting: extension\.fake_stable/, error.message)
+    assert_equal 0, AppSetting.count
+  end
+
+  # A no-op returns before any write, so an extension's shipped default is never
+  # pinned into extension_states as an explicit value.
+  test "set_experimental_setting to the value it already has writes nothing and says so" do
+    result = action(action: "set_experimental_setting", setting: "extension.fake_experiment", enabled: false)
+
+    assert_includes result, "is already **off** — nothing changed"
+    assert_equal 0, AppSetting.count
   end
 
   # The controller's "registered ids only" rule, reached from the registry: an
