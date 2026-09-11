@@ -232,7 +232,8 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
   #
   # The re-fire half of #214: session 460 was told three times about merge conflicts
   # on one PR. Dedup lives in the confirmed marker, and nothing but a clean reading
-  # clears it — this pins that, over more polls than the report saw.
+  # clears it — behaviour that already holds, pinned here over more polls than the
+  # report saw rather than changed.
   test "a persistent conflict notifies once, not once per poll" do
     track(PR_URL)
 
