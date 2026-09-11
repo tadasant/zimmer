@@ -487,26 +487,32 @@ class QueuedJobMaintenance
       return if result.affected.zero?
 
       verb = result.action == :discard ? "discarded" : "rescheduled"
-      title = "Queued jobs #{verb}: #{result.affected} row#{'s' unless result.affected == 1}"
-      details = [
+      # Stable by SHAPE, with the numbers in the context below: GlitchTip groups
+      # `report_message` by its message and notifies once per issue, so a count in
+      # the title would make every distinct count its own one-shot issue.
+      title = "Queued jobs #{verb}"
+      lines = [
         "#{result.affected} queued job#{'s' unless result.affected == 1} #{verb} by #{result.actor || 'unknown'}.",
         "By class: #{format_counts(result.by_job_class)}",
         result.action == :reschedule ? "New scheduled_at: #{result.scheduled_at&.iso8601}" : nil,
         result.action == :discard ? "A discard is not recoverable — those jobs will never run." : nil,
         result.skipped_total.positive? ? "Skipped #{result.skipped_total} row(s) that changed state mid-call." : nil
-      ].compact.join(" ")
+      ].compact
 
-      Rails.logger.error("[queued_job_maintenance] #{title}. #{details}")
+      Rails.logger.error("[queued_job_maintenance] #{title}: #{lines.join(' ')}")
       ErrorReporter.report_message(
         title,
         level: :error,
         context: {
           source: name,
-          details: details,
+          details: lines.join("\n"),
           action: result.action,
+          affected: result.affected,
+          skipped: result.skipped_total,
+          actor: result.actor,
           job_class: result.job_class,
           queue_name: result.queue_name,
-          performed_at: result.performed_at&.iso8601
+          acted_at: result.performed_at&.iso8601
         }
       )
     rescue StandardError => e
