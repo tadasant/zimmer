@@ -88,10 +88,12 @@ module Workflow
       super(@raw_values)
     end
 
-    # The validated input as a WorkflowRun records it: every declared param,
-    # cast, and nil where an optional one was not supplied.
+    # The validated input as a WorkflowRun records it: every declared param, cast,
+    # nil where an optional one was not supplied — and as JSON, so a date is its
+    # "YYYY-MM-DD" string here exactly as it is once it comes back out of jsonb.
+    # The typed values are the readers (`input.for_date`), which #plan uses.
     def to_h
-      attributes
+      attributes.as_json
     end
 
     private

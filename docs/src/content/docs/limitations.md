@@ -3759,7 +3759,8 @@ Two edges follow, and both fail loudly rather than quietly:
 
 - **A workflow trigger that reached a template firing site would raise, not fire.** Those sites
   call `Trigger#interpolate_prompt` and `create_session!(prompt:)`, and both refuse a workflow
-  trigger. A schedule fire that raises parks the trigger `failed`. Nothing can create such a row
+  trigger. A one-time schedule fire that raises parks the trigger `failed`; a recurring one
+  advances its schedule and raises again at its next slot. Nothing can create such a row
   today; Phase 1's `Trigger#fire!` routes every site through `WorkflowRunner`.
 - **If the `workflow_runs` insert fails, the session exists and is never enqueued.** The run is
   written when the session row commits and before its start job is enqueued (see

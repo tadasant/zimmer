@@ -35,6 +35,7 @@ class WorkflowRegistryTest < ActiveSupport::TestCase
   test "every registered workflow is complete" do
     WorkflowRegistry.all.each do |workflow|
       assert_operator workflow, :<, ApplicationWorkflow
+      assert_predicate workflow.workflow_id, :present?, "#{workflow.name} declares no workflow id"
       assert_predicate workflow.title, :present?, "#{workflow.name} declares no title"
       assert_predicate workflow.description, :present?, "#{workflow.name} declares no description"
       assert_not_equal ApplicationWorkflow, workflow.instance_method(:plan).owner, "#{workflow.name} does not implement #plan"

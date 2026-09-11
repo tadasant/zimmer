@@ -168,6 +168,42 @@ class WorkflowRunnerTest < ActiveSupport::TestCase
     assert_nil result.workflow_run
   end
 
+  test "a fire while the trigger's last session is still pending creates nothing and records no run" do
+    trigger = workflow_trigger(skip_if_pending_session: true)
+    first = WorkflowRunner.call(trigger: trigger, payload: { message: "first" })
+
+    result = nil
+    assert_no_difference([ "Session.count", "WorkflowRun.count" ]) do
+      result = WorkflowRunner.call(trigger: trigger, payload: { message: "second" })
+    end
+
+    assert_nil result.session
+    assert_nil result.workflow_run
+    assert trigger.last_fire_skipped_for_pending_session?
+    assert_equal first.session, trigger.last_fire_pending_session
+  end
+
+  test "a run that cannot be recorded leaves its session unstarted rather than started unbound" do
+    trigger = workflow_trigger
+    WorkflowRun.any_instance.stubs(:update!).raises(ActiveRecord::ActiveRecordError, "insert failed")
+    AgentSessionJob.expects(:enqueue_new_session).never
+
+    assert_difference("Session.count", 1) do
+      assert_no_difference("WorkflowRun.count") do
+        assert_raises(ActiveRecord::ActiveRecordError) { WorkflowRunner.call(trigger: trigger, payload: { message: "hi" }) }
+      end
+    end
+  end
+
+  test "a workflow trigger's agent root is never healed onto a successor" do
+    trigger = workflow_trigger
+    trigger.expects(:heal_stale_agent_root!).never
+
+    result = WorkflowRunner.call(trigger: trigger, payload: { message: "hi" })
+
+    assert_equal "zimmer", result.session.metadata["agent_root_key"]
+  end
+
   test "a workflow's declared equipment is added to its root's defaults, and its resolved identifiers are recorded, not prompted" do
     WorkflowRegistry.stubs(:registered?).with("test.equipped").returns(true)
     WorkflowRegistry.stubs(:find!).with("test.equipped").returns(EquippedWorkflow)

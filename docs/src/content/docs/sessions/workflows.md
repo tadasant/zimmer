@@ -111,8 +111,9 @@ when a lookup fails. It runs before the session exists, so a raise leaves nothin
 `workflow_id`, the validated `input` and `resolved`, both `jsonb`. It is deliberately not
 `sessions.metadata`, which dozens of code paths write.
 
-A run is written once and is read-only afterwards — `WorkflowRun#readonly?` refuses every update,
-including `update_columns`. It is written the moment the session row commits and before the
+A run is written once and is read-only afterwards — `WorkflowRun#readonly?` refuses every write
+through a record: `save`, `update!`, `update_columns`. (A class-level `update_all` bypasses it, as it
+bypasses every model rule.) It is written the moment the session row commits and before the
 session's start job is enqueued, so by the time anything spawns the agent, `resolved` is on record.
 The foreign keys never block cleanup elsewhere: deleting a session deletes its run, and deleting a
 trigger keeps the run and clears its `trigger_id`.
@@ -137,9 +138,16 @@ sequenceDiagram
   Runner->>Workflow: new.plan(input)
   Workflow-->>Runner: Plan(resolved, instructions)
   Runner->>Trigger: create_session!(prompt: instructions, workflow_run:)
-  Note over Trigger: burst cap and pending-session dedup apply
-  Trigger->>Trigger: insert the session, then its workflow_runs row
-  Trigger->>Job: enqueue_new_session
+  alt under the burst cap, and nothing it spawned is still pending
+    Trigger->>Trigger: insert the session, then its workflow_runs row
+    Trigger->>Job: enqueue_new_session (in Session.create_from_agent_root!)
+    Trigger-->>Runner: the session and its run
+  else burst-suppressed, or a session it spawned is still pending
+    Trigger-->>Runner: no session, no run
+  else this fire tips the burst cap
+    Trigger->>Job: enqueue the burst-notice session, which gets no workflow_runs row
+    Trigger-->>Runner: the burst-notice session, no run
+  end
 ```
 
 The spawn goes through the trigger's own `create_session!`, so a workflow fire gets the
@@ -163,15 +171,22 @@ workflow and gets no `workflow_runs` row.
 
 A trigger has **exactly one** of `prompt_template` and `workflow_id`. The model validates it, and
 the `triggers_prompt_template_xor_workflow_id` check constraint holds the database to it even for a
-write that skips validations. Beyond its template, a workflow trigger:
+write that skips validations. A blank `prompt_template` on a workflow trigger is stored as NULL,
+because every edit form submits the field. Beyond its template, a workflow trigger:
 
 - **may not set `reuse_session`.** `resolved` is bound to a session when it spawns, and letting a
   later fire re-bind a conversation already running is a privilege-escalation shape nobody has
-  designed yet. The per-session wakes are all reuse triggers, so they stay template triggers.
+  designed yet. The model validates it, the `triggers_workflow_trigger_never_reuses_session` check
+  constraint holds the database to it, and `create_session!` refuses a workflow trigger's reuse fire
+  regardless. The per-session wakes are all reuse triggers, so they stay template triggers.
 - **carries no equipment of its own.** Its `mcp_servers`, `catalog_skills`, `catalog_hooks` and
   `catalog_plugins` must be empty and its `goal` blank. The workflow declares them.
 - **is pinned to the workflow's agent root**, when the workflow declares one. A root-agnostic
   workflow like `echo` declares none, and then the trigger's `agent_root_name` decides.
+- **is never healed onto a successor root.** A template trigger whose root left the catalog is
+  [repointed at a matching successor](/sessions/triggers/#an-agent-root-the-catalog-does-not-carry-yet)
+  on its next fire. A workflow trigger is not: repointing it would start the run in a root nobody
+  reviewed the workflow for, so an agent root the catalog does not carry raises at spawn instead.
 - **names a registered workflow.**
 
 The template firing sites still call `Trigger#interpolate_prompt` and `create_session!(prompt:)`
@@ -219,6 +234,7 @@ and each is open to revisiting:
   Alongside it, `LegacyTemplateWorkflow` and a `Trigger#fire!` refactor, so every firing site goes
   through `WorkflowRunner` and template triggers become one quarantined workflow.
 - **Phase 2** — a `/workflows` index and show page, a template/workflow toggle on the trigger form,
-  and `POST /workflows/:id/runs` for parameterized manual runs.
+  and `POST /workflows/:id/runs` for parameterized manual runs. `workflow_runs` has no `/supervisor`
+  panel either, so until then a run is visible only from a Rails console.
 - **Phase 3** — reuse semantics for workflow triggers, and retiring the template path if no template
   triggers remain.

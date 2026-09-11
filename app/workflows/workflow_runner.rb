@@ -17,10 +17,10 @@
 #      commits and before its start job is enqueued, so by the time anything
 #      spawns the agent, `resolved` is already on record.
 #
-# Nothing fires this in production yet. This is Phase 0 of #18 — the contract —
-# and every firing site still fires a trigger through its template. A workflow
-# trigger reaching one of them raises in Trigger#interpolate_prompt rather than
-# rendering a prompt it does not have.
+# No firing site calls this: the pollers, the Invoke button, and the trigger API
+# and MCP tools fire every trigger through its template, and routing them here is
+# Phase 1 of #18. A workflow trigger reaching one of them raises in
+# Trigger#interpolate_prompt rather than rendering a prompt it does not have.
 class WorkflowRunner
   # `session` is nil when the trigger's spawn policy created nothing (it is
   # burst-suppressed, or a session it already spawned is still pending), and is
