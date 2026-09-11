@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 require "tmpdir"
 
 class AirCatalogServiceTest < ActiveSupport::TestCase
@@ -560,26 +561,243 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     ], AirCatalogService.pinnable_catalogs
   end
 
-  # The "provider cache" here is a local `git init`, not a fetch: resolved_sha_for
-  # only ever reads a clone AIR already placed on disk.
-  test "resolved_sha_for reads the commit SHA from the cache clone" do
+  # The "provider cache" here is a local `git init`, not a fetch: the resolve
+  # only ever reads clones AIR already placed on disk.
+  test "a resolve records the SHAs and fetch time of the disk it resolved from on the snapshot" do
+    File.write(@air_json, JSON.generate("catalogs" => [ "github://pulsemcp/ai-artifacts" ]))
+    CatalogPin.create!(catalog: "github://pulsemcp/ai-artifacts", ref: "v1")
     cache_dir = File.join(@tmpdir, "cache")
-    clone = File.join(cache_dir, "pulsemcp", "ai-artifacts", "HEAD")
-    FileUtils.mkdir_p(clone)
-    system("git", "-C", clone, "init", "-q", exception: true)
-    File.write(File.join(clone, "f.txt"), "x")
-    system("git", "-C", clone, "add", ".", exception: true)
-    system("git", "-C", clone, "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-qm", "init", exception: true)
+    head_sha = git_clone_at(File.join(cache_dir, "pulsemcp", "ai-artifacts", "HEAD"))
+    pinned_sha = git_clone_at(File.join(cache_dir, "pulsemcp", "ai-artifacts", "v1"))
+    fetched = Time.utc(2026, 9, 11, 7, 15)
+    fetch_head = File.join(cache_dir, "pulsemcp", "ai-artifacts", "HEAD", ".git", "FETCH_HEAD")
+    File.write(fetch_head, "")
+    File.utime(fetched, fetched, fetch_head)
 
     with_github_cache_dir(cache_dir) do
-      sha = AirCatalogService.resolved_sha_for("github://pulsemcp/ai-artifacts", ref: "HEAD")
-      assert_match(/\A[0-9a-f]{40}\z/, sha)
+      with_air_resolve_passing_git_through(NON_EMPTY_RESOLVE) { AirCatalogService.reload! }
+    end
+
+    snapshot = CatalogSnapshot.latest
+    assert_equal({ "HEAD" => head_sha, "v1" => pinned_sha }, snapshot.catalog_shas["github://pulsemcp/ai-artifacts"])
+    assert_equal fetched, snapshot.fetched_at
+    assert_equal pinned_sha, AirCatalogService.resolved_sha_for("github://pulsemcp/ai-artifacts", ref: "v1")
+    assert_equal head_sha, AirCatalogService.resolved_sha_for("github://pulsemcp/ai-artifacts/some/path@main")
+  end
+
+  test "resolved_sha_for and last_refreshed_at read the served snapshot, not this process's disk" do
+    fetched = Time.utc(2026, 9, 11, 7, 45)
+    CatalogSnapshot.store!(NON_EMPTY_RESOLVE, fetched_at: fetched,
+      catalog_shas: { "github://pulsemcp/ai-artifacts" => { "HEAD" => "b" * 40 } })
+
+    # This process has no clones at all — the web container between boots, as
+    # far as the snapshot's writer is concerned — and must not shell out.
+    with_github_cache_dir(File.join(@tmpdir, "no-cache")) do
+      Open3.expects(:capture3).never
+      assert_equal "b" * 40, AirCatalogService.resolved_sha_for("github://pulsemcp/ai-artifacts")
+      assert_equal fetched, AirCatalogService.last_refreshed_at
     end
   end
 
-  test "resolved_sha_for returns nil when the catalog is not cached" do
+  test "resolved_sha_for returns nil for a ref the snapshot has no SHA for, or a non-github catalog" do
+    CatalogSnapshot.store!(NON_EMPTY_RESOLVE, catalog_shas: { "github://pulsemcp/ai-artifacts" => { "HEAD" => "b" * 40 } })
+
+    assert_nil AirCatalogService.resolved_sha_for("github://pulsemcp/ai-artifacts", ref: "v2")
+    assert_nil AirCatalogService.resolved_sha_for("github://someone/else")
+    assert_nil AirCatalogService.resolved_sha_for("./local/catalog")
+  end
+
+  # --- the snapshot is the source of truth (#98) ------------------------------
+  #
+  # The worker's cron is the only periodic resolve. Every other process —
+  # the web above all — serves the newest snapshot on its TTL. These drive the
+  # TTL expiry by hand because test_helper disables it for the rest of the suite.
+
+  test "picks up a newer snapshot written by another process on TTL expiry, without running air" do
+    CatalogSnapshot.store!({ skills: { "before" => {} } })
+    Open3.expects(:capture3).never
+
+    assert_equal [ "before" ], AirCatalogService.entries_for(:skills).keys
+
+    # The worker's CatalogRefreshJob, in another container: `air update` +
+    # `air resolve` on its own disk, then store!.
+    newer = CatalogSnapshot.store!({ skills: { "after" => {} } }, fetched_at: Time.utc(2026, 9, 11, 10))
+
+    # Still inside the TTL: memory, no query.
+    CatalogSnapshot.expects(:latest_header).never
+    assert_equal [ "before" ], AirCatalogService.entries_for(:skills).keys
+    CatalogSnapshot.unstub(:latest_header)
+
+    expire_ttl do
+      assert_equal [ "after" ], AirCatalogService.entries_for(:skills).keys
+    end
+    assert_equal CatalogSnapshot.find(newer.id).resolved_at, AirCatalogService.last_known_good_at
+    assert_equal Time.utc(2026, 9, 11, 10), AirCatalogService.last_refreshed_at
+    refute AirCatalogService.degraded?
+  end
+
+  test "reads only the header when the newest snapshot is the one already served" do
+    CatalogSnapshot.store!({ skills: { "a" => {} } })
+    AirCatalogService.entries_for(:skills)
+
+    CatalogSnapshot.expects(:find_by).never
+    CatalogSnapshot.expects(:latest).never
+    expire_ttl { assert_equal [ "a" ], AirCatalogService.entries_for(:skills).keys }
+  end
+
+  test "a refresh that failed in another process makes this one degraded, and a new snapshot clears it" do
+    served = CatalogSnapshot.store!({ skills: { "a" => {} } })
+    AirCatalogService.entries_for(:skills)
+    refute AirCatalogService.degraded?
+
+    # The worker's `air update` failed: it recorded that on the snapshot and
+    # stored nothing new.
+    at = Time.utc(2026, 9, 11, 11)
+    CatalogSnapshot.record_failure!("air update failed (exit 1): network is unreachable", at: at)
+
+    expire_ttl { AirCatalogService.entries_for(:skills) }
+    assert AirCatalogService.degraded?
+    assert_equal({ message: "air update failed (exit 1): network is unreachable", at: at }, AirCatalogService.resolve_failure)
+    assert_equal CatalogSnapshot.find(served.id).resolved_at, AirCatalogService.last_known_good_at
+
+    CatalogSnapshot.store!({ skills: { "b" => {} } })
+    expire_ttl { assert_equal [ "b" ], AirCatalogService.entries_for(:skills).keys }
+    refute AirCatalogService.degraded?
+    assert_nil AirCatalogService.resolve_failure
+  end
+
+  test "a failed refresh records its scrubbed failure on the snapshot for every other process" do
+    token = "ghp_#{"s" * 36}"
+    CatalogSnapshot.store!({ skills: { "a" => {} } })
+
+    SecretsLoader.stub(:all, { "AIR_GITHUB_TOKEN" => token }) do
+      without_install_bootstrap do
+        AirCatalogService.stub(:air_binary, @fake_binary) do
+          Open3.stub(:capture3, ->(*) { [ "", "auth failed for #{token}", fake_status(1) ] }) do
+            assert_raises(AirCatalogService::CatalogError) { AirCatalogService.refresh! }
+          end
+        end
+      end
+    end
+
+    failure = CatalogSnapshot.latest.failure
+    assert failure, "the failure must be visible to processes that did not run the refresh"
+    refute_includes failure[:message], token
+    assert_includes failure[:message], "[REDACTED:AIR_GITHUB_TOKEN]"
+  end
+
+  # A refresh that fails must not mark a snapshot that another process resolved
+  # successfully while it was failing — that row is fresh, and stamping it would
+  # tell every process a current catalog is degraded (fresh-eyes review of #1150).
+  test "a failed refresh does not mark a snapshot that superseded the attempt" do
+    CatalogSnapshot.store!({ skills: { "fresh" => {} } })
+    CatalogSnapshot.update_all(resolved_at: 1.minute.from_now)
+
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, @fake_binary) do
+        Open3.stub(:capture3, ->(*) { [ "", "network is unreachable", fake_status(1) ] }) do
+          assert_raises(AirCatalogService::CatalogError) { AirCatalogService.refresh! }
+        end
+      end
+    end
+
+    assert_nil CatalogSnapshot.latest.failure,
+      "the snapshot stored after this attempt began is fresh and must not be marked degraded"
+  end
+
+  test "a failed refresh marks the snapshot it was trying to supersede" do
+    CatalogSnapshot.store!({ skills: { "stale" => {} } })
+    CatalogSnapshot.update_all(resolved_at: 1.minute.ago)
+
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, @fake_binary) do
+        Open3.stub(:capture3, ->(*) { [ "", "network is unreachable", fake_status(1) ] }) do
+          assert_raises(AirCatalogService::CatalogError) { AirCatalogService.refresh! }
+        end
+      end
+    end
+
+    assert_match(/network is unreachable/, CatalogSnapshot.latest.failure[:message])
+  end
+
+  # store! prunes every other row, so a newest row this process did not write is
+  # a supersede however its clock reads. Decided on identity, not on a timestamp
+  # from another container (fresh-eyes review of #1150).
+  test "adopts a superseding snapshot whose resolved_at reads earlier than the one it serves" do
+    CatalogSnapshot.store!({ skills: { "mine" => {} } })
+    assert_equal [ "mine" ], AirCatalogService.entries_for(:skills).keys
+
+    # Another process stores its own row, with a clock that reads behind ours.
+    CatalogSnapshot.delete_all
+    CatalogSnapshot.create!(entries: { skills: { "theirs" => {} } }, resolved_at: 2.minutes.ago)
+
+    expire_ttl { assert_equal [ "theirs" ], AirCatalogService.entries_for(:skills).keys }
+  end
+
+  test "keeps a tree it resolved itself over an older snapshot when its own write failed" do
+    CatalogSnapshot.store!({ skills: { "old" => {} } })
+    CatalogSnapshot.update_all(resolved_at: 1.hour.ago)
+
+    CatalogSnapshot.stub(:store!, ->(*, **) { raise ActiveRecord::ConnectionNotEstablished, "db blip" }) do
+      with_air_resolve("skills" => { "fresh" => {} }) { AirCatalogService.reload! }
+    end
+
+    expire_ttl { assert_equal [ "fresh" ], AirCatalogService.entries_for(:skills).keys }
+  end
+
+  test "keeps serving the in-memory tree when the snapshot cannot be read" do
+    CatalogSnapshot.store!({ skills: { "a" => {} } })
+    AirCatalogService.entries_for(:skills)
+
+    Open3.expects(:capture3).never
+    CatalogSnapshot.stubs(:latest_header).raises(ActiveRecord::ConnectionNotEstablished, "db down")
+    expire_ttl { assert_equal [ "a" ], AirCatalogService.entries_for(:skills).keys }
+  end
+
+  test "a process with no snapshot to serve resolves on first use and stores one" do
+    assert_nil CatalogSnapshot.latest
+
+    with_air_resolve("skills" => { "resolved" => {} }) do
+      assert_equal [ "resolved" ], AirCatalogService.entries_for(:skills).keys
+    end
+    assert_equal [ "resolved" ], CatalogSnapshot.latest.entries["skills"].keys
+  end
+
+  test "sync_from_snapshot! serves the newest snapshot without waiting for the TTL" do
+    CatalogSnapshot.store!({ skills: { "before" => {} } })
+    AirCatalogService.entries_for(:skills)
+    CatalogSnapshot.store!({ skills: { "after" => {} } })
+
+    assert AirCatalogService.sync_from_snapshot!
+    assert_equal [ "after" ], AirCatalogService.entries_for(:skills).keys
+  end
+
+  test "disk_cache_behind_snapshot? compares this process's fetch with the snapshot's" do
+    cache_dir = File.join(@tmpdir, "cache")
+    fetch_head = File.join(cache_dir, "o", "r", "HEAD", ".git", "FETCH_HEAD")
+    FileUtils.mkdir_p(File.dirname(fetch_head))
+    File.write(fetch_head, "")
+    snapshot_fetch = Time.utc(2026, 9, 11, 12)
+    CatalogSnapshot.store!(NON_EMPTY_RESOLVE, fetched_at: snapshot_fetch)
+
+    with_github_cache_dir(cache_dir) do
+      File.utime(snapshot_fetch - 600, snapshot_fetch - 600, fetch_head)
+      assert AirCatalogService.disk_cache_behind_snapshot?, "a clone fetched before the snapshot's is behind"
+
+      File.utime(snapshot_fetch, snapshot_fetch, fetch_head)
+      refute AirCatalogService.disk_cache_behind_snapshot?, "the writer's own disk is not behind its snapshot"
+    end
+
     with_github_cache_dir(File.join(@tmpdir, "no-cache")) do
-      assert_nil AirCatalogService.resolved_sha_for("github://pulsemcp/ai-artifacts")
+      assert AirCatalogService.disk_cache_behind_snapshot?, "no clones at all is behind a snapshot that had some"
+    end
+  end
+
+  test "disk_cache_behind_snapshot? is false when the snapshot's writer had no github clones" do
+    CatalogSnapshot.store!(NON_EMPTY_RESOLVE)
+
+    with_github_cache_dir(File.join(@tmpdir, "no-cache")) do
+      refute AirCatalogService.disk_cache_behind_snapshot?
     end
   end
 
@@ -620,12 +838,13 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
   end
 
   test "serves the persisted last-known-good snapshot when resolve fails on a cold cache" do
-    CatalogSnapshot.store!(roots: { "zimmer-router" => { "name" => "zimmer-router" } }, skills: {})
+    CatalogSnapshot.store!({ roots: { "zimmer-router" => { "name" => "zimmer-router" } }, skills: {} })
     AirCatalogService.reset! # cold process: nothing cached in memory
 
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
         Open3.stub(:capture3, ->(*) { [ "", "cross-scope shortname collision", fake_status(1) ] }) do
+          AirCatalogService.reload! # a cold process that resolves (e.g. its boot refresh) and fails
           assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys,
             "a freshly restarted process must recover zimmer-router from the persisted snapshot"
           assert AirCatalogService.degraded?
@@ -737,12 +956,13 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
   end
 
   test "records resolve_failure when a resolve fails but a last-known-good is served" do
-    CatalogSnapshot.store!(roots: { "zimmer-router" => { "name" => "zimmer-router" } }, skills: {})
+    CatalogSnapshot.store!({ roots: { "zimmer-router" => { "name" => "zimmer-router" } }, skills: {} })
     AirCatalogService.reset!
 
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
         Open3.stub(:capture3, ->(*) { [ "", "cross-scope shortname collision", fake_status(1) ] }) do
+          AirCatalogService.reload!
           assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys
         end
       end
@@ -754,13 +974,13 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
   end
 
   test "clears resolve_failure once resolution recovers" do
-    CatalogSnapshot.store!(roots: { "stale" => { "name" => "stale" } })
+    CatalogSnapshot.store!({ roots: { "stale" => { "name" => "stale" } } })
     AirCatalogService.reset!
 
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
         Open3.stub(:capture3, ->(*) { [ "", "boom", fake_status(1) ] }) do
-          AirCatalogService.entries_for(:roots)
+          AirCatalogService.reload!
           assert AirCatalogService.resolve_failure
         end
 
@@ -967,12 +1187,13 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
   end
 
   test "clears degraded state and persists a fresh snapshot once resolution recovers" do
-    CatalogSnapshot.store!(roots: { "stale" => { "name" => "stale" } })
+    CatalogSnapshot.store!({ roots: { "stale" => { "name" => "stale" } } })
     AirCatalogService.reset!
 
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
         Open3.stub(:capture3, ->(*) { [ "", "boom", fake_status(1) ] }) do
+          AirCatalogService.reload!
           assert_equal [ "stale" ], AirCatalogService.entries_for(:roots).keys
           assert AirCatalogService.degraded?
         end
@@ -1132,6 +1353,34 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
 
   def fake_status(code)
     Struct.new(:exitstatus, :success?).new(code, code.zero?)
+  end
+
+  # Like with_air_resolve, but lets `git` through to the real Open3 so the
+  # resolve can read SHAs off the test's clones.
+  def with_air_resolve_passing_git_through(parsed)
+    real = Open3.method(:capture3)
+    fake = ->(*args) { args.first == "git" ? real.call(*args) : [ JSON.generate(parsed), "", fake_status(0) ] }
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, @fake_binary) do
+        Open3.stub(:capture3, fake) { yield }
+      end
+    end
+  end
+
+  # A one-commit repository at `dir`; returns its HEAD SHA.
+  def git_clone_at(dir)
+    FileUtils.mkdir_p(dir)
+    system("git", "-C", dir, "init", "-q", exception: true)
+    File.write(File.join(dir, "f.txt"), dir)
+    system("git", "-C", dir, "add", ".", exception: true)
+    system("git", "-C", dir, "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-qm", "init", exception: true)
+    `git -C #{dir.shellescape} rev-parse HEAD`.strip
+  end
+
+  # Expire the in-memory TTL for the block. test_helper overrides expired? to
+  # false suite-wide; these tests are about what happens when it is true.
+  def expire_ttl
+    AirCatalogService.stub(:expired?, true) { yield }
   end
 
   def with_github_cache_dir(value)

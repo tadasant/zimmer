@@ -93,9 +93,14 @@ CacheIsolationGuard.capture!
 #      tests hit AirCatalogService.entries_for(:mcp) transitively via
 #      AgentSessionJob#perform → ensure_baseline_mcp_config!. By pre-warming the
 #      catalog here, entries_for returns cached data without shelling out.
+#
+# reload!, not entries_for: a cold entries_for serves the newest CatalogSnapshot
+# if one exists, and the boot pre-warm runs outside any test transaction, so the
+# previous local run's snapshot is still in the table — resolved from whatever
+# the catalog files said then. Forcing a resolve pins the suite to this checkout.
 begin
   AirPrepareService.ensure_air_installed!
-  AirCatalogService.entries_for(:skills)
+  AirCatalogService.reload!
 rescue AirPrepareService::AirPrepareError, AirCatalogService::CatalogError => e
   warn "[test_helper] AIR CLI pre-warm failed: #{e.message} — individual tests may retry"
 end
