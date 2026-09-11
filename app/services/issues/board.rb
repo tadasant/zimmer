@@ -34,6 +34,9 @@ module Issues
     # them and a page that renders all of them is a page nobody scrolls.
     GITHUB_PER_PAGE = 50
 
+    # The stranded list is the one with no natural ceiling — see #stranded_rows.
+    MAX_STRANDED_ROWS = 50
+
     # How far back the "finished recently" list reaches, measured from when each
     # session ENDED rather than from when its item started.
     RECENTLY_ENDED_WINDOW = 24.hours
@@ -120,9 +123,26 @@ module Issues
     # each, but puts nothing back: telling a finished issue from one with a
     # deliberate remainder needs a judgement per issue, which is not a cron job's
     # to make. The state is the evidence a triager starts from.
+    # Oldest first, and BOUNDED. Unlike the lists above it, nothing bounds this
+    # population: `in_flight` and `parked` are capped by the WIP ceiling and
+    # `recently_ended` by its window, but a stranded row leaves only when a person
+    # triages it. It was 41 rows when measured. So the page shows the oldest
+    # MAX_STRANDED_ROWS and says how many there are in total.
+    #
+    # Ordered on COALESCE rather than `started_at`, because half this list has no
+    # `started_at` at all — a mechanically removed row was never started — and
+    # Postgres sorts those NULLs to the top of a DESC ordering, pinning every
+    # removed row above every started one for no reason a reader could guess.
     def stranded_rows
-      @stranded_rows ||= started_rows(WorkBacklogItem.stranded)
+      @stranded_rows ||= WorkBacklogItem.stranded
+        .includes(:started_session)
+        .order(Arel.sql("COALESCE(started_at, removed_at) ASC"))
+        .limit(MAX_STRANDED_ROWS)
+        .map { |item| build_row(item, nil) }
     end
+
+    # Whether the page is showing only part of the stranded population.
+    def stranded_truncated? = counts[:stranded] > stranded_rows.length
 
     # Open GitHub issues with no live backlog row, filtered by the repo and
     # direction the filter bar is set to. This is the half of the page that is

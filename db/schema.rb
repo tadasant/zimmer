@@ -901,6 +901,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_024903) do
     t.index ["key"], name: "index_work_backlog_items_on_key"
     t.index ["key"], name: "index_work_backlog_items_on_queued_key", unique: true, where: "((status)::text = 'queued'::text)"
     t.index ["kind"], name: "index_work_backlog_items_on_kind"
+    t.index ["liveness_checked_at"], name: "index_work_backlog_items_on_liveness"
     t.index ["pinned"], name: "index_work_backlog_items_on_pinned", where: "pinned"
     t.index ["removed_at"], name: "index_work_backlog_items_on_removed_at"
     t.index ["repo"], name: "index_work_backlog_items_on_repo"
@@ -908,7 +909,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_024903) do
     t.index ["started_at"], name: "index_work_backlog_items_on_started_at"
     t.index ["started_by_session_id"], name: "index_work_backlog_items_on_started_by_session_id"
     t.index ["started_session_id"], name: "index_work_backlog_items_on_started_session_id"
-    t.index ["status", "liveness_checked_at"], name: "index_work_backlog_items_on_liveness"
     t.index ["status", "precedence", "added_at", "id"], name: "index_work_backlog_items_rank", order: { precedence: :desc }
     t.index ["surface"], name: "index_work_backlog_items_on_surface"
     t.index ["writing_session_id"], name: "index_work_backlog_items_on_writing_session_id"

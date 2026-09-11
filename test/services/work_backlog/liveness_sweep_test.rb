@@ -115,6 +115,46 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     assert_nil item.reload.liveness_state
   end
 
+  test "a row removed inside the grace is not yet a candidate" do
+    item = removed_row(reason: "session_already_working", removed_at: 1.minute.ago)
+
+    assert_equal 0, sweep(probes: {}).examined
+    assert_nil item.reload.liveness_state,
+               "a session that was already working it a minute ago has not had time to produce a PR"
+  end
+
+  # The triage route leaves a newer row behind rather than moving this one, so
+  # without this the re-queued item would age in the stranded count forever and
+  # the alert could never be cleared by the action it recommends.
+  test "a row a newer row has taken over resolves without asking GitHub" do
+    item = started_row
+    backlog_item(key: item.key, issue_url: issue_url(1))
+
+    result = sweep(probes: {})
+
+    assert_equal WorkBacklogItem::LIVENESS_SUPERSEDED, item.reload.liveness_state
+    assert_empty WorkBacklogItem.stranded.where(id: item.id)
+    assert_equal 1, result.count(WorkBacklogItem::LIVENESS_SUPERSEDED)
+  end
+
+  # One unwritable row must not cost every other. It would otherwise cost them
+  # permanently: a row that raises keeps `liveness_checked_at` NULL, so it sorts
+  # first on the next pass too, and the sweep never gets past it.
+  test "a row that cannot be written does not stop the pass" do
+    broken = started_row(key: "zimmer#1", number: 1)
+    broken.update_columns(estimated_cost: "enormous")
+    healthy = started_row(key: "zimmer#2", number: 2)
+    log = StringIO.new
+
+    result = sweep(probes: { 1 => probe(references: []), 2 => probe(references: []) },
+                   logger: Logger.new(log))
+
+    assert_equal 2, result.examined
+    assert_equal WorkBacklogItem::LIVENESS_NO_PR, healthy.reload.liveness_state
+    assert_nil broken.reload.liveness_state
+    assert_match(/could not record/, log.string)
+  end
+
   # --- a read that failed is not a conclusion -------------------------------
 
   test "a repo that could not be probed leaves its rows unknown and is named" do
