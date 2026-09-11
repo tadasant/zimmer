@@ -360,6 +360,59 @@ class ClaudeUsageSamplerJobTest < ActiveSupport::TestCase
   # including calls a more specific `.with(token)` stub defined afterwards goes
   # on to answer. `@probed_tokens` is therefore every probe attempted, failures
   # included, which is what the attempt-budget assertions want.
+  # --- The credential verdict (#239) -----------------------------------------
+  #
+  # This sweep is the pool's most regular probe, so it is the most regular source
+  # of truth about whether a stored token still works.
+
+  test "a landed sample records that Anthropic honoured the stored token" do
+    serving = account("serving@example.com", current: true)
+    stub_probe
+
+    ClaudeUsageSamplerJob.perform_now
+
+    assert_equal :verified, serving.reload.credential_state
+  end
+
+  test "a 401 takes the account out of the pool; an unreachable Anthropic does not" do
+    serving = account("serving@example.com", current: true)
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401).")
+    )
+
+    ClaudeUsageSamplerJob.perform_now
+
+    assert_equal :rejected, serving.reload.credential_state
+    assert_not ClaudeAccount.any_serviceable_for?(ClaudeAuthProvider::RUNTIME)
+
+    QuotaCheckService.unstub(:check_with_token)
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, unreachable: true, error_message: "timed out")
+    )
+
+    ClaudeUsageSamplerJob.perform_now
+
+    assert_equal :rejected, serving.reload.credential_state,
+      "an unreachable probe is not a verdict in either direction — it must not clear one either"
+  end
+
+  test "a later successful sample puts a refused account back in the pool" do
+    serving = account("serving@example.com", current: true)
+    serving.record_credential_probe!(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401)."),
+      probed_token: serving.claude_access_token
+    )
+    assert_not ClaudeAccount.any_serviceable_for?(ClaudeAuthProvider::RUNTIME)
+    stub_probe
+
+    ClaudeUsageSamplerJob.perform_now
+
+    assert_equal :verified, serving.reload.credential_state
+    assert ClaudeAccount.any_serviceable_for?(ClaudeAuthProvider::RUNTIME)
+  end
+
   def stub_probe
     QuotaCheckService.stubs(:check_with_token).with do |token|
       @probed_tokens << token

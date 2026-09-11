@@ -3022,10 +3022,14 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     ClaudeCredentialHealth.stubs(:status).returns(
       ClaudeCredentialHealth::Status.new(state: :ok, detail: "fine", owner_email: "a@b.com", checked_at: Time.current)
     )
-    refusal = QuotaCheckService::Result.new(success: false, unreachable: false,
+    refusal = QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
       error_message: "No rate-limit headers in response (HTTP 401).")
     ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).each do |account|
-      account.oauth_config.present? ? account.record_credential_probe!(refusal) : account.update!(status: :needs_reauth)
+      if account.claude_access_token.present?
+        account.record_credential_probe!(refusal, probed_token: account.claude_access_token)
+      else
+        account.update!(status: :needs_reauth)
+      end
     end
 
     auth = HealthMonitorService.new.auth_health

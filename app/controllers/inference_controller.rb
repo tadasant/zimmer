@@ -565,7 +565,7 @@ class InferenceController < ApplicationController
     # The verdict, after the one refresh this method allows — so the card the
     # caller is about to re-render reports what Anthropic just said about the
     # token now in the row rather than whether the row is non-empty (#239).
-    account.record_credential_probe!(result)
+    account.record_credential_probe!(result, probed_token: token)
 
     result
   end
