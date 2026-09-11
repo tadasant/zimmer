@@ -2998,7 +2998,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
 
     @mock_cli_adapter.resume_hook = ->(opts) { { pid: 54321, stderr_log_path: "/tmp/stderr2.log" } }
     @mock_process_manager.running_hook = ->(pid) { true }
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
@@ -3024,10 +3024,10 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::BUDGET.max))
 
     alert = nil
-    AlertService.stubs(:raise_alert).with do |title, opts|
-      alert = [ title, opts ]
+    ErrorReporter.stubs(:report_message).with do |message, opts|
+      alert = [ message, opts[:context] ]
       true
-    end.returns(true)
+    end
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
@@ -3040,8 +3040,9 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     assert_equal "Malformed tool call the retry ladder did not clear", alert[0]
     assert_match(/deterministically unserializable/, alert[1][:details])
     assert_equal "ProcessLifecycleManager#handle_retryable_api_error", alert[1][:source]
-    assert_match(/claude_code/, alert[1][:dedup_key],
-      "keyed on the runtime only, so a fleet-wide wave is one message rather than one per session"
+    assert_equal "claude_code", alert[1][:runtime]
+    assert_no_match(/#{@session.id}/, alert[0],
+      "the message carries no session id, so a fleet-wide wave is one issue rather than one per session"
     )
   end
 
@@ -3055,10 +3056,10 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::BUDGET.max))
 
     alert = nil
-    AlertService.stubs(:raise_alert).with do |title, opts|
-      alert = [ title, opts ]
+    ErrorReporter.stubs(:report_message).with do |message, opts|
+      alert = [ message, opts[:context] ]
       true
-    end.returns(true)
+    end
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
@@ -3082,10 +3083,10 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 99))
 
     alert = nil
-    AlertService.stubs(:raise_alert).with do |title, opts|
-      alert = [ title, opts ]
+    ErrorReporter.stubs(:report_message).with do |message, opts|
+      alert = [ message, opts[:context] ]
       true
-    end.returns(true)
+    end
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
@@ -3106,7 +3107,10 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     setup_transcript_with_api_server_error("500 Internal Server Error")
     @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 99))
-    AlertService.expects(:raise_alert).never
+    # The recognized wording still logs its own terminal line; what must not fire is
+    # the malformed-tool-call escalation.
+    ErrorReporter.expects(:report_message).with("Malformed tool call the retry ladder did not clear", anything).never
+    ErrorReporter.stubs(:report_message)
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
@@ -3124,7 +3128,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     setup_transcript_with_api_server_error("500 Internal Server Error")
     @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::BUDGET.max))
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
@@ -4042,10 +4046,10 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     @mock_file_system.write(stderr_path, "Error: the CLI invented a brand new way to die\n")
 
     alert = nil
-    AlertService.stubs(:raise_alert).with do |title, opts|
-      alert = [ title, opts ]
+    ErrorReporter.stubs(:report_message).with do |message, opts|
+      alert = [ message, opts[:context] ]
       true
-    end.returns(true)
+    end
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
@@ -4057,8 +4061,8 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     assert alert, "an unclassified exit must page"
     assert_equal "Unclassified failure: process exit", alert[0]
     assert_match(/exit code: 2/, alert[1][:details])
-    assert_match(/brand new way to die/, alert[1][:error],
-      "the alert must carry the output no pattern matched, via error: so AlertSnippet redacts it")
+    assert_match(/brand new way to die/, alert[1][:unmatched_output],
+      "the report must carry the output no pattern matched, through AlertSnippet so it is redacted")
     assert_equal "ProcessLifecycleManager#handle_exit", alert[1][:source]
   end
 
@@ -4066,7 +4070,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
   # expected event and must never reach the unclassified path.
   test "handle_exit does not alert on a normal completion" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
@@ -4079,7 +4083,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     stderr_path = "/tmp/test-clone/claude_stderr.log"
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
     @mock_file_system.write(stderr_path, "No conversation found with session ID: abc123\n")
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
@@ -4103,17 +4107,17 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     )
 
     alert = nil
-    AlertService.stubs(:raise_alert).with do |_title, opts|
-      alert = opts
+    ErrorReporter.stubs(:report_message).with do |_message, opts|
+      alert = opts[:context]
       true
-    end.returns(true)
+    end
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
     manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
 
     assert alert, "an unclassified exit must page"
-    assert_match(/cool-down mode/, alert[:error])
+    assert_match(/cool-down mode/, alert[:unmatched_output])
   end
 
   # A classifier said a recovery path applied and the recovery service then said
@@ -4125,10 +4129,10 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     ApiErrorRetryService.any_instance.stubs(:attempt_retry).returns(:not_applicable)
 
     alert = nil
-    AlertService.stubs(:raise_alert).with do |title, opts|
-      alert = [ title, opts ]
+    ErrorReporter.stubs(:report_message).with do |message, opts|
+      alert = [ message, opts[:context] ]
       true
-    end.returns(true)
+    end
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
@@ -4156,7 +4160,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
       )
     )
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
@@ -4166,25 +4170,25 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     assert_equal :failed, decision.action, "the session still fails — only the page is withheld"
   end
 
-  # The summary IS the dedup key, so it must carry the runtime. Without it a
-  # routine failure on one runtime holds the key and suppresses a genuinely
-  # novel failure on another that happens to share its exit code.
-  test "the unclassified alert dedup key distinguishes runtimes sharing an exit code" do
+  # The summary is what distinguishes one unknown failure mode from another, so it
+  # must carry the runtime. Without it a routine failure on one runtime looks like a
+  # genuinely novel failure on another that happens to share its exit code.
+  test "the unclassified alert summary distinguishes runtimes sharing an exit code" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
 
     alert = nil
-    AlertService.stubs(:raise_alert).with do |_title, opts|
-      alert = opts
+    ErrorReporter.stubs(:report_message).with do |_message, opts|
+      alert = opts[:context]
       true
-    end.returns(true)
+    end
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
     manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
 
     assert alert
-    assert_match(/claude_code/, alert[:details],
-      "the runtime must reach the alert, because the summary is the dedup key")
+    assert_match(/claude_code/, alert[:summary],
+      "the runtime must reach the report, because the summary is what separates the modes")
   end
 
   # A signal death that exhausts its resume budget IS classified — it returns
@@ -4195,7 +4199,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     @session.update!(metadata: @session.metadata.merge(
       "signal_death_retry_count" => RetryBudget::SIGNAL_DEATH.max
     ))
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
@@ -4214,10 +4218,10 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     ContextLengthRetryService.any_instance.stubs(:attempt_recovery).returns(:not_applicable)
 
     alert = nil
-    AlertService.stubs(:raise_alert).with do |title, opts|
-      alert = [ title, opts ]
+    ErrorReporter.stubs(:report_message).with do |message, opts|
+      alert = [ message, opts[:context] ]
       true
-    end.returns(true)
+    end
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
@@ -4234,7 +4238,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
   # Alerting must never be able to change how the session itself is failed.
   test "a failing alert does not change the exit decision" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
-    AlertService.stubs(:raise_alert).raises(StandardError, "slack is on fire")
+    ErrorReporter.stubs(:report_message).raises(StandardError, "glitchtip is on fire")
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")

@@ -37,19 +37,17 @@ class SlackTriggerHealthCheckJob < ApplicationJob
   def perform
     return unless SlackService.configured?
 
-    AlertBatcher.with_batch do
-      TriggerCondition.slack
-        .joins(:trigger)
-        .where(triggers: { status: "enabled" })
-        .includes(:trigger)
-        .find_each do |condition|
-        check_condition(condition)
-      rescue => e
-        # An API hiccup checking one condition shouldn't abort the sweep or
-        # masquerade as a stalled feed. Log at INFO — this self-resolves on the
-        # next hourly run — and move on.
-        Rails.logger.info "[SlackTriggerHealthCheckJob] Could not check condition #{condition.id}: #{e.message}"
-      end
+    TriggerCondition.slack
+      .joins(:trigger)
+      .where(triggers: { status: "enabled" })
+      .includes(:trigger)
+      .find_each do |condition|
+      check_condition(condition)
+    rescue => e
+      # An API hiccup checking one condition shouldn't abort the sweep or
+      # masquerade as a stalled feed. Log at INFO — this self-resolves on the
+      # next hourly run — and move on.
+      Rails.logger.info "[SlackTriggerHealthCheckJob] Could not check condition #{condition.id}: #{e.message}"
     end
   end
 
@@ -82,16 +80,27 @@ class SlackTriggerHealthCheckJob < ApplicationJob
     lag_seconds = Time.now.to_f - latest_ts.to_f
     return if lag_seconds < STALE_THRESHOLD_SECONDS
 
-    source = condition.thread_scoped? ? "thread #{condition.thread_ts}" : "##{condition.channel_name || channel_id}"
-    AlertService.raise_alert(
+    feed = condition.thread_scoped? ? "thread #{condition.thread_ts}" : "##{condition.channel_name || channel_id}"
+    details = "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) " \
+              "monitoring #{feed} has fallen behind. Slack's newest message (ts #{latest_ts}, " \
+              "~#{(lag_seconds / 3600.0).round(1)}h old) is newer than the last one the poller processed " \
+              "(ts #{last_processed}). The feed may have silently stopped being delivered or processed — " \
+              "investigate before dependent automation goes dark."
+
+    # .error, and this line is the load-bearing half: a stalled feed is a silence,
+    # so nothing else here says anything. The ERROR record is what pages (any
+    # non-staging Zimmer ERROR trips the Grafana rule, and it re-pages while the
+    # condition lasts); the GlitchTip event below carries the detail.
+    Rails.logger.error "[SlackTriggerHealthCheckJob] Slack trigger feed stalled: #{details}"
+    ErrorReporter.report_message(
       "Slack trigger feed stalled",
-      details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) " \
-               "monitoring #{source} has fallen behind. Slack's newest message (ts #{latest_ts}, " \
-               "~#{(lag_seconds / 3600.0).round(1)}h old) is newer than the last one the poller processed " \
-               "(ts #{last_processed}). The feed may have silently stopped being delivered or processed — " \
-               "investigate before dependent automation goes dark.",
-      source: "SlackTriggerHealthCheckJob",
-      dedup_key: "slack_trigger_stalled_#{condition.id}"
+      level: :error,
+      context: {
+        source: "SlackTriggerHealthCheckJob",
+        details: details,
+        condition_id: condition.id,
+        trigger_id: condition.trigger_id
+      }
     )
   end
 

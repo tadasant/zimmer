@@ -700,21 +700,26 @@ class AirPrepareService
     )
   end
 
-  # Surface a dropped stale skill the same way the trigger self-heal does: a
-  # deduped #eng-alerts notice so the stale stored config is still visible even
-  # though it's no longer fatal. Dedup is per-session so a retrying prepare
-  # doesn't spam the channel.
+  # Surface a dropped stale skill the same way the trigger self-heal does, so the
+  # stale stored config is still visible even though it's no longer fatal.
   def alert_stale_skills_dropped(stale, valid)
-    AlertService.raise_alert(
+    details = "Session #{session.id} referenced catalog skill(s) that no longer exist in the catalog:\n" \
+              "• Removed: #{stale.join(', ')}\n" \
+              "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
+              "The stale reference(s) were dropped so `air prepare` could proceed. " \
+              "The session started with the remaining skills.\n\n" \
+              "#{AppUrl.base_url}/sessions/#{session.id}"
+
+    Rails.logger.error("[AirPrepareService] Session self-healed: stale catalog skill(s) removed — #{details}")
+    ErrorReporter.report_message(
       "Session self-healed: stale catalog skill(s) removed",
-      details: "Session *#{session.id}* referenced catalog skill(s) that no longer exist in the catalog:\n" \
-               "• Removed: #{stale.join(', ')}\n" \
-               "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
-               "The stale reference(s) were dropped so `air prepare` could proceed. " \
-               "The session started with the remaining skills.\n\n" \
-               "<#{AppUrl.base_url}/sessions/#{session.id}|View session in Zimmer>",
-      source: "AirPrepareService#run_air_prepare!",
-      dedup_key: "session_stale_skills_#{session.id}"
+      level: :error,
+      context: {
+        source: "AirPrepareService#run_air_prepare!",
+        details: details,
+        session_id: session.id,
+        removed: stale.join(", ")
+      }
     )
   end
 

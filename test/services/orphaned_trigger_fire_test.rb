@@ -51,16 +51,18 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
   test "alerts when a trigger-originated session fails, naming the trigger and the subject" do
     session = orphaned_session
 
-    AlertService.expects(:raise_alert).with do |title, opts|
+    ErrorReporter.expects(:report_message).with do |title, opts|
       assert_equal "Trigger session failed with its work undone", title
-      assert_match(/trigger #{@trigger.id}/, opts[:details])
-      assert_match(/CI Failure Handler/, opts[:details])
-      assert_match(%r{https://github\.com/tadasant/zimmer/pull/623}, opts[:details])
-      assert_match(%r{/sessions/#{session.id}}, opts[:details])
-      assert_match(%r{/triggers/#{@trigger.id}}, opts[:details])
-      assert_equal "OrphanedTriggerFire", opts[:source]
+      assert_equal :error, opts[:level]
+      assert_match(/trigger #{@trigger.id}/, opts[:context][:details])
+      assert_match(/CI Failure Handler/, opts[:context][:details])
+      assert_match(%r{https://github\.com/tadasant/zimmer/pull/623}, opts[:context][:details])
+      assert_match(%r{/sessions/#{session.id}}, opts[:context][:details])
+      assert_match(%r{/triggers/#{@trigger.id}}, opts[:context][:details])
+      assert_equal "OrphanedTriggerFire", opts[:context][:source]
+      assert_equal session.id, opts[:context][:session_id]
       true
-    end.returns(true)
+    end
 
     assert OrphanedTriggerFire.report!(session)
   end
@@ -68,51 +70,49 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
   test "says why the session died, so the reader knows whether to re-dispatch or investigate" do
     session = orphaned_session
 
-    AlertService.expects(:raise_alert).with do |_title, opts|
+    ErrorReporter.expects(:report_message).with do |_title, opts|
       # The classified half is prose a human reads at a glance...
-      assert_match(/Process failed/, opts[:details])
+      assert_match(/Process failed/, opts[:context][:details])
       # ...and the runtime's own words are the sentence that identifies THIS
-      # failure. They ride on `error:` — see the redaction test below.
-      assert_match(/already in use/, opts[:error])
+      # failure. They ride on `runtime_failure:` — see the redaction test below.
+      assert_match(/already in use/, opts[:context][:runtime_failure])
       true
-    end.returns(true)
+    end
 
     OrphanedTriggerFire.report!(session)
   end
 
-  # The security seam the merge gate held this PR on. `AlertService` runs
-  # `error:` through `AlertSnippet` — 14 redaction rules, clamping, UTF-8
-  # coercion, fencing — and passes `details:` to Slack untouched. `exit_status`
-  # and `exception_message` are arbitrary runtime output: `AirPrepareError`
-  # embeds `air prepare`'s full stderr, and `air prepare` is what resolves
-  # `.mcp.json`'s `${VAR}` credential substitutions. A secret posted to
-  # `#eng-alerts` cannot be un-posted.
-  test "raw runtime text travels as error:, never in the unredacted details" do
+  # The security seam the merge gate held the original PR on. Raw runtime text goes
+  # through `AlertSnippet` — 14 redaction rules, clamping, UTF-8 coercion — while
+  # the prose is assembled here. `exit_status` and `exception_message` are arbitrary
+  # runtime output: `AirPrepareError` embeds `air prepare`'s full stderr, and `air
+  # prepare` is what resolves `.mcp.json`'s `${VAR}` credential substitutions. A
+  # secret that reaches an alert cannot be un-sent.
+  test "raw runtime text travels redacted, never in the unredacted details" do
     session = orphaned_session(metadata: {
       "exit_status" => "boom: Authorization: Bearer sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA",
       "exception_message" => "air prepare failed: token=hunter2supersecret"
     })
 
-    AlertService.expects(:raise_alert).with do |_title, opts|
-      refute_match(/sk-ant-api03/, opts[:details])
-      refute_match(/hunter2supersecret/, opts[:details])
-      refute_match(/boom:/, opts[:details])
+    ErrorReporter.expects(:report_message).with do |_title, opts|
+      refute_match(/sk-ant-api03/, opts[:context][:details])
+      refute_match(/hunter2supersecret/, opts[:context][:details])
+      refute_match(/boom:/, opts[:context][:details])
 
-      # Present in the snippet argument, and redacted by AlertSnippet on the way
-      # to Slack — asserted through AlertSnippet rather than assumed.
-      assert_match(/air prepare failed/, opts[:error])
-      snippet = AlertSnippet.build(opts[:error])
+      # Present in the snippet, and redacted there before it leaves the process.
+      snippet = opts[:context][:runtime_failure]
+      assert_match(/air prepare failed/, snippet)
       refute_match(/sk-ant-api03/, snippet)
       refute_match(/hunter2supersecret/, snippet)
       true
-    end.returns(true)
+    end
 
     assert OrphanedTriggerFire.report!(session)
   end
 
-  test "records the drop on the session's own timeline, not only in Slack" do
+  test "records the drop on the session's own timeline, not only in the alert" do
     session = orphaned_session
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
 
     assert_difference -> { session.logs.count }, 1 do
       OrphanedTriggerFire.report!(session)
@@ -126,7 +126,7 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
 
   test "stamps the session so the drop is visible on the row itself" do
     session = orphaned_session
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
 
     OrphanedTriggerFire.report!(session)
 
@@ -144,7 +144,7 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
       metadata: { "failure_reason" => "process_failed" }
     )
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     refute OrphanedTriggerFire.candidate?(session)
     refute OrphanedTriggerFire.report!(session)
@@ -154,7 +154,7 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
   test "a trigger-originated session that has not failed is not reported" do
     session = orphaned_session(status: :running)
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     refute OrphanedTriggerFire.candidate?(session)
     refute OrphanedTriggerFire.report!(session)
@@ -162,24 +162,24 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
 
   test "reports once per session, so a retried job cannot double-page" do
     session = orphaned_session
-    AlertService.expects(:raise_alert).once.returns(true)
+    ErrorReporter.expects(:report_message).once
 
     assert OrphanedTriggerFire.report!(session)
     refute OrphanedTriggerFire.report!(session)
     assert_equal 1, session.logs.count
   end
 
-  # The stamp goes down AFTER the report. Stamping first would turn a Slack
-  # outage into a permanent silent drop — the exact bug this service removes,
+  # The stamp goes down AFTER the report. Stamping first would turn a reporting
+  # failure into a permanent silent drop — the exact bug this service removes,
   # reintroduced inside the fix.
-  test "a Slack post that blows up leaves the session eligible to report again" do
+  test "a report that blows up leaves the session eligible to report again" do
     session = orphaned_session
-    AlertService.expects(:raise_alert).once.raises(StandardError, "slack is down")
+    ErrorReporter.expects(:report_message).once.raises(StandardError, "glitchtip is down")
 
     refute OrphanedTriggerFire.report!(session)
     assert_nil session.reload.metadata[OrphanedTriggerFire::REPORTED_AT_KEY]
 
-    AlertService.expects(:raise_alert).once.returns(true)
+    ErrorReporter.expects(:report_message).once
     assert OrphanedTriggerFire.report!(session)
     assert session.reload.metadata[OrphanedTriggerFire::REPORTED_AT_KEY].present?
   end
@@ -202,15 +202,15 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
   test "reports a fire whose trigger has since been deleted" do
     session = orphaned_session(metadata: { "trigger_id" => 999_999 })
 
-    AlertService.expects(:raise_alert).with do |_title, opts|
-      assert_match(/trigger 999999/, opts[:details])
+    ErrorReporter.expects(:report_message).with do |_title, opts|
+      assert_match(/trigger 999999/, opts[:context][:details])
       # The name is still readable off the session, which is the whole reason the
       # fire stamps it there — but there is no trigger row left to link.
-      assert_match(/CI Failure Handler/, opts[:details])
-      assert_match(%r{/sessions/#{session.id}}, opts[:details])
-      refute_match(%r{/triggers/}, opts[:details])
+      assert_match(/CI Failure Handler/, opts[:context][:details])
+      assert_match(%r{/sessions/#{session.id}}, opts[:context][:details])
+      refute_match(%r{/triggers/}, opts[:context][:details])
       true
-    end.returns(true)
+    end
 
     assert OrphanedTriggerFire.report!(session)
   end
@@ -218,31 +218,32 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
   test "reports a fire with no GitHub subject in its prompt" do
     session = orphaned_session(prompt: "The nightly backlog groom is due.")
 
-    AlertService.expects(:raise_alert).with do |_title, opts|
-      assert_match(/session #{session.id}/, opts[:details])
+    ErrorReporter.expects(:report_message).with do |_title, opts|
+      assert_match(/session #{session.id}/, opts[:context][:details])
       true
-    end.returns(true)
+    end
 
     assert OrphanedTriggerFire.report!(session)
   end
 
-  # Each orphaned fire is a distinct work item somebody has to re-dispatch, so
-  # two of them must not collapse into one message the way an unclassified
-  # failure mode does.
-  test "two orphaned fires on the same trigger get distinct dedup keys" do
+  # Each orphaned fire is a distinct work item somebody has to re-dispatch, so two
+  # of them must each be reported — with their own session in the context, which is
+  # what stops one report standing in for both.
+  test "two orphaned fires on the same trigger are reported separately" do
     first = orphaned_session
     second = orphaned_session
 
-    keys = []
-    AlertService.stubs(:raise_alert).with do |_title, opts|
-      keys << opts[:dedup_key]
+    session_ids = []
+    ErrorReporter.stubs(:report_message).with do |_title, opts|
+      session_ids << opts[:context][:session_id]
       true
-    end.returns(true)
+    end
 
     OrphanedTriggerFire.report!(first)
     OrphanedTriggerFire.report!(second)
 
-    assert_equal 2, keys.uniq.size, "collapsing two drops would leave one subject still orphaned"
+    assert_equal [ first.id, second.id ].sort, session_ids.sort,
+      "collapsing two drops would leave one subject still orphaned"
   end
 
   # ── The population: only a fire that is genuinely consumed ────────────────
@@ -252,7 +253,7 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
   test "a scheduled trigger's session is not reported — its next tick is the retry" do
     session = orphaned_session(genesis: SessionGenesis::SCHEDULE)
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     refute OrphanedTriggerFire.candidate?(session)
     refute OrphanedTriggerFire.report!(session)
@@ -261,7 +262,7 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
   test "a system_event trigger's session is not reported — an unhandled event is re-armed" do
     session = orphaned_session(genesis: SessionGenesis::SYSTEM_EVENT)
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     refute OrphanedTriggerFire.candidate?(session)
   end
@@ -280,7 +281,7 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
   test "a burst-notice session is not reported" do
     session = orphaned_session(metadata: { "burst_notice" => true })
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     refute OrphanedTriggerFire.candidate?(session)
   end
@@ -294,21 +295,20 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
 
   # ── Rendering the failure ─────────────────────────────────────────────────
 
-  # AlertService clamps the details block and the links are rendered last, so an
-  # unbounded exit_status in `details:` would push the reader's way back to the
-  # session off the end of the message whose only job is to get them there.
-  # Keeping the raw text on `error:` is what makes that impossible: AlertSnippet
-  # holds its own budget.
+  # The links are rendered last in the prose, so an unbounded exit_status inlined
+  # there would push the reader's way back to the session off the end of the message
+  # whose only job is to get them there. Keeping the raw text in its own bounded
+  # snippet is what makes that impossible: AlertSnippet holds its own budget.
   test "a huge exit_status cannot crowd the links out of the details" do
     session = orphaned_session(metadata: { "exit_status" => "boom " * 5_000 })
 
-    AlertService.expects(:raise_alert).with do |_title, opts|
-      assert_operator opts[:details].length, :<, AlertService::DETAILS_SECTION_MAX_CHARS
-      assert_match(%r{/sessions/#{session.id}}, opts[:details])
-      assert_match(%r{/triggers/#{@trigger.id}}, opts[:details])
-      assert_operator AlertSnippet.build(opts[:error]).length, :<=, AlertSnippet::MAX_CHARS
+    ErrorReporter.expects(:report_message).with do |_title, opts|
+      assert_match(%r{/sessions/#{session.id}}, opts[:context][:details])
+      assert_match(%r{/triggers/#{@trigger.id}}, opts[:context][:details])
+      assert_operator opts[:context][:runtime_failure].length, :<=, AlertSnippet::MAX_CHARS
+      refute_match(/boom/, opts[:context][:details])
       true
-    end.returns(true)
+    end
 
     assert OrphanedTriggerFire.report!(session)
   end
@@ -322,10 +322,10 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
       "exception_message" => "PG::ConnectionBad: could not connect to server"
     })
 
-    AlertService.expects(:raise_alert).with do |_title, opts|
-      assert_match(/could not connect to server/, opts[:error])
+    ErrorReporter.expects(:report_message).with do |_title, opts|
+      assert_match(/could not connect to server/, opts[:context][:runtime_failure])
       true
-    end.returns(true)
+    end
 
     assert OrphanedTriggerFire.report!(session)
   end
@@ -342,11 +342,11 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
       - **URL:** https://github.com/tadasant/zimmer/pull/623
     PROMPT
 
-    AlertService.expects(:raise_alert).with do |_title, opts|
-      assert_match(%r{\*Subject:\* https://github\.com/tadasant/zimmer/pull/623}, opts[:details])
-      refute_match(%r{attacker/repo}, opts[:details])
+    ErrorReporter.expects(:report_message).with do |_title, opts|
+      assert_match(%r{Subject: https://github\.com/tadasant/zimmer/pull/623}, opts[:context][:details])
+      refute_match(%r{attacker/repo}, opts[:context][:details])
       true
-    end.returns(true)
+    end
 
     assert OrphanedTriggerFire.report!(session)
   end

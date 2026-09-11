@@ -206,7 +206,7 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     assert_includes details, "counter is not in this payload"
     assert_not_includes details, "so no OOM kill landed in it"
     # And the evidence block must not print the defaults as if they were readings.
-    assert_includes details, "*Cgroup:* census unavailable, oom_kill=unread"
+    assert_includes details, "Cgroup: census unavailable, oom_kill=unread"
     assert_not_includes details, "0 live workload processes"
   end
 
@@ -233,7 +233,7 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
 
     assert_includes details, "could not take a census of its cgroup"
     assert_not_includes details, "so it is running no jobs and no agent sessions"
-    assert_includes details, "*Cgroup:* census unavailable"
+    assert_includes details, "Cgroup: census unavailable"
   end
 
   # A positive count can only come from a walk that worked, so it needs no flag to vouch
@@ -245,7 +245,7 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
 
     assert_includes details, "5 processes are still alive in its cgroup"
-    assert_includes details, "*Cgroup:* 5 live workload processes (6 total)"
+    assert_includes details, "Cgroup: 5 live workload processes (6 total)"
   end
 
   test "a payload carrying no OOM fields at all says the cause is unknown" do
@@ -273,10 +273,10 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     assert_includes details, "issues/502"
   end
 
-  test "keys dedup on the container id so a replacement container can page again" do
+  test "the container id rides in the context, so a replacement container is legible" do
     captured = capture_alert { WorkerWedgeAlert.report(FULL_PAYLOAD) }
 
-    assert_equal "worker_wedge:8f1c2b3d4e5f", captured[:dedup_key]
+    assert_equal "8f1c2b3d4e5f", captured[:container_id]
   end
 
   test "an unrecovered wedge says so and points at the runbook" do
@@ -361,8 +361,8 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     assert_includes captured[:details], "8f1c2b3d4e5f"
     assert_includes captured[:details], "redeploy"
     assert_includes captured[:details], WorkerWedgeAlert::RUNBOOK
-    # Same container, same throttle bucket as the wedge page that preceded it.
-    assert_equal "worker_wedge:8f1c2b3d4e5f", captured[:dedup_key]
+    # Same container as the wedge page that preceded it.
+    assert_equal "8f1c2b3d4e5f", captured[:container_id]
   end
 
   # A paused container fails exec exactly like the wedge does. Calling it a wedge —
@@ -399,7 +399,8 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     assert_equal "Worker watchdog reported a wedge (unreadable payload)", captured[:title]
     assert_includes captured[:details], "{not json at all"
     assert_includes captured[:details], WorkerWedgeAlert::RUNBOOK
-    assert_equal "worker_wedge:unknown host", captured[:dedup_key]
+    assert_equal "unknown host", captured[:host]
+    assert_nil captured[:container_id]
   end
 
   test "an empty payload still pages" do
@@ -412,7 +413,7 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     captured = capture_alert { WorkerWedgeAlert.report('{"host":"zimmer-prod"}') }
 
     assert_equal "Worker container wedged on zimmer-prod", captured[:title]
-    assert_equal "worker_wedge:zimmer-prod", captured[:dedup_key]
+    assert_equal "zimmer-prod", captured[:host]
     assert_includes captured[:details], "This one is not over"
   end
 
@@ -423,12 +424,12 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
 
     assert_includes details, "(truncated)"
-    assert_operator details.length, :<, AlertService::DETAILS_SECTION_MAX_CHARS
+    assert_operator details.length, :<, DETAILS_CAP
   end
 
   # The busiest framing is the longest one -- a live census spells out why `docker exec`
-  # proves nothing -- and AlertService truncates from the end, which is where the runbook
-  # link lives. So the worst case has to fit with both long fields at their caps.
+  # proves nothing -- and the runbook link lives at the end, where any truncation would
+  # cut. So the worst case has to fit with both long fields at their caps.
   test "the longest framing still fits inside the details cap with both long fields maxed" do
     payload = JSON.parse(NO_OOM_BUSY_PAYLOAD)
     payload["probe"]["last_error"] = "x" * 5_000
@@ -440,22 +441,29 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
 
     details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
 
-    assert_operator details.length, :<, AlertService::DETAILS_SECTION_MAX_CHARS
+    assert_operator details.length, :<, DETAILS_CAP
     assert_includes details, WorkerWedgeAlert::RUNBOOK
   end
 
   private
 
+  # The body a page may carry and still read as one message rather than a wall.
+  # Nothing enforces it at the boundary any more — the body travels as an ERROR log
+  # record and a GlitchTip `extra` — so the bound is the service's own, and these
+  # tests are what hold it.
+  DETAILS_CAP = 2800
+
   # Intercept the one call this service makes, and hand back what it was asked to send.
   def capture_alert
     captured = {}
-    AlertService.expects(:raise_alert).once.with do |title, opts|
-      captured[:title] = title
-      captured[:details] = opts[:details]
-      captured[:source] = opts[:source]
-      captured[:dedup_key] = opts[:dedup_key]
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      captured[:title] = message
+      captured[:details] = opts[:context][:details]
+      captured[:source] = opts[:context][:source]
+      captured[:host] = opts[:context][:host]
+      captured[:container_id] = opts[:context][:container_id]
       true
-    end.returns(true)
+    end
 
     yield
 

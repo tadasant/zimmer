@@ -1136,9 +1136,8 @@ class ClaudeAccount < ApplicationRecord
     # raising here is not.
     #
     # .warn rather than .error: a plain ERROR line trips the "any Zimmer ERROR →
-    # critical" Grafana rule (see ApplicationJob), and paging critically about a
-    # lost notification is the same mistake AlertService#dm_operator's own rescue
-    # avoids.
+    # critical" Grafana rule (see ApplicationJob), and paging critically about one
+    # lost notification would be an alert about the alerting path.
     Rails.logger.warn "[ClaudeAccount] Failed to dispatch status-transition alert for #{email}: #{e.class} - #{e.message}"
   ensure
     # One latch, one event. Without this a later save on the same in-memory record

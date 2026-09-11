@@ -1,12 +1,17 @@
 # frozen_string_literal: true
 
-# Turns a raised exception (or a raw log blob) into the bounded excerpt that
-# rides along with an AlertService alert.
+# Turns a raised exception (or a raw log blob) into the bounded, redacted excerpt
+# that rides along with an operational report.
 #
-# An alert whose body is only hand-written prose — "Condition 42 on trigger 'x'
-# failed: <e.message>" — omits the one thing a human needs to diagnose it from
-# Slack: what actually blew up, and where in our code. The backtrace is right
-# there at the rescue site; this is what carries it.
+# A report whose body is only hand-written prose — "Condition 42 on trigger 'x'
+# failed: <e.message>" — omits the one thing a human needs to diagnose it: what
+# actually blew up, and where in our code. The backtrace is right there at the
+# rescue site; this is what carries it.
+#
+# `ErrorReporter.report_exception` carries a real exception's backtrace itself, so
+# this is for the paths that have no exception object: raw agent-process stderr, a
+# probe's failure string, a metadata blob. Those are arbitrary runtime text, which
+# is why redaction and UTF-8 coercion live here rather than at each call site.
 #
 # Two decisions carry most of the value:
 #
@@ -17,17 +22,10 @@
 # 2. *Explicit* truncation. Every cut is marked, so a reader never mistakes an
 #    elided snippet for a complete one.
 #
-# Snippets never influence deduplication — see AlertService#raise_alert.
 class AlertSnippet
-  # Per-alert cap. Slack's section-block text limit is 3000 characters and the
-  # snippet renders inside a fenced block of its own, so this leaves a wide
-  # margin for the fence and for Slack's overall payload budget while still
-  # fitting an exception line plus ~10 backtrace frames.
+  # Per-report cap: wide enough for an exception line plus ~10 backtrace frames,
+  # bounded so one snippet cannot dominate the event it rides on.
   MAX_CHARS = 1200
-
-  # Tighter cap for snippets folded into an AlertBatcher aggregate, where N
-  # occurrences share one 2700-character body.
-  MAX_BATCHED_CHARS = 500
 
   # How many app-owned frames are worth showing; beyond this a backtrace is
   # repeating the same call path through the framework.
@@ -102,9 +100,8 @@ class AlertSnippet
       "(log snippet unavailable: #{e.class})"
     end
 
-    # Bound an already-built snippet to a smaller budget, marking the cut.
-    # Public because AlertBatcher re-clamps per-occurrence snippets when it folds
-    # several of them into one aggregated body.
+    # Bound an already-built snippet to a smaller budget, marking the cut. Public
+    # so a caller assembling its own body can apply the same bound `build` does.
     def clamp(text, max_chars)
       return text if text.length <= max_chars
       return text[0, max_chars] if max_chars <= MARKER_RESERVE * 2
@@ -115,13 +112,6 @@ class AlertSnippet
 
       dropped = text.length - head.length - tail.length
       "#{head}\n… #{dropped} characters elided …\n#{tail}"
-    end
-
-    # Wrap a snippet in a Slack fenced code block. Inner fences are defanged so
-    # a backtick run inside the log can't terminate the block early and spill
-    # the rest as prose.
-    def fenced(text)
-      "```\n#{text.to_s.gsub('```', "'''")}\n```"
     end
 
     # Mask secret-shaped substrings. Exposed for tests and for call sites that

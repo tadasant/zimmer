@@ -691,10 +691,9 @@ Shared scrubbing (`CliSpawnEnv`):
   itself never needs a key that reads every production secret value), and
   `SENTRY_DSN_BACKEND` (the production error DSN — an agent running `bin/rails` in a clone
   would otherwise report that clone's exceptions as
-  [production errors](/operate/observability/#only-production-and-staging-may-report)), and
-  `ALERTS_ENABLED` (the explicit opt-in that overrides
-  [`AlertService`'s environment gate](/operate/background-jobs/#who-is-allowed-to-page) — an
-  instance that sets it to page must not hand that permission to every agent it spawns).
+  [production errors](/operate/observability/#only-production-and-staging-may-report) — and that
+  DSN is the whole of the [authorization to page](/operate/background-jobs/#who-is-allowed-to-page),
+  so clearing it is what keeps an agent's test run out of `#alerts`).
   A value in the clone's `.env` always wins.
 
   **This list is a denylist, not an allowlist.** Sessions are plain child processes of the
