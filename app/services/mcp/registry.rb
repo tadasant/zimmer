@@ -12,6 +12,8 @@ module Mcp
   #   gate_decisions → read and append the agent gates' decision ledger.
   #                    OPT-IN: addressable, but never part of "no groups"
   #   outcome_analyses → start and stop Outcomes analyses. OPT-IN too
+  #   settings       → read and change the Settings page's global defaults.
+  #                    OPT-IN, like gate_decisions
   #   self_session   → the curated set auto-injected into every session, so a
   #                    session can manage itself (notes/title/heartbeat/archive),
   #                    notify its user, and schedule its own wake-ups
@@ -33,7 +35,7 @@ module Mcp
     # included — but deliberately outside the default-everything set, the way
     # COMPOSITE_GROUPS is. A group lands here when the cost of every unscoped
     # connection carrying its write tools outweighs the convenience.
-    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses].freeze
+    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings].freeze
 
     COMPOSITE_GROUPS = %w[self_session].freeze
 
@@ -214,7 +216,27 @@ module Mcp
       # construction: the read, get_outcome_analysis, lives in `sessions` above.
       # The limits a caller meets once it is here — the concurrency cap, one
       # running batch, expected_count — are in ActionOutcomeAnalysis.
-      Definition.new(klass: "Mcp::Tools::ActionOutcomeAnalysis", group: "outcome_analyses", write: true)
+      Definition.new(klass: "Mcp::Tools::ActionOutcomeAnalysis", group: "outcome_analyses", write: true),
+
+      # Settings — the Settings page's global defaults: the base runtime + model
+      # and the Settings → Experimental toggles.
+      #
+      # OPT-IN, AND NOT IN `health` BESIDE THE SPOT POLICY THAT SHARES ITS ROW.
+      # The spot policy decides how much work the fleet does; these decide what
+      # every later session is created UNDER — which model it runs, whether it
+      # searches MCP tools on demand, how its Claude credentials reach it, which
+      # extensions reshape its spawn. A session that can write them changes the
+      # harness its successors run in, so the write must not ride along on the
+      # unscoped `zimmer` surface, and never on `self_session`. A connection
+      # names `settings` to get the write; `settings_readonly` gets the read
+      # alone. `zimmer-settings` / `zimmer-settings-readonly` (mcp.json) are the
+      # catalog entries that name them, and no root carries either by default.
+      #
+      # A scoping boundary, as everywhere here, not an authorization one: the
+      # fleet's shared API key can compose `?tool_groups=settings` itself. What
+      # holds regardless is the `[AppSettings]` audit line every write leaves.
+      Definition.new(klass: "Mcp::Tools::GetAppSettings", group: "settings", write: false),
+      Definition.new(klass: "Mcp::Tools::ActionAppSettings", group: "settings", write: true)
     ].freeze
 
     module_function
