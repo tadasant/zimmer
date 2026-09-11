@@ -1,11 +1,10 @@
 # Base controller for API v1 endpoints.
 # Provides API key authentication via the X-API-Key header.
 #
-# API keys are configured via the API_KEYS environment variable as a
-# comma-separated list of valid keys.
-#
-# Example:
-#   API_KEYS=key1,key2,key3
+# A key is either an entry in the API_KEYS environment variable (comma-separated)
+# or one minted on the API keys settings page. Both are ApiKey rows, which is what
+# gives every request a key name for the log and lets a revoke take effect on the
+# next request — see ApiKey.
 #
 # Usage:
 #   curl -H "X-API-Key: your_api_key" https://example.com/api/v1/sessions
@@ -26,8 +25,8 @@ class Api::BaseController < ActionController::API
   #
   # The acting session is self-declared, via an `acting_session_id` on the
   # request body, because nothing about an API request identifies the caller:
-  # one API key is shared by the whole fleet, so it establishes a caller but not
-  # a session. Omitting it records nothing — which is the right outcome for a
+  # one API key is shared by the whole fleet, so it names a key but not a
+  # session. Omitting it records nothing — which is the right outcome for a
   # script or a human with a curl command, neither of which is a session.
   #
   # Deliberately absent from the web UI controllers: a person clicking "Send
@@ -59,11 +58,17 @@ class Api::BaseController < ActionController::API
     }.merge(extra), status: status
   end
 
+  # Every outcome is logged with the key's name, never the key. A success is INFO
+  # (stdout, beside Rails' own request lines, tagged with the same request id). A
+  # refusal that names a known key — revoked, or taken out of API_KEYS — is WARN,
+  # so it ships to obs: that is a leaked or forgotten credential still being tried.
   def authenticate_api_key
-    api_key = api_key_from_request
+    authentication = ApiKey.authenticate(api_key_from_request)
 
-    # Use constant-time comparison to prevent timing attacks
-    unless api_key.present? && valid_api_keys.any? { |valid_key| ActiveSupport::SecurityUtils.secure_compare(valid_key, api_key) }
+    if authentication.authenticated?
+      Rails.logger.info("[api_key] #{request.request_method} #{request.path} authenticated as #{api_key_label(authentication.api_key)}")
+    else
+      log_api_key_refusal(authentication)
       render_api_error("Unauthorized", "Invalid or missing API key", status: :unauthorized)
     end
   end
@@ -75,11 +80,24 @@ class Api::BaseController < ActionController::API
     request.headers["X-API-Key"]
   end
 
-  def valid_api_keys
-    @valid_api_keys ||= begin
-      keys_string = ENV.fetch("API_KEYS", "")
-      keys_string.split(",").map(&:strip).reject(&:empty?)
+  def log_api_key_refusal(authentication)
+    line = "[api_key] #{request.request_method} #{request.path} refused from #{request.remote_ip}: "
+
+    case authentication.refusal
+    when :revoked
+      Rails.logger.warn("#{line}#{api_key_label(authentication.api_key)} was revoked at #{authentication.api_key.revoked_at.iso8601}")
+    when :retired
+      Rails.logger.warn("#{line}#{api_key_label(authentication.api_key)} is no longer in #{ApiKey::ENV_VAR}")
+    when :missing
+      Rails.logger.info("#{line}no API key")
+    else
+      Rails.logger.info("#{line}unknown API key")
     end
+  end
+
+  # `inspect` quotes the name, so a newline in it cannot forge a second log line.
+  def api_key_label(api_key)
+    "#{api_key.name.inspect} (api_key_id=#{api_key.id || 'unsaved'}, source=#{api_key.source})"
   end
 
   def not_found

@@ -12,10 +12,10 @@ which is most of the battle.
 flowchart TB
     subgraph none["1 · Human → Zimmer: NOTHING (except the operator realm)"]
         W["Web UI · /inference · /settings · /jobs<br/>NO AUTH OF ANY KIND"]
-        SUP["/supervisor admin panel<br/>+ the mutating POST /health/* actions<br/>HTTP Basic vs ENV['SUPERVISOR_PASSWORD']<br/>fails closed when unset"]
+        SUP["/supervisor admin panel<br/>+ the mutating POST /health/* actions<br/>+ /settings/api_keys<br/>HTTP Basic vs ENV['SUPERVISOR_PASSWORD']<br/>fails closed when unset"]
     end
     subgraph api["2 · Client → REST API"]
-        A["X-API-Key header<br/>vs ENV['API_KEYS'] (comma-separated)<br/>opaque, unscoped, no identity"]
+        A["X-API-Key header (or Bearer on /mcp)<br/>vs api_keys rows: API_KEYS entries + minted keys<br/>named, revocable, unscoped"]
     end
     subgraph harness["3 · Zimmer → Agent vendor"]
         H["ClaudeAccount pool (claude_code + codex)<br/>OAuth refresh + rotation on quota<br/>tokens on disk AND in Postgres<br/>(pi: a provider API key, no pool)"]
@@ -29,6 +29,7 @@ flowchart TB
     C["Script / MCP self-session"] --> A
     W --> H
     SUP --> H
+    SUP -. mints and revokes .-> A
     H --> V["Anthropic · OpenAI"]
     M --> S["Linear · Slack · Google · …"]
 ```
@@ -44,9 +45,9 @@ Everything is open to anyone who can reach the host:
 - `/settings`, `/inference` (including the OAuth login flow),
 - the GoodJob dashboard at `/jobs`.
 
-### The exception: the operator realm, in front of two surfaces
+### The exception: the operator realm, in front of three surfaces
 
-Two surfaces are where "anyone who reaches the host" is too generous, and they share one HTTP Basic
+Three surfaces are where "anyone who reaches the host" is too generous, and they share one HTTP Basic
 realm — `OperatorHttpBasicAuth` (`app/controllers/concerns/operator_http_basic_auth.rb`):
 
 ```ruby
@@ -63,6 +64,9 @@ end
 `oauth_config` JSONB holds plaintext access and refresh tokens), `mcp_oauth_credentials`,
 `x_oauth_credentials`, and `runtime_login_attempts` as *editable* resources. It is also where the X
 consent flow runs, so minting an X credential takes the operator credential on every leg.
+
+**The API keys page, `/settings/api_keys`**, all of it, reads included, because it creates and
+revokes the credential the REST API and MCP endpoint take. See [managing keys](#managing-keys).
 
 **The mutating `POST /health/*` actions** — `cleanup_processes`, `retry_sessions`, `archive_old`,
 `enter_queue_recovery_mode` and `run_post_deploy_tasks` — because they terminate processes, rewrite
@@ -142,15 +146,61 @@ Those comments read as unfinished work; they described the product's shape. See
 
 ## 2. Client → REST API: `X-API-Key`
 
-The only authenticated surface. `Api::BaseController#authenticate_api_key` compares the `X-API-Key`
-header against `ENV["API_KEYS"]` (comma-separated) using a constant-time comparison.
+The only authenticated surface. `Api::BaseController#authenticate_api_key` hands the `X-API-Key`
+header to `ApiKey.authenticate`. `POST /mcp` also takes the key as `Authorization: Bearer`. A key is
+one of two things, and both are rows in `api_keys`:
 
-What it isn't:
+- **An `API_KEYS` entry** (comma-separated, from the environment). Every client that existed before
+  [#46](https://github.com/tadasant/zimmer/issues/46) holds one of these, including every agent
+  session, so they keep working. The first time an entry authenticates it gets a row named
+  `API_KEYS <fingerprint>`. The row authenticates only while the key is still in the variable, so
+  removing an entry and redeploying retires it, as it always did.
+- **A minted key**, created on the API keys page. It is shown once, in the response that created it.
 
-- **No scoping.** Keys are opaque strings with no identity, no permissions, no ownership. Any valid
-  key can read, mutate, and delete every session, trigger, and category.
-- **No rotation without a restart** — the valid-key list is memoized per request instance from ENV.
-- **No audit trail** of which key did what.
+The table holds a SHA-256 digest of each key and never the key. Every request re-reads `API_KEYS`
+and re-finds the row. Nothing is cached across requests, so a revoke takes effect on the next
+request in every Puma worker.
+
+Each request is logged with the key's name and never the key:
+
+```text
+[api_key] POST /mcp authenticated as "API_KEYS 3f9a1c2e" (api_key_id=1, source=env)
+[api_key] GET /api/v1/sessions refused from 100.64.0.7: "laptop scripts" (api_key_id=4, source=minted) was revoked at 2026-09-11T20:14:03Z
+```
+
+The success line is INFO, so it stays in the container's stdout, tagged with the request id. A
+refusal that names a known key (revoked, or no longer in `API_KEYS`) is WARN, so it ships to obs.
+`last_used_at` is stamped at most once a minute per key.
+
+What it still isn't:
+
+- **No scoping.** Any valid key can read, mutate, and delete every session, trigger, and category.
+- **No per-session identity.** The agents share the deployment's self-session key. See
+  [the limitation](/limitations/#api-keys-have-names-but-no-scope-and-the-whole-fleet-shares-one).
+
+### Managing keys
+
+`/settings/api_keys` (linked from Settings) lists every key by name, with where it came from, its
+fingerprint, and when it was last used. It marks the key this deployment gives its own agent
+sessions. From there you can:
+
+- **Create** a named key. Copy it from the page, because it is not shown again.
+- **Revoke** a key. It is refused from the next request on. Revoking is a timestamp, not a delete, so
+  that a revoked `API_KEYS` entry stays revoked while the key is still in the variable.
+- **Restore** a revoked key, if you revoked the wrong one. It authenticates again at once.
+
+The page sits behind the [operator realm](#the-exception-the-operator-realm-in-front-of-three-surfaces),
+and it has no REST or MCP sibling, on purpose. Agent sessions hold an API key and not the operator
+credential. If an API key could mint keys it would issue itself new credentials, and if it could
+revoke them any session could cut every other session off by revoking the key they share. With
+`SUPERVISOR_PASSWORD` unset the page is closed, and `API_KEYS` entries still work.
+
+The fingerprint is the first eight characters of the key's SHA-256, so you can match a key you hold
+to its row:
+
+```bash
+printf %s "$KEY" | sha256sum | cut -c1-8
+```
 
 Two endpoints take a different credential instead:
 
@@ -242,7 +292,7 @@ Security relies on database access controls."*
 Combined with an Administrate panel that renders those columns as *editable* resources, database
 access controls are close to the only control — and what stands between the panel and them is one
 shared HTTP Basic password, not a database grant. That realm [fails
-closed](#the-exception-the-operator-realm-in-front-of-two-surfaces), so an unconfigured deployment has no
+closed](#the-exception-the-operator-realm-in-front-of-three-surfaces), so an unconfigured deployment has no
 panel at all; a configured one has exactly one credential in front of the plaintext.
 :::
 
@@ -299,8 +349,8 @@ provider would have rotated the single-use refresh token, and only then would th
 
 | Var | Used for |
 | --- | --- |
-| `API_KEYS` | REST API auth (comma-separated) |
-| `SUPERVISOR_PASSWORD` | The operator HTTP Basic realm: `/supervisor` and the mutating `POST /health/*` actions. Unset or blank means **both are closed**, not open. |
+| `API_KEYS` | REST API and MCP auth (comma-separated). Each entry gets a named row the first time it is used, and can be revoked on `/settings/api_keys`. Minted keys live only in the database. |
+| `SUPERVISOR_PASSWORD` | The operator HTTP Basic realm: `/supervisor`, `/settings/api_keys`, and the mutating `POST /health/*` actions. Unset or blank means **all three are closed**, not open. |
 | `SUPERVISOR_USERNAME` | Optional; defaults to `supervisor`. |
 | `APP_HOST` | The MCP OAuth **redirect URI**. Defaults to `localhost:3000`, and picks `http` iff the host string contains "localhost". |
 | `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_oauth_clients`, `mcp_secrets`) |
