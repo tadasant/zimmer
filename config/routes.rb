@@ -9,6 +9,9 @@ Rails.application.routes.draw do
     # from what a session actually did, so there is nothing to hand-author — but a row
     # recorded in error must be removable, since it suppresses a comment fleet-wide.
     resources :agent_posted_github_comments, only: [ :index, :show, :destroy ]
+    # Read-only: keys are minted, revoked and restored on /settings/api_keys
+    # (ApiKeysController), the one place a key is ever shown.
+    resources :api_keys, only: [ :index, :show ]
     resources :app_settings
     resources :catalog_pins
     resources :categories
@@ -372,6 +375,14 @@ Rails.application.routes.draw do
   patch "settings/categorization", to: "categorization#update"
   post "settings/categorization/replay", to: "categorization#replay", as: :categorization_replay
   patch "settings/catalog_pins", to: "catalog_pins#update", as: :catalog_pins
+  # Named API keys (#46): list, mint, revoke, restore. Browser-only and behind the
+  # operator credential by design — no API key and no MCP tool reaches these, so the
+  # credential the fleet shares can neither issue keys nor revoke them. See
+  # ApiKeysController.
+  get "settings/api_keys", to: "api_keys#index", as: :api_keys
+  post "settings/api_keys", to: "api_keys#create"
+  post "settings/api_keys/:id/revoke", to: "api_keys#revoke", as: :revoke_api_key
+  post "settings/api_keys/:id/restore", to: "api_keys#restore", as: :restore_api_key
   patch "settings/session_defaults", to: "app_settings#update", as: :app_settings
 
   # Inference page (per-runtime via ?runtime=claude_code|codex|pi)

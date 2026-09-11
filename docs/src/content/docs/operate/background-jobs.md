@@ -1668,7 +1668,7 @@ never pages.
 fails closed when the cache is unavailable, and an overloaded instance is exactly when the cache is
 least trustworthy — a lock on the escape hatch is worse than an unthrottled two-row write.
 
-On `/health`, **entering and extending are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-two-surfaces) and resuming deliberately is not.** That asymmetry is the load-bearing part: halting the
+On `/health`, **entering and extending are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-three-surfaces) and resuming deliberately is not.** That asymmetry is the load-bearing part: halting the
 demand-side queues is the destructive direction and the one an agent session must not be able to
 take on its own, while the way *out* of a halt has to work on the first try — including on a
 deployment that never set `SUPERVISOR_PASSWORD`, where the realm refuses everything else. Same
@@ -1755,7 +1755,7 @@ who was not reading the transcript it happened in.
 | REST | `GET /api/v1/health/queued_jobs` | `POST /api/v1/health/discard_queued_jobs` | `POST /api/v1/health/reschedule_queued_jobs` |
 | `/health` | the Queued Job Maintenance panel | its Discard button | its Reschedule control |
 
-On `/health` **both actions are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-two-surfaces)**, via
+On `/health` **both actions are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-three-surfaces)**, via
 `HealthController::OPERATOR_GATED_ACTIONS`. That is load-bearing and not decoration: a bulk discard
 is exactly the destructive-action-reachable-anonymously shape of
 [#312](https://github.com/tadasant/zimmer/issues/312), and an agent session's shell can reach this

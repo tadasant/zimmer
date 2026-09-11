@@ -1085,12 +1085,27 @@ What the token does not do:
 
 The endpoints were unauthenticated until [#45](https://github.com/tadasant/zimmer/issues/45).
 
-### API keys have no scope, identity, or audit trail
+### API keys have names but no scope, and the whole fleet shares one
 
-Opaque strings from `ENV["API_KEYS"]`, memoized per request. Any valid key can do anything to anything.
-Rotation requires a restart. No record of which key did what.
+Since [#46](https://github.com/tadasant/zimmer/issues/46) every key is a row with a name and a
+`last_used_at`, the request log names the key behind each call, and a revoke on
+[the API keys page](/auth/overview/#managing-keys) refuses the key from the next request on, with no
+restart. What is still true:
 
-Tracked in [#46](https://github.com/tadasant/zimmer/issues/46).
+- **No scopes.** Any valid key can do anything to anything. That is the single circle of trust, not
+  an oversight, but it means a leaked key is a full-API credential until someone revokes it.
+- **The agents share one key.** Every session's Zimmer MCP servers carry the deployment's
+  self-session key, the first `API_KEYS` entry. The log can say "the fleet's key did this" and not
+  which session did it. Revoking that key disconnects every session from Zimmer at once, and
+  replacing it for good means changing the deploy secret it comes from.
+- **Revoking is not rotating.** A revoked `API_KEYS` entry stays in the variable until a deploy
+  removes it, and nothing issues its replacement. A minted key has no expiry.
+- **The logs are the audit trail, and INFO is not shipped.** A successful request's line goes to the
+  container's stdout. Only the WARN lines ship to obs: a revoked or retired key being tried, and a
+  key being minted, revoked or restored.
+- **An `API_KEYS` entry is stored as an unsalted SHA-256.** A minted key has 256 random bits, so its
+  digest gives nothing away. An `API_KEYS` entry is only as strong as whoever chose it: a short one
+  can be brute-forced from a database dump.
 
 ### Agents run unsandboxed on the app host
 

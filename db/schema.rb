@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_11_180100) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_11_200000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -65,6 +65,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_180100) do
     t.datetime "updated_at", null: false
     t.index ["comment_type", "comment_id"], name: "index_agent_posted_github_comments_on_type_and_comment_id", unique: true
     t.index ["session_id"], name: "index_agent_posted_github_comments_on_session_id"
+  end
+
+  create_table "api_keys", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "last_used_at"
+    t.string "name", null: false
+    t.datetime "revoked_at"
+    t.string "source", null: false
+    t.string "token_digest", null: false
+    t.datetime "updated_at", null: false
+    t.index "lower((name)::text)", name: "index_api_keys_on_lower_name", unique: true
+    t.index ["token_digest"], name: "index_api_keys_on_token_digest", unique: true
   end
 
   create_table "app_settings", force: :cascade do |t|

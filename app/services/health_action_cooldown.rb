@@ -52,7 +52,7 @@ class HealthActionCooldown
   PROBE_TTL = 10.seconds
 
   # Truncated because this only has to be stable and collision-free across the
-  # handful of strings in ENV["API_KEYS"], not cryptographically binding.
+  # handful of API keys an instance holds, not cryptographically binding.
   def self.fingerprint(api_key)
     key = api_key.to_s
     return ANONYMOUS if key.empty?
