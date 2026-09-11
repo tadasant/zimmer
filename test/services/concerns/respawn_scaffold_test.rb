@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 require "automated_prompts"
 
 # Direct coverage for the scaffolding the four recovery services share.
@@ -7,28 +8,47 @@ require "automated_prompts"
 # pieces those tests reach only incidentally — the log sentences all four share, and
 # the long-delay slicing that a service with a short delay never enters.
 class RespawnScaffoldTest < ActiveJob::TestCase
-  # A minimal host: the readers the module requires, plus its label.
+  # A minimal host: the readers the module requires, plus its three answers.
   class TestHost
     include RespawnScaffold
 
-    attr_reader :session, :process_manager, :log_buffer, :slept
+    attr_reader :session, :cli_adapter, :process_manager, :log_buffer, :file_system, :slept, :next_attempts
 
-    def initialize(session, process_manager, log_buffer, on_sleep: nil)
+    attr_accessor :attempt_limit
+
+    def initialize(session, process_manager, log_buffer, on_sleep: nil, cli_adapter: nil, file_system: nil)
       @session = session
       @process_manager = process_manager
       @log_buffer = log_buffer
+      @cli_adapter = cli_adapter
+      @file_system = file_system
       @on_sleep = on_sleep
       @slept = []
+      @next_attempts = []
+      @attempt_limit = 3
+      @logger = StructuredLogger.new({ session_id: session.id, service: "TestHost" })
     end
 
     # The module's methods are private; the tests drive them through these.
     def verify(pid, attempt) = verify_process_running(pid, attempt)
     def wait(delay, **kwargs) = wait_with_status_checks(delay, **kwargs)
     def status_check(**kwargs) = check_session_status(**kwargs)
+    def respawn(dir, attempt, prompt:, &block) = respawn_and_verify(dir, attempt, resume_prompt: prompt, &block)
+    def resume(dir, prompt:) = resume_for_recovery(dir, prompt: prompt)
+    def transcript_path(dir) = find_transcript_path(dir)
+    def line_count(dir) = get_transcript_line_count(dir)
+    def message_text(entry) = extract_message_text(entry)
 
     private
 
     def recovery_label = "test recovery"
+
+    def recovery_attempt_limit = @attempt_limit
+
+    def next_recovery_attempt(working_directory)
+      @next_attempts << working_directory
+      :retried
+    end
 
     # Record rather than actually sleep, so the tests run in milliseconds.
     def sleep(seconds)
@@ -37,11 +57,13 @@ class RespawnScaffoldTest < ActiveJob::TestCase
     end
   end
 
-  # A host that forgets to declare its label.
+  # A host that forgets to declare the three answers the module asks for.
   class LabellessHost
     include RespawnScaffold
 
     def label = recovery_label
+    def limit = recovery_attempt_limit
+    def next_attempt = next_recovery_attempt("/tmp")
   end
 
   setup do
@@ -233,6 +255,205 @@ class RespawnScaffoldTest < ActiveJob::TestCase
   test "a host that declares no recovery_label fails loudly" do
     error = assert_raises(NotImplementedError) { LabellessHost.new.label }
     assert_match(/LabellessHost must define #recovery_label/, error.message)
+  end
+
+  test "a host that declares no recovery_attempt_limit fails loudly" do
+    error = assert_raises(NotImplementedError) { LabellessHost.new.limit }
+    assert_match(/LabellessHost must define #recovery_attempt_limit/, error.message)
+  end
+
+  test "a host that declares no next_recovery_attempt fails loudly" do
+    error = assert_raises(NotImplementedError) { LabellessHost.new.next_attempt }
+    assert_match(/LabellessHost must define #next_recovery_attempt/, error.message)
+  end
+
+  # ============================================================================
+  # respawn_and_verify — the loop all four services run once they decide to act
+  # ============================================================================
+
+  # A host whose verification always succeeds without burning five real seconds.
+  def verifying_host(cli_adapter: nil, file_system: nil)
+    @process_manager.running_hook = ->(_pid) { true }
+    travel_to Time.current
+    TestHost.new(@session, @process_manager, @log_buffer,
+                 on_sleep: ->(seconds) { travel_to(Time.current + seconds, with_usec: true) },
+                 cli_adapter: cli_adapter, file_system: file_system)
+  end
+
+  test "respawn_and_verify records the process and reports success with the shared sentence" do
+    host = verifying_host
+
+    result = host.respawn("/tmp/clone", 2, prompt: AutomatedPrompts::SYSTEM_RECOVERY) { { pid: 4242 } }
+
+    assert_equal :success, result
+    assert_equal 4242, @session.reload.metadata["process_pid"],
+                 "the new pid has to be recorded, or the monitor watches the dead one"
+    assert_empty host.next_attempts, "a verified re-spawn does not spend another attempt"
+
+    contents = logged.map(&:last)
+    assert_includes contents, "Spawned new agent process with PID 4242 for test recovery attempt 2"
+    assert_includes contents, "Test recovery 2 successful - process 4242 verified running for 5s"
+  end
+
+  test "respawn_and_verify aborts before spawning when the session is no longer running" do
+    @session.update!(status: :needs_input)
+    spawned = false
+
+    result = @host.respawn("/tmp/clone", 1, prompt: AutomatedPrompts::SYSTEM_RECOVERY) do
+      spawned = true
+      { pid: 4242 }
+    end
+
+    assert_equal :aborted, result
+    refute spawned, "the abort check is the last gate BEFORE the spawn, not after it"
+    assert_empty @host.next_attempts
+  end
+
+  test "respawn_and_verify hands on to the next attempt when the re-spawn dies during verification" do
+    @process_manager.running_hook = ->(_pid) { false }
+
+    result = @host.respawn("/tmp/clone", 1, prompt: AutomatedPrompts::SYSTEM_RECOVERY) { { pid: 4242 } }
+
+    assert_equal :retried, result
+    assert_equal [ "/tmp/clone" ], @host.next_attempts
+  end
+
+  # The alerting decision the four services each carried a copy of the comment
+  # for: an intermediate failure is .info (self-resolving, no alert), the final
+  # one is .error (nothing left to recover it, so it must page).
+  test "respawn_and_verify logs an intermediate failure at info and tries again" do
+    @host.attempt_limit = 3
+
+    result = @host.respawn("/tmp/clone", 2, prompt: AutomatedPrompts::SYSTEM_RECOVERY) { raise "adapter blew up" }
+
+    assert_equal :retried, result
+    assert_equal [ "/tmp/clone" ], @host.next_attempts
+    assert_equal [ [ "info", "Error during test recovery attempt 2: adapter blew up" ] ], logged
+  end
+
+  test "respawn_and_verify logs the final failure at error and gives up" do
+    @host.attempt_limit = 3
+
+    result = @host.respawn("/tmp/clone", 3, prompt: AutomatedPrompts::SYSTEM_RECOVERY) { raise "adapter blew up" }
+
+    assert_equal :exhausted, result
+    assert_empty @host.next_attempts, "there is nothing left to try on the last attempt"
+    assert_equal [ [ "error", "Error during test recovery attempt 3: adapter blew up" ] ], logged
+  end
+
+  test "respawn_and_verify catches a failure in the next attempt it delegated to" do
+    @process_manager.running_hook = ->(_pid) { false }
+    @host.define_singleton_method(:next_recovery_attempt) { |_dir| raise "the next attempt blew up too" }
+
+    result = @host.respawn("/tmp/clone", 3, prompt: AutomatedPrompts::SYSTEM_RECOVERY) { { pid: 4242 } }
+
+    assert_equal :exhausted, result
+    assert_includes logged.map(&:last), "Error during test recovery attempt 3: the next attempt blew up too"
+  end
+
+  test "a host may say something else about a verified re-spawn" do
+    host = verifying_host
+    host.define_singleton_method(:log_respawn_verified) do |pid, attempt|
+      add_log("re-spawned #{pid} on attempt #{attempt}, but claiming nothing", level: "info")
+    end
+
+    assert_equal :success, host.respawn("/tmp/clone", 1, prompt: AutomatedPrompts::SYSTEM_RECOVERY) { { pid: 7 } }
+
+    contents = logged.map(&:last)
+    assert_includes contents, "re-spawned 7 on attempt 1, but claiming nothing"
+    refute contents.any? { |text| text.include?("successful") },
+           "AuthRecoveryService means something weaker by this; the scaffold must let it say so"
+  end
+
+  test "resume_for_recovery hands the runtime the prompt, the model and a rebuilt system prompt" do
+    adapter = MockClaudeCliAdapter.new
+    host = TestHost.new(@session, @process_manager, @log_buffer, cli_adapter: adapter)
+    @session.update!(config: { "model" => "opus" })
+
+    host.resume("/tmp/clone", prompt: "/compact")
+
+    assert_equal 1, adapter.resumed_sessions.length
+    resumed = adapter.resumed_sessions.first
+    assert_equal @session.session_id, resumed[:session_id]
+    assert_equal "/compact", resumed[:prompt]
+    assert_equal "/tmp/clone", resumed[:working_dir]
+    assert_equal "opus", resumed[:model]
+    assert resumed[:append_system_prompt].present?,
+           "a re-spawn told nothing about its goal or its root is a different session"
+  end
+
+  # ============================================================================
+  # Reading the transcript the symptom was found in
+  # ============================================================================
+
+  test "find_transcript_path goes through the runtime's own source rather than a hardcoded path" do
+    file_system = MockFileSystemAdapter.new
+    host = TestHost.new(@session, @process_manager, @log_buffer, file_system: file_system)
+    source = TranscriptRuntime.source_for(@session, file_system: file_system)
+    directory = source.transcript_directory(working_directory: "/tmp/clone")
+    file_system.mkdir_p(directory)
+    file_system.write(File.join(directory, "#{@session.session_id}.jsonl"), "{}\n")
+
+    assert_equal File.join(directory, "#{@session.session_id}.jsonl"), host.transcript_path("/tmp/clone")
+  end
+
+  # The whole reason step 3 waited for the TranscriptSource seam: a Claude path
+  # baked into the extracted copy would find nothing for any other runtime.
+  test "find_transcript_path follows the session's runtime, not Claude's layout" do
+    @session.update!(agent_runtime: "codex")
+    file_system = MockFileSystemAdapter.new
+    host = TestHost.new(@session, @process_manager, @log_buffer, file_system: file_system)
+
+    CodexTranscriptSource.any_instance.stubs(:locate).returns("/codex/rollout.jsonl")
+
+    assert_equal "/codex/rollout.jsonl", host.transcript_path("/tmp/clone")
+  end
+
+  test "find_transcript_path answers nil rather than taking the recovery down with it" do
+    file_system = MockFileSystemAdapter.new
+    host = TestHost.new(@session, @process_manager, @log_buffer, file_system: file_system)
+    TranscriptRuntime.stubs(:source_for).raises(Errno::EACCES, "/tmp/clone")
+
+    assert_nil host.transcript_path("/tmp/clone")
+  end
+
+  test "get_transcript_line_count counts the lines of the located transcript" do
+    file_system = MockFileSystemAdapter.new
+    host = TestHost.new(@session, @process_manager, @log_buffer, file_system: file_system)
+    source = TranscriptRuntime.source_for(@session, file_system: file_system)
+    directory = source.transcript_directory(working_directory: "/tmp/clone")
+    file_system.mkdir_p(directory)
+    file_system.write(File.join(directory, "#{@session.session_id}.jsonl"), "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n")
+
+    assert_equal 3, host.line_count("/tmp/clone")
+  end
+
+  test "get_transcript_line_count answers zero when there is no transcript to count" do
+    file_system = MockFileSystemAdapter.new
+    host = TestHost.new(@session, @process_manager, @log_buffer, file_system: file_system)
+
+    assert_equal 0, host.line_count("/tmp/clone")
+  end
+
+  test "extract_message_text joins the entry's text blocks and ignores everything else" do
+    entry = {
+      "message" => {
+        "content" => [
+          { "type" => "text", "text" => "Prompt is too long" },
+          { "type" => "tool_use", "name" => "Bash" },
+          "a bare string",
+          { "type" => "text", "text" => "and it stayed that way" }
+        ]
+      }
+    }
+
+    assert_equal "Prompt is too long and it stayed that way", @host.message_text(entry)
+  end
+
+  test "extract_message_text answers empty for entries that carry no prose" do
+    assert_equal "", @host.message_text({})
+    assert_equal "", @host.message_text({ "message" => "a string, not a hash" })
+    assert_equal "", @host.message_text({ "message" => { "content" => "not an array" } })
   end
 
   test "every recovery service is built on the scaffold" do

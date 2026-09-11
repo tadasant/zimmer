@@ -663,7 +663,7 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
     log_contents = logs.map(&:content).join("\n")
 
     assert_match(/detected.*auto-retry/, log_contents)
-    assert_match(/Spawned new Claude CLI process/, log_contents)
+    assert_match(/Spawned new agent process with PID \d+ for API error retry attempt 1/, log_contents)
     assert_match(/API error retry.*successful/, log_contents)
   end
 
