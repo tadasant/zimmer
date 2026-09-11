@@ -155,8 +155,22 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   #
   # This is the extension point for a new server: add the tool it posts with. What
   # a name on this list buys is bounded by #urls_from — an MCP result vouches for
-  # the `html_url` of the JSON resource it created and for nothing else it printed —
-  # so a tool that both posts and lists records nothing rather than a thread.
+  # the `html_url` of the single JSON object it answered with, and for nothing else
+  # it printed — so a tool that answers with a whole thread records nothing rather
+  # than every comment in it.
+  #
+  # A name on the list is therefore not by itself coverage. The two pending-review
+  # entries are the case in point: github-mcp-server acknowledges them in prose,
+  # which records nothing, and the call that publishes the review
+  # (`submit_pending_pull_request_review`) answers with a `#pullrequestreview-N` url,
+  # which is not a comment permalink. They are listed because a server that does
+  # answer with the created comment should be read, not because that route is known
+  # to be closed — see docs/src/content/docs/limitations.md.
+  #
+  # Pi sessions reach none of this: Pi calls every MCP server through one proxy tool
+  # rather than by name, so a Pi transcript has no `mcp__<server>__<tool>` to key on
+  # (TranscriptHooks::PiToolCallParser#structured_tool_calls), the same way
+  # GithubPrUrlHook's MCP create tier does not reach them.
   MCP_COMMENT_POST_TOOLS = %w[
     add_issue_comment
     create_issue_comment
@@ -167,11 +181,6 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
     create_and_submit_pull_request_review
   ].freeze
   MCP_COMMENT_POST_TOOL_PATTERN = /\Amcp__.+__(?:#{Regexp.union(MCP_COMMENT_POST_TOOLS).source})\z/
-
-  # The post kinds whose result is read as JSON and nothing else. See #urls_from:
-  # both echo the resource they created, and both can echo a body that QUOTES a
-  # human's permalink, so free-text scanning either would silence that human.
-  JSON_ONLY_KINDS = %i[api mcp].freeze
 
   # The two ways a session reaches GitHub from a shell. Counted over the segments'
   # #unquoted views, so a `gh` a command merely quotes does not count, and loosely —
@@ -303,7 +312,8 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # gives up every recording in the call. That call lists PRs, not comments, so nothing
   # it printed is somebody else's comment.
   def urls_from(text, post)
-    return html_urls_from_json(text) if JSON_ONLY_KINDS.include?(post[:kind])
+    return created_html_url(text) if post[:kind] == :mcp
+    return html_urls_from_json(text) if post[:kind] == :api
     return permalinks_anywhere(text) if post[:scan] == :whole_result
 
     lines = permalink_lines(text)
@@ -327,6 +337,23 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
       stripped = line.strip
       stripped if COMMENT_URL_LINE_PATTERNS.any? { |_comment_type, pattern| pattern.match?(stripped) }
     end.uniq
+  end
+
+  # The `html_url` of the ONE JSON object a result carries, and nothing else: the MCP
+  # tier's reading.
+  #
+  # Narrower than #html_urls_from_json, which also reads an array. An array is the
+  # shape of a listing, and `mcp__<server>__<tool>` is a convention matched across
+  # servers Zimmer has never seen rather than one program whose output it can
+  # predict — so a posting tool that answers with a thread records nothing instead
+  # of every comment in it. Same asymmetry GithubPrUrlHook#urls_from_mcp_pr_create_results
+  # draws for the same reason: the MCP tier is held tighter than the shell ones
+  # because what it is reading is unverified.
+  def created_html_url(text)
+    parsed = JSON.parse(text)
+    parsed.is_a?(Hash) ? Array(parsed["html_url"]) : []
+  rescue JSON::ParserError
+    []
   end
 
   # The `html_url` of a `gh api` response. Returns [] when the output is not a JSON

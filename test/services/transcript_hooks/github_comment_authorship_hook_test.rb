@@ -596,6 +596,10 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
   end
 
   test "records an inline review comment posted through a GitHub MCP server" do
+    # A server that answers a pending-review add with the created comment. This pins the
+    # wiring rather than claiming coverage of github-mcp-server's own flow, which
+    # acknowledges in prose and publishes through a tool whose url is a review, not a
+    # comment — see the note on MCP_COMMENT_POST_TOOLS.
     output = { "id" => 999, "html_url" => "https://github.com/owner/repo/pull/7#discussion_r999" }.to_json
 
     run_hook(claude_mcp_transcript(
@@ -657,6 +661,26 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
       is_error: true
     ))
 
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+  end
+
+  test "does NOT record an MCP post that answered with a whole thread" do
+    # A JSON array is the shape of a listing, and an MCP server is a convention rather
+    # than a program whose output Zimmer can predict — so a posting tool that answers
+    # with the thread records nothing rather than every comment in it, the human's
+    # included.
+    output = [
+      { "id" => 50, "html_url" => HUMAN_COMMENT_URL },
+      { "id" => 100, "html_url" => AGENT_COMMENT_URL }
+    ].to_json
+
+    run_hook(claude_mcp_transcript(
+      name: "mcp__github__add_issue_comment",
+      input: { "owner" => "tadasant", "repo" => "tadasant-internal", "issue_number" => 281, "body" => "..." },
+      output: output
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 50)
     assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
   end
 

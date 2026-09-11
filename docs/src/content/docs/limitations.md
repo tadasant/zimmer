@@ -3581,9 +3581,19 @@ a new posting route means adding its pattern to `DIRECT_POST_PATTERNS`, its tool
 `MCP_COMMENT_POST_TOOLS`, or teaching `gh_api_post?` the shape.
 
 The MCP tier is narrower than the shell ones in what a result may vouch for: only the `html_url` of
-the JSON resource the call created, never a free-text scan. A server that answers in prose, or one
-whose posting tool both posts and lists, records nothing — a lost recording costs one comment its
-suppression, while a wrong one costs a human their reply, permanently and fleet-wide.
+the single JSON *object* the call answered with, never a free-text scan and never a JSON array,
+which is the shape of a listing. So a server that answers in prose, or with a whole thread, records
+nothing — a lost recording costs one comment its suppression, while a wrong one costs a human their
+reply, permanently and fleet-wide.
+
+Two things that tier does not reach. The pending-review tools on the list
+(`add_comment_to_pending_review` and its longer spelling) are covered only as far as the server
+answers with a permalink-bearing object; `github-mcp-server` acknowledges them in prose, and the
+call that publishes the review (`submit_pending_pull_request_review`) answers with a
+`#pullrequestreview-N` url, which is not a comment permalink and matches nothing — so that route
+still records nothing today. And a **Pi** session cannot reach the tier at all: Pi calls every MCP
+server through one proxy tool rather than by name, so there is no `mcp__<server>__<tool>` in its
+transcript to key on (the same reason `GithubPrUrlHook`'s MCP create tier skips Pi).
 
 The recognition reads what a command segment *runs*, not what it quotes
 ([#870](https://github.com/tadasant/zimmer/issues/870)), so `grep -rn "gh pr comment" docs/` over
@@ -3650,6 +3660,15 @@ What a human loses is one route to a session, not the session: the web follow-up
 and do not care whether a PR is open. Nothing announces the drop on GitHub, though — no 👀, no
 reply — so a human commenting on a merged PR and expecting an agent gets silence. The skip is
 logged at `info` naming the PR and the session.
+
+`closed` is skipped on the same footing as `merged`, and the argument is weaker there: a PR closed
+without merging can be reopened, and "reopen this and do X" is a comment a human plausibly leaves on
+one. Two consequences follow. While the PR sits closed its comments are never fetched, so none of
+them reaches the session; and if it is reopened, the next pass sees the whole backlog at once — all
+of it after `github_pr_tracking_started_at`, which does not move — and enqueues a follow-up per
+comment in one burst rather than one at a time. Both are the cost of the issue asking for
+merged *and* closed; narrowing the skip to `merged` alone is the change to make if the closed case
+turns out to matter more than the loop it prevents.
 
 A PR the pass could not *read* is still polled: only a positive terminal reading stops it.
 

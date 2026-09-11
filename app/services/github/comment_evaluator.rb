@@ -131,17 +131,15 @@ module Github
     # reads, because waiting on it delays a prompt that does not depend on it.
     REACTION_TIMEOUT = 10
 
-    # The PR states whose comment thread is over, so nothing on it should wake a
-    # session. See #pollable.
-    TERMINAL_PR_STATUSES = %w[merged closed].freeze
-
     # @param session [Session]
     # @param refs [Array<Github::PrRef>] the session's tracked PRs, already resolved
     # @param snapshots [Hash{String => Github::PrSnapshot, nil}] this pass's reading of
     #   each PR, keyed by url. A nil value, or a url with no entry at all, is "we could
-    #   not ask about this one" and is polled.
+    #   not ask about this one" and is polled. Required, like the sibling evaluators'
+    #   third argument: a default would let a caller skip the reading silently, and the
+    #   silent direction here is a PR that keeps being polled forever.
     # @return [void]
-    def evaluate(session, refs, snapshots = {})
+    def evaluate(session, refs, snapshots)
       refs = pollable(refs, snapshots, session)
       return if refs.empty?
 
@@ -238,7 +236,7 @@ module Github
     def pollable(refs, snapshots, session)
       refs.reject do |ref|
         status = snapshots[ref.url]&.status
-        next false unless TERMINAL_PR_STATUSES.include?(status)
+        next false unless PrSnapshot::TERMINAL_STATUSES.include?(status)
 
         Rails.logger.info "[Github::CommentEvaluator] Not polling comments on #{ref.url} for session " \
           "#{session.id}: the PR is #{status}"

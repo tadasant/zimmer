@@ -101,7 +101,7 @@ module GithubPullRequestMergeability
   # mergeability question and, failing that, to `:unknown`.
   def interpret(snapshot)
     return :unknown if snapshot.nil?
-    return :not_open if [ "merged", "closed" ].include?(snapshot.status)
+    return :not_open if Github::PrSnapshot::TERMINAL_STATUSES.include?(snapshot.status)
 
     case snapshot.conflicting?
     when false then :mergeable
