@@ -433,7 +433,9 @@ fails one:
 
 `SlackEventJob` fires the same conditions the poller would, with the same filters and through the
 same `Trigger#interpolate_prompt` and `Trigger#create_session!`, so a session a delivery fired looks
-exactly like one the poller fired. It serves `new_message` (a channel's top-level messages, or one
+exactly like one the poller fired. That includes the trusted identifiers a Slack fire fills in
+(`{{channel_id}}`, `{{message_ts}}`, `{{thread_ts}}`, `{{author_id}}`) and the `{{name|untrusted}}`
+fencing, so a template written for the poller behaves identically on a delivery. It serves `new_message` (a channel's top-level messages, or one
 thread's replies), `bot_mention` (one channel, every channel the bot is in, one thread, and DMs) and
 `dm_message`. It ignores edits, deletes and hidden events, and group DMs, none of which the poller
 fires on either. It never moves a condition's cursor, and it has no baseline to establish: a
