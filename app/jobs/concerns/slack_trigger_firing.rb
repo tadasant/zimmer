@@ -212,19 +212,22 @@ module SlackTriggerFiring
   #
   # +via+ is "poll" or "webhook". A webhook fire always claims its messages in
   # TriggerEventClaim; a poll fire claims them only while the webhook path is switched on,
-  # so with Slack on `poll` the poller behaves exactly as it did before webhooks existed. The
-  # claim happens in the same transaction as the spawn, so a message the other path already
-  # fired is not fired again, and a fire that raises releases its claim with its rollback.
+  # so with Slack on `poll` the poller claims nothing and takes no lock. The claim happens in
+  # the same transaction as the spawn, so a message the other path already fired is not fired
+  # again, and a fire that raises releases its claim with its rollback.
+  #
+  # +rendered+ is a fire the caller already rendered (SlackEventJob does, before opening its own
+  # transaction). Without one it is rendered here, still before the transaction.
   #
   # Raises whatever the spawn raises; the caller decides what a failure costs.
-  def fire_slack_event(condition, message, channel_id:, dm:, via:, folded: [])
+  def fire_slack_event(condition, message, channel_id:, dm:, via:, folded: [], rendered: nil)
     trigger = condition.trigger
     candidates = [ message ] + folded
     claiming = via == "webhook" || Webhooks::Source.slack.webhook_enabled?
 
     # Rendered before the transaction: it makes Slack API calls (permalinks, author names), and
     # those should not hold a transaction open.
-    rendered = render_slack_fire(condition, candidates, channel_id: channel_id, dm: dm)
+    rendered ||= render_slack_fire(condition, candidates, channel_id: channel_id, dm: dm)
     session = nil
     fired = candidates
 
@@ -241,6 +244,13 @@ module SlackTriggerFiring
     # so a capture failure still cannot take the spawn down with it.
     ActiveRecord::Base.transaction do
       if claiming
+        # With both paths live, fires of one trigger can run at once: SlackEventJob runs several,
+        # and the poller runs beside them. A fire inside a transaction gets no lock from
+        # Trigger.with_spawn_lock, so it takes the transaction-scoped one — see
+        # Trigger.lock_spawn_for_transaction!. Re-taking it inside a caller that already holds it
+        # is a no-op.
+        Trigger.lock_spawn_for_transaction!(trigger.id)
+
         keys = candidates.index_with { |candidate| TriggerEventClaim.slack_event_key(channel_id, candidate.ts) }
         won = TriggerEventClaim.claim!(
           condition, keys.values,
@@ -249,7 +259,8 @@ module SlackTriggerFiring
         fired = candidates.select { |candidate| won.include?(keys[candidate]) }
 
         # Lost part of the group to the other path mid-flight: fire for what this path owns, so
-        # nothing the other path already answered is announced twice.
+        # nothing the other path already answered is announced twice. Every link and name it
+        # needs was resolved by the first render and is memoized, so this makes no Slack call.
         if fired.any? && fired.size != candidates.size
           rendered = render_slack_fire(condition, fired, channel_id: channel_id, dm: dm)
         end
@@ -390,11 +401,20 @@ module SlackTriggerFiring
   # past this message whether or not a session came out of it, so an exception
   # escaping here does not defer the message — it deletes it. A prompt missing its
   # link is a worse prompt; a trigger that silently never fires is a lost message.
+  #
+  # Memoized per message for the life of the job, so a fire re-rendered after losing part of
+  # its group to the other path asks Slack for nothing it already asked for.
   def get_message_permalink(channel_id, message_ts)
-    SlackService.get_message_permalink(channel_id, message_ts)
-  rescue SlackService::SlackError => e
-    Rails.logger.warn "#{slack_log_tag} No permalink for #{message_ts} in #{channel_id}: #{e.message}"
-    nil
+    @permalink_cache ||= {}
+    key = [ channel_id, message_ts ]
+    return @permalink_cache[key] if @permalink_cache.key?(key)
+
+    @permalink_cache[key] = begin
+      SlackService.get_message_permalink(channel_id, message_ts)
+    rescue SlackService::SlackError => e
+      Rails.logger.warn "#{slack_log_tag} No permalink for #{message_ts} in #{channel_id}: #{e.message}"
+      nil
+    end
   end
 
   def resolve_channel_name(channel_id)
@@ -414,7 +434,9 @@ module SlackTriggerFiring
 
     return "Unknown" if message.user.blank?
 
-    SlackService.get_user_name(message.user)
+    # Memoized per user for the life of the job, for the same reason as #get_message_permalink.
+    @author_name_cache ||= {}
+    @author_name_cache[message.user] ||= SlackService.get_user_name(message.user)
   rescue SlackService::SlackError
     message.user
   end

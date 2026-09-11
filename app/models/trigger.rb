@@ -356,6 +356,30 @@ class Trigger < ApplicationRecord
     end
   end
 
+  # The .with_spawn_lock serialization, for a fire that runs inside its caller's
+  # own transaction and so gets no lock from .acquire_spawn_lock.
+  #
+  # pg_advisory_xact_lock on the same namespace and key, so it conflicts with the
+  # session-level lock every other firing path takes, and Postgres releases it
+  # when the caller's transaction ends — committed OR rolled back. That is what
+  # the session-level lock cannot do from inside a transaction (see
+  # .acquire_spawn_lock), and why this is a separate method rather than a flag.
+  #
+  # The caller takes it FIRST, before it reads anything a concurrent fire could
+  # change: a statement run after the lock is granted sees whatever the previous
+  # holder committed, which is what lets #spawn_unless_pending_session! see a
+  # session another fire of this trigger has just spawned.
+  #
+  # Blocks until granted, unlike .with_spawn_lock. The holders are other fires of
+  # this trigger, each a single transaction, so the wait is bounded by one spawn.
+  def self.lock_spawn_for_transaction!(trigger_id)
+    connection.select_value(
+      sanitize_sql_array(
+        [ "SELECT pg_advisory_xact_lock(?, ?)", SPAWN_ADVISORY_LOCK_NAMESPACE, spawn_lock_key(trigger_id) ]
+      )
+    )
+  end
+
   # Take the lock, or report that it could not be taken. Never raises — every way
   # of failing to acquire is the fail-open case.
   def self.acquire_spawn_lock(conn, trigger_id, wait)
@@ -368,7 +392,8 @@ class Trigger < ApplicationRecord
     # transaction would leave the UNLOCK rejected with the rest of it, and the
     # lock would be held for the life of a pooled connection — disabling this
     # guard for that trigger permanently and costing every later fire the full
-    # wait. SlackTriggerPollerJob is the one caller that wraps a fire this way.
+    # wait. The Slack firing paths (SlackTriggerFiring) wrap a fire this way; the
+    # ones that can run concurrently take .lock_spawn_for_transaction! instead.
     if conn.transaction_open?
       Rails.logger.info(
         "[Trigger] Trigger #{trigger_id} is firing inside its caller's transaction — not taking the " \

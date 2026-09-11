@@ -15,10 +15,10 @@ module Webhooks
   #                               from them; the poller keeps running as the backstop, and
   #                               TriggerEventClaim keeps the two from firing one event twice.
   #
-  # `webhook` alone — the endpoint with no poller behind it — is deliberately not accepted yet.
-  # For Slack the decision on #141 is that the Events API replaces SlackTriggerPollerJob and the
-  # poller and its watermarks are deleted rather than left dormant, so the no-poll mode ships with
-  # that deletion instead of as a switch that parks the poller.
+  # `webhook` alone — the endpoint with no poller behind it — is not a mode. For Slack the
+  # decision on #141 is that the Events API replaces SlackTriggerPollerJob and the poller and its
+  # watermarks are deleted rather than left dormant, so the no-poll state is reached by deleting
+  # the poller, not by a switch that parks it.
   class Source
     POLL = "poll"
     WEBHOOK_WITH_POLL_FALLBACK = "webhook_with_poll_fallback"
@@ -77,8 +77,8 @@ module Webhooks
 
       @warned << raw
       why = if raw == "webhook"
-        "`webhook` without a poller is not available yet: it ships with the change that deletes the " \
-        "poller (tadasant/zimmer#141). Use `#{WEBHOOK_WITH_POLL_FALLBACK}`."
+        "`webhook` without a poller is not a mode: the poller is replaced by deleting it " \
+        "(tadasant/zimmer#141), not by switching it off. Use `#{WEBHOOK_WITH_POLL_FALLBACK}`."
       else
         "Expected one of #{MODES.join(', ')}."
       end

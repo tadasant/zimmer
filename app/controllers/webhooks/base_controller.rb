@@ -17,16 +17,36 @@ module Webhooks
   #   3. verify the signature over the raw bytes
   #   4. only then parse JSON, and only then act on it
   #
-  # Nothing here calls `params`, which would parse the body before step 3.
+  # Rails would otherwise parse a JSON body before any of that: the request instrumentation reads
+  # `filtered_parameters` for its log line, and ParamsWrapper reads the body to wrap it, both
+  # before the action runs. ParamsWrapper is switched off and #process_action stops the other, so
+  # the first thing to parse the body is step 4.
   class BaseController < ActionController::API
     # Provider event payloads are a few kilobytes. The cap exists so an unauthenticated caller
     # cannot make this action HMAC an arbitrarily large body.
     MAX_BODY_BYTES = 1.megabyte
 
+    wrap_parameters false
+
+    # Hand Rails an empty params hash before anything asks for one. The instrumentation runs
+    # inside the super call, and a request whose parameters are already set is never parsed. The
+    # body stays readable through `request.raw_post`, which is all a subclass reads.
+    def process_action(*)
+      request.request_parameters = {}
+      super
+    end
+
     private
 
+    # At most MAX_BODY_BYTES + 1 bytes, however the body arrives. A Content-Length lets
+    # #body_too_large? refuse without reading at all; a chunked body carries none, so the read
+    # itself is bounded, and one byte past the cap is enough to know it is over.
     def raw_body
-      @raw_body ||= request.raw_post.to_s
+      @raw_body ||= begin
+        io = request.body
+        io.rewind if io.respond_to?(:rewind)
+        io.read(MAX_BODY_BYTES + 1).to_s
+      end
     end
 
     def body_too_large?

@@ -142,6 +142,63 @@ class SlackEventJobTest < ActiveJob::TestCase
     assert_equal 0, fires(slack_event(ts: "1756500000.000100"))
   end
 
+  test "an app_mention delivery fires nothing, even on a mention" do
+    configure_condition("event_type" => "bot_mention", "allowed_user_ids" => [ "U_ALICE" ])
+
+    event = slack_event(ts: "1756500000.000100", type: "app_mention", text: mention).except("channel_type")
+    assert_equal 0, fires(event)
+  end
+
+  test "a message with no channel_type is not guessed at" do
+    configure_condition("event_type" => "bot_mention", "allowed_user_ids" => [ "U_ALICE" ])
+
+    assert_equal 0, fires(slack_event(ts: "1756500000.000100", text: mention).except("channel_type"))
+  end
+
+  # --- concurrency, suppression and the backstop ------------------------------------------
+
+  test "every delivery takes its trigger's spawn lock for its transaction" do
+    Trigger.expects(:lock_spawn_for_transaction!).with(@trigger.id).at_least_once
+
+    run_event(slack_event(ts: "1756500000.000100"))
+  end
+
+  test "skip_if_pending_session holds across deliveries from different authors" do
+    @trigger.update!(skip_if_pending_session: true)
+
+    assert_equal 1, fires(slack_event(ts: "1756500000.000100", user: "U_ALICE"))
+    assert_equal 0, fires(slack_event(ts: "1756500001.000100", user: "U_BOB"))
+  end
+
+  test "a delivery that spawns nothing keeps its claim, so the poller does not fire the message either" do
+    Trigger.any_instance.stubs(:create_session!).returns(nil)
+    run_event(slack_event(ts: "1756500000.000100"))
+    Trigger.any_instance.unstub(:create_session!)
+
+    assert_nil TriggerEventClaim.sole.session_id
+    assert_no_difference -> { Session.count } do
+      poll_channel([ polled_message(ts: "1756500000.000100") ])
+    end
+  end
+
+  test "a poller fire that lost part of its group to the webhook announces only what it won" do
+    run_event(slack_event(ts: "1756500000.600100", user: "U_ALERTS", text: "alert two"))
+
+    assert_difference -> { Session.count }, 1 do
+      poll_channel([
+        polled_message(ts: "1756500000.000100", user: "U_ALERTS", text: "alert one"),
+        polled_message(ts: "1756500000.600100", user: "U_ALERTS", text: "alert two"),
+        polled_message(ts: "1756500001.200100", user: "U_ALERTS", text: "alert three")
+      ])
+    end
+
+    prompt = Session.order(:id).last.prompt
+    assert_includes prompt, "1 more message landed"
+    assert_includes prompt, "alert three"
+    refute_includes prompt, "alert two"
+    assert_equal %w[poll poll webhook], TriggerEventClaim.order(:claimed_via).pluck(:claimed_via)
+  end
+
   # --- failure and folding ------------------------------------------------------------
 
   test "a fire that raises rolls its claim back, so the poller can still fire the message" do
