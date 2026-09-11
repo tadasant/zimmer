@@ -18,10 +18,17 @@ REST API, not through MCP, and not through the model, which raises on both. A co
 row on the same artifact citing the earlier one, so both readings stay visible and the record cannot
 be edited into agreement with itself.
 
-The honest limit: this is enforced on the model, so `update_all` and raw SQL would bypass it. A
-Postgres trigger would be stronger, but Rails' Ruby schema dumper cannot carry one, so it would
-exist in production and silently not exist in CI — a guarantee no test could hold you to. Nothing in
-the app takes those paths against this table.
+It is enforced twice. The model's callbacks refuse every path through a `GateDecision` instance,
+with an error a caller can read. The `gate_decisions_append_only` Postgres trigger refuses the paths
+that never reach a callback — `update_all`, `delete_all`, `update_column`, raw SQL. The trigger is in
+`db/schema.rb`, so CI and test have it too (see
+[Testing](/operate/testing/#functions-and-triggers-are-dumped-other-ddl-is-refused)).
+
+Two gaps, both deliberate. The trigger lets one `UPDATE` through: the foreign key clearing
+`writing_session_id` after that session is deleted, which would otherwise make the session
+undeletable. And `TRUNCATE` fires no row trigger. A plain `TRUNCATE gate_decisions` is refused
+anyway, because `gate_decision_feedbacks` references the table, but `TRUNCATE … CASCADE` is not.
+`gate_decision_feedbacks` itself is append-only on the model only.
 
 Only a handful of fields are columns:
 

@@ -79,12 +79,12 @@ class GateDecision < ApplicationRecord
   scope :recent_first, -> { order(decided_at: :desc, id: :desc) }
   scope :with_human_feedback, -> { where(id: GateDecisionFeedback.select(:gate_decision_id)) }
 
-  # Enforced here rather than with a Postgres trigger, which would be stronger but
-  # cannot survive this app's Ruby schema dump — see the migration. So the honest
-  # statement of the guarantee is: every path that goes through a model instance
-  # is append-only, and `update_all` / `delete_all` / raw SQL are not. Nothing in
-  # the app takes those paths against this table, and the API and MCP surfaces
-  # expose no update or destroy at all.
+  # Enforced twice. These callbacks refuse every path through a model instance,
+  # with an error a caller can read. The `gate_decisions_append_only` Postgres
+  # trigger (AddAppendOnlyTriggerToGateDecisions) refuses the paths that never
+  # reach a callback: `update_all`, `delete_all`, `update_column`, raw SQL. The one
+  # UPDATE it allows is the foreign key clearing `writing_session_id` once that
+  # session has been deleted. The API and MCP surfaces expose no update or destroy.
   before_update { raise ActiveRecord::ReadOnlyRecord, "GateDecision is append-only: record a new decision instead of editing one" }
   before_destroy { raise ActiveRecord::ReadOnlyRecord, "GateDecision is append-only and cannot be deleted" }
 
