@@ -230,4 +230,139 @@ class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
 
     assert_includes error.message, "enable_pauses"
   end
+
+  # The text an investigating session reads while the queues are halted is the
+  # thing that tells it the third lever exists at all. Before #335 it named the
+  # GoodJob dashboard, which is the app the session cannot drive.
+  test "enter_queue_recovery_mode points at the job maintenance actions, not at /jobs" do
+    AlertService.stubs(:raise_alert).returns(true)
+    GoodJob::Setting.delete_all
+    AppSetting.delete_all
+
+    result = @tool.call("action" => "enter_queue_recovery_mode")
+
+    assert_includes result, "discard_queued_jobs"
+    refute_includes result, "GoodJob dashboard"
+  ensure
+    GoodJob::Setting.delete_all
+  end
+
+  # === Queued job maintenance ===
+
+  def enqueue_good_job(job_class: "CanaryJob", queue_name: "pollers", **attrs)
+    id = SecureRandom.uuid
+
+    GoodJob::Job.create!(
+      id: id, active_job_id: id, job_class: job_class, queue_name: queue_name,
+      priority: 0, scheduled_at: Time.current,
+      serialized_params: {
+        "job_class" => job_class, "job_id" => id, "queue_name" => queue_name,
+        "priority" => 0, "arguments" => [], "executions" => 0, "locale" => "en"
+      },
+      **attrs
+    )
+  end
+
+  test "preview_queued_jobs counts the eligible rows and names the expected_count to pass back" do
+    GoodJob::Job.delete_all
+    2.times { enqueue_good_job }
+
+    result = @tool.call("action" => "preview_queued_jobs", "queue_name" => "pollers")
+
+    assert_includes result, "## Queued Jobs — 2 eligible"
+    assert_includes result, "`CanaryJob` 2"
+    assert_includes result, "expected_count: 2"
+    assert_equal 0, GoodJob::Job.where.not(finished_at: nil).count
+  ensure
+    GoodJob::Job.delete_all
+  end
+
+  test "discard_queued_jobs reports what it discarded, by class" do
+    AlertService.stubs(:raise_alert).returns(true)
+    GoodJob::Job.delete_all
+    2.times { enqueue_good_job }
+    enqueue_good_job(job_class: "HeartbeatSweepJob")
+
+    result = @tool.call(
+      "action" => "discard_queued_jobs", "queue_name" => "pollers", "expected_count" => 3
+    )
+
+    assert_includes result, "## Queued Jobs Discarded — 3 rows"
+    assert_includes result, "`CanaryJob` 2"
+    assert_includes result, "`HeartbeatSweepJob` 1"
+    assert_includes result, "not recoverable"
+    assert_equal 3, GoodJob::Job.where.not(finished_at: nil).count
+  ensure
+    GoodJob::Job.delete_all
+  end
+
+  test "a count mismatch is a tool error the model can recover from, and discards nothing" do
+    GoodJob::Job.delete_all
+    3.times { enqueue_good_job }
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "discard_queued_jobs", "queue_name" => "pollers", "expected_count" => 1)
+    end
+
+    assert_includes error.message, "Count confirmation failed"
+    assert_includes error.message, "expected_count=3"
+    assert_equal 0, GoodJob::Job.where.not(finished_at: nil).count
+  ensure
+    GoodJob::Job.delete_all
+  end
+
+  test "the agents queue is refused through the tool surface too" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "discard_queued_jobs", "queue_name" => "agents", "expected_count" => 0)
+    end
+
+    assert_includes error.message, "protected"
+  end
+
+  test "reschedule_queued_jobs moves the work instead of ending it" do
+    AlertService.stubs(:raise_alert).returns(true)
+    GoodJob::Job.delete_all
+    job = enqueue_good_job
+
+    result = @tool.call(
+      "action" => "reschedule_queued_jobs", "queue_name" => "pollers",
+      "expected_count" => 1, "delay_minutes" => 30
+    )
+
+    assert_includes result, "## Queued Jobs Rescheduled — 1 row"
+    assert_includes result, "Nothing was destroyed"
+    job.reload
+    assert_nil job.finished_at
+    assert_in_delta 30.minutes.from_now.to_i, job.scheduled_at.to_i, 5
+  ensure
+    GoodJob::Job.delete_all
+  end
+
+  # Same reasoning as the recovery mode exemption, plus their own: a mistaken
+  # repeat is refused by the count confirmation, not by a timer that fails closed
+  # when the cache is down.
+  test "the queued job actions are not rate limited" do
+    AlertService.stubs(:raise_alert).returns(true)
+    GoodJob::Job.delete_all
+    HealthActionCooldown.new(HealthActionCooldown.fingerprint("key_one")).record("cleanup_processes")
+
+    assert_includes @tool.call("action" => "preview_queued_jobs", "queue_name" => "pollers"), "## Queued Jobs"
+    assert_includes @tool.call("action" => "discard_queued_jobs", "queue_name" => "pollers", "expected_count" => 0),
+      "## Queued Jobs Discarded"
+  ensure
+    GoodJob::Job.delete_all
+  end
+
+  test "the three actions are advertised in the schema and the description" do
+    schema = Mcp::Tools::ActionHealth.input_schema.to_h
+    actions = schema.dig(:properties, :action, :enum) || schema.dig("properties", "action", "enum")
+
+    assert_includes actions, "preview_queued_jobs"
+    assert_includes actions, "discard_queued_jobs"
+    assert_includes actions, "reschedule_queued_jobs"
+
+    description = Mcp::Tools::ActionHealth.rendered_description
+    assert_includes description, "NOT RECOVERABLE"
+    assert_includes description, "expected_count"
+  end
 end

@@ -1,0 +1,76 @@
+<%# The third cleanup lever for a runaway queue, beside the one that halts it:
+    discard or reschedule the jobs that are already enqueued, without leaving
+    Zimmer for GoodJob's own dashboard mid-incident (#335).
+
+    Both controls POST to routes in HealthController::OPERATOR_GATED_ACTIONS, so
+    they need the operator credential — the fix for #312 covers this panel by
+    construction rather than by remembering to. %>
+<% rows = queued_job_maintenance_rows %>
+<div class="mb-6 bg-white rounded-lg shadow border-l-4 border-gray-200">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <h3 class="text-lg font-medium text-gray-900">Queued Job Maintenance</h3>
+    <p class="mt-1 text-sm text-gray-600">
+      Jobs that are enqueued but not started, by class and queue. Discarding is
+      <span class="font-medium">not recoverable</span> — the work never runs. Rescheduling is the
+      reversible sibling: the work still happens, later. Running executions, finished history and
+      the <span class="font-mono"><%= QueuedJobMaintenance::PROTECTED_QUEUES.join(", ") %></span>
+      queue are never eligible, because an unfinished job there is a live session or the backstop
+      that lifts queue recovery mode.
+    </p>
+  </div>
+
+  <div class="px-4 py-5 sm:p-6">
+    <% if rows.empty? %>
+      <p class="text-sm text-gray-500">Nothing is waiting. Every eligible queue is empty.</p>
+    <% else %>
+      <div class="space-y-3">
+        <% rows.each do |row| %>
+          <% scope = { job_class: row[:job_class], queue_name: row[:queue_name] }.compact %>
+          <% label = [ row[:job_class] || "(unknown class)", row[:queue_name] || "(unknown queue)" ].join(" on ") %>
+          <div class="flex flex-col gap-3 rounded-md border border-gray-200 p-3 sm:flex-row sm:items-end sm:justify-between">
+            <div class="min-w-0">
+              <p class="text-sm font-medium text-gray-900 break-words font-mono"><%= row[:job_class] || "(unknown class)" %></p>
+              <p class="mt-1 text-xs text-gray-500">
+                queue <span class="font-mono"><%= row[:queue_name] || "(unknown)" %></span> ·
+                <span class="font-medium text-gray-700"><%= row[:count] %></span>
+                waiting
+              </p>
+            </div>
+
+            <div class="flex flex-wrap items-end gap-2">
+              <%# delay_minutes defaults to 0 — "run as soon as the queue allows", which is what
+                  an operator draining a backlog after lifting a halt actually wants. %>
+              <%= form_with url: reschedule_queued_jobs_health_path, method: :post, class: "flex items-end gap-2" do |f| %>
+                <%= f.hidden_field :job_class, value: row[:job_class] %>
+                <%= f.hidden_field :queue_name, value: row[:queue_name] %>
+                <%= f.hidden_field :expected_count, value: row[:count] %>
+                <div>
+                  <%= f.label :delay_minutes, "Delay (min)", class: "block text-xs font-medium text-gray-500" %>
+                  <%= f.number_field :delay_minutes, value: 0, min: 0,
+                      max: (QueuedJobMaintenance::MAX_RESCHEDULE_DELAY / 60).to_i,
+                      class: "mt-1 w-24 rounded-md border-gray-300 shadow-sm text-sm" %>
+                </div>
+                <%= f.submit "Reschedule",
+                    class: "inline-flex justify-center items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 cursor-pointer" %>
+              <% end %>
+
+              <%= button_to "Discard", discard_queued_jobs_health_path,
+                  method: :post,
+                  params: scope.merge(expected_count: row[:count], reason: "discarded from the /health panel"),
+                  form: { data: { turbo_confirm: "Discard #{row[:count]} queued #{label}? This is NOT recoverable — those jobs will never run." } },
+                  class: "inline-flex justify-center items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500" %>
+            </div>
+          </div>
+        <% end %>
+      </div>
+
+      <p class="mt-4 text-xs text-gray-500">
+        Each control carries the count shown beside it. If the queue moves between this page being
+        rendered and the click, the action is refused rather than acting on a set you did not see —
+        reload and try again. At most
+        <span class="font-medium"><%= QueuedJobMaintenance::MAX_PER_CALL %></span>
+        rows are touched per call.
+      </p>
+    <% end %>
+  </div>
+</div>

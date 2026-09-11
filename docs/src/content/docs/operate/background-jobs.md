@@ -1440,6 +1440,8 @@ that isn't happening. Zimmer's own metadata (who, why, when it auto-exits) lives
 **Jobs are frozen, not discarded.** Enqueue keeps working and cron keeps ticking; only execution
 stops. Everything waiting drains when the mode is lifted. The periodic jobs that would otherwise
 pile up are already singletons (`total_limit: 1`), so at most one of each poller can be waiting.
+If the backlog itself is the thing that has to go, that is
+[queued job maintenance](#queued-job-maintenance) below, not this.
 
 **It always ends.** Every entry carries a TTL — 60 minutes by default, clamped to 5 minutes–4 hours;
 re-entering extends it. Two independent paths act on that TTL, because each covers the other's
@@ -1469,6 +1471,99 @@ demand-side queues is the destructive direction and the one an agent session mus
 take on its own, while the way *out* of a halt has to work on the first try — including on a
 deployment that never set `SUPERVISOR_PASSWORD`, where the realm refuses everything else. Same
 reasoning as the cooldown exemption above, one layer up.
+
+## Queued job maintenance
+
+Halting the queues buys time; it does not remove the backlog. `QueuedJobMaintenance` is the third
+cleanup lever, beside disabling the stampeding Trigger and archiving the runaway sessions: **discard
+or reschedule the already-enqueued rows, scoped by job class and/or queue.**
+
+It exists because the other two were reachable from every surface and this one was not. An agent
+session started to work a queue incident could disable the trigger and archive the sessions, and
+then hit a wall on the ~494 already-enqueued `GitHubPullRequestPollerJob` rows behind
+[#329](https://github.com/tadasant/zimmer/issues/329) — its only options were to ask a human to
+click through GoodJob's own dashboard at `/jobs`, or to lift recovery mode and let the backlog drain
+unchanged, which is the state it entered recovery mode to avoid
+([#335](https://github.com/tadasant/zimmer/issues/335)).
+
+### Discard is not recoverable; reschedule is
+
+**A discard ends the job.** It writes `finished_at` and a `GoodJob::Job::DiscardJobError` onto the
+row, the work never runs, and nothing brings it back. For a poller tick that is exactly right — the
+next tick does the same work. For anything carrying state it is not.
+
+**Reschedule is the reversible sibling.** It only moves `scheduled_at`, so the work still happens,
+later, and another call moves it back. Reach for it unless you are certain the work is disposable.
+The receipt says which you got: `recoverable` is `true` for a reschedule and `false` for a discard.
+
+### What is eligible
+
+Only rows that are **unfinished, unstarted and unclaimed** — `finished_at IS NULL AND performed_at
+IS NULL AND locked_by_id IS NULL`. Four consequences worth stating, because a bulk destructive op on
+`good_jobs` with an over-broad predicate strands live sessions and fails silently:
+
+| Population | Eligible? | Why |
+| --- | --- | --- |
+| Waiting, not yet claimed | **yes** | this is the backlog |
+| Future-dated (`scheduled_at` ahead) | **yes** | backlog that has not come due; it still piles up |
+| Currently executing | no | `performed_at` is set. GoodJob resets it on retry, so waiting retries stay eligible |
+| Claimed by a worker, not yet started | no | `locked_by_id` is set |
+| Finished, succeeded or already discarded | no | history is never rewritten |
+| Anything on `agents` | **never** | see below |
+
+**The `agents` queue is refused outright**, by name and again in the predicate. Two populations live
+there and neither is backlog: an unfinished `AgentSessionJob` row *is* a live session — discarding it
+strands the session with a job nothing will run — and `QueueRecoveryModeExpiryJob` is the cron
+backstop that lifts a halt when its TTL elapses, so discarding it during an incident would remove the
+guarantee that the halt ends. Both are refused by class as well, so moving either onto another queue
+does not quietly make it discardable. To act on a runaway session, archive or kill the session.
+
+`auth` is deliberately *not* protected: `RuntimeLoginJob` runs only when a human presses a button, so
+it is not a source of backlog, and a discarded one costs a second click rather than a stranded session.
+
+### Three guards before anything is written
+
+1. **A scope is required.** A call that names neither a `job_class` nor a `queue_name` is refused.
+   There is no "discard everything".
+2. **A count confirmation.** The caller states how many rows it expects to affect, and a mismatch
+   refuses and writes nothing. The refusal is also the preview: it names the real count and the
+   per-class breakdown, so the recovery is one retry. On `/health` this is the count rendered beside
+   the button — a page opened ten minutes ago names a number that no longer matches, and the click
+   is refused rather than acting on a set the operator never saw.
+3. **A hard cap** of 2,000 rows per call, checked before the count so an over-cap scope cannot be
+   confirmed into. A bigger backlog goes in several calls, each stating its own count.
+
+Every refusal happens before the first row is written, which is what "no partial action" means. What
+is *not* transactional is the write itself: rows are discarded one at a time, so a row a worker
+claims mid-call is skipped and reported in `skipped` rather than aborting the rest.
+
+### It reports what it did, by class
+
+The receipt carries `by_job_class` and `by_queue`, so an operator reading a transcript back knows
+*what* was thrown away and not only how much. A mutating call also raises a Slack alert naming the
+count and the classes — the same reasoning as the recovery-mode alerts: a bulk write against
+`good_jobs` should be legible to somebody who was not reading the transcript it happened in.
+
+### Surfaces
+
+| Surface | Read | Discard | Reschedule |
+| --- | --- | --- | --- |
+| MCP `action_health` | `preview_queued_jobs` | `discard_queued_jobs` | `reschedule_queued_jobs` |
+| REST | `GET /api/v1/health/queued_jobs` | `POST /api/v1/health/discard_queued_jobs` | `POST /api/v1/health/reschedule_queued_jobs` |
+| `/health` | the Queued Job Maintenance panel | its Discard button | its Reschedule control |
+
+On `/health` **both actions are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-two-surfaces)**, via
+`HealthController::OPERATOR_GATED_ACTIONS`. That is load-bearing and not decoration: a bulk discard
+is exactly the destructive-action-reachable-anonymously shape of
+[#312](https://github.com/tadasant/zimmer/issues/312), and an agent session's shell can reach this
+app from the production host.
+
+None of the three is behind the shared `HealthActionCooldown`, for the reason the recovery-mode pair
+is exempt plus one of their own: the cooldown fails closed when the cache is unavailable, and an
+overloaded instance is exactly when the cache is least trustworthy — so it would lock the third
+cleanup lever during the incident it exists for. And they carry a stronger throttle than a timer:
+a mistaken repeat of the same call is refused by the count confirmation, because the scope now holds
+zero rows.
 
 ## Trigger-poll liveness
 
