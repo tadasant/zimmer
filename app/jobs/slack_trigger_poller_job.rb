@@ -21,9 +21,9 @@
 # - Only processes messages from allowed users: the condition's own allowed_user_ids if
 #   set, else the SLACK_BOT_MENTION_ALLOWED_USER_IDS allow-list, else EVERYONE (see
 #   TriggerCondition#allow_all_users?). The bot's own messages never trigger anything.
-# - With thread_ts configured, none of the above: it watches that ONE thread's replies
-#   for @mentions and nothing else — no other thread, no top-level message, no DM
-#   (see #process_thread_mentions).
+# - With thread_ts configured, it watches that ONE thread's replies for @mentions and
+#   nothing else — no other thread, no top-level message, no DM (see
+#   #process_thread_mentions). The allow-list and the self-message rule still apply.
 #
 # For passive-listening conditions (see #process_passive_listen_condition):
 # - Same channel sweep and same per-channel/per-thread bookkeeping as bot_mention,
@@ -372,7 +372,12 @@ class SlackTriggerPollerJob < ApplicationJob
     else
       fetch_new_messages(channel_id, condition.last_message_ts)
     end
-    return if messages.empty?
+
+    if messages.empty?
+      # A thread with no replies yet is baselined on its parent — see #thread_cursor.
+      condition.mark_polled!(message_ts: condition.thread_ts) if condition.thread_scoped? && condition.last_message_ts.blank?
+      return
+    end
 
     source = condition.thread_scoped? ? "thread #{condition.thread_ts}" : condition.channel_name
     Rails.logger.info "[SlackTriggerPollerJob] Found #{messages.length} new message(s) in #{source} for condition #{condition.id}"
@@ -429,7 +434,16 @@ class SlackTriggerPollerJob < ApplicationJob
     mentions = replies.select { |reply| mention_for?(condition, reply, bot_id) }
     process_messages(condition, mentions, channel_id: condition.channel_id)
 
-    condition.mark_polled!(message_ts: replies.map(&:ts).max)
+    condition.mark_polled!(message_ts: thread_cursor(condition, replies))
+  end
+
+  # The cursor a thread-scoped poll leaves behind: the newest reply it fetched, or —
+  # on the first poll of a thread with no replies yet — the thread's parent. Without
+  # the parent, the thread's first reply would land on a blank cursor, be taken as
+  # the baseline, and never fire, which is exactly the "@mention Zimmer in the thread
+  # you just started" case a thread-scoped bot_mention exists for.
+  def thread_cursor(condition, replies)
+    replies.map(&:ts).max || (condition.thread_ts if condition.last_message_ts.blank?)
   end
 
   # Process a dm_message condition: every DM the bot receives from an allowed

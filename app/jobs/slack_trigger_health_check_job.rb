@@ -68,8 +68,8 @@ class SlackTriggerHealthCheckJob < ApplicationJob
     return if channel_id.blank?
 
     last_processed = condition.last_message_ts
-    # No baseline established yet (condition never polled, or thread has no
-    # replies): there is nothing to fall behind on.
+    # No baseline established yet (condition never polled): there is nothing to
+    # fall behind on.
     return if last_processed.blank?
 
     latest_ts = latest_source_ts(condition, channel_id, last_processed)

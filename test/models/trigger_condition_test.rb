@@ -124,6 +124,78 @@ class TriggerConditionTest < ActiveSupport::TestCase
                  @slack_condition.description
   end
 
+  # --- Changing thread_ts on a live condition restarts its cursors ---
+  #
+  # last_message_ts means the newest top-level message on one side of that edit and
+  # the newest thread reply on the other, so carrying it across replays a backlog.
+
+  EDIT_TIME = Time.utc(2026, 9, 11, 12, 0, 0)
+  EDIT_TS = format("%.6f", EDIT_TIME.to_f)
+
+  def live_bot_mention_condition(thread_ts: nil)
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "thread_ts" => thread_ts,
+      "dm_timestamps" => { "U1" => "1704000000.000001" },
+      "channel_timestamps" => { "C1" => "1704000000.000002" },
+      "thread_timestamps" => { "C1:1703000000.000000" => "1704000000.000003" },
+      "thread_recheck_cursors" => { "C1" => "C1:1703000000.000000" }
+    ))
+    condition.update_columns(last_polled_at: 1.minute.ago)
+    condition
+  end
+
+  # The shape a form save sends: the rendered fields only, poll state omitted.
+  def form_configuration(condition, thread_ts:)
+    { "channel_id" => condition.channel_id, "channel_name" => condition.channel_name,
+      "event_type" => "bot_mention", "thread_ts" => thread_ts }
+  end
+
+  def assert_rebaselined(condition)
+    condition.reload
+    assert_equal EDIT_TS, condition.last_message_ts
+    assert_equal({ "U1" => EDIT_TS }, condition.dm_timestamps)
+    assert_equal({ "C1" => EDIT_TS }, condition.channel_timestamps)
+    assert_empty condition.thread_timestamps
+    assert_empty condition.thread_recheck_cursors
+  end
+
+  test "scoping a live condition to a thread restarts its cursors at the moment of the edit" do
+    condition = live_bot_mention_condition
+
+    travel_to(EDIT_TIME) { condition.update!(configuration: form_configuration(condition, thread_ts: "1704000000.000000")) }
+
+    assert_rebaselined(condition)
+  end
+
+  test "clearing a live condition's thread_ts restarts its cursors at the moment of the edit" do
+    condition = live_bot_mention_condition(thread_ts: "1704000000.000000")
+
+    travel_to(EDIT_TIME) { condition.update!(configuration: form_configuration(condition, thread_ts: "")) }
+
+    assert_rebaselined(condition)
+    assert_not condition.thread_scoped?
+  end
+
+  test "an edit that keeps the same thread_ts leaves the cursors alone" do
+    condition = live_bot_mention_condition(thread_ts: "1704000000.000000")
+
+    condition.update!(configuration: form_configuration(condition, thread_ts: "1704000000.000000").merge("channel_name" => "renamed"))
+
+    condition.reload
+    assert_equal "1704067200.000000", condition.last_message_ts
+    assert_equal({ "U1" => "1704000000.000001" }, condition.dm_timestamps)
+    assert_equal({ "C1:1703000000.000000" => "1704000000.000003" }, condition.thread_timestamps)
+  end
+
+  test "a condition the poller has never visited keeps its cursor when scoped" do
+    condition = trigger_conditions(:bot_mention_slack_condition) # last_polled_at is nil
+
+    condition.update!(configuration: condition.configuration.merge("thread_ts" => "1704000000.000000"))
+
+    assert_equal "1704067200.000000", condition.reload.last_message_ts
+  end
+
   test "thread_ts is rejected for every passive-listening condition" do
     %w[passive_listen_thread passive_listen_channel].each do |event_type|
       @slack_condition.configuration["event_type"] = event_type

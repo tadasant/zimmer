@@ -91,7 +91,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
     SlackTriggerHealthCheckJob.new.send(:check_condition, condition)
   end
 
-  # Scoping a bot_mention to a thread gives it one source and one cursor again, so
+  # Scoping a bot_mention to a thread gives it a single source and cursor, so
   # it can stall the same way a thread-scoped new_message can, and is checked.
   test "checks a thread-scoped bot_mention condition against its thread's newest reply" do
     SlackService.stubs(:configured?).returns(true)

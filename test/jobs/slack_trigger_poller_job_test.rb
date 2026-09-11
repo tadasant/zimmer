@@ -1261,6 +1261,8 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_no_difference("Session.count") do
       SlackTriggerPollerJob.new.send(:process_condition, condition)
     end
+
+    assert_equal "1704067300.000000", condition.reload.last_message_ts
   end
 
   test "a thread-scoped bot_mention reads only its own thread: not the channel, other threads, or DMs" do
@@ -1290,6 +1292,41 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     end
 
     assert_equal "1704067200.000000", condition.reload.last_message_ts
+  end
+
+  # The workflow this scoping exists for: a thread is started, the trigger is pointed
+  # at it before anyone replies, and the first reply is the @mention. A first poll
+  # that left the cursor blank would take that reply as the baseline and drop it.
+  test "a thread-scoped bot_mention on a thread with no replies yet fires on its first @mention" do
+    condition = stub_thread_mention_condition
+    condition.update!(last_message_ts: nil)
+    SlackService.stubs(:get_thread_replies).with(condition.channel_id, THREAD_MENTION_TS).returns([])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+    # The parent is the baseline: every reply is newer than it.
+    assert_equal THREAD_MENTION_TS, condition.reload.last_message_ts
+
+    stub_thread_replies(condition, [ thread_reply("1704067300.000000", "<@U_BOT_123> kicking this off") ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+    assert_equal "1704067300.000000", condition.reload.last_message_ts
+  end
+
+  test "a thread-scoped new_message condition on a thread with no replies baselines on the parent" do
+    SlackService.stubs(:configured?).returns(true)
+
+    condition = trigger_conditions(:new_slack_condition) # last_message_ts is nil
+    condition.configuration["thread_ts"] = "1704000000.000000"
+    condition.save!
+    SlackService.stubs(:get_thread_replies).with(condition.channel_id, "1704000000.000000").returns([])
+
+    SlackTriggerPollerJob.new.send(:process_condition, condition)
+
+    assert_equal "1704000000.000000", condition.reload.last_message_ts
   end
 
   test "get_author_name returns bot username for bot messages" do

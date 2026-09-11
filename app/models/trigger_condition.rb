@@ -138,6 +138,7 @@ class TriggerCondition < ApplicationRecord
   before_validation :normalize_github_configuration, if: :github_condition?
   before_validation :preserve_github_poll_state, if: :github_condition?
   before_validation :preserve_slack_poll_state, if: -> { condition_type == "slack" }
+  before_validation :rebaseline_on_thread_change, if: -> { condition_type == "slack" }
 
   # Arming is what a never-fired `days`/`weeks` schedule measures its first fire
   # from (see #armed_before?). Stamped on create for every condition type, so the
@@ -843,7 +844,8 @@ class TriggerCondition < ApplicationRecord
   # omits them. Unlike the GitHub equivalent there is no scope-change branch that
   # drops them: every Slack cursor is keyed by channel or by thread, so a condition
   # that changes channel or event type simply stops consulting the entries that no
-  # longer apply rather than being re-baselined by them.
+  # longer apply rather than being re-baselined by them. The exception is a change of
+  # thread_ts, which #rebaseline_on_thread_change handles after this runs.
   def preserve_slack_poll_state
     return if new_record?
     return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
@@ -853,6 +855,38 @@ class TriggerCondition < ApplicationRecord
       next if configuration.key?(key)
       configuration[key] = configuration_was[key] if configuration_was.key?(key)
     end
+  end
+
+  # Restart a live condition's Slack cursors at the moment of the edit when its
+  # thread_ts changes: scoped to unscoped, unscoped to scoped, or one thread to another.
+  #
+  # last_message_ts means something different on each side of that edit — the newest
+  # TOP-LEVEL message for a channel condition, the newest REPLY for a thread-scoped
+  # one — so carried across it, the first poll replays a backlog: every reply in the
+  # thread newer than the channel's last top-level post, or every channel @mention
+  # since the thread last spoke. The per-source cursors a thread-scoped bot_mention
+  # never advances (DMs, channels, threads) are just as stale by the time it is
+  # unscoped again.
+  #
+  # So every cursor moves to "now": nothing said before the edit fires, and
+  # everything after it does. Tracked threads are dropped rather than moved, since
+  # moving them would make every one look freshly active; the channel sweep picks the
+  # live ones up again from recent history.
+  #
+  # A condition the poller has never visited has no cursor to mislead, and is left
+  # alone.
+  def rebaseline_on_thread_change
+    return if new_record? || last_polled_at.blank?
+    return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
+    return if configuration["thread_ts"].presence == configuration_was["thread_ts"].presence
+
+    now = format("%.6f", Time.current.to_f)
+    self.last_message_ts = now
+    %w[dm_timestamps channel_timestamps].each do |key|
+      configuration[key] = configuration[key].transform_values { now } if configuration[key].is_a?(Hash)
+    end
+    configuration.delete("thread_timestamps")
+    configuration.delete("thread_recheck_cursors")
   end
 
   # Keep the poller's bookkeeping across a user's edit of the same row.

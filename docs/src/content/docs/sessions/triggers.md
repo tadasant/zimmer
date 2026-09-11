@@ -84,7 +84,7 @@ reason it skips an unscoped `bot_mention` — there is no single monitored sourc
 against.
 
 :::caution[A `dm_message` condition and a `bot_mention` condition both fire on the same DM]
-`bot_mention` covers DMs unconditionally, and `dm_message` deliberately applies no mention filter.
+An unscoped `bot_mention` covers DMs unconditionally, and `dm_message` deliberately applies no mention filter.
 Two conditions covering the same DM therefore each fire on it, spawning two sessions — and that
 holds whether they sit on two triggers or on the *same* one, which is the likelier mistake:
 `SlackTriggerPollerJob` iterates conditions, not triggers, and each one calls `create_session!`.
@@ -140,10 +140,20 @@ doesn't mention the bot.
 Mechanically it is a thread-scoped `new_message` with a mention filter:
 `conversations.replies` on the one thread, a single cursor in `last_message_ts` that advances past
 every reply fetched whether or not it mentioned the bot, and a first poll that only records a
-baseline. The mention test is the one every `bot_mention` path shares (`mention_for?`), so the
-allow-list and the rule that Zimmer's own messages never fire apply unchanged. With one source
-again, `SlackTriggerHealthCheckJob` checks it for staleness the same way it checks a thread-scoped
-`new_message`.
+baseline. That baseline is the newest existing reply, or the thread's parent when there are no
+replies yet, so the first @mention in a brand-new thread still fires. The mention test is the one
+every `bot_mention` path shares (`mention_for?`), so the allow-list and the rule that Zimmer's own
+messages never fire apply unchanged. With a single source, `SlackTriggerHealthCheckJob` checks it
+for staleness the same way it checks a thread-scoped `new_message`.
+
+Changing `thread_ts` on a live condition — adding it, clearing it, or pointing it at another thread
+— restarts the condition's cursors at the moment of the edit: nothing said before the edit fires,
+and everything after it does. The cursor from one scope means something else in the other, so
+carrying it across would make the first poll replay a backlog — every reply in the thread newer
+than the channel's last top-level message, or every channel @mention and DM since the thread last
+spoke. Threads the condition was tracking are forgotten; the channel sweep picks the live ones up
+again from recent history. The `action_trigger` MCP tool refuses an update that drops `thread_ts`
+by omission; send `"thread_ts": ""` to clear it on purpose.
 
 `channel_id` is required with `thread_ts`. `dm_message` and both passive types still reject it: a DM
 has no thread to scope, and the passive types walk threads themselves.

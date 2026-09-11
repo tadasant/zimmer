@@ -103,7 +103,9 @@ module Mcp
         - An element with an `id` updates that condition. Omit `configuration` to leave it
           untouched. Sending one REPLACES the condition's user-facing keys, so send every key
           you want to keep — notably `event_type`, which defaults to `new_message` (fire on
-          everything) if you drop it. Keys a POLLER owns survive an update that omits them: the
+          everything) if you drop it. Either update shape refuses that, and refuses dropping
+          `thread_ts` from a thread-scoped Slack condition, since both silently widen what fires;
+          send `"thread_ts": ""` to clear the scope on purpose. Keys a POLLER owns survive an update that omits them: the
           Slack cursors (plus `allowed_user_ids`), and the GitHub ones (`seen_items`,
           `seen_missing_counts`, `baseline_scope`, `last_issue_at`, `seen_issue_keys`,
           `issue_repo_baselines`). You do not need to echo them — editing `repos` on a live
@@ -799,7 +801,7 @@ module Mcp
             end
           end
 
-          reject_widening_configuration!(target, condition, index) if target && condition.key?("configuration")
+          reject_widening_configuration!(target, condition, "conditions[#{index}]") if target && condition.key?("configuration")
 
           attributes = {}
           attributes[:id] = id if id
@@ -866,14 +868,14 @@ module Mcp
       # with nothing in the response to say so. Poller state is merged back by
       # preserve_slack_poll_state / preserve_github_poll_state, but neither of these is
       # poller state, so nothing else catches it.
-      def reject_widening_configuration!(target, condition, index)
+      def reject_widening_configuration!(target, condition, field)
         incoming = condition["configuration"]
         return unless incoming.is_a?(Hash)
 
         case target.condition_type
-        when "slack" then reject_widening_slack_configuration!(target, incoming, index)
-        when "ao_event" then reject_widening_ao_event_configuration!(target, incoming, index)
-        when "github_issue" then reject_widening_github_issue_configuration!(target, incoming, index)
+        when "slack" then reject_widening_slack_configuration!(target, incoming, field)
+        when "ao_event" then reject_widening_ao_event_configuration!(target, incoming, field)
+        when "github_issue" then reject_widening_github_issue_configuration!(target, incoming, field)
         end
       end
 
@@ -883,11 +885,11 @@ module Mcp
       # is creatable through this tool. It is also how the wake_me_up_when_session_
       # changes_state tool's own rows are shaped, so an ordinary-looking edit to one
       # of those would do it.
-      def reject_widening_ao_event_configuration!(target, incoming, index)
+      def reject_widening_ao_event_configuration!(target, incoming, field)
         return unless target.session_scoped_ao_event?
         return if incoming["watched_session_id"].present?
 
-        raise ToolError, "conditions[#{index}] omits \"watched_session_id\" from the configuration of " \
+        raise ToolError, "#{field} omits \"watched_session_id\" from the configuration of " \
                          "condition #{target.id}, which currently watches session " \
                          "##{target.watched_session_id}. configuration replaces the condition's " \
                          "user-facing keys, so this would widen a one-shot wake into a broadcast that " \
@@ -900,36 +902,37 @@ module Mcp
       # "new_message", so a passive or @mention condition would silently start firing on
       # EVERY message in its channel.
       #
-      # Dropping `thread_ts` from a thread-scoped bot_mention widens it too: from
-      # @mentions in ONE thread to @mentions anywhere in the channel plus every allowed
-      # DM. Keyed on the KEY's absence, so an explicit "" still clears it deliberately.
-      def reject_widening_slack_configuration!(target, incoming, index)
+      # Dropping `thread_ts` from a thread-scoped condition widens it too: a new_message
+      # goes from one thread's replies to every top-level message in the channel, and a
+      # bot_mention from one thread to the whole channel plus every allowed DM. Keyed on
+      # the KEY's absence, so an explicit "" still clears it deliberately.
+      def reject_widening_slack_configuration!(target, incoming, field)
         if target.event_type != "new_message" && incoming["event_type"].blank?
-          raise ToolError, "conditions[#{index}] omits \"event_type\" from the configuration of " \
+          raise ToolError, "#{field} omits \"event_type\" from the configuration of " \
                            "condition #{target.id}, which is currently \"#{target.event_type}\". " \
                            "configuration replaces the condition's user-facing keys, so this would " \
                            "reset it to \"new_message\" and fire on every message. Re-send event_type."
         end
 
-        return unless target.event_type == "bot_mention" && target.thread_scoped?
+        return unless target.thread_scoped?
         return if incoming.key?("thread_ts")
 
-        raise ToolError, "conditions[#{index}] omits \"thread_ts\" from the configuration of " \
+        raise ToolError, "#{field} omits \"thread_ts\" from the configuration of " \
                          "condition #{target.id}, which currently watches only thread " \
                          "#{target.thread_ts}. configuration replaces the condition's user-facing " \
-                         "keys, so this would widen it to @mentions anywhere in the channel plus " \
-                         "every allowed DM. Re-send thread_ts, or send it as \"\" to clear it deliberately."
+                         "keys, so this would drop the thread scope and widen the condition beyond " \
+                         "that thread. Re-send thread_ts, or send it as \"\" to clear it deliberately."
       end
 
       # Dropping `exclude_labels` re-arms the gate for every issue that was opting out of
       # it. Keyed on the KEY's absence rather than its emptiness, so a caller that means
       # to remove the exclusion still can — by sending an explicit empty array.
-      def reject_widening_github_issue_configuration!(target, incoming, index)
+      def reject_widening_github_issue_configuration!(target, incoming, field)
         return if target.github_exclude_labels.empty?
         return if incoming.key?("exclude_labels")
 
         excluded = target.github_exclude_labels.join(", ")
-        raise ToolError, "conditions[#{index}] omits \"exclude_labels\" from the configuration of " \
+        raise ToolError, "#{field} omits \"exclude_labels\" from the configuration of " \
                          "condition #{target.id}, which currently excludes: #{excluded}. " \
                          "configuration replaces the condition's user-facing keys, so this would " \
                          "drop the exclusion and fire on every new issue again. Re-send " \
@@ -963,6 +966,10 @@ module Mcp
           raise ToolError, "Cannot update trigger configuration without a trigger_type when the " \
                            "trigger has zero or multiple conditions."
         end
+
+        # The same silent widenings the `conditions` path refuses. The flat pair is the
+        # natural way to edit a single-condition trigger, so it needs the guard as much.
+        reject_widening_configuration!(target, args, "\"configuration\"") if target && args.key?("configuration")
 
         attributes = {
           condition_type: condition_type,
