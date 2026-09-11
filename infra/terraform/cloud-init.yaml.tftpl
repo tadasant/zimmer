@@ -101,10 +101,14 @@ write_files:
   # rewritten. One extra binary is the cheaper half of that trade.
   #
   # BOUND TO THE TAILNET, NEVER 0.0.0.0. The DO firewall admits exactly one inbound
-  # rule (UDP 41641, Tailscale) and no public TCP at all, so a 0.0.0.0 bind is not
-  # reachable from the internet TODAY -- but it would be the moment anyone adds a TCP
-  # rule, and the bind is the part that does not depend on remembering that. Binding
-  # the tailnet address instead needs no firewall change, which is the point.
+  # rule (UDP 41641, Tailscale) and no public TCP, so a 0.0.0.0 bind reaches no one from
+  # the internet -- but only for as long as that stays true, and the bind is the half
+  # that does not depend on anyone remembering it. Binding the tailnet address needs no
+  # firewall change, which is the point.
+  #
+  # It is served with no TLS and no auth, so every tailnet peer that Tailscale ACLs let
+  # reach this node can read host telemetry from it. The ACL is the control, not this
+  # file -- see docs/operate/provisioning.md#tailscale-acls.
   - path: /usr/local/bin/zimmer-node-exporter
     permissions: "0755"
     content: |
@@ -141,7 +145,9 @@ write_files:
       # The wrapper gives up after two minutes without a tailnet address. systemd's
       # default start limit (5 starts in 10s) would then mark the unit failed for
       # good, so a slow tailnet join would cost the exporter until someone noticed.
-      # No limit + Restart=always means it keeps trying instead.
+      # No limit + Restart=always means it keeps trying instead. The trade is that a
+      # genuinely broken binary also retries forever, every 5s, into the journal --
+      # cheaper than an exporter that is silently dead on a box nobody logs into.
       StartLimitIntervalSec=0
 
       [Service]
@@ -338,6 +344,12 @@ runcmd:
   # unit starts; the wrapper waits for it anyway, because cloud-init ordering says
   # nothing about when the control plane hands out an address.
   - |
+    (
+    # A SUBSHELL, and `set -eu` belongs INSIDE it. cloud-init concatenates every runcmd
+    # entry into ONE /bin/sh script (util.shellify), so a bare `set -eu` here is not
+    # scoped to this entry -- it would apply to every command after it, and abort the
+    # rest of the boot script on the first non-zero exit, but only on droplets that
+    # enabled the exporter. The parentheses are what keep the strictness local.
     set -eu
     ver=1.12.1
     sha=b51d8a76aa2a9156a55d501aca6276fae09e262259a5e4e831d2c2222f084e63
@@ -350,4 +362,5 @@ runcmd:
     id -u node_exporter >/dev/null 2>&1 || useradd --system --user-group --no-create-home --shell /usr/sbin/nologin node_exporter
     systemctl daemon-reload
     systemctl enable --now node_exporter.service
+    )
 %{ endif ~}

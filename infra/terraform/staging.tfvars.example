@@ -70,8 +70,8 @@ ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: thi
 domain = "staging.zimmer.tadasant.com"
 
 # Opt into a tailnet-bound Prometheus node_exporter on :9100 (host CPU / memory / disk /
-# load, in the conventional node_* metric names). Off by default, and left off the
-# rendered cloud-config carries no trace of it.
+# load, in the conventional node_* metric names). Off by default. Left off, the rendered
+# cloud-config carries no trace of it.
 #
 # It rides cloud-init, and the droplet ignores user_data changes -- so setting this true
 # produces NO plan diff and installs nothing on a running box. The next droplet creation

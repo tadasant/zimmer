@@ -11,10 +11,16 @@
 # never joined. CI has no Terraform binary and no DigitalOcean credentials, so the choice is
 # between this and no check at all.
 #
-# It is NOT a Terraform implementation. It handles the two constructs this one file uses --
-# `${ ... }` interpolation and whole-line `%{ if ... ~}` / `%{ endif ~}` directives -- and
-# RAISES on anything else, so a template that grows a construct this cannot model fails loudly
-# here instead of being silently half-rendered.
+# It is NOT a Terraform implementation. It handles exactly the constructs this one file uses --
+# `${ ... }` interpolation, and `%{ if ... ~}` / `%{ endif ~}` directives that start at column 0
+# and right-trim -- and RAISES on every other shape it can see, so a template that grows a
+# construct this cannot model fails loudly here instead of being silently half-rendered.
+#
+# The raises are not decoration. Terraform's whitespace rules are the part that is easy to model
+# WRONG rather than not at all: an INDENTED `%{ if ~}` emits its own leading spaces (they belong
+# to the preceding literal, and only `%{~` trims them), and a directive without the `~` leaves
+# its newline behind. Dropping the whole line is faithful to `%{ ... ~}` at column 0 and to
+# nothing else, so anything else has to stop this renderer rather than be approximated.
 module CloudInitRender
   TEMPLATE = Rails.root.join("infra/terraform/cloud-init.yaml.tftpl")
 
@@ -23,16 +29,23 @@ module CloudInitRender
   # SSH key or auth key in a test fixture buys nothing.
   PLACEHOLDER = "RENDERED-VALUE"
 
-  # A line that is nothing but a directive. Every `%{` in this template is one of these.
-  DIRECTIVE = /\A\s*%\{\s*(?<body>.*?)\s*~?\}\s*\z/
+  # A line that is nothing but a directive, at column 0, right-trimming. Every `%{` in this
+  # template is one of these, and `truthy?`/`apply_directive` reject anything that is not.
+  DIRECTIVE = /\A%\{\s*(?<body>.*?)\s*(?<trim>~?)\}\s*\z/
+
+  # Terraform's two literal escapes. Neither appears in this template, and the interpolation
+  # substitution below would mangle both rather than pass them through.
+  ESCAPES = /\$\$\{|%%\{/
 
   class UnsupportedTemplate < StandardError; end
 
   class << self
     # The variables main.tf passes, with the defaults a rendering assumes unless a test says
-    # otherwise. Booleans here are "is this block in or out", not Terraform values.
+    # otherwise. Booleans here are "is this block in or out", not Terraform values -- except
+    # node_exporter_enabled, which mirrors main.tf's own `false` so that a no-argument render is
+    # a config some real droplet actually gets.
     def defaults
-      { "ssh_host_ed25519_key" => "key", "domain" => "example.com", "node_exporter_enabled" => true }
+      { "ssh_host_ed25519_key" => "key", "domain" => "example.com", "node_exporter_enabled" => false }
     end
 
     def render(vars = {})
@@ -41,12 +54,16 @@ module CloudInitRender
       out = []
 
       File.read(TEMPLATE).each_line do |line|
+        raise UnsupportedTemplate, "literal escape this renderer cannot model: #{line}" if line.match?(ESCAPES)
+
         if (m = line.match(DIRECTIVE))
+          raise UnsupportedTemplate, "directive without `~}`, whose newline this renderer would eat: #{line}" if m[:trim].empty?
+
           apply_directive(m[:body], emit, vars)
           next
         end
 
-        raise UnsupportedTemplate, "inline template expression this renderer cannot model: #{line}" if line.match?(/%\{/)
+        raise UnsupportedTemplate, "inline or indented template directive this renderer cannot model: #{line}" if line.match?(/%\{/)
 
         out << line.gsub(/\$\{[^}\n]*\}/, PLACEHOLDER) if emit.all?
       end

@@ -55,9 +55,8 @@ both variables.
 ### The DigitalOcean metrics agent reaches only a droplet Terraform creates, never one that exists
 
 `digitalocean_droplet.zimmer` sets `monitoring = var.monitoring`, which defaults to `true`, so a
-droplet this module creates boots with
-DigitalOcean's metrics agent — CPU, memory, disk and load history, and the only metrics DO's own
-resource alert policies can evaluate. It is free.
+droplet this module creates boots with DigitalOcean's metrics agent — CPU, memory, disk and load
+history, and the only metrics DO's own resource alert policies can evaluate. It is free.
 
 It is also **create-time only**, and there is no second path. `monitoring` is `ForceNew` in the
 provider (the schema flag, in every 2.x release including the `~> 2.43` pin; the Update function has
@@ -108,12 +107,28 @@ digitalocean_droplet.zimmer`), or installing the binary and the unit on the live
 Tailscale SSH — which on production is the access [no agent session
 has](#an-agent-sessions-ssh-key-is-root-on-every-host-it-can-reach-and-no-session-is-scoped).
 
-Two consequences worth stating. **The scraper has to be on the tailnet**: the bind is a single 100.x
-address, and the DigitalOcean firewall opens no public TCP, so there is no route to `:9100` from
-anywhere else — by design, and it is why enabling this needs no firewall change. And the version is
+Three consequences worth stating. **The scraper has to be on the tailnet**: the bind is a single
+100.x address, and the DigitalOcean firewall opens no public TCP, so there is no route to `:9100` from
+anywhere else — by design, and it is why enabling this needs no firewall change. The version is
 **pinned** in `cloud-init.yaml.tftpl` with its checksum, because node_exporter reshapes collectors
 between minor releases and that moves metric cardinality under whatever is scraping it; bumping it
 means editing both, and then rebuilding a droplet to deliver it.
+
+And **`:9100` has no TLS and no authentication**, so *every* tailnet peer the ACLs let reach this node
+can read host telemetry and the box's mount and interface topology from it — including, on the
+production droplet, the agent sessions that run on it. That is the same trust boundary the app itself
+sits behind, so it is a reasonable trade rather than a new hole; but the control is the
+[Tailscale ACL](/operate/provisioning/#tailscale-acls), not this module, which adds no firewall rule
+and no auth of its own.
+
+**The install path has not been exercised on a real droplet.** Rendering it is verified — the template
+is parsed as YAML both ways in CI, the pinned binary was downloaded, checksum-verified and run, and
+the wrapper was executed to confirm it binds one interface address and nothing else. What has not
+happened is a droplet boot with the flag on, because that needs a rebuild: on production, the box
+every session runs on; on staging, one of [five weekly Let's Encrypt
+issuances](#rebuilding-staging-costs-a-lets-encrypt-issuance-and-there-are-only-five-a-week). So the
+first real exercise of this path is whenever a droplet is next rebuilt with it enabled, and that is
+the moment to check `systemctl status node_exporter` rather than assume.
 
 ### RAILS_MASTER_KEY is optional on staging, and silently degrades when absent
 

@@ -20,10 +20,13 @@ require "test_helper"
 class NodeExporterTest < ActiveSupport::TestCase
   MAIN_TF = Rails.root.join("infra/terraform/main.tf")
 
-  # Pinned deliberately: node_exporter reshapes collectors between minor releases, which moves
-  # metric cardinality under whatever scrapes it. Bump this, the checksum, and the template
-  # together.
-  PINNED_VERSION = "1.12.1"
+  # A version and a 64-hex checksum, both present. Deliberately NOT a check that the version
+  # equals a constant duplicated here: a legitimate bump is a normal change, and failing it with
+  # "no longer pinned" would misdescribe what happened. What must never change is that there IS
+  # a pin and that its checksum is verified -- node_exporter reshapes collectors between minor
+  # releases, which moves metric cardinality under whatever scrapes it.
+  PINNED = /^\s*ver=\d+\.\d+\.\d+$/
+  CHECKSUM = /^\s*sha=[0-9a-f]{64}$/
 
   test "the variable defaults to false, so an existing consumer gets nothing new" do
     block = File.read(MAIN_TF)[/variable "node_exporter_enabled" \{.*?\n\}/m]
@@ -58,9 +61,9 @@ class NodeExporterTest < ActiveSupport::TestCase
       "the exporter must bind the address resolved from tailscale0, on :9100")
     refute_match(/0\.0\.0\.0|\[::\]|--web\.listen-address=":/, wrapper, <<~MSG)
       The exporter binds a wildcard address. The DigitalOcean firewall in this module opens no
-      public TCP at all, so nothing is exposed the moment this lands -- but it filters the
-      PUBLIC interface only, and the bind is what keeps :9100 tailnet-scoped independently of
-      anyone ever adding a TCP rule. Bind the tailscale0 address.
+      public TCP, so that exposes nothing on its own -- but it filters the PUBLIC interface
+      only, and the bind is what keeps :9100 tailnet-scoped independently of anyone ever adding
+      a TCP rule. Bind the tailscale0 address.
     MSG
   end
 
@@ -78,17 +81,14 @@ class NodeExporterTest < ActiveSupport::TestCase
   end
 
   test "the installed version is pinned and checksum-verified" do
-    install = CloudInitRender.parse(node_exporter_enabled: true)
-      .fetch("runcmd").grep(String).find { |c| c.include?("node_exporter-") }
-    assert install, "no runcmd entry installs node_exporter"
+    install = install_block
 
-    assert_match(/^\s*ver=#{Regexp.escape(PINNED_VERSION)}$/, install, <<~MSG)
+    assert_match(PINNED, install, <<~MSG)
       node_exporter is no longer installed at a pinned version. Tracking latest moves metric
       cardinality under the scraper between minor releases, which is exactly what the pin is
       for.
     MSG
-    assert_match(/^\s*sha=[0-9a-f]{64}$/, install,
-      "the download must be checksum-verified")
+    assert_match(CHECKSUM, install, "the download must be checksum-verified")
     assert_match(/sha256sum -c -/, install,
       "the checksum must actually be CHECKED, not merely recorded")
     assert_match(/^\s*set -eu$/, install, <<~MSG)
@@ -96,9 +96,54 @@ class NodeExporterTest < ActiveSupport::TestCase
       failed command, so without it a checksum mismatch would be logged and the unverified
       binary installed anyway.
     MSG
+    assert_match(/\A\(\n.*^\s*set -eu$.*^\s*\)\n?\z/m, install, <<~MSG)
+      `set -eu` is not inside a subshell. cloud-init concatenates every runcmd entry into ONE
+      /bin/sh script, so an unscoped `set -eu` applies to every command after this one and
+      aborts the rest of the boot script on the first non-zero exit -- on exactly the droplets
+      that enabled the exporter, and nowhere else. Wrap the block in `( ... )`.
+    MSG
+  end
+
+  # Three names have to agree across two rendered files and a runcmd entry, and none of the
+  # disagreements would fail loudly: a unit whose User does not exist refuses to start, and an
+  # ExecStart pointing somewhere the binary was not installed does the same. Both would surface
+  # as an exporter that is simply absent on a box nobody logs into.
+  test "the unit's user and binary path match what the install actually creates" do
+    install = install_block
+    unit = write_file("/etc/systemd/system/node_exporter.service").fetch("content")
+    wrapper = write_file("/usr/local/bin/zimmer-node-exporter").fetch("content")
+
+    user = unit[/^User=(\S+)$/, 1]
+    assert_match(/useradd .*\b#{Regexp.escape(user)}\b/, install,
+      "the unit runs as #{user.inspect}, which the install block never creates")
+    assert_match(/^Group=#{Regexp.escape(user)}$/, unit)
+    assert_match(/useradd .*--user-group/, install,
+      "useradd must create the matching group explicitly, since the unit names one")
+
+    binary = wrapper[%r{^exec (\S+) }, 1]
+    assert_match(/install -m 0755 .* #{Regexp.escape(binary)}$/, install,
+      "the wrapper execs #{binary.inspect}, which the install block never puts there")
+  end
+
+  test "the unit keeps the privilege reductions it was given" do
+    unit = write_file("/etc/systemd/system/node_exporter.service").fetch("content")
+
+    # node_exporter reads /proc and /sys and writes nothing, so none of these cost it a metric
+    # -- which is exactly why a later "simplification" that drops them would go unnoticed.
+    %w[NoNewPrivileges=true ProtectHome=yes ProtectSystem=strict PrivateTmp=true].each do |directive|
+      assert_match(/^#{Regexp.escape(directive)}$/, unit,
+        "#{directive} is gone from the unit; the exporter needs none of what it gives up")
+    end
   end
 
   private
+
+  def install_block
+    install = CloudInitRender.parse(node_exporter_enabled: true)
+      .fetch("runcmd").grep(String).find { |c| c.include?("node_exporter-") }
+    assert install, "no runcmd entry installs node_exporter"
+    install
+  end
 
   def write_file(path)
     files = CloudInitRender.parse(node_exporter_enabled: true).fetch("write_files")
