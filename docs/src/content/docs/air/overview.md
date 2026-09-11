@@ -158,7 +158,9 @@ against the remote is informational only (network failures during it are swallow
 | --- | --- |
 | **Dangling reference** (a skill points at a missing reference; a root default names a missing skill; `default_in_roots` names an unknown root) | **Warn on stderr, drop the reference, exit 0** |
 | Duplicate qualified ID | Hard fail |
-| Ambiguous shortname (resolvable in >1 scope) | Hard fail |
+| Same shortname from two different scopes | **Warn on stderr, keep both**, each under its own qualified ID |
+| Same shortname from two different scopes, under `--no-scope` | Hard fail — the flag's output shape cannot express both |
+| A reference *inside* an entry naming an ambiguous shortname | Hard fail |
 | Malformed or unreachable index file | Warn, skip that source, continue |
 | Catalog URI with no installed provider | Hard fail |
 
@@ -218,7 +220,7 @@ and never touched.
 `air init` · `air validate` · `air resolve` · `air prepare <adapter>` · `air start <agent>` ·
 `air clean` · `air list <type>` · `air install` · `air update` · `air export <emitter>`
 
-Zimmer uses exactly two of these: `air resolve --json --no-scope` (to read the catalog) and
+Zimmer uses exactly two of these: `air resolve --json` (to read the catalog) and
 `air prepare <adapter>` (to set up a session). Plus `air update` to refresh provider caches.
 
 → Next: [How Zimmer consumes AIR](/air/zimmer-integration/)

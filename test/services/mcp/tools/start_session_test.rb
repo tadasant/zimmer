@@ -277,6 +277,36 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_match(/not permitted/, forbidden.message)
   end
 
+  # An artifact has more than one legal spelling since zimmer#208 — the canonical
+  # token, the fully-qualified AIR id, and a bare short id one catalog
+  # contributes. The allowlist must compare the artifact, not the spelling.
+  test "a restricted connection accepts the qualified form of a root it allows" do
+    result = restricted_tool.call(
+      "agent_root" => "@local/zimmer",
+      "title" => "Qualified spelling",
+      "mcp_servers" => AgentRootsConfig.find("zimmer").default_mcp_servers || []
+    )
+
+    assert_includes result, "## Session Started Successfully"
+  end
+
+  # The no-widening half: two roots sharing a short id reduce to two different
+  # canonical tokens, so normalizing cannot admit a root the allowlist excludes.
+  test "normalizing the allowlist does not admit a same-short-id root from another catalog" do
+    roots = AirCatalogService.entries_for(:roots)
+    contested = ArtifactIdentity.canonicalize(
+      roots.transform_keys { |token| ArtifactIdentity.qualified?(token) ? token : "@local/#{token}" }
+        .merge("@acme/catalog/zimmer" => { "name" => "zimmer", "url" => "https://example.com/x.git" })
+    )
+
+    AirCatalogService.stub(:entries_for, ->(type) { type == :roots ? contested : {} }) do
+      error = assert_raises(Mcp::ToolError) do
+        restricted_tool.call("agent_root" => "@acme/catalog/zimmer", "title" => "x")
+      end
+      assert_match(/not permitted/, error.message)
+    end
+  end
+
   test "a restricted connection must use the root's exact default mcp servers" do
     error = assert_raises(Mcp::ToolError) do
       restricted_tool.call("agent_root" => "zimmer", "title" => "x", "mcp_servers" => [ "context7" ])

@@ -80,7 +80,11 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "invokes air resolve with --no-scope so AIR returns shortname-keyed output" do
+  # The flag's absence is the whole of zimmer#208: `--no-scope` asks AIR for
+  # shortname-keyed output and hard-fails the entire resolve on any cross-scope
+  # shortname collision, so one legitimately-duplicated short id took the whole
+  # catalog down to last-known-good.
+  test "invokes air resolve WITHOUT --no-scope so AIR returns qualified-ID-keyed output" do
     captured_args = nil
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
@@ -93,8 +97,8 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
       end
     end
 
-    assert_includes captured_args, "--no-scope"
-    assert_equal %w[resolve --json --no-scope --git-protocol https], captured_args
+    refute_includes captured_args, "--no-scope"
+    assert_equal %w[resolve --json --git-protocol https], captured_args
   end
 
   test "bridges AIR_GITHUB_TOKEN from mcp_secrets into the air resolve subprocess env" do

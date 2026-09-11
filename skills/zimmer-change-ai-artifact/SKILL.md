@@ -37,10 +37,12 @@ production/staging) wire six artifact types to top-level indexes:
 | References | `references/references.json` | `references/<file>.md` |
 
 The Rails side reads all six through one seam — `AirCatalogService`, which shells
-out to `air resolve --json --no-scope --git-protocol https` and caches the parsed
-tree (60s TTL). `SkillsConfig`, `AgentRootsConfig`, `PluginsConfig`,
-`ReferencesConfig` are thin readers over it. **Never parse the JSON indexes
-directly from app code** — go through `AirCatalogService`.
+out to `air resolve --json --git-protocol https` and caches the parsed tree (60s
+TTL). AIR keys that tree by fully-qualified `@scope/id`; `ArtifactIdentity`
+reduces each key to the bare short id when one catalog contributes it, which is
+every artifact in this single-scope catalog. `SkillsConfig`, `AgentRootsConfig`,
+`PluginsConfig`, `ReferencesConfig` are thin readers over it. **Never parse the
+JSON indexes directly from app code** — go through `AirCatalogService`.
 
 ## Adding a skill
 
@@ -139,7 +141,7 @@ Resolve the catalog exactly the way the app does:
 
 ```bash
 AIR="$(bin/rails runner 'print AirPrepareService::AIR_INSTALL_DIR')"/node_modules/.bin/air
-AIR_CONFIG=$PWD/air.json $AIR resolve --json --no-scope --git-protocol https \
+AIR_CONFIG=$PWD/air.json $AIR resolve --json --git-protocol https \
   > /tmp/resolve.json 2>/tmp/resolve.err
 echo "exit=$?"; cat /tmp/resolve.err          # MUST be empty — any "Dropping the reference" is a failure
 ```
@@ -150,7 +152,7 @@ Then assert the shape you expect:
 ruby -rjson -e '
   j = JSON.parse(File.read("/tmp/resolve.json"))
   j.each { |type, entries| puts "#{type}: #{entries.size}" }
-  puts "zimmer default_skills: #{j["roots"]["zimmer"]["default_skills"].inspect}"
+  puts "zimmer default_skills: #{j["roots"]["@local/zimmer"]["default_skills"].inspect}"
 '
 ```
 

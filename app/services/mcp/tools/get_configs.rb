@@ -156,6 +156,13 @@ module Mcp
         available.each do |status|
           lines << "### #{status.title}"
           lines << "- **Name:** `#{status.server_name}`"
+          # Only for a server whose short id a second composed catalog also
+          # contributes, where the heading above is not unique and `Name` is
+          # already the qualified `@scope/id`. Saying which catalog it came from
+          # is what lets an agent pick the right one deliberately; on a
+          # single-catalog deployment nothing is contested and this never
+          # renders. See ArtifactIdentity.
+          lines << "- **Catalog:** `#{status.server.scope}`" if status.server.contested?
           lines << "- **Description:** #{status.server.description}"
           lines << ""
         end
@@ -231,6 +238,7 @@ module Mcp
         data = root.to_h.with_indifferent_access
         lines = [ "### #{data[:title]}" ]
         lines << "- **Name:** `#{data[:name]}`"
+        lines << "- **Catalog:** `#{root.scope}`" if root.contested?
         lines << "- **Git Root:** `#{data[:git_root]}`"
         lines << "- **Description:** #{data[:description]}"
         lines << "- **Default Branch:** `#{data[:default_branch]}`" if data[:default_branch].present?

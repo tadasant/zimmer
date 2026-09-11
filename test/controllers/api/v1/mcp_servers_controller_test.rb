@@ -164,7 +164,10 @@ class Api::V1::McpServersControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     JSON.parse(response.body)["mcp_servers"].each do |server|
-      assert_equal %w[name title description unavailable unavailable_reason startup_timeout_sec].sort,
+      # `scope` names the AIR catalog an entry came from, and is only non-null
+      # for a short id a second composed catalog also contributes — it carries no
+      # configuration and no credential.
+      assert_equal %w[name title scope description unavailable unavailable_reason startup_timeout_sec].sort,
         server.keys.sort
     end
   end

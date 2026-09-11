@@ -625,7 +625,7 @@ class AirPrepareService
     ]
 
     root_name = find_root_name
-    cmd += [ "--root", root_name ] if root_name.present?
+    cmd += [ "--root", air_reference(:roots, root_name) ] if root_name.present?
 
     # AIR 0.0.32 switched artifact-selection flags from plural + comma-separated
     # (`--skills a,b`) to singular + variadic (`--skill a --skill b`). The plural
@@ -639,12 +639,20 @@ class AirPrepareService
     # bricking startup. scrubbed_catalog_skills drops such ids — persisting the
     # pruned list, with a warning log and a one-per-session self-heal alert —
     # instead. See its comment for the full rationale.
+    #
+    # Each id goes through air_reference, which qualifies exactly the ones AIR
+    # would call ambiguous — an artifact whose short id a second composed
+    # catalog also contributes — and passes everything else through unchanged.
     skills = scrubbed_catalog_skills
-    cmd += skills.flat_map { |id| [ "--skill", id ] } if skills.present?
+    cmd += skills.flat_map { |id| [ "--skill", air_reference(:skills, id) ] } if skills.present?
     effective_mcp_servers = session.user_selected_mcp_servers
-    cmd += effective_mcp_servers.flat_map { |id| [ "--mcp-server", id ] } if effective_mcp_servers.present?
-    cmd += session.catalog_hooks.flat_map { |id| [ "--hook", id ] } if session.catalog_hooks.present?
-    cmd += session.catalog_plugins.flat_map { |id| [ "--plugin", id ] } if session.catalog_plugins.present?
+    if effective_mcp_servers.present?
+      cmd += effective_mcp_servers.flat_map { |id| [ "--mcp-server", air_reference(:mcp, id) ] }
+    end
+    cmd += session.catalog_hooks.flat_map { |id| [ "--hook", air_reference(:hooks, id) ] } if session.catalog_hooks.present?
+    if session.catalog_plugins.present?
+      cmd += session.catalog_plugins.flat_map { |id| [ "--plugin", air_reference(:plugins, id) ] }
+    end
 
     Rails.logger.info "[AirPrepareService] Running: #{cmd.join(' ')}"
 
@@ -1015,5 +1023,15 @@ class AirPrepareService
   def find_root_name
     session.metadata&.dig("agent_root_key") ||
       AgentRootsConfig.find_for_session(session)&.name
+  end
+
+  # How an artifact Zimmer stores by canonical token is named to the AIR CLI.
+  # Unchanged for everything a single catalog contributes; fully-qualified for
+  # an artifact whose short id a second catalog also carries, which AIR would
+  # otherwise refuse as ambiguous. See AirCatalogService#air_reference.
+  def air_reference(type, id)
+    AirCatalogService.air_reference(type, id)
+  rescue AirCatalogService::CatalogError
+    id
   end
 end
