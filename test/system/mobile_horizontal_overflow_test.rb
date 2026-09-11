@@ -1060,6 +1060,31 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/health-outage-panels-375.png")
   end
 
+  # The queued job maintenance panel (#335) is a row per (job class, queue) pair,
+  # and each row is the shape the skill warns about: an unbreakable 28-character
+  # class name on the left, and a three-control cluster on the right — a number
+  # field plus two buttons. On a laptop they sit on one line; below `sm:` the row
+  # has to stack, or the Discard button is the one that ends up off the edge.
+  test "the queued job maintenance panel does not overflow horizontally on a phone" do
+    now = Time.current
+    GoodJob::Job.insert_all(
+      %w[GitHubPullRequestPollerJob OutcomeAnalysisBatchPumpJob AbandonedStatusSummaryForkSweepJob].map do |job_class|
+        { queue_name: "pollers", job_class: job_class, created_at: now, updated_at: now, scheduled_at: now }
+      end
+    )
+
+    visit health_dashboard_path
+    assert_text "Queued Job Maintenance"
+    assert_text "GitHubPullRequestPollerJob"
+
+    assert_no_horizontal_overflow("health dashboard (queued job maintenance)")
+
+    # Captured as PR evidence — scrolled to the panel, since a viewport screenshot
+    # of a page this long otherwise shows only the header.
+    page.execute_script("document.evaluate(\"//h3[text()='Queued Job Maintenance']\", document, null, 9, null).singleNodeValue.scrollIntoView()")
+    page.save_screenshot("tmp/screenshots/health-queued-job-maintenance-375.png")
+  end
+
   # The auth card grows a second line when the pool is recovering — every account
   # still labelled quota_exceeded while its own newer reading says it can serve.
   # That line is the longest string on the card, so it is the one that would push

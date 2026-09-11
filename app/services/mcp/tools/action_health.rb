@@ -10,6 +10,7 @@ module Mcp
         cleanup_processes retry_sessions archive_old cli_refresh cli_clear_cache
         enter_queue_recovery_mode exit_queue_recovery_mode backfill_token_usage
         run_post_deploy_tasks
+        preview_queued_jobs discard_queued_jobs reschedule_queued_jobs
       ].freeze
 
       # The three HealthMonitorService actions terminate processes and rewrite rows
@@ -17,6 +18,15 @@ module Mcp
       # — literally the same object, so hammering one surface throttles the other
       # for this caller. The two CLI actions only enqueue a job (and are
       # unthrottled over REST), so they are not rate-limited here either.
+      #
+      # Nor are the three queued-job actions, for the reason the queue recovery
+      # mode pair is exempt and one more of their own. The cooldown fails CLOSED
+      # when the cache is unavailable, and an overloaded instance is exactly when
+      # the cache is least trustworthy — so it would lock the third cleanup lever
+      # during the incident it exists for. And they carry a stronger throttle than
+      # a timer: every mutating call must state the exact row count it expects, so
+      # an accidental repeat of the same call refuses (the scope now holds zero
+      # rows) rather than running twice.
       RATE_LIMITED_ACTIONS = %w[cleanup_processes retry_sessions archive_old].freeze
       DEFAULT_ARCHIVE_DAYS = 7
       MIN_ARCHIVE_DAYS = 1
@@ -49,6 +59,22 @@ module Mcp
           use this to re-scan, or to restart one that stopped. Idempotent — it returns the run
           already in flight rather than starting a second, and ingestion upserts on the row's
           request id, so a re-read corpus writes no duplicate rows.
+        - **preview_queued_jobs**: Count the queued jobs a maintenance call would act on,
+          broken down by class and queue. Read-only. Scope it with "job_class" and/or
+          "queue_name" — at least one is required. The `matched` number it returns is what the
+          two actions below require as "expected_count".
+        - **discard_queued_jobs**: Discard queued jobs scoped by "job_class" and/or "queue_name".
+          **NOT RECOVERABLE** — the rows are marked finished with a DiscardJobError and the work
+          never runs. Requires "expected_count" (a mismatch refuses and discards nothing) and is
+          capped at #{QueuedJobMaintenance::MAX_PER_CALL} rows per call. Only rows that are
+          unfinished, unstarted and unclaimed are eligible; finished history, running executions
+          and the protected `#{QueuedJobMaintenance::PROTECTED_QUEUES.join(", ")}` queue are never
+          touched. Reports what it discarded by class.
+        - **reschedule_queued_jobs**: The reversible sibling of discard — moves the same scope's
+          `scheduled_at` instead of ending it, so the work still happens and another call moves it
+          back. Same scope, cap and "expected_count" rules. "delay_minutes" says how far out
+          (default 0 = as soon as the queue allows, max
+          #{(QueuedJobMaintenance::MAX_RESCHEDULE_DELAY / 60).to_i} minutes).
         - **run_post_deploy_tasks**: Re-arm any failed one-time post-deploy task (`db/post_deploy/`)
           and queue a run. These normally run themselves within a couple of minutes of a deploy and
           need nobody; use this when one has failed for a reason that has since been fixed, or when
@@ -80,7 +106,32 @@ module Mcp
           },
           reason: {
             type: "string",
-            description: "Why the queues are being halted. For enter_queue_recovery_mode."
+            description: "Why. Shown in the banner and the Slack alert for enter_queue_recovery_mode; " \
+              "recorded on the discarded rows for discard_queued_jobs."
+          },
+          job_class: {
+            type: "string",
+            description: "Exact job class to scope to, e.g. \"GitHubPullRequestPollerJob\". For the " \
+              "three *_queued_jobs actions; at least one of job_class / queue_name is required."
+          },
+          queue_name: {
+            type: "string",
+            description: "Exact queue to scope to, e.g. \"pollers\". For the three *_queued_jobs " \
+              "actions; at least one of job_class / queue_name is required. The " \
+              "#{QueuedJobMaintenance::PROTECTED_QUEUES.join(", ")} queue is refused."
+          },
+          expected_count: {
+            type: "number",
+            minimum: 0,
+            description: "How many rows you expect to affect, from preview_queued_jobs. Required by " \
+              "discard_queued_jobs and reschedule_queued_jobs; a mismatch refuses and changes nothing."
+          },
+          delay_minutes: {
+            type: "number",
+            minimum: 0,
+            maximum: (QueuedJobMaintenance::MAX_RESCHEDULE_DELAY / 60).to_i,
+            description: "How far out to push the rescheduled jobs, in minutes. For " \
+              "reschedule_queued_jobs. Default 0 — as soon as the queue allows."
           },
           # Bounds read from the service rather than re-declared, so a change to
           # the window cannot leave this schema advertising the old one.
@@ -111,6 +162,9 @@ module Mcp
         when "exit_queue_recovery_mode" then exit_queue_recovery_mode
         when "backfill_token_usage" then backfill_token_usage
         when "run_post_deploy_tasks" then run_post_deploy_tasks
+        when "preview_queued_jobs" then preview_queued_jobs(args)
+        when "discard_queued_jobs" then discard_queued_jobs(args)
+        when "reschedule_queued_jobs" then reschedule_queued_jobs(args)
         end
 
         record_action(action)
@@ -166,8 +220,9 @@ module Mcp
 
           Enqueued jobs are frozen, not discarded — they resume when the mode is lifted. To
           act on the cause: disable the stampeding Trigger (`action_trigger`), archive or
-          kill runaway sessions (`action_session`), or discard queued jobs by class from the
-          GoodJob dashboard at `/jobs`. Call `exit_queue_recovery_mode` when done; calling
+          kill runaway sessions (`action_session`), or thin the backlog itself with
+          `preview_queued_jobs` then `discard_queued_jobs` / `reschedule_queued_jobs` on this
+          same tool. Call `exit_queue_recovery_mode` when done; calling
           `enter_queue_recovery_mode` again extends the window.
 
           #{json_block(status)}
@@ -212,6 +267,96 @@ module Mcp
         "- **Blocked:** #{result[:blocked]} (failed and out of retries)\n\n" \
         "A pass runs every two minutes and works each task inside a 90-second budget; a task too " \
         "slow for one slice resumes on the next tick.\n\n#{json_block(result)}"
+      end
+
+      # The read the two mutating actions are driven from. Kept on this tool rather
+      # than on `get_system_health` because the number it returns is an argument to
+      # the next call, not a health signal: it has to be scoped exactly the way the
+      # write will be, and read at the moment the write is about to happen.
+      def preview_queued_jobs(args)
+        preview = QueuedJobMaintenance.preview(
+          job_class: args["job_class"],
+          queue_name: args["queue_name"]
+        )
+
+        <<~MD
+          ## Queued Jobs — #{preview.matched} eligible
+
+          #{scope_line(preview)}
+          - **By class:** #{counts_line(preview.by_job_class)}
+          - **By queue:** #{counts_line(preview.by_queue)}
+
+          Eligible means unfinished, unstarted and unclaimed. Finished history, running executions
+          and the `#{QueuedJobMaintenance::PROTECTED_QUEUES.join(", ")}` queue are never included.
+          #{"\n**Over the #{QueuedJobMaintenance::MAX_PER_CALL}-row cap** — narrow the scope before discarding or rescheduling.\n" if preview.over_cap?}
+          To act on these, pass `expected_count: #{preview.matched}` to `discard_queued_jobs`
+          (not recoverable) or `reschedule_queued_jobs` (reversible).
+
+          #{json_block(preview)}
+        MD
+      rescue QueuedJobMaintenance::Refused => e
+        raise ToolError, e.message
+      end
+
+      def discard_queued_jobs(args)
+        result = QueuedJobMaintenance.discard!(
+          job_class: args["job_class"],
+          queue_name: args["queue_name"],
+          expected_count: args["expected_count"],
+          reason: args["reason"],
+          actor: "MCP action_health"
+        )
+
+        maintenance_receipt(result, "Discarded", "Those jobs will never run — a discard is not recoverable.")
+      rescue QueuedJobMaintenance::Refused => e
+        raise ToolError, e.message
+      end
+
+      def reschedule_queued_jobs(args)
+        result = QueuedJobMaintenance.reschedule!(
+          job_class: args["job_class"],
+          queue_name: args["queue_name"],
+          expected_count: args["expected_count"],
+          scheduled_at: args["delay_minutes"].presence&.to_i&.minutes&.from_now,
+          actor: "MCP action_health"
+        )
+
+        maintenance_receipt(
+          result, "Rescheduled",
+          "Nothing was destroyed — the work runs at #{result.scheduled_at&.iso8601}, and another call moves it again."
+        )
+      rescue QueuedJobMaintenance::Refused => e
+        raise ToolError, e.message
+      end
+
+      # One receipt shape for both mutating actions. The per-class breakdown is the
+      # point: an operator reading the transcript back has to be able to see WHAT
+      # was thrown away, not only how much.
+      def maintenance_receipt(result, verb, note)
+        <<~MD
+          ## Queued Jobs #{verb} — #{result.affected} row#{"s" unless result.affected == 1}
+
+          - **By class:** #{counts_line(result.by_job_class)}
+          - **By queue:** #{counts_line(result.by_queue)}
+          #{"- **Skipped:** #{result.skipped_total} row(s) that changed state mid-call\n" if result.skipped_total.positive?}
+          #{note}
+
+          #{json_block(result)}
+        MD
+      end
+
+      def scope_line(preview)
+        parts = []
+        parts << "job_class `#{preview.job_class}`" if preview.job_class.present?
+        parts << "queue `#{preview.queue_name}`" if preview.queue_name.present?
+
+        "- **Scope:** #{parts.join(", ")}"
+      end
+
+      def counts_line(counts)
+        return "none" if counts.blank?
+
+        counts.map { |key, count| "`#{key}` #{count}" }.join(", ")
       end
 
       def json_block(payload)

@@ -275,6 +275,12 @@ Rails.application.routes.draw do
         # Re-arm and kick the one-time post-deploy tasks. Their status is already
         # in the health report this endpoint's #show returns.
         post :run_post_deploy_tasks
+        # The third cleanup lever for a runaway queue (QueuedJobMaintenance): read
+        # the eligible backlog, then discard or reschedule it by class/queue. GET
+        # for the read because it is one, POST for the two that write.
+        get :queued_jobs
+        post :discard_queued_jobs
+        post :reschedule_queued_jobs
       end
 
       # Transcript archive download and status
@@ -302,6 +308,11 @@ Rails.application.routes.draw do
   post "health/enter_queue_recovery_mode", to: "health#enter_queue_recovery_mode", as: :enter_queue_recovery_mode_health
   post "health/exit_queue_recovery_mode", to: "health#exit_queue_recovery_mode", as: :exit_queue_recovery_mode_health
   post "health/run_post_deploy_tasks", to: "health#run_post_deploy_tasks", as: :run_post_deploy_tasks_health
+  # Queued job maintenance (QueuedJobMaintenance). Both write, so both are behind the
+  # operator realm in HealthController::OPERATOR_GATED_ACTIONS — the read is the panel
+  # the dashboard GET already renders, so it needs no route of its own.
+  post "health/discard_queued_jobs", to: "health#discard_queued_jobs", as: :discard_queued_jobs_health
+  post "health/reschedule_queued_jobs", to: "health#reschedule_queued_jobs", as: :reschedule_queued_jobs_health
 
   # Polled by every page for the "live updates paused" banner. Deliberately plain
   # HTTP: the condition it reports is the broadcast circuit breaker being open,
