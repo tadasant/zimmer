@@ -1569,6 +1569,9 @@ class Trigger < ApplicationRecord
     sync_catalog_skills!(session)
     sync_catalog_hooks!(session)
     sync_catalog_plugins!(session)
+    # And the goal, on the same terms: a blank trigger goal says nothing about
+    # the session's — see #sync_goal!.
+    sync_goal!(session)
 
     @last_follow_up_status = :dropped
 
@@ -1846,6 +1849,82 @@ class Trigger < ApplicationRecord
   # For running sessions, this only takes effect on the next process spawn.
   def sync_catalog_plugins!(session)
     sync_session_artifact!(session, :catalog_plugins, resolvable_catalog_plugins)
+  end
+
+  # Push this trigger's goal onto a session it is reusing, so the trigger is the
+  # single source of truth for what the session is told it is for.
+  #
+  # Without this the goal was stamped once, when the session was created, and
+  # never again — while the trigger's own goal stayed editable. The two drift,
+  # and the session's copy wins: Zimmer injects it into every resumption as
+  # "The user has indicated the goal for this task is: …", framed as the human's
+  # own words, so it outranks both the trigger's prompt and the skill the prompt
+  # names. That is the "Daily Backlog Groomer" case of 2026-09 — the nightly
+  # tech-debt pass was removed from the skill and the trigger's goal said one
+  # thing, but the reused session's stored goal still asked for "at most 5 new
+  # high-impact convergent tech-debt issues", and it kept filing them for three
+  # nights (tadasant-internal#2527).
+  #
+  # Blank means the same thing it means for an artifact list: this trigger has
+  # nothing to say about the session's goal. That is load-bearing, not a
+  # nicety — every per-session wake (`Sessions::ScheduleWakeUp` behind
+  # `wake_me_up_later`, and the session-scoped ao_event behind
+  # `wake_me_up_when_session_changes_state`) is a reuse trigger created with no
+  # goal, so "blank overwrites" would erase the goal of every sleeping session
+  # on its own wake. It is also the rule `action_session` `follow_up` already
+  # applies; clearing a goal is its own operation (`change_goal`, the web
+  # `update_goal` action, `PATCH /api/v1/sessions/:id`).
+  #
+  # Runs on EVERY fire that takes the reuse path, including one that coalesces
+  # or drops rather than delivering — the configuration a session runs under is
+  # not conditional on this particular prompt reaching it, which is how the four
+  # artifact syncs above already behave.
+  #
+  # Takes effect on the session's next resumption, like the artifact syncs.
+  def sync_goal!(session)
+    desired = Sessions::FollowUpGoal.normalize(goal)
+
+    # Nothing validates the length of a trigger's goal, and Session does
+    # (GOAL_MAX_LENGTH). A reuse-only trigger never reaches the spawn path, so
+    # without this guard an over-long goal would raise RecordInvalid here on
+    # every fire, forever, after the artifact syncs had already written and
+    # before the prompt was delivered. Refusing the re-stamp loudly leaves the
+    # fire working; the surfaces that accept the goal are where it should have
+    # been refused, and this says so.
+    if Sessions::FollowUpGoal.too_long?(desired)
+      Rails.logger.warn(
+        "[Trigger#sync_goal!] Trigger '#{name}' (ID: #{id}) has a goal of #{desired.length} " \
+        "characters, over the #{Session::GOAL_MAX_LENGTH} Session allows. Not re-stamping it onto " \
+        "session #{session.id}; the session keeps the goal it has. Shorten the trigger's goal."
+      )
+      return
+    end
+
+    previous = session.goal
+
+    changed = Sessions::FollowUpGoal.apply!(
+      session: session,
+      goal: desired,
+      source: :trigger_reuse,
+      # The previous value rides along on the session's own log line, not just
+      # the application log: an operator with nothing but the web UI is the one
+      # who has to see what a fire overwrote.
+      log_with: lambda { |content|
+        session.logs.create!(content: "[Trigger##{id}] #{content} (was: #{previous.inspect})", level: "info")
+      }
+    )
+    return unless changed
+
+    # Narrated the way #sync_session_artifact! narrates a removal, at INFO
+    # rather than its WARN: a session losing an artifact is breakage that will
+    # not self-resolve, while a re-stamp is the trigger's configuration
+    # converging as configured. An operator should still be able to see from
+    # the logs that a fire moved a goal, and what it replaced.
+    Rails.logger.info(
+      "[Trigger#sync_goal!] Trigger '#{name}' (ID: #{id}) re-stamped the goal on session " \
+      "#{session.id} on reuse: #{previous.inspect} -> #{session.goal.inspect}. " \
+      "Session will be told the new goal on its next resumption."
+    )
   end
 
   # Push one artifact list from this trigger onto a session it is reusing.

@@ -21,6 +21,13 @@ module Sessions
   #   (`PATCH /api/v1/sessions/:id`, the web `update_goal` action, the MCP
   #   `change_goal` action).
   #
+  # `Trigger#sync_goal!` is the fifth caller and arrives from a different direction:
+  # nobody typed the goal at the moment of the fire, it is the trigger's own column
+  # being re-stamped onto the session it reuses. The rule it wants is the same one,
+  # and the blank half is what makes it safe — the per-session wake triggers carry no
+  # goal, so "blank preserves" is the difference between a wake that resumes a
+  # sleeping session and one that resumes it with its goal erased.
+  #
   # The web UI is the one deliberate exception, and it is a real one rather than a
   # drift: its follow-up form always submits the goal field, so it can tell "the human
   # emptied the box" (`params.key?(:goal)` with a blank value — a clear) from "no goal
@@ -42,7 +49,8 @@ module Sessions
     LOG_PHRASES = {
       web_follow_up: "for this follow-up",
       follow_up: "from follow-up",
-      enqueued_message: "from enqueued message"
+      enqueued_message: "from enqueued message",
+      trigger_reuse: "from the trigger fire"
     }.freeze
 
     class << self
@@ -58,10 +66,12 @@ module Sessions
       # @param goal [String, nil] a normalized goal
       # @return [Boolean] true when the goal exceeds `Session::GOAL_MAX_LENGTH`
       #
-      # Every surface rejects an over-long goal *before* any branch mutates state, so
-      # it fails the same way whether the message is queued, interrupted in, or sent
+      # Every surface checks this *before* any branch mutates state, so an over-long
+      # goal fails the same way whether the message is queued, interrupted in, or sent
       # directly — and never after the prompt has already been delivered. Only the
-      # phrasing of the refusal is the surface's own.
+      # response is the surface's own: the four typed-follow-up surfaces refuse the
+      # whole request, while `Trigger#sync_goal!` has no requester to refuse and so
+      # skips the re-stamp, warns, and lets the fire carry on.
       def too_long?(goal)
         goal.present? && goal.to_s.length > Session::GOAL_MAX_LENGTH
       end
