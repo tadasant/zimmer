@@ -228,7 +228,12 @@ Rails.application.routes.draw do
       # row's, because a caller has a handle on the session.
       resources :outcome_analyses, only: [ :index, :show, :create ]
 
-      # MCP server fallback elicitations
+      # MCP server fallback elicitations. An MCP server speaks the protocol on the
+      # token routes: the path carries its session's token (ElicitationEndpoint),
+      # because the client sends no auth header and appends /<request-id> to the
+      # poll URL it was given. The bare routes take an API key.
+      post "elicitations/session/:token", to: "elicitations#create", as: :session_elicitations
+      get "elicitations/session/:token/:id", to: "elicitations#show", as: :session_elicitation
       resources :elicitations, only: [ :create, :show ] do
         member do
           patch :respond

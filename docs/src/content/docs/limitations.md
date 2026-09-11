@@ -946,13 +946,32 @@ anything with database access reads them.
 
 Tracked in [#43](https://github.com/tadasant/zimmer/issues/43).
 
-### The elicitation endpoints are unauthenticated
+### An elicitation URL is a session credential that sits on disk
 
-`POST /api/v1/elicitations` and `GET /api/v1/elicitations/:id` skip the API key (required by the MCP
-fallback protocol — the child process has no key). Anyone who can reach the host can create an
-elicitation for any session id, or enumerate and poll any elicitation by `request_id`.
+An MCP server raises and polls approval requests on `POST /api/v1/elicitations/session/<token>` and
+`GET …/session/<token>/<request_id>`. It authenticates with the token in the path, because the
+`@pulsemcp/mcp-elicitation` client sends no auth header and Zimmer does not control it. The token is
+an HMAC of the session id, keyed from `secret_key_base`. So someone who can merely reach the host
+cannot raise a prompt on a session or read one, and the bare `/api/v1/elicitations` routes take an
+API key ([who may raise a prompt](/sessions/elicitation/#who-may-raise-a-prompt)).
 
-Tracked in [#45](https://github.com/tadasant/zimmer/issues/45).
+What the token does not do:
+
+- **It does not keep agents on the same host apart.** It sits in the agent process's environment and
+  in the clone's generated MCP config. The session's own agent can read both. Every session also
+  runs as the same Unix user on the same filesystem, so any other session's agent that goes looking
+  in another clone, or in `/proc`, can read them too. An agent can therefore raise an approval prompt
+  on its own session, and on a neighbour's if it reads the neighbour's config. It cannot answer one,
+  because `respond` takes an API key. See
+  [agents run unsandboxed on the app host](#agents-run-unsandboxed-on-the-app-host).
+- **It does not expire and cannot be revoked per session.** It is deterministic, so a session keeps
+  the same URL for life. Rotating `SECRET_KEY_BASE` revokes every token at once. The deploy that
+  rotates it also respawns every agent process, and the respawned processes get the new tokens.
+- **A clone `.env` that names `ELICITATION_REQUEST_URL` still wins**, and a bare URL there fails: the
+  POST answers 401 and the API logs a warning. To point a session's servers at a different Zimmer,
+  name a token URL that the other Zimmer minted.
+
+The endpoints were unauthenticated until [#45](https://github.com/tadasant/zimmer/issues/45).
 
 ### API keys have no scope, identity, or audit trail
 
@@ -1875,7 +1894,7 @@ can verify from its own side, which no issue closes.
 
 Codex rebuilds every MCP server's environment from `HOME`/`LANG`/`PATH`/`PWD`/`SHELL` plus what the
 config entry's own `env`/`env_vars` name, so nothing Zimmer exports to the agent process is inherited.
-Zimmer bridges exactly the names it knows a server needs: the two `ELICITATION_*` variables (written
+Zimmer bridges exactly the names it knows a server needs: the `ELICITATION_*` variables (written
 into each stdio entry's `env` by `RuntimeConfigPostProcessor`) and `SSH_PRIVATE_KEY_PATH` (forwarded
 via `env_vars` by the Codex post-processor). Anything else an operator puts in a clone's `.env` reaches
 the agent and, on Claude, the servers that inherit its environment — but on Codex it stops at the agent.

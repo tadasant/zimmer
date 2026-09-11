@@ -169,9 +169,12 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     build_processor.post_process!
 
     config = read_config
-    assert_equal ElicitationEndpoint.url, config.dig("mcp_servers", "acme-server", "env", "ELICITATION_REQUEST_URL")
+    assert_equal ElicitationEndpoint.session_url(@session.id), config.dig("mcp_servers", "acme-server", "env", "ELICITATION_REQUEST_URL")
     assert_equal @session.id.to_s, config.dig("mcp_servers", "acme-server", "env", "ELICITATION_SESSION_ID"),
       "the approval request must arrive tagged with the session that raised it"
+    assert_equal @session,
+      ElicitationEndpoint.session_for_token(config.dig("mcp_servers", "acme-server", "env", "ELICITATION_REQUEST_URL").split("/").last),
+      "the server's own env table is the only channel Codex honors, so the token must be in it"
     assert_nil config.dig("mcp_servers", "hosted", "env"),
       "an HTTP entry has no child process, so it gets no env table"
   end
@@ -193,7 +196,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     assert_equal "sk-literal-123", env["ACME_API_KEY"],
       "the env table holds the server's credentials — injection must merge, never replace"
     assert_equal "us-east-1", env["ACME_REGION"]
-    assert_equal ElicitationEndpoint.url, env["ELICITATION_REQUEST_URL"]
+    assert_equal ElicitationEndpoint.session_url(@session.id), env["ELICITATION_REQUEST_URL"]
     assert_equal @session.id.to_s, env["ELICITATION_SESSION_ID"]
   end
 
@@ -211,7 +214,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
 
     build_processor.post_process!
 
-    assert_equal ElicitationEndpoint.url,
+    assert_equal ElicitationEndpoint.session_url(@session.id),
       read_config.dig("mcp_servers", "acme-server", "env", "ELICITATION_REQUEST_URL"),
       "Zimmer's address for its own endpoint wins over a catalog copy that can go stale"
   end
@@ -252,7 +255,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
 
     entry = read_config.dig("mcp_servers", "acme-server")
     assert_nil entry["env_vars"], "an emptied env_vars table must be removed, not left as []"
-    assert_equal ElicitationEndpoint.url, entry.dig("env", "ELICITATION_REQUEST_URL")
+    assert_equal ElicitationEndpoint.session_url(@session.id), entry.dig("env", "ELICITATION_REQUEST_URL")
   end
 
   # The gate degrading is survivable; a session that never starts is not. Anything
@@ -679,9 +682,9 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       startup_timeout_sec = #{McpStartupTimeout::SECONDS}
       [mcp_servers.acme-server.env]
       ACME_API_KEY = "sk-acme-123"
-      ELICITATION_POLL_URL = "#{ElicitationEndpoint.url}"
+      ELICITATION_POLL_URL = "#{ElicitationEndpoint.session_url(@session.id)}"
       ELICITATION_PREFER_HTTP_FALLBACK = "true"
-      ELICITATION_REQUEST_URL = "#{ElicitationEndpoint.url}"
+      ELICITATION_REQUEST_URL = "#{ElicitationEndpoint.session_url(@session.id)}"
       ELICITATION_SESSION_ID = "#{@session.id}"
       ELICITATION_TTL_MS = "#{Elicitation::DEFAULT_EXPIRATION.to_i * 1000}"
       NPM_CONFIG_CACHE = "#{File.join(@working_dir, '.npm-cache')}"

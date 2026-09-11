@@ -151,10 +151,13 @@ What it isn't:
 - **No rotation without a restart** — the valid-key list is memoized per request instance from ENV.
 - **No audit trail** of which key did what.
 
-Two endpoints skip it entirely:
+Two endpoints take a different credential instead:
 
-- `POST /api/v1/elicitations` and `GET /api/v1/elicitations/:id` — required by the MCP
-  fallback-elicitation protocol, since the MCP child process has no key.
+- `POST /api/v1/elicitations/session/:token` and `GET /api/v1/elicitations/session/:token/:request_id`
+  — the MCP fallback-elicitation protocol. The MCP child process has no key, so it authenticates
+  with a per-session token in the URL path, which Zimmer puts in its environment at spawn. A token
+  reaches only its own session's elicitations, and it is not derived from any API key. See
+  [who may raise a prompt](/sessions/elicitation/#who-may-raise-a-prompt).
 
 ## 3. Zimmer → the agent vendor
 

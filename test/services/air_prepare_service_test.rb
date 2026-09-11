@@ -1524,7 +1524,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     end
 
     entry = JSON.parse(@mock_fs.read(mcp_config_path)).dig("mcpServers", "some-npx-server")
-    assert_equal ElicitationEndpoint.url, entry.dig("env", "ELICITATION_REQUEST_URL")
+    assert_equal ElicitationEndpoint.session_url(@session.id), entry.dig("env", "ELICITATION_REQUEST_URL")
     assert_equal @session.id.to_s, entry.dig("env", "ELICITATION_SESSION_ID")
     assert_equal [ "-y", "some-package" ], entry["args"],
       "the catalog's npx argv must survive post-processing unchanged (zimmer#467)"
