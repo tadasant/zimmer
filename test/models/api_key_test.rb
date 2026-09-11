@@ -20,6 +20,17 @@ class ApiKeyTest < ActiveSupport::TestCase
 
   def fingerprint(key) = Digest::SHA256.hexdigest(key)[0, 8]
 
+  # A table with no `grant` column, which is what every deployment has between
+  # the code shipping and its migration applying.
+  def with_grant_column_missing
+    ApiKey.ignored_columns += [ "grant" ]
+    ApiKey.reset_column_information
+    yield
+  ensure
+    ApiKey.ignored_columns -= [ "grant" ]
+    ApiKey.reset_column_information
+  end
+
   # --- API_KEYS entries: the cutover ---
 
   test "an API_KEYS entry authenticates and gets a row named after its fingerprint" do
@@ -184,6 +195,39 @@ class ApiKeyTest < ActiveSupport::TestCase
     env_row.grant = ApiKey::QUICK_ROUTER_GRANT
     assert_not env_row.valid?
     assert_includes env_row.errors[:grant].join, ApiKey::ENV_VAR
+  end
+
+  test "authentication survives a database whose grant column has not been added yet" do
+    # The production failure of 2026-09-11: a duplicate migration version stopped
+    # `db:migrate` applying anything, the containers served the new code anyway,
+    # and every authenticated request 500ed on a column that was not there. An
+    # ignored column is the same shape — the attribute does not exist on the row.
+    with_grant_column_missing do
+      _minted, token = ApiKey.mint!(name: "before the column")
+
+      assert_predicate ApiKey.authenticate(token), :authenticated?
+      assert_predicate ApiKey.authenticate("env-key-one"), :authenticated?
+      assert_equal ApiKey::API_GRANT, ApiKey.authenticate(token).api_key.effective_grant
+      assert_not_predicate ApiKey.authenticate(token).api_key, :quick_router?
+
+      # The narrow grant cannot exist on such a database, so nothing opens the
+      # Quick Router ingest — and minting one says so rather than handing back a
+      # key that would open everything.
+      assert_equal :wrong_grant, ApiKey.authenticate(token, grant: ApiKey::QUICK_ROUTER_GRANT).refusal
+      error = assert_raises(ActiveRecord::ActiveRecordError) do
+        ApiKey.mint!(name: "narrow", grant: ApiKey::QUICK_ROUTER_GRANT)
+      end
+      assert_match(/api_keys.grant does not exist/, error.message)
+    end
+  end
+
+  test "revocation still works with no grant column" do
+    with_grant_column_missing do
+      api_key, token = ApiKey.mint!(name: "revocable")
+      api_key.revoke!
+
+      assert_equal :revoked, ApiKey.authenticate(token).refusal
+    end
   end
 
   test "names are unique regardless of case" do

@@ -43,6 +43,11 @@ class ApiKeysController < ApplicationController
     # Two submits of one name at once (a double-click): the loser passes the
     # uniqueness validation and meets the unique index instead.
     render_create_error([ "Name has already been taken" ])
+  rescue ActiveRecord::ActiveRecordError => e
+    # Last, so the two specific rescues above keep their own wording. Reaches
+    # the refusal `mint!` raises when the grant column is not on the table yet:
+    # a refusal this page can state is better than a 500.
+    render_create_error([ e.message ])
   end
 
   def revoke
@@ -112,7 +117,7 @@ class ApiKeysController < ApplicationController
   # is the audit trail this page exists to give.
   def log_lifecycle(verb, api_key)
     Rails.logger.warn(
-      "[api_key] #{verb} #{api_key.name.inspect} (api_key_id=#{api_key.id}, source=#{api_key.source}, grant=#{api_key.grant}) " \
+      "[api_key] #{verb} #{api_key.name.inspect} (api_key_id=#{api_key.id}, source=#{api_key.source}, grant=#{api_key.effective_grant}) " \
       "from the settings page, #{request.remote_ip}"
     )
   end

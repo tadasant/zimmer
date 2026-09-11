@@ -182,6 +182,33 @@ class Api::V1::QuickRouterControllerTest < ActionDispatch::IntegrationTest
     refute_includes line, @narrow_token
   end
 
+  test "the API and the ingest both answer on a database whose grant column is missing" do
+    ApiKey.ignored_columns += [ "grant" ]
+    ApiKey.reset_column_information
+
+    # Every full-API key keeps working — this is the request that 500ed in
+    # production on 2026-09-11 — and the ingest refuses every key there is,
+    # because no key can carry the narrow grant without the column.
+    get api_v1_sessions_path, headers: { "X-API-Key" => ENV_KEY }
+    assert_response :success
+
+    post api_v1_quick_router_path, params: payload, headers: { "X-API-Key" => ENV_KEY }, as: :json
+    assert_response :unauthorized
+
+    # Including the key that WAS narrow before the column was hidden. It loses
+    # the ingest and gains the API, which is the widening this default accepts
+    # and the reason it is only correct in the forward direction: nothing can
+    # read a grant the table no longer carries.
+    post api_v1_quick_router_path, params: payload, headers: @headers, as: :json
+    assert_response :unauthorized
+
+    get api_v1_sessions_path, headers: @headers
+    assert_response :success
+  ensure
+    ApiKey.ignored_columns -= [ "grant" ]
+    ApiKey.reset_column_information
+  end
+
   # --- Limits ---
 
   test "a blank prompt is 422" do

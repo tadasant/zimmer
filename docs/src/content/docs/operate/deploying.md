@@ -574,6 +574,55 @@ independent branches each adding `…180000` each pass, which is exactly how the
 Closing that requires branches to be up to date with `main` before merging, so the collision is on the
 branch by the time CI runs — a repository setting, not a check this repo can ship.
 
+### And it happened again, with a bigger blast radius
+
+On 2026-09-11 [#1155](https://github.com/tadasant/zimmer/pull/1155) and
+[#1156](https://github.com/tadasant/zimmer/pull/1156) both merged a migration numbered
+`20260912120000`, and [#1163](https://github.com/tadasant/zimmer/pull/1163) renumbered the second an
+hour later. What made this one worse than the 2026-09-05 collision was not the collision — it was
+what the new code did while the collision was live.
+
+`ActiveRecord::Migrator` validates duplicates in `#initialize`, so `db:migrate` raised before
+applying **anything**. Production ran the new image against a database that consequently had no
+`api_keys.grant` column, and `ApiKey.authenticate` read that attribute on every authenticated
+request. The result was `NoMethodError: undefined method 'grant'` — a 500 on **every** REST API and
+`/mcp` call, which is every agent session in the fleet, while the web UI kept answering 200 because
+its pages never touch that table. A missing key still returned 401, and a valid one 500ed.
+
+**So: code may not hard-require a column its own deploy adds.** The
+[two-deploy rule for dropping a column](#dropping-a-column-takes-two-deploys) exists because old
+containers keep serving after the schema moves; this is the mirror image, and it bites whenever a
+migration has not run yet for *any* reason — a duplicate version, a failed migrate step, a rollback,
+a container that boots before the migrate step finishes. Read a newly added column through one
+accessor that answers the pre-migration default when the attribute is absent, the way
+`ApiKey#effective_grant` does:
+
+```ruby
+def effective_grant
+  has_attribute?(:grant) ? self[:grant] : API_GRANT
+end
+```
+
+`column_names` is the table's own shape, so the answer is the meaning that row already had. Ask the
+table rather than the row: `has_attribute?` is *also* false for a record loaded through a projection
+that left the column out, and answering the old default for one of those would apply it to a row
+that really does carry a value. Guard the column's validations with the same test, and have any
+write that *needs* the column fail loudly rather than silently storing something weaker.
+
+**The default is only correct in the forward direction, and that bound is the price.** It holds
+while the column has never existed, because no row can yet carry a value other than the default. It
+does **not** hold in reverse: roll the migration back, or run an older image after narrow values
+exist, and every one of them silently reads as the default — for `api_keys.grant` that means every
+Quick Router key becomes a full-API key. So the accessor is not a licence to treat the migration as
+optional; it buys the window between the code landing and the migration applying, and nothing after
+it. Say so wherever the reverse is plausible, and prefer an irreversible `down` on a migration whose
+column carries a privilege.
+
+There is no guard for any of this: the discipline is to route every read of a new column through a
+single accessor in the deploy that adds it — including the ones that do not look like reads, such as
+an Administrate dashboard, which renders `ATTRIBUTE_TYPES` by `public_send` and will raise on the
+raw attribute exactly as application code does.
+
 ## One-time post-deploy tasks
 
 **If the step runs once and then never again, write a post-deploy task.** This is Zimmer's

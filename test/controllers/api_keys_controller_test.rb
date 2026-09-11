@@ -122,6 +122,27 @@ class ApiKeysControllerTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Grant is not included in the list"
   end
 
+  test "the page renders, and refuses a narrow key, on a database with no grant column" do
+    ApiKey.mint!(name: "listed")
+    ApiKey.ignored_columns += [ "grant" ]
+    ApiKey.reset_column_information
+
+    get api_keys_path, headers: operator_headers
+    assert_response :success
+    assert_includes response.body, "listed"
+
+    # Nowhere to store the narrow grant, so the page says so rather than 500ing
+    # or handing back a key that would open everything.
+    assert_no_difference("ApiKey.count") do
+      post api_keys_path, params: { api_key: { name: "narrow", grant: ApiKey::QUICK_ROUTER_GRANT } }, headers: operator_headers
+    end
+    assert_response :unprocessable_entity
+    assert_match(/api_keys.grant does not exist/, response.body)
+  ensure
+    ApiKey.ignored_columns -= [ "grant" ]
+    ApiKey.reset_column_information
+  end
+
   test "creating a key with a taken name re-renders with the error" do
     ApiKey.mint!(name: "taken")
 
