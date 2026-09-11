@@ -51,7 +51,8 @@ needs it.
 Zimmer's catalog ships five: `engineering-practices`, `brand`, `brand-voice`,
 `anti-slop-rubric`, and `git-workflow`, mapping to `references/ENGINEERING_PRACTICES.md`,
 `BRAND.md`, `BRAND_VOICE.md`, `ANTI_SLOP_RUBRIC.md`, and `GIT_WORKFLOW.md`. The `sync-docs`
-skill declares three of them; `open-pr` and `wait-for-ci` declare `git-workflow`.
+skill declares three of them; `open-pr` and `wait-for-ci` declare `git-workflow`; and
+`zimmer-run-tests` and `zimmer-change-ai-artifact` declare `engineering-practices`.
 
 At prepare time, each skill's declared references are bundled into
 `.claude/skills/<skill-id>/references/`.
