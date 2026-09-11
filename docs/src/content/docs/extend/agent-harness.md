@@ -209,7 +209,13 @@ working-dir guard's accept/reject behavior. Add your adapter (and a mock) to
 `RuntimeCliAdapterContractTest::ADAPTERS`. An adapter provided by an extension lives outside that
 list, so call `assert_runtime_cli_adapter_contract` from the extension's own test instead.
 
-Also `include CliSpawnEnv` — don't reimplement env scrubbing.
+Also `include CliSpawnEnv` — don't reimplement env scrubbing — and call its
+`apply_extension_env(env_vars, runtime:)` after your own baseline, so enabled Zimmer Extensions'
+env contributions reach your runtime the way they reach the other three.
+
+Two optional class hooks default to Claude's answer: `compacts_on_resume?` (false — your runtime
+needs a command to compact; answer true if resuming after a context-window failure compacts by
+itself) and `cli_label`.
 
 ### Retry strategy: the five predicates
 
@@ -231,7 +237,7 @@ session that is already failing, so a missing predicate used to surface as a pro
 `auth_recovery_needed?` is the one to notice. It is what routes an exit into
 `AuthRecoveryCoordinator` (adopt → rotate → park) rather than into a plain failure, so a runtime
 that returns a flat `false` is not "safely defaulting" — it is opting out of credential recovery
-entirely. See the Codex note under [What the existing runtimes get wrong](#what-the-existing-runtimes-get-wrong).
+entirely. See how Codex answers it under [Codex classifies by the code it records](#codex-classifies-by-the-code-it-records).
 
 ### `TranscriptSource`
 
@@ -245,6 +251,8 @@ parse_events(serialized)
 discover_subagent_files(working_directory:, session_id:)
 mcp_log_paths(working_directory:)
 find_main_transcript(transcript_directory:, session:)
+records_turn_errors?                                   # default false
+terminal_turn_error(session:, working_directory:)      # default nil
 ```
 
 `find_main_transcript` is declared on the abstract base class and raises `NotImplementedError`
@@ -512,30 +520,52 @@ each other's conversations.
 
 ## What the existing runtimes get wrong
 
-Codex is the honest reference implementation, and it is *incomplete*:
+### Codex classifies by the code it records
 
-:::danger[`CodexRetryStrategy` classifies almost nothing]
-It returns `false` from `context_length_error?`, `api_error_for_retry?`, and
-`auth_recovery_needed?`, and only matches `/no rollout found/i`. Exit code 0 is still treated as
-success.
+A failed Codex turn ends on a rollout `task_complete` record that carries a machine-readable
+`codex_error_info` code beside its message, and every failure exits 1. `CodexTurnError` reads that
+record — the LAST turn-lifecycle event in the rollout, so an earlier turn's error never stands in for
+a later turn that has not ended — and `CodexRetryStrategy` answers the recovery questions from its
+code:
 
-Which means, for a Codex session: no context-length compaction retry, no API-error retry, no quota
-rotation, and no auth recovery. Everything the Claude path does to keep a session alive, Codex
-sessions do without.
+| `codex_error_info` (codex-cli 0.146.0) | Predicate | Recovery |
+| --- | --- | --- |
+| `context_window_exceeded`, or a raw 400 body naming `context_length_exceeded` | `context_length_error?` | resume; Codex compacts the thread itself |
+| `internal_server_error`, `server_overloaded`, any 429 or 5xx status, a transport code, or "stream disconnected before completion" | `api_error_for_retry?` | `ApiErrorRetryService` backoff |
+| `usage_limit_exceeded` | `api_error_for_retry?` | `ApiErrorRetryService` → `:quota_exceeded` → rotation |
+| `unauthorized`, or a 401 status | `auth_recovery_needed?` | `AuthRecoveryCoordinator` |
+| anything else | none | fail, and page with Codex's message |
 
-`AuthRecoveryCoordinator` is runtime-agnostic — it reads the pool and rotates through
-`RuntimeAuthProvider`, and `CodexAuthProvider` implements both — so the coordinated
-adopt/rotate/park behaviour is available to Codex the moment
-`CodexRetryStrategy#auth_recovery_needed?` learns to recognize the signature. Until then it is
-unreachable for Codex, because nothing routes a Codex exit into the auth branch. The blocker is the
-classifier, not the recovery.
-:::
+The codes and messages were produced by the real binary against a local fake of the ChatGPT
+backend; `CodexTurnError`'s docstring carries the full table and the rollouts live in
+`test/fixtures/files/codex_rollouts/`. Two seams carry Codex through services that used to be
+Claude-shaped, and a new runtime can answer them too:
 
-Other known gaps:
+- **`TranscriptSource#records_turn_errors?` / `#terminal_turn_error`.** A source that answers them
+  is asked which recovery path a dead turn belongs to; the three recovery services stop scanning its
+  transcript for Claude's `isApiErrorMessage` envelope. `RecordedTurnError` is the one reader the
+  strategy and the services share, and it keeps a handled-turn marker so a recovery whose
+  replacement dies before writing anything cannot act on the same dead turn twice.
+- **`RuntimeCliAdapter.compacts_on_resume?`.** Codex, after a context-window failure, compacts the
+  thread before answering whatever the resume says. `ContextLengthRetryService` therefore resumes
+  it with the recovery nudge and owes no second "Continue with the previous task" turn — where
+  Claude gets `/compact` and the continuation after it.
 
-- `Zimmer::ExtensionRegistry.spawn_env_contributions` is Claude-only — extension env contributions are
-  unreachable from Codex, despite the hook receiving a `runtime` context.
-- `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.
+Quota and auth need no new plumbing: `CodexAuthProvider#rotate_for_quota!` and the runtime-agnostic
+`AuthRecoveryCoordinator` do the work once a classifier routes to them. The coordinator gains one
+Codex-specific branch, behind `RuntimeAuthProvider#refresh_proves_serviceable?`: Codex's
+`unauthorized` is only ever about the credential (quota has its own code), so when refreshing an
+OAuth account succeeds the session is re-seeded with it once, instead of rotating away from an
+account that works; an API-key account, whose refresh is a no-op, rotates. A usage-limit refusal
+also leaves the account's rate-limit windows behind, which `ApiErrorRetryService` keeps as a quota
+snapshot so `QuotaResetCheckerJob` can restore the account once they reset. What is still open is in
+[Known limitations](/limitations/#codex-failure-classification-rests-on-one-cli-versions-record).
+
+Extension env contributions reach every runtime: `CliSpawnEnv#apply_extension_env` is called
+by all three adapters, with the runtime's own id in the context. `SubagentTranscript` resolves its
+normalizer through `TranscriptRuntime` like every other transcript read.
+
+### Pi declines the recovery questions
 
 `PiRetryStrategy` classifies one thing and declines the rest.
 
@@ -554,17 +584,14 @@ own wording rather than parked as finished. An error followed by more
 conversation is a turn that recovered on its own and is left alone.
 
 `context_length_error?`, `api_error_for_retry?` and `auth_recovery_needed?` still
-return `false`, and now for a different reason than Codex's: the *signature* is
-known, but each names a recovery path that is Claude-shaped.
-`ContextLengthRetryService` recovers by sending Claude Code's `/compact` command,
-which Pi has no equivalent of; `ApiErrorRetryService` detects by Claude's
-`isApiErrorMessage` envelope, which Pi does not write; `AuthRecoveryService`
-recovers by re-writing the active account's credentials, and `PiAuthProvider`
-pools no accounts to re-write. Making those three transcript-format-agnostic is
-tracked in [#856](https://github.com/tadasant/zimmer/issues/856). Until then a Pi
-provider failure is failed and named rather than retried — the same posture Codex
-has. `classifies_exits?` stays `false`, so that failure is loud in the session log
-without becoming a standing page.
+return `false`. The *signature* is known, and the two seams Codex uses above are
+there for it — but `PiTranscriptSource` does not answer `records_turn_errors?`,
+`PiRuntimeAdapter` does not answer `compacts_on_resume?`, and `AuthRecoveryService`
+recovers by re-writing the active account's credentials while `PiAuthProvider`
+pools no accounts to re-write. Tracked in
+[#856](https://github.com/tadasant/zimmer/issues/856). Until then a Pi provider
+failure is failed and named rather than retried. `classifies_exits?` stays `false`,
+so that failure is loud in the session log without becoming a standing page.
 
 There is also no failed-resume pattern to match, and unlike the above that one is
 correct rather than deferred: Pi's `--session-id` *creates* a missing session

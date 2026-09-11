@@ -290,6 +290,7 @@ module ActiveSupport
     include McpOauthTestHelpers
     include McpAvailabilityHelpers
     include SessionMemoryCgroupHelpers
+    include CodexRolloutFixtures
 
     # The sessions dashboard shows `needs_input` only until the user filters. A
     # test that is about something else — pagination, card chrome, category

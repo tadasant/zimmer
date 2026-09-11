@@ -27,11 +27,12 @@ class SubagentTranscript < ApplicationRecord
   end
 
   # Normalize the stored JSONL into OpenTranscripts events (see OpenTranscript).
-  # Subagents are spawned via the Claude Code Task tool, so their transcripts are
-  # always Claude JSONL. Rendered through the same unified timeline_items/_item
-  # partial as the parent timeline.
+  # A subagent's transcript is written by the same runtime as its parent, so the
+  # normalizer is the parent session's — resolved through TranscriptRuntime like
+  # every other transcript read, rather than assumed to be Claude's. Rendered
+  # through the same unified timeline_items/_item partial as the parent timeline.
   def open_transcript_events
-    normalizer = ClaudeTranscriptNormalizer.new
+    normalizer = TranscriptRuntime.normalizer_for(session)
     events = []
     parsed_transcript.each_with_index do |raw_event, index|
       events.concat(normalizer.normalize(raw_event, session: session, transcript_index: index))

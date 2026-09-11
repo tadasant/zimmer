@@ -134,6 +134,14 @@ class CodexAuthProviderTest < ActiveSupport::TestCase
     assert File.exist?(CodexAuthProvider::AUTH_JSON_PATH)
   end
 
+  # #54: auth recovery re-seeds a refreshed account instead of rotating only where a
+  # refresh is evidence. For an API-key account #refresh! is a no-op, so it is not.
+  test "a successful refresh proves an OAuth account serves, and says nothing about an API key" do
+    assert @provider.refresh_proves_serviceable?(claude_accounts(:codex_primary))
+    assert_not @provider.refresh_proves_serviceable?(claude_accounts(:codex_api_key))
+    assert_not ClaudeAuthProvider.new.refresh_proves_serviceable?(claude_accounts(:codex_primary))
+  end
+
   test "rotate_for_quota! marks the current account quota_exceeded and activates the next" do
     # Stub token validation so activate_next_account doesn't hit the network.
     ClaudeAccount.any_instance.stubs(:refresh_token!).returns(true)

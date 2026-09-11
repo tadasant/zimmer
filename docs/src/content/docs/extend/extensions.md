@@ -36,7 +36,7 @@ cli_adapter_override(runtime)        # → an adapter class, or nil
 provides_print_runner?               # → Boolean
 print_runner_backend(claude_binary:, model:, process_manager:, logger:)
                                      # → an object responding to #run(prompt:, timeout:)
-spawn_env_contribution(context = {}) # → Hash. context is { runtime: "claude_code" }
+spawn_env_contribution(context = {}) # → Hash. context is { runtime: "claude_code" | "codex" | "pi" }
 ```
 
 ## The three mount points
@@ -48,16 +48,17 @@ flowchart LR
     E["Zimmer::ExtensionRegistry"]
     E -->|"cli_adapter_override_for(runtime)"| R["RuntimeRegistry.cli_adapter_class_for<br/>(first enabled wins, registration order)"]
     E -->|"print_runner_backend(...)"| P["ClaudePrintRunner.build<br/>(fallback: NativeClaudePrintRunner)"]
-    E -->|"spawn_env_contributions(runtime:)"| S["ClaudeSpawnEnv#build_claude_spawn_env<br/>(merged, later wins)"]
+    E -->|"spawn_env_contributions(runtime:)"| S["CliSpawnEnv#apply_extension_env<br/>(every adapter's spawn; merged, later wins)"]
 ```
 
-:::caution[Only one of those three is runtime-generic]
-`spawn_env_contribution` receives a `runtime` context, which implies it applies to any runtime. It
-doesn't: `ClaudeSpawnEnv` is the only caller, so neither `CodexRuntimeAdapter#spawn_process` nor
-`PiRuntimeAdapter#spawn_process` reaches the registry. Extension env contributions are unreachable
-for Codex and [Pi](/sessions/runtimes/) sessions alike.
+:::note[Which mount points are runtime-generic]
+`spawn_env_contribution` is: every adapter — Claude, Codex and [Pi](/sessions/runtimes/) — calls
+`CliSpawnEnv#apply_extension_env` after building its own baseline env and before the scratch-dir,
+test-parallelism, operator-SSH-key and elicitation steps, passing its runtime id as
+`context[:runtime]`. An extension that means only one runtime checks that key.
 
-The other two mount points are Claude-specific by name (`ClaudePrintRunner`, `ClaudeSpawnEnv`).
+The other two mount points are Claude-specific by name (`ClaudePrintRunner`, and the adapter
+override is keyed by runtime).
 :::
 
 ## What ships: the seam, and no extensions

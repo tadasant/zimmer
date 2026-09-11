@@ -198,6 +198,22 @@ class RuntimeAuthProvider
     []
   end
 
+  # Auth-recovery hook: does a successful #refresh! prove `account` can serve?
+  #
+  # AuthRecoveryCoordinator asks when a session's runtime rejected the identity
+  # it was spawned with and the pool has not moved. When true, a refresh that
+  # succeeds means the failed process was merely holding an older copy of a
+  # credential that works, so the coordinator re-seeds the account once rather
+  # than rotating away from it. When false — the default, and Claude Code's
+  # answer in shared-file mode, whose "Not logged in" also stands for an
+  # exhausted quota — it rotates, as it always has.
+  #
+  # @param account [ClaudeAccount] the account the runtime just rejected
+  # @return [Boolean]
+  def refresh_proves_serviceable?(account)
+    false
+  end
+
   # Quota-rotation hook: rotate away from the current account, activating the
   # next available one. Defaults to a no-op result for runtimes that don't pool
   # quota-limited accounts.

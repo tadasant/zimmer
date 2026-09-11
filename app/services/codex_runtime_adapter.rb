@@ -115,6 +115,18 @@ class CodexRuntimeAdapter
     "Codex CLI"
   end
 
+  # @see RuntimeCliAdapter::ClassMethods#compacts_on_resume?
+  #
+  # When a turn fails with `context_window_exceeded`, Codex records the thread's
+  # token count as the whole context window. The next `codex exec resume` of that
+  # thread — whatever its prompt — runs Codex's compaction task first (the
+  # rollout gains a `compacted` record and a `context_compacted` event) and then
+  # answers the prompt in the same turn. Verified against codex-cli 0.146.0, so
+  # the recovery needs no Claude-style `/compact` turn in front of it.
+  def self.compacts_on_resume?
+    true
+  end
+
   attr_accessor :process_manager, :file_system, :zimmer_session_id
 
   def initialize(logger: Rails.logger)
@@ -351,6 +363,8 @@ class CodexRuntimeAdapter
     env_vars = clear_inherited_env_vars(env_vars)
     env_vars = ensure_rmcp_logging(env_vars)
     env_vars = ensure_codex_home(env_vars)
+    # Enabled Zimmer Extensions contribute here, over the Codex baseline above.
+    env_vars = apply_extension_env(env_vars, runtime: CodexAuthProvider::RUNTIME)
     # Export the durable per-session scratch dir (AO_SESSION_SCRATCH_DIR) so
     # agents persist cross-step state on the durable volume instead of ephemeral /tmp.
     env_vars = apply_session_scratch_dir(env_vars)

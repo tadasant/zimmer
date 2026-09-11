@@ -23,17 +23,30 @@
 # (dropping the dead resume id) instead of reporting a hard failure with a blank
 # transcript.
 #
-# == Not yet characterized ==
+# == Everything else: the error Codex recorded ==
 #
-# context_length_error? and api_error_for_retry? still return false because the
-# Codex-specific signals are not yet characterized in Zimmer: Codex's
-# context-length stderr strings differ from Claude's, and the Codex transcript
-# error envelope shape is owned by the Codex transcript source (pulsemcp/pulsemcp#3779). Unlike a
-# failed resume, those conditions surface as ordinary non-zero exits that
-# ProcessLifecycleManager already classifies as failures — so deferring here is
-# safe (the failure is reported, not hidden). As the Codex transcript pipeline
-# and real-world failure patterns are understood, this strategy gains the same
-# kind of pattern matching ClaudeRetryStrategy has today.
+# A failed Codex turn ends on a rollout `task_complete` record carrying a
+# `codex_error_info` code (CodexTurnError has the evidence table). The four
+# recovery questions are answered from that code, read through
+# RecordedTurnError so this strategy and the recovery service it routes to
+# agree on which error is live:
+#
+#   context_window_exceeded        -> context_length_error?  (resume; Codex compacts itself)
+#   internal_server_error,
+#   server_overloaded, 429, 5xx    -> api_error_for_retry?   (backoff retry)
+#   usage_limit_exceeded           -> api_error_for_retry?   (ApiErrorRetryService answers
+#                                                             :quota_exceeded -> rotation)
+#   unauthorized, 401              -> auth_recovery_needed?  (AuthRecoveryCoordinator)
+#
+# Anything else is unclassified, and an unclassified Codex exit is news:
+# #classifies_exits? is true, so it reaches UnclassifiedFailureReporter with
+# Codex's own message attached (#unclassified_error_text, or the terminal-error
+# backstop ProcessLifecycleManager asks on a failed exit).
+#
+# None of this reads stderr. Codex's stderr is its tracing log, full of WARN
+# lines that quote upstream errors mid-retry ("retrying sampling request (2/5)
+# … 401 Unauthorized"), so a stderr pattern would fire on errors Codex went on
+# to recover from.
 #
 # The constructor mirrors ClaudeRetryStrategy so ProcessLifecycleManager can
 # build either strategy through the identical adapter#retry_strategy factory.
@@ -50,6 +63,10 @@ class CodexRetryStrategy
   # fresh `codex exec` (which resumes nothing) cannot reproduce it, so recovery
   # clears the signal exactly as the Claude path's does.
   FAILED_RESUME_PATTERN = /no rollout found/i
+
+  # Which recorded kinds ApiErrorRetryService takes: the transient ones it
+  # retries, and the quota refusal it hands back as :quota_exceeded.
+  API_ERROR_KINDS = %i[retryable quota].freeze
 
   def initialize(cli_adapter:, session:, file_system:, process_manager:, rate_limit_tracker:, logger: Rails.logger)
     @cli_adapter = cli_adapter
@@ -69,11 +86,11 @@ class CodexRetryStrategy
     false
   end
 
-  # Codex context-length error detection is not yet characterized; defer to
-  # generic exit handling, which classifies it as a (surfaced) failure. See the
-  # class docstring.
+  # The turn died because the conversation outgrew the model's context window.
+  # The recovery is a resume: Codex compacts the thread itself before its next
+  # turn (see CodexRuntimeAdapter.compacts_on_resume?).
   def context_length_error?(stderr_log_path:)
-    false
+    unhandled_kind(@session&.working_directory) == :context_length
   end
 
   # Detect a failed `codex exec resume` whose rollout no longer exists.
@@ -95,37 +112,75 @@ class CodexRetryStrategy
     false
   end
 
-  # Codex transcript API-error envelope parsing is owned by the Codex transcript
-  # source (pulsemcp/pulsemcp#3779); until it lands there is nothing to classify.
+  # A transient upstream failure Codex's own retries did not outlast, or the
+  # account's usage limit — both are ApiErrorRetryService's to answer.
   def api_error_for_retry?(working_dir:)
-    false
+    API_ERROR_KINDS.include?(unhandled_kind(working_dir))
   end
 
-  # Codex's mid-session auth-invalidation signature (the analog of Claude Code's
-  # "Not logged in / Please run /login") is not yet characterized in Zimmer — its
-  # transcript error envelope is owned by the Codex transcript source (pulsemcp/pulsemcp#3779).
-  # Until then there is nothing to classify, so an invalidated Codex turn falls
-  # through to the generic failure path (surfaced, not hidden), exactly as
-  # #api_error_for_retry? does.
+  # Codex could not authenticate the account on disk: its refresh token was
+  # refused (expired, revoked, or already spent by another refresh), or the
+  # backend answered 401 after a refresh. AuthRecoveryCoordinator decides
+  # whether that is an adoption, a rotation, or a park.
   def auth_recovery_needed?(working_dir:)
-    false
+    unhandled_kind(working_dir) == :auth
   end
 
-  # No transcript error envelope to mine for unmatched prose, for the same
-  # reason as the two classifiers above.
+  # Codex's own words for an error no classifier above recognized, for the
+  # unclassified failure alert.
+  #
+  # @return [String, nil]
   def unclassified_error_text(working_dir:)
+    error = unhandled_error(working_dir)
+    return nil unless error && !error.recognized?
+
+    error.message.presence
+  end
+
+  # The error this turn DIED on, whoever owns it. ProcessLifecycleManager asks
+  # this last on the exits it would otherwise read as completed — the unreaped
+  # door, where there is no exit code — so a Codex turn that ended on an error
+  # is failed and named rather than parked as finished.
+  #
+  # Deliberately NOT filtered by the handled marker: a recovery that acted on
+  # this error and whose replacement then wrote nothing leaves the turn just as
+  # dead. ProcessLifecycleManager keeps its own once-per-turn key.
+  #
+  # @return [ApiErrorRetryService::TerminalApiError, nil]
+  def terminal_api_error(working_dir:)
+    return nil unless working_dir
+
+    error = RecordedTurnError.terminal(session: @session, working_directory: working_dir, file_system: @file_system)
+    return nil unless error
+
+    ApiErrorRetryService::TerminalApiError.new(
+      text: error.message.presence || "(no error text)",
+      recognized: error.recognized?,
+      line: error.id
+    )
+  rescue => e
+    @logger.error("Error checking the Codex rollout for a terminal turn error", error: e.message)
     nil
   end
 
-  # Codex classifies nothing but a missing rollout, so an ordinary Codex failure
-  # is ALWAYS an exit no classifier matched — that is this strategy's documented
-  # design, not an anomaly. Alerting on it would turn the expected shape of a
-  # Codex failure into a standing hourly page, which is how a channel gets
-  # ignored. ProcessLifecycleManager asks this before raising the unclassified
-  # alert; the loud log still happens, so the signal is not lost, it just is not
-  # paged. Flip this to true once Codex's transcript envelope is characterized
-  # (#3779) and its classifiers can actually answer.
+  # Codex's classifiers answer from a structured code, so an exit none of them
+  # claims is genuinely unknown and worth the unclassified-failure alert.
   def classifies_exits?
-    false
+    true
+  end
+
+  private
+
+  def unhandled_kind(working_dir)
+    unhandled_error(working_dir)&.kind
+  end
+
+  def unhandled_error(working_dir)
+    return nil unless working_dir && @session
+
+    RecordedTurnError.unhandled(session: @session, working_directory: working_dir, file_system: @file_system)
+  rescue => e
+    @logger.error("Error reading the Codex rollout for a turn error", error: e.message)
+    nil
   end
 end

@@ -221,6 +221,22 @@ module CliSpawnEnv
     env_vars
   end
 
+  # Merge the enabled Zimmer Extensions' environment contributions into the
+  # child's env, telling each one which runtime is being spawned.
+  #
+  # Every adapter calls this at the same point: after its own baseline (so an
+  # extension can override a Zimmer default) and before the scratch dir, test
+  # parallelism, operator SSH key and elicitation steps (so no extension can
+  # redirect those). With no extension enabled the registry contributes nothing
+  # and the env is unchanged.
+  #
+  # @param env_vars [Hash] Environment variables to pass to the child process
+  # @param runtime [String] the RuntimeRegistry id of the CLI being spawned
+  # @return [Hash] env_vars, with every contribution merged in (later extension wins)
+  def apply_extension_env(env_vars, runtime:)
+    env_vars.merge!(Zimmer::ExtensionRegistry.spawn_env_contributions(runtime: runtime))
+  end
+
   # Export a durable per-session scratch directory to the spawned agent as
   # AO_SESSION_SCRATCH_DIR.
   #
