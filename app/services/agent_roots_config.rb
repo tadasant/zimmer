@@ -23,6 +23,8 @@ class AgentRootsConfig
 
   # Agent root configuration object
   class AgentRoot
+    include ArtifactIdentity::Entry
+
     attr_reader :name, :display_name, :description, :url, :default_branch, :subdirectory, :default_goal, :default_mcp_servers, :default_skills, :default_hooks, :default_plugins, :default_subagent_roots, :user_invocable, :default_model, :default_runtime
 
     # @param app_setting [AppSetting, AppSetting::NULL, nil] the global base
@@ -30,6 +32,7 @@ class AgentRootsConfig
     #   catalog build rather than once per root (avoiding an N+1). When nil
     #   (direct construction, e.g. in tests) it is fetched here.
     def initialize(name, config, app_setting: nil)
+      identify!(name, config)
       @name = name
       @display_name = config["display_name"]
       @description = config["description"]
@@ -76,6 +79,7 @@ class AgentRootsConfig
     def to_h
       {
         name: name,
+        qualified_name: qualified_name,
         display_name: display_name,
         description: description,
         url: url,
@@ -105,8 +109,14 @@ class AgentRootsConfig
       build_roots
     end
 
+    # Accepts a canonical token, a fully-qualified `@scope/id`, or a bare short
+    # id that exactly one catalog contributes. See ArtifactIdentity.find.
+    #
+    # ROUTER_ROOT_NAMES and every `metadata["agent_root_key"]` written before
+    # qualification was preserved resolve on the FIRST of those: on a catalog
+    # where one scope contributes the id, the canonical token IS the bare id.
     def find(name)
-      all.find { |agent_root| agent_root.name == name }
+      ArtifactIdentity.find(all, name)
     end
 
     def find!(name)

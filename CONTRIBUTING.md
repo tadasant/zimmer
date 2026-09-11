@@ -103,7 +103,7 @@ So if you see a broad wave of `ActiveRecord::RecordInvalid` in session tests,
 suspect the catalog before your change. Verify it resolves cleanly:
 
 ```bash
-AIR_CONFIG=$PWD/air.json <air-cli>/air resolve --json --no-scope --git-protocol https \
+AIR_CONFIG=$PWD/air.json <air-cli>/air resolve --json --git-protocol https \
   >/tmp/resolve.json 2>/tmp/resolve.err
 cat /tmp/resolve.err   # MUST be empty — any "Dropping the reference" is a failure
 ```

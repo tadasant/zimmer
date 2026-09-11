@@ -44,7 +44,7 @@ class McpServerOptions
   # through the provider chain, which holds a 60-second namespace snapshot.
   # Measured at ~50ms cold and ~14ms warm for an 18-server catalog, in 2 queries.
   #
-  # @return [Array<Hash>] `{name:, title:, description:, unavailable:, unavailable_reason:, startup_timeout_sec:}`
+  # @return [Array<Hash>] `{name:, title:, scope:, description:, unavailable:, unavailable_reason:, startup_timeout_sec:}`
   def self.all
     Cache.options ||= build
   end
@@ -78,6 +78,12 @@ class McpServerOptions
     {
       name: server.name,
       title: server.title,
+      # Which catalog contributed this entry, and only when a second one
+      # contributes the same short id. Populated exactly when `name` has had to
+      # become the qualified `@scope/id`, which is when two rows in a picker
+      # would otherwise both read "Slack" — see ArtifactIdentity. nil on a
+      # single-catalog deployment, so nothing renders a badge today.
+      scope: server.contested? ? server.scope : nil,
       description: server.description,
       unavailable: unavailable,
       unavailable_reason: unavailable ? status.unavailable_reason(markdown: false) : nil,

@@ -2648,6 +2648,41 @@ If AIR ever rewords that warning, Zimmer quietly starts accepting degraded catal
 
 Tracked in [#66](https://github.com/tadasant/zimmer/issues/66).
 
+### Two artifacts sharing a short id cannot be activated in the same session
+
+Zimmer holds a local `slack` MCP server and a composed `@reframe-systems/agentic-engineering/slack`
+as two distinct entries, and either is selectable on its own
+([#208](https://github.com/tadasant/zimmer/issues/208)). **Both at once is not.**
+
+`air prepare` materializes an artifact under its *short* name — the `mcpServers` key in the session
+clone's `.mcp.json`, the directory name under `.claude/skills/` — so activating both makes AIR exit
+non-zero:
+
+```
+Error: MCP server shortname collision: both "@local/slack" and "@acme/catalog/slack" are
+activated and would write to the same target name "slack". Add one to air.json#exclude or
+activate only one of them.
+```
+
+That is AIR's constraint, not Zimmer's, and lifting it means giving the adapters a disambiguated
+target name — work that belongs in `pulsemcp/air`. Zimmer's part is to fail early instead of at
+spawn: `CatalogArtifactReferences` rejects the pair at save time, so it is a form error on the
+picker rather than a session that starts and immediately bricks.
+
+The same applies to a skill a session activates under a contested short id: whichever one is
+selected lands at `.claude/skills/<short-id>/`, so a runtime slash-command like `/open-pr` still
+names the short id and cannot distinguish the two.
+
+**OAuth does not reach a contested server yet.** A runtime keys its credential store by the name it
+sees in `.mcp.json` — the short id — while Zimmer keys `McpOauthCredential` by its own identifier,
+which for the losing side of a collision is `@owner/repo/<id>`. The two keys differ, so a token
+Zimmer holds for that server is written where the agent will not look for it. Nothing regresses:
+every artifact in a single-scope catalog has identical short id and Zimmer identifier, so the two
+keys are the same string everywhere today. Closing it means mapping Zimmer's identifier to the
+runtime's target name at the credential-writing boundary — `McpOauthCredentialInjector`,
+`ClaudeMcpCredentialWriter#credential_key_for` and their Codex/Pi siblings — and that mapping is
+only well-defined once AIR stops flattening the target name in the first place.
+
 ### The catalog-failure banner is per-process
 
 Every config facade (`AgentRootsConfig`, `ServersConfig`, `SkillsConfig`, `HooksConfig`,

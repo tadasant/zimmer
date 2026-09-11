@@ -2417,7 +2417,12 @@ class Session < ApplicationRecord
       # nil means nobody ranked this session, so SessionPrecedence lands it just
       # above the session that spawned it.
       precedence: precedence,
-      metadata: metadata.merge("agent_root_key" => agent_root_name),
+      # The RESOLVED root's name, not the caller's spelling of it. An artifact
+      # has three legal spellings since zimmer#208 (canonical token, qualified
+      # `@scope/id`, bare short id), and what is stored has to be the one
+      # AgentRootsConfig.find, the MCP allowlists and `air prepare --root` all
+      # key on — the canonical token. See ArtifactIdentity.
+      metadata: metadata.merge("agent_root_key" => agent_root.name),
       custom_metadata: custom_metadata,
       config: { "model" => resolved_model }
     )

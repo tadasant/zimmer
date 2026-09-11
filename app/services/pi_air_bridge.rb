@@ -279,8 +279,9 @@ class PiAirBridge < RuntimeArtifactBridge
 
   # The unqualified tail of an AIR id.
   #
-  # AirCatalogService resolves with `--no-scope`, so Zimmer's own ids are already
-  # bare and this is the identity for every one of them today. It is here for the
+  # Zimmer's own ids are the canonical tokens ArtifactIdentity produces, which
+  # are bare for every artifact a single catalog contributes — so this is the
+  # identity for every one of them today. It is here for the
   # references INSIDE a generated index, which the extensions re-qualify as
   # `@local/<key>` unconditionally: should a scoped id ever reach this service,
   # carrying it through verbatim would leave the reference unresolvable, while

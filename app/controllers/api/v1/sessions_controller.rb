@@ -1480,7 +1480,8 @@ class Api::V1::SessionsController < Api::BaseController
       @session.catalog_skills = agent_root.default_skills || [] unless explicit_list_param?(:catalog_skills)
       @session.catalog_hooks = agent_root.default_hooks || [] unless explicit_list_param?(:catalog_hooks)
       @session.catalog_plugins = agent_root.default_plugins || [] unless explicit_list_param?(:catalog_plugins)
-      @session.metadata = (@session.metadata || {}).merge("agent_root_key" => agent_root_name)
+      # `agent_root.name`, not the caller's spelling — see Session.create_from_agent_root!.
+      @session.metadata = (@session.metadata || {}).merge("agent_root_key" => agent_root.name)
     end
 
     # When the caller didn't specify a model, adopt the agent root's default
