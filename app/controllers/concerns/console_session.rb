@@ -7,18 +7,18 @@
 # carries the flash and the CSRF token: coupling the two would make a login's expiry
 # the CSRF token's expiry and vice versa. Its lifetime is the token row's
 # `session_ttl_seconds`, decided at mint, and it is on the wire as `Max-Age` (with a
-# matching `Expires`). Rails embeds the same instant in the signed payload, so a
-# client that edits `Max-Age` on the wire gets a cookie the jar refuses.
-# `read_console_login` checks the payload's own `expires_at` too, so an over-long
-# cookie is never trusted.
+# matching `Expires`). The browser drops it then; the server does not depend on that.
+# Rails embeds the same instant in the encrypted payload and the jar refuses the
+# cookie past it, and `read_console_login` checks the payload's own `expires_at` as
+# well — so a client that keeps the cookie longer than it was told to holds nothing.
 #
 # `HttpOnly`, `SameSite=Lax`, and `Secure` everywhere except a local (development or
 # test) deployment answering over plain HTTP.
 #
-# Nothing gates on `current_console_login` today: the web UI has no login, and the
-# perimeter is the boundary. This concern is what a UI gate would include when one
-# exists, and `ConsoleLoginController#show` is the one consumer that proves an
-# exchanged cookie reads back.
+# No controller gates on `current_console_login`: the web UI has no login, and the
+# perimeter is the boundary. This concern is what a UI gate would include, and
+# `ConsoleLoginController#show` is the one reader, which proves an exchanged cookie
+# reads back.
 module ConsoleSession
   extend ActiveSupport::Concern
 
@@ -39,7 +39,7 @@ module ConsoleSession
     expires_at = now + token.session_ttl_seconds.seconds
     login = Login.new(token_id: token.id, principal: token.principal, role: token.role, expires_at: expires_at)
 
-    # `expires` is what Rails embeds in the signed payload; `max_age` is what the
+    # `expires` is what Rails embeds in the encrypted payload; `max_age` is what the
     # browser honours first, and it is the attribute the issue asks for. Both name
     # the same instant.
     cookies.encrypted[COOKIE] = {
@@ -62,9 +62,12 @@ module ConsoleSession
     @current_console_login = read_console_login
   end
 
+  # nil for anything but a payload this concern wrote that has not expired —
+  # including one missing a field.
   def read_console_login(now: Time.current)
     payload = cookies.encrypted[COOKIE]
     return nil unless payload.is_a?(Hash)
+    return nil unless payload.values_at("token_id", "principal", "role", "expires_at").all?(&:present?)
 
     expires_at = Time.iso8601(payload["expires_at"].to_s)
     return nil if expires_at <= now
@@ -76,7 +79,7 @@ module ConsoleSession
       expires_at: expires_at
     )
   rescue ArgumentError
-    # `Time.iso8601` on a payload that is not what this concern wrote.
+    # `Time.iso8601` on an `expires_at` that is not a timestamp.
     nil
   end
 

@@ -16,8 +16,8 @@ class ConsoleLoginTokenReaperJobTest < ActiveJob::TestCase
     assert_not ConsoleLoginToken.exists?(old.id)
   end
 
-  test "is a singleton sweep on the maintenance queue" do
-    assert_equal "maintenance", ConsoleLoginTokenReaperJob.new.queue_name
+  test "is a singleton sweep on the default queue" do
+    assert_equal "default", ConsoleLoginTokenReaperJob.new.queue_name
     assert_includes ConsoleLoginTokenReaperJob.ancestors, SingletonSweep
   end
 end

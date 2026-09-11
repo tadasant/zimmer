@@ -5,12 +5,16 @@
 # Zimmer is a [single circle of trust](docs/src/content/docs/intro/philosophy.md) and the
 # network perimeter is the authentication boundary, so this is not "who are you" but "are
 # you inside the perimeter at all" — one shared credential, no user model, no audit trail.
-# It exists for the two surfaces whose blast radius the perimeter alone does not cover:
+# It exists for the surfaces whose blast radius the perimeter alone does not cover:
 #
 # - `/supervisor`, because Administrate renders `mcp_oauth_credentials.access_token` and its
-#   siblings as *editable* fields (#42), and
+#   siblings as *editable* fields (#42),
 # - the mutating `POST /health/*` actions, because they terminate processes, rewrite session
-#   rows in bulk and halt the fleet's demand-side job queues (#312, #371).
+#   rows in bulk and halt the fleet's demand-side job queues (#312, #371),
+# - `/settings/api_keys`, because it issues and revokes the credential every agent holds (#46),
+#   and
+# - minting and revoking console login tokens (#220), because a token exchanges for a console
+#   session, and the API key every agent session holds must not be able to issue one.
 #
 # **The second one is why the realm is shared rather than per-surface.** The caller the
 # `/health` gate is aimed at is not an outsider — it is an agent session, which runs on the

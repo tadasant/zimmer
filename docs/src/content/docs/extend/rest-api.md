@@ -947,13 +947,16 @@ tool. They are the [agent-login primitive](/auth/overview/#the-agent-login-primi
 an automated actor exchanges once for a web-console session cookie. An API key is what every agent
 session holds, so a route here that minted console sessions would let the fleet's shared key issue
 itself a login. All four answer `403 {"error": "Forbidden"}` naming `CONSOLE_LOGIN_ENABLED` unless
-that variable is the literal `true`, and that check runs before any credential is read.
+that variable is the literal `true`, and that check runs before any credential is read. The three
+`POST`s take `Content-Type: application/json` only and answer anything else with `415` — they are
+not CSRF-protected otherwise, and a cross-origin JSON request is preflighted where a form post is
+not.
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| `POST` | `/console_login_tokens` | operator realm (HTTP Basic, `SUPERVISOR_PASSWORD`) | `principal` (required, ≤100 chars, no control characters), `ttl_seconds` (default 300, clamped 10–900), `session_ttl_seconds` (default 900, clamped 60–3600); a non-integer → 422. → `201 {token, console_login_token}` with `Cache-Control: no-store`. `token` is `zlt_<id>.<secret>` and appears here and nowhere else; the row holds its SHA-256 |
-| `POST` | `/console_login_tokens/:id/revoke` | operator realm | Idempotent. → `200 {console_login_token, revoked}`, `revoked` true only for the call that changed the row; false again afterwards and for a consumed row. Unknown id → 404 |
-| `POST` | `/console_login` | the token, in the **body** (JSON or form field `token`) | → `200 {console_login: {token_id, principal, role, expires_at}}` plus `Set-Cookie: zimmer_console_session` (`HttpOnly`, `SameSite=Lax`, `Secure` outside local, `Max-Age` = the row's `session_ttl_seconds`). One conditional `UPDATE` from `active` to `consumed`, so a race gets one 200 and one 409. Refusals set no cookie: `401 reason: invalid` (malformed, unknown id, wrong secret — one answer for all three), `401 reason: expired`, `409 reason: consumed`, `409 reason: revoked`. A token in the query string → `400`, unread, and it stays live |
+| `POST` | `/console_login_tokens` | operator realm (HTTP Basic, `SUPERVISOR_PASSWORD`) | JSON body: `principal` (required string, ≤100 chars, no control characters), `ttl_seconds` (default 300, clamped 10–900), `session_ttl_seconds` (default 900, clamped 60–3600); each a JSON integer or a string of base-10 digits — anything else, or a non-string `principal`, → 422. → `201 {token, console_login_token}` with `Cache-Control: no-store`. `token` is `zlt_<id>.<secret>` and appears here and nowhere else; the row holds its SHA-256 |
+| `POST` | `/console_login_tokens/:id/revoke` | operator realm | `Content-Type: application/json` (the body may be `{}`). Idempotent. → `200 {console_login_token, revoked}`, `revoked` true only for the call that changed the row; false again afterwards and for a consumed row. Unknown id → 404 |
+| `POST` | `/console_login` | the token, in the JSON **body** as `token` | → `200 {console_login: {token_id, principal, role, expires_at}}` plus `Set-Cookie: zimmer_console_session` (`HttpOnly`, `SameSite=Lax`, `Secure` outside local, `Max-Age` = the row's `session_ttl_seconds`). One conditional `UPDATE` from `active` to `consumed`, so a race gets one 200 and one 409. Refusals set no cookie: `401 reason: invalid` (malformed, unknown id, wrong secret — one answer for all three), `401 reason: expired`, `409 reason: consumed`, `409 reason: revoked`. No `token` → `400`. A token in the query string → `400` whatever the body says, and it is **revoked** if it is a whole valid token (`revoked: true`) — a URL has been logged |
 | `GET` | `/console_login` | the cookie | → `200 {console_login}` for a live session, `401` otherwise. The only reader of the cookie today — see [the limitation](/limitations/#console-login-tokens-issue-a-session-that-nothing-gates-on-yet) |
 
 ```bash

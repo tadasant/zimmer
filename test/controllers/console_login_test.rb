@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # The agent-login primitive over HTTP (tadasant/zimmer#220): mint behind the operator
 # credential, exchange once for a cookie, refuse every non-active state with no
@@ -116,10 +117,28 @@ class ConsoleLoginTest < ActionDispatch::IntegrationTest
     assert_response :created
     assert_equal ConsoleLoginToken::DEFAULT_SESSION_TTL_SECONDS, response.parsed_body["console_login_token"]["session_ttl_seconds"]
 
-    post console_login_tokens_path, params: { principal: "ci", ttl_seconds: "soon" }, headers: operator_headers, as: :json
+    post console_login_tokens_path, params: { principal: "ci", ttl_seconds: "-5" }, headers: operator_headers, as: :json
+    assert_response :created
+    assert_in_delta ConsoleLoginToken::TTL_SECONDS.begin.seconds.from_now, Time.iso8601(response.parsed_body["console_login_token"]["expires_at"]), 5.seconds
+
+    post console_login_tokens_path, params: { principal: "ci", session_ttl_seconds: "0600" }, headers: operator_headers, as: :json
+    assert_response :created
+    assert_equal 600, response.parsed_body["console_login_token"]["session_ttl_seconds"], "base 10, never octal"
+
+    [ "soon", "0x3c", "1_0", "12.5", 12.5, true ].each do |bad|
+      post console_login_tokens_path, params: { principal: "ci", ttl_seconds: bad }, headers: operator_headers, as: :json
+      assert_response :unprocessable_entity, "ttl_seconds=#{bad.inspect}"
+      assert_includes response.parsed_body["message"], "ttl_seconds must be an integer"
+    end
+    assert_equal 4, ConsoleLoginToken.count
+  end
+
+  test "mint refuses a principal that is not a string" do
+    post console_login_tokens_path, params: { principal: { "name" => "ci" } }, headers: operator_headers, as: :json
+
     assert_response :unprocessable_entity
-    assert_includes response.parsed_body["message"], "ttl_seconds must be an integer"
-    assert_equal 2, ConsoleLoginToken.count
+    assert_includes response.parsed_body["message"], "principal must be a string"
+    assert_equal 0, ConsoleLoginToken.count
   end
 
   test "mint refuses a blank principal with the model's message" do
@@ -205,27 +224,95 @@ class ConsoleLoginTest < ActionDispatch::IntegrationTest
     assert_predicate token.reload, :active?
   end
 
-  test "a token in the query string is refused unread, and stays live" do
+  test "a token in the query string is treated as leaked: revoked, refused, no cookie" do
     token, plaintext = ConsoleLoginToken.mint!(principal: "ci")
 
     post "#{console_login_path}?token=#{plaintext}"
     assert_response :bad_request
     assert_includes response.parsed_body["message"], "not the query string"
-    assert_predicate token.reload, :active?
+    assert_equal true, response.parsed_body["revoked"]
+    assert_predicate token.reload, :revoked?
+    assert_no_console_cookie
 
+    post console_login_path, params: { token: plaintext }, as: :json
+    assert_response :conflict
+    assert_equal "revoked", response.parsed_body["reason"]
+  end
+
+  test "a query-string token wins over a body token, and a junk one revokes nothing" do
+    token, plaintext = ConsoleLoginToken.mint!(principal: "ci")
+
+    post "#{console_login_path}?token=junk", params: { token: plaintext }, as: :json
+    assert_response :bad_request
+    assert_equal false, response.parsed_body["revoked"]
+    assert_predicate token.reload, :active?, "the body token was not exchanged"
+    assert_no_console_cookie
+  end
+
+  test "a missing or non-string token is refused" do
     post console_login_path, params: {}, as: :json
     assert_response :bad_request
     assert_includes response.parsed_body["message"], "token is required"
+
+    post console_login_path, params: { token: { "id" => 1 } }, as: :json
+    assert_response :unauthorized
+    assert_equal "invalid", response.parsed_body["reason"]
+    assert_no_console_cookie
   end
 
-  test "the exchange also takes a form-encoded body" do
-    _token, plaintext = ConsoleLoginToken.mint!(principal: "ci")
+  test "a form-encoded exchange is refused with 415 and the token stays live" do
+    token, plaintext = ConsoleLoginToken.mint!(principal: "ci")
 
     post console_login_path, params: { token: plaintext }
 
+    assert_response :unsupported_media_type
+    assert_no_console_cookie
+    assert_predicate token.reload, :active?
+  end
+
+  test "form-encoded mint and revoke are refused with 415 before the credential is checked" do
+    token, _plaintext = ConsoleLoginToken.mint!(principal: "ci")
+
+    post console_login_tokens_path, params: { principal: "cross-site" }, headers: operator_headers
+    assert_response :unsupported_media_type
+    post revoke_console_login_token_path(token), headers: operator_headers
+    assert_response :unsupported_media_type
+
+    assert_not ConsoleLoginToken.exists?(principal: "cross-site")
+    assert_predicate token.reload, :active?
+  end
+
+  # Over TLS the cookie is Secure in every environment; outside a local one it is
+  # Secure regardless. The deployed case cannot be asserted through an integration
+  # request — Rails declines to write a Secure cookie onto a plain-HTTP response, and
+  # production answers over TLS — so the predicate itself is checked too.
+  test "the cookie is Secure over TLS, and outside a local environment" do
+    _token, plaintext = ConsoleLoginToken.mint!(principal: "ci")
+
+    post console_login_path, params: { token: plaintext }, as: :json, headers: { "HTTPS" => "on" }
+
     assert_response :ok
-    get console_login_path
-    assert_response :ok
+    assert_match(/;\s*secure/i, response.headers["Set-Cookie"].to_s)
+
+    controller = ConsoleLoginController.new
+    controller.set_request!(ActionDispatch::TestRequest.create)
+    assert_not controller.send(:console_cookie_secure?), "plain HTTP in development or test"
+    Rails.env.stubs(:local?).returns(false)
+    assert controller.send(:console_cookie_secure?), "a deployed environment, whatever the request"
+  end
+
+  test "a validly encrypted cookie missing a field, or with a bad expiry, is not a session" do
+    [
+      { "principal" => "ci", "role" => "console", "expires_at" => 1.hour.from_now.iso8601 },
+      { "token_id" => 1, "principal" => "ci", "role" => "console", "expires_at" => "tomorrow" }
+    ].each do |payload|
+      jar = ActionDispatch::Request.new(Rails.application.env_config.deep_dup).cookie_jar
+      jar.encrypted[COOKIE] = { value: payload, expires: 1.hour.from_now }
+      cookies[COOKIE] = jar[COOKIE]
+
+      get console_login_path
+      assert_response :unauthorized
+    end
   end
 
   test "the session cookie expires on its own schedule, after the token's window has closed" do
