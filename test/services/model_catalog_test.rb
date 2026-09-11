@@ -95,11 +95,12 @@ class ModelCatalogTest < ActiveSupport::TestCase
   end
 
   # A dated snapshot silently outlives the model it names (#85). Nothing in the
-  # catalog, on any runtime, is one.
+  # catalog, on any runtime, is one — in Anthropic's `-YYYYMMDD` form or
+  # Vertex's `@YYYYMMDD`.
   test "no catalog id is a dated model snapshot" do
     ids = ModelCatalog::MODELS.values.flatten.flat_map { |m| [ m[:id], m[:messages_api_id] ] }.compact
 
-    offenders = ids.grep(/-\d{8}\z/)
+    offenders = ids.grep(/[-@]\d{8}\z/)
     assert_empty offenders, "ModelCatalog must hold floating aliases, not dated snapshots"
   end
 
@@ -123,19 +124,25 @@ class ModelCatalogTest < ActiveSupport::TestCase
   end
 
   # ClaudeModelConfigurationAudit only reads ANTHROPIC_MODEL and settings.json.
-  # This extends its rule to the code: a string literal the audit would call a
-  # concrete Claude model version (bare, or provider-qualified like
-  # `anthropic/claude-haiku-4-5`) lives in ModelCatalog and nowhere else, so
-  # every model pin is where the tests above can see it (#85).
-  test "no Claude model-version string literal lives outside ModelCatalog" do
+  # This extends its rule to the code: a Claude model version the audit would
+  # call concrete — bare (`claude-haiku-4-5`), provider-qualified
+  # (`openrouter/anthropic/claude-opus-4.6`) or Bedrock-style
+  # (`us.anthropic.claude-…`) — lives in ModelCatalog and nowhere else, so every
+  # model pin is where the tests above can see it (#85). It checks each token of
+  # every string, symbol and backtick literal in the Ruby under app/, config/
+  # and lib/, so an id inside a tool description or a command line counts too.
+  # Comments, ERB, YAML and JavaScript are not scanned.
+  test "no Claude model-version literal lives outside ModelCatalog" do
     catalog_path = Rails.root.join("app/services/model_catalog.rb").to_s
 
     offenders = Dir[Rails.root.join("{app,config,lib}/**/*.{rb,rake}").to_s].sort.flat_map do |path|
       next [] if path == catalog_path
 
-      StringLiteralCollector.collect(path)
-        .select { |value, _line| value.match?(/\A\S+\z/) && ClaudeModelConfigurationAudit.concrete_model?(value.split("/").last) }
-        .map { |value, line| "#{path.delete_prefix("#{Rails.root}/")}:#{line} #{value.inspect}" }
+      StringLiteralCollector.collect(path).flat_map do |value, line|
+        value.scan(%r{[\w./@:-]+})
+          .select { |token| token.split(%r{[/.]}).any? { |segment| ClaudeModelConfigurationAudit.concrete_model?(segment) } }
+          .map { |token| "#{path.delete_prefix("#{Rails.root}/")}:#{line} #{token.inspect}" }
+      end
     end
 
     assert_empty offenders, "Claude model ids belong in ModelCatalog; look them up from there"
@@ -154,6 +161,16 @@ class ModelCatalogTest < ActiveSupport::TestCase
     end
 
     def visit_string_node(node)
+      @strings << [ node.unescaped, node.location.start_line ]
+      super
+    end
+
+    def visit_symbol_node(node)
+      @strings << [ node.unescaped, node.location.start_line ]
+      super
+    end
+
+    def visit_x_string_node(node)
       @strings << [ node.unescaped, node.location.start_line ]
       super
     end

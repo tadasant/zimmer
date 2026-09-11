@@ -15,10 +15,11 @@
 # runtime's implementation bundle (see #resolve), so the data layer can land
 # ahead of the adapter that consumes it.
 #
-# It is also the one place a versioned Claude model id is written down. Code
-# that calls Anthropic with a specific model — the quota probe — looks the id up
-# here (#messages_api_id_for), and ModelCatalogTest fails on a Claude
-# model-version string literal anywhere else in app/, config/ or lib/ (#85).
+# It is also the one place in the app's Ruby where a versioned Claude model id
+# is written down. Code that calls Anthropic with a specific model — the quota
+# probe — looks the id up here (#messages_api_id_for), and ModelCatalogTest
+# fails on a Claude model version in any Ruby literal elsewhere under app/,
+# config/ or lib/ (#85).
 #
 # The list is a Ruby literal on purpose, so adding a model is a PR and a deploy.
 # Most additions need a CLI bump in the image anyway (Pi's list has to match the
