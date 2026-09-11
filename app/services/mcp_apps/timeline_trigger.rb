@@ -30,7 +30,7 @@ module McpApps
     def active?
       return false if session.nil?
 
-      policy.enabled? && (policy.servers & session.all_mcp_servers).any?
+      policy.enabled? && (policy.servers & server_names).any?
     end
 
     # @param item [Hash] a normalized timeline event
@@ -43,7 +43,7 @@ module McpApps
       transcript_index = item[:transcript_index]
       return nil if tool_call_id.blank? || transcript_index.blank?
 
-      parsed = ToolName.parse(item[:tool_name], servers: session.all_mcp_servers)
+      parsed = ToolName.parse(item[:tool_name], servers: server_names)
       return nil if parsed.nil?
       return nil unless policy.allows?(parsed.server)
       return nil if view_tool?(parsed.server, parsed.tool) == false
@@ -60,6 +60,15 @@ module McpApps
 
     def policy
       @policy ||= Policy.snapshot
+    end
+
+    # Memoized because it is not the cheap attribute read it looks like:
+    # Session#all_mcp_servers derives the plugin-supplied servers, and that walk
+    # rebuilds every Plugin object in the catalog, once per catalog_plugins
+    # entry, with nothing along the way memoizing. Asked once per timeline row it
+    # is the most expensive thing on the render path; asked once it is nothing.
+    def server_names
+      @server_names ||= session.all_mcp_servers
     end
 
     # @return [Boolean, nil] nil when the server's tool index has never been read

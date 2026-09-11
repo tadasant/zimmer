@@ -22,6 +22,15 @@ module McpApps
   class Client
     class Error < StandardError; end
 
+    # Raised from inside the body-reading block to abandon an oversized response.
+    #
+    # It has to be an exception rather than a `break`: `break` leaves
+    # Net::HTTPResponse#reading_body believing the body was never read, so on the
+    # way out of the request block it reads the WHOLE remainder into memory —
+    # which is the one thing the cap exists to prevent. An exception propagates
+    # out of `reading_body` and skips that read entirely.
+    class ResponseTooLarge < StandardError; end
+
     # The server answered, and answered with a JSON-RPC error. Carries the code so
     # the proxy can pass a faithful error back to the view instead of flattening
     # everything to "something went wrong".
@@ -55,12 +64,9 @@ module McpApps
     CLIENT_INFO = { "name" => "zimmer", "title" => "Zimmer", "version" => Mcp::SERVER_VERSION }.freeze
 
     # The protocol revision the TRANSPORT speaks, which is not the MCP Apps
-    # revision in McpApps::PROTOCOL_VERSION.
+    # revision — that one is negotiated in the browser, by
+    # mcp_app_host_controller.js, and never reaches this class.
     MCP_PROTOCOL_VERSION = "2025-06-18"
-
-    # The server's own `serverInfo`, populated by the `initialize` handshake and
-    # nil until one has happened.
-    attr_reader :server_info
 
     # @param url [String] the server's Streamable HTTP endpoint
     # @param headers [Hash] fully resolved request headers (auth included)
@@ -130,7 +136,6 @@ module McpApps
         "capabilities" => {},
         "clientInfo" => CLIENT_INFO
       })
-      @server_info = result["serverInfo"] if result.is_a?(Hash)
       @initialized = true
       notify("notifications/initialized")
     end
@@ -178,25 +183,24 @@ module McpApps
       # The body is read in chunks and abandoned the moment it passes the cap,
       # rather than read whole and measured afterwards. A server Zimmer does not
       # operate can answer with a stream that never ends; measuring after the
-      # fact would mean it had already been in memory.
+      # fact would mean it had already been in memory. See ResponseTooLarge for
+      # why the abandonment is a raise and not a break.
       result = nil
       body = +""
-      truncated = false
 
-      http.request(post) do |response|
-        result = response
-        @session_id ||= response["Mcp-Session-Id"]
+      begin
+        http.request(post) do |response|
+          result = response
+          @session_id ||= response["Mcp-Session-Id"]
 
-        response.read_body do |chunk|
-          body << chunk
-          if body.bytesize > MAX_RESPONSE_BYTES
-            truncated = true
-            break
+          response.read_body do |chunk|
+            body << chunk
+            raise ResponseTooLarge if body.bytesize > MAX_RESPONSE_BYTES
           end
         end
+      rescue ResponseTooLarge
+        raise Error, "MCP response exceeded #{MAX_RESPONSE_BYTES} bytes"
       end
-
-      raise Error, "MCP response exceeded #{MAX_RESPONSE_BYTES} bytes" if truncated
 
       unless result.is_a?(Net::HTTPSuccess)
         raise Error, "MCP server returned HTTP #{result.code}"

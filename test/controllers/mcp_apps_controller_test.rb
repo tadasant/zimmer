@@ -96,14 +96,47 @@ class McpAppsControllerTest < ActionDispatch::IntegrationTest
     refute_includes response.headers["Content-Security-Policy"], "unpkg"
   end
 
-  test "nothing resolves while the feature is off" do
+  test "nothing resolves while the feature is off, and the transcript is not even read" do
     AppSetting.current.update!(mcp_apps_enabled: false)
+    # The gate is ahead of the transcript parse on purpose: a URL anyone can
+    # request must not make a deployment with the feature off detoast and
+    # normalize a multi-megabyte transcript column.
+    McpApps::TranscriptToolCall.any_instance.expects(:found?).never
 
     get session_mcp_app_path(@session, "toolu_01"), params: panel_params
     assert_response :not_found
 
     get fragment_session_mcp_app_path(@session, "toolu_01"), params: panel_params
     assert_response :not_found
+
+    post rpc_session_mcp_app_path(@session, "toolu_01", transcript_index: 0),
+      params: { method_name: "tools/call", params: { name: "roll_dice" } }, as: :json
+    assert_response :not_found
+
+    post message_session_mcp_app_path(@session, "toolu_01", transcript_index: 0),
+      params: { text: "hi", kind: "message" }, as: :json
+    assert_response :not_found
+  end
+
+  test "a view that floods the proxy is throttled rather than forwarded" do
+    McpApps::RequestThrottle.expects(:allow?).with(@session, "rpc").returns(false)
+    @client.expects(:call_tool).never
+
+    post rpc_session_mcp_app_path(@session, "toolu_01", transcript_index: 0),
+      params: { method_name: "tools/call", params: { name: "roll_dice" } }, as: :json
+
+    assert_response :success
+    assert_match "faster than Zimmer will forward", response.parsed_body.dig("error", "message")
+  end
+
+  test "a view that floods the agent is throttled rather than delivered" do
+    McpApps::RequestThrottle.expects(:allow?).with(@session, "message").returns(false)
+    AgentSessionJob.expects(:enqueue_with_prompt).never
+
+    post message_session_mcp_app_path(@session, "toolu_01", transcript_index: 0),
+      params: { text: "roll again", kind: "message" }, as: :json
+
+    assert_response :too_many_requests
   end
 
   test "nothing resolves for a server nobody opted in" do

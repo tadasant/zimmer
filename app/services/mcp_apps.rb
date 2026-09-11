@@ -28,9 +28,10 @@
 #
 # Off by default, and per-server opt-in on top of that — see Policy.
 module McpApps
-  # The MCP Apps protocol revision Zimmer's host implementation speaks, as sent
-  # in the `ui/initialize` result.
-  PROTOCOL_VERSION = "2026-01-26"
+  # There is no protocol-version constant here on purpose. `ui/initialize` is
+  # answered in the browser, by mcp_app_host_controller.js, which negotiates
+  # against its own list — a second copy on this side would be a fact nothing
+  # reads and nothing keeps true.
 
   # Where the extension hangs its metadata on a tool, a resource, or a tool
   # result. The spec's own key is the reverse-DNS one; `ui` is the shorthand the
