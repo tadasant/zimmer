@@ -554,7 +554,7 @@ class InferenceController < ApplicationController
 
     result = QuotaCheckService.check_with_token(token)
 
-    if !result.success? && result.error_message&.include?("401") && account.can_refresh_token?
+    if !result.success? && result.credential_refused? && account.can_refresh_token?
       if account.refresh_token!
         account.reload
         token = account.claude_access_token

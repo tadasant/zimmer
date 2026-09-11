@@ -558,7 +558,10 @@ class AuthOutageParkService
   # @return [String, nil] nil if the pool could not be read at all
   def self.pool_fingerprint(runtime)
     parts = RuntimeAuthProvider.for(runtime).accounts.available.map do |account|
-      "#{account.id}:#{Digest::SHA256.hexdigest(account.oauth_config.to_json)}:#{account.credential_rejected?}"
+      part = "#{account.id}:#{Digest::SHA256.hexdigest(account.oauth_config.to_json)}"
+      # Appended only when true, so an account with no refusal hashes exactly as
+      # it did before the flag existed and parks already on disk keep matching.
+      account.credential_rejected? ? "#{part}:refused" : part
     end
 
     OpenSSL::HMAC.hexdigest("SHA256", Rails.application.secret_key_base.to_s, parts.sort.join("|"))

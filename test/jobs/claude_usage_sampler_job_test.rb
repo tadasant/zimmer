@@ -376,6 +376,7 @@ class ClaudeUsageSamplerJobTest < ActiveSupport::TestCase
 
   test "a 401 takes the account out of the pool; an unreachable Anthropic does not" do
     serving = account("serving@example.com", current: true)
+    ClaudeAccount.any_instance.stubs(:refresh_token!).returns(false)
     QuotaCheckService.stubs(:check_with_token).returns(
       QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
         error_message: "No rate-limit headers in response (HTTP 401).")
@@ -411,6 +412,35 @@ class ClaudeUsageSamplerJobTest < ActiveSupport::TestCase
 
     assert_equal :verified, serving.reload.credential_state
     assert ClaudeAccount.any_serviceable_for?(ClaudeAuthProvider::RUNTIME)
+  end
+
+  test "a refused token gets one repair refresh, and only one, however many ticks see it" do
+    serving = account("serving@example.com", current: true)
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401).")
+    )
+    # A refresh that fails leaves the token — and so the verdict — where it was.
+    # A refresh that succeeded would write a new token and retire the verdict,
+    # which is a new token death and earns its own single repair.
+    ClaudeAccount.any_instance.expects(:refresh_token!).once.returns(false)
+
+    ClaudeUsageSamplerJob.perform_now
+    assert_equal :rejected, serving.reload.credential_state
+
+    ClaudeUsageSamplerJob.perform_now
+    ClaudeUsageSamplerJob.perform_now
+  end
+
+  test "an answered failure that is not about authentication spends no refresh" do
+    account("serving@example.com", current: true)
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 400,
+        error_message: "No rate-limit headers in response (HTTP 400).")
+    )
+    ClaudeAccount.any_instance.expects(:refresh_token!).never
+
+    ClaudeUsageSamplerJob.perform_now
   end
 
   def stub_probe

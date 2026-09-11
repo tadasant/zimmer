@@ -523,6 +523,14 @@ class AccountRotationService
   # account is dead" would park every session on the instance at once.
   def usable_candidate?(account)
     probed_token = account.claude_access_token
+    # Nothing to present, so nothing a session could be handed. `available` only
+    # requires a non-empty oauth_config, which a row holding just an identity
+    # satisfies.
+    if probed_token.blank?
+      @logger.warn("Candidate holds no access token, skipping during bootstrap", email: account.email)
+      return false
+    end
+
     result = QuotaCheckService.check_with_token(probed_token)
 
     # The repair refresh is spent once per recorded refusal, not once per spawn.
@@ -533,7 +541,7 @@ class AccountRotationService
     # account has a working refresh endpoint and a dead subscription spends a
     # single-use token on every session spawn, forever — the shape #242 is about,
     # arrived at from a different direction.
-    if result.rejected? && account.can_refresh_token? && !account.credential_rejected?
+    if result.credential_refused? && account.can_refresh_token? && !account.credential_rejected?
       @logger.info("Candidate's token was refused, refreshing before deciding", email: account.email)
       account.refresh_token!
       account.reload
@@ -556,15 +564,21 @@ class AccountRotationService
       return false
     end
 
-    if result.unreachable?
-      @logger.warn("Could not reach Anthropic to validate the candidate, promoting it unvalidated",
+    if result.credential_refused?
+      @logger.warn("Candidate's tokens were rejected by Anthropic, skipping during bootstrap",
         email: account.email, error: result.error_message)
-      return true
+      return false
     end
 
-    @logger.warn("Candidate's tokens were rejected by Anthropic, skipping during bootstrap",
-      email: account.email, error: result.error_message)
-    false
+    # Unreachable, or answered with something that is not about authentication —
+    # a 400 for a retired probe model, a 404, a proxy stripping the rate-limit
+    # headers. Neither is a verdict on the credential, and skipping on one would
+    # skip EVERY candidate at once: an Anthropic-side change becoming an
+    # instance that cannot spawn. The same line the recorded verdict draws; see
+    # QuotaCheckService::Result#credential_refused?.
+    @logger.warn("Could not validate the candidate against Anthropic, promoting it unvalidated",
+      email: account.email, error: result.error_message, unreachable: result.unreachable?)
+    true
   end
 
   # True when the account's most recent quota reading says its weekly allowance is

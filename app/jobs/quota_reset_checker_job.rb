@@ -100,7 +100,7 @@ class QuotaResetCheckerJob < ApplicationJob
 
     # On 401, the access token may have been invalidated server-side.
     # Try refreshing and retry once.
-    if !result.success? && result.error_message&.include?("401") && account.can_refresh_token?
+    if !result.success? && result.credential_refused? && account.can_refresh_token?
       if account.refresh_token!
         account.reload
         token = account.claude_access_token
