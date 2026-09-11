@@ -156,12 +156,17 @@ module Mcp
         # cause — so it is reported apart rather than charged to the budget
         # ceiling.
         preempted_count = SpotSessionPause.preempted_count
+        # The starvation lane's reading — the same object the /inference card
+        # renders, so the two report the same ceiling, the same count past it and
+        # the same occupant.
+        starvation = SpotHoldExplanation::Starvation.read(setting: setting)
         explanation = SpotHoldExplanation.new(
           decision,
           paused_count: paused_count,
           held_count: held_count,
           overdue_hold_count: overdue_hold_count,
-          preempted_count: preempted_count
+          preempted_count: preempted_count,
+          starvation: starvation
         )
         # The same reading the /inference top-up card renders, from the same
         # object, so a human on the page and an agent on this tool are told the
@@ -181,6 +186,7 @@ module Mcp
           "#{worker_pool_note(setting.spot_max_concurrent_sessions)}",
           "- **Priority preemption:** #{setting.spot_preemption_enabled ? "on" : "off"} — " \
           "#{setting.spot_preemption_enabled ? "a priority session starting into a full fleet takes the slot off the lowest-ranked running spot session, which sleeps in the spot queue and is resumed when a slot frees" : "a priority session starting into a full fleet runs one over the limit instead of taking a slot off a running spot session"}",
+          "- **Starvation age ceiling:** #{starvation_ceiling_phrase(setting)}",
           "",
           "### Current decision",
           "",
@@ -211,7 +217,12 @@ module Mcp
           # same thing about who is asleep and whose ladder has stopped.
           "- **Spot sessions held before a turn:** #{held_count}" \
           "#{overdue_hold_count.positive? ? ", #{overdue_hold_count} of them overdue for a re-check" : ''}. " \
-          "#{explanation.sessions_held}"
+          "#{explanation.sessions_held}",
+          # The starvation lane, beside the population it bounds. Rendered whether
+          # or not anyone is starved: "none past the ceiling, lane free" is the
+          # answer to "is anything waiting without bound", which nothing used to
+          # answer (tadasant/zimmer#693).
+          "- **Spot starvation:** #{explanation.sessions_starved}"
         ]
 
         if decision.pool_size
@@ -298,6 +309,20 @@ module Mcp
 
         " — NOTE: the `agents` pool runs #{RunningTurns.worker_slots} turns at once, so this number " \
           "cannot be reached and #{RunningTurns.effective_ceiling(configured)} is the effective ceiling"
+      end
+
+      # The one bound on how long a hold lasts, and the one hole in the budget
+      # ceiling — named as both.
+      def starvation_ceiling_phrase(setting)
+        hours = setting.spot_starvation_age_ceiling_hours
+        if hours.zero?
+          "off (0) — a held spot session waits as long as the window stays over its ceiling, with no bound"
+        else
+          "#{hours}h — a spot session held longer than this is admitted by the starvation lane: one " \
+            "session at a time, past the quota ceilings only (never past the concurrency limit), for " \
+            "that one turn, and recorded on the session as admitted by the lane rather than by the gate. " \
+            "Set it with `action_spot_policy` (`starvation_age_ceiling_hours`; 0 turns the lane off)"
+        end
       end
 
       # The clock the threshold is measured against, and the one the card renders

@@ -17,6 +17,9 @@ class AppSettingDashboard < Administrate::BaseDashboard
     # Whether a priority session may take a slot off a running spot session when
     # the fleet is at that limit — SpotPreemption.
     spot_preemption_enabled: Field::Boolean,
+    # How long a held spot session waits before the starvation lane admits its
+    # turn — SpotSessionHold. 0 is off.
+    spot_starvation_age_ceiling_hours: Field::Number,
     spot_reserve_five_hour_pct: Field::Number,
     spot_reserve_weekly_pct: Field::Number,
     # The quota pool's cached verdict, and when it last flipped.

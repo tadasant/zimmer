@@ -4266,6 +4266,85 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-spot-hold-recheck]", text: /Next check/
   end
 
+  # The two numbers that tell a session held twice from one held 127 times used
+  # to live only in the metadata, and nothing thresholded on them
+  # (tadasant/zimmer#693). The banner says how long and how many, and where that
+  # stands against the starvation age ceiling.
+  test "the spot hold banner says how long the session has waited and names the age ceiling" do
+    AppSetting.editable.update!(spot_starvation_age_ceiling_hours: 24)
+    session = Session.create!(
+      prompt: "Fix the bug", status: :waiting, scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::HELD_AT => 30.minutes.ago.iso8601,
+      SpotSessionHold::HELD_SINCE => 5.days.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: weekly window has spent its spot budget.",
+      SpotSessionHold::HELD_RETRY_AT => 30.minutes.from_now.iso8601,
+      SpotSessionHold::HELD_COUNT => 127,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-waiting]", text: /5 days.*127 holds so far/m
+    assert_select "[data-spot-hold-waiting]", text: /past the 24 hours starvation age ceiling/
+  end
+
+  # A session running while /inference says "spot sessions held" has to explain
+  # itself, or the gate looks like it leaked.
+  test "a session the starvation lane admitted says so on its page" do
+    session = Session.create!(
+      prompt: "Fix the bug", status: :running, scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::STARVATION_ADMITTED_AT => 10.minutes.ago.iso8601,
+      SpotSessionHold::STARVATION_ADMITTED_AFTER_HOLDS => 127,
+      SpotSessionHold::STARVATION_ADMITTED_AFTER_SECONDS => 5.days.to_i
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-starvation-admission]", text: /Admitted by the starvation lane/
+    assert_select "[data-spot-starvation-admission]", text: /held it 127 times over 5 days/
+    assert_select "[data-spot-starvation-admission]", text: /It runs to its end/
+    assert_select "[data-spot-hold-banner]", false
+
+    session.update!(status: :needs_input)
+    get session_url(session)
+    assert_select "[data-spot-starvation-admission]", text: /That turn has ended/
+  end
+
+  # A fleet-cap hold is never admitted by the lane, and the banner must not say
+  # it will be — a fleet permanently full of priority work is the documented
+  # unbounded case, and those sessions would be told the wrong thing forever.
+  test "the spot hold banner does not promise the lane to a fleet-cap hold, however old" do
+    session = Session.create!(
+      prompt: "Fix the bug", status: :waiting, scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::HELD_AT => 30.minutes.ago.iso8601,
+      SpotSessionHold::HELD_SINCE => 5.days.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 8 of 8 session slots taken.",
+      SpotSessionHold::HELD_RETRY_AT => 20.minutes.from_now.iso8601,
+      SpotSessionHold::HELD_COUNT => 200,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-waiting]", text: /200 holds so far/
+    assert_select "[data-spot-hold-waiting]", text: /which the starvation lane does not override/
+    assert_select "[data-spot-hold-waiting]", text: /starvation lane admits it/, count: 0
+  end
+
   # One box, two spot records: the banner used to render whichever the HOLD keys
   # described, whatever the pause beside it said. Ranked now, like everything else.
   test "the spot hold banner renders the newer of a hold and a ceiling pause" do

@@ -67,6 +67,18 @@ class AppSetting < ApplicationRecord
   # operator moves in.
   DEFAULT_SPOT_PREEMPTION_ENABLED = true
 
+  # How long a spot session may sit HELD at the gate before the starvation lane
+  # admits its turn past a spent or over-paced quota window (SpotSessionHold).
+  # A day, because "deferred, never cancelled" has to have a bound for the
+  # second half to mean anything: session 8526 was held 127 times over five days
+  # under a gate that was right every time (tadasant/zimmer#693). Zero turns
+  # the lane off, which is the only setting that restores an unbounded wait.
+  DEFAULT_SPOT_STARVATION_AGE_CEILING_HOURS = 24
+
+  # The widest the ceiling may be set. A month is past any window Claude sells;
+  # an operator who wants the lane off has 0 for it.
+  MAX_SPOT_STARVATION_AGE_CEILING_HOURS = 720
+
   # How few sessions the fleet has to be running before `no_sessions_in_progress`
   # counts it as idle enough to take more work. The count is sessions actually
   # `running` and nothing else, and the test is strictly BELOW this number — so 1
@@ -110,6 +122,7 @@ class AppSetting < ApplicationRecord
     spot_reserve_weekly_pct
     spot_max_concurrent_sessions
     spot_preemption_enabled
+    spot_starvation_age_ceiling_hours
     fleet_idle_max_sessions
     fleet_idle_threshold_minutes
     fleet_idle_min_fire_interval_minutes
@@ -182,6 +195,15 @@ class AppSetting < ApplicationRecord
     end
     alias_method :spot_preemption_enabled?, :spot_preemption_enabled
 
+    # Moot for the same reason, and answered for the same reason.
+    def spot_starvation_age_ceiling_hours
+      DEFAULT_SPOT_STARVATION_AGE_CEILING_HOURS
+    end
+
+    def spot_starvation_age_ceiling
+      DEFAULT_SPOT_STARVATION_AGE_CEILING_HOURS.hours
+    end
+
     # No persisted row exists, so the fleet top-up policy resolves to its shipped
     # numbers. A DB-less boot fires nothing anyway — FleetIdleMonitor bails on an
     # unreadable fleet — but the readers have to answer.
@@ -241,6 +263,10 @@ class AppSetting < ApplicationRecord
   # what turning the gate off (or setting a target of 0) is for.
   validates :spot_max_concurrent_sessions,
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 100 }
+  # Zero is a real setting — the lane off — so the floor is 0, not 1.
+  validates :spot_starvation_age_ceiling_hours,
+    numericality: { only_integer: true, greater_than_or_equal_to: 0,
+                    less_than_or_equal_to: MAX_SPOT_STARVATION_AGE_CEILING_HOURS }
   # At least one, for the same reason: the test is `running_sessions < ceiling`,
   # so a ceiling of 0 can never be satisfied and the event would never fire again.
   # 1 means "nothing running".
@@ -400,6 +426,22 @@ class AppSetting < ApplicationRecord
     !!self[:spot_preemption_enabled]
   end
   alias_method :spot_preemption_enabled?, :spot_preemption_enabled
+
+  # The starvation lane's age ceiling, in hours, with the same
+  # schema-predates-the-migration guard as the switch above. 0 means the lane
+  # is off.
+  def spot_starvation_age_ceiling_hours
+    return DEFAULT_SPOT_STARVATION_AGE_CEILING_HOURS unless has_attribute?(:spot_starvation_age_ceiling_hours)
+
+    self[:spot_starvation_age_ceiling_hours].to_i
+  end
+
+  # The same number as a duration, or nil when the lane is off — so a caller
+  # asks one question ("is there a ceiling, and what is it") rather than two.
+  def spot_starvation_age_ceiling
+    hours = spot_starvation_age_ceiling_hours
+    hours.positive? ? hours.hours : nil
+  end
 
   def session_scoped_credentials_enabled?
     return DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED unless has_attribute?(:session_scoped_credentials_enabled)

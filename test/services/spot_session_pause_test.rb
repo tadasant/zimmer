@@ -133,6 +133,21 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert session.reload.running?
   end
 
+  # The `spot_budget` ceiling is the one that starved sessions 8526 and 8657
+  # (tadasant/zimmer#693). A turn the starvation lane admitted past it would be
+  # paused on the next tick, and the lane would have admitted nothing.
+  test "a turn the starvation lane admitted is not paused" do
+    seed(current_5h: 0.99)
+    admitted = running_session(metadata: { SpotSessionHold::STARVATION_ADMITTED_AT => 5.minutes.ago.utc.iso8601 })
+    ordinary = running_session
+
+    result = SpotSessionPause.sweep!
+
+    assert_equal 1, result.paused, "the lane exempts ONE turn, not the fleet"
+    assert admitted.reload.running?
+    assert ordinary.reload.waiting?
+  end
+
   test "a status summary fork is not paused" do
     seed(current_5h: 0.99)
     session = running_session(metadata: { SessionStatusSummaryGenerator::FORK_MARKER => 123 })

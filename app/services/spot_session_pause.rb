@@ -92,7 +92,8 @@
 # Only sessions that resolve to `spot` are eligible, and only on the Claude Code
 # runtime — a Codex session spends nothing against a Claude window. Status
 # summary forks are excluded too: they are Zimmer's own bookkeeping, they last
-# seconds, and pausing one strands the blurb it exists to write.
+# seconds, and pausing one strands the blurb it exists to write. And a turn the
+# starvation lane admitted is left to finish — see #pausable_sessions.
 class SpotSessionPause
   # Metadata keys written by a pause, cleared by the resume.
   PAUSED_AT = "spot_pause_at"
@@ -222,9 +223,18 @@ class SpotSessionPause
     end
 
     # Running spot sessions this service may pause, oldest first.
+    #
+    # A turn the starvation lane admitted is left out. That turn was admitted
+    # PAST a window the gate said was spent, so this sweep's own decision would
+    # pause it on the next tick and the lane would have admitted nothing — the
+    # `spot_budget` ceiling is exactly the one that starved sessions 8526 and
+    # 8657 (tadasant/zimmer#693). The lane is one session wide, so the most this
+    # exemption leaves running over the line is one session's burn; see
+    # SpotSessionHold's "A hold has an age ceiling".
     def pausable_sessions
       Session.spot
         .where(status: :running, agent_runtime: ClaudeAuthProvider::RUNTIME)
+        .where("metadata->>? IS NULL", SpotSessionHold::STARVATION_ADMITTED_AT)
         .excluding_status_summary_forks
         .order(:id)
     end
