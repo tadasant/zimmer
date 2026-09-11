@@ -68,3 +68,7 @@
 # content, not by this path, and will fail the build.
 # See docs/operate/deploying.md, "The docs never ship in the image".
 /docs
+
+# The browser extension is loaded unpacked into a browser from a checkout; the
+# Rails image never serves it. See docs/extend/browser-extension.md.
+/browser-extension

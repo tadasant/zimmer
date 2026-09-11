@@ -63,7 +63,7 @@ class Api::BaseController < ActionController::API
   # refusal that names a known key — revoked, or taken out of API_KEYS — is WARN,
   # so it ships to obs: that is a leaked or forgotten credential still being tried.
   def authenticate_api_key
-    authentication = ApiKey.authenticate(api_key_from_request)
+    authentication = ApiKey.authenticate(api_key_from_request, grant: api_key_grant)
 
     if authentication.authenticated?
       Rails.logger.info("[api_key] #{request.request_method} #{request.path} authenticated as #{api_key_label(authentication.api_key)}")
@@ -80,6 +80,15 @@ class Api::BaseController < ActionController::API
     request.headers["X-API-Key"]
   end
 
+  # Which ApiKey grant opens this controller. The whole API, unless a subclass
+  # says otherwise — and the only one that does is the Quick Router ingest,
+  # which honours the browser extension's `quick_router` keys and nothing else.
+  # The match is exact in both directions, so overriding this narrows a
+  # controller to one kind of key rather than adding one.
+  def api_key_grant
+    ApiKey::API_GRANT
+  end
+
   def log_api_key_refusal(authentication)
     line = "[api_key] #{request.request_method} #{request.path} refused from #{request.remote_ip}: "
 
@@ -88,6 +97,10 @@ class Api::BaseController < ActionController::API
       Rails.logger.warn("#{line}#{api_key_label(authentication.api_key)} was revoked at #{authentication.api_key.revoked_at.iso8601}")
     when :retired
       Rails.logger.warn("#{line}#{api_key_label(authentication.api_key)} is no longer in #{ApiKey::ENV_VAR}")
+    when :wrong_grant
+      # A `quick_router` key trying the API is the browser extension's credential
+      # being used for something the extension never does.
+      Rails.logger.warn("#{line}#{api_key_label(authentication.api_key)} has grant #{authentication.api_key.grant}, not #{api_key_grant}")
     when :missing
       Rails.logger.info("#{line}no API key")
     else

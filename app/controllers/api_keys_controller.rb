@@ -32,7 +32,7 @@ class ApiKeysController < ApplicationController
   # which is to say, the session cookie. `no-store` keeps it out of the browser's
   # HTTP cache, and the view exempts the page from Turbo's snapshot cache.
   def create
-    @api_key, @minted_token = ApiKey.mint!(name: submitted_name)
+    @api_key, @minted_token = ApiKey.mint!(name: submitted_name, grant: submitted_grant)
     log_lifecycle("minted", @api_key)
     response.headers["Cache-Control"] = "no-store"
     load_page
@@ -70,9 +70,19 @@ class ApiKeysController < ApplicationController
     submitted[:name] if submitted.is_a?(ActionController::Parameters)
   end
 
+  # `api_key[grant]` from the form. Anything but a known grant becomes the
+  # widest one, so a tampered value cannot mint a key with a grant nothing
+  # honours — and the model refuses a value outside GRANTS regardless.
+  def submitted_grant
+    submitted = params[:api_key]
+    grant = submitted[:grant].to_s if submitted.is_a?(ActionController::Parameters)
+    ApiKey::GRANTS.include?(grant) ? grant : ApiKey::API_GRANT
+  end
+
   def render_create_error(messages)
     @create_errors = messages
     @attempted_name = submitted_name
+    @attempted_grant = submitted_grant
     load_page
     render :index, status: :unprocessable_entity
   end
@@ -101,7 +111,7 @@ class ApiKeysController < ApplicationController
   # is the audit trail this page exists to give.
   def log_lifecycle(verb, api_key)
     Rails.logger.warn(
-      "[api_key] #{verb} #{api_key.name.inspect} (api_key_id=#{api_key.id}, source=#{api_key.source}) " \
+      "[api_key] #{verb} #{api_key.name.inspect} (api_key_id=#{api_key.id}, source=#{api_key.source}, grant=#{api_key.grant}) " \
       "from the settings page, #{request.remote_ip}"
     )
   end

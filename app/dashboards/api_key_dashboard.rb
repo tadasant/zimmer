@@ -5,6 +5,7 @@ class ApiKeyDashboard < Administrate::BaseDashboard
     id: Field::Number,
     name: Field::String,
     source: Field::String,
+    grant: Field::String,
     last_used_at: Field::DateTime,
     revoked_at: Field::DateTime,
     created_at: Field::DateTime,
@@ -26,6 +27,7 @@ class ApiKeyDashboard < Administrate::BaseDashboard
     id
     name
     source
+    grant
     last_used_at
     revoked_at
   ].freeze
