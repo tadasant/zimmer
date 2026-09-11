@@ -181,7 +181,7 @@ class AoEventTriggerJobAccountTest < ActiveJob::TestCase
 
   # The circularity: reporting a dead account needs a live one to spawn the
   # session with. When the pool is empty enough that the spawn fails, the failure
-  # is not silent — it reaches #eng-alerts, which needs no account at all.
+  # is not silent — it reaches #alerts, which needs no account at all.
   test "an unspawnable session still reaches a human through the alert channel" do
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("no usable account in the pool"))
     alerted = false

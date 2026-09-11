@@ -28,7 +28,10 @@ if ENV["SENTRY_DSN_BACKEND"].present?
 
     # Only these environments may send. Any other Rails.env (test, development,
     # or an ad-hoc one) drops events at the client, DSN present or not.
-    config.enabled_environments = %w[production staging]
+    # `ErrorReporter::ALERTING_ENVIRONMENTS` names the same list for the boot-time
+    # check in obs_reporting_health_check.rb; test/initializers/sentry_test.rb pins
+    # that the two agree.
+    config.enabled_environments = ErrorReporter::ALERTING_ENVIRONMENTS
 
     config.breadcrumbs_logger = [ :active_support_logger, :http_logger ]
 

@@ -79,10 +79,17 @@ class UnclassifiedFailureReporter
         source: source,
         session_id: session&.id,
         unmatched_output: output,
-        details: alert_details(kind: kind, summary: summary, session: session)
+        # Newlines flattened: this rides in a single formatted log line as well as
+        # in the reported context, and a multi-paragraph value would turn one ERROR
+        # record into several lines that nothing reassembles.
+        details: alert_details(kind: kind, summary: summary, session: session).squish
       }.compact
 
       if logger.is_a?(StructuredLogger)
+        # One call, both halves. It writes the record first and reports second, so a
+        # logger that raises loses the GlitchTip half — that is StructuredLogger's
+        # own ordering, shared by every caller of it, and not something to work
+        # around here with a second report that would open a second issue.
         logger.error(message, **fields)
       else
         # Reported before the log line, not after: ErrorReporter swallows its own

@@ -667,7 +667,7 @@ drained"](#one-predicate-for-is-the-pool-drained).
 `needs_reauth` is the one account failure Zimmer cannot recover from. The refresh token is
 permanently invalid, the pool quietly stops drawing on the account, and everything keeps working —
 with a smaller pool. Nothing surfaces it: the failure is logged at `.warn` precisely so it does *not*
-page `#eng-alerts` (a channel alert for a condition only a human can clear is noise), and
+page `#alerts` (a channel alert for a condition only a human can clear is noise), and
 `recover_needs_reauth` re-probes it forever without ever succeeding. The account just sits dead on
 `/inference` until somebody happens to open the page.
 
@@ -745,7 +745,7 @@ means spawning a session, and spawning a session needs a usable account. One dea
 is fine. A pool where *every* account is dead cannot spawn the session that would say so — and the
 seeded trigger is `priority` rather than the `spot` that `ao_event` derives, precisely so the one
 session whose job is to report a dead pool is not also gated behind a healthy one. When the spawn
-fails anyway, `AoEventTriggerJob#handle_fire_failure` alerts `#eng-alerts`, which needs no account at
+fails anyway, `AoEventTriggerJob#handle_fire_failure` alerts `#alerts`, which needs no account at
 all. That is the floor: a channel post rather than a DM, but not silence.
 
 ```mermaid
@@ -760,7 +760,7 @@ flowchart LR
     E --> T[ao_event Trigger]
     T --> G[general-agent session<br/>+ slack-workspace MCP]
     G --> DM[Slack DM to the operator]
-    T -.->|spawn failed:<br/>the pool has nothing left| A[#eng-alerts]
+    T -.->|spawn failed:<br/>the pool has nothing left| A[#alerts]
     RC[recover_needs_reauth<br/>restore] -.->|update_columns:<br/>skips callbacks| S
     H[human re-auths<br/>LoginDriver#capture!] -->|clear_reauth_alert!| D
 ```

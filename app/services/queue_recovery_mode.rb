@@ -376,10 +376,18 @@ class QueueRecoveryMode
       )
     end
 
-    # The queues resumed but Zimmer could not confirm it. This is the one condition
-    # here that no timer resolves on its own, so it emits an ERROR record on every
-    # backstop tick that retries -- which is what keeps it paging while it lasts,
-    # since the title names the stuck set and Grafana re-pages a live alert.
+    # The queues resumed but Zimmer could not confirm it -- the one condition here
+    # that no timer resolves on its own.
+    #
+    # `log_only: true`, and that is the whole difference from the other three. This
+    # runs on every retried exit, including the web backstop's, which reconciles at
+    # most every RECOVERY_MODE_RECONCILE_INTERVAL on an ordinary page load: a stuck
+    # set can therefore reach here twice a minute for as long as it lasts. The ERROR
+    # record is what pages, and Grafana collapses those into one notification per
+    # group interval; a GlitchTip event per retry would buy nothing on top of that
+    # (the issue is notified once either way) and would put thousands of events
+    # behind one issue. The line above this call already logs the same fact with the
+    # structured queue context, so `deliver_alert` here is the human-readable half.
     def alert_stuck(before, stuck:)
       deliver_alert(
         "Queue recovery mode could NOT resume #{stuck.join(", ")}",
@@ -389,7 +397,8 @@ class QueueRecoveryMode
           "on each backstop tick; if it does not clear, unpause them by hand in the GoodJob dashboard at `/jobs`.",
           before.entered_at.present? ? "Halted since: #{before.entered_at.iso8601}" : nil
         ].compact.join("\n"),
-        context: { stuck_queues: stuck.sort.join(",") }
+        context: { stuck_queues: stuck.sort.join(",") },
+        log_only: true
       )
     end
 
@@ -418,8 +427,13 @@ class QueueRecoveryMode
     # are each worth a human's attention, and each fires at most once per transition.
     # If emitting fails, say so and carry on -- the transition already happened, and
     # a missing alert must not look like a failed exit.
-    def deliver_alert(title, details:, context: {})
+    # @param log_only [Boolean] emit the ERROR record (which is the page) but no
+    #   GlitchTip event. For a condition that re-reports on every retry rather than
+    #   once per transition -- see alert_stuck.
+    def deliver_alert(title, details:, context: {}, log_only: false)
       Rails.logger.error("[queue_recovery_mode] #{title}: #{details.tr("\n", " ")}")
+      return if log_only
+
       ErrorReporter.report_message(
         title,
         level: :error,

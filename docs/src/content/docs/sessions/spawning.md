@@ -977,7 +977,7 @@ flowchart TD
     F -->|yes| FR["restart from scratch"]
     F -->|no| SD{"signal_death_exit?<br/>(SIGKILL/OOM, non-SIGTERM)"}
     SD -->|yes| SDR["handle_signal_death<br/>resume same session<br/>(budget: 3)"]
-    SD -->|no| FAIL["unclassified:<br/>alert #eng-alerts<br/>fail! → failed"]
+    SD -->|no| FAIL["unclassified:<br/>alert #alerts<br/>fail! → failed"]
     CR --> P
     AR --> P
     RT --> P
@@ -1105,7 +1105,7 @@ written up in the code. See
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 
 Falling off the end of that list is now loud. When none of the questions above answer yes,
-`UnclassifiedFailureReporter` logs and raises an `#eng-alerts` alert carrying the stderr tail
+`UnclassifiedFailureReporter` logs and raises an `#alerts` alert carrying the stderr tail
 and any transcript API-error text no pattern matched, before the session fails as it always
 did. It also fires on the inverse: a classifier that says a recovery path applies while that
 path's service reports it does not. Dedup is keyed on the failure *shape* — runtime plus exit
@@ -1225,7 +1225,7 @@ is the worst conditions for escaping the failure mode. A respawn is a materially
 
 What a retry cannot fix is a *deterministically* unserializable payload — an oversized tool argument
 that fails identically every time. `MAX_RETRIES` bounds that, and a ladder spent this way fails the
-session **and** pages `#eng-alerts` under "Malformed tool call survived every retry", deduped per
+session **and** pages `#alerts` under "Malformed tool call the retry ladder did not clear", grouped per
 runtime. Deliberately louder than the generic exhausted ladder, which just fails with
 `api_error_retries_exhausted`: an exhausted 5xx ladder means the API was down for half an hour, but
 an exhausted malformed-tool-call ladder means Zimmer classified something as transient that isn't.

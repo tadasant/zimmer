@@ -2265,10 +2265,10 @@ class Trigger < ApplicationRecord
     if successor
       update_column(:agent_root_name, successor.name)
 
-      # Log-only, no #eng-alerts page: a found successor is matched on an exact
+      # Log-only, no #alerts page: a found successor is matched on an exact
       # git_root + subdirectory match (see find_agent_root_successor), so it is
       # the SAME code location under a new catalog name — repointing is
-      # impact-free and needs no human action. Paging #eng-alerts on every
+      # impact-free and needs no human action. Paging #alerts on every
       # successful heal is pure noise, and it recurs indefinitely for
       # self-waking sessions whose one-time wake triggers are recreated each
       # fire carrying a legacy/renamed root name. The .warn line is shipped to

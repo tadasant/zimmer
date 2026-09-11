@@ -353,12 +353,14 @@ class EnqueuedMessageDrainJob < ApplicationJob
     )
   end
 
-  # Reported inline. This method is reached from give_up, whose caller may be inside
-  # EnqueuedMessageProcessorService's transaction on a failed delivery — a
-  # transaction holding `lock!` on this session's row — so anything that blocks here
-  # blocks any concurrent interrupt on the one session already in trouble. Neither
-  # half of the emission does: the log record is local, and ErrorReporter hands its
-  # event to the Sentry SDK's background worker.
+  # Reported AFTER any open transaction commits. This method is reached from give_up,
+  # whose caller may be inside EnqueuedMessageProcessorService's transaction on a
+  # failed delivery, and a page saying a queue is undeliverable is a page about
+  # persisted state — it must not go out for a transaction that then rolled back.
+  # after_all_transactions_commit runs the block immediately when no transaction is
+  # open, which is the ordinary case here, so nothing is deferred that does not need
+  # to be. (This job opens no transaction and takes no advisory lock of its own —
+  # see the class header.)
   def alert_on_undeliverable_queue(session_id, count, status)
     details = "Session #{session_id} is at rest (#{status}) with #{count} message(s) still queued. " \
               "#{MAX_ATTEMPTS} attempts to deliver them failed, so the session is sitting idle on work " \
@@ -366,25 +368,27 @@ class EnqueuedMessageDrainJob < ApplicationJob
               "session takes — but nothing is going to give it one on its own.\n\n" \
               "#{AppUrl.base_url}/sessions/#{session_id}"
 
-    Rails.logger.error(
-      "[EnqueuedMessageDrainJob] Session idle with an undeliverable queued message: " \
-      "session #{session_id} (#{status}), #{count} message(s)"
-    )
-    ErrorReporter.report_message(
-      "Session idle with an undeliverable queued message",
-      level: :error,
-      context: {
-        source: "EnqueuedMessageDrainJob",
-        details: details,
-        session_id: session_id,
-        queued_count: count
-      }
-    )
-  rescue => e
-    # Reached from give_up, which has its own rescue but must not be made to care.
-    Rails.logger.error(
-      "[EnqueuedMessageDrainJob] Failed to alert on an undeliverable queue for session #{session_id}: " \
-      "#{e.class}: #{e.message}"
-    )
+    ActiveRecord.after_all_transactions_commit do
+      Rails.logger.error(
+        "[EnqueuedMessageDrainJob] Session idle with an undeliverable queued message: " \
+        "session #{session_id} (#{status}), #{count} message(s)"
+      )
+      ErrorReporter.report_message(
+        "Session idle with an undeliverable queued message",
+        level: :error,
+        context: {
+          source: "EnqueuedMessageDrainJob",
+          details: details,
+          session_id: session_id,
+          queued_count: count
+        }
+      )
+    rescue => e
+      # The block outlives give_up's own rescue, so it needs its own.
+      Rails.logger.error(
+        "[EnqueuedMessageDrainJob] Failed to alert on an undeliverable queue for session #{session_id}: " \
+        "#{e.class}: #{e.message}"
+      )
+    end
   end
 end

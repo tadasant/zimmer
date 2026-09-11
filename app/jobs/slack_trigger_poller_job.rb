@@ -308,7 +308,12 @@ class SlackTriggerPollerJob < ApplicationJob
         level: :error,
         context: {
           source: "SlackTriggerPollerJob",
-          details: "Slack has been unavailable across #{MAX_DEFERRALS} deferred polls. Latest error:\n#{error.message}"
+          details: "Slack has been unavailable across #{MAX_DEFERRALS} deferred polls. Latest error:\n#{error.message}",
+          # report_message rather than report_exception: the incident is the outage,
+          # not the particular 429 that happened to be last, so the message is stable
+          # and every give-up lands in one issue. The class is what the exception
+          # would have contributed that the prose does not.
+          error_class: error.class.name
         }
       )
       return

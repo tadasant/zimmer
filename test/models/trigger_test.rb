@@ -2433,12 +2433,12 @@ class TriggerTest < ActiveSupport::TestCase
     assert_match(/no successor could be identified/, error.message)
   end
 
-  test "create_session! heals stale agent root without paging #eng-alerts" do
+  test "create_session! heals stale agent root without paging #alerts" do
     # A found successor is matched on an exact git_root + subdirectory match, so
     # it is the SAME code location under a renamed catalog entry — the repoint
     # is impact-free and needs no human action. The heal is recorded via a
     # .warn log (obs audit trail) but must NOT report an alert,
-    # which would spam #eng-alerts on every recurrence (e.g. self-waking
+    # which would spam #alerts on every recurrence (e.g. self-waking
     # sessions whose one-time wake triggers are recreated each fire carrying a
     # legacy/renamed root name). The unhealable branch still raises
     # AgentRootNotFoundError (→ .error → page), which IS correct — see the
@@ -2464,7 +2464,7 @@ class TriggerTest < ActiveSupport::TestCase
     AgentRootsConfig.stubs(:find!).with(new_root_name).returns(successor)
     AgentSessionJob.stubs(:enqueue_new_session)
 
-    # Successful self-heal must be silent on #eng-alerts.
+    # Successful self-heal must be silent on #alerts.
     ErrorReporter.expects(:report_message).never
 
     session = @trigger.create_session!(prompt: "Test prompt")

@@ -1501,8 +1501,9 @@ merge gate) quietly stop firing. Two mechanisms close that:
 - **A liveness check.** `GithubTriggerPollerJob` stamps a Redis heartbeat
   (`HEARTBEAT_CACHE_KEY`) on every sweep that processes at least one condition successfully.
   `GithubTriggerHealthCheckJob` reads it every 5 minutes and pages `#alerts` when it is older
-  than `STALE_THRESHOLD` (15m), under one stable dedup key so a long outage notifies about once an
-  hour rather than every run. This is the GitHub counterpart to `SlackTriggerHealthCheckJob`.
+  than `STALE_THRESHOLD` (15m). It reports the same message every run, so a long outage is one
+  GlitchTip issue and one Grafana alert group rather than a notification per run. This is the GitHub
+  counterpart to `SlackTriggerHealthCheckJob`.
 
 The heartbeat's bar is *"at least one condition came back clean"*, not *"`perform` returned"*: the
 per-condition `rescue` swallows errors so one bad condition can't abort the sweep, which means
