@@ -531,7 +531,7 @@ code:
 | `codex_error_info` (codex-cli 0.146.0) | Predicate | Recovery |
 | --- | --- | --- |
 | `context_window_exceeded`, or a raw 400 body naming `context_length_exceeded` | `context_length_error?` | resume; Codex compacts the thread itself |
-| `internal_server_error`, `server_overloaded`, any 429 or 5xx status | `api_error_for_retry?` | `ApiErrorRetryService` backoff |
+| `internal_server_error`, `server_overloaded`, any 429 or 5xx status, a transport code, or "stream disconnected before completion" | `api_error_for_retry?` | `ApiErrorRetryService` backoff |
 | `usage_limit_exceeded` | `api_error_for_retry?` | `ApiErrorRetryService` → `:quota_exceeded` → rotation |
 | `unauthorized`, or a 401 status | `auth_recovery_needed?` | `AuthRecoveryCoordinator` |
 | anything else | none | fail, and page with Codex's message |
@@ -552,16 +552,16 @@ Claude-shaped, and a new runtime can answer them too:
   Claude gets `/compact` and the continuation after it.
 
 Quota and auth need no new plumbing: `CodexAuthProvider#rotate_for_quota!` and the runtime-agnostic
-`AuthRecoveryCoordinator` were waiting for a classifier to route to them. The coordinator gains one
+`AuthRecoveryCoordinator` do the work once a classifier routes to them. The coordinator gains one
 Codex-specific branch, behind `RuntimeAuthProvider#refresh_proves_serviceable?`: Codex's
-`unauthorized` is only ever about the credential (quota has its own code), so when refreshing the
-account succeeds the session is re-seeded with it once, instead of rotating away from an account
-that works. A usage-limit refusal also leaves the account's rate-limit windows behind, which
-`ApiErrorRetryService` keeps as a quota snapshot so `QuotaResetCheckerJob` can restore the account
-once they reset. What is still open is in
+`unauthorized` is only ever about the credential (quota has its own code), so when refreshing an
+OAuth account succeeds the session is re-seeded with it once, instead of rotating away from an
+account that works; an API-key account, whose refresh is a no-op, rotates. A usage-limit refusal
+also leaves the account's rate-limit windows behind, which `ApiErrorRetryService` keeps as a quota
+snapshot so `QuotaResetCheckerJob` can restore the account once they reset. What is still open is in
 [Known limitations](/limitations/#codex-failure-classification-rests-on-one-cli-versions-record).
 
-Extension env contributions now reach every runtime: `CliSpawnEnv#apply_extension_env` is called
+Extension env contributions reach every runtime: `CliSpawnEnv#apply_extension_env` is called
 by all three adapters, with the runtime's own id in the context. `SubagentTranscript` resolves its
 normalizer through `TranscriptRuntime` like every other transcript read.
 

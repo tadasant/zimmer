@@ -41,6 +41,8 @@
 #   refresh token expired/revoked/used   unauthorized                             Your access token could not be refreshed because …
 #   401 after a successful refresh       other                                    unexpected status 401 Unauthorized: …
 #   400 invalid_value                    other                                    {"error": {… "code": "invalid_value"}}
+#   stream closed before completing      other                                    stream disconnected before completion: stream closed …
+#   connection refused                   other                                    stream disconnected before completion: error sending …
 #
 # Codex retries 5xx and 429 itself (five attempts) before it records the error,
 # so by the time one reaches Zimmer the request has already failed repeatedly —
@@ -58,7 +60,9 @@
 #
 # That is when a quota-exceeded Codex account can serve again, and #quota_reading
 # carries it to QuotaSnapshotService so QuotaResetCheckerJob can restore the
-# account once it passes.
+# account once it passes. A refusal without those headers gets a `token_count`
+# whose windows are null, and that is recorded too — as a refusal with no known
+# reset, so nothing restores the account on a guess.
 class CodexTurnError
   # The rollout records that say a turn started or stopped. The LAST of them
   # decides whether there is a terminal error at all: a `task_started` after the
@@ -67,8 +71,20 @@ class CodexTurnError
   TURN_LIFECYCLE_EVENTS = %w[task_started task_complete turn_aborted].freeze
 
   # Codex codes that are a transient upstream failure — the same class as a
-  # Claude 5xx / overloaded error.
-  RETRYABLE_CODES = %w[internal_server_error server_overloaded].freeze
+  # Claude 5xx / overloaded error. The first two were produced by the fake
+  # backend; the three transport codes are Codex's own names for a connection or
+  # stream that failed, from the same `codex_error_info` enum in the 0.146.0
+  # binary, and are retryable by what they name.
+  RETRYABLE_CODES = %w[
+    internal_server_error server_overloaded
+    http_connection_failed response_stream_connection_failed response_stream_disconnected
+  ].freeze
+
+  # How Codex words a request that never got a response — a stream that closed
+  # early, a connection refused — when it files it under `other` with no status.
+  # Both were produced against the real binary; both are the network, not the
+  # request, so both are worth another attempt.
+  TRANSPORT_FAILURE_MESSAGE = /\Astream disconnected before completion:/
 
   # `unexpected status 503 …` / `exceeded retry limit, last status: 429 …` — the
   # two forms Codex puts an HTTP status into prose with, used when the code is
@@ -79,26 +95,34 @@ class CodexTurnError
   # 400 body under `other`.
   CONTEXT_LENGTH_BODY_CODE = /"code"\s*:\s*"context_length_exceeded"/
 
-  # The quota reading this turn left behind, in the shape
+  # The `anthropic-ratelimit-unified-*-status` value ClaudeAccountQuotaSnapshot
+  # reads as "this window is refusing". A Codex refusal writes it on the windows
+  # it was refused on, so the snapshot keeps refusing until their reset passes —
+  # or, with no reset known, until a human re-activates the account.
+  REFUSED_STATUS = "rejected"
+
+  # The quota reading a refusal leaves behind, in the shape
   # QuotaSnapshotService.save_snapshot takes (QuotaCheckService::Result's
   # fields). Codex's primary window lands in the columns Claude's five-hour
   # window uses and its secondary window in the weekly ones;
   # ClaudeAccountQuotaSnapshot#windows_clear? — what the restore decides on —
-  # asks about reset times and counters, not window lengths.
-  QuotaReading = Data.define(:utilization_5h, :reset_5h, :utilization_7d, :reset_7d) do
+  # asks about reset times, statuses and counters, not window lengths.
+  QuotaReading = Data.define(:utilization_5h, :reset_5h, :status_5h, :utilization_7d, :reset_7d, :status_7d) do
     def subscription_type = nil
     def rate_limit_tier = nil
-    def status_5h = nil
-    def status_7d = nil
     def overage_status = nil
     def overage_disabled_reason = nil
 
-    # When the account can serve again: the latest reset among the windows at
-    # their cap, which is when ClaudeAccountQuotaSnapshot#windows_clear? turns true.
+    # When the account can serve again: the latest reset among the refused
+    # windows, which is when ClaudeAccountQuotaSnapshot#windows_clear? turns true.
+    # nil when a refused window has no reset time — then nothing restores it.
+    #
+    # @return [Time, nil]
     def restores_at
-      [ [ utilization_5h, reset_5h ], [ utilization_7d, reset_7d ] ]
-        .filter_map { |utilization, reset| reset if utilization.to_f >= 1.0 }
-        .max
+      resets = [ [ status_5h, reset_5h ], [ status_7d, reset_7d ] ]
+        .select { |status, _reset| status == REFUSED_STATUS }
+        .map(&:last)
+      resets.all? ? resets.max : nil
     end
   end
 
@@ -107,41 +131,46 @@ class CodexTurnError
   # The terminal turn error in a serialized rollout, or nil when the latest turn
   # did not end on one.
   #
+  # Walks backwards, because only the end of the rollout is in question and a
+  # long session's rollout runs to tens of thousands of lines that every exit
+  # would otherwise parse. The walk stops at the last turn-lifecycle record, and,
+  # when that is a failed `task_complete`, carries on to the turn's own
+  # `task_started` collecting the turn's latest rate-limit reading — never an
+  # earlier turn's, which may describe a different account.
+  #
   # @param serialized [String, nil] the rollout's JSONL
   # @return [CodexTurnError, nil]
   def self.terminal(serialized)
     return nil if serialized.blank?
 
-    last_lifecycle = nil
+    lines = serialized.lines
+    terminal = nil
     rate_limits = nil
 
-    serialized.each_line.with_index(1) do |raw, line_number|
-      next if raw.strip.empty?
+    (lines.length - 1).downto(0) do |index|
+      raw = lines[index]
+      next unless raw.include?("event_msg")
 
-      record = begin
-        JSON.parse(raw)
-      rescue JSON::ParserError
-        next
-      end
-      next unless record.is_a?(Hash) && record["type"] == "event_msg"
+      payload = event_payload(raw)
+      next unless payload
 
-      payload = record["payload"]
-      next unless payload.is_a?(Hash)
+      type = payload["type"]
+      if terminal.nil?
+        next unless TURN_LIFECYCLE_EVENTS.include?(type)
+        return nil unless type == "task_complete" && payload["error"].is_a?(Hash)
 
-      if payload["type"] == "token_count"
-        limits = payload["rate_limits"]
-        rate_limits = limits if limits.is_a?(Hash) && (limits["primary"].is_a?(Hash) || limits["secondary"].is_a?(Hash))
-      elsif TURN_LIFECYCLE_EVENTS.include?(payload["type"])
-        last_lifecycle = [ payload, line_number ]
+        terminal = [ payload, index + 1 ]
+      elsif type == "token_count" && rate_limits.nil? && payload["rate_limits"].is_a?(Hash)
+        rate_limits = payload["rate_limits"]
+      elsif type == "task_started"
+        break
       end
     end
 
-    return nil unless last_lifecycle
+    return nil unless terminal
 
-    payload, line_number = last_lifecycle
+    payload, line_number = terminal
     error = payload["error"]
-    return nil unless payload["type"] == "task_complete" && error.is_a?(Hash)
-
     new(
       message: error["message"].to_s,
       info: error["codex_error_info"],
@@ -150,6 +179,20 @@ class CodexTurnError
       rate_limits: rate_limits
     )
   end
+
+  # The payload of an `event_msg` rollout line, or nil for anything else —
+  # including a half-flushed final line, which is the normal state of a rollout
+  # still being written.
+  def self.event_payload(raw)
+    record = JSON.parse(raw)
+    return nil unless record.is_a?(Hash) && record["type"] == "event_msg"
+
+    payload = record["payload"]
+    payload.is_a?(Hash) ? payload : nil
+  rescue JSON::ParserError
+    nil
+  end
+  private_class_method :event_payload
 
   def initialize(message:, info:, turn_id:, line:, rate_limits: nil)
     @message = message
@@ -178,6 +221,7 @@ class CodexTurnError
     return :auth if code == "unauthorized" || http_status == 401
     return :retryable if RETRYABLE_CODES.include?(code)
     return :retryable if http_status == 429 || http_status.to_i.between?(500, 599)
+    return :retryable if code == "other" && message.match?(TRANSPORT_FAILURE_MESSAGE)
 
     :unclassified
   end
@@ -220,33 +264,41 @@ class CodexTurnError
     match && match[1].to_i
   end
 
-  # The reading to record against the account this turn ran as, or nil when the
-  # reading Codex recorded does not say when the account comes back.
+  # The reading to record against the account a quota refusal was about, or nil
+  # for an error that is not one.
   #
-  # It has to explain the refusal: at least one window at its cap, and every
-  # capped window with a reset time. Anything less is refused rather than
-  # recorded, because recorded it would read as clear —
-  # ClaudeAccountQuotaSnapshot counts a window under its cap, or one whose reset
-  # is unknown, as clear — and QuotaResetCheckerJob would put an account that
-  # was just refused straight back in rotation. That covers a refusal that came
-  # with no rate-limit headers at all, where the latest reading is one an
-  # earlier, successful turn left behind.
+  # Every refusal gets a reading, because the newest reading is what
+  # QuotaResetCheckerJob (and the /inference heal) restore on, and it has to
+  # describe the newest refusal — an older refusal's reading, long since reset,
+  # would otherwise put the account straight back in rotation.
+  #
+  # The windows at their cap are marked refused with their reset times, so the
+  # account comes back when those pass. A refusal the turn's reading does not
+  # explain — no window at its cap, a capped window with no reset time, or no
+  # windows at all because the backend sent no rate-limit headers — is recorded
+  # as a refusal of the five-hour window with no reset: it never reads as clear,
+  # so the account stays out of rotation until a human re-activates it.
   #
   # @return [QuotaReading, nil]
   def quota_reading
-    return nil unless rate_limits.is_a?(Hash)
+    return nil unless kind == :quota
 
-    primary = window(rate_limits["primary"])
-    secondary = window(rate_limits["secondary"])
+    primary = window(rate_limits&.dig("primary"))
+    secondary = window(rate_limits&.dig("secondary"))
     capped = [ primary, secondary ].compact.select { |w| w[:utilization].to_f >= 1.0 }
-    return nil if capped.empty?
-    return nil if capped.any? { |w| w[:reset].nil? }
+
+    if capped.empty? || capped.any? { |w| w[:reset].nil? }
+      return QuotaReading.new(
+        utilization_5h: primary&.dig(:utilization), reset_5h: nil, status_5h: REFUSED_STATUS,
+        utilization_7d: secondary&.dig(:utilization), reset_7d: secondary&.dig(:reset), status_7d: nil
+      )
+    end
 
     QuotaReading.new(
-      utilization_5h: primary&.dig(:utilization),
-      reset_5h: primary&.dig(:reset),
-      utilization_7d: secondary&.dig(:utilization),
-      reset_7d: secondary&.dig(:reset)
+      utilization_5h: primary&.dig(:utilization), reset_5h: primary&.dig(:reset),
+      status_5h: capped.include?(primary) ? REFUSED_STATUS : nil,
+      utilization_7d: secondary&.dig(:utilization), reset_7d: secondary&.dig(:reset),
+      status_7d: capped.include?(secondary) ? REFUSED_STATUS : nil
     )
   end
 

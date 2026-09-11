@@ -21,23 +21,22 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
   # --- Codex (#54) ---------------------------------------------------------------
   #
   # A Codex account has no quota endpoint to probe. It is restored on the reading
-  # Codex recorded when it refused the account — the one ApiErrorRetryService keeps
-  # as a `usage_limit` snapshot — once that reading's capped windows have reset.
+  # ApiErrorRetryService keeps every time Codex refuses it for quota — the refused
+  # windows marked `rejected` — once their reset times have passed. The newest
+  # reading always describes the newest refusal.
 
-  def codex_refused!(reading_at:, reset_5h:, utilization_5h: 1.0, reset_7d: 5.days.from_now, utilization_7d: 0.4, rotated_at: nil)
+  def codex_refused!(reading_at: Time.current, reset_5h:, status_5h: "rejected", utilization_5h: 1.0,
+                     reset_7d: 5.days.from_now, utilization_7d: 0.4, status_7d: nil)
     account = claude_accounts(:codex_primary)
-    account.mark_quota_exceeded!
+    account.mark_quota_exceeded! unless account.quota_exceeded?
     account.quota_snapshots.create!(trigger: "usage_limit", created_at: reading_at,
-      utilization_5h: utilization_5h, reset_5h: reset_5h, utilization_7d: utilization_7d, reset_7d: reset_7d)
-    if rotated_at
-      AccountRotationEvent.create!(rotated_from: account, rotated_to: claude_accounts(:codex_secondary),
-        reason: "quota_exceeded", source: "automatic", created_at: rotated_at)
-    end
+      utilization_5h: utilization_5h, reset_5h: reset_5h, status_5h: status_5h,
+      utilization_7d: utilization_7d, reset_7d: reset_7d, status_7d: status_7d)
     account
   end
 
   test "restores a Codex account once the window it was refused on has reset" do
-    account = codex_refused!(reading_at: 6.hours.ago, reset_5h: 1.hour.ago, rotated_at: 6.hours.ago)
+    account = codex_refused!(reading_at: 6.hours.ago, reset_5h: 1.hour.ago)
 
     QuotaResetCheckerJob.perform_now
 
@@ -45,16 +44,16 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
   end
 
   test "leaves a Codex account exceeded while the window it was refused on is still capped" do
-    account = codex_refused!(reading_at: 10.minutes.ago, reset_5h: 4.hours.from_now, rotated_at: 10.minutes.ago)
+    account = codex_refused!(reset_5h: 4.hours.from_now)
 
     QuotaResetCheckerJob.perform_now
 
     assert account.reload.quota_exceeded?
   end
 
-  test "leaves a Codex account exceeded while its weekly window is capped, whatever the five-hour one says" do
-    account = codex_refused!(reading_at: 6.hours.ago, reset_5h: 1.hour.ago, utilization_5h: 0.2,
-      utilization_7d: 1.0, reset_7d: 3.days.from_now, rotated_at: 6.hours.ago)
+  test "leaves a Codex account exceeded while its weekly window is refusing, whatever the five-hour one says" do
+    account = codex_refused!(reading_at: 6.hours.ago, reset_5h: 1.hour.ago, status_5h: nil, utilization_5h: 0.2,
+      utilization_7d: 1.0, reset_7d: 3.days.from_now, status_7d: "rejected")
 
     QuotaResetCheckerJob.perform_now
 
@@ -70,29 +69,29 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     assert account.reload.quota_exceeded?
   end
 
-  test "does not restore a Codex account on an old refusal's reading after a newer refusal recorded none" do
-    # Refused two days ago (reading kept, long since reset), restored, then refused
-    # again an hour ago with no windows. The old reading is clear and still the
-    # latest — and says nothing about the refusal that wrote the current label.
-    account = codex_refused!(reading_at: 2.days.ago, reset_5h: 2.days.ago + 5.hours, rotated_at: 2.days.ago)
-    AccountRotationEvent.create!(rotated_from: account, rotated_to: claude_accounts(:codex_secondary),
-      reason: "quota_exceeded", source: "automatic", created_at: 1.hour.ago)
+  test "a refusal with no known reset keeps the account exceeded, even over an older reading that has reset" do
+    # Refused two days ago with windows that reset long since, then refused again an
+    # hour ago with none: the newer refusal is the one that decides.
+    codex_refused!(reading_at: 2.days.ago, reset_5h: 2.days.ago + 5.hours)
+    account = codex_refused!(reading_at: 1.hour.ago, reset_5h: nil)
 
     QuotaResetCheckerJob.perform_now
 
     assert account.reload.quota_exceeded?
   end
 
-  test "a reading taken moments before its rotation still counts as that refusal's" do
-    account = codex_refused!(reading_at: 6.hours.ago - 30.seconds, reset_5h: 1.hour.ago, rotated_at: 6.hours.ago)
+  test "a Codex account that cannot be written does not stop the parked sessions being woken" do
+    codex_refused!(reading_at: 6.hours.ago, reset_5h: 1.hour.ago)
+    # Only the Codex row is in the restore loops, so the stub is about it alone.
+    ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:active])
+    ClaudeAccount.any_instance.stubs(:update!).raises(ActiveRecord::StatementInvalid, "boom")
+    AuthOutageParkService.expects(:wake_parked_sessions!).returns(0)
 
     QuotaResetCheckerJob.perform_now
-
-    assert account.reload.active?
   end
 
   test "a Codex restore is never probed against Anthropic" do
-    codex_refused!(reading_at: 6.hours.ago, reset_5h: 1.hour.ago, rotated_at: 6.hours.ago)
+    codex_refused!(reading_at: 6.hours.ago, reset_5h: 1.hour.ago)
     ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:active])
     QuotaCheckService.expects(:check_with_token).never
 

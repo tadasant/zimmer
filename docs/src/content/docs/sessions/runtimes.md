@@ -186,7 +186,7 @@ Either way each is worth knowing before you route real work to Pi.
   transcript and writes nothing to stderr. `PiRetryStrategy#terminal_api_error` is what stops that
   turn being reported as a successful pause, but `context_length_error?`, `api_error_for_retry?`
   and `auth_recovery_needed?` all answer `false`. So a Pi provider failure is failed and named
-  rather than retried. The recovery services now take a runtime's own record of a failed turn
+  rather than retried. The recovery services take a runtime's own record of a failed turn
   (Codex answers `TranscriptSource#records_turn_errors?`); teaching Pi to answer it is its own piece
   of work ([#856](https://github.com/tadasant/zimmer/issues/856)).
 - **Status summaries always take the cheap path.** `SessionStatusSummaryGenerator#pool_exhausted?`

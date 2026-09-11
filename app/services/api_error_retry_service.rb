@@ -522,9 +522,10 @@ class ApiErrorRetryService
 
   # Keep the quota reading the runtime left with the refusal, against the
   # account this session's process was running as, so QuotaResetCheckerJob can
-  # restore that account once the reading's windows reset. A runtime with no
-  # reading to offer — Claude, whose readings come from probing Anthropic — is
-  # skipped.
+  # restore that account once the refused windows reset — or, when the refusal
+  # came with no reset time, so that nothing restores it on an older reading. A
+  # runtime with no reading to offer — Claude, whose readings come from probing
+  # Anthropic — is skipped.
   #
   # Best effort: a reading that cannot be kept costs the restore, never the
   # rotation that follows.
@@ -538,9 +539,15 @@ class ApiErrorRetryService
     return unless account
 
     QuotaSnapshotService.save_snapshot(account, reading, trigger: "usage_limit")
+    restores_at = reading.restores_at
     add_log(
-      "Recorded #{account.email}'s usage-limit reading: it can serve again after " \
-        "#{reading.restores_at.utc.iso8601}, and QuotaResetCheckerJob restores it then",
+      if restores_at
+        "Recorded #{account.email}'s usage-limit reading: it can serve again after " \
+          "#{restores_at.utc.iso8601}, and QuotaResetCheckerJob restores it then"
+      else
+        "Recorded #{account.email}'s usage-limit refusal: the runtime gave no reset time, so it " \
+          "stays out of rotation until it is re-activated on /inference"
+      end,
       level: "info"
     )
   rescue => e
@@ -626,11 +633,15 @@ class ApiErrorRetryService
     # Nor should a rate limit a runtime recorded against a different provider's
     # API (@turn_error — Codex's OpenAI 429s): the tracker is the fleet's measure
     # of pressure on the Anthropic API, and every Claude session's backoff reads it.
-    rate_limit_tracker.record_event if @detected_rate_limit && @turn_error.nil?
+    anthropic_error = @turn_error.nil?
+    rate_limit_tracker.record_event if @detected_rate_limit && anthropic_error
 
     # Use adaptive delay: if system is under rate limit pressure, use escalated delays
-    # from the global tracker; otherwise use fixed exponential backoff
-    retry_delay = if rate_limit_tracker.under_pressure?
+    # from the global tracker; otherwise use fixed exponential backoff. The same
+    # reasoning as above keeps a runtime's own recorded error off the tracker's
+    # escalation: pressure on the Anthropic API says nothing about its provider.
+    under_pressure = anthropic_error && rate_limit_tracker.under_pressure?
+    retry_delay = if under_pressure
       rate_limit_tracker.recommended_delay(attempt: current_retry_count)
     else
       RETRY_DELAYS[current_retry_count] || MAX_SINGLE_DELAY
@@ -646,7 +657,7 @@ class ApiErrorRetryService
     end
 
     # Log rate limit pressure status for visibility
-    if rate_limit_tracker.under_pressure?
+    if under_pressure
       recent_count = rate_limit_tracker.recent_event_count
       add_log(
         "System under rate limit pressure (#{recent_count} events in last 5 min) - using escalated delays",

@@ -7,8 +7,8 @@ require "tmpdir"
 # A Codex session that hits each failure, driven through the same entry point
 # production uses — ProcessLifecycleManager#handle_exit, with Codex's real exit
 # code (1) and the rollout the real codex-cli 0.146.0 wrote for that failure
-# (CodexRolloutFixtures). Before #54 every one of these ended the same way: the
-# session failed, whatever the cause.
+# (CodexRolloutFixtures). Without the classification in #54 every one of these
+# ends the same way: the session fails, whatever the cause.
 #
 # What is real here: the retry strategy, the three recovery services, the
 # coordinator, CodexAuthProvider's rotation over the fixture Codex pool, the
@@ -115,7 +115,17 @@ class CodexRecoveryEndToEndTest < ActiveJob::TestCase
     assert_match(/Rate limit detected - attempting auto-retry 1\/6/, session_log)
   end
 
+  test "a dropped stream or refused connection is retried like a 5xx" do
+    decision = codex_turn_fails_with(:stream_disconnected)
+
+    assert_equal :continue, decision.action
+    assert_equal 1, ApiErrorRetryService::BUDGET.count_for(@session.reload)
+  end
+
   test "the same dead turn is not retried twice, but the next failed turn is" do
+    # The dead turn is failed and named, but it is not an unknown failure mode.
+    UnclassifiedFailureReporter.expects(:report).never
+
     codex_turn_fails_with(:server_500)
     assert_equal 1, ApiErrorRetryService::BUDGET.count_for(@session.reload)
 
@@ -123,6 +133,7 @@ class CodexRecoveryEndToEndTest < ActiveJob::TestCase
     # ends on the 500 that was already retried, so nothing may claim it again.
     decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: CLONE)
     assert_equal :failed, decision.action
+    assert_match(/We're currently experiencing high demand/, decision.error_message)
     assert_equal 1, @adapter.resumed_sessions.size
 
     # Whereas a resumed turn that fails again is a new failure, and is retried.
@@ -165,12 +176,14 @@ class CodexRecoveryEndToEndTest < ActiveJob::TestCase
     assert_match(/Account quota hit — rotated to #{Regexp.escape(secondary.email)}/, session_log)
   end
 
-  test "a usage limit that came with no windows still rotates, but keeps no reading to restore on" do
+  test "a usage limit that came with no windows still rotates, and records a refusal nothing restores on a guess" do
     decision = codex_turn_fails_with(:usage_limit_without_windows)
 
     assert_equal :continue, decision.action
-    assert claude_accounts(:codex_primary).reload.quota_exceeded?
-    assert_nil claude_accounts(:codex_primary).latest_snapshot
+    primary = claude_accounts(:codex_primary).reload
+    assert primary.quota_exceeded?
+    assert_equal "rejected", primary.latest_snapshot.status_5h
+    assert_not primary.latest_snapshot.windows_clear?
   end
 
   test "a usage limit with every Codex account spent parks the session until quota resets" do
@@ -241,6 +254,18 @@ class CodexRecoveryEndToEndTest < ActiveJob::TestCase
       "an auth rotation is not quota evidence, so the outgoing account stays in the pool"
   end
 
+  test "an API-key account the backend rejects is rotated away from, not re-seeded" do
+    claude_accounts(:codex_primary).update_columns(is_current: false)
+    claude_accounts(:codex_api_key).update_columns(is_current: true)
+    @session.merge_metadata!(AuthRecoveryCoordinator::IDENTITY_KEY => claude_accounts(:codex_api_key).email)
+
+    decision = codex_turn_fails_with(:unauthorized_after_refresh)
+
+    assert_equal :continue, decision.action
+    assert_not claude_accounts(:codex_api_key).reload.is_current?
+    assert_equal "auth_recovery", AccountRotationEvent.where(runtime: "codex").last.reason
+  end
+
   test "a refresh token that is dead rotates to the next account" do
     CodexAuthProvider.any_instance.stubs(:refresh!).returns(RuntimeAuthProvider::Result.new(ok: false, error: :needs_reauth))
 
@@ -255,7 +280,7 @@ class CodexRecoveryEndToEndTest < ActiveJob::TestCase
 
   test "an error no recovery path owns fails the session and pages with Codex's own words" do
     UnclassifiedFailureReporter.expects(:report).with do |kind:, output:, **|
-      kind == "process exit" && output.to_s.include?("invalid_value")
+      kind == "terminal API error" && output.to_s.include?("invalid_value")
     end
 
     decision = codex_turn_fails_with(:bad_request_400)

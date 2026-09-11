@@ -395,12 +395,12 @@ class AuthRecoveryCoordinator
   end
 
   # A runtime whose auth failure is only ever about the credential
-  # (RuntimeAuthProvider#refresh_proves_serviceable? — Codex) has just had that
-  # credential refreshed successfully by #classify_outgoing!, which also wrote
-  # the new pair where the runtime reads it. The failed process was holding an
-  # older copy; the account itself can serve. Re-seed it rather than rotating
-  # away from a healthy account — which, in a pool of one, parked the session
-  # telling a human to re-authenticate an account that needed nothing.
+  # (RuntimeAuthProvider#refresh_proves_serviceable? — Codex OAuth) has just had
+  # that credential refreshed successfully by #classify_outgoing!, which also
+  # wrote the new pair where the runtime reads it. The failed process was holding
+  # an older copy; the account itself can serve. Re-seed it rather than rotating
+  # away from a healthy account, which in a pool of one would park the session
+  # telling a human to re-authenticate an account that needs nothing.
   #
   # Once per incident. A process that fails the same way after a fresh refresh
   # is being refused for something a refresh does not fix, and the next attempt
@@ -408,7 +408,7 @@ class AuthRecoveryCoordinator
   #
   # @return [Plan, nil] a :reseeded plan, or nil to fall through to rotation
   def reseed_refreshed_current(current, working_directory)
-    return nil unless auth_provider.respond_to?(:refresh_proves_serviceable?) && auth_provider.refresh_proves_serviceable?
+    return nil unless auth_provider.refresh_proves_serviceable?(current)
     return nil if reseeded_this_incident?
 
     account = inject(working_directory)

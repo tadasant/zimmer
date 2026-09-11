@@ -73,7 +73,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   end
 
   # #54: the extension env seam hands every hook a `runtime`, so it has to be called for
-  # every runtime. It used to be reached only from ClaudeSpawnEnv.
+  # every runtime, not only from ClaudeSpawnEnv.
   class RuntimeEchoExtension < Zimmer::Extension
     def id = "runtime_echo"
     def spawn_env_contribution(context = {}) = { "ZIMMER_EXTENSION_SAW_RUNTIME" => context[:runtime] }
