@@ -18,6 +18,11 @@ require_relative "connection_budget"
 # so the constant has to already exist by then.
 require_relative "cron_schedule"
 
+# The environments allowed to report to GlitchTip. Not autoloaded:
+# config/initializers/sentry.rb reads it, and initializers run before Rails sets up the
+# main autoloader, so the constant has to already exist by then.
+require_relative "alerting_environments"
+
 module Zimmer
   class Application < Rails::Application
     # Initialize configuration defaults for originally generated Rails version.

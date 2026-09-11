@@ -30,10 +30,10 @@ Rails.application.config.after_initialize do
 
   # The environments that page. Anything else is quiet by design, not by fault —
   # say which, so the two are never confused.
-  unless ErrorReporter::ALERTING_ENVIRONMENTS.include?(Rails.env.to_s)
+  unless AlertingEnvironments::ALL.include?(Rails.env.to_s)
     Rails.logger.info(
       "[ObsReportingHealthCheck] Alerting is off in #{Rails.env} — errors are logged, not reported. " \
-      "Only #{ErrorReporter::ALERTING_ENVIRONMENTS.join(' and ')} page."
+      "Only #{AlertingEnvironments::ALL.join(' and ')} page."
     )
     next
   end
