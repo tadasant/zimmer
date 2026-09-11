@@ -3,11 +3,12 @@
 module Mcp
   module Tools
     # Mirrors /api/v1/categories (index/create/update/destroy/reorder) plus
-    # SessionsController#set_category, which is the "set_session_category"
-    # action. Normalization, uniqueness and the Uncategorized sentinel all live
-    # in the Category model, so every write path stays canonical.
+    # SessionsController#set_category and #reorder, which are the
+    # "set_session_category" and "reorder_sessions" actions. Normalization,
+    # uniqueness and the Uncategorized sentinel all live in the Category model,
+    # and card positions in SessionCardOrder, so every write path stays canonical.
     class ManageCategories < Tool
-      ACTIONS = %w[list create update delete reorder set_session_category].freeze
+      ACTIONS = %w[list create update delete reorder set_session_category reorder_sessions].freeze
 
       tool_name "manage_categories"
 
@@ -23,6 +24,7 @@ module Mcp
         - **delete**: Delete a category (requires "category_id"). Sessions in it fall back to Uncategorized.
         - **reorder**: Set the top-to-bottom order of categories (requires "ids" — an array of category IDs). Categories omitted keep their existing position. Include the string "uncategorized" to position the Uncategorized section.
         - **set_session_category**: Assign a session to a category (requires "session_id"; "category_id" to assign, or omit/null to clear to Uncategorized).
+        - **reorder_sessions**: Set the top-to-bottom order of session cards inside one section (requires "session_ids"; "category_id" names the section, omit/null for Uncategorized). The dashboard shows a section 50 cards at a time, so a partial list is fine: the sessions you name are dealt back into the slots they already hold, in your order, and sessions you omit keep their positions. Pass "session_id" to move ONE card instead, as the dashboard's drag does: it is placed immediately above the session after it in "session_ids" (or below the one before it, if it is last), nothing else moves, and if it is in another section it is moved into this one first.
 
         **Note:** All freeze state uses "is_frozen".
       DESC
@@ -58,7 +60,12 @@ module Mcp
           },
           session_id: {
             oneOf: [ { type: "string" }, { type: "number" } ],
-            description: 'Session ID (numeric) or slug (string). Required for "set_session_category".'
+            description: 'Session ID (numeric) or slug (string). Required for "set_session_category". Optional for "reorder_sessions": the one card being moved — placed next to its neighbour in "session_ids", and moved into "category_id" first if it is in another section.'
+          },
+          session_ids: {
+            type: "array",
+            items: { type: "number" },
+            description: 'Required for "reorder_sessions". New top-to-bottom order of numeric session IDs within the section named by "category_id". Sessions omitted keep their positions; IDs not in that section are ignored.'
           }
         },
         required: [ "action" ]
@@ -74,6 +81,7 @@ module Mcp
         when "delete" then destroy(args)
         when "reorder" then reorder(args)
         when "set_session_category" then set_session_category(args)
+        when "reorder_sessions" then reorder_sessions(args)
         else
           raise ToolError, "Unknown action \"#{action}\". Valid actions: #{ACTIONS.join(', ')}"
         end
@@ -157,6 +165,30 @@ module Mcp
           "- **Session ID:** #{session.id}",
           "- **Category:** #{session.category&.name || 'Uncategorized'}",
           "- **Result:** #{session.category_id ? 'Session assigned to category' : 'Session moved to Uncategorized'}"
+        ].join("\n")
+      end
+
+      def reorder_sessions(args)
+        ids = args["session_ids"]
+        unless ids.is_a?(Array) && ids.any?
+          raise ToolError, '"session_ids" (a non-empty array) is required for the "reorder_sessions" action.'
+        end
+
+        category_id = args["category_id"].presence
+        category = nil
+        if category_id && category_id.to_s != Category::UNCATEGORIZED_SENTINEL
+          category = Category.find_by(id: category_id)
+          raise ToolError, "Category ##{category_id} not found" unless category
+        end
+
+        moved = args["session_id"].presence && find_session(args["session_id"]).id
+        order = Session.reorder_cards!(ids, category_id: category&.id, moved_session_id: moved)
+
+        [
+          "## Session Cards Reordered",
+          "",
+          "- **Section:** #{category&.name || 'Uncategorized'}",
+          "- **Order (top to bottom):** #{order.join(', ')}"
         ].join("\n")
       end
 

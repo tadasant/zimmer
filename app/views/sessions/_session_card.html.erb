@@ -2,24 +2,26 @@
     hidden from the menu below, visibility_controller takes this element (and its
     wrapping turbo-frame) off the board without a reload. %>
 <div class="flex flex-col h-full bg-white shadow rounded-lg relative max-w-[400px]" data-visibility-unit>
-  <%# Drag handle: only this grab bar starts a category drag, so taps on the card's
-      own controls (favorite star, title) never trigger an accidental
-      move. Top-center keeps it clear of the status badge (left) and star (right).
-      touch-none lets a long-press here drag instead of scrolling on mobile.
-      Right-click (contextmenu) opens the "move to category" menu as a no-drag
-      alternative to dragging.
+  <%# Drag handle: only this grab bar starts a drag, so taps on the card's own
+      controls (favorite star, title) never trigger an accidental move. Top-center
+      keeps it clear of the status badge (left) and star (right). touch-none lets a
+      long-press here drag instead of scrolling on mobile. A drag moves the card
+      between sections AND within one — both are persisted. Right-click (contextmenu)
+      opens the "move to category" menu as a no-drag alternative to dragging.
 
       Hidden for favorited sessions: a favorited card renders in the pinned "Starred"
       group above all categories (outside the category-dnd controller), where its
-      category placement is invisible until it is unstarred. Showing a drag/right-click
-      "move to category" affordance there would be a misleading no-op, so it is omitted
-      — unstar the session to manage its category. Deriving this from favorited? (rather
-      than a passed-in local) keeps it correct across every render path, including the
-      single-card turbo-frame replace used by real-time status broadcasts. %>
+      category placement is invisible until it is unstarred and the group has no order
+      to drag against. Showing a drag/right-click affordance there would be a
+      misleading no-op, so it is omitted — unstar the session to manage its category
+      and its position, both of which it kept while it was starred. Deriving this from
+      favorited? (rather than a passed-in local) keeps it correct across every render
+      path, including the single-card turbo-frame replace used by real-time status
+      broadcasts. %>
   <% unless agent_session.favorited? %>
     <div class="session-drag-handle absolute top-1 left-1/2 -translate-x-1/2 z-10 px-3 py-0.5 text-gray-300 hover:text-gray-500 cursor-grab active:cursor-grabbing touch-none"
-         title="Drag to move between categories — right-click to pick one"
-         aria-label="Drag to move between categories, or right-click to pick one"
+         title="Drag to reorder, or to move between categories — right-click to pick one"
+         aria-label="Drag to reorder this card or move it between categories, or right-click to pick a category"
          data-action="contextmenu->category-dnd#openCardMenu"
          data-session-id="<%= agent_session.id %>">
       <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">

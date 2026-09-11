@@ -797,10 +797,12 @@
       <!-- Sessions List: drag-and-drop category sections -->
       <%# The whole grid is one drag-and-drop controller. Every section (Uncategorized
           plus each category) is a Sortable list sharing a group, so a card can be
-          dragged from any section into any other; the drop persists the session's
-          category assignment so it survives reload. %>
+          dragged from any section into any other, and reordered within one. Every drop
+          POSTs the destination section's new card order — carrying the moved card's id
+          when it crossed sections, so the category change and the position are one
+          write — and both survive a reload. %>
       <div data-controller="category-dnd category-edit"
-           data-category-dnd-set-category-url-template-value="<%= set_category_session_path("__SESSION_ID__") %>"
+           data-category-dnd-reorder-cards-url-value="<%= reorder_sessions_path %>"
            data-category-dnd-create-url-value="<%= categories_path %>"
            data-category-dnd-reorder-url-value="<%= reorder_categories_path %>"
            data-category-edit-update-url-template-value="<%= category_path("__ID__") %>">
