@@ -37,6 +37,12 @@ export default class extends Controller {
 
   // Bound to the <summary>, so it never sees clicks on the panel's own contents.
   pin(event) {
+    // A summary may contain a link — the Costs rows carry one that narrows the
+    // whole page to that row. Pinning calls preventDefault on the SAME click
+    // event, which on a link cancels the navigation: the row would pin and go
+    // nowhere. A click that started on a link is a click meant for the link.
+    if (event.target.closest("a")) return
+
     const row = event.currentTarget.parentElement
     if (!row || row.dataset.hoverOpened !== "true") return
 
