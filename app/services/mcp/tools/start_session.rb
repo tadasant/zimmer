@@ -8,7 +8,8 @@ module Mcp
     # A session names its target repository either with `agent_root` (a catalog
     # root, which brings its repository and its default artifacts with it) or with
     # a bare `git_root` URL, which brings nothing — the same two ways POST
-    # /api/v1/sessions and the web form accept. One of them is required.
+    # /api/v1/sessions accepts. One of them is required. (The new-session form is
+    # narrower than both: it offers the catalog's roots and nothing else.)
     #
     # A restricted connection (allowed_agent_roots) may only spawn one of its
     # allowed roots, and must use that root's exact default MCP servers — the
@@ -137,9 +138,7 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         - If a prompt is provided, the agent job is automatically queued to start
         - If no prompt is provided, creates a clone-only session that can be started later with action_session
 
-        **Agent Roots:** Use `agent_root` to specify which preconfigured agent root to use. The API resolves git_root, branch, subdirectory, default_model, and other defaults from the agent root configuration.
-
-        **Naming the target repository — `agent_root` OR `git_root`, and one of them is required.** Prefer `agent_root`: a catalog root carries its repository *and* its default MCP servers, skills, hooks and plugins. For a repository no root covers — a fork, a scratch repo, someone's one-off project — pass `git_root` (a clone URL or local path), optionally with `branch` and `subdirectory`. A `git_root` spawn inherits no catalog defaults at all, so it starts with no MCP servers, skills, hooks or plugins beyond what you name, and its runtime and model come from the global defaults on the Settings page unless you pass them. Pass both and the `git_root` wins over the root's URL while the root's other defaults still apply, which is how you run a root's tooling against a fork. A call that names neither is refused — it cannot be turned into a session.
+        **Naming the target repository — `agent_root` OR `git_root`, and one of them is required.** Prefer `agent_root`: naming a preconfigured agent root resolves git_root, branch, subdirectory and default_model from its catalog entry, and carries that root's default MCP servers, skills, hooks and plugins. For a repository no root covers — a fork, a scratch repo, someone's one-off project — pass `git_root` (a clone URL or local path), optionally with `branch` and `subdirectory`. A `git_root` spawn inherits no catalog defaults at all, so it starts with no MCP servers, skills, hooks or plugins beyond what you name, and its runtime and model come from the global defaults on the Settings page unless you pass them. Pass both and the `git_root` wins over the root's URL while the root's other defaults still apply, which is how you run a root's tooling against a fork. A call that names neither is refused — it cannot be turned into a session.
 
         On a connection restricted to specific agent roots, `git_root`, `branch` and `subdirectory` are rejected outright: that restriction is a fence around which repositories the connection may spawn into, and its repository coordinates come from the allowed root's catalog entry exactly.
 
@@ -209,7 +208,6 @@ On a connection restricted to specific agent roots this parameter is rejected ou
       def call(args)
         agent_root_name = args["agent_root"].presence
         enforce_root_constraints!(agent_root_name, args)
-        require_spawn_target!(agent_root_name, args)
 
         # Answered before any of the create work — the retry this exists for is a
         # caller that already got its session and does not know it, so the cheap
@@ -222,6 +220,12 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         replayed = Sessions::IdempotentCreate.existing(idempotency_key)
         return format_session(replayed, reused: true) if replayed
 
+        # Below the replay, unlike the restriction check above it: this one is a
+        # contract check rather than a fence, and a caller retrying a lost response
+        # with the same key gets its session back whatever it passes — the promise
+        # IDEMPOTENCY_KEY_DESC makes, and what the REST endpoint does.
+        require_spawn_target!(agent_root_name, args)
+
         session = Session.new(session_attributes(args))
         # A router spawning downstream work passes parent_session_id, and that
         # session belongs to the same line of work as its parent — assign_genesis
@@ -231,7 +235,7 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         # Recorded before save so the job starting moments later can tell a
         # deliberate "no MCP servers" from a column that landed empty by accident
         # and would otherwise be healed back to the root's defaults.
-        session.record_explicit_mcp_servers(session.mcp_servers) if deliberate_mcp_servers?(args, agent_root_name)
+        session.record_explicit_mcp_servers(session.mcp_servers) if explicit_list?(args, "mcp_servers")
         resolve_spawn_defaults!(session, agent_root_name, args)
 
         # The lookup above answers the sequential retry; this answers the
@@ -319,17 +323,6 @@ On a connection restricted to specific agent roots this parameter is rejected ou
                          "its repository and its default MCP servers, skills, hooks and plugins with it) or `git_root` " \
                          "(a repository URL or local path to spawn against directly, with no catalog defaults). " \
                          "Available agent roots: #{AgentRootsConfig.names.join(', ')}."
-      end
-
-      # A rootless spawn has no root defaults to fall back to, so an omitted
-      # mcp_servers is a session with no MCP servers — and that has to be recorded
-      # as deliberate. Otherwise McpServerBackfill reads the empty column as a
-      # failed catalog resolve and, if the git_root happens to match a catalog
-      # root's URL, hands the session that root's servers at job start — servers
-      # the caller never asked for, on a path whose whole premise is that no
-      # catalog entry applies.
-      def deliberate_mcp_servers?(args, agent_root_name)
-        explicit_list?(args, "mcp_servers") || agent_root_name.blank?
       end
 
       # An omitted mcp_servers means "take the root's defaults" (that is what

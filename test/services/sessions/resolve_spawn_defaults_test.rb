@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
+require "ostruct" # OpenStruct builds the mock root below; not autoloaded in isolation
 
 # The create-time defaults chain both spawn surfaces share — POST
 # /api/v1/sessions and MCP `start_session`. Tested here once, directly, because
@@ -98,6 +100,78 @@ class Sessions::ResolveSpawnDefaultsTest < ActiveSupport::TestCase
     assert_empty session.mcp_servers
     assert_equal [ "open-pr" ], session.catalog_skills
     assert_equal @root.default_hooks || [], session.catalog_hooks, "an omitted list still takes the root's"
+  end
+
+  test "every explicitly-named list is left alone, one branch per artifact" do
+    session = Session.new(catalog_hooks: [], catalog_plugins: [])
+
+    Sessions::ResolveSpawnDefaults.call(
+      session,
+      agent_root_name: "zimmer",
+      explicit_lists: { hooks: true, plugins: true }
+    )
+
+    assert_empty session.catalog_hooks
+    assert_empty session.catalog_plugins
+    assert_equal @root.default_mcp_servers || [], session.mcp_servers, "an omitted list still takes the root's"
+    assert_equal @root.default_skills || [], session.catalog_skills
+  end
+
+  # Stubbed rather than taken from the catalog: no root Zimmer ships declares a
+  # subdirectory today, so a test that looked for one would skip itself forever
+  # and the branch would go unexercised.
+  test "the root's subdirectory fills a blank one and never overwrites a named one" do
+    root = OpenStruct.new(
+      name: "monorepo-root",
+      url: "https://github.com/test/mono.git",
+      default_branch: "main",
+      subdirectory: "packages/api",
+      default_mcp_servers: [],
+      default_skills: [],
+      default_hooks: [],
+      default_plugins: [],
+      default_runtime: "claude_code",
+      default_model: "opus"
+    )
+    AgentRootsConfig.stubs(:find!).with("monorepo-root").returns(root)
+
+    from_root = Session.new
+    Sessions::ResolveSpawnDefaults.call(from_root, agent_root_name: "monorepo-root")
+    assert_equal "packages/api", from_root.subdirectory
+
+    named = Session.new(subdirectory: "somewhere/else")
+    Sessions::ResolveSpawnDefaults.call(named, agent_root_name: "monorepo-root")
+    assert_equal "somewhere/else", named.subdirectory
+  end
+
+  # With no root there are no defaults for an omitted list to fall back to, so
+  # omitted IS none — and McpServerBackfill must not undo that at job start.
+  test "a rootless spawn's empty mcp_servers is recorded as deliberate" do
+    session = Session.new(git_root: AgentRootsConfig.find!("zimmer").url)
+
+    Sessions::ResolveSpawnDefaults.call(session)
+
+    assert_predicate session.mcp_servers, :blank?
+    assert session.mcp_servers_explicitly_empty?
+  end
+
+  test "a rootless spawn that names servers is not marked as deliberately empty" do
+    session = Session.new(git_root: "https://github.com/someone/scratch.git", mcp_servers: [ "context7" ])
+
+    Sessions::ResolveSpawnDefaults.call(session, explicit_lists: { mcp_servers: true })
+
+    assert_equal [ "context7" ], session.mcp_servers
+    refute session.mcp_servers_explicitly_empty?
+  end
+
+  # A root supplies the defaults an omitted list falls back to, so an empty column
+  # under a root is the accidental kind the heal exists for — it must NOT be marked.
+  test "a spawn under a root is not marked as deliberately empty" do
+    session = Session.new
+
+    Sessions::ResolveSpawnDefaults.call(session, agent_root_name: "zimmer")
+
+    refute session.mcp_servers_explicitly_empty?
   end
 
   test "an unknown root raises rather than silently spawning rootless" do

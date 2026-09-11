@@ -454,6 +454,70 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert session.mcp_servers_explicitly_empty?
   end
 
+  # The same omitted-vs-[] rule, on the three lists the mcp_servers test above does
+  # not cover. Worth pinning per list rather than once: each is a separate branch,
+  # and a request param whose name stopped reaching that branch would silently
+  # overwrite the caller's [] with the root's defaults with nothing to notice it.
+  test "an explicit empty skills, hooks or plugins array is not refilled from the root" do
+    mock_agent_root = OpenStruct.new(
+      name: "test-root",
+      url: "https://github.com/test/correct-repo.git",
+      default_branch: "main",
+      subdirectory: nil,
+      default_mcp_servers: [],
+      default_skills: [ "open-pr" ],
+      default_hooks: [ "git-push-ci-reminder" ],
+      default_plugins: [ "ci-workflow" ],
+      default_model: "sonnet"
+    )
+
+    AgentRootsConfig.stub(:find!, ->(_name) { mock_agent_root }) do
+      post api_v1_sessions_path,
+        params: {
+          agent_root: "test-root", prompt: "Least privilege",
+          catalog_skills: [], catalog_hooks: [], catalog_plugins: []
+        }.to_json,
+        headers: @headers.merge("CONTENT_TYPE" => "application/json")
+    end
+
+    assert_response :created
+    session = Session.order(:id).last
+    assert_equal [], session.catalog_skills
+    assert_equal [], session.catalog_hooks
+    assert_equal [], session.catalog_plugins
+  end
+
+  # The omitted half of the same rule, so a param name that stopped reaching its
+  # branch fails one of these two tests whichever direction it broke in.
+  test "omitted skills, hooks and plugins take the root's defaults" do
+    mock_agent_root = OpenStruct.new(
+      name: "test-root",
+      url: "https://github.com/test/correct-repo.git",
+      default_branch: "main",
+      subdirectory: nil,
+      default_mcp_servers: [],
+      default_skills: [ "open-pr" ],
+      default_hooks: [ "git-push-ci-reminder" ],
+      default_plugins: [ "ci-workflow" ],
+      default_model: "sonnet"
+    )
+    SkillsConfig.stubs(:exists?).returns(true)
+    HooksConfig.stubs(:exists?).returns(true)
+    PluginsConfig.stubs(:exists?).returns(true)
+
+    AgentRootsConfig.stub(:find!, ->(_name) { mock_agent_root }) do
+      post api_v1_sessions_path,
+        params: { agent_root: "test-root", prompt: "Defaults please" }.to_json,
+        headers: @headers.merge("CONTENT_TYPE" => "application/json")
+    end
+
+    assert_response :created
+    session = Session.order(:id).last
+    assert_equal [ "open-pr" ], session.catalog_skills
+    assert_equal [ "git-push-ci-reminder" ], session.catalog_hooks
+    assert_equal [ "ci-workflow" ], session.catalog_plugins
+  end
+
   test "an omitted mcp_servers key still takes the root's default servers" do
     mock_agent_root = OpenStruct.new(
       name: "test-root",
