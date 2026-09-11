@@ -184,6 +184,12 @@ grant the calling controller honours and matches it exactly, so a `quick_router`
 an `api` key presented to the Quick Router ingest is refused too. The grant is a column the
 comparison reads, not a promise about how the key is used.
 
+Every read of that column goes through `ApiKey#effective_grant`, which answers `api` when the column
+is not on the table at all — the state a deployment is in between the code shipping and its migration
+applying. A row with no `grant` predates the column, so it predates the only grant that is not `api`.
+Skipping that made every authenticated request 500 in production on 2026-09-11; see
+[the deploy rule](/operate/deploying/#and-it-happened-again-with-a-bigger-blast-radius).
+
 What it still isn't:
 
 - **No scoping within the API.** Any valid `api` key can read, mutate, and delete every session,

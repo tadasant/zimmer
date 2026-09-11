@@ -574,6 +574,41 @@ independent branches each adding `…180000` each pass, which is exactly how the
 Closing that requires branches to be up to date with `main` before merging, so the collision is on the
 branch by the time CI runs — a repository setting, not a check this repo can ship.
 
+### And it happened again, with a bigger blast radius
+
+On 2026-09-11 [#1155](https://github.com/tadasant/zimmer/pull/1155) and
+[#1156](https://github.com/tadasant/zimmer/pull/1156) both merged a migration numbered
+`20260912120000`, and [#1163](https://github.com/tadasant/zimmer/pull/1163) renumbered the second an
+hour later. What made this one worse than the 2026-09-05 collision was not the collision — it was
+what the new code did while the collision was live.
+
+`ActiveRecord::Migrator` validates duplicates in `#initialize`, so `db:migrate` raised before
+applying **anything**. Production ran the new image against a database that consequently had no
+`api_keys.grant` column, and `ApiKey.authenticate` read that attribute on every authenticated
+request. The result was `NoMethodError: undefined method 'grant'` — a 500 on **every** REST API and
+`/mcp` call, which is every agent session in the fleet, while the web UI kept answering 200 because
+its pages never touch that table. A missing key still returned 401, and a valid one 500ed.
+
+**So: code may not hard-require a column its own deploy adds.** The
+[two-deploy rule for dropping a column](#dropping-a-column-takes-two-deploys) exists because old
+containers keep serving after the schema moves; this is the mirror image, and it bites whenever a
+migration has not run yet for *any* reason — a duplicate version, a failed migrate step, a rollback,
+a container that boots before the migrate step finishes. Read a newly added column through one
+accessor that answers the pre-migration default when the attribute is absent, the way
+`ApiKey#effective_grant` does:
+
+```ruby
+def effective_grant
+  has_attribute?(:grant) ? self[:grant] : API_GRANT
+end
+```
+
+`has_attribute?` is false exactly when the column is not in the table, so the answer is the meaning
+that row already had. Guard the column's validations with the same test, and have any write that
+*needs* the column fail loudly rather than silently storing something weaker. There is no guard for
+this one: the discipline is to route every read of a new column through a single accessor in the
+deploy that adds it.
+
 ## One-time post-deploy tasks
 
 **If the step runs once and then never again, write a post-deploy task.** This is Zimmer's

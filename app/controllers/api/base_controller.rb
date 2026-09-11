@@ -100,7 +100,7 @@ class Api::BaseController < ActionController::API
     when :wrong_grant
       # A `quick_router` key trying the API is the browser extension's credential
       # being used for something the extension never does.
-      Rails.logger.warn("#{line}#{api_key_label(authentication.api_key)} has grant #{authentication.api_key.grant}, not #{api_key_grant}")
+      Rails.logger.warn("#{line}#{api_key_label(authentication.api_key)} has grant #{authentication.api_key.effective_grant}, not #{api_key_grant}")
     when :missing
       Rails.logger.info("#{line}no API key")
     else
