@@ -724,6 +724,7 @@ class ForkSessionService
           catalog_plugins: source_session.catalog_plugins,
           config: source_session.config,
           goal: source_session.goal,
+          goal_inherited: true,
           is_autonomous: source_session.is_autonomous,
           session_notes: source_session.session_notes,
           session_notes_updated_at: source_session.session_notes_updated_at,

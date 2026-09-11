@@ -557,6 +557,8 @@ module Mcp
           lines.concat(execution)
         end
 
+        lines.concat(goal_check_lines(session))
+
         lines.concat(prompt_lines(session, verbose)) if session.prompt.present?
 
         lines << ""
@@ -601,6 +603,26 @@ module Mcp
         end
 
         lines.join("\n")
+      end
+
+      # What GoalCheck can read back about the goal. Nothing for a free-text goal:
+      # there is nothing to check, and an empty section would read as "checked".
+      def goal_check_lines(session)
+        check = GoalCheck.for(session)
+        return [] unless check
+
+        lines = [ "", "### Goal Check (advisory)" ]
+        verdict = "- **Verdict:** #{check.verdict} (#{check.met_count} of #{check.criteria.size} criteria met, goal `#{check.goal_id}`)"
+        verdict += " — provisional, the session is still running" if check.provisional
+        lines << verdict
+        lines << "- **PRs last read:** #{check.observed_at.iso8601}" if check.observed_at
+        check.criteria.each do |criterion|
+          line = "- [#{criterion.status}] #{criterion.label}"
+          line += " — #{criterion.detail}" if criterion.detail.present?
+          lines << line
+        end
+        lines << "- _#{GoalCheck::NOT_CHECKED_NOTE}_"
+        lines
       end
 
       # The prompt this session is running, cut unless the caller asked for it in

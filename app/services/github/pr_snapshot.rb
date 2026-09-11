@@ -18,9 +18,14 @@ module Github
   # can read but not push to — and PR status is the fleet's archive signal. `mergeable`
   # answers the conflict question on its own.
   class PrSnapshot
-    # The fields the two evaluators between them need. Kept as one string because that
+    # The fields the evaluators between them need. Kept as one string because that
     # is the shape `gh --json` takes.
-    JSON_FIELDS = "state,mergedAt,mergeable"
+    #
+    # `body` and `labels` are for Github::GoalFactsEvaluator — what a PR goal asks the
+    # description and the labels to carry. Both are readable by any viewer who can
+    # read the PR at all, so neither can be the one refused field that fails the
+    # whole query (see WHAT IS NOT ASKED FOR above).
+    JSON_FIELDS = "state,mergedAt,mergeable,body,labels"
 
     # Wall-clock bound on the `gh` child, process group killed on deadline. See
     # GithubCli: a timeout arrives as a failed Result, and this class turns that into
@@ -40,7 +45,7 @@ module Github
     MERGEABLE_CONFLICTING = "CONFLICTING"
     MERGEABLE_UNKNOWN = "UNKNOWN"
 
-    attr_reader :ref, :state, :merged_at, :mergeable
+    attr_reader :ref, :state, :merged_at, :mergeable, :body, :labels
 
     # Take a reading of one PR.
     #
@@ -60,17 +65,28 @@ module Github
       end
 
       data = JSON.parse(result.stdout)
-      new(ref: ref, state: data["state"], merged_at: data["mergedAt"], mergeable: data["mergeable"])
+      new(
+        ref: ref,
+        state: data["state"],
+        merged_at: data["mergedAt"],
+        mergeable: data["mergeable"],
+        body: data["body"],
+        labels: Array(data["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
+      )
     rescue JSON::ParserError => e
       Rails.logger.error "[Github::PrSnapshot] Failed to parse gh pr view output for #{ref}: #{e.message}"
       nil
     end
 
-    def initialize(ref:, state:, merged_at:, mergeable:)
+    # `body` and `labels` default to "not read" so a reading built by hand for a
+    # caller that only asks about lifecycle or conflicts need not invent them.
+    def initialize(ref:, state:, merged_at:, mergeable:, body: nil, labels: [])
       @ref = ref
       @state = state
       @merged_at = merged_at
       @mergeable = mergeable
+      @body = body
+      @labels = labels
     end
 
     # The two #status values a PR never comes back from. Named here because this class

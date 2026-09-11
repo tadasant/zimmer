@@ -257,8 +257,21 @@ class Session < ApplicationRecord
   # Broadcast metadata changes to session detail page (e.g., clone_path, failure_reason, exit_status, exception_class)
   after_update_commit :broadcast_metadata_change, if: :should_broadcast_metadata_change?
 
+  # Set by a writer that copies another session's goal rather than choosing one —
+  # ForkSessionService. The goal_reference validation judges a goal someone is
+  # setting; a copied one was judged (or predates the check) on the session it came
+  # from, and refusing it would fail the fork — and with it every status summary,
+  # which forks the session it summarizes.
+  attr_accessor :goal_inherited
+
   # Broadcast custom_metadata changes to session detail page (e.g., github_pull_request_statuses)
   after_update_commit :broadcast_custom_metadata_change, if: :saved_change_to_custom_metadata?
+
+  # A new goal can bring a goal check with it, change its criteria, or take it away.
+  # This covers a goal changed on its own (`change_goal`, PATCH, the web Goal
+  # field); a goal that arrives with a follow-up is repainted by
+  # #broadcast_status_change instead.
+  after_update_commit :broadcast_goal_check_panel, if: :saved_change_to_goal?
 
   # A newly-spawned child changes the hierarchy and human-message scope for
   # every open detail page in that lineage. The fresh GET path already computes
@@ -808,6 +821,7 @@ class Session < ApplicationRecord
   validates :idempotency_key, uniqueness: true, length: { maximum: IDEMPOTENCY_KEY_MAX_LENGTH }, allow_nil: true
   validates :title, length: { maximum: 100, message: "is too long (maximum 100 characters)" }, allow_nil: true
   validates :goal, length: { maximum: GOAL_MAX_LENGTH, message: "is too long (maximum #{GOAL_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_nil: true
+  validates :goal, goal_reference: true, if: -> { will_save_change_to_goal? && !goal_inherited }
   validates :session_notes, length: { maximum: 50_000, message: "is too long (maximum 50,000 characters)" }, allow_nil: true
   # Cap at 1M tokens — well above any realistic Claude Code model context (~200K)
   # while still preventing runaway/typo values from polluting the spawn env.
@@ -2993,6 +3007,12 @@ class Session < ApplicationRecord
     # Also broadcast metadata - it may contain status-dependent UI elements
     # (e.g., OAuth authorization buttons only shown when status is failed)
     broadcast_metadata_change
+    # The goal check's "session still running" note follows status. And every
+    # follow-up that brings a new goal also changes status, inside one transaction
+    # whose last save is not the goal write — so `saved_change_to_goal?` cannot be
+    # relied on to see it (the same trap track_status_change_for_broadcast exists
+    # for), and this is the repaint that does.
+    broadcast_goal_check_panel
   end
 
   def broadcast_status_badge
@@ -3148,7 +3168,8 @@ class Session < ApplicationRecord
 
   # `mcp_status_changed` defaults to the dirty-tracking answer for the callback path;
   # AtomicJsonMetadata passes it explicitly because a raw UPDATE leaves no dirty state.
-  def broadcast_custom_metadata_change(mcp_status_changed: custom_metadata_mcp_status_changed?)
+  def broadcast_custom_metadata_change(mcp_status_changed: custom_metadata_mcp_status_changed?,
+                                       goal_check_changed: custom_metadata_goal_check_inputs_changed?)
     # The header actions include the GitHub PR link button, which depends on
     # custom_metadata. Same stream, target and rendering as the status-change
     # path, so it is the same method rather than a second copy of it.
@@ -3157,6 +3178,34 @@ class Session < ApplicationRecord
     # Also broadcast metadata partial if MCP status changed
     # This updates the MCP server status indicators in real-time
     broadcast_metadata_partial if mcp_status_changed
+
+    broadcast_goal_check_panel if goal_check_changed
+  end
+
+  # The keys GoalCheck reads. Only a change to one of these repaints the goal check
+  # panel: every poll pass rewrites `poller_last_polled_at`, and repainting on that
+  # would re-render the panel every thirty seconds for nothing.
+  GOAL_CHECK_INPUT_KEYS = %w[
+    github_pull_request_urls
+    github_pull_request_statuses
+    github_pull_request_ci_statuses
+    github_pull_request_goal_facts
+  ].freeze
+
+  # @param old_metadata [Hash, nil]
+  # @param new_metadata [Hash, nil]
+  def goal_check_inputs_changed?(old_metadata, new_metadata)
+    GOAL_CHECK_INPUT_KEYS.any? { |key| old_metadata&.dig(key) != new_metadata&.dig(key) }
+  end
+
+  def broadcast_goal_check_panel
+    broadcaster.broadcast_html(
+      action: :replace,
+      stream: "session_#{id}_status",
+      target: "session_#{id}_goal_check"
+    ) do
+      SessionsController.render(partial: "sessions/goal_check_panel", locals: { agent_session: self })
+    end
   end
 
   # The enqueue side of the provenance fan-out. Public alongside the method it
@@ -3217,6 +3266,12 @@ class Session < ApplicationRecord
       available_models: ModelCatalog.model_ids_for(agent_runtime),
       goals_for_select: GoalsConfig.all.map { |g| { id: g.id, name: g.name, description: g.description } }
     }
+  end
+
+  def custom_metadata_goal_check_inputs_changed?
+    return false unless saved_change_to_custom_metadata?
+
+    goal_check_inputs_changed?(*saved_change_to_custom_metadata)
   end
 
   def custom_metadata_mcp_status_changed?

@@ -1530,6 +1530,13 @@ class SessionsController < ApplicationController
       return
     end
 
+    # Only a goal this follow-up changes is judged, like the model validation: a
+    # session already carrying a retired id keeps taking follow-ups.
+    if goal != @session.goal && GoalsConfig.unknown_id?(goal)
+      respond_to_follow_up_error(GoalsConfig.unknown_id_message(goal))
+      return
+    end
+
     # IMPORTANT: If a turn is already underway, redirect to queue the message instead of
     # sending immediately. This prevents race conditions where the form action was set
     # incorrectly (e.g., before JS loaded) or where the user double-submitted. Messages

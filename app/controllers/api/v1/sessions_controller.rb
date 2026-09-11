@@ -354,6 +354,12 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
+    # Only a goal this follow-up changes is judged, like the model validation.
+    if goal != @session.goal && GoalsConfig.unknown_id?(goal)
+      render_api_error("Validation failed", GoalsConfig.unknown_id_message(goal), status: :unprocessable_entity)
+      return
+    end
+
     force_immediate = params[:force_immediate] == true || params[:force_immediate] == "true"
 
     # When force_immediate is set, send immediately regardless of session state.

@@ -185,6 +185,9 @@ class Trigger < ApplicationRecord
   # every surface that renders a trigger marks the name. See zimmer#448 and
   # #agent_root_missing_from_catalog?.
   validates :agent_root_name, presence: true
+  # The goal a trigger stamps onto every session it spawns or reuses. Refused here,
+  # where a person is editing the trigger, rather than on a fire, where nobody is.
+  validates :goal, goal_reference: true, if: :will_save_change_to_goal?
   # A trigger either renders a `prompt_template` or runs a workflow (#18) —
   # exactly one, which the `triggers_prompt_template_xor_workflow_id` check
   # constraint holds the database to as well. Every trigger that predates
@@ -1981,7 +1984,8 @@ class Trigger < ApplicationRecord
   #
   # Takes effect on the session's next resumption, like the artifact syncs.
   def sync_goal!(session)
-    desired = Sessions::FollowUpGoal.normalize(goal)
+    # An unknown id resolves to nil, and a blank goal preserves the session's own.
+    desired = Sessions::FollowUpGoal.normalize(resolvable_goal)
 
     # Nothing validates the length of a trigger's goal, and Session does
     # (GOAL_MAX_LENGTH). A reuse-only trigger never reaches the spawn path, so
@@ -2434,8 +2438,27 @@ class Trigger < ApplicationRecord
       catalog_skills: resolvable_catalog_skills,
       catalog_hooks: resolvable_catalog_hooks,
       catalog_plugins: resolvable_catalog_plugins,
-      goal: goal
+      goal: resolvable_goal
     }
+  end
+
+  # The goal a fire hands a session: the trigger's own, unless it is an id the
+  # catalog does not have.
+  #
+  # The `goal_reference` validation keeps a person from saving one, but a trigger
+  # saved before it existed, or whose goal id was later retired from
+  # config/goals.json, still carries its old value — and Session runs the same
+  # validation, so passing it through would fail every fire. The artifact lists
+  # follow the same rule (`resolvable_<attr>`): a session never receives a name the
+  # catalog cannot resolve. The fire goes ahead without a goal and the log says why.
+  def resolvable_goal
+    return goal unless GoalsConfig.unknown_id?(goal)
+
+    Rails.logger.warn(
+      "[Trigger] Trigger '#{name}' (ID: #{id}) has goal #{goal.to_s.strip.inspect}, which is not a " \
+      "known goal id. The session gets no goal from this fire. Fix the trigger's goal."
+    )
+    nil
   end
 
   # What a trigger gives up by running a workflow (#18), beyond its template.

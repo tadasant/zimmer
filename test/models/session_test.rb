@@ -1136,7 +1136,9 @@ class SessionTest < ActiveSupport::TestCase
 
   test "should accept goal at exactly maximum length" do
     session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code", status: :waiting)
-    session.goal = "a" * Session::GOAL_MAX_LENGTH
+    # A sentence, not one 50,000-character word: a goal with no whitespace is read
+    # as a catalog id (GoalsConfig.unknown_id?), which this test is not about.
+    session.goal = ("a" * (Session::GOAL_MAX_LENGTH - 2)) + " b"
     assert session.valid?
   end
 

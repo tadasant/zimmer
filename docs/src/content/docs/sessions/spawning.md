@@ -442,7 +442,7 @@ every follow-up turn, so anything it appends rides along on every turn:
 
 | Block | When |
 | --- | --- |
-| The goal suffix | `session.goal` is set — a goal ID resolves to its description, free text passes through |
+| The goal suffix | `session.goal` is set — a goal ID resolves to its description, a free-text sentence passes through. A new unknown ID is refused where the goal is set; one a row already held before that check, or an ID since retired, still passes through verbatim |
 | `<session-notes>` | `session_notes` is non-blank |
 | `<unavailable-mcp-servers>` | a server this session was configured with failed to connect |
 

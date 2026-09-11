@@ -73,6 +73,8 @@ module Mcp
             lines << "### #{data[:name]}"
             lines << "- **ID:** `#{data[:id]}`"
             lines << "- **Description:** #{data[:description]}"
+            # What GoalCheck reads back for this goal — the same list GET /configs carries.
+            lines << "- **Checks:** #{data[:checks].map { |check| "`#{check}`" }.join(', ')}" if data[:checks].present?
             lines << ""
           end
         end

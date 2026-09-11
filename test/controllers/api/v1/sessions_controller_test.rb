@@ -1514,6 +1514,94 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_includes json["message"], "goal is too long"
   end
 
+  # ---- unknown goal ids are refused at every API boundary (#88) ----
+
+  test "should reject create with an unknown goal id" do
+    assert_no_difference("Session.count") do
+      post api_v1_sessions_path, params: {
+        agent_runtime: "claude_code", git_root: "https://github.com/test/repo.git", branch: "main",
+        goal: "open-reviewd-green-pr"
+      }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    assert_includes JSON.parse(response.body)["messages"].join(" "), %(Goal "open-reviewd-green-pr" is not a known goal id)
+  end
+
+  test "should create with a known goal id or a free-text goal" do
+    [ "open-reviewed-green-pr", "Fix the flaky test and open a PR" ].each do |goal|
+      post api_v1_sessions_path, params: {
+        agent_runtime: "claude_code", git_root: "https://github.com/test/repo.git", branch: "main", goal: goal
+      }, headers: @headers
+
+      assert_response :created
+      assert_equal goal, JSON.parse(response.body)["session"]["goal"]
+    end
+  end
+
+  test "should reject PATCH to an unknown goal id and keep the old goal" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+
+    patch api_v1_session_path(session.id), params: { goal: "pr_merged" }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_includes response.body, "is not a known goal id"
+    assert_equal "existing goal", session.reload.goal
+  end
+
+  test "should reject a follow-up carrying an unknown goal id without touching the session" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+    original_prompt = session.prompt
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      post follow_up_api_v1_session_path(session.id), params: {
+        prompt: "Follow-up prompt", goal: "open-reviewd-green-pr"
+      }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_equal "Validation failed", json["error"]
+    assert_includes json["message"], %(Goal "open-reviewd-green-pr" is not a known goal id)
+    session.reload
+    assert_equal "existing goal", session.goal
+    assert_equal original_prompt, session.prompt
+    assert_equal "needs_input", session.status
+  end
+
+  test "should reject a queued follow-up carrying an unknown goal id" do
+    session = sessions(:running)
+
+    assert_no_difference "EnqueuedMessage.count" do
+      post follow_up_api_v1_session_path(session.id), params: { prompt: "Follow-up", goal: "pr_merged" }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    assert_includes JSON.parse(response.body)["message"], "is not a known goal id"
+  end
+
+  # ---- the goal check rides on the session JSON ----
+
+  test "show includes the goal check for a catalog goal, and null for free text" do
+    session = sessions(:needs_input)
+    session.update!(goal: "open-reviewed-green-pr")
+
+    get api_v1_session_path(session.id), headers: @headers
+
+    check = JSON.parse(response.body)["session"]["goal_check"]
+    assert_equal "open-reviewed-green-pr", check["goal_id"]
+    assert_equal "unmet", check["verdict"]
+    assert_equal "No pull request is recorded for this session",
+      check["criteria"].find { |c| c["key"] == "pull_request_open" }["detail"]
+
+    session.update!(goal: "Just answer the question")
+    get api_v1_session_path(session.id), headers: @headers
+
+    assert_nil JSON.parse(response.body)["session"]["goal_check"]
+  end
+
   # force_immediate follow-up tests
   test "should send follow-up immediately to running session with force_immediate" do
     session = sessions(:running)

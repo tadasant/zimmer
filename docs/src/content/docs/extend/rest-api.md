@@ -334,6 +334,10 @@ Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`,
 `branch` defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents`
 default to false wherever they appear.
 
+`goal` is a goal id from `GET /configs` or a free-text sentence. A single word that is not a known
+id is refused with a 422 that lists the known ids. The same rule applies on `PATCH`, on
+`follow_up` and on enqueued messages. See [where a goal comes from](/sessions/goals/#where-a-goal-comes-from).
+
 `priority_class` accepts `spot` or `priority`; `genesis` accepts one of `web_ui`, `slack`,
 `github_issue`, `github_label`, `schedule`, `ao_event`, `api`, `unknown`. A session that carries no
 `scheduling_class` of its own is classified from its genesis on read, so moving a genesis on Inference
@@ -521,8 +525,10 @@ about the request or the response shape changes; the record is internal.
 `goal` behaves identically on all three: **a non-blank goal is applied to the session, a blank or
 omitted one leaves the session's existing goal alone.** The queued and interrupted paths carry it on
 the `EnqueuedMessage` and `EnqueuedMessageProcessorService` applies it when it claims the message;
-the direct path writes it alongside the prompt. A goal over `GOAL_MAX_LENGTH` (50,000) is rejected
-with a 422 before anything is delivered, on every path.
+the direct path writes it alongside the prompt. A goal over `GOAL_MAX_LENGTH` (50,000), or a single
+word that is not a known goal id, is rejected with a 422 before anything is delivered, on every path.
+Repeating the session's own goal is never refused, even when that goal is an id since retired from
+the catalog.
 
 **`pending_wake` — the session was asleep on a wake-up of its own, and still is.** When the target
 had an armed one-time wake at the moment the follow-up arrived, all three responses carry an extra
@@ -646,12 +652,20 @@ semantics.
 ### `session_json`
 
 `id`, `slug`, `title`, `status`, `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory`,
-`goal`, `mcp_servers`, `all_mcp_servers`, `injected_mcp_servers`, `catalog_skills`, `catalog_hooks`,
+`goal`, `goal_check`, `mcp_servers`, `all_mcp_servers`, `injected_mcp_servers`, `catalog_skills`, `catalog_hooks`,
 `catalog_plugins`, `config`, `metadata`, `custom_metadata`,
 `is_autonomous`, `heartbeat_enabled`, `heartbeat_interval_seconds`, `auto_compact_window`,
 `genesis`, `scheduling_class`, `priority_class`, `category_id`, `category{}`, `session_id`, `job_id`,
 `running_job_id`, `archived_at`, `trash_after`, `created_at`, `updated_at`, `session_notes`,
 `session_notes_updated_at`, `favorited`, `visibility`, `effective_visibility`, `snoozed_until`.
+
+`goal_check` is `null` for a free-text goal or no goal. For a catalog goal with checks it is the
+[goal check](/sessions/goals/#how-a-goal-is-checked):
+`{goal_id, goal_name, verdict, provisional, observed_at, criteria: [{key, label, status, detail}], note}`.
+`verdict` is `met`, `unmet` or `pending`, and each criterion's `status` is `met`, `unmet`,
+`pending` or `unknown`. `provisional` is true while the session is running. `observed_at` is when the
+poll pass last read the session's PRs. It is advisory: nothing in Zimmer acts on it. It is computed
+from `custom_metadata` alone, so it costs no query on a list.
 
 Every response with a `session` key renders it through the same serializer
 (`ApiSessionSerialization`), including `POST /enqueued_messages/:id/interrupt` — `session` means one
@@ -1168,7 +1182,7 @@ curl "$BASE_URL/gate_decisions?gate=pr_merge&surface=zimmer&decision=hold&per_pa
 | **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent · undelivered`; the read payload also carries `origin` ∈ `caller · automated_pr_merged · automated_merge_conflict · automated_recovery_nudge`, which records who wrote the row. No request can set it: every create site names its attributes literally and no `permit` list mentions it. Zimmer assigns it, and on one internal path (`SpotSessionHold`, for a refused turn it is re-queueing) derives it from the prompt body. Archiving a session is **refused** (422) while any row is `pending`, since the archive would discard it; `force: true` on the archive overrides that and retires the rows to `undelivered` — see [lifecycle](/sessions/lifecycle/). Deleting one re-numbers the positions behind it |
 | **CLIs** | `GET /clis/status` · `POST /clis/refresh` · `POST /clis/clear_cache` |
 | **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status`. `status` returns `{state, generated_at, session_count, file_size_bytes, stale, stale_reason, complete, deferred_count, incomplete_reason}` where `state` is `present`. `complete` is false while the job is still draining a backlog — a partial archive is freshly written, so `stale` is false and `complete` is the only thing that distinguishes it; a 404 carries `state` `never_built` or `missing` plus the `archive_path` it looked at, so "no archive" is a fact you can check rather than a promise to wait. The download's `X-Archive-*` headers carry the same generated-at, session count and staleness. **Not the way to search conversations** — use `/sessions/search?search_contents=true`; the zip is hundreds of megabytes and up to ten minutes stale |
-| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, and `requires_oauth` · `GET /mcp_servers` → `{name, title, description, unavailable, unavailable_reason}` · `GET /skills` |
+| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, and `requires_oauth` · each goal is `{id, name, description, checks}`, where `checks` names the [goal check](/sessions/goals/#how-a-goal-is-checked) criteria · `GET /mcp_servers` → `{name, title, description, unavailable, unavailable_reason}` · `GET /skills` |
 
 **Both server lists say whether Zimmer can start each entry.** `unavailable` is a boolean and
 `unavailable_reason` a short string that is `null` exactly when `unavailable` is false — the same

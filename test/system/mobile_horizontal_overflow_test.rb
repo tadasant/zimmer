@@ -253,6 +253,33 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("session detail")
   end
 
+  # The goal check panel's details carry PR references — owner/repo#N, one
+  # unbreakable token each — and with two live PRs a detail names both. That is
+  # the row most likely to set the panel's width.
+  test "the goal check panel does not overflow horizontally on a phone" do
+    pr = "https://github.com/a-long-organisation-name/an-even-longer-repository-name/pull/12345"
+    other = "https://github.com/a-long-organisation-name/another-long-repository-name/pull/67890"
+    session = create_session(
+      status: :needs_input,
+      goal: "open-reviewed-green-pr",
+      custom_metadata: {
+        "github_pull_request_urls" => [ pr, other ],
+        "github_pull_request_statuses" => { pr => "open", other => "open" },
+        "github_pull_request_ci_statuses" => { pr => "fail", other => "pending" },
+        "github_pull_request_goal_facts" => {
+          pr => { "verification_section" => false, "verification_checked_boxes" => 0, "unchecked_boxes" => 3, "labels" => [] },
+          other => { "verification_section" => true, "verification_checked_boxes" => 2, "unchecked_boxes" => 0, "labels" => [ "ready to merge" ] }
+        }
+      }
+    )
+
+    visit session_path(session)
+    assert_selector "#session_#{session.id}_goal_check [data-goal-check-verdict=unmet]"
+    assert_text "Goal check"
+
+    assert_no_horizontal_overflow("session detail with a goal check")
+  end
+
   # The approval banner is the densest row on the session page: three action
   # buttons in one flex row, above a request summary that is one unbreakable
   # `tool_name: message` string. A non-wrapping row puts Dismiss off the edge.

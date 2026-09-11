@@ -30,7 +30,7 @@ module Mcp
       SLUG_DESC = "URL-friendly identifier for the session. Must be unique, and cannot be all digits — " \
                   "an all-digit identifier always resolves as a session id, so such a slug would be unreachable."
 
-      GOAL_DESC = 'Goal ID from get_configs (e.g. "pr_merged"). The description is automatically resolved and passed to the agent as context.'
+      GOAL_DESC = 'Goal ID from get_configs (e.g. "open-reviewed-green-pr"). The description is automatically resolved and passed to the agent as context. A free-text sentence is also accepted; a single word that is not a known goal ID is rejected as a typo.'
 
       # The one sentence every list-valued parameter below repeats, because the
       # failure it prevents was a caller that had read "drop what you don't need"
@@ -332,9 +332,13 @@ On a connection restricted to specific agent roots this parameter is rejected ou
       end
 
       # Goals are passed to the agent as prose, so a goal ID is swapped for its
-      # description; anything not in the catalog is passed through verbatim.
+      # description; a free-text sentence is passed through verbatim. A single
+      # word the catalog does not know is a mistyped id, and is refused rather
+      # than handed to the agent as the goal.
       def resolved_goal(goal)
-        GoalsConfig.find(goal.to_s)&.description || goal
+        raise ToolError, GoalsConfig.unknown_id_message(goal) if GoalsConfig.unknown_id?(goal)
+
+        GoalsConfig.find(goal.to_s.strip)&.description || goal
       end
 
       # @param args [Hash] the raw tool arguments, needed to tell an omitted

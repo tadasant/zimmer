@@ -1271,6 +1271,43 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_nil session.reload.goal
   end
 
+  test "change_goal refuses an unknown goal id and keeps the old goal" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_goal", "session_id" => session.id, "goal" => "pr_merged")
+    end
+
+    assert_includes error.message, %(Goal "pr_merged" is not a known goal id)
+    assert_equal "existing goal", session.reload.goal
+  end
+
+  test "change_goal accepts a known goal id" do
+    session = sessions(:needs_input)
+
+    @tool.call("action" => "change_goal", "session_id" => session.id, "goal" => "codebase-question")
+
+    assert_equal "codebase-question", session.reload.goal
+  end
+
+  test "follow_up refuses an unknown goal id without sending the prompt" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+
+    error = nil
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      error = assert_raises(Mcp::ToolError) do
+        @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Keep going", "goal" => "open-reviewd-green-pr")
+      end
+    end
+
+    assert_includes error.message, "is not a known goal id"
+    session.reload
+    assert_equal "existing goal", session.goal
+    assert_equal "needs_input", session.status
+  end
+
   test "change_goal requires the goal parameter" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "change_goal", "session_id" => sessions(:needs_input).id) }
     assert_match(/"goal" parameter is required/, error.message)

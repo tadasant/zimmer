@@ -21,6 +21,39 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     refute_includes output, "I've completed the task for you."
   end
 
+  # The web page's Goal check panel and this section read the same GoalCheck.
+  test "reports the goal check for a catalog goal, criterion by criterion" do
+    pr = "https://github.com/owner/repo/pull/7"
+    session = sessions(:needs_input)
+    session.update!(
+      goal: "open-reviewed-green-pr",
+      custom_metadata: {
+        "github_pull_request_urls" => [ pr ],
+        "github_pull_request_statuses" => { pr => "open" },
+        "github_pull_request_ci_statuses" => { pr => "fail" },
+        "github_pull_request_goal_facts" => {
+          pr => { "verification_section" => true, "verification_checked_boxes" => 2, "unchecked_boxes" => 0, "labels" => [] }
+        }
+      }
+    )
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "### Goal Check (advisory)"
+    assert_includes output, "- **Verdict:** unmet (3 of 5 criteria met, goal `open-reviewed-green-pr`)"
+    assert_includes output, "- [met] A pull request is open or merged — owner/repo#7 open"
+    assert_includes output, "- [unmet] CI is green — failing"
+    assert_includes output, "- [unmet] Label \"ready to merge\" applied — label not applied"
+    assert_includes output, GoalCheck::NOT_CHECKED_NOTE
+  end
+
+  test "has no goal check section for a free-text goal" do
+    session = sessions(:needs_input)
+    session.update!(goal: "Answer the question inline")
+
+    refute_includes @tool.call("id" => session.id), "### Goal Check"
+  end
+
   test "reports an empty queue as an explicit answer rather than an absent section" do
     output = @tool.call("id" => sessions(:running).id)
 
