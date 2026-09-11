@@ -24,23 +24,6 @@ class InferenceResetCountdownTest < ApplicationSystemTestCase
   # picks them up.
   SCREENSHOT_DIR = Rails.root.join("tmp", "capybara")
 
-  setup do
-    # InferenceController#show reconciles the worker's ~/.claude credential files on
-    # render. Point those paths at an empty tmp dir so the page render performs no
-    # real filesystem work and reconcile is a clean no-op during the test.
-    @tmpdir = Dir.mktmpdir
-    @orig_claude_json = ClaudeAuthProvider::CLAUDE_JSON_PATH
-    @orig_credentials_json = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
-    stub_claude_path(:CLAUDE_JSON_PATH, File.join(@tmpdir, "claude.json"))
-    stub_claude_path(:CREDENTIALS_JSON_PATH, File.join(@tmpdir, ".credentials.json"))
-  end
-
-  teardown do
-    stub_claude_path(:CLAUDE_JSON_PATH, @orig_claude_json)
-    stub_claude_path(:CREDENTIALS_JSON_PATH, @orig_credentials_json)
-    FileUtils.remove_entry(@tmpdir) if @tmpdir && File.directory?(@tmpdir)
-  end
-
   test "a card in the last minute before a reset names the wait instead of rendering a bare label" do
     account = claude_accounts(:exceeded)
     # The shape the bug was reported in: the 5-hour window already reset, the
@@ -255,10 +238,5 @@ class InferenceResetCountdownTest < ApplicationSystemTestCase
     FileUtils.mkdir_p(SCREENSHOT_DIR)
     scroll_into_center(element)
     page.save_screenshot(SCREENSHOT_DIR.join("proof-#{name}.png"))
-  end
-
-  def stub_claude_path(const, value)
-    ClaudeAuthProvider.send(:remove_const, const)
-    ClaudeAuthProvider.const_set(const, value)
   end
 end

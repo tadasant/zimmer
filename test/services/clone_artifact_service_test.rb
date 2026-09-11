@@ -79,11 +79,10 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
   # instead of betting against it, and keeps the suite out of the runner's real
   # home, where a killed run leaves artifact directories behind for good.
   #
-  # Weigh this before widening what runs under the sandbox: constants that bake
-  # Dir.home at class-load time (ClaudeAuthProvider::CLAUDE_JSON_PATH,
-  # QuotaCheckService::CREDENTIALS_PATH) would freeze a tmpdir path for the rest
-  # of the worker process if they were first autoloaded here. Nothing this file
-  # touches reaches them, and CI eager-loads the whole graph at boot.
+  # Weigh this before widening what runs under the sandbox: a constant that bakes
+  # Dir.home at class-load time would freeze a tmpdir path for the rest of the
+  # worker process if it were first autoloaded here. Nothing this file touches
+  # reaches one, and CI eager-loads the whole graph at boot.
   setup do
     @original_home = ENV["HOME"]
     @home_dir = Dir.mktmpdir("clone-artifact-home")

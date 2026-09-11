@@ -99,9 +99,7 @@ class AuthRecoveryCoordinator
   # that failed" — the distinction the old code never made.
   IDENTITY_KEY = "auth_identity_email"
   IDENTITY_AT_KEY = "auth_identity_recorded_at"
-  CREDENTIAL_MODE_KEY = "auth_session_scoped_credentials"
   CREDENTIAL_FINGERPRINT_KEY = "auth_access_token_fingerprint"
-  SESSION_SCOPED_SETTING_KEY = "session_scoped_credentials"
   # When #reseed_refreshed_current last re-seeded this session's identity, so it
   # does so at most once per incident.
   RESEEDED_AT_KEY = "auth_refresh_reseeded_at"
@@ -147,20 +145,16 @@ class AuthRecoveryCoordinator
     Rails.logger.info "[AuthRecoveryCoordinator] Could not record auth identity: #{e.message}"
   end
 
-  # Record what the child process is ACTUALLY about to receive, at the spawn-env
-  # seam where fail-open fallback has already decided between the shared file and
-  # a session-scoped access token. The global setting can change while a process
-  # is alive, so recovery must not infer the failed process's mode from its value
-  # later. The fingerprint is one-way and exists only to answer whether the DB
-  # token generation changed since this process was spawned.
-  def self.record_spawn_credentials!(session_id:, account:, session_scoped:)
+  # Record which exact access token the child process is about to receive, at the
+  # spawn-env seam that exports it. The fingerprint is one-way and exists only to
+  # answer whether the DB token generation has changed since this process was
+  # spawned — the question #spawned_token_stale? asks to tell "the pool rotated
+  # under me" from "the token I am holding is the one that failed".
+  def self.record_spawn_credentials!(session_id:, account:)
     session = Session.find_by(id: session_id)
     return unless session
 
-    updates = {
-      CREDENTIAL_MODE_KEY => !!session_scoped,
-      CREDENTIAL_FINGERPRINT_KEY => session_scoped ? credential_fingerprint(account) : nil
-    }
+    updates = { CREDENTIAL_FINGERPRINT_KEY => credential_fingerprint(account) }
     if account.respond_to?(:email) && account.email.present?
       updates[IDENTITY_KEY] = account.email
       updates[IDENTITY_AT_KEY] = Time.current.iso8601
@@ -235,7 +229,7 @@ class AuthRecoveryCoordinator
     current = auth_provider.current_account
 
     # Nothing is current: there is no identity to diagnose, only one to establish.
-    # inject_for_session! bootstraps from the pool (or the filesystem) if it can.
+    # inject_for_session! promotes a usable account out of the pool if it can.
     return adopt_or_park(working_directory, "no account was current") if current.nil?
 
     spawned_as = session&.metadata&.dig(IDENTITY_KEY)
@@ -454,18 +448,11 @@ class AuthRecoveryCoordinator
     probe.credential_refused?
   end
 
+  # Every Claude Code session carries its own credentials — a per-session
+  # CLAUDE_CONFIG_DIR and an access token with no refresh token — so this is a
+  # question about the runtime and nothing else (issue #618).
   def session_scoped_claude?
-    return false unless runtime.to_s == ClaudeAuthProvider::RUNTIME
-
-    spawned_session_scoped? || AppSetting.session_scoped_credentials_enabled?
-  end
-
-  def spawned_session_scoped?
-    metadata = session&.metadata || {}
-    return metadata[CREDENTIAL_MODE_KEY] if metadata.key?(CREDENTIAL_MODE_KEY)
-
-    flag = session&.session_experimental_flags&.find_by(setting_key: SESSION_SCOPED_SETTING_KEY)
-    flag&.value_at_end == true
+    runtime.to_s == ClaudeAuthProvider::RUNTIME
   end
 
   def spawned_token_stale?(current)

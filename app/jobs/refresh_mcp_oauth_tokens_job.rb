@@ -214,17 +214,28 @@ class RefreshMcpOauthTokensJob < ApplicationJob
     Rails.logger.warn "[RefreshMcpOauthTokensJob] Skipped runtime reconciliation for #{credential.server_name}: #{e.class}: #{e.message}"
   end
 
-  # One writer/reconciler pair per registered runtime that has a credential
-  # store, built once per job run. Reading is lazy inside the reconciler, so a
+  # One writer/reconciler pair per registered runtime that has a HOST-GLOBAL
+  # credential store, built once per job run.
+  #
+  # Claude Code is skipped, and that is not a gap. Its store is per-session (a
+  # `.credentials.json` inside each session's CLAUDE_CONFIG_DIR, issue #618), so
+  # this sweep has no single file to read; what it used to read —
+  # ~/.claude/.credentials.json — is a file no session writes any more, and
+  # adopting from it could only ever resurrect a fossil. The capture happens
+  # instead at every spawn and follow-up, where McpOauthCredentialInjector builds
+  # a reconciler over THAT session's writer.
+  # Reading is lazy inside the reconciler, so a
   # listable store (Claude Code, Codex) is read once for the whole run however
   # many credentials ask. Pi's is probed per key, and its keys are server names,
   # so it costs one `node` spawn per distinct server — bounded by the throttle on
   # #credentials_needing_refresh rather than by the size of the table.
   def runtime_reconcilers
-    @runtime_reconcilers ||= RuntimeRegistry.mcp_credential_writer_classes.map do |writer_class|
-      writer = writer_class.new
-      [ writer, McpOauthRuntimeReconciler.new(writer) ]
-    end
+    @runtime_reconcilers ||= RuntimeRegistry.mcp_credential_writer_classes
+      .reject(&:session_scoped_store?)
+      .map do |writer_class|
+        writer = writer_class.new
+        [ writer, McpOauthRuntimeReconciler.new(writer) ]
+      end
   end
 
   def credentials_needing_refresh

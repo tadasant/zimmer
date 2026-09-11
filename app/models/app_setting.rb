@@ -17,6 +17,17 @@
 # (e.g. Claude Code + a GPT model, which the Claude Code harness can't run) can
 # never be persisted.
 class AppSetting < ApplicationRecord
+  # Phase 1 of the two-phase drop of `session_scoped_credentials_enabled`.
+  #
+  # Session-scoped Claude credentials are unconditional now (issue #618), so
+  # nothing reads the column. It cannot come out in the same deploy that stops
+  # reading it: kamal-proxy health-gates the cutover, so the old containers keep
+  # serving with the attribute on their model while the new schema is already
+  # live, and their SELECTs would come back without it and raise
+  # ActiveModel::MissingAttributeError (#482). A later PR drops it, annotated
+  # `# two-phase-drop: phase 2 of #<this PR>`.
+  self.ignored_columns += %w[session_scoped_credentials_enabled]
+
   # Where the dashboard's "Uncategorized" section sits in the category stack when no
   # explicit ordering has been persisted. 0 keeps it at the top, matching the
   # historical behavior before the section became reorderable.
@@ -43,13 +54,6 @@ class AppSetting < ApplicationRecord
   # default: with several servers attached, the up-front schema load is a large,
   # unavoidable context cost at the start of every session.
   DEFAULT_MCP_TOOL_SEARCH_ENABLED = true
-
-  # Whether Claude Code sessions run under their own CLAUDE_CONFIG_DIR with an
-  # access token handed in via CLAUDE_CODE_OAUTH_TOKEN, making the DB the sole
-  # owner of the subscription refresh chain (issue #618). OFF is the default and
-  # the off path is the pre-existing shared-credentials-file behaviour, which is
-  # what makes flipping this back a rollback rather than a migration.
-  DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED = false
 
   # How many sessions may run at once. The gate admits spot work in parallel up to
   # the concurrency the quota can carry, and this is the brake on that — 10 is the
@@ -240,13 +244,6 @@ class AppSetting < ApplicationRecord
       DEFAULT_MCP_TOOL_SEARCH_ENABLED
     end
     alias_method :mcp_tool_search_enabled?, :mcp_tool_search_enabled
-
-    # No persisted row exists, so sessions keep the shared-credentials-file
-    # behaviour. A DB-less boot never opts a session into the new scheme.
-    def session_scoped_credentials_enabled
-      DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED
-    end
-    alias_method :session_scoped_credentials_enabled?, :session_scoped_credentials_enabled
   end.new(default_runtime: nil, default_model: nil)
 
   validates :default_runtime,
@@ -371,14 +368,6 @@ class AppSetting < ApplicationRecord
     def mcp_tool_search_enabled?
       current(context: "AppSetting.mcp_tool_search_enabled?").mcp_tool_search_enabled?
     end
-
-    # Whether Claude Code sessions get a per-session CLAUDE_CONFIG_DIR and a
-    # CLAUDE_CODE_OAUTH_TOKEN instead of the shared credentials file. Read on the
-    # spawn path, the auth sweep and the /inference render, so it falls back to the
-    # shipped default whenever the row can't be read rather than raising.
-    def session_scoped_credentials_enabled?
-      current(context: "AppSetting.session_scoped_credentials_enabled?").session_scoped_credentials_enabled?
-    end
   end
 
   # Whether the extension with `id` is enabled on this row, defaulting to
@@ -441,12 +430,6 @@ class AppSetting < ApplicationRecord
   def spot_starvation_age_ceiling
     hours = spot_starvation_age_ceiling_hours
     hours.positive? ? hours.hours : nil
-  end
-
-  def session_scoped_credentials_enabled?
-    return DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED unless has_attribute?(:session_scoped_credentials_enabled)
-
-    !!self[:session_scoped_credentials_enabled]
   end
 
   # The operator's extra category guidance, or nil. Returns nil when the column

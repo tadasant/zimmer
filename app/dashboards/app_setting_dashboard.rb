@@ -29,7 +29,6 @@ class AppSettingDashboard < Administrate::BaseDashboard
     # verbatim. /health is where an operator normally reads this.
     queue_recovery_mode: Field::String.with_options(searchable: false),
     mcp_tool_search_enabled: Field::Boolean,
-    session_scoped_credentials_enabled: Field::Boolean,
     # The removable-extension registry: a JSONB map of extension id => on/off,
     # read through AppSetting's extension accessors rather than as a column.
     extension_states: Field::String.with_options(searchable: false),

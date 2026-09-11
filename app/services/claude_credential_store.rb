@@ -1,25 +1,23 @@
 # frozen_string_literal: true
 
-# The read-modify-write discipline for Claude Code's host-global credential file,
-# `~/.claude/.credentials.json`.
+# The read-modify-write discipline for a Claude Code session's `.credentials.json`.
 #
-# That one file has two writers inside Zimmer and a third outside it:
+# That file used to be host-global, with two writers inside Zimmer and a third
+# outside it — the account pool's `claudeAiOauth` block, ClaudeMcpCredentialWriter's
+# `mcpOAuth` map, and the CLI rewriting both. Nobody owned the whole file, and
+# on 2026-08-22 that cost the pool three hours (issue #618).
 #
-#   - ClaudeAccount#write_credentials_to_filesystem! owns the `claudeAiOauth`
-#     subscription tokens (which account the CLI is logged in as).
-#   - ClaudeMcpCredentialWriter owns the `mcpOAuth` map (per-server MCP OAuth
-#     tokens) and the sibling needs-auth cache.
-#   - the Claude Code CLI itself rewrites both blocks at runtime.
+# It is per-session now: each session gets its own CLAUDE_CONFIG_DIR, Zimmer
+# writes only the `mcpOAuth` map into it, and no subscription token is ever on
+# disk. Two writers are left — ClaudeMcpCredentialWriter and the CLI — and they
+# still overlap, because a session's spawn and its follow-ups both inject while
+# the CLI refreshes MCP tokens mid-session. So the rule is unchanged: no writer
+# may write the whole file from its own snapshot, because a plain `File.write` of
+# one block's blob discards what the other writer put beside it. One lock file,
+# one atomic write.
 #
-# Nobody owns the whole file, so no writer may write the whole file from its own
-# snapshot: a plain `File.write` of one block's blob discards whatever another
-# writer put in the other block. Both Zimmer writers therefore go through here —
-# one lock file, one atomic write — so the two are actually coordinated rather
-# than coincidentally ordered.
-#
-# Every entry point takes the credentials path rather than reading a constant, so
-# each caller keeps its own (test-relocatable) path constant. In production they
-# resolve to the same file, which is what makes the lock coordinate anything.
+# Every entry point takes the credentials path rather than reading a constant,
+# which is what lets one implementation serve every session's own file.
 module ClaudeCredentialStore
   # A dedicated lock file, so the lock is never the file being replaced by rename.
   # It is derived from the credentials path's directory: relocating the
@@ -27,10 +25,10 @@ module ClaudeCredentialStore
   LOCK_FILENAME = ".zimmer-credential-store.lock"
 
   class << self
-    # Serializes a read-modify-write of the credential store against every other
-    # writer on the host — other sessions' credential injections and Zimmer's own
-    # account writes alike. Without it, two overlapping writers each merge into the
-    # snapshot they read and the last one wins, silently dropping the other's block.
+    # Serializes a read-modify-write of one session's credential store against
+    # every other writer of that same file. Without it, two overlapping writers
+    # each merge into the snapshot they read and the last one wins, silently
+    # dropping the other's entry.
     #
     # @param credentials_path [String] the credentials file being modified
     def with_lock(credentials_path)

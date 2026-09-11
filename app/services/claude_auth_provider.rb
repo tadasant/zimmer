@@ -3,14 +3,12 @@
 # ClaudeAuthProvider — the RuntimeAuthProvider for Claude Code.
 #
 # Owns every Anthropic-specific constant for the login-credential lifecycle (the
-# OAuth token endpoint, the OAuth client ID, and the canonical filesystem paths
-# for ~/.claude.json and ~/.claude/.credentials.json) and implements the provider
+# OAuth token endpoint and the OAuth client ID) and implements the provider
 # contract by delegating to the workhorses that already manage the Claude account
 # pool:
 #
-#   - ClaudeAccount        — the account pool, token storage, and refresh_token!
-#   - AccountRotationService — filesystem ↔ DB reconciliation and before-spawn
-#                              credential writes
+#   - ClaudeAccount          — the account pool, token storage, and refresh_token!
+#   - AccountRotationService — which account is current, and rotating between them
 #
 # These constants are the single source of truth: ClaudeAccount,
 # AccountRotationService, and the claude_accounts rake task all reference
@@ -22,27 +20,9 @@ class ClaudeAuthProvider < RuntimeAuthProvider
   TOKEN_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
   CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
-  # Canonical filesystem locations the Claude CLI reads its identity and OAuth
-  # tokens from. All sessions on a worker share this single identity.
-  CLAUDE_JSON_PATH = File.join(Dir.home, ".claude.json")
-  CREDENTIALS_JSON_PATH = File.join(Dir.home, ".claude", ".credentials.json")
-
-  # Claude's CLI rotates refresh tokens on its own during sessions, so Zimmer sweeps
-  # the pool every 5 minutes to refresh anything expiring soon.
+  # Access tokens live 8 hours and Zimmer is the only thing that refreshes them,
+  # so the pool is swept every 5 minutes to re-mint anything expiring soon.
   ROTATION_INTERVAL = 5.minutes
-
-  # Sidecar marker recording which account Zimmer last wrote into the SHARED
-  # ~/.claude/.credentials.json. It is co-located with the credentials file (same
-  # directory, which in production is a bind mount shared by the web and worker
-  # containers) so every reader agrees on "whose tokens are on disk" — unlike
-  # ~/.claude.json, which is container-local and diverges across containers.
-  #
-  # Derived from CREDENTIALS_JSON_PATH at call time (not a frozen constant) so a
-  # test that redirects CREDENTIALS_JSON_PATH to a temp dir automatically
-  # relocates the marker alongside it. See ClaudeAccount.credentials_owner_email.
-  def self.credentials_owner_path
-    File.join(File.dirname(CREDENTIALS_JSON_PATH), ".ao-credentials-owner.json")
-  end
 
   def runtime
     RUNTIME
@@ -73,12 +53,9 @@ class ClaudeAuthProvider < RuntimeAuthProvider
   # Make sure a usable account is current and its token is fresh before a session
   # spawns.
   #
-  # With session-scoped credentials on, that is all this does — the session
-  # receives the account's access token through CLAUDE_CODE_OAUTH_TOKEN and never
-  # touches a shared file. With it off, this also writes ~/.claude.json and
-  # ~/.claude/.credentials.json, a fixed home-dir location shared by every
-  # session, which is why the per-session working_directory is not used either
-  # way.
+  # That is ALL this does. The session receives the account's access token
+  # through CLAUDE_CODE_OAUTH_TOKEN and reads no credential file, so nothing is
+  # written to disk here and the per-session working_directory is unused.
   #
   # @return [ClaudeAccount, nil] the active account, or nil if none is available
   def inject_for_session!(_session = nil, _working_directory = nil)
@@ -87,8 +64,7 @@ class ClaudeAuthProvider < RuntimeAuthProvider
 
   # Activate a validated account by routing through AccountRotationService so a
   # manual switch (or safe-delete fallback) takes exactly the same activation
-  # path as an automatic rotation: write ~/.claude.json + ~/.claude/.credentials.json,
-  # mark current in the DB, take a quota snapshot.
+  # path as an automatic rotation: mark current in the DB, take a quota snapshot.
   def activate!(account)
     AccountRotationService.new.activate!(account, snapshot_trigger: "manual_switch")
     account
@@ -99,38 +75,20 @@ class ClaudeAuthProvider < RuntimeAuthProvider
   end
 
   # --- Token-refresh dispatcher hooks (used by RefreshRuntimeAuthTokensJob) ---
-
-  # Sync filesystem tokens for the current account back to the DB. The CLI may
-  # have rotated the refresh token on disk, making the DB copy stale.
   #
-  # A no-op under session-scoped credentials: no session writes the shared file,
-  # so there is nothing on it that the DB does not already have, and reading one
-  # back would reintroduce the second source of truth the setting removes.
+  # Zimmer implements NEITHER filesystem hook for Claude Code, and the inherited
+  # no-ops are the behaviour:
   #
-  # Zimmer does NOT implement the base #reconcile_filesystem_identity! hook. The
-  # inherited no-op is the behaviour: adopting an identity off ~/.claude.json —
-  # a container-local file a replacement destroys while keeping the tokens — is
-  # how a stale identity got adopted over a correct one, and it ran on a
-  # five-minute timer. Codex still implements it against its own auth.json.
-  # See issue #618, addendum B and the acceptance criterion.
+  #   * #reconcile_filesystem_identity! — adopting an identity off ~/.claude.json,
+  #     a container-local file a replacement destroys while keeping the tokens, is
+  #     how a stale identity got adopted over a correct one on a five-minute timer
+  #     (#618, addendum B).
+  #   * #sync_current_account_tokens! — no session holds a refresh token or writes
+  #     a credentials file, so there is nothing on disk the DB does not already
+  #     have, and reading one back would reintroduce the second source of truth
+  #     #618 removed.
   #
-  # @return [Symbol, nil] the sync outcome (see ClaudeAccount#sync_tokens_from_filesystem!),
-  #   or nil when there is no current account / the sync raised. The dispatcher
-  #   reads this: a sync that is being skipped for corruption invalidates the
-  #   `:stale` handler's whole reason for waiting.
-  def sync_current_account_tokens!
-    return nil if AppSetting.session_scoped_credentials_enabled?
-
-    current = current_account
-    return nil unless current
-
-    outcome = current.sync_tokens_from_filesystem!
-    Rails.logger.info "[ClaudeAuthProvider] Filesystem token sync for current account #{current.email}: #{outcome}"
-    outcome
-  rescue => e
-    Rails.logger.info "[ClaudeAuthProvider] Failed to sync filesystem tokens: #{e.message}"
-    nil
-  end
+  # Codex still implements both against its own auth.json, which its CLI owns.
 
   # Accounts stuck in needs_reauth that still hold a refresh token worth retrying.
   def needs_reauth_recovery_candidates
