@@ -152,10 +152,63 @@ class CategoryFeedbackEventTest < ActiveSupport::TestCase
 
   test "the decline rate is read off inference outcomes only" do
     record_inference(category: @bugs)
-    record_inference(category: nil)
+    record_inference(category: nil, session: sessions(:running))
     CategoryFeedbackEvent.record_correction!(session: @session, corrected_category: @research)
 
     assert_equal({ sampled: 2, declined: 1 }, CategoryFeedbackEvent.decline_rate)
+  end
+
+  test "a correction into a since-deleted category is unscorable, not a NULL-equals-NULL hit" do
+    record_inference(category: @bugs)
+    correction = CategoryFeedbackEvent.record_correction!(session: @session, corrected_category: @research)
+    correction.update!(replayed_at: Time.current, replay_category_id: nil, replay_category_name: nil)
+
+    @research.destroy!
+    correction.reload
+
+    refute correction.scorable?
+    assert_nil correction.replay_correct?
+    assert_nil CategoryFeedbackEvent.scorecard([ correction ]).accuracy_pct
+  end
+
+  test "a correction into a since-frozen category is unscorable" do
+    record_inference(category: @bugs)
+    correction = CategoryFeedbackEvent.record_correction!(session: @session, corrected_category: @research)
+    correction.update!(replayed_at: Time.current, replay_category_id: @bugs.id)
+
+    @research.update!(is_frozen: true)
+
+    assert_nil correction.reload.replay_correct?
+  end
+
+  test "a correction to Uncategorized stays scorable" do
+    record_inference(category: @bugs)
+    correction = CategoryFeedbackEvent.record_correction!(session: @session, corrected_category: nil)
+    correction.update!(replayed_at: Time.current, replay_category_id: nil)
+
+    assert correction.scorable?
+    assert correction.replay_correct?
+  end
+
+  test "the decline rate counts each session's latest outcome, not every attempt" do
+    # One session declined three times (it paused a lot) and was finally placed;
+    # another was placed first time. Neither is a decline now.
+    3.times { record_inference(category: nil) }
+    record_inference(category: @bugs)
+    record_inference(category: @bugs, session: sessions(:running))
+    record_inference(category: nil, session: sessions(:needs_input))
+
+    assert_equal({ sampled: 3, declined: 1 }, CategoryFeedbackEvent.decline_rate)
+  end
+
+  test "the corpus reads only the rows it returns, and can leave the bodies out" do
+    record_inference(category: @bugs)
+    CategoryFeedbackEvent.record_correction!(session: @session, corrected_category: @research)
+
+    row = CategoryFeedbackEvent.eval_corpus.without_bodies.first
+
+    refute row.has_attribute?(:context_snapshot)
+    assert_equal "Research", row.corrected_label
   end
 
   test "the decline rate is nil before anything has been categorized" do

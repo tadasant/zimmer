@@ -48,7 +48,7 @@ class CategorizationController < ApplicationController
   # verdicts off the rows once the job has written them.
   def replay
     limit = CategorizationReplayJob.clamp_limit(params[:limit].presence || CategorizationReplayJob::DEFAULT_LIMIT)
-    corpus_size = CategoryFeedbackEvent.eval_corpus(limit: limit).size
+    corpus_size = CategoryFeedbackEvent.eval_corpus(limit: limit).pluck(:id).size
 
     if corpus_size.zero?
       redirect_to categorization_path,
@@ -56,7 +56,12 @@ class CategorizationController < ApplicationController
       return
     end
 
-    CategorizationReplayJob.perform_later(limit)
+    unless CategorizationReplayJob.enqueue(limit)
+      redirect_to categorization_path,
+        notice: "A replay is already queued or running. Reload in a moment to see its scores."
+      return
+    end
+
     redirect_to categorization_path,
       notice: "Replaying #{corpus_size} #{'correction'.pluralize(corpus_size)} against the current config. Reload in a moment to see the scores."
   end
@@ -68,7 +73,7 @@ class CategorizationController < ApplicationController
     @resolved_model = CategorizationService.new(setting: @setting).model
     @model_options = ModelCatalog.model_ids_for(RuntimeRegistry::DEFAULT_RUNTIME)
     @candidates = CategorizationService.candidates
-    @corrections = CategoryFeedbackEvent.eval_corpus(limit: CORPUS_PAGE_SIZE)
+    @corrections = CategoryFeedbackEvent.eval_corpus(limit: CORPUS_PAGE_SIZE).without_bodies.to_a
     @scorecard = CategoryFeedbackEvent.scorecard(@corrections)
     @decline_rate = CategoryFeedbackEvent.decline_rate
     @replay_limit = CategorizationReplayJob::DEFAULT_LIMIT

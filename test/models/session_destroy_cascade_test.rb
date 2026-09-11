@@ -22,6 +22,10 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # Nullify, not cascade: the record of a comment an agent posted has to outlive
     # the session, because the comment on GitHub does.
     [ "agent_posted_github_comments", "session_id", :nullify ],
+    # Nullify: the categorization eval corpus outlives the session it was
+    # collected from. Every correction carries its own context snapshot, so a row
+    # with no session is still a complete example for replay.
+    [ "category_feedback_events", "session_id", :nullify ],
     [ "elicitations", "session_id", :cascade ],
     [ "enqueued_messages", "session_id", :cascade ],
     [ "gate_decisions", "writing_session_id", :nullify ],

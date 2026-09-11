@@ -117,6 +117,16 @@ class SessionCategorizationTest < ActiveSupport::TestCase
     assert_equal "Moved to category \"Research\" (was \"Bugs\")", @session.logs.order(:id).last.content
   end
 
+  test "a move into a frozen category is filing, not a correction, but still logged" do
+    record_inference(@bugs)
+    @research.update!(is_frozen: true)
+
+    assert_no_difference "CategoryFeedbackEvent.corrections.count" do
+      @session.update!(category_id: @research.id)
+    end
+    assert_equal "Moved to category \"Research\" (was Uncategorized)", @session.logs.order(:id).last.content
+  end
+
   test "a write that changes nothing but the sort order logs nothing" do
     @session.update!(category_id: @bugs.id)
     before = @session.logs.count

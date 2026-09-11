@@ -90,6 +90,15 @@ class Mcp::Tools::ManageCategoriesTest < ActiveSupport::TestCase
     assert_includes output, "- **Corrections queued:** 1"
   end
 
+  test "replay says so when one is already queued or running" do
+    bugs = Category.create!(name: "Bugs")
+    research = Category.create!(name: "Research")
+    record_correction(bugs, research)
+    CategorizationReplayJob.stubs(:enqueue).returns(false)
+
+    assert_includes @tool.call("action" => "replay"), "already queued or running"
+  end
+
   test "replay with no corrections raises" do
     CategoryFeedbackEvent.delete_all
 

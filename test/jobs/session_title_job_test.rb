@@ -307,6 +307,17 @@ class SessionTitleJobTest < ActiveJob::TestCase
     assert_nil @session.reload.category_id
   end
 
+  test "a backend that did not answer is not recorded as a decline" do
+    Category.create!(name: "Bugs", description: "Defects and regressions to fix")
+    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
+    @mock_inference_service.expects(:generate).returns(nil)
+
+    assert_no_difference "CategoryFeedbackEvent.count" do
+      @job.perform(@session.id)
+    end
+    assert_nil @session.reload.category_id
+  end
+
   test "the answer is recorded even when a manual category lands mid-flight" do
     bugs = Category.create!(name: "Bugs", description: "Defects and regressions to fix")
     research = Category.create!(name: "Research", description: "Spikes")

@@ -179,15 +179,21 @@ class SessionTitleJob < ApplicationJob
     # Written BEFORE the session write, so the model's answer and the context it
     # came from exist even if the assignment below is skipped (a manual category
     # landed mid-flight) or a human overwrites it a second later.
-    record_feedback_event(
-      session,
-      category: result.category,
-      raw_answer: result.raw,
-      context: context,
-      context_source: context_source,
-      title_requested: want_title,
-      candidates: candidates
-    )
+    #
+    # Only when the backend actually answered. A timeout or a non-zero exit has
+    # not declined anything, and filing it as a decline would make the decline
+    # rate a measure of inference availability — the same rule replay follows.
+    if result.answered?
+      record_feedback_event(
+        session,
+        category: result.category,
+        raw_answer: result.raw,
+        context: context,
+        context_source: context_source,
+        title_requested: want_title,
+        candidates: candidates
+      )
+    end
 
     result.category ? assign_category(session, result.category) : record_uncategorized(session, result.choice)
   end

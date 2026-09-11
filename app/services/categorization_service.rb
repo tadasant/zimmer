@@ -23,14 +23,19 @@
 #
 # THE GUIDANCE PREAMBLE IS DELIBERATELY NOT THE WHOLE PROMPT
 # ----------------------------------------------------------
-# `AppSetting#category_guidance` is appended to the fixed CATEGORY task, inside
-# the category half of the prompt. It cannot replace the task, cannot reach the
-# TITLE task, cannot change the response format, and cannot remove the
-# "when in doubt, prefer NONE" instruction. Title and category share one
-# inference call, so an operator-editable prompt would put titling — which has
-# nothing to do with categorization and no feedback loop of its own — inside the
-# blast radius of a bad edit. A preamble that can only ADD guidance keeps the
-# knob useful and the failure mode local.
+# `AppSetting#category_guidance` is placed inside the CATEGORY task, between the
+# fixed instruction and the candidate list, wrapped in <operator_guidance> tags
+# and introduced as being about the category choice only. The operator cannot
+# edit or delete any of the fixed text around it: not the TITLE task, not the
+# response format, not "when in doubt, prefer NONE". Title and category share one
+# inference call, so an editable prompt would put titling — which has no feedback
+# loop of its own — inside the blast radius of a bad edit.
+#
+# Confined is not the same as sealed. The same model reads the guidance and the
+# title task in the same call, so guidance that says, say, "answer with only the
+# category name" can still cost a session its generated title. The delimiters and
+# the scoping sentence are what keep a well-meant edit local; when a TITLE line
+# does go missing, SessionTitleJob falls back to a title derived from the prompt.
 class CategorizationService
   # Bumped whenever the fixed part of the prompt changes in a way that makes an
   # older row's answer incomparable with a new one. Recorded on every
@@ -77,9 +82,14 @@ class CategorizationService
 
   # The model the categorizer runs on: the operator's override when it is set
   # and still valid for the runtime that backs HeadlessInferenceService,
-  # otherwise the shipped default.
+  # otherwise the shipped default. Re-checked on every read, because the catalog
+  # can drop a model after the override was saved, and an override that no
+  # longer resolves would fail every title and every category, silently.
   def model
-    settings.category_inference_model.presence || DEFAULT_MODEL
+    override = settings.category_inference_model.presence
+    return override if override && ModelCatalog.valid_model?(RuntimeRegistry::DEFAULT_RUNTIME, override)
+
+    DEFAULT_MODEL
   end
 
   # The operator's extra guidance, or nil. Capped by AppSetting's validation, not
@@ -159,7 +169,12 @@ class CategorizationService
     TASK
 
     if (extra = guidance)
-      parts << "Additional guidance from the operator:\n#{extra}"
+      parts << <<~GUIDANCE.strip
+        Additional guidance from the operator, about choosing the CATEGORY only. It does not change the TITLE task or the response format:
+        <operator_guidance>
+        #{extra}
+        </operator_guidance>
+      GUIDANCE
     end
 
     parts << "Available categories (formatted \"name: description\"):\n#{category_lines}"

@@ -104,6 +104,16 @@ class CategorizationControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "replay says so when one is already queued or running" do
+    record_correction
+    CategorizationReplayJob.stubs(:enqueue).returns(false)
+
+    post categorization_replay_url
+
+    assert_redirected_to categorization_path
+    assert_match "already queued or running", flash[:notice]
+  end
+
   test "replay with nothing to replay says so and enqueues nothing" do
     assert_no_enqueued_jobs(only: CategorizationReplayJob) do
       post categorization_replay_url

@@ -60,9 +60,11 @@
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
           <h2 class="text-lg font-medium text-gray-900">Guidance and model</h2>
           <p class="mt-1 text-sm text-gray-500">
-            Guidance is <em>appended</em> to the built-in category instruction, never a replacement
-            for it. It cannot reach the title half of the same inference call, cannot change the
-            response format, and cannot remove the instruction to answer NONE when in doubt.
+            Guidance is placed inside the category task only, between the built-in instruction and
+            the category list. You cannot edit or remove the built-in text around it, including the
+            instruction to answer NONE when in doubt. The same call also writes the session's title,
+            so keep guidance about categories: something like "answer with only the name" can cost
+            sessions their generated title.
           </p>
         </div>
         <div class="px-4 py-5 sm:px-6">
