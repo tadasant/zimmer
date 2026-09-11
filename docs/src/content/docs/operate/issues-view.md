@@ -12,7 +12,7 @@ It is a *view*. It stores nothing. Every number on it comes from `work_backlog_i
 `gate_decisions`, or a live read of GitHub — there is no Issues table, no sync job, and nothing to
 reconcile.
 
-## The five lists
+## The six lists
 
 **The spot queue** is every `queued` backlog item in rank order — precedence descending, oldest
 first within a tie, which is the order [`WorkBacklog::Ranking`](/operate/work-backlog/#ranking)
@@ -45,6 +45,15 @@ an hour after that work finished, and therefore reads as a fleet that did nothin
 measured from the end and not from the start, because an item started on Monday that only finishes
 on Wednesday — its session parked on a PR in between — is exactly the one this list must not drop
 at the moment it lands.
+
+**Stranded** is every `started` item whose session ended more than six hours ago and whose issue
+has not been seen closed. Before it existed, these rendered only in the GitHub list below, as an
+ordinary un-triaged issue, so a pile of work the fleet had started and dropped read as work nobody
+had rated yet. `WorkBacklogStaleStartSweepJob` re-checks them hourly and puts back the ones whose
+session left nothing behind, so on a healthy deployment this list is short; what stays is what the
+sweep deliberately left — somebody else has an open PR for the issue, the session merged a PR that
+never closed it, or the item has used up its re-queues. Each row carries that verdict and when it
+was reached. See [When a started item goes nowhere](/operate/work-backlog/#when-a-started-item-goes-nowhere).
 
 **In GitHub, not on the queue** is every open issue across the six repos with no live backlog row —
 held by the gate, unrated, or simply not picked up yet. This is the half that makes the page "what

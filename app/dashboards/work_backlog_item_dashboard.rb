@@ -28,6 +28,9 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     removed_at: Field::DateTime,
     removed_by: Field::String,
     removal_reason: Field::Text,
+    liveness_state: Field::String,
+    liveness_checked_at: Field::DateTime,
+    requeue_count: Field::Number,
     payload: Field::String.with_options(searchable: false),
     created_at: Field::DateTime,
     updated_at: Field::DateTime
@@ -72,6 +75,9 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     removed_at
     removed_by
     removal_reason
+    liveness_state
+    liveness_checked_at
+    requeue_count
     payload
     created_at
     updated_at
@@ -94,6 +100,7 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     pinned: ->(resources) { resources.pinned_items },
     in_flight: ->(resources) { resources.in_flight },
     spot_held: ->(resources) { resources.spot_held },
-    parked: ->(resources) { resources.parked }
+    parked: ->(resources) { resources.parked },
+    stranded: ->(resources) { resources.stranded }
   }.freeze
 end

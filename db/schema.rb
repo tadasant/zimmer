@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_06_190000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_11_024903) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -874,6 +874,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_06_190000) do
     t.string "issue_url"
     t.string "key", null: false
     t.string "kind", null: false
+    t.datetime "liveness_checked_at"
+    t.string "liveness_state"
     t.jsonb "payload", default: {}, null: false
     t.boolean "pinned", default: false, null: false
     t.integer "precedence", null: false
@@ -881,6 +883,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_06_190000) do
     t.datetime "removed_at"
     t.string "removed_by"
     t.string "repo", null: false
+    t.integer "requeue_count", default: 0, null: false
     t.string "scope_direction", null: false
     t.datetime "started_at"
     t.bigint "started_by_session_id"
@@ -906,6 +909,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_06_190000) do
     t.index ["started_at"], name: "index_work_backlog_items_on_started_at"
     t.index ["started_by_session_id"], name: "index_work_backlog_items_on_started_by_session_id"
     t.index ["started_session_id"], name: "index_work_backlog_items_on_started_session_id"
+    t.index ["status", "liveness_checked_at"], name: "index_work_backlog_items_on_liveness"
     t.index ["status", "precedence", "added_at", "id"], name: "index_work_backlog_items_rank", order: { precedence: :desc }
     t.index ["surface"], name: "index_work_backlog_items_on_surface"
     t.index ["writing_session_id"], name: "index_work_backlog_items_on_writing_session_id"

@@ -35,6 +35,26 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
     assert_match "Not on the queue", response.body
   end
 
+  # The population the page used to hide: an item the fleet started and dropped
+  # rendered only in the GitHub list, as an ordinary un-triaged issue. It gets a
+  # section and a count of its own, and each row says what the sweep concluded.
+  test "a started item whose session ended long ago is listed as stranded, with the sweep's verdict" do
+    dropped = backlog_item(key: "zimmer#600", title: "Dropped by its session", issue_url: url(600))
+    dropped.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    dropped.record_liveness!(WorkBacklogItem::LIVENESS_ISSUE_HAS_OPEN_PR)
+    sessions(:archived).update!(archived_at: 3.days.ago)
+
+    with_github_snapshot(github_snapshot(issues: [ github_issue(number: 600) ])) { get issues_path }
+
+    assert_response :success
+    assert_select "h2", text: /Stranded/
+    assert_match "Dropped by its session", response.body
+    assert_match "issue has open pr", response.body
+    assert_select "div", text: "Stranded" do |labels|
+      assert_equal "1", labels.first.parent.at_css("div.tabular-nums").text.strip
+    end
+  end
+
   # The number Tadas read off this page, and the number the WIP ceiling is
   # computed against, have to be the same number. A session parked in
   # `needs_input` for a day is counted in neither.
