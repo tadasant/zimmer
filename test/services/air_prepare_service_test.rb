@@ -1674,6 +1674,70 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_not AirPrepareService.air_binary_healthy?("/nonexistent/air")
   end
 
+  # ---------------------------------------------------------------------------
+  # The session `.env` (#372) — scoped to the session's own artifacts, and
+  # regenerated here so it stays in step with a mid-life mcp_servers change.
+  # The scoping rule itself is tested in session_secret_scope_test.rb.
+  # ---------------------------------------------------------------------------
+
+  test "prepare! rewrites the clone's .env with only this session's secrets" do
+    SecretsLoader.stubs(:all).returns(
+      "SLACK_BOT_TOKEN" => "value-for-SLACK_BOT_TOKEN",
+      "ZIMMER_PROD_API_KEY" => "value-for-ZIMMER_PROD_API_KEY"
+    )
+    @session.update!(mcp_servers: [ "slack-workspace" ], catalog_skills: [], catalog_plugins: [])
+
+    stub_air_subprocess(proc { [ "", "", stub(success?: true, exitstatus: 0) ] }) do
+      AirPrepareService.new(
+        session: @session, working_directory: @working_dir, file_system: @mock_fs
+      ).prepare!
+    end
+
+    keys = EnvFile.parse(@mock_fs.read(File.join(@working_dir, ".env"))).keys
+
+    assert_equal [ "SLACK_BOT_TOKEN" ], keys
+  end
+
+  test "ensure_baseline_mcp_config! rewrites the .env too" do
+    SecretsLoader.stubs(:all).returns("SLACK_BOT_TOKEN" => "value-for-SLACK_BOT_TOKEN")
+    @session.update!(mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [])
+
+    AirPrepareService.new(
+      session: @session, working_directory: @working_dir, file_system: @mock_fs
+    ).ensure_baseline_mcp_config!
+
+    assert_empty EnvFile.parse(@mock_fs.read(File.join(@working_dir, ".env"))).keys,
+      "a session with nothing wired gets a .env with no secrets in it"
+  end
+
+  test "a .env write failure is logged and does not stop the prepare" do
+    SessionEnvFile.stubs(:write!).raises(Errno::EACCES, "denied")
+    @session.update!(mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [])
+    service = AirPrepareService.new(
+      session: @session, working_directory: @working_dir, file_system: @mock_fs
+    )
+
+    assert_nothing_raised { service.ensure_baseline_mcp_config! }
+    assert_includes service.injected_mcp_servers, "zimmer-self-session",
+      "the rest of the prepare ran after the .env write failed"
+  end
+
+  test "the .env is written before AIR runs, so a failed prepare still leaves it scoped" do
+    SecretsLoader.stubs(:all).returns("SLACK_BOT_TOKEN" => "value-for-SLACK_BOT_TOKEN")
+    @session.update!(mcp_servers: [ "slack-workspace" ], catalog_skills: [], catalog_plugins: [])
+
+    stub_air_subprocess(proc { [ "", "boom", stub(success?: false, exitstatus: 1) ] }) do
+      assert_raises(AirPrepareService::AirPrepareError) do
+        AirPrepareService.new(
+          session: @session, working_directory: @working_dir, file_system: @mock_fs
+        ).prepare!
+      end
+    end
+
+    assert_equal [ "SLACK_BOT_TOKEN" ],
+      EnvFile.parse(@mock_fs.read(File.join(@working_dir, ".env"))).keys
+  end
+
   private
 
   # Create a fake air binary that exits 0 — enough for air_binary_healthy? to pass.

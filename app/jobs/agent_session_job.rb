@@ -1256,6 +1256,11 @@ class AgentSessionJob < ApplicationJob
             )
           end
 
+          # This path spawns without a prepare, so it is the one place the scoped
+          # `.env` would otherwise never be written — a clone created before
+          # scoping would keep the whole bundle across every retry.
+          inject_secrets_to_env_file(session, working_directory, log_buffer)
+
           # Re-inject OAuth credentials before spawning into the reused clone.
           # The reused-clone path is taken after a job retry AND after the user
           # completes an OAuth flow for an oauth_required-failed session (which
@@ -1370,8 +1375,8 @@ class AgentSessionJob < ApplicationJob
             )
           end
 
-          # Inject secrets from Rails credentials into .env file
-          inject_secrets_to_env_file(working_directory, log_buffer)
+          # Inject the secrets this session's artifacts ask for into its .env file
+          inject_secrets_to_env_file(session, working_directory, log_buffer)
 
           # Give the clone its gems, before the agent exists rather than after.
           #
@@ -6123,31 +6128,29 @@ class AgentSessionJob < ApplicationJob
     "#{(bytes / (1024.0 * 1024.0)).round(1)} MB"
   end
 
-  # Inject secrets from Rails credentials into a .env file in the working directory
+  # Write the session's `.env`: the secrets from Rails credentials that THIS
+  # session's artifacts ask for, and no others.
+  #
+  # The narrowing rule, and the ways back out of it, are SessionSecretScope's;
+  # the file format is SessionEnvFile's. This stays here because the clone has
+  # just been created and nothing else has run against it yet — AirPrepareService
+  # rewrites the same file on every later prepare, which is what keeps it in step
+  # with a mid-life `change_mcp_servers`.
+  #
+  # @param session [Session] the session whose clone this is
   # @param working_directory [String] The directory to write the .env file to
   # @param log_buffer [LogBuffer] Buffer for logging
-  def inject_secrets_to_env_file(working_directory, log_buffer)
-    secrets = SecretsLoader.all
-    return if secrets.empty?
-
-    env_file_path = File.join(working_directory, ".env")
-
-    # Format secrets as KEY="value" with proper escaping for special characters
-    # Double quotes allow the .env parser to handle values containing equals signs,
-    # newlines, and other special characters. Inner double quotes are escaped.
-    env_content = secrets.map do |key, value|
-      escaped_value = value.to_s.gsub("\\", "\\\\\\\\").gsub('"', '\\"').gsub("\n", "\\n")
-      "#{key}=\"#{escaped_value}\""
-    end.join("\n")
-    env_content += "\n" # Ensure trailing newline
-
-    @file_system.write(env_file_path, env_content)
-
-    # Set restrictive permissions (owner read/write only) for security
-    @file_system.chmod(0o600, env_file_path)
+  def inject_secrets_to_env_file(session, working_directory, log_buffer)
+    result = SessionEnvFile.write!(
+      session: session,
+      working_directory: working_directory,
+      file_system: @file_system
+    )
+    return if result.nil?
 
     log_buffer.add(
-      "Injected #{secrets.size} secret(s) into .env file",
+      "Injected #{result.key_names.size} of #{result.available_count} secret(s) into .env " \
+      "(scoped to this session's MCP servers, skills and hooks): #{result.summary}",
       level: "info"
     )
   rescue => e

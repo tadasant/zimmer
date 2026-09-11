@@ -109,6 +109,24 @@ env:
     # PARALLEL_WORKERS for every agent session. Same value as production: the number is
     # about how many sessions share the droplet's vCPUs, not about the memory cap.
     ZIMMER_SESSION_PARALLEL_WORKERS: "<%= ENV.fetch("ZIMMER_SESSION_PARALLEL_WORKERS", "2") %>"
+    # Which of Zimmer's `mcp_secrets` reach a session clone's `.env`. Unset (the
+    # default) means SCOPED: a session gets the secrets its own MCP servers, skills
+    # and hooks declare, and nothing else -- see SessionSecretScope. Before
+    # tadasant/zimmer#372 every clone got all ~90, so a session provisioned with
+    # nothing but `grafana` could still read SLACK_BOT_TOKEN, the Cloudflare
+    # read-write pair and three GCS service-account keys.
+    #
+    # "all" is the break-glass: every clone gets the whole bundle again, fleet-wide,
+    # as one deploy-time variable. Reach for it if a narrowing turns out to have taken
+    # a credential something genuinely needed and you need every session working again
+    # in one deploy. The narrower fixes, in order of preference: attach the MCP server
+    # that declares the variable to the affected session (which rewrites its `.env` on
+    # the next turn), or name the variable in ZIMMER_SESSION_ENV_EXTRA_KEYS below.
+    ZIMMER_SESSION_ENV_SCOPE: "<%= ENV.fetch("ZIMMER_SESSION_ENV_SCOPE", "scoped") %>"
+    # Comma-separated secret names every clone gets regardless of what its artifacts
+    # declare. Empty by default -- nothing in the bundle is needed by a clone for a
+    # reason no artifact states. This is the surgical half of the break-glass above.
+    ZIMMER_SESSION_ENV_EXTRA_KEYS: "<%= ENV.fetch("ZIMMER_SESSION_ENV_EXTRA_KEYS", "") %>"
     # Canonical external host: the custom domain (Caddy terminates TLS on :443 in
     # front of kamal-proxy). Without this, McpOauthService falls back to
     # localhost:3000 and every OAuth callback breaks.
