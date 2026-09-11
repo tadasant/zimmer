@@ -839,6 +839,58 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     assert_not primary.reload.is_current?
   end
 
+  test "ensure_active_account! does not keep a current account whose token Anthropic refused" do
+    # The 2026-07-31 shape: one `active` account, credentials stored, and a 401 on
+    # every request made with them. `has_valid_config?` said "credentials stored",
+    # so the current-account branch returned it to every spawn for an hour without
+    # anybody presenting it to Anthropic.
+    primary = claude_accounts(:primary)
+    secondary = claude_accounts(:secondary)
+    primary.record_credential_probe!(rejected_probe)
+    reject_token(primary)
+    fail_refresh_with(503)
+
+    result = @service.ensure_active_account!
+
+    assert_equal secondary, result, "a refused credential must not be handed to the next session"
+    assert secondary.reload.is_current?
+  end
+
+  test "a recorded refusal is only a reason to re-check, not a condemnation" do
+    # The recorded verdict takes the account out of the fast path; the probe on the
+    # way through is what decides. An account whose token started working again —
+    # a refresh landed, a human re-authenticated — comes straight back.
+    primary = claude_accounts(:primary)
+    primary.record_credential_probe!(rejected_probe)
+
+    assert_equal primary, @service.ensure_active_account!
+    assert_equal :verified, primary.reload.credential_state
+  end
+
+  test "ensure_active_account! keeps a current account whose probe merely could not reach Anthropic" do
+    primary = claude_accounts(:primary)
+    primary.record_credential_probe!(
+      QuotaCheckService::Result.new(success: false, unreachable: true, error_message: "timeout")
+    )
+
+    assert_equal primary, @service.ensure_active_account!,
+      "an Anthropic blip is not a verdict — depose the pool on one and the instance cannot spawn at all"
+  end
+
+  test "ensure_active_account! records what the bootstrap probe learned about each candidate" do
+    ClaudeAccount.update_all(is_current: false)
+    primary = claude_accounts(:primary)
+    secondary = claude_accounts(:secondary)
+    reject_token(primary)
+    fail_refresh_with(503)
+
+    assert_equal secondary, @service.ensure_active_account!
+
+    assert_equal :rejected, primary.reload.credential_state,
+      "the page has to be able to say WHY the pool skipped this account"
+    assert_equal :verified, secondary.reload.credential_state
+  end
+
   test "ensure_active_account! does not refresh a candidate whose token already works" do
     # The probe is non-consuming; a refresh spends a single-use token, and
     # spending one per candidate is what drained the pool in #242.

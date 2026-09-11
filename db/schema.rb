@@ -142,6 +142,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_150000) do
 
   create_table "claude_accounts", force: :cascade do |t|
     t.datetime "created_at", null: false
+    t.datetime "credential_rejected_at"
+    t.string "credential_rejection_reason"
+    t.datetime "credential_verified_at"
     t.string "email", null: false
     t.boolean "is_current", default: false, null: false
     t.datetime "last_rotated_to_at"

@@ -33,6 +33,18 @@ class QuotaCheckService
     # network, not about the token, so callers deciding whether a credential is
     # dead must not read it as a refusal.
     def unreachable? = !!unreachable
+
+    # True when Anthropic answered this probe and refused the token — the pool's
+    # non-consuming validity verdict. Unlike ClaudeAccount#refresh_token!, which
+    # spends a SINGLE-USE refresh token to find out whether credentials work, the
+    # probe behind this reads rate-limit headers off a 1-token message, so it can
+    # be run over every candidate in the pool without burning anything (#242).
+    #
+    # False when the probe cannot tell: an unreachable API says nothing about the
+    # credential, and condemning the whole pool on an Anthropic blip would park
+    # every session at once. A blank token, on the other hand, is a refusal —
+    # there is nothing to present, and #check_with_token answers accordingly.
+    def rejected? = !success? && !unreachable?
   end
 
   def self.check
@@ -41,32 +53,6 @@ class QuotaCheckService
 
   def self.check_with_token(token)
     new.check_with_token(token)
-  end
-
-  # True when Anthropic answered a probe of this access token and refused it.
-  #
-  # This is the pool's non-consuming validity test. Unlike ClaudeAccount#refresh_token!,
-  # which spends a SINGLE-USE refresh token to find out whether credentials work,
-  # this reads the rate-limit headers off a 1-token message — so it can be run
-  # over every candidate in the pool without burning anything (#242).
-  #
-  # It answers false when it cannot tell: a blank result from an unreachable API
-  # says nothing about the credential, and condemning the whole pool on an
-  # Anthropic blip would park every session at once. A blank token, on the other
-  # hand, is a refusal — there is nothing to present.
-  #
-  # @param token [String, nil] an OAuth access token (sk-ant-oat01-*)
-  # @return [Boolean] true only when the token was presented and rejected
-  def self.token_rejected?(token)
-    return true if token.blank?
-
-    result = check_with_token(token)
-    return false if result.success?
-
-    !result.unreachable?
-  rescue StandardError => e
-    Rails.logger.warn "[QuotaCheckService] Token probe raised, treating as inconclusive: #{e.message}"
-    false
   end
 
   def check

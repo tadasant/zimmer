@@ -13,6 +13,9 @@ class ClaudeAccountDashboard < Administrate::BaseDashboard
     last_stale_refresh_failure_at: Field::DateTime,
     last_rotated_to_at: Field::DateTime,
     reauth_alerted_at: Field::DateTime,
+    credential_verified_at: Field::DateTime,
+    credential_rejected_at: Field::DateTime,
+    credential_rejection_reason: Field::String,
     quota_snapshots: Field::HasMany,
     created_at: Field::DateTime,
     updated_at: Field::DateTime

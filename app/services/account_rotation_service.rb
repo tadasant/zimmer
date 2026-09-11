@@ -208,7 +208,16 @@ class AccountRotationService
 
     current = ClaudeAccount.current_account
 
-    if current&.active? && current&.has_valid_config?
+    # `has_valid_config?` answers "something is stored", which is exactly the
+    # proxy for "usable" that let a 401ing account stay current through every
+    # session spawn of the 2026-07-31 outage (#239). It is still asked — a row
+    # with no credentials has nothing to write to disk — but a row whose stored
+    # token Anthropic has ANSWERED and refused now falls through to the bootstrap
+    # path below, which probes candidates and promotes one that works. Reading a
+    # recorded verdict costs no network call and cannot spend a refresh token; an
+    # unreachable Anthropic records nothing, so a provider blip cannot depose a
+    # working account.
+    if current&.active? && current&.has_valid_config? && !current.credential_rejected?
       if config_file_matches?(current) || adopt_own_filesystem_identity(current)
         # The container-local identity file agrees this is the current account,
         # so it owns the shared credentials. Bootstrap the shared owner marker if
@@ -285,7 +294,11 @@ class AccountRotationService
     # session is handed, so a row carrying only a stored identity is not a usable
     # current account here even though the hash is non-empty. Keeping it current
     # would spawn token-less sessions while /health called the same row corrupt.
-    if current&.active? && current&.claude_access_token.present?
+    # ...and not one Anthropic has already refused, for the reason spelled out in
+    # #ensure_active_account!: under this setting the stored token IS what the
+    # session is handed, so a recorded refusal is a statement about the exact
+    # string that would be exported as CLAUDE_CODE_OAUTH_TOKEN.
+    if current&.active? && current&.claude_access_token.present? && !current.credential_rejected?
       if current.token_expired? || current.token_expiring_soon?
         @logger.info("Refreshing expired/expiring tokens for current account", email: current.email)
         @logger.warn("Token refresh failed for current account", email: current.email) unless current.refresh_token!
@@ -518,6 +531,12 @@ class AccountRotationService
       result = QuotaCheckService.check_with_token(account.claude_access_token)
     end
 
+    # The verdict this candidate was judged on, kept for the page that has to
+    # explain the decision afterwards. Recorded here rather than at the first
+    # probe above: a refusal we are about to try to repair with a refresh is not
+    # a final answer about the account. See ClaudeAccount#record_credential_probe!.
+    account.record_credential_probe!(result)
+
     if result.success?
       snapshot = QuotaSnapshotService.save_snapshot(account, result, trigger: "bootstrap")
       return true unless snapshot.seven_day_window_spent?
@@ -629,6 +648,7 @@ class AccountRotationService
     return unless token.present?
 
     result = QuotaCheckService.check_with_token(token)
+    account.record_credential_probe!(result)
     return unless result.success?
 
     QuotaSnapshotService.save_snapshot(account, result, trigger: trigger)
