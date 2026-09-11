@@ -858,7 +858,9 @@ class HealthMonitorService
       result = termination_service.terminate
 
       if result.success?
-        if result.status == :already_dead
+        # :recycled is "the process we meant was already gone" too — the pid now
+        # belongs to something else, which was deliberately not signalled.
+        if %i[already_dead recycled].include?(result.status)
           results[:already_dead] << process_info[:pid]
         else
           results[:terminated] << process_info[:pid]

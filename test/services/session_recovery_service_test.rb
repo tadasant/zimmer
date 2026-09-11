@@ -752,6 +752,48 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
     mock_poller.verify
   end
 
+  test "recover with force_terminate_hung_process does not signal, or claim a failed kill for, a pid from another container" do
+    # The pid was recorded by a worker container that has since been replaced: a
+    # complete identity from a PID namespace this process is not in (#365).
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      metadata: @session.metadata.merge(
+        "working_directory" => Rails.root.to_s,
+        AgentProcessLiveness::IDENTITY_KEY => {
+          "pid" => 12345,
+          "boot_id" => SecureRandom.uuid,
+          "pid_namespace" => "pid:[999999999]",
+          "started_at_ticks" => "260018677"
+        }
+      )
+    )
+
+    signals = []
+    mock_pm = Object.new
+    mock_pm.define_singleton_method(:running?) { |_pid| true }
+    mock_pm.define_singleton_method(:kill) { |signal, pid| signals << [ signal, pid ] }
+    mock_pm.define_singleton_method(:wait) { |_pid, _flags| raise Errno::ECHILD }
+
+    service = SessionRecoveryService.new(@session, process_manager: mock_pm, force_terminate_hung_process: true)
+
+    mock_poller = Minitest::Mock.new
+    mock_poller.expect :poll_and_broadcast, nil
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      TranscriptPollerService.stub :new, mock_poller do
+        assert service.recover
+      end
+    end
+
+    assert_empty signals, "a pid from another PID namespace names something else here"
+    logs = @session.logs.order(created_at: :asc)
+    assert logs.any? { |log| log.level == "warning" && log.content.include?("not visible from this container") }
+    assert_not logs.any? { |log| log.content.include?("Failed to terminate") },
+      "no kill was attempted, so none failed"
+    assert logs.any? { |log| log.content.include?("Auto-restarting session") }
+    mock_poller.verify
+  end
+
   test "recover without force_terminate_hung_process enqueues monitoring job for running process" do
     # Create a mock process manager that reports the process as running
     mock_pm = Object.new

@@ -77,6 +77,11 @@ class AgentProcessLiveness
   # Index of field 22 (`starttime`) once `/proc/<pid>/stat` is split past the comm field.
   START_TIME_INDEX = 19
 
+  # The identity fields that together name one process on one kernel. An identity
+  # missing any of them was captured without provenance (no `/proc`, or a process
+  # already gone at spawn time) and cannot be checked against anything.
+  PROVENANCE_FIELDS = %w[pid boot_id pid_namespace started_at_ticks].freeze
+
   # Statuses that permit a spawn without any intervention: there is provably nothing
   # left running, or nothing we are entitled to act on.
   INERT_STATUSES = %i[none unknown dead recycled].freeze
@@ -138,21 +143,39 @@ class AgentProcessLiveness
     #   :alive    — same kernel and namespace, present, and provably the process we spawned
     def classify(identity)
       return :none if identity.blank?
-
-      pid = identity["pid"]
-      recorded_boot = identity["boot_id"]
-      recorded_namespace = identity["pid_namespace"]
-      recorded_ticks = identity["started_at_ticks"]
-      return :unknown if pid.blank? || recorded_boot.blank? || recorded_namespace.blank? || recorded_ticks.blank?
-      return :unknown if boot_id.blank? || boot_id != recorded_boot
-      return :unknown if pid_namespace.blank? || pid_namespace != recorded_namespace
+      return :unknown unless locality(identity) == :local
 
       # One read answers both remaining questions, so the process cannot exit between
       # them and be reported as a live one whose start time merely fails to match.
-      snapshot = process_snapshot(pid)
+      snapshot = process_snapshot(identity["pid"])
       return :dead if snapshot.nil? || snapshot[:state] == ZOMBIE_STATE || snapshot[:started_at_ticks].blank?
 
-      snapshot[:started_at_ticks].to_s == recorded_ticks.to_s ? :alive : :recycled
+      snapshot[:started_at_ticks].to_s == identity["started_at_ticks"].to_s ? :alive : :recycled
+    end
+
+    # Can a recorded identity be checked from where this code is running?
+    #
+    # {.classify} folds the two negative answers into `:unknown`, which is all the
+    # spawn guard needs. `ProcessTerminationService` needs them apart: an identity that
+    # was never complete says nothing about the pid, while a complete one from another
+    # boot or namespace says the pid is not ours to signal from here.
+    #
+    # @param identity [Hash, nil] a `process_identity` blob
+    # @return [Symbol] one of:
+    #   :unrecorded — blank, or missing a provenance field; there is nothing to check
+    #   :foreign    — complete, but recorded on another boot or in another PID
+    #                 namespace, or this host has no `/proc` to compare against
+    #   :local      — complete, and recorded in this kernel, boot and namespace
+    def locality(identity)
+      return :unrecorded if identity.blank? || PROVENANCE_FIELDS.any? { |field| identity[field].blank? }
+
+      current_boot = boot_id
+      return :foreign if current_boot.blank? || current_boot != identity["boot_id"]
+
+      current_namespace = pid_namespace
+      return :foreign if current_namespace.blank? || current_namespace != identity["pid_namespace"]
+
+      :local
     end
 
     # Guarantee that no agent process from a previous turn is still running before the
@@ -193,7 +216,8 @@ class AgentProcessLiveness
         process_pid: pid,
         process_manager: process_manager,
         log_buffer: log_buffer,
-        session: session
+        session: session,
+        identity: identity
       ).terminate
 
       unless result.success?

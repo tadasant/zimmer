@@ -339,7 +339,7 @@ class ProcessLifecycleManager
 
     @logger.info("Process terminated", pid: pid_to_terminate, reason: reason, status: result.status)
 
-    TerminateResult.new(success: result.success?, reason: reason)
+    TerminateResult.new(success: result.success?, reason: reason, error: (result.message unless result.success?))
   end
 
   # Handle process exit and determine next action
