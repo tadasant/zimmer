@@ -32,10 +32,21 @@ class CliSpawnEnvElicitationTest < ActiveSupport::TestCase
   test "points MCP servers at this Zimmer's elicitation endpoint" do
     env = Host.new(session_id: 886, logger: @logger).apply!({})
 
-    assert_equal "https://zimmer.example.com/api/v1/elicitations", env["ELICITATION_REQUEST_URL"]
+    assert_equal ElicitationEndpoint.session_url(886), env["ELICITATION_REQUEST_URL"],
+      "the server's only credential is the token in its session's URL"
+    assert_equal env["ELICITATION_REQUEST_URL"], env["ELICITATION_POLL_URL"]
     assert_equal "886", env["ELICITATION_SESSION_ID"]
     # Deliberately absent: whether a server gates an action stays that server's call.
     assert_not env.key?("ELICITATION_ENABLED")
+  end
+
+  test "the URL on the agent process verifies as the session it was spawned for" do
+    session = sessions(:elicitation_session)
+
+    env = Host.new(session_id: session.id, logger: @logger).apply!({})
+
+    token = env["ELICITATION_REQUEST_URL"].delete_prefix("https://zimmer.example.com/api/v1/elicitations/session/")
+    assert_equal session, ElicitationEndpoint.session_for_token(token)
   end
 
   test "an explicit value from the session .env wins" do

@@ -713,7 +713,9 @@ Shared scrubbing (`CliSpawnEnv`):
   [how long scratch lasts](/limitations/#a-sessions-scratch-directory-survives-archive-but-only-for-the-trash-window).
 - Sets `ELICITATION_REQUEST_URL` and `ELICITATION_SESSION_ID` — where an MCP
   server sends an [approval request](/sessions/elicitation/#where-the-request-goes-and-what-happens-when-it-cant-get-there),
-  and who is asking. A value in the clone's `.env` wins. This reaches the CLI, and on
+  and who is asking. The URL ends in the session's token, which is the server's only credential
+  there ([who may raise a prompt](/sessions/elicitation/#who-may-raise-a-prompt)). A value in the
+  clone's `.env` wins. This reaches the CLI, and on
   Claude Code the stdio MCP servers that inherit its environment; on **all three** runtimes the
   stdio servers also get the two values from their own `env` table in the generated config,
   written by `RuntimeConfigPostProcessor#inject_elicitation_env!` — which Pi's post-processor

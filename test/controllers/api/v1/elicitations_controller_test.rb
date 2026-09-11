@@ -20,7 +20,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     request_id = "req-#{SecureRandom.hex(8)}"
 
     assert_difference("Elicitation.count") do
-      post api_v1_elicitations_path,
+      post protocol_create_path,
         params: {
           mode: "form",
           message: "Confirm sending email to user@example.com",
@@ -52,7 +52,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
   test "should create elicitation with default mode" do
     request_id = "req-#{SecureRandom.hex(8)}"
 
-    post api_v1_elicitations_path,
+    post protocol_create_path,
       params: {
         message: "Confirm action",
         _meta: {
@@ -70,7 +70,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
   test "should set default expiration when none provided" do
     request_id = "req-#{SecureRandom.hex(8)}"
 
-    post api_v1_elicitations_path,
+    post protocol_create_path,
       params: {
         message: "Confirm action",
         _meta: {
@@ -90,7 +90,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     request_id = "req-#{SecureRandom.hex(8)}"
 
     with_expiration_env("240") do
-      post api_v1_elicitations_path,
+      post protocol_create_path,
         params: {
           message: "Confirm action",
           _meta: {
@@ -111,7 +111,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     server_deadline = 3.minutes.from_now
 
     with_expiration_env("240") do
-      post api_v1_elicitations_path,
+      post protocol_create_path,
         params: {
           message: "Confirm action",
           _meta: {
@@ -132,7 +132,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     request_id = "req-#{SecureRandom.hex(8)}"
 
     with_expiration_env("240") do
-      post api_v1_elicitations_path,
+      post protocol_create_path,
         params: {
           message: "Confirm action",
           _meta: {
@@ -153,7 +153,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     request_id = "req-#{SecureRandom.hex(8)}"
     expires_at = 30.minutes.from_now.iso8601
 
-    post api_v1_elicitations_path,
+    post protocol_create_path,
       params: {
         message: "Confirm action",
         _meta: {
@@ -170,7 +170,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should return 422 when request_id is missing" do
-    post api_v1_elicitations_path,
+    post protocol_create_path,
       params: {
         message: "Confirm action",
         _meta: {
@@ -185,7 +185,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should return 422 when message is missing" do
-    post api_v1_elicitations_path,
+    post protocol_create_path,
       params: {
         _meta: {
           "com.pulsemcp/request-id" => "req-#{SecureRandom.hex(8)}",
@@ -199,68 +199,23 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Missing parameter", json["error"]
   end
 
-  test "should return 404 when session not found" do
-    post api_v1_elicitations_path,
-      params: {
-        message: "Confirm action",
-        _meta: {
-          "com.pulsemcp/request-id" => "req-#{SecureRandom.hex(8)}",
-          "com.pulsemcp/session-id" => "99999999"
-        }
-      },
+  # The client omits the session tag when ELICITATION_SESSION_ID is unset. On a
+  # token route that loses nothing: the token already names the session.
+  test "a token-routed create with no session-id in _meta is raised on the token's session" do
+    request_id = "req-#{SecureRandom.hex(8)}"
+
+    post protocol_create_path,
+      params: { message: "Confirm action", _meta: { "com.pulsemcp/request-id" => request_id } },
       as: :json
 
-    assert_response :not_found
-    json = JSON.parse(response.body)
-    assert_equal "Session not found", json["error"]
-  end
-
-  test "should return 404 and warn when session-id is blank (missing ELICITATION_SESSION_ID)" do
-    # A blank session-id is the signature of an MCP server spawned without
-    # ELICITATION_SESSION_ID (the @pulsemcp/mcp-elicitation library omits the tag
-    # entirely). It must warn — not silently 404 — so obs surfaces the spawn-env defect.
-    warned = false
-    Rails.logger.stub(:warn, ->(msg) { warned = true if msg.to_s.include?("blank session-id") }) do
-      post api_v1_elicitations_path,
-        params: {
-          message: "Confirm action",
-          _meta: {
-            "com.pulsemcp/request-id" => "req-#{SecureRandom.hex(8)}",
-            "com.pulsemcp/session-id" => ""
-          }
-        },
-        as: :json
-    end
-
-    assert_response :not_found
-    assert warned, "expected a .warn log for a blank session-id elicitation POST"
-  end
-
-  test "should return 404 without warning when session-id is present but unknown" do
-    # A present-but-unknown id is a plausible stale/expired session, not a spawn-env
-    # defect — it must stay at .info so it doesn't add noise to the obs alert stream.
-    # This pins the warn/info split so a refactor can't silently escalate it to .warn.
-    warned = false
-    Rails.logger.stub(:warn, ->(msg) { warned = true if msg.to_s.include?("session-id") }) do
-      post api_v1_elicitations_path,
-        params: {
-          message: "Confirm action",
-          _meta: {
-            "com.pulsemcp/request-id" => "req-#{SecureRandom.hex(8)}",
-            "com.pulsemcp/session-id" => "99999999"
-          }
-        },
-        as: :json
-    end
-
-    assert_response :not_found
-    refute warned, "a present-but-unknown session-id must not warn (info only)"
+    assert_response :created
+    assert_equal @session.id, Elicitation.find_by!(request_id: request_id).session_id
   end
 
   test "should return 422 for duplicate request_id" do
     existing = create_pending_elicitation
 
-    post api_v1_elicitations_path,
+    post protocol_create_path,
       params: {
         message: "Confirm action",
         _meta: {
@@ -279,7 +234,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     request_id = "req-#{SecureRandom.hex(8)}"
 
     assert_enqueued_with(job: SendPushNotificationJob) do
-      post api_v1_elicitations_path,
+      post protocol_create_path,
         params: {
           message: "Confirm sending email",
           _meta: {
@@ -296,7 +251,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "running", @session.status
     request_id = "req-#{SecureRandom.hex(8)}"
 
-    post api_v1_elicitations_path,
+    post protocol_create_path,
       params: {
         message: "Confirm sending email",
         _meta: {
@@ -318,7 +273,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     @session.update!(slug: "test-session-slug-#{SecureRandom.hex(4)}")
     request_id = "req-#{SecureRandom.hex(8)}"
 
-    post api_v1_elicitations_path,
+    post protocol_create_path,
       params: {
         message: "Confirm action",
         _meta: {
@@ -338,7 +293,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
   test "should return pending status for pending elicitation" do
     elicitation = create_pending_elicitation
 
-    get api_v1_elicitation_path(elicitation.request_id)
+    get protocol_poll_path(elicitation.request_id)
 
     assert_response :success
     json = JSON.parse(response.body)
@@ -350,7 +305,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
   test "should return resolved status with content when accepted" do
     elicitation = create_resolved_elicitation
 
-    get api_v1_elicitation_path(elicitation.request_id)
+    get protocol_poll_path(elicitation.request_id)
 
     assert_response :success
     json = JSON.parse(response.body)
@@ -363,7 +318,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     elicitation = create_expired_elicitation
     assert_equal "pending", elicitation.status
 
-    get api_v1_elicitation_path(elicitation.request_id)
+    get protocol_poll_path(elicitation.request_id)
 
     assert_response :success
     json = JSON.parse(response.body)
@@ -374,7 +329,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should return 404 for unknown request_id" do
-    get api_v1_elicitation_path("nonexistent-request-id")
+    get protocol_poll_path("nonexistent-request-id")
 
     assert_response :not_found
     json = JSON.parse(response.body)
@@ -432,12 +387,12 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     assert_kind_of Array, json["messages"]
   end
 
-  # show stays request_id-only: it is unauthenticated for the MCP poll protocol,
-  # so accepting a primary key would make it a sequential-id enumeration.
+  # show stays request_id-only: the poll protocol speaks nothing else, and a
+  # primary key would make it a sequential-id enumeration.
   test "show does not resolve an elicitation by database id" do
     elicitation = create_pending_elicitation
 
-    get api_v1_elicitation_path(elicitation.id)
+    get protocol_poll_path(elicitation.id)
 
     assert_response :not_found
   end
@@ -581,7 +536,178 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     assert_nil elicitation.response_content
   end
 
+  # === Who may create and poll (#45) ===
+  #
+  # An MCP server holds no API key. The token in the URL Zimmer gave it is its
+  # credential, and it names exactly one session: the session comes from the
+  # token, never from `_meta`, and a poll sees only that session's elicitations.
+
+  test "create without a token or an API key is refused, and warns" do
+    warned = false
+    Rails.logger.stub(:warn, ->(msg) { warned = true if msg.to_s.include?("without a session token or an API key") }) do
+      assert_no_enqueued_jobs(only: SendPushNotificationJob) do
+        assert_no_difference("Elicitation.count") do
+          post api_v1_elicitations_path, params: protocol_params, as: :json
+        end
+      end
+    end
+
+    assert_response :unauthorized
+    assert warned, "a keyless POST on the bare route is a server that never got its session's URL — obs must see it"
+  end
+
+  test "create with a forged token is refused" do
+    assert_no_difference("Elicitation.count") do
+      post api_v1_session_elicitations_path("#{@session.id}-#{'A' * 43}"), params: protocol_params, as: :json
+    end
+
+    assert_response :unauthorized
+  end
+
+  test "a valid API key does not rescue a forged token" do
+    assert_no_difference("Elicitation.count") do
+      post api_v1_session_elicitations_path("#{@session.id}-#{'A' * 43}"), params: protocol_params, headers: @headers, as: :json
+    end
+
+    assert_response :unauthorized
+  end
+
+  test "another session's token cannot raise a prompt on this session" do
+    other = sessions(:pending_oauth)
+
+    assert_no_enqueued_jobs(only: SendPushNotificationJob) do
+      assert_no_difference("Elicitation.count") do
+        post protocol_create_path(other), params: protocol_params(session_id: @session.id.to_s), as: :json
+      end
+    end
+
+    assert_response :forbidden
+    assert_equal "Forbidden", JSON.parse(response.body)["error"]
+  end
+
+  test "a _meta session-id that disagrees with the token is refused" do
+    other = sessions(:pending_oauth)
+
+    assert_no_difference("Elicitation.count") do
+      post protocol_create_path, params: protocol_params(session_id: other.id.to_s), as: :json
+    end
+
+    assert_response :forbidden
+  end
+
+  test "a _meta session-id that names the token's session by slug is accepted" do
+    @session.update!(slug: "token-slug-#{SecureRandom.hex(4)}")
+
+    post protocol_create_path, params: protocol_params(session_id: @session.slug), as: :json
+
+    assert_response :created
+  end
+
+  test "the token decides the session: another session's token lands on that session" do
+    other = sessions(:pending_oauth)
+    request_id = "req-#{SecureRandom.hex(8)}"
+
+    post protocol_create_path(other), params: protocol_params(session_id: nil, request_id: request_id), as: :json
+
+    assert_response :created
+    assert_equal other.id, Elicitation.find_by!(request_id: request_id).session_id
+  end
+
+  test "show without a token or an API key is refused" do
+    elicitation = create_resolved_elicitation
+
+    get api_v1_elicitation_path(elicitation.request_id)
+
+    assert_response :unauthorized
+    assert_not_includes response.body, "approved"
+  end
+
+  test "show with a forged token is refused" do
+    elicitation = create_pending_elicitation
+
+    get api_v1_session_elicitation_path("#{@session.id}-#{'A' * 43}", elicitation.request_id)
+
+    assert_response :unauthorized
+  end
+
+  test "show with another session's token cannot see this session's elicitation" do
+    elicitation = create_resolved_elicitation
+
+    get protocol_poll_path(elicitation.request_id, sessions(:pending_oauth))
+
+    assert_response :not_found
+    assert_not_includes response.body, "approved"
+  end
+
+  # The client polls the poll URL it was configured with, but the create response's
+  # poll-url is the protocol's own statement of where to poll, so it must be one
+  # the server can use without a key.
+  test "create's poll-url is the token route, and polling it answers" do
+    request_id = "req-#{SecureRandom.hex(8)}"
+
+    post protocol_create_path, params: protocol_params(request_id: request_id), as: :json
+    assert_response :created
+    poll_url = JSON.parse(response.body).dig("_meta", "com.pulsemcp/poll-url")
+
+    assert_equal "http://www.example.com#{protocol_poll_path(request_id)}", poll_url
+    get URI(poll_url).path
+    assert_response :success
+    assert_equal "pending", JSON.parse(response.body)["action"]
+  end
+
+  test "an API-key holder can still create and poll on the bare routes" do
+    request_id = "req-#{SecureRandom.hex(8)}"
+
+    post api_v1_elicitations_path, params: protocol_params(request_id: request_id), headers: @headers, as: :json
+    assert_response :created
+    assert_equal "http://www.example.com#{api_v1_elicitation_path(request_id)}",
+      JSON.parse(response.body).dig("_meta", "com.pulsemcp/poll-url")
+
+    get api_v1_elicitation_path(request_id), headers: @headers
+    assert_response :success
+  end
+
+  test "the bare route answers an API-key holder 404 for an unknown session" do
+    post api_v1_elicitations_path, params: protocol_params(session_id: "99999999"), headers: @headers, as: :json
+
+    assert_response :not_found
+    assert_equal "Session not found", JSON.parse(response.body)["error"]
+  end
+
+  test "a token does not reach respond" do
+    elicitation = create_pending_elicitation
+
+    patch "#{protocol_poll_path(elicitation.request_id)}/respond", params: { action_type: "accept" }, as: :json
+
+    assert_response :not_found
+    assert_equal "pending", elicitation.reload.status
+  end
+
+  # ElicitationEndpoint.probe counts any HTTP answer as reachable; this pins which
+  # answer it gets, from the route MCP servers actually poll.
+  test "the reachability probe's poll answers 401 from the token route" do
+    probe = ElicitationEndpoint::PROBE_REQUEST_ID
+
+    get "#{ElicitationEndpoint::PATH}/#{ElicitationEndpoint::SESSION_SEGMENT}/#{probe}/#{probe}"
+
+    assert_response :unauthorized
+  end
+
   private
+
+  def protocol_create_path(session = @session)
+    api_v1_session_elicitations_path(ElicitationEndpoint.token_for(session.id))
+  end
+
+  def protocol_poll_path(request_id, session = @session)
+    api_v1_session_elicitation_path(ElicitationEndpoint.token_for(session.id), request_id)
+  end
+
+  def protocol_params(session_id: @session.id.to_s, request_id: "req-#{SecureRandom.hex(8)}")
+    meta = { "com.pulsemcp/request-id" => request_id }
+    meta["com.pulsemcp/session-id"] = session_id if session_id
+    { message: "Approve the 1Password reveal", _meta: meta }
+  end
 
   def create_pending_elicitation
     Elicitation.create!(
