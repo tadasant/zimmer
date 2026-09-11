@@ -803,7 +803,8 @@ candidates that may be skipped without spending a single-use refresh token. A ca
 fix — so the single-use token is spent only where it might help, never on a candidate whose
 credentials already work. `ClaudeLoginDriver#capture!` applies the same probe through
 `QuotaCheckService.token_rejected?`, because a login that produces a complete-looking token pair is
-another way an unusable account enters the pool.
+another way an unusable account enters the pool. The probe's model is the catalog's Haiku, sent as its
+Messages API id; see [Models](/sessions/runtimes/#models).
 
 The probe answers three ways, and only one of them condemns an account: Anthropic honoured the token,
 Anthropic answered and refused it, or **the probe never got an answer** (timeout, DNS failure, 5xx).
