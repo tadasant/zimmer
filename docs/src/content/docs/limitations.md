@@ -4233,6 +4233,27 @@ issueless item needs a human behind it is one string away for any REST caller. T
 agent-login primitive the gate ledger's feedback boundary is waiting on ([#371](https://github.com/tadasant/zimmer/issues/371),
 [#220](https://github.com/tadasant/zimmer/issues/220)) is what would make either claim verifiable.
 
+### Work stranded with no backlog row at all is invisible to the liveness re-check
+
+[`WorkBacklog::LivenessSweep`](/operate/work-backlog/#when-a-row-leaves-the-queue-and-goes-nowhere)
+re-checks rows that have left `queued` — a `started` row whose session ended, and a `removed` row
+whose reason has expired. It reads the `work_backlog_items` table, so it can only ever see work
+that has a row.
+
+**Before 2026-08-29 the issue gate started sessions itself**, and the migration into this table
+imported only `queued` items. Work started that way left no row, so an issue it dropped is
+reachable by nothing here. `tadasant/zimmer#368` sat 37 days in exactly that state and was the
+headline example of the problem — while being the one class the fix cannot reach. Those issues do
+appear on [the Issues view](/operate/issues-view/) under "In GitHub, not on the queue", but
+indistinguishably from work nobody has ever rated. Closing this needs a sweep over GitHub — open,
+gate-cleared issues with no live row — rather than over the table.
+
+**The re-check also cannot tell a finished issue from one with a deliberate remainder**, which is
+why it re-queues nothing. A PR that merged without a closing keyword leaves the issue open whether
+it finished the work or deliberately fixed part of it, and both land on `pr_merged_issue_open`.
+Separating them means reading the PR's scope and the current code, per issue. The sweep records the
+evidence; a human or an agent decides.
+
 ---
 
 ## Hardcoded values that shouldn't be

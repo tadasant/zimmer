@@ -109,6 +109,18 @@
     <%= render "started_rows", rows: @board.recently_ended_rows,
         empty_message: "No session the backlog started has ended in the last #{pluralize(Issues::Board::RECENTLY_ENDED_WINDOW.in_hours.to_i, 'hour')}." %>
 
+    <%# Work that left the queue and went nowhere. Without this section such a row
+        renders only in the GitHub list below, as an ordinary un-triaged issue, and
+        the pile is invisible. Nothing puts these back automatically — see
+        WorkBacklog::LivenessSweep for why that judgement is not a cron job's to
+        make — so each row carries the evidence a triager starts from. %>
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">
+      Stranded
+      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.counts[:stranded]) %> off the queue and unresolved, waiting on a triage decision<%= ", showing the #{@board.stranded_rows.length} oldest" if @board.stranded_truncated? %></span>
+    </h2>
+    <%= render "started_rows", rows: @board.stranded_rows, liveness: true,
+        empty_message: "Nothing that left the queue has been left behind." %>
+
     <h2 class="text-sm font-semibold text-gray-900 mb-2">In GitHub, not on the queue</h2>
     <%= render "repo_summaries", summaries: @board.repo_summaries %>
     <%= render "github", rows: @board.loose_page_rows, snapshot: @snapshot, total: @board.loose_total,

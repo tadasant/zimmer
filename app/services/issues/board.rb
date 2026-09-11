@@ -15,6 +15,8 @@ module Issues
   #   parked    a started item whose session has stopped in `needs_input`: a
   #             person is what it is waiting on, usually over an open PR
   #   ended     a started item whose session archived or failed recently
+  #   stranded  a row that left the queue — started, or mechanically removed —
+  #             whose issue is still open and whose premise has expired
   #   loose     an open GitHub issue with no queued or CLAIMED backlog row —
   #             held, unrated, or simply not picked up yet
   #
@@ -31,6 +33,9 @@ module Issues
     # Loose GitHub issues are paginated: the repos carry ~500 open issues between
     # them and a page that renders all of them is a page nobody scrolls.
     GITHUB_PER_PAGE = 50
+
+    # The stranded list is the one with no natural ceiling — see #stranded_rows.
+    MAX_STRANDED_ROWS = 50
 
     # How far back the "finished recently" list reaches, measured from when each
     # session ENDED rather than from when its item started.
@@ -104,6 +109,41 @@ module Issues
       @recently_ended_rows ||= started_rows(WorkBacklogItem.ended_since(RECENTLY_ENDED_WINDOW.ago))
     end
 
+    # Started items whose session ended a while ago and whose issue has not been
+    # seen closed — work that left the queue and went nowhere.
+    #
+    # The page hides it by omission rather than by error: such an issue is open,
+    # no live row claims it, so it renders in "In GitHub, not on the queue" beside
+    # everything the gate has never rated. That reads as "not picked up yet",
+    # which is the opposite of true — the fleet started it and dropped it — and
+    # it is exactly the confusion that prompted "what's up with the rest of the
+    # convergent issues, why aren't they getting scheduled?" on 2026-09-11.
+    #
+    # WorkBacklog::LivenessSweep classifies these and writes `liveness_state` on
+    # each, but puts nothing back: telling a finished issue from one with a
+    # deliberate remainder needs a judgement per issue, which is not a cron job's
+    # to make. The state is the evidence a triager starts from.
+    # Oldest first, and BOUNDED. Unlike the lists above it, nothing bounds this
+    # population: `in_flight` and `parked` are capped by the WIP ceiling and
+    # `recently_ended` by its window, but a stranded row leaves only when a person
+    # triages it. It was 41 rows when measured. So the page shows the oldest
+    # MAX_STRANDED_ROWS and says how many there are in total.
+    #
+    # Ordered on COALESCE rather than `started_at`, because half this list has no
+    # `started_at` at all — a mechanically removed row was never started — and
+    # Postgres sorts those NULLs to the top of a DESC ordering, pinning every
+    # removed row above every started one for no reason a reader could guess.
+    def stranded_rows
+      @stranded_rows ||= WorkBacklogItem.stranded
+        .includes(:started_session)
+        .order(Arel.sql("COALESCE(started_at, removed_at) ASC"))
+        .limit(MAX_STRANDED_ROWS)
+        .map { |item| build_row(item, nil) }
+    end
+
+    # Whether the page is showing only part of the stranded population.
+    def stranded_truncated? = counts[:stranded] > stranded_rows.length
+
     # Open GitHub issues with no live backlog row, filtered by the repo and
     # direction the filter bar is set to. This is the half of the page that is
     # "what is going on in GitHub" rather than "what is on the queue".
@@ -152,6 +192,7 @@ module Issues
         in_flight: WorkBacklogItem.in_flight.count,
         spot_held: WorkBacklogItem.spot_held.count,
         parked: WorkBacklogItem.parked.count,
+        stranded: WorkBacklogItem.stranded.count,
         github_open: snapshot.issues.count(&:open?)
       }
     end
@@ -245,7 +286,7 @@ module Issues
       @all_queued_rows ||= WorkBacklogItem.queued.in_rank_order.map { |item| build_row(item, nil) }
     end
 
-    # The three started-item lists, newest start first. One shape, so a reader
+    # The four started-item lists, newest start first. One shape, so a reader
     # comparing "running" against "parked" is comparing the same rows.
     def started_rows(scope)
       scope.includes(:started_session).order(started_at: :desc).map { |item| build_row(item, nil) }

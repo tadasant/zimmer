@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_06_190000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_11_024903) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -874,6 +874,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_06_190000) do
     t.string "issue_url"
     t.string "key", null: false
     t.string "kind", null: false
+    t.datetime "liveness_checked_at"
+    t.string "liveness_state"
     t.jsonb "payload", default: {}, null: false
     t.boolean "pinned", default: false, null: false
     t.integer "precedence", null: false
@@ -899,6 +901,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_06_190000) do
     t.index ["key"], name: "index_work_backlog_items_on_key"
     t.index ["key"], name: "index_work_backlog_items_on_queued_key", unique: true, where: "((status)::text = 'queued'::text)"
     t.index ["kind"], name: "index_work_backlog_items_on_kind"
+    t.index ["liveness_checked_at"], name: "index_work_backlog_items_on_liveness"
     t.index ["pinned"], name: "index_work_backlog_items_on_pinned", where: "pinned"
     t.index ["removed_at"], name: "index_work_backlog_items_on_removed_at"
     t.index ["repo"], name: "index_work_backlog_items_on_repo"
