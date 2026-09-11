@@ -78,6 +78,7 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # and one that kept a dead id would leave a split with no whole to reconcile
     # against. Both tables forget the session and keep the spend.
     [ "token_usage_features", "session_id", :nullify ],
+    [ "trigger_event_claims", "session_id", :nullify ],
     # Nullify on all three: a backlog row is the record of what the gate cleared
     # and what became of it, and outlives the session that appended it, the
     # session that pulled it, and the session it became.

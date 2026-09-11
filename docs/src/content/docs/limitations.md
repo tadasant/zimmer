@@ -4492,9 +4492,10 @@ What the webhook does not cover yet:
   and the poller fires the rest, or delivers a later message before an earlier one, the parts
   coalesce separately. Nothing fires twice and nothing is lost, but the one-session-per-burst
   promise holds only for a burst that arrives by one path, in order.
-- **There is no screen for it.** Whether deliveries are arriving, and which path fired each message,
-  is in the `webhook_deliveries` and `trigger_event_claims` tables, which nothing in the UI or the
-  API reads yet.
+- **Only `/supervisor` shows it.** Whether deliveries are arriving, and which path fired each
+  message, is in the `webhook_deliveries` and `trigger_event_claims` tables, which
+  `/supervisor/webhook_deliveries` and `/supervisor/trigger_event_claims` list read-only. Nothing in
+  the REST API or the MCP tools reads them, and nothing summarises them.
 
 Tracked in [#79](https://github.com/tadasant/zimmer/issues/79); the design is
 [#217](https://github.com/tadasant/zimmer/issues/217).
