@@ -21,6 +21,10 @@ class Api::V1::SessionsController < Api::BaseController
   # forgotten the way a `performed?` check can.
   class PlacementError < StandardError; end
 
+  # Raised under the archive lock when a turn is in flight and the caller did
+  # not force. See #guarded_rest_archive!.
+  class LiveTurnRefused < StandardError; end
+
   rescue_from PlacementError, with: :render_placement_error
 
   # The `error` titles the catalog-selection endpoints answer with, keyed by the
@@ -250,24 +254,19 @@ class Api::V1::SessionsController < Api::BaseController
   # the trash. `force: true` overrides it for a caller that has read them and is
   # deliberately discarding them. See Sessions::ArchiveGuard.
   def archive
-    if @session.may_archive?
-      force = ActiveModel::Type::Boolean.new.cast(params[:force])
-      queued = force ? [] : Sessions::ArchiveGuard.pending_messages(@session)
+    force = ActiveModel::Type::Boolean.new.cast(params[:force])
 
-      if queued.any?
+    archived =
+      begin
+        @session.may_archive? && guarded_rest_archive!(@session, force: force, actor: "the REST API")
+      rescue Sessions::ArchiveGuard::Refused => e
         render_api_error(
           "Queued messages would be discarded",
-          Sessions::ArchiveGuard.refusal_message(@session, queued),
+          Sessions::ArchiveGuard.refusal_message(@session, e.messages),
           status: :unprocessable_entity
         )
         return
-      end
-
-      # A live turn is the other thing an archive discards, and this endpoint
-      # carries no caller identity at all — the API key is the fleet's. So it
-      # takes the same answer the MCP tool gives an unidentified connection:
-      # refuse, and let `force` through. See Sessions::LiveTurn.
-      if !force && Sessions::LiveTurn.in_flight?(@session)
+      rescue LiveTurnRefused
         render_api_error(
           "A turn is in flight",
           Sessions::LiveTurn.refusal_message(@session),
@@ -276,12 +275,7 @@ class Api::V1::SessionsController < Api::BaseController
         return
       end
 
-      destroyed_turn = force && Sessions::LiveTurn.in_flight?(@session)
-
-      @session.archive_actor = "the REST API"
-      @session.archive_forced = force
-      @session.archive!
-      note_archive_over_live_turn(@session, "the REST API") if destroyed_turn
+    if archived
       render json: {
         session: session_json(@session.reload),
         message: "Session moved to trash",
@@ -1154,25 +1148,18 @@ class Api::V1::SessionsController < Api::BaseController
 
     force = ActiveModel::Type::Boolean.new.cast(params[:force])
 
+    # Refusals are reported and skipped rather than aborting the loop, matching
+    # the MCP twin. `force` applies to the whole batch, not one member of it.
     sessions.each do |session|
-      queued = force ? [] : Sessions::ArchiveGuard.pending_messages(session)
-      live_turn = Sessions::LiveTurn.in_flight?(session)
-
-      if queued.any?
-        # Reported and skipped rather than aborting the loop, matching the MCP
-        # twin. `force` applies to the whole batch, not one member of it.
-        errors << { id: session.id, message: Sessions::ArchiveGuard.refusal_message(session, queued, batch: true) }
-      elsif !force && live_turn
-        errors << { id: session.id, message: Sessions::LiveTurn.refusal_message(session, batch: true) }
-      elsif session.may_archive?
-        session.archive_actor = "the REST API (bulk)"
-        session.archive_forced = force
-        session.archive!
-        note_archive_over_live_turn(session, "the REST API (bulk)") if live_turn
+      if guarded_rest_archive!(session, force: force, actor: "the REST API (bulk)")
         archived_count += 1
       else
         errors << { id: session.id, message: "Cannot archive from status: #{session.status}" }
       end
+    rescue Sessions::ArchiveGuard::Refused => e
+      errors << { id: session.id, message: Sessions::ArchiveGuard.refusal_message(session, e.messages, batch: true) }
+    rescue LiveTurnRefused
+      errors << { id: session.id, message: Sessions::LiveTurn.refusal_message(session, batch: true) }
     end
 
     render json: { archived_count: archived_count, errors: errors }
@@ -1276,9 +1263,32 @@ class Api::V1::SessionsController < Api::BaseController
 
   private
 
+  # Archive +session+ through Sessions::ArchiveGuard.guarded_archive!, refusing
+  # a live turn under the same lock and after the queue check.
+  #
+  # A live turn is the other thing an archive discards, and this endpoint
+  # carries no caller identity at all — the API key is the fleet's. So it takes
+  # the same answer the MCP tool gives an unidentified connection: refuse, and
+  # let `force` through. See Sessions::LiveTurn.
+  #
+  # The live turn is read before the lock and only acted on under it: the read
+  # is a GoodJob query that swallows its own errors, and a failed statement
+  # inside the lock's transaction would abort the archive.
+  #
+  # @return [Boolean] whether it archived
+  # @raise [Sessions::ArchiveGuard::Refused, LiveTurnRefused]
+  def guarded_rest_archive!(session, force:, actor:)
+    live_turn = Sessions::LiveTurn.in_flight?(session)
+    archived = Sessions::ArchiveGuard.guarded_archive!(session, force: force, actor: actor) do
+      raise LiveTurnRefused if live_turn && !force
+    end
+    note_archive_over_live_turn(session, actor) if archived && live_turn
+    archived
+  end
+
   # Record a forced archive that killed a live turn on the timeline of the
-  # session it happened to. The twin of Mcp::Tools::ActionSession's, and it has
-  # to exist separately because the two surfaces share no archive code.
+  # session it happened to. The twin of Mcp::Tools::ActionSession's; the two
+  # surfaces share the archive guard but not their timeline writes.
   #
   # Best-effort: a timeline write must not fail an archive that has already
   # landed.

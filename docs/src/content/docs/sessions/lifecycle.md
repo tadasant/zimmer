@@ -1752,6 +1752,20 @@ because it believes its work is finished, and a message that landed mid-turn is 
 evidence that the belief is stale. It ends its turn instead, the pause drains the queue, the
 message arrives as the next turn, and the archive succeeds after that because the queue is empty.
 
+**The check and the transition are one step.** Every surface goes through
+`Sessions::ArchiveGuard.guarded_archive!`, which takes the session row `FOR UPDATE`, reads the queue
+under that lock, and archives inside the same transaction. The surface's live-turn refusal runs
+under the same lock, after the queue check, so it can never be shown first. An enqueue cannot slip
+between the read and the archive: `Trigger#follow_up_session!` and
+`EnqueuedMessageProcessorService` lock the same row, and every other create surface's foreign-key
+check takes `FOR KEY SHARE` on it, which conflicts. A message committed first is refused. One that
+arrives later waits for the archive to commit: a wake then re-reads the status under its lock and
+is dropped, while a plain create lands `pending` on the archived session — the gap in
+[Limitations](/limitations/). An unlocked read loses this race, which is
+[#1139](https://github.com/tadasant/zimmer/issues/1139): production session 16494 self-archived in
+the same second a held backstop wake was enqueued onto it, and the wake was stranded and paged
+instead of refused.
+
 **`force` is the deliberate override**, off by default, for a caller that has read the message and
 is choosing to discard it. It is named last in the error and hedged in its own schema description,
 because it exists for the exception rather than the rule. Forcing does not make the discard

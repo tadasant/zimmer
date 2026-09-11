@@ -2759,7 +2759,11 @@ content acted on means someone re-sending it.
 Every caller-facing archive surface refuses over a queued message in every state, and `force` is the
 deliberate override ([lifecycle](/sessions/lifecycle/)) — so the retirement path runs on a forced
 archive or a system-initiated one, and in both cases someone or something has already decided the
-message is going. What it does not do is re-route the content: getting it acted on still means a
+message is going. The check and the transition run under one `FOR UPDATE` lock on the session row
+(`Sessions::ArchiveGuard.guarded_archive!`), which every enqueue serializes on through its
+foreign-key check, so a message committed before the archive is refused rather than stranded
+([#1139](https://github.com/tadasant/zimmer/issues/1139)). One committed after it is the
+already-archived case below. What it does not do is re-route the content: getting it acted on still means a
 human re-sending it.
 
 **Deleting a session is the uncovered path, and it is worse than archiving one.** `DELETE
