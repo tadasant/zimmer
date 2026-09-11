@@ -52,6 +52,27 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
       @process_manager.spawned_processes.first[:env]["PARALLEL_WORKERS"]
   end
 
+  # #54: the extension env seam hands every hook a `runtime`, so it has to be called for
+  # every runtime. It used to be reached only from ClaudeSpawnEnv.
+  class RuntimeEchoExtension < Zimmer::Extension
+    def id = "runtime_echo"
+    def spawn_env_contribution(context = {}) = { "ZIMMER_EXTENSION_SAW_RUNTIME" => context[:runtime] }
+  end
+
+  test "spawn_process merges enabled extension env contributions, naming the pi runtime" do
+    @file_system.mkdir_p(WORKING_DIR)
+    Zimmer::ExtensionRegistry.register(RuntimeEchoExtension.new)
+    AppSetting.editable.tap { |s| s.set_extension_enabled("runtime_echo", true); s.save! }
+
+    @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+
+    assert_equal "pi", @process_manager.spawned_processes.first[:env]["ZIMMER_EXTENSION_SAW_RUNTIME"]
+  ensure
+    AppSetting.delete_all
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register_builtins!
+  end
+
   test "binary_name and stderr log filename identify the Pi runtime" do
     assert_equal "pi", @adapter.binary_name
     assert_equal "pi_stderr.log", PiRuntimeAdapter.stderr_log_filename

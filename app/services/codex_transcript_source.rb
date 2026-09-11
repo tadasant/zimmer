@@ -166,6 +166,25 @@ class CodexTranscriptSource < TranscriptSource
     true
   end
 
+  # @see TranscriptSource#records_turn_errors?
+  #
+  # Every Codex turn ends on a `task_complete` record, and a failed one carries
+  # a `codex_error_info` code beside its message. See CodexTurnError.
+  def records_turn_errors?
+    true
+  end
+
+  # @see TranscriptSource#terminal_turn_error
+  #
+  # Read raw rather than through #read: nothing here is stored or displayed, and
+  # the redaction cache is keyed for the poller's reads, not these.
+  def terminal_turn_error(session:, working_directory:)
+    path = locate(session: session, working_directory: working_directory)
+    return nil unless path && file_system.exists?(path)
+
+    CodexTurnError.terminal(read_raw(path))
+  end
+
   private
 
   # Select a rollout before this session's own Codex UUID has been captured.

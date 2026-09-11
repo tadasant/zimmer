@@ -63,6 +63,46 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
       @mock_process_manager.spawned_processes.first[:env]["PARALLEL_WORKERS"]
   end
 
+  # #54: after a context-window failure, resuming the thread is what makes Codex
+  # compact it — so the compaction recovery must not prepend Claude's `/compact`.
+  test "compacts on resume, and says so to the recovery path" do
+    assert CodexRuntimeAdapter.compacts_on_resume?
+    assert @adapter.compacts_on_resume?
+    assert MockCodexRuntimeAdapter.new.compacts_on_resume?, "the double must answer as production does"
+    assert_not ClaudeCliAdapter.new.compacts_on_resume?, "Claude Code still compacts on its /compact command"
+  end
+
+  # #54: the extension env seam hands every hook a `runtime`, so it has to be called for
+  # every runtime. It used to be reached only from ClaudeSpawnEnv.
+  class RuntimeEchoExtension < Zimmer::Extension
+    def id = "runtime_echo"
+    def spawn_env_contribution(context = {}) = { "ZIMMER_EXTENSION_SAW_RUNTIME" => context[:runtime] }
+  end
+
+  test "spawn_process merges enabled extension env contributions, naming the codex runtime" do
+    Zimmer::ExtensionRegistry.register(RuntimeEchoExtension.new)
+    AppSetting.editable.tap { |s| s.set_extension_enabled("runtime_echo", true); s.save! }
+
+    @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: @test_dir)
+
+    assert_equal "codex", @mock_process_manager.spawned_processes.first[:env]["ZIMMER_EXTENSION_SAW_RUNTIME"]
+  ensure
+    AppSetting.delete_all
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register_builtins!
+  end
+
+  test "spawn_process adds nothing when no extension is enabled" do
+    Zimmer::ExtensionRegistry.register(RuntimeEchoExtension.new)
+
+    @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: @test_dir)
+
+    refute @mock_process_manager.spawned_processes.first[:env].key?("ZIMMER_EXTENSION_SAW_RUNTIME")
+  ensure
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register_builtins!
+  end
+
   test "spawn_process refuses a nil working directory with an actionable error" do
     error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
       @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: nil)

@@ -74,6 +74,18 @@ class CodexAuthProvider < RuntimeAuthProvider
     ROTATION_INTERVAL
   end
 
+  # @see RuntimeAuthProvider#refresh_proves_serviceable?
+  #
+  # Codex reports an exhausted quota with its own code (`usage_limit_exceeded`),
+  # so the `unauthorized` code auth recovery answers is only ever about the
+  # credential — typically "refresh token was already used", which is a Codex
+  # process losing the single-use-token race to another refresher (Zimmer's own
+  # sweep, or another session's CLI) rather than a dead account. A refresh that
+  # succeeds, and so writes the new pair to auth.json, is what resolves it.
+  def refresh_proves_serviceable?
+    true
+  end
+
   # Refresh the account's tokens via OpenAI's OAuth endpoint. API-key accounts
   # have nothing to refresh and report a healthy no-op.
   # @return [RuntimeAuthProvider::Result]
@@ -221,8 +233,9 @@ class CodexAuthProvider < RuntimeAuthProvider
       # This pool has no evidence branch and cannot have one: Codex accounts
       # carry no Anthropic quota window to probe, so `reason` is the only signal
       # there is. That also makes the mistake permanent here where it is merely
-      # slow on the Claude side — QuotaResetCheckerJob is Claude-only, so nothing
-      # ever restores a Codex account labelled by mistake.
+      # slow on the Claude side — QuotaResetCheckerJob restores a Codex account
+      # only on the reading Codex recorded when it refused it, and a mistaken
+      # label has none.
       if current.needs_reauth?
         @logger.info("Rotating away from codex account already marked needs_reauth", email: current.email)
       elsif AccountRotationService::QUOTA_ROTATION_REASONS.include?(reason)

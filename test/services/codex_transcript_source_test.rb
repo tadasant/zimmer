@@ -435,6 +435,29 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
     )
   end
 
+  # === records_turn_errors? / terminal_turn_error (#54) ===
+
+  test "records the error each turn ended on" do
+    assert @source.records_turn_errors?
+  end
+
+  test "terminal_turn_error reads the session's own rollout" do
+    @session.update!(agent_runtime: "codex")
+    plant_codex_rollout(@file_system, @session, :usage_limit_with_windows)
+
+    error = @source.terminal_turn_error(session: @session, working_directory: "/tmp/clone")
+
+    assert_equal :quota, error.kind
+  end
+
+  test "terminal_turn_error is nil when the rollout cannot be found or the turn completed" do
+    @session.update!(agent_runtime: "codex", session_id: SecureRandom.uuid)
+    assert_nil @source.terminal_turn_error(session: @session, working_directory: "/tmp/clone")
+
+    plant_codex_rollout(@file_system, @session, :completed)
+    assert_nil @source.terminal_turn_error(session: @session, working_directory: "/tmp/clone")
+  end
+
   private
 
   # Capture everything written to Rails.logger during the block as a String so

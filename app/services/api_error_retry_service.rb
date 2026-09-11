@@ -235,12 +235,16 @@ class ApiErrorRetryService
       # the old quota entry first).
       with_db_retry do
         session.merge_metadata!(
-          "last_quota_limit_at" => Time.current.iso8601,
-          "last_quota_limit_message" => @detected_quota_message,
-          "quota_limit_count" => (session.metadata&.dig("quota_limit_count") || 0) + 1,
-          "api_error_last_checked_line" => get_transcript_line_count(working_directory)
+          {
+            "last_quota_limit_at" => Time.current.iso8601,
+            "last_quota_limit_message" => @detected_quota_message,
+            "quota_limit_count" => (session.metadata&.dig("quota_limit_count") || 0) + 1,
+            "api_error_last_checked_line" => get_transcript_line_count(working_directory)
+          }.merge(RecordedTurnError.handled_attributes(@turn_error))
         )
       end
+
+      record_quota_reading(@turn_error)
 
       return :quota_exceeded
     end
@@ -262,6 +266,7 @@ class ApiErrorRetryService
   # @return [Boolean] true if a retryable API error was detected in the transcript
   def retryable_api_error_detected?(working_directory)
     return false unless working_directory
+    return recorded_api_error_detected?(working_directory) if records_turn_errors?
 
     transcript_path = find_transcript_path(working_directory)
     return false unless transcript_path
@@ -492,6 +497,65 @@ class ApiErrorRetryService
   # The noun the shared respawn log sentences interpolate.
   def recovery_label = "API error retry"
 
+  # #retryable_api_error_detected? for a runtime that records the error its
+  # turn ended on (Codex): the record's kind decides, and sets the same three
+  # detection flags the Claude envelope scan does.
+  #
+  # A malformed tool call is a Claude Code synthesis with no counterpart in the
+  # record, so that flag stays false.
+  #
+  # @return [Boolean]
+  def recorded_api_error_detected?(working_directory)
+    error = unhandled_turn_error(working_directory)
+    return false unless error && %i[retryable quota].include?(error.kind)
+
+    @turn_error = error
+    @detected_quota_limit = error.kind == :quota
+    @detected_rate_limit = !@detected_quota_limit && error.rate_limited?
+    @detected_malformed_tool_call = false
+    @detected_quota_message = error.message if @detected_quota_limit
+
+    @logger.info("Recorded turn error routed to API error retry",
+      kind: error.kind, turn_error: error.id, http_status: error.http_status)
+    true
+  end
+
+  # Keep the quota reading the runtime left with the refusal, against the
+  # account this session's process was running as, so QuotaResetCheckerJob can
+  # restore that account once the reading's windows reset. A runtime with no
+  # reading to offer — Claude, whose readings come from probing Anthropic — is
+  # skipped.
+  #
+  # Best effort: a reading that cannot be kept costs the restore, never the
+  # rotation that follows.
+  def record_quota_reading(error)
+    return unless error.respond_to?(:quota_reading)
+
+    reading = error.quota_reading
+    return unless reading
+
+    account = quota_refused_account
+    return unless account
+
+    QuotaSnapshotService.save_snapshot(account, reading, trigger: "usage_limit")
+    add_log(
+      "Recorded #{account.email}'s usage-limit reading: it can serve again after " \
+        "#{reading.restores_at.utc.iso8601}, and QuotaResetCheckerJob restores it then",
+      level: "info"
+    )
+  rescue => e
+    @logger.warn("Could not record the quota reading", error: e.message)
+  end
+
+  # The account the refusal was about: the identity the process was spawned
+  # with (AuthRecoveryCoordinator::IDENTITY_KEY), falling back to the pool's
+  # current account when none was recorded.
+  def quota_refused_account
+    provider = RuntimeAuthProvider.for(session.agent_runtime)
+    email = session.metadata&.dig(AuthRecoveryCoordinator::IDENTITY_KEY)
+    (email.present? && provider.accounts.find_by(email: email)) || provider.current_account
+  end
+
   # Whether this error belongs to a classifier other than this service. Keeps the
   # "unclassified" signal honest — an ordinary compact recovery or auth recovery
   # must never be reported as an unknown failure mode.
@@ -558,8 +622,11 @@ class ApiErrorRetryService
     retry_attempt = BUDGET.next_attempt(session)
 
     # Record event in global rate limit tracker only for actual rate limit errors
-    # Server errors (500/502/503) should not escalate delays for other sessions
-    rate_limit_tracker.record_event if @detected_rate_limit
+    # Server errors (500/502/503) should not escalate delays for other sessions.
+    # Nor should a rate limit a runtime recorded against a different provider's
+    # API (@turn_error — Codex's OpenAI 429s): the tracker is the fleet's measure
+    # of pressure on the Anthropic API, and every Claude session's backoff reads it.
+    rate_limit_tracker.record_event if @detected_rate_limit && @turn_error.nil?
 
     # Use adaptive delay: if system is under rate limit pressure, use escalated delays
     # from the global tracker; otherwise use fixed exponential backoff
@@ -604,6 +671,7 @@ class ApiErrorRetryService
         session,
         attempt: retry_attempt,
         extra: { "api_error_last_checked_line" => get_transcript_line_count(working_directory) }
+          .merge(RecordedTurnError.handled_attributes(@turn_error))
       )
     end
 

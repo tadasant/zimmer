@@ -162,6 +162,15 @@ class ClaudeTranscriptSourceTest < ActiveSupport::TestCase
     assert_equal [], @source.mcp_log_paths(working_directory: nil)
   end
 
+  # === records_turn_errors? (#54) ===
+
+  # Claude's API-error envelope is read by the recovery services themselves, so
+  # its source must not claim a structured record they would then be routed to.
+  test "does not record turn errors, so the Claude envelope readers stay in charge" do
+    refute @source.records_turn_errors?
+    assert_nil @source.terminal_turn_error(session: sessions(:running), working_directory: "/tmp/clone")
+  end
+
   # === rotates_transcript_files? ===
 
   test "rotates_transcript_files? is false because Claude resumes into one file" do

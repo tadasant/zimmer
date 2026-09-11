@@ -1650,7 +1650,7 @@ class ProcessLifecycleManager
   def report_unclassified_exit(error_msg, working_dir)
     runtime = session&.agent_runtime.presence || "unknown runtime"
 
-    # A runtime whose strategy classifies nothing (Codex, today) reaches this
+    # A runtime whose strategy classifies nothing (Pi, today) reaches this
     # branch on EVERY ordinary failure. Paging on its designed-for path would be
     # a standing hourly alert for expected behavior, so it logs and stops.
     unless runtime_classifies_exits?
@@ -1794,7 +1794,7 @@ class ProcessLifecycleManager
 
   # The API error this turn died on, unless it is the same one a previous exit
   # already failed for. Runtimes whose strategy does not answer the question
-  # (Codex) never route here.
+  # never route here.
   def unhandled_terminal_api_error(working_dir)
     return nil unless retry_strategy.respond_to?(:terminal_api_error)
 
@@ -1851,8 +1851,8 @@ class ProcessLifecycleManager
   end
 
   # The runtime's own unmatched error prose, if its retry strategy can produce
-  # one. Strategies that cannot (Codex, whose transcript envelope parsing is not
-  # characterized yet) return nil and the alert carries stderr alone.
+  # one. Strategies that cannot (Pi, whose provider errors are not classified
+  # yet) return nil and the alert carries stderr alone.
   def unclassified_runtime_error_text(working_dir)
     return nil unless retry_strategy.respond_to?(:unclassified_error_text)
 

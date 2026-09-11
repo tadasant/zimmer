@@ -18,6 +18,87 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     assert account.reload.active?
   end
 
+  # --- Codex (#54) ---------------------------------------------------------------
+  #
+  # A Codex account has no quota endpoint to probe. It is restored on the reading
+  # Codex recorded when it refused the account — the one ApiErrorRetryService keeps
+  # as a `usage_limit` snapshot — once that reading's capped windows have reset.
+
+  def codex_refused!(reading_at:, reset_5h:, utilization_5h: 1.0, reset_7d: 5.days.from_now, utilization_7d: 0.4, rotated_at: nil)
+    account = claude_accounts(:codex_primary)
+    account.mark_quota_exceeded!
+    account.quota_snapshots.create!(trigger: "usage_limit", created_at: reading_at,
+      utilization_5h: utilization_5h, reset_5h: reset_5h, utilization_7d: utilization_7d, reset_7d: reset_7d)
+    if rotated_at
+      AccountRotationEvent.create!(rotated_from: account, rotated_to: claude_accounts(:codex_secondary),
+        reason: "quota_exceeded", source: "automatic", created_at: rotated_at)
+    end
+    account
+  end
+
+  test "restores a Codex account once the window it was refused on has reset" do
+    account = codex_refused!(reading_at: 6.hours.ago, reset_5h: 1.hour.ago, rotated_at: 6.hours.ago)
+
+    QuotaResetCheckerJob.perform_now
+
+    assert account.reload.active?
+  end
+
+  test "leaves a Codex account exceeded while the window it was refused on is still capped" do
+    account = codex_refused!(reading_at: 10.minutes.ago, reset_5h: 4.hours.from_now, rotated_at: 10.minutes.ago)
+
+    QuotaResetCheckerJob.perform_now
+
+    assert account.reload.quota_exceeded?
+  end
+
+  test "leaves a Codex account exceeded while its weekly window is capped, whatever the five-hour one says" do
+    account = codex_refused!(reading_at: 6.hours.ago, reset_5h: 1.hour.ago, utilization_5h: 0.2,
+      utilization_7d: 1.0, reset_7d: 3.days.from_now, rotated_at: 6.hours.ago)
+
+    QuotaResetCheckerJob.perform_now
+
+    assert account.reload.quota_exceeded?
+  end
+
+  test "never restores a Codex account on a guess: no reading, no restore" do
+    account = claude_accounts(:codex_primary)
+    account.mark_quota_exceeded!
+
+    QuotaResetCheckerJob.perform_now
+
+    assert account.reload.quota_exceeded?
+  end
+
+  test "does not restore a Codex account on an old refusal's reading after a newer refusal recorded none" do
+    # Refused two days ago (reading kept, long since reset), restored, then refused
+    # again an hour ago with no windows. The old reading is clear and still the
+    # latest — and says nothing about the refusal that wrote the current label.
+    account = codex_refused!(reading_at: 2.days.ago, reset_5h: 2.days.ago + 5.hours, rotated_at: 2.days.ago)
+    AccountRotationEvent.create!(rotated_from: account, rotated_to: claude_accounts(:codex_secondary),
+      reason: "quota_exceeded", source: "automatic", created_at: 1.hour.ago)
+
+    QuotaResetCheckerJob.perform_now
+
+    assert account.reload.quota_exceeded?
+  end
+
+  test "a reading taken moments before its rotation still counts as that refusal's" do
+    account = codex_refused!(reading_at: 6.hours.ago - 30.seconds, reset_5h: 1.hour.ago, rotated_at: 6.hours.ago)
+
+    QuotaResetCheckerJob.perform_now
+
+    assert account.reload.active?
+  end
+
+  test "a Codex restore is never probed against Anthropic" do
+    codex_refused!(reading_at: 6.hours.ago, reset_5h: 1.hour.ago, rotated_at: 6.hours.ago)
+    ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:active])
+    QuotaCheckService.expects(:check_with_token).never
+
+    QuotaResetCheckerJob.perform_now
+  end
+
   test "records what its probe learned about the account's stored token (#239)" do
     account = claude_accounts(:exceeded)
     claude_account_quota_snapshots(:exceeded_snapshot).update!(reset_5h: 2.hours.from_now, utilization_5h: 1.0)
