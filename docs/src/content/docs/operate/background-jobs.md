@@ -1090,18 +1090,76 @@ whenever `Session#unresolved_pr_urls` is non-empty:
   backoff exists to relieve. The bound keeps that population proportional to a week of fleet
   throughput rather than to all of time.
 
-Only the pass's own gate is capped. The comment and merge-conflict evaluators keep their own keys
-inside the pass and ride the full curve — see
+The two evaluators that keep their own gate inside the pass used to ride the full curve regardless,
+which quietly made the cap a half-measure: a session past 24 hours of no user activity was *polled*
+every 30 minutes while its merge conflicts were *evaluated* once a day. The merge-conflict gate now
+inherits the pass's own ceiling, so it is never slower than the pass that has already decided the
+session is due. That costs no rate limit at all — `Github::MergeConflictEvaluator` takes no `gh`
+calls of its own and reads the snapshot the pass already fetched.
+
+`Github::CommentEvaluator` deliberately still rides the full curve, because it *does* spend `gh api`
+calls, so speeding it up for every idle PR-holding session in the fleet is a rate-limit decision
+rather than a free one — see
 [Limitations](/limitations/#a-parked-session-can-hear-about-its-merged-pr-up-to-half-an-hour-late).
+
+### The conflict debounce is a duration, not a poll count
+
+`Github::MergeConflictEvaluator` notifies a session only after a PR has read `CONFLICTING` **twice**.
+The first reading records the PR as *suspected*; a later one promotes it to *confirmed* and enqueues
+the notice; any clean reading clears both. That exists because GitHub recomputes mergeability
+lazily and returns transient readings in the minute after a push — without it, one stale reading
+spends a session's turn nudging it to resolve conflicts on a PR that is already clean (sessions 7235
+and 3889).
+
+The gap between those two readings was "two consecutive gated polls", which is two minutes only if
+whatever supplies the cadence actually ticks every two minutes. For the population this notice
+exists for it did not: an idle session holding a PR is capped at 30 minutes, and the evaluator's own
+gate stretched to 24 hours. So the confirming reading was half an hour to a day away, and a single
+clean reading anywhere in that gap reset the streak to zero — which is how a PR open since
+2026-09-06 went five days with a merge conflict its session was never told about, until a human
+found the stalled PR and typed "fix merge conflict" into the session by hand
+([#1123](https://github.com/tadasant/zimmer/issues/1123)).
+
+Two changes make the debounce mean what it always claimed:
+
+- **The gap is measured in seconds.** `MIN_CONFIRMATION_GAP_SECONDS` (120) is checked against a
+  timestamp stored in the suspected marker — `{ pr_url => "2026-09-11T02:28:00Z" }` rather than
+  `{ pr_url => true }` — so the interval holds at any cadence. A reading that arrives too soon
+  leaves the marker **exactly** as it is rather than re-stamping it; re-stamping would restart the
+  debounce on every poll and a fast-polled PR would never confirm at all.
+- **A suspicion buys its session the cadence the debounce needs.** While
+  `Github::MergeConflictEvaluator.fresh_suspicion?` holds, `Github::PrPollPass` caps that session at
+  `MERGE_CONFLICT_INTERVAL_SECONDS`, ahead of every other ceiling including the 7-day idle bound. So
+  the confirming reading lands about two minutes after the first rather than whenever the curve next
+  allows.
+
+The fast cadence is bounded at both ends. A suspicion normally resolves on the very next gated
+evaluation — confirmed or cleared — and `SUSPICION_FAST_POLL_WINDOW` (30 minutes) stops it granting
+anything after that, so a PR whose snapshot never comes back (deleted, or a repo the token cannot
+read) cannot pin its session at two-minute polling forever. Past the window the suspicion is still
+*confirmable*, just not privileged: later, rather than never.
+
+A suspected marker written before this change holds `true` and carries no timestamp. Those confirm
+on the next conflicting reading — they were written by an earlier gated poll, so the reading in
+front of them genuinely is the second one — but they do **not** grant the fast cadence, because an
+unknown age must not buy an unbounded poll rate.
 
 ## A conflict notice is re-read when it comes off the queue, not when it was written
 
 `AutomatedSessionMessage` sends a poller's notice immediately only when the session is parked in
 `needs_input`. A session that is mid-turn, or asleep in `waiting` on the `open-pr` skill's bounded
 self-wake, gets the notice *queued* instead — and the row then sits until that session's next turn
-boundary. Two things stretch that gap: the merge-conflict poller's own two-poll debounce holds the
-notice back by at least one poll interval before it is written, and the queue holds it for however
-long the session takes to reach a boundary. Neither end is bounded by anything the poller can see.
+boundary. Two things stretch that gap: the merge-conflict poller's own debounce holds the notice
+back by at least `MIN_CONFIRMATION_GAP_SECONDS` before it is written, and the queue holds it for
+however long the session takes to reach a boundary. Neither end is bounded by anything the poller
+can see.
+
+(A queued notice does always have *something* coming back for it, even on a session at rest in
+`waiting` with no wake armed: `EnqueuedMessage`'s `after_create_commit` hook schedules
+`EnqueuedMessageDrainJob` for either resting state. That is the invariant, and it is owned there
+rather than in `AutomatedSessionMessage` — see
+[A session does not idle on its own queue](/sessions/lifecycle/#a-session-does-not-idle-on-its-own-queue)
+if you are tempted to read the queueing branch as "it waits behind the current turn".)
 
 Merge conflicts un-resolve in exactly that window. A session that rebases onto the base branch,
 fixes the conflicts and force-pushes has made the notice false before anybody reads it, which is

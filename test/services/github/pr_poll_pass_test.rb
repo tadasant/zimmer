@@ -356,7 +356,8 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
     GithubPrPollPassJob.perform_now
 
     @session_with_pr.reload
-    assert_equal({ PR_URL => true }, @session_with_pr.custom_metadata["github_pull_request_merge_conflicts_suspected"])
+    assert_equal [ PR_URL ],
+      @session_with_pr.custom_metadata["github_pull_request_merge_conflicts_suspected"].keys
     refute @session_with_pr.enqueued_messages.pending.exists?,
       "the first conflicting reading only suspects"
 
@@ -377,6 +378,100 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
     assert_equal({ PR_URL => true }, @session_with_pr.custom_metadata["github_pull_request_merge_conflicts"])
     assert @session_with_pr.enqueued_messages.pending.exists?,
       "the second gated conflicting reading confirms and notifies"
+  end
+
+  # ---- #1123: the debounce could not confirm at the cadence these sessions are polled ----
+  #
+  # A session holding an unresolved PR is capped at AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL
+  # (30 minutes), and the merge-conflict evaluator's own gate rode PollBackoff's curve
+  # past that to its 24-hour floor. So the "two consecutive gated polls" the debounce
+  # needs were half an hour to a day apart for exactly the population a conflict notice
+  # is for — and any single clean reading in that gap reset the streak to zero. A PR
+  # open since 2026-09-06 was still un-notified five days later and a human flagged the
+  # conflict by hand.
+
+  test "an idle session capped at 30 minutes still confirms its conflict two minutes later" do
+    @session_with_pr.update!(status: :running)
+    idle_session_holding(PR_URL, status: "open", idle_for: 10.hours, last_polled: 1.hour.ago)
+    isolate
+    stub_gh(
+      pr_view: { "state" => "OPEN", "mergedAt" => nil, "mergeable" => "CONFLICTING" },
+      pr_checks: [],
+      comments: []
+    )
+
+    GithubPrPollPassJob.perform_now
+
+    @session_with_pr.reload
+    assert_equal [ PR_URL ],
+      @session_with_pr.custom_metadata["github_pull_request_merge_conflicts_suspected"].keys,
+      "the first gated poll suspects the conflict"
+
+    # Before the fix this session was not due again for another 30 minutes, so the
+    # confirming reading never landed inside the debounce's own interval.
+    travel 3.minutes do
+      GithubPrPollPassJob.perform_now
+    end
+
+    @session_with_pr.reload
+    assert_equal({ PR_URL => true }, @session_with_pr.custom_metadata["github_pull_request_merge_conflicts"])
+    assert @session_with_pr.enqueued_messages.pending.exists?,
+      "the session must be told about a conflict its own poller has now seen twice"
+  end
+
+  # The exemption is a ceiling on the SUSPECTED session only, and it is bounded at
+  # both ends: a suspicion resolves on the next gated evaluation, and
+  # .fresh_suspicion? stops answering true past SUSPICION_FAST_POLL_WINDOW. Without
+  # that bound a PR whose snapshot never comes back (deleted, or a repo the token
+  # cannot read) would pin its session at two-minute polling forever.
+  test "the fast cadence lapses once a suspicion outlives its window" do
+    stale = (Github::MergeConflictEvaluator::SUSPICION_FAST_POLL_WINDOW + 5.minutes).ago
+    idle_session_holding(PR_URL, status: "open", idle_for: 10.hours, last_polled: 5.minutes.ago)
+    @session_with_pr.merge_custom_metadata!(
+      "github_pull_request_merge_conflicts_suspected" => { PR_URL => stale.utc.iso8601 }
+    )
+    isolate
+
+    PollBackoff.expects(:record_poll!).never
+    Github::PrSnapshot.expects(:fetch).never
+
+    Github::PrPollPass.new.run
+  end
+
+  test "a fresh suspicion makes a session due inside the 30-minute cap" do
+    idle_session_holding(PR_URL, status: "open", idle_for: 10.hours, last_polled: 5.minutes.ago)
+    @session_with_pr.merge_custom_metadata!(
+      "github_pull_request_merge_conflicts_suspected" => { PR_URL => 4.minutes.ago.utc.iso8601 }
+    )
+    isolate
+    stub_evaluators
+
+    Github::PrSnapshot.expects(:fetch).once.returns(nil)
+
+    Github::PrPollPass.new.run
+  end
+
+  # The pass's own gate was capped and the evaluators inside it were not, so the
+  # class comment's claim that "gating the pass cannot starve an evaluator" stopped
+  # being true: a >24 hr idle session was polled every 30 minutes and its merge
+  # conflicts were evaluated once a day. The merge-conflict gate inherits the pass's
+  # ceiling now — free, because this evaluator takes no GitHub calls of its own.
+  test "the merge-conflict evaluator inherits the pass ceiling for a >24 hr idle session" do
+    idle_session_holding(PR_URL, status: "open", idle_for: 2.days, last_polled: 1.hour.ago)
+    @session_with_pr.merge_custom_metadata!(
+      "poller_last_polled_at" => {
+        Github::PrPollPass::POLL_BACKOFF_KEY => 1.hour.ago.iso8601,
+        Github::PrPollPass::MERGE_CONFLICT_BACKOFF_KEY => 1.hour.ago.iso8601
+      }
+    )
+    isolate
+    Github::PrStatusEvaluator.any_instance.stubs(:evaluate)
+    Github::CommentEvaluator.any_instance.stubs(:evaluate)
+    Github::PrSnapshot.stubs(:fetch).returns(nil)
+
+    Github::MergeConflictEvaluator.any_instance.expects(:evaluate).once
+
+    Github::PrPollPass.new.run
   end
 
   private

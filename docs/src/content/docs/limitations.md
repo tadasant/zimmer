@@ -3446,10 +3446,15 @@ tracked PR has merged or closed is waiting on nothing and keeps the full curve, 
 included; that is the case the backoff was written for, and the rate limit it protects is
 unchanged. Touching the session still resets the curve to the 30-second cadence.
 
-So the residual delay is up to 30 minutes rather than up to a day. Three caveats. Only the pass's
-own gate is capped: `Github::CommentEvaluator` and `Github::MergeConflictEvaluator` keep their own
-keys inside the pass and still ride the full curve, so a comment or a conflict notice on the PR of a
-long-idle session can still be a day late. The cap is not a guarantee of delivery — the cases in
+So the residual delay is up to 30 minutes rather than up to a day. Three caveats.
+`Github::CommentEvaluator` keeps its own key inside the pass and still rides the full curve, so a
+**comment** on the PR of a long-idle session can still be a day late; it is left there deliberately,
+because it spends `gh api` calls of its own and speeding it up for the whole idle population is a
+rate-limit decision rather than a free one. `Github::MergeConflictEvaluator` no longer rides it — it
+inherits the pass's ceiling, and a PR it already suspects of conflicting pulls the session down to a
+two-minute cadence until the debounce resolves
+([#1123](https://github.com/tadasant/zimmer/issues/1123)) — which is free, because that evaluator
+reads the snapshot the pass already fetched. The cap is not a guarantee of delivery — the cases in
 [A PR session waits for a merge message that three cases can prevent](#a-pr-session-waits-for-a-merge-message-that-three-cases-can-prevent)
 are untouched by it. And the cap itself expires after `AWAITING_PR_OUTCOME_MAX_IDLE` (7 days) of no
 user activity, because nothing removes an idle session from `Session.with_github_prs` and a deleted
