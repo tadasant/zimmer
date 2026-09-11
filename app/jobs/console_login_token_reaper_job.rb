@@ -16,7 +16,9 @@ class ConsoleLoginTokenReaperJob < ApplicationJob
   include DatabaseRetry
   include SingletonSweep
 
-  queue_as :maintenance
+  # `default`, with the other quick table sweeps (CleanupExpiredElicitationsJob): one
+  # indexed DELETE, not the long-running cleanup `maintenance` is fenced off for.
+  queue_as :default
 
   def perform
     deleted = with_db_retry { ConsoleLoginToken.reapable.delete_all }

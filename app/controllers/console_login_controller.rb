@@ -3,17 +3,17 @@
 # Exchange a console login token for a console session, and read the session back
 # (tadasant/zimmer#220): the automated-actor half of the agent-login primitive.
 #
-# The exchange takes the token in the request **body** and nowhere else. A token in a
-# query string lands in access logs and `Referer` headers, so one presented that way
-# is refused without being looked at — the actor is told to move it, and the token is
-# still live.
+# The exchange takes the token in a JSON request **body** and nowhere else. A token in
+# a query string has already been written to access logs and may be in a `Referer`
+# header, so it counts as leaked: it is revoked on sight, if it is a whole valid
+# token, and the request is refused with a 400 whatever the body says.
 #
 # On success the response sets the console session cookie (ConsoleSession) and answers
 # 200 with what the cookie carries. On any refusal there is no cookie, and the status
 # says which kind of refusal it was:
 #
 #   401 `invalid`   malformed, no such id, or a secret that does not match — one
-#                   answer for all three, so a guess at an id learns nothing
+#                   answer for all three, so the response does not distinguish them
 #   401 `expired`   the secret matched, the token was never used, and its window is over
 #   409 `consumed`  the token was already exchanged — **the tripwire**. An actor that
 #                   minted this token and has not used it should not retry it: revoke
@@ -23,21 +23,24 @@
 # The exchange itself is one conditional UPDATE in ConsoleLoginToken.exchange!, so two
 # requests racing on one token get one 200 and one 409.
 #
-# No CSRF check on the exchange, and none is needed: the request carries no cookie of
-# consequence and the only thing it can do is log the *presenting* browser in as the
-# token's principal. Anyone holding a token can do that directly.
-#
-# Everything is closed unless `CONSOLE_LOGIN_ENABLED` is `true` — see ConsoleLoginGate.
+# JSON-only (ConsoleLoginGate#require_json_body) is also what closes login CSRF: a
+# cross-site page cannot submit a form here to log an operator's browser in as a
+# principal of its choosing.
 class ConsoleLoginController < ActionController::API
-  include ControllerDatabaseRetry
   include ActionController::Cookies
   include ConsoleLoginGate
   include ConsoleSession
 
-  # POST /console_login — body `token`. → 200 `{console_login}` plus the cookie.
+  before_action :refuse_token_in_query_string, only: :create
+  before_action :require_json_body, only: :create
+
+  # POST /console_login — JSON body `{"token": "zlt_…"}`. → 200 `{console_login}` plus
+  # the cookie.
   def create
-    presented = presented_token
-    return if performed?
+    presented = request.request_parameters["token"]
+    if presented.blank?
+      return render_console_login_error("Bad Request", "token is required in the JSON request body", status: :bad_request)
+    end
 
     exchange = ConsoleLoginToken.exchange!(presented, consumed_from_ip: request.remote_ip)
 
@@ -55,8 +58,8 @@ class ConsoleLoginController < ActionController::API
   end
 
   # GET /console_login → 200 `{console_login}` for a request carrying a live console
-  # session cookie, 401 otherwise. The one consumer of the cookie today, and the way
-  # an actor checks its exchange took before it drives the UI.
+  # session cookie, 401 otherwise. The one reader of the cookie, and the way an actor
+  # checks its exchange took before it drives the UI.
   def show
     login = current_console_login
 
@@ -69,24 +72,22 @@ class ConsoleLoginController < ActionController::API
 
   private
 
-  # The body's `token`, and only the body's. `params` merges the query string in,
-  # so it is read from `request_parameters` — which is the parsed JSON body for a
-  # JSON request and the form fields otherwise — and a token that is *only* in the
-  # query string is refused with an explanation rather than silently ignored.
-  def presented_token
-    presented = request.request_parameters["token"]
-    return presented if presented.present?
+  # Runs before the JSON check, so a token in a URL is killed however the rest of the
+  # request looks. Revoking needs the whole valid token, so this cannot be used to
+  # revoke a token the caller does not hold.
+  def refuse_token_in_query_string
+    leaked = request.query_parameters["token"]
+    return if leaked.blank?
 
-    if request.query_parameters["token"].present?
-      render_console_login_error(
-        "Bad Request",
-        "Send the token in the request body, not the query string: a URL is logged and forwarded, a body is not. The token has not been consumed.",
-        status: :bad_request
-      )
-    else
-      render_console_login_error("Bad Request", "token is required in the request body", status: :bad_request)
-    end
-    nil
+    revoked = ConsoleLoginToken.revoke_presented!(leaked)
+    Rails.logger.warn(
+      "[console_login] token presented in a query string from #{request.remote_ip}; " \
+      "#{revoked ? "revoked it" : "not a live token, nothing revoked"}"
+    )
+
+    message = "Send the token in the JSON request body, not the query string: a URL is logged and forwarded."
+    message += " That token has been revoked because it was in a URL; mint a new one." if revoked
+    render_console_login_error("Bad Request", message, status: :bad_request, revoked: revoked)
   end
 
   # Every refusal is WARN with the id when there is one: a consumed or revoked token

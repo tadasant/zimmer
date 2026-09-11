@@ -4,7 +4,7 @@
 # half of the agent-login primitive.
 #
 # Both actions sit behind the operator credential (OperatorHttpBasicAuth,
-# `SUPERVISOR_PASSWORD`) and take JSON, so the caller is `curl -u` from a CI job
+# `SUPERVISOR_PASSWORD`) and take JSON only, so the caller is `curl -u` from a CI job
 # whose secret never leaves it. That credential, and not an API key, for the same
 # reason `/settings/api_keys` gives: every agent session holds an API key, and the
 # operator password is the one credential `CliSpawnEnv` keeps out of them. A surface
@@ -20,14 +20,15 @@
 # It is idempotent, and a no-op on a consumed token: the exchanged session has its
 # own expiry, and revoking the token that produced it changes nothing about it.
 #
-# Everything is closed unless `CONSOLE_LOGIN_ENABLED` is `true` — see ConsoleLoginGate,
-# which runs before the operator check so a closed deployment never challenges.
+# The order of the gates is deliberate (ConsoleLoginGate): the env gate first, so a
+# closed deployment never challenges; then JSON-only, so a cross-site form post never
+# reaches the credential check; then the operator credential.
 class ConsoleLoginTokensController < ActionController::API
-  include ControllerDatabaseRetry
   include ActionController::HttpAuthentication::Basic::ControllerMethods
   include ConsoleLoginGate
   include OperatorHttpBasicAuth
 
+  before_action :require_json_body
   before_action :authenticate_operator
 
   rescue_from ActiveRecord::RecordNotFound do
@@ -36,17 +37,22 @@ class ConsoleLoginTokensController < ActionController::API
 
   # POST /console_login_tokens
   #
-  # Body: `principal` (required — who this login is for, in the log and the cookie),
-  # `ttl_seconds` (the mint-to-exchange window; default 300, clamped to 10–900),
-  # `session_ttl_seconds` (the exchanged session's lifetime; default 900, clamped to
-  # 60–3600). → 201 with the plaintext `token`, once, beside the row.
+  # Body: `principal` (required string — who this login is for, in the log and the
+  # cookie), `ttl_seconds` (the mint-to-exchange window; default 300, clamped to
+  # 10–900), `session_ttl_seconds` (the exchanged session's lifetime; default 900,
+  # clamped to 60–3600). → 201 with the plaintext `token`, once, beside the row.
   def create
+    principal = params[:principal]
+    unless principal.nil? || principal.is_a?(String)
+      return render_console_login_error("Unprocessable Entity", "principal must be a string", status: :unprocessable_entity)
+    end
+
     ttl_seconds = clamped_seconds(:ttl_seconds, ConsoleLoginToken::TTL_SECONDS, ConsoleLoginToken::DEFAULT_TTL_SECONDS)
     session_ttl_seconds = clamped_seconds(:session_ttl_seconds, ConsoleLoginToken::SESSION_TTL_SECONDS, ConsoleLoginToken::DEFAULT_SESSION_TTL_SECONDS)
     return if performed?
 
     token, plaintext = ConsoleLoginToken.mint!(
-      principal: params[:principal].to_s,
+      principal: principal.to_s,
       ttl_seconds: ttl_seconds,
       session_ttl_seconds: session_ttl_seconds,
       minted_from_ip: request.remote_ip
@@ -71,20 +77,20 @@ class ConsoleLoginTokensController < ActionController::API
 
   private
 
-  # An absent value is the default; a present one must be an integer, and is clamped
-  # into the range the model accepts. Anything else renders a 422 and returns nil,
-  # so the action checks `performed?` before going on.
+  # An absent value is the default; a present one must be a base-10 integer — a JSON
+  # number or a string of digits, nothing `Integer()` would read as octal or hex — and
+  # is clamped into the range the model accepts. Anything else renders a 422 and
+  # returns nil, so the action checks `performed?` before going on.
   def clamped_seconds(name, range, default)
     raw = params[name]
-    return default if raw.blank?
+    return default if raw.nil? || raw == ""
 
-    value = Integer(raw.to_s, exception: false)
-    if value.nil?
+    unless raw.is_a?(Integer) || (raw.is_a?(String) && raw.match?(/\A-?\d{1,9}\z/))
       render_console_login_error("Unprocessable Entity", "#{name} must be an integer number of seconds", status: :unprocessable_entity)
       return nil
     end
 
-    value.clamp(range)
+    raw.to_i.clamp(range)
   end
 
   # WARN, so it ships to obs: which token was minted or revoked, for whom, from where,
@@ -98,8 +104,8 @@ class ConsoleLoginTokensController < ActionController::API
   end
 
   # A JSON client, so the 401 carries the reason in the body. The realm challenge
-  # stays on a configured realm — `curl -u` does not care, and a browser that gets
-  # here can still sign in — and is withheld when there is nothing to satisfy it.
+  # stays on a configured realm — `curl -u` does not care — and is withheld when there
+  # is nothing to satisfy it.
   def refuse_operator(realm_configured: true)
     message = if realm_configured
       "Minting and revoking console login tokens needs the operator credential (HTTP Basic, the same one " \

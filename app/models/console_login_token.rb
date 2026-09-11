@@ -30,15 +30,16 @@ require "digest"
 #   `expires_at` is dead, and the reaper deletes it once it is older than RETENTION.
 # - `principal` and `role` are the authority the exchanged session carries. They are
 #   copied into the cookie at exchange time and nothing about how the token is
-#   presented can change them. The one role today is `console`: the web UI, and
-#   nothing behind the operator realm — a console session never satisfies
+#   presented can change them. The one role is `console`: the web UI, and nothing
+#   behind the operator realm — a console session never satisfies
 #   `OperatorHttpBasicAuth`, so an actor holding one cannot mint another.
 # - `session_ttl_seconds` is the cookie's `Max-Age`, decided at mint, not at exchange.
 #
-# Every endpoint that reads or writes this table is closed unless `CONSOLE_LOGIN_ENABLED`
-# is `true`. Nothing sets it by default in any environment: the web UI has no login
-# gate today, so the cookie the exchange issues authorizes nothing the perimeter does
-# not already grant, and the primitive is landed so it is ready when a gate exists.
+# The mint, exchange, revoke and whoami endpoints are closed unless
+# `CONSOLE_LOGIN_ENABLED` is `true` (ConsoleLoginGate); nothing sets it by default in
+# any environment. The web UI has no login gate, so the cookie the exchange issues
+# authorizes nothing the perimeter does not already grant, and the primitive is ready
+# for the gate that would.
 class ConsoleLoginToken < ApplicationRecord
   ENABLED_ENV = "CONSOLE_LOGIN_ENABLED"
 
@@ -78,7 +79,7 @@ class ConsoleLoginToken < ApplicationRecord
   #   consumed    already exchanged — the tripwire
   #   revoked     revoked before it was exchanged
   # The caller decides which of these it tells the client apart; the first three are
-  # deliberately one answer on the wire, so a guess at an id learns nothing.
+  # deliberately one answer on the wire.
   Exchange = Data.define(:token, :refusal) do
     def exchanged? = refusal.nil?
   end
@@ -128,25 +129,38 @@ class ConsoleLoginToken < ApplicationRecord
     # row-state refusals (`expired`, `consumed`, `revoked`) are only ever told to a
     # caller holding the right secret. And the UPDATE's WHERE clause is the whole
     # single-use guarantee: two requests carrying the same valid token both pass the
-    # checks above it, and exactly one of them updates a row.
+    # checks above it, and exactly one of them updates a row. Success is built on
+    # that row count and nothing else, so a row that reads as usable after an UPDATE
+    # that matched nothing is still a refusal.
     #
     # @param presented [String, nil] the token off the request body
     # @return [Exchange]
     def exchange!(presented, consumed_from_ip: nil, now: Time.current)
-      id, secret = parse(presented)
-      return refuse(:malformed) if id.nil?
-
-      token = find_by(id: id)
-      return refuse(:unknown) if token.nil?
-      return refuse(:bad_secret, token) unless token.secret_matches?(secret)
+      token, refusal = authenticate(presented)
+      return refuse(refusal, token) if refusal
 
       consumed = where(id: token.id, status: ACTIVE).where("expires_at > ?", now)
         .update_all(status: CONSUMED, consumed_at: now, consumed_from_ip: consumed_from_ip, updated_at: now)
 
-      token.reload
-      return Exchange.new(token: token, refusal: nil) if consumed == 1
+      # Re-read rather than `reload`: the reaper may have deleted the row between
+      # the lookup and here.
+      current = find_by(id: token.id)
+      return refuse(:unknown) if current.nil?
+      return Exchange.new(token: current, refusal: nil) if consumed == 1
 
-      refuse(token.refusal_reason(now: now), token)
+      refuse(current.refusal_reason(now: now) || :consumed, current)
+    end
+
+    # Revoke the token a presented string names, if the string is a whole valid
+    # token. For a token that turned up somewhere it should not have — a URL — where
+    # the right move is to kill it rather than to leave it live.
+    #
+    # @return [Boolean] whether this call is what revoked it
+    def revoke_presented!(presented)
+      token, refusal = authenticate(presented)
+      return false if refusal
+
+      token.revoke!
     end
 
     def digest(secret)
@@ -155,10 +169,26 @@ class ConsoleLoginToken < ApplicationRecord
 
     private
 
-    # `zlt_<id>.<secret>` → [id, secret], or [nil, nil] for anything else. The id is
-    # decimal digits only, so a lookup never sees anything but an integer.
+    # [row, nil] when the presented string is a well-formed token whose secret matches
+    # a row; [row-or-nil, reason] otherwise. Says nothing about the row's state.
+    def authenticate(presented)
+      id, secret = parse(presented)
+      return [ nil, :malformed ] if id.nil?
+
+      token = find_by(id: id)
+      return [ nil, :unknown ] if token.nil?
+      return [ token, :bad_secret ] unless token.secret_matches?(secret)
+
+      [ token, nil ]
+    end
+
+    # `zlt_<id>.<secret>` → [id, secret], or [nil, nil] for anything else, including
+    # a non-String. The id is decimal digits only, so a lookup never sees anything
+    # but an integer.
     def parse(presented)
-      match = /\A#{PREFIX}(\d{1,18})\.([0-9a-f]{64})\z/.match(presented.to_s)
+      return [ nil, nil ] unless presented.is_a?(String)
+
+      match = /\A#{PREFIX}(\d{1,18})\.([0-9a-f]{64})\z/.match(presented)
       match ? [ match[1].to_i, match[2] ] : [ nil, nil ]
     end
 
@@ -201,17 +231,6 @@ class ConsoleLoginToken < ApplicationRecord
       .update_all(status: REVOKED, revoked_at: now, updated_at: now)
     reload
     changed == 1
-  end
-
-  # What the exchange writes into the cookie and what the whoami endpoint reports.
-  # Never the digest, never the status.
-  def as_console_login(now: Time.current)
-    {
-      token_id: id,
-      principal: principal,
-      role: role,
-      expires_at: (now + session_ttl_seconds).iso8601
-    }
   end
 
   # The public shape of a row: what mint and revoke return, and what a caller may

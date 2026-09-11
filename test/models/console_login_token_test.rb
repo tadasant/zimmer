@@ -110,12 +110,32 @@ class ConsoleLoginTokenTest < ActiveSupport::TestCase
     assert_equal :bad_secret, ConsoleLoginToken.exchange!("zlt_#{token.id}.#{"0" * 64}").refusal
   end
 
-  test "as_console_login and as_api_json never carry the digest" do
-    token, _plaintext = ConsoleLoginToken.mint!(principal: "ci", session_ttl_seconds: 120)
-    now = Time.current
+  test "a non-String presented token is malformed, not an error" do
+    assert_equal :malformed, ConsoleLoginToken.exchange!({ "a" => "b" }).refusal
+    assert_equal :malformed, ConsoleLoginToken.exchange!(123).refusal
+  end
 
-    login = token.as_console_login(now: now)
-    assert_equal({ token_id: token.id, principal: "ci", role: "console", expires_at: (now + 120).iso8601 }, login)
+  test "revoke_presented! kills a whole valid token and nothing else" do
+    token, plaintext = ConsoleLoginToken.mint!(principal: "ci")
+
+    assert_not ConsoleLoginToken.revoke_presented!("zlt_#{token.id}.#{"0" * 64}"), "a wrong secret revokes nothing"
+    assert_not ConsoleLoginToken.revoke_presented!("garbage")
+    assert_predicate token.reload, :active?
+
+    assert ConsoleLoginToken.revoke_presented!(plaintext)
+    assert_predicate token.reload, :revoked?
+    assert_not ConsoleLoginToken.revoke_presented!(plaintext), "idempotent"
+  end
+
+  test "an exchange whose row vanishes mid-flight is refused as unknown rather than raising" do
+    token, plaintext = ConsoleLoginToken.mint!(principal: "ci")
+    ConsoleLoginToken.stub(:find_by, ->(**conditions) { conditions[:id] == token.id && !@looked_up ? (@looked_up = token) : nil }) do
+      assert_equal :unknown, ConsoleLoginToken.exchange!(plaintext).refusal
+    end
+  end
+
+  test "as_api_json never carries the digest" do
+    token, _plaintext = ConsoleLoginToken.mint!(principal: "ci", session_ttl_seconds: 120)
 
     api = token.as_api_json
     assert_equal token.id, api[:id]

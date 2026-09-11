@@ -186,7 +186,8 @@ sequenceDiagram
 The operator credential and not an API key, for the reason `/settings/api_keys` gives: every agent
 session holds an API key, and `SUPERVISOR_PASSWORD` is the one credential `CliSpawnEnv` keeps out of
 them, so this is the surface the fleet's shared key cannot use to issue itself a login. The body is
-JSON (or a form): `principal` (required — who the login is for; it goes in the log and the cookie),
+JSON — every console-login write refuses anything else with a `415`, which is the CSRF defence (see
+below): `principal` (required string — who the login is for; it goes in the log and the cookie),
 `ttl_seconds` (the mint-to-exchange window, default 300, clamped to 10–900) and
 `session_ttl_seconds` (the session's lifetime, default 900, clamped to 60–3600). The `201` carries
 the plaintext `token` once, with `Cache-Control: no-store`; the `console_login_tokens` row holds a
@@ -200,9 +201,10 @@ curl -s -u "supervisor:$SUPERVISOR_PASSWORD" -H 'Content-Type: application/json'
 # {"token":"zlt_12.7f3a…","console_login_token":{"id":12,"principal":"ci-playwright","role":"console","status":"active","expires_at":"…","session_ttl_seconds":900,…}}
 ```
 
-**Exchange** — `POST /console_login`, no credential but the token, **in the request body**. One
-presented in the query string is refused with a `400` before it is looked at, and stays live: a URL
-is written to access logs and forwarded in `Referer`, a body is not. The exchange is one conditional
+**Exchange** — `POST /console_login`, no credential but the token, **in a JSON request body**. A
+token in the query string counts as leaked — a URL is written to access logs and forwarded in
+`Referer`, a body is not — so it is revoked on sight if it is a whole valid token, and the request
+is refused with a `400` (`revoked: true|false`) whatever the body says. The exchange is one conditional
 `UPDATE … WHERE status = 'active' AND expires_at > now`, from `active` to `consumed`, so two
 requests racing on one token get one `200` and one `409` — there is no window in which both succeed.
 On success the response sets `zimmer_console_session` and answers `200` with what the cookie
@@ -210,7 +212,7 @@ carries. On any refusal there is **no cookie**, and the status and `reason` say 
 
 | Status | `reason` | Meaning |
 | --- | --- | --- |
-| `401` | `invalid` | Malformed, no such id, or a secret that does not match. One answer for all three, so a guess at an id learns nothing |
+| `401` | `invalid` | Malformed, no such id, or a secret that does not match. One answer for all three: the response does not distinguish them |
 | `401` | `expired` | The secret matched, the token was never used, and its window closed |
 | `409` | `consumed` | Already exchanged. **The tripwire** — see below |
 | `409` | `revoked` | Revoked before it was exchanged |
@@ -219,9 +221,9 @@ The row-state reasons are only ever told to a caller holding the right secret.
 
 **The session** is an encrypted cookie, separate from the Rails session cookie that carries the
 flash and the CSRF token: `HttpOnly`, `SameSite=Lax`, `Secure` outside a local (development or test)
-deployment on plain HTTP, `Max-Age` equal to the row's `session_ttl_seconds`. The same instant is
-embedded in the signed payload, so a client that edits `Max-Age` on the wire gets a cookie the jar
-refuses. The cookie carries the row's `principal` and `role` — the authority is **baked into the
+deployment on plain HTTP, `Max-Age` equal to the row's `session_ttl_seconds`. The server does not
+rely on the browser honouring that: the same instant is inside the encrypted payload, and the
+server refuses the cookie past it however long a client keeps it. The cookie carries the row's `principal` and `role` — the authority is **baked into the
 row at mint** and nothing about how the token is presented can change it — and the row's id, for
 the log. The one role is `console`: the web UI, and nothing behind the operator realm. A console
 session never satisfies `OperatorHttpBasicAuth`, so an actor holding one cannot mint another. The
@@ -254,10 +256,11 @@ is the only reader. `ConsoleSession` (`app/controllers/concerns/console_session.
 gate includes when one exists. Until then the primitive is proof that the flow works end to end,
 behind a flag nobody has to set. The residual gap once it is used in anger: a consumed token is
 dead, a revoked-unconsumed token is dead, and a leaked mint is bounded by the mint-to-exchange
-window and then by the session TTL, which is why both are short and clamped. No CSRF check on the
-exchange, and none is needed: the request carries no cookie of consequence, and the only thing a
-cross-site POST could do is log the presenting browser in as the token's principal, which anyone
-holding a token can do directly. Rows are reaped 30 days after they expire by
+window and then by the session TTL, which is why both are short and clamped. The controllers are
+`ActionController::API`, with no authenticity token, and a browser attaches cached Basic credentials
+to a cross-site form post — so every write is **JSON only**. A cross-origin JSON post is preflighted
+and nothing answers the preflight, so no page an operator visits can mint or revoke with their
+credential, or log their browser in with a token it chose (login CSRF). Rows are reaped 30 days after they expire by
 [`ConsoleLoginTokenReaperJob`](/operate/background-jobs/); until then `/supervisor/console_login_tokens`
 lists who was minted a login and whether it was exchanged, read-only. There is no REST `/api/v1`
 route and no MCP tool for any of this, on purpose. See
