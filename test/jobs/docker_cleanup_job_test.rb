@@ -3,6 +3,7 @@
 require "test_helper"
 require "ostruct"
 require "minitest/mock"
+require "mocha/minitest"
 
 class DockerCleanupJobTest < ActiveJob::TestCase
   test "performs without raising" do
@@ -52,12 +53,73 @@ class DockerCleanupJobTest < ActiveJob::TestCase
     end
   end
 
-  test "find_stale_dev_server_projects returns empty when docker fails" do
+  # A failed `docker ps` must leave a trace carrying its exit status and stderr: `[]` on its
+  # own is indistinguishable from a clean run with nothing to reap (#409).
+  test "find_stale_dev_server_projects warns with exit status and stderr when docker ps fails" do
     job = DockerCleanupJob.new
-    failed = DockerCleanupJob::FailedStatus.new(false)
+    denied = "permission denied while trying to connect to the Docker API at unix:///var/run/docker.sock"
+    failed = OpenStruct.new(success?: false, exitstatus: 1, termsig: nil)
 
-    Open3.stub(:capture3, [ "", "error", failed ]) do
+    Rails.logger.expects(:warn).with(
+      regexp_matches(/\[DockerCleanupJob\] Stale dev-server discovery \(`docker ps`\) failed: exit status 1: #{Regexp.escape(denied)}/)
+    ).once
+
+    Open3.stub(:capture3, [ "", denied, failed ]) do
       assert_equal [], job.send(:find_stale_dev_server_projects)
+    end
+  end
+
+  # The other way `docker ps` fails: the binary is missing or cannot be executed, so Open3
+  # raises and run_command builds its own FailedStatus stand-in. Let the rescue construct it,
+  # since the point is that describing that stand-in does not itself raise on the failure path.
+  test "find_stale_dev_server_projects warns when docker cannot be executed at all" do
+    job = DockerCleanupJob.new
+
+    Rails.logger.expects(:error).with(regexp_matches(/Command failed: docker ps/)).once
+    Rails.logger.expects(:warn).with(
+      regexp_matches(/discovery \(`docker ps`\) failed: no exit code reported: .*No such file or directory/)
+    ).once
+
+    Open3.stub(:capture3, ->(*) { raise Errno::ENOENT, "docker" }) do
+      assert_equal [], job.send(:find_stale_dev_server_projects)
+    end
+  end
+
+  # Nil is what Open3 returns when another waiter reaps the child first (see
+  # SubprocessStatus). It is a failure whose exit code was never read, and the log line
+  # has to say that rather than invent a phantom non-zero exit.
+  test "find_stale_dev_server_projects warns when the status was never read" do
+    job = DockerCleanupJob.new
+
+    Rails.logger.expects(:warn).with(
+      regexp_matches(/discovery \(`docker ps`\) failed: #{Regexp.escape(SubprocessStatus::REAPED_DESCRIPTION)}/)
+    ).once
+
+    Open3.stub(:capture3, [ "", "", nil ]) do
+      assert_equal [], job.send(:find_stale_dev_server_projects)
+    end
+  end
+
+  test "find_stale_dev_server_projects does not warn when docker ps succeeds with no containers" do
+    job = DockerCleanupJob.new
+    success = OpenStruct.new(success?: true)
+
+    Rails.logger.expects(:warn).never
+
+    Open3.stub(:capture3, [ "", "", success ]) do
+      assert_equal [], job.send(:find_stale_dev_server_projects)
+    end
+  end
+
+  test "emergency_cleanup warns when a prune fails instead of staying silent" do
+    job = DockerCleanupJob.new
+    failed = OpenStruct.new(success?: false, exitstatus: 1, termsig: nil)
+
+    Rails.logger.expects(:warn).with(regexp_matches(/Emergency image prune failed: exit status 1: daemon down/)).once
+    Rails.logger.expects(:warn).with(regexp_matches(/Emergency builder prune failed: exit status 1: daemon down/)).once
+
+    Open3.stub(:capture3, [ "", "daemon down", failed ]) do
+      job.send(:emergency_cleanup)
     end
   end
 
