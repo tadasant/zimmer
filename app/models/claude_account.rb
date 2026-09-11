@@ -1697,10 +1697,24 @@ class ClaudeAccount < ApplicationRecord
   # Apply a verdict only while the row still holds `probed_token`, and mirror it
   # onto this instance when it lands. See #record_credential_probe!.
   #
+  # **The token never enters SQL; its SHA-256 does.** Production's Sentry SDK
+  # records every `sql.active_record` statement's text as a breadcrumb, and
+  # whether a string `where("... = ?", token)` keeps the value out of that text
+  # depends on the connection: with prepared statements on it travels as a bind,
+  # and with them off — `unprepared_statement`, a pooler that disables them — it
+  # is quoted into the statement, and a live bearer token would ship to GlitchTip
+  # with the next event in the same scope. So Postgres hashes the stored value and
+  # the statement carries only the digest, the same one-way fingerprint
+  # AuthRecoveryCoordinator already keeps in session metadata. Safe whatever the
+  # connection setting, and the compare-and-set stays one atomic UPDATE.
+  #
   # @return [Boolean] whether the verdict was written
   def write_credential_verdict(values, probed_token)
     written = self.class.where(id: id)
-      .where("oauth_config #>> '{credentials_json,claudeAiOauth,accessToken}' = ?", probed_token)
+      .where(
+        "encode(sha256(convert_to(oauth_config #>> '{credentials_json,claudeAiOauth,accessToken}', 'UTF8')), 'hex') = ?",
+        Digest::SHA256.hexdigest(probed_token)
+      )
       .update_all(values)
 
     if written.zero?
