@@ -1637,9 +1637,10 @@ claims mid-call is skipped and reported in `skipped` rather than aborting the re
 ### It reports what it did, by class
 
 The receipt carries `by_job_class` and `by_queue`, so an operator reading a transcript back knows
-*what* was thrown away and not only how much. A mutating call also raises a Slack alert naming the
-count and the classes — the same reasoning as the recovery-mode alerts: a bulk write against
-`good_jobs` should be legible to somebody who was not reading the transcript it happened in.
+*what* was thrown away and not only how much. A mutating call also emits an ERROR log record and a
+GlitchTip event — the pair that reaches `#alerts` — naming the count and the classes, the same
+reasoning as the recovery-mode alerts: a bulk write against `good_jobs` should be legible to somebody
+who was not reading the transcript it happened in.
 
 ### Surfaces
 
