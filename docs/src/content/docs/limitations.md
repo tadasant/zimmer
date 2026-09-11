@@ -966,6 +966,34 @@ the note, and [#312](https://github.com/tadasant/zimmer/issues/312) /
 [#371](https://github.com/tadasant/zimmer/issues/371) for the `/health` half. What is above is the
 perimeter model itself, which no issue is open against.
 
+### Console login tokens issue a session that nothing gates on yet
+
+🟡 [#220](https://github.com/tadasant/zimmer/issues/220) landed the
+[agent-login primitive](/auth/overview/#the-agent-login-primitive-console-login-tokens) — a
+single-use, short-lived, revocable token minted behind the operator realm and exchanged once, in a
+request body, for a `zimmer_console_session` cookie — ahead of the UI gate it exists for. Two things
+follow from landing it early.
+
+**The cookie authorizes nothing.** No controller reads `ConsoleSession#current_console_login` except
+`GET /console_login`, because there is no login to be behind: the perimeter is still the boundary
+and an anonymous request reaches every page an exchanged session does. The primitive is proof that
+the mint → exchange → refuse-replay flow works end to end, and `ConsoleSession` is what a gate
+includes when one exists. Until then, `CONSOLE_LOGIN_ENABLED` has no reason to be `true` on any
+deployment, and it is unset everywhere by default. A deployment that does set it has opened a way
+for an actor holding the operator credential to mint a login — which that actor could already reach
+everything with — and nothing more.
+
+**The residual gap once a gate exists is bounded, not zero.** A consumed token is dead and a
+revoked-unconsumed token is dead, but the *session* a token issued is its own thing: it lives for
+the row's `session_ttl_seconds` (at most an hour), it survives a later revoke of the token (a no-op
+on a consumed row, by design), and there is no endpoint that ends it early — no logout, no
+session-list, no kill. A leaked mint is bounded by the mint-to-exchange window (at most 15 minutes)
+and then by that session TTL. Both windows are clamped server-side so a caller cannot ask for a
+day. A wrong secret against a real id is logged at WARN and nothing else: there is no lockout and
+no rate limit on `POST /console_login`, on the grounds that the secret is 256 random bits and the
+id is not a secret. If that ever becomes the wrong trade, the `refused exchange` log line is what
+an alert would key on.
+
 ### The operator realm closes the web door, and not the other two
 
 🔴 The perimeter argument that covers the rest of the web UI answers an *external* caller. It does

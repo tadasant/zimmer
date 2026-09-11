@@ -731,7 +731,7 @@ One object, `PostDeployTaskRun.summary`, rendered four ways so they cannot disag
 
 | Surface | Where |
 | --- | --- |
-| **Health page panel** | `/health` → **Post-Deploy Tasks** — status per task, counters, the error text, and a **Re-arm and run now** button. The panel is read-only-anonymous; the button is a mutating POST and sits behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-three-surfaces), so it needs `SUPERVISOR_PASSWORD`. The REST row below is the credential-free-of-Basic path |
+| **Health page panel** | `/health` → **Post-Deploy Tasks** — status per task, counters, the error text, and a **Re-arm and run now** button. The panel is read-only-anonymous; the button is a mutating POST and sits behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-four-surfaces), so it needs `SUPERVISOR_PASSWORD`. The REST row below is the credential-free-of-Basic path |
 | **REST** | `GET /api/v1/health` → `health_report.post_deploy_task_health`; `POST /api/v1/health/run_post_deploy_tasks` to re-arm |
 | **MCP** | `get_system_health` reports it; `action_health` with `action: "run_post_deploy_tasks"` re-arms |
 | **Supervisor** | `/supervisor/post_deploy_task_runs` — read-only, row-level: cursor, stats, lease holder, backtrace |
