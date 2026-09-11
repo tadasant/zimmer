@@ -131,8 +131,36 @@
                 <span class="inline-flex flex-wrap items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200"
                       title="Queued or interrupted this session, so Zimmer treats it as an additional parent">
                   also senior:
+                  <%# Each senior carries its own detach control, because an uncle
+                      edge is written as a SIDE EFFECT of a follow-up from a
+                      self-declared acting_session_id nothing verifies — one stale
+                      or mistyped id attaches the wrong session here, and the graph
+                      is the scope human messages are gathered over, so leaving it
+                      widens what both sessions carry from then on. Until #299 the
+                      only way back was a console on the production box.
+
+                      The junior is `node.id`, not `agent_session.id`: a chip on
+                      one row of this panel belongs to that row's session, and the
+                      wrong edge is routinely on a row other than the page's. %>
                   <% node.uncles.each_with_index do |uncle_id, index| %><%= "," if index.positive? %>
-                    <%= link_to "##{uncle_id}", session_path(uncle_id), data: session_drawer_link_data(uncle_id), class: "underline hover:text-amber-900" %>
+                    <span class="inline-flex items-center gap-0.5 break-keep" data-uncle-edge="<%= uncle_id %>-<%= node.id %>">
+                      <%= link_to "##{uncle_id}", session_path(uncle_id), data: session_drawer_link_data(uncle_id), class: "underline hover:text-amber-900" %>
+                      <%# `turbo_frame: "_top"` is NOT set: this submits from inside
+                          the lazy provenance frame and the controller answers with a
+                          Turbo Stream, which Turbo applies to the whole document
+                          rather than to the frame. %>
+                      <%= button_to session_uncle_link_path(node.id, uncle_id, viewer_id: agent_session.id),
+                                    method: :delete,
+                                    form_class: "inline-flex",
+                                    form: { data: { turbo_confirm: "Remove ##{uncle_id} as an additional senior of ##{node.id}?\n\nBoth sessions stop pulling in the other's human messages through this edge. Spawn parents are untouched, and both timelines record the removal." } },
+                                    class: "inline-flex h-5 w-5 items-center justify-center rounded-full text-amber-700 hover:bg-amber-100 hover:text-amber-900 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-500",
+                                    title: "Remove ##{uncle_id} as an additional senior of ##{node.id}",
+                                    aria: { label: "Remove ##{uncle_id} as an additional senior of ##{node.id}" } do %>
+                        <svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" aria-hidden="true">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      <% end %>
+                    </span>
                   <% end %>
                 </span>
               <% end %>
@@ -173,6 +201,12 @@
           on the assumption that a session which inspected another and decided to redirect it holds information that
           session does not. The edge is declared by the calling session, so it is a claim of seniority rather than proof
           of one.
+        </p>
+        <p class="mt-1 text-xs text-gray-400">
+          Nothing verifies that claim, so a stale or mistyped acting session id attaches the wrong session as a senior —
+          and that widens what context both sessions carry from then on. The <span class="font-medium">×</span> on a
+          senior removes that one edge: spawn parents are untouched, no other edge is rewritten, and both sessions'
+          timelines record the removal.
         </p>
       <% end %>
     </div>

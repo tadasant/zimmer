@@ -607,6 +607,31 @@ senior — are in [Hierarchy and human
 messages](/sessions/hierarchy-and-human-messages/#the-rules-including-inversion), and the provenance
 consequences are in [Limitations](/limitations/).
 
+### Removing an uncle edge
+
+```
+DELETE /api/v1/sessions/:id/uncle_links/:uncle_id
+```
+
+Detaches `:uncle_id` as an additional senior of `:id`. Both ends are in the path because direction is
+the whole content of an uncle edge: `:id` is the **junior** — the session whose hierarchy grew when
+the edge was written — and `:uncle_id` the senior. Either may be an id or a slug.
+
+Optional body param `acting_session_id` is recorded on both timelines as the actor, self-declared for
+the same reason it is on `follow_up`. Omitting it logs "an undeclared REST API caller".
+
+- `204 No Content` — the edge is gone, and both sessions' timelines record when it was written, what
+  entry point wrote it, and who detached it.
+- `404 Not Found` — there is no such edge. Never a 204: a caller told an edge is gone while it is
+  still widening two sessions' context has been misinformed. When the pair *is* joined the other way
+  round, the message says so and names how to remove that one — the edge the caller did not name is
+  left alone.
+
+There is no `POST`, `GET` or `PATCH` on this resource. Edges are written by
+`Sessions::RecordUncleEdge`, as a side effect of a queue or interrupt, which is where the acyclicity
+invariant lives — a create here would be a way round it. The same removal is on
+[`action_session` → `remove_uncle`](/extend/mcp-server/) and on the session-detail hierarchy panel.
+
 There is no way to *clear* a goal through `follow_up` — a blank one means "leave it", not "remove
 it". Use `PATCH /sessions/:id` with `goal: ""` for that. (The HTML endpoint behind the web follow-up
 form reads a blank goal as a clear and an *absent* one as "leave it", a distinction the JSON API does
