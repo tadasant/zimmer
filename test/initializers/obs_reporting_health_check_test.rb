@@ -14,16 +14,29 @@ require "test_helper"
 # no longer exists.
 class ObsReportingHealthCheckTest < ActiveSupport::TestCase
   test "the alerting environments are the deployed ones" do
-    assert_equal %w[production staging], ErrorReporter::ALERTING_ENVIRONMENTS
+    assert_equal %w[production staging], AlertingEnvironments::ALL
   end
 
   test "the environments that page are frozen, so nothing can widen them at runtime" do
-    assert ErrorReporter::ALERTING_ENVIRONMENTS.frozen?
+    assert AlertingEnvironments::ALL.frozen?
   end
 
   test "test is not an alerting environment, so a test run cannot page" do
-    assert_not_includes ErrorReporter::ALERTING_ENVIRONMENTS, "test"
-    assert_not_includes ErrorReporter::ALERTING_ENVIRONMENTS, "development"
+    assert_not_includes AlertingEnvironments::ALL, "test"
+    assert_not_includes AlertingEnvironments::ALL, "development"
+  end
+
+  # The list is not autoloadable on purpose: config/initializers/sentry.rb reads it while
+  # it runs, and initializers run before Rails sets up the main autoloader. Moving it back
+  # under app/ raises NameError at boot and fails every production deploy — which is what
+  # test/initializers/production_boot_test.rb catches for real.
+  test "the alerting environments are defined outside the autoload paths" do
+    assert_equal Rails.root.join("config/alerting_environments.rb").to_s,
+      Object.const_source_location(:AlertingEnvironments).first
+
+    assert_empty ActiveSupport::Dependencies.autoload_paths.select { |path|
+      Rails.root.join("config/alerting_environments.rb").to_s.start_with?("#{path}/")
+    }, "config/alerting_environments.rb must not sit under an autoload path"
   end
 
   test "the initializer exists and names both halves of the alerting path" do
@@ -33,7 +46,7 @@ class ObsReportingHealthCheckTest < ActiveSupport::TestCase
       "the GlitchTip half must be checked — an unset DSN means no structured events"
     assert_includes source, "OTEL_LOGS_EXPORTER_ENDPOINT",
       "the log half must be checked — an unset endpoint means no ERROR record ships, so nothing pages"
-    assert_includes source, "ErrorReporter::ALERTING_ENVIRONMENTS",
+    assert_includes source, "AlertingEnvironments::ALL",
       "the check must read the same list the SDK is configured with, not a second copy"
   end
 

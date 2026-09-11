@@ -320,7 +320,7 @@ attribute carrying the role, and there isn't one — cross-reference `scope.name
 `config/initializers/sentry.rb` sets an environment allowlist:
 
 ```ruby
-config.enabled_environments = %w[production staging]
+config.enabled_environments = AlertingEnvironments::ALL   # %w[production staging]
 ```
 
 Any other `Rails.env` — `test`, `development`, an ad-hoc one — drops events at the client,
@@ -344,6 +344,37 @@ environment gate holds. Two layers now enforce it:
   every agent-session child process, alongside `DATABASE_*`, `RAILS_ENV`, and the operator SSH
   key. The agent's shell never sees the production DSN at all, for any tool an agent session
   spawns — not just Rails ones. A clone that wants its own DSN can still set one in its `.env`.
+
+### The list is not autoloadable, and that is load-bearing
+
+`AlertingEnvironments::ALL` lives in `config/alerting_environments.rb`, which
+`config/application.rb` `require_relative`s — the same treatment `connection_budget.rb` and
+`cron_schedule.rb` get, and for the same reason. Rails loads `config/initializers/*.rb` from
+the engine's `:load_config_initializers`, and sets up the main Zeitwerk autoloader
+**afterwards**, in `Rails::Application::Finisher`'s `:setup_main_autoloader`. An `app/`
+constant referenced from an initializer body therefore raises
+`NameError: uninitialized constant` — every time, not intermittently.
+
+Defining this list under `app/` broke every production deploy: Kamal's `db:prepare`
+pre-deploy command aborted on the `NameError`, the new container never passed its health
+check, and Kamal rolled back. Nothing caught it before the deploy, because the whole
+`Sentry.init` block is gated on `SENTRY_DSN_BACKEND` and no development, test or CI process
+sets one — the initializer's body never ran outside a deployed environment.
+
+`test/initializers/production_boot_test.rb` is what pins it: it boots a real
+`RAILS_ENV=production` subprocess with a dummy DSN set and asserts `initialize!` completes,
+that no initializer raised `uninitialized constant`, that the SDK comes out allowing exactly
+`production` and `staging`, and that `obs_reporting_health_check.rb` — the other reader of the
+list, and one that swallows its own exceptions — logged the line it only logs on success.
+It points the database at a closed port, so it can never touch a real one and asserts the same
+thing everywhere it runs. An in-process test cannot stand in for it: the suite runs inside an
+already-booted app, where every `app/` constant is loadable and the boot order under test has
+already happened.
+
+**Do not move the list under `app/`,** and do not reach for an autoloaded constant from any
+other initializer body. Deferring the reference into `after_initialize` or `to_prepare` — as
+`obs_reporting_health_check.rb` and every other initializer here does — is the alternative
+when an initializer genuinely needs application code.
 
 ## An interactive `rails runner` on the box does not page
 
