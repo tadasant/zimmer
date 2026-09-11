@@ -1875,21 +1875,51 @@ class Trigger < ApplicationRecord
   # applies; clearing a goal is its own operation (`change_goal`, the web
   # `update_goal` action, `PATCH /api/v1/sessions/:id`).
   #
+  # Runs on EVERY fire that takes the reuse path, including one that coalesces
+  # or drops rather than delivering — the configuration a session runs under is
+  # not conditional on this particular prompt reaching it, which is how the four
+  # artifact syncs above already behave.
+  #
   # Takes effect on the session's next resumption, like the artifact syncs.
   def sync_goal!(session)
+    desired = Sessions::FollowUpGoal.normalize(goal)
+
+    # Nothing validates the length of a trigger's goal, and Session does
+    # (GOAL_MAX_LENGTH). A reuse-only trigger never reaches the spawn path, so
+    # without this guard an over-long goal would raise RecordInvalid here on
+    # every fire, forever, after the artifact syncs had already written and
+    # before the prompt was delivered. Refusing the re-stamp loudly leaves the
+    # fire working; the surfaces that accept the goal are where it should have
+    # been refused, and this says so.
+    if Sessions::FollowUpGoal.too_long?(desired)
+      Rails.logger.warn(
+        "[Trigger#sync_goal!] Trigger '#{name}' (ID: #{id}) has a goal of #{desired.length} " \
+        "characters, over the #{Session::GOAL_MAX_LENGTH} Session allows. Not re-stamping it onto " \
+        "session #{session.id}; the session keeps the goal it has. Shorten the trigger's goal."
+      )
+      return
+    end
+
     previous = session.goal
 
     changed = Sessions::FollowUpGoal.apply!(
       session: session,
-      goal: Sessions::FollowUpGoal.normalize(goal),
+      goal: desired,
       source: :trigger_reuse,
-      log_with: ->(content) { session.logs.create!(content: "[Trigger##{id}] #{content}", level: "info") }
+      # The previous value rides along on the session's own log line, not just
+      # the application log: an operator with nothing but the web UI is the one
+      # who has to see what a fire overwrote.
+      log_with: lambda { |content|
+        session.logs.create!(content: "[Trigger##{id}] #{content} (was: #{previous.inspect})", level: "info")
+      }
     )
     return unless changed
 
-    # Narrated the way #sync_session_artifact! narrates a removal: an operator
-    # reading the logs should be able to see that a fire re-stamped the goal,
-    # and what it replaced.
+    # Narrated the way #sync_session_artifact! narrates a removal, at INFO
+    # rather than its WARN: a session losing an artifact is breakage that will
+    # not self-resolve, while a re-stamp is the trigger's configuration
+    # converging as configured. An operator should still be able to see from
+    # the logs that a fire moved a goal, and what it replaced.
     Rails.logger.info(
       "[Trigger#sync_goal!] Trigger '#{name}' (ID: #{id}) re-stamped the goal on session " \
       "#{session.id} on reuse: #{previous.inspect} -> #{session.goal.inspect}. " \
