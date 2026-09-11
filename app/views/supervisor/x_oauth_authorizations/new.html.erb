@@ -1,0 +1,40 @@
+<% content_for(:title) { "Connect an X account" } %>
+
+<header class="main-content__header">
+  <h1 class="main-content__page-title"><%= content_for(:title) %></h1>
+  <div>
+    <%= link_to "Back to X OAuth credentials", supervisor_x_oauth_credentials_path, class: "button button--alt", data: { turbo_prefetch: false } %>
+  </div>
+</header>
+
+<section class="main-content__body">
+  <%= render "supervisor/x_oauth_authorizations/flow_notes" %>
+
+  <%= form_with url: supervisor_x_oauth_authorization_path, method: :post, local: true, class: "form", data: { turbo: false } do |f| %>
+    <% if @errors.present? %>
+      <div id="error_explanation">
+        <h2>The authorization could not start</h2>
+        <ul>
+          <% @errors.each do |message| %>
+            <li class="flash-error"><%= message %></li>
+          <% end %>
+        </ul>
+      </div>
+    <% end %>
+
+    <div class="field-unit field-unit--string field-unit--required">
+      <div class="field-unit__label"><%= f.label :account_key, "Account key" %></div>
+      <div class="field-unit__field"><%= f.text_field :account_key, value: @account_key, required: true, placeholder: "a label for the X account, e.g. its handle" %></div>
+    </div>
+
+    <div class="field-unit field-unit--string field-unit--required">
+      <div class="field-unit__label"><%= f.label :access_token_env_var, "Access token env var" %></div>
+      <div class="field-unit__field"><%= f.text_field :access_token_env_var, value: @access_token_env_var, required: true %></div>
+      <div class="field-unit__hint">The <code>${NAME}</code> an MCP server's config reads the access token from.</div>
+    </div>
+
+    <div class="form-actions">
+      <%= f.submit "Continue to X" %>
+    </div>
+  <% end %>
+</section>

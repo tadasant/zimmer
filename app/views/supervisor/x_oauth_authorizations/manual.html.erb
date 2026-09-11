@@ -1,0 +1,36 @@
+<% content_for(:title) { "Authorize #{@flow.account_key} with X" } %>
+
+<header class="main-content__header">
+  <h1 class="main-content__page-title"><%= content_for(:title) %></h1>
+</header>
+
+<section class="main-content__body">
+  <% if @error_message.present? %>
+    <div class="flashes"><div class="flash flash-error"><%= @error_message %></div></div>
+  <% end %>
+
+  <p><strong>1.</strong> Open X's consent page and approve.</p>
+  <p>
+    <%= link_to "Open X consent page", @authorization_url, target: "_blank", rel: "noopener noreferrer", class: "button" %>
+  </p>
+
+  <p>
+    <strong>2.</strong> X then redirects to <code><%= @flow.redirect_uri %></code>. Nothing answers there, so the
+    browser shows an error page. That's expected. Copy the whole URL from the address bar and paste it below.
+    It has to include the <code>state</code>. This link works once and expires at <%= @flow.expires_at.utc.strftime("%H:%M UTC") %>.
+  </p>
+
+  <%= form_with url: supervisor_x_oauth_complete_path, method: :post, local: true, class: "form", data: { turbo: false } do |f| %>
+    <%= hidden_field_tag :flow_state, @flow.state %>
+    <div class="field-unit field-unit--string field-unit--required">
+      <div class="field-unit__label"><%= label_tag :redirect_response, "Redirect URL" %></div>
+      <div class="field-unit__field">
+        <%= text_area_tag :redirect_response, nil, rows: 3, required: true, autocomplete: "off",
+          placeholder: "#{@flow.redirect_uri}?state=…&code=…" %>
+      </div>
+    </div>
+    <div class="form-actions">
+      <%= f.submit "Finish authorization" %>
+    </div>
+  <% end %>
+</section>

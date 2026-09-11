@@ -97,6 +97,29 @@
       "message": "Possible SQL injection",
       "note": "False positive: `SET` accepts no bind parameters, so the timeout has to be interpolated. The value is never request-derived -- it comes from ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS (an operator-set env var) or the DEFAULT_TIME_BUDGET_SECONDS literal -- and it is forced through Integer() and clamped to 1..120000 before it reaches the string, so the interpolated text is always a bare integer. Everything a caller supplies (the query, the cursor, the id list) reaches Postgres as a bind parameter.",
       "user_input": "Integer(((budget_seconds or self.class.budget_seconds).to_f * 1000).ceil).clamp(1, 120000)"
+    },
+    {
+      "warning_type": "Redirect",
+      "warning_code": 18,
+      "fingerprint": "3de43aadef87d1d0fa3fcfe4e16a49c3f488a0600cbee74122d5773dd52da2cc",
+      "check_name": "Redirect",
+      "message": "Possible unprotected redirect",
+      "file": "app/controllers/supervisor/x_oauth_authorizations_controller.rb",
+      "line": 66,
+      "link": "https://brakemanscanner.org/docs/warning_types/redirect/",
+      "code": "redirect_to(XOauthPendingFlow.start!(:account_key => params[:account_key], :access_token_env_var => params[:access_token_env_var]).authorization_url(:client_id => XOauthCredential.client_id), :allow_other_host => true)",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Supervisor::XOauthAuthorizationsController",
+        "method": "create"
+      },
+      "user_input": "XOauthPendingFlow.start!(:account_key => params[:account_key], :access_token_env_var => params[:access_token_env_var]).authorization_url(:client_id => XOauthCredential.client_id)",
+      "confidence": "Weak",
+      "cwe_id": [
+        601
+      ],
+      "note": "False positive: the redirect target is always XOauthCredential::AUTHORIZE_ENDPOINT (https://x.com/i/oauth2/authorize), built by XOauthBootstrap.authorize_url. The request params only become the account_key / access_token_env_var stored on the pending flow; they never reach the URL's scheme, host or path, and the action is behind the operator HTTP Basic realm."
     }
   ],
   "updated": "2026-06-12 00:00:00 +0000"

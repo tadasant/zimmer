@@ -42,9 +42,9 @@ class XOauthCredential < ApplicationRecord
   # accepts the connection and then goes silent holds the caller's thread for a
   # full minute — a GoodJob `default`-queue thread (RefreshXOauthTokensJob,
   # unattended from cron), a session-prep thread (XOauthTokenVendor), or the
-  # thread running `x_oauth:complete` (XOauthBootstrap). Bounding it is also what
-  # makes RefreshXOauthTokensJob's Net::OpenTimeout / Net::ReadTimeout
-  # classifications reachable rather than dead code.
+  # Puma thread serving the Supervisor consent callback (XOauthBootstrap).
+  # Bounding it is also what makes RefreshXOauthTokensJob's Net::OpenTimeout /
+  # Net::ReadTimeout classifications reachable rather than dead code.
   #
   # Note what a read bound is and is not: Net::HTTP applies it per read, so it
   # caps how long one wait for bytes lasts, not the whole exchange. A server

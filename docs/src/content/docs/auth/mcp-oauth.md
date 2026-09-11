@@ -726,6 +726,76 @@ so `initiate` calls `McpOauthPendingFlow.sweep_expired_session_less!` each time 
 starts a flow. An abandoned Connectors-page flow would otherwise sit indefinitely
 holding a PKCE `code_verifier` and a client secret.
 
+## X (Twitter) is minted from `/supervisor`
+
+The X MCP server does not go through anything above. It runs in static access-token mode, and the
+token comes from an `XOauthCredential` row that `XOauthTokenVendor` resolves as
+`${X_OAUTH_ACCESS_TOKEN}` at prepare time and `RefreshXOauthTokensJob` keeps fresh. X rotates
+refresh tokens single-use and expires them, so that row is not minted once and forgotten: a reused
+token, a double exchange or an expiry breaks the chain, the refresh fails permanently, and the only
+way back is a human consenting on X again.
+
+That consent runs from the Supervisor panel (`Supervisor::XOauthAuthorizationsController`):
+
+- **Re-authorize with X** on a credential's page (`/supervisor/x_oauth_credentials/:id`) re-runs
+  consent for that credential's account and env var.
+- **Connect an X account** on the index asks for an account key and env var, then does the same for
+  an account with no row yet.
+
+```mermaid
+sequenceDiagram
+    participant O as Operator's browser
+    participant Z as Zimmer /supervisor
+    participant X as x.com / api.x.com
+
+    O->>Z: POST /supervisor/x_oauth/authorize (operator realm)
+    Z->>Z: XOauthPendingFlow.start!<br/>state (16B) + PKCE verifier, expires in 30 min<br/>replaces any flow for the same env var
+    alt redirect URI is Zimmer's callback
+        Z-->>O: 302 to X consent
+        O->>X: approve
+        X-->>O: 302 /supervisor/x_oauth/callback?state&code
+        O->>Z: GET callback (operator realm)
+    else redirect URI is anywhere else (the default)
+        Z-->>O: consent link + paste box
+        O->>X: approve
+        X-->>O: 302 http://localhost:8080/callback?state&code (nothing listens)
+        O->>Z: POST /supervisor/x_oauth/complete (the pasted URL)
+    end
+    Z->>Z: XOauthPendingFlow.claim!(state)<br/>conditional DELETE, so it succeeds once
+    Z->>X: POST /2/oauth2/token (Basic client auth, code + verifier)
+    X-->>Z: access + refresh token
+    Z->>Z: XOauthBootstrap.complete! writes XOauthCredential
+    Z-->>O: 302 to the credential's page
+```
+
+Things that hold on every path:
+
+- **Every leg is behind the operator realm**, the callback included. The callback arrives in the
+  operator's own browser, which already holds the `/supervisor` credential, and the fleet's sessions
+  do not hold it (`CliSpawnEnv` clears `SUPERVISOR_PASSWORD`). So an agent can neither start a flow nor
+  finish one. That is a tighter boundary than the MCP flow's, which has
+  [none beyond the perimeter](#known-problems).
+- **The `state` X echoes back is the only way to a flow.** A missing, unknown, replaced or expired
+  state stops the request before anything is sent to X. Claiming deletes the row, so a replayed
+  callback, a double-submitted paste and a second tab all find nothing. An expired flow is deleted
+  when it is refused, and every start sweeps expired flows.
+- **The paste-back requires the whole redirect URL.** A bare code is refused, because the state is
+  what ties the code to the verifier that can redeem it.
+- **A failed exchange stores nothing.** The code is single-use at X, so the page says to start
+  again, and the credential Zimmer already holds is untouched.
+
+Which of the two completions a deployment gets is decided by `X_OAUTH_REDIRECT_URI`: the flow
+finishes on its own only when that is byte-for-byte `XOauthBootstrap.hosted_redirect_uri`
+(`https://<APP_HOST>/supervisor/x_oauth/callback`). The default is `http://localhost:8080/callback`,
+the one URI the X app already has registered, which is why paste-back is what ships. To get the
+hosted callback, register `https://<APP_HOST>/supervisor/x_oauth/callback` on the X app in X's
+developer portal, then set `X_OAUTH_REDIRECT_URI` to it. Registering it is a step on X's side that
+no API reaches.
+
+Consents in progress are listed at `/supervisor/x_oauth_pending_flows` (verifier not shown), where
+one can be cancelled. There is deliberately no MCP tool for any of this: consent is a browser
+handshake, and keeping the flow behind the operator realm is what keeps agents off it.
+
 ## Known problems
 
 :::danger[Anyone who can reach the host can start an OAuth flow]
