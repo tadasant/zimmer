@@ -133,6 +133,28 @@ module Mcp
         }
       }.freeze
 
+      # The actions that are held to the connection's `allowed_agent_roots`
+      # fence, with the reason each one is on the list. `fork` copies the source
+      # session's `git_root`, `branch`, `subdirectory` and whole MCP server set
+      # onto a new row (ForkSessionService), which is a spawn by another name;
+      # `regenerate_status_summary` reaches the same service by a different name,
+      # and dispatches an agent turn on the row it creates; `restart` runs a
+      # row's agent, re-cloning the repository outright when the session never
+      # got a clone. None of the three consulted the fence before
+      # [#1118](https://github.com/tadasant/zimmer/issues/1118), so a connection
+      # scoped to one set of roots could reach any repository and any server in
+      # the fleet through a session id `get_session` hands it for the asking.
+      #
+      # Like CATALOG_LIST_FIELDS this is a table the dispatch reads rather than a
+      # check buried in an action body, so the dispatch itself shows which
+      # actions are fenced and a later tidy-up cannot drop the guard silently.
+      ROOT_FENCED_ACTIONS = {
+        "fork" => "A fork copies the source session's repository, branch and MCP servers onto the new session.",
+        "restart" => "A restart runs that session's agent in its own repository, with its own MCP servers.",
+        "regenerate_status_summary" => "Regenerating a status summary forks the session, so it stands up a new " \
+                                       "session in that session's repository carrying its MCP servers."
+      }.freeze
+
       description <<~DESC
         Perform an action on an agent session.
 
@@ -140,7 +162,7 @@ module Mcp
         - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one.
         - **pause**: Pause a running session, transitioning it to idle "needs_input" status
         - **pause_into_spot_queue**: Put this session to sleep in the spot queue instead of at a wall-clock time — the counterpart of `wake_me_up_later` when there is no time worth naming. The session goes dormant in "waiting" with NO wake-up trigger and no time attached, and resumes when the spot scheduler reaches it: a Claude Code account under both quota targets, a free session slot, highest precedence first. Any unfired one-time wake this session had is cancelled, since it was replaced by this. A session that resolves to "priority" is set to "spot" (a priority session cannot sit in the queue) — reverse it with `change_scheduling_class`, which resumes it on the next sweep. Optionally takes "prompt": what the session should be resumed with, in place of the default recovery nudge. A running session sleeps when its current turn ends, not mid-turn — pass "halt": true to stop the turn where it stands instead. Only use "halt" on a session that is NOT you: it terminates the agent process, so a session halting itself never gets a reply to this call. Any message still queued for the session waits with it, and unlike a timed pause nothing bounds how long — drain the queue first if that matters. Use this instead of a made-up wake time when the answer to "when should this come back" is "whenever there is quota headroom for it".
-        - **restart**: Restart an idle or failed session without providing new input
+        - **restart**: Restart an idle or failed session without providing new input. On a connection restricted to specific agent roots, only sessions belonging to one of those roots can be restarted
         - **start_now**: Take a waiting session's next turn now instead of when the scheduler gets round to it — the tool half of the Ranked view's ⋮ menu entry. Reach for it when one session should not wait out the gate's deferred re-check, which can sit up to an hour out. It moves WHEN the turn is asked for and not WHETHER it is allowed: a spot session stays spot, so a window still over its target holds it again — `change_scheduling_class` to "priority" is what removes the gate. A session that has never run has its first turn enqueued, with the images and files it was created with. One that has run before with nothing queued is stranded rather than queued, and is refused with the error naming "follow_up" or "restart" instead; so is one asleep on a wake-up it has not reached, because a pause outranks the queue and it wakes on its own schedule.
         - **archive**: Archive a session (marks as completed). Refused when messages are still queued for the session, since archiving discards them — the error names them, and "force" overrides it deliberately. Also refused when you are archiving a session OTHER than your own and it has an agent turn in flight: that archive kills the running process mid-turn and deletes its clone. Archiving yourself is never refused for that reason — your own turn is the one in flight, and you are the only caller that knows whether it is finished.
         - **unarchive**: Restore an archived session to idle "needs_input" status
@@ -156,8 +178,8 @@ module Mcp
         - **change_category**: Assign the session's organizational category (requires "category_id"; null moves it to Uncategorized)
         - **toggle_push_notifications**: Toggle push notifications on a session
         - **set_heartbeat**: Toggle a session's heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When enabled and the session sits in needs_input, a recurring nudge prompts it to keep working toward its goal; set "enabled" to false to stop the nudges.
-        - **fork**: Fork a session from a specific transcript message (requires "message_index")
-        - **regenerate_status_summary**: Rewrite the session's Status blurb — the 2-3 sentence "where things stand" shown at the top of its detail page, and returned by get_session. Forced: it regenerates even when Zimmer considers the cached blurb current. Zimmer writes this automatically when a session comes to rest (needs_input or failed) and at no other time, so reach for this only when you need a summary of a session that has NOT changed status since its last one — never in a loop, and never to poll: it forks the session and spends a full agent turn. Errors, rather than queuing work that cannot run, in the two cases that cannot produce a summary at all: a session with no transcript, or one that is itself a summary fork. An archived session is a normal candidate, however long ago it was archived — the fork answers from the session's conversation, so Zimmer having reclaimed the working clone does not stop it.
+        - **fork**: Fork a session from a specific transcript message (requires "message_index"). A fork carries the source session's repository and MCP servers, so on a connection restricted to specific agent roots only sessions belonging to one of those roots can be forked
+        - **regenerate_status_summary**: Rewrite the session's Status blurb — the 2-3 sentence "where things stand" shown at the top of its detail page, and returned by get_session. Forced: it regenerates even when Zimmer considers the cached blurb current. Zimmer writes this automatically when a session comes to rest (needs_input or failed) and at no other time, so reach for this only when you need a summary of a session that has NOT changed status since its last one — never in a loop, and never to poll: it forks the session and spends a full agent turn. Because it forks, a connection restricted to specific agent roots may only use it on a session belonging to one of those roots. Errors, rather than queuing work that cannot run, in the two cases that cannot produce a summary at all: a session with no transcript, or one that is itself a summary fork. An archived session is a normal candidate, however long ago it was archived — the fork answers from the session's conversation, so Zimmer having reclaimed the working clone does not stop it.
         - **refresh**: Refresh a single session's status from the execution provider
         - **refresh_all**: Refresh all active sessions (no session_id needed)
         - **update_notes**: Update the notes on a session (requires "session_notes")
@@ -248,12 +270,63 @@ module Mcp
         !SESSIONLESS_ACTIONS.include?(action)
       end
 
+      # `find_session`, plus the `allowed_agent_roots` fence for the actions in
+      # ROOT_FENCED_ACTIONS. An unrestricted connection is unaffected: it reaches
+      # every session exactly as it did before.
+      #
+      # A session the fence cannot place is refused rather than allowed — see
+      # #declared_agent_root for what "cannot place" means and why it is stricter
+      # than it looks. Refusing is the safe direction for a fence, and it takes
+      # nothing away that an unrestricted connection cannot still do.
+      #
+      # Root ALIASES are deliberately not expanded here, unlike
+      # Mcp::Tool#enforce_any_allowed_root!: a connection baked with one of
+      # AgentRootsConfig::ROUTER_ROOT_NAMES is refused on a session that names the
+      # other. That errs closed, it matches what the wake tool's
+      # #enforce_watched_session_root! already does, and widening it is not
+      # something to do to an authorization predicate without a reason to.
+      def fenced_session(identifier, action)
+        session = find_session(identifier)
+        return session unless context.restricted?
+
+        allowed = context.allowed_agent_roots
+        root = declared_agent_root(session)
+        return session if root && allowed.include?(root)
+
+        raise ToolError, "The \"#{action}\" action is not allowed on session #{session.id}: this connection is " \
+                         "restricted to agent roots [#{allowed.join(', ')}], and that session belongs to agent " \
+                         "root \"#{root || '(none)'}\". #{ROOT_FENCED_ACTIONS.fetch(action)}"
+      end
+
+      # The root a session was created AGAINST, or nil when the row does not name
+      # one the catalog carries.
+      #
+      # Deliberately not `Session#agent_root_key`. That method falls back to
+      # matching a root on `url` + `subdirectory` and returns the first hit, and
+      # every root in this catalog shares one repository URL with an empty
+      # subdirectory — so the fallback answers "zimmer" for any session carrying
+      # no key of its own, including every fork (ForkSessionService builds the
+      # fork's metadata fresh and does not copy the key across). A fence reading
+      # that answer would admit a fork of any root's session to a connection
+      # allowed only "zimmer", which is the hole it exists to close.
+      # `Session#catalog_subdirectory` resolves through the key alone for the
+      # same reason.
+      #
+      # Nil is therefore both "names no root" and "names one the catalog has
+      # dropped", and both are refusals: the fence cannot place either.
+      def declared_agent_root(session)
+        key = session.metadata&.dig("agent_root_key").presence
+        return nil if key.blank?
+
+        AgentRootsConfig.find(key) ? key : nil
+      end
+
       def dispatch(action, args)
         case action
         when "follow_up" then follow_up(find_session(args["session_id"]), args)
         when "pause" then pause(find_session(args["session_id"]))
         when "pause_into_spot_queue" then pause_into_spot_queue(find_session(args["session_id"]), args)
-        when "restart" then restart(find_session(args["session_id"]))
+        when "restart" then restart(fenced_session(args["session_id"], action))
         when "start_now" then start_now(find_session(args["session_id"]))
         when "archive" then archive(find_session(args["session_id"]), args)
         when "unarchive" then unarchive(find_session(args["session_id"]))
@@ -266,8 +339,8 @@ module Mcp
         when "change_category" then change_category(find_session(args["session_id"]), args)
         when "toggle_push_notifications" then toggle_push_notifications(find_session(args["session_id"]))
         when "set_heartbeat" then set_heartbeat(find_session(args["session_id"]), args)
-        when "fork" then fork_session(find_session(args["session_id"]), args)
-        when "regenerate_status_summary" then regenerate_status_summary(find_session(args["session_id"]))
+        when "fork" then fork_session(fenced_session(args["session_id"], action), args)
+        when "regenerate_status_summary" then regenerate_status_summary(fenced_session(args["session_id"], action))
         when "refresh" then refresh(find_session(args["session_id"]))
         when "refresh_all" then refresh_all
         when "update_notes" then update_notes(find_session(args["session_id"]), args)

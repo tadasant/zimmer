@@ -1406,6 +1406,217 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/"message_index" parameter is required/, error.message)
   end
 
+  # === the allowed_agent_roots fence on fork, restart and the summary fork (#1118)
+  #
+  # `fork` copies the source session's repository, branch and MCP servers onto a
+  # new session, `regenerate_status_summary` reaches the same service by another
+  # name, and `restart` runs a session's agent in its own repository with its own
+  # servers — so on a restricted connection all three are held to the same fence
+  # `start_session` is held to. These tests assert the REFUSAL as much as the
+  # permission: an authorization predicate that fails open is indistinguishable
+  # from a correct one until something asserts that it says no.
+
+  def restricted_tool(roots)
+    Mcp::Tools::ActionSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: roots)
+    )
+  end
+
+  # Two roots the catalog really carries, so "inside the fence" and "outside it"
+  # are both real placements rather than a name the resolver cannot resolve.
+  # Named rather than taken from the head of the catalog: the two ROUTER_ROOT_NAMES
+  # are aliases of ONE root, so an ordering that put them first would make these
+  # tests assert a refusal between two names for the same thing.
+  FENCE_ALLOWED_ROOT = "zimmer"
+  FENCE_OUTSIDE_ROOT = "fleet-maintenance"
+
+  def two_catalog_roots
+    [ FENCE_ALLOWED_ROOT, FENCE_OUTSIDE_ROOT ].each do |name|
+      assert AgentRootsConfig.find(name), "the catalog no longer carries the #{name} agent root"
+    end
+  end
+
+  def session_on_root(root_name, **attrs)
+    Session.create!(
+      git_root: "https://github.com/t/r.git",
+      prompt: "fenced-session fixture",
+      metadata: { "agent_root_key" => root_name }.compact,
+      **attrs
+    )
+  end
+
+  def forkable_result(session)
+    ForkSessionService::Result.new(success?: true, forked_session: session)
+  end
+
+  test "fork is refused on a restricted connection when the source session's root is outside the fence" do
+    allowed, other = two_catalog_roots
+    source = session_on_root(other, status: :needs_input)
+
+    error = assert_no_difference "Session.count" do
+      ForkSessionService.stub(:call, ->(**) { flunk "ForkSessionService must not be reached" }) do
+        assert_raises(Mcp::ToolError) do
+          restricted_tool(allowed).call("action" => "fork", "session_id" => source.id, "message_index" => 1)
+        end
+      end
+    end
+
+    assert_match(/The "fork" action is not allowed on session #{source.id}/, error.message)
+    assert_match(/restricted to agent roots \[#{allowed}\]/, error.message)
+    assert_match(/belongs to agent root "#{other}"/, error.message)
+  end
+
+  test "restart is refused on a restricted connection when the session's root is outside the fence" do
+    allowed, other = two_catalog_roots
+    session = session_on_root(other, status: :failed, metadata: { "agent_root_key" => other, "failure_reason" => "git_clone_failed" })
+
+    error = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      error = assert_raises(Mcp::ToolError) do
+        restricted_tool(allowed).call("action" => "restart", "session_id" => session.id)
+      end
+    end
+
+    assert_match(/The "restart" action is not allowed on session #{session.id}/, error.message)
+    assert_match(/belongs to agent root "#{other}"/, error.message)
+    assert_equal "failed", session.reload.status
+  end
+
+  test "fork is allowed on a restricted connection when the source session's root is inside the fence" do
+    allowed = two_catalog_roots.first
+    source = session_on_root(allowed, status: :needs_input)
+    forked = session_on_root(allowed, status: :waiting)
+
+    result = ForkSessionService.stub(:call, ->(**) { forkable_result(forked) }) do
+      restricted_tool(allowed).call("action" => "fork", "session_id" => source.id, "message_index" => 1)
+    end
+
+    assert_includes result, "## Session Forked"
+    assert_includes result, "- **New Session ID:** #{forked.id}"
+  end
+
+  test "restart is allowed on a restricted connection when the session's root is inside the fence" do
+    allowed = two_catalog_roots.first
+    session = session_on_root(allowed, status: :failed, metadata: { "agent_root_key" => allowed, "failure_reason" => "git_clone_failed" })
+
+    output = nil
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      output = restricted_tool(allowed).call("action" => "restart", "session_id" => session.id)
+    end
+
+    assert_includes output, "Session restarted from scratch"
+    assert_equal "waiting", session.reload.status
+  end
+
+  # The edge the fence has to have an answer for. A session whose row names no
+  # agent root cannot be placed inside OR outside the fence, so a restricted
+  # connection is refused: a fence that lets through what it cannot place is not
+  # a fence. An unrestricted connection still forks and restarts it (the two
+  # tests further down).
+  test "fork is refused on a restricted connection when the source session has no resolvable agent root" do
+    source = session_on_root(nil, status: :needs_input)
+    assert_nil source.agent_root_key
+
+    error = assert_no_difference "Session.count" do
+      assert_raises(Mcp::ToolError) do
+        restricted_tool(two_catalog_roots.first).call("action" => "fork", "session_id" => source.id, "message_index" => 1)
+      end
+    end
+
+    assert_match(/belongs to agent root "\(none\)"/, error.message)
+  end
+
+  # Same refusal by a different route: the row NAMES a root, and the catalog no
+  # longer carries it. `resolved_agent_root` falls back to the git_root match,
+  # which misses too, so the session is unplaceable and the answer is the same.
+  test "restart is refused on a restricted connection when the session names a root the catalog has dropped" do
+    session = session_on_root("a-root-the-catalog-no-longer-has", status: :failed)
+
+    error = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      error = assert_raises(Mcp::ToolError) do
+        restricted_tool(two_catalog_roots.first).call("action" => "restart", "session_id" => session.id)
+      end
+    end
+
+    assert_match(/The "restart" action is not allowed on session #{session.id}/, error.message)
+    assert_match(/belongs to agent root "\(none\)"/, error.message)
+  end
+
+  # The shape that dominates production, and the one a fence reading
+  # Session#agent_root_key would admit: a row with no agent_root_key whose
+  # git_root IS the catalog's repository. Every root in this catalog shares that
+  # URL with an empty subdirectory, so `agent_root_key`'s fallback arm answers
+  # with the FIRST of them — and every fork is this shape, because
+  # ForkSessionService does not copy the key across. The fence places a session
+  # by the root its row names and nothing else, so this is a refusal.
+  test "fork is refused on a restricted connection when the session's root is only inferred from its git_root" do
+    catalog_url = AgentRootsConfig.find(FENCE_ALLOWED_ROOT).url
+    source = Session.create!(git_root: catalog_url, prompt: "a fork, whose metadata names no root", status: :needs_input)
+    assert_equal FENCE_ALLOWED_ROOT, source.agent_root_key, "the fallback arm no longer infers a root from the URL"
+
+    error = assert_no_difference "Session.count" do
+      assert_raises(Mcp::ToolError) do
+        restricted_tool(FENCE_ALLOWED_ROOT).call("action" => "fork", "session_id" => source.id, "message_index" => 1)
+      end
+    end
+
+    assert_match(/belongs to agent root "\(none\)"/, error.message)
+  end
+
+  # The third fenced action, and the one that hides the fork inside a different
+  # verb: SessionStatusSummaryGenerator calls ForkSessionService and then
+  # dispatches an agent turn on the row it creates.
+  test "regenerate_status_summary is refused on a restricted connection when the session is outside the fence" do
+    allowed, other = two_catalog_roots
+    session = session_on_root(other, status: :needs_input, transcript: sessions(:with_transcript).transcript)
+
+    error = nil
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      error = assert_raises(Mcp::ToolError) do
+        restricted_tool(allowed).call("action" => "regenerate_status_summary", "session_id" => session.id)
+      end
+    end
+
+    assert_match(/The "regenerate_status_summary" action is not allowed on session #{session.id}/, error.message)
+    assert_match(/belongs to agent root "#{other}"/, error.message)
+  end
+
+  test "regenerate_status_summary is allowed on a restricted connection when the session is inside the fence" do
+    allowed = two_catalog_roots.first
+    session = session_on_root(allowed, status: :needs_input, transcript: sessions(:with_transcript).transcript)
+
+    output = nil
+    assert_enqueued_jobs(1, only: SessionStatusSummaryJob) do
+      output = restricted_tool(allowed).call("action" => "regenerate_status_summary", "session_id" => session.id)
+    end
+
+    assert_includes output, "## Status Summary Regenerating"
+  end
+
+  test "an unrestricted connection forks a session whatever root it belongs to" do
+    source = session_on_root(nil, status: :needs_input)
+    forked = session_on_root(nil, status: :waiting)
+
+    result = ForkSessionService.stub(:call, ->(**) { forkable_result(forked) }) do
+      @tool.call("action" => "fork", "session_id" => source.id, "message_index" => 1)
+    end
+
+    assert_includes result, "- **New Session ID:** #{forked.id}"
+  end
+
+  test "an unrestricted connection restarts a session whatever root it belongs to" do
+    _allowed, other = two_catalog_roots
+    session = session_on_root(other, status: :failed, metadata: { "agent_root_key" => other, "failure_reason" => "git_clone_failed" })
+
+    output = nil
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      output = @tool.call("action" => "restart", "session_id" => session.id)
+    end
+
+    assert_includes output, "Session restarted from scratch"
+  end
+
   # JSONL lines shaped so TranscriptFileLocator can read a head sessionId out of
   # them, which is what makes a file a re-keyed branch of a session.
   def rekey_lines(session_id, range)
