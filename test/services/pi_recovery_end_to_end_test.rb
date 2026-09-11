@@ -115,8 +115,8 @@ class PiRecoveryEndToEndTest < ActiveJob::TestCase
     assert_nil @session.metadata["last_quota_limit_at"]
   end
 
-  test "a dropped stream and a refused connection are retried like a 5xx" do
-    %i[stream_terminated connection_error].each do |fixture|
+  test "a timeout, a dropped stream and a refused connection are retried like a 5xx" do
+    %i[timeout_408 stream_terminated connection_error].each do |fixture|
       setup_fresh_session
       assert_equal :continue, pi_turn_ends_with(fixture).action, fixture.to_s
       assert_equal 1, ApiErrorRetryService::BUDGET.count_for(@session.reload), fixture.to_s
@@ -176,6 +176,19 @@ class PiRecoveryEndToEndTest < ActiveJob::TestCase
     assert_empty @adapter.resumed_sessions
   end
 
+  # An exhausted balance does not refill on a backoff, so six attempts would
+  # spend the budget to reach the same end more slowly.
+  test "a 402 fails rather than burning the retry budget on a balance that will not refill" do
+    UnclassifiedFailureReporter.expects(:report).never
+
+    decision = pi_turn_ends_with(:insufficient_credits_402)
+
+    assert_equal :failed, decision.action
+    assert_match(/Insufficient credits/, decision.error_message)
+    assert_empty @adapter.resumed_sessions
+    assert_equal 0, ApiErrorRetryService::BUDGET.count_for(@session.reload)
+  end
+
   # Pi has no `/compact` and does not compact on a plain resume either, so there
   # is no recovery to spend the budget on. Failing names the condition; retrying
   # would re-send a conversation that is already too long, one turn longer.
@@ -193,15 +206,34 @@ class PiRecoveryEndToEndTest < ActiveJob::TestCase
 
   # --- what is genuinely unknown ----------------------------------------------
 
-  test "an error no recovery path owns fails the session and pages with Pi's own words" do
+  test "a wording nothing recognizes fails the session and pages with Pi's own words" do
     UnclassifiedFailureReporter.expects(:report).with do |kind:, output:, **|
-      kind == "terminal API error" && output.to_s.include?("Invalid value for 'temperature'")
+      kind == "terminal API error" && output.to_s.include?(PiSessionFixtures::UNKNOWN_WORDING)
     end
 
-    decision = pi_turn_ends_with(:bad_request_400)
+    manager.spawn(prompt: "Hello", working_dir: CLONE)
+    plant_pi_session(@file_system, @session, working_directory: CLONE,
+      content: pi_session_with_unknown_error(@session.session_id))
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: CLONE)
 
     assert_equal :failed, decision.action
     assert_empty @adapter.resumed_sessions
+  end
+
+  # The case that decides whether this classification is safe to ship: production
+  # Pi runs on OpenRouter, whose 400 carries a numeric `"code":400` and nothing
+  # Zimmer can match. It must fail QUIETLY — a page here would fire on every long
+  # Pi session that outgrows its window.
+  test "a rejection Zimmer cannot name more precisely fails without paging" do
+    UnclassifiedFailureReporter.expects(:report).never
+
+    %i[bad_request_400 openrouter_context_400].each do |fixture|
+      setup_fresh_session
+      decision = pi_turn_ends_with(fixture)
+
+      assert_equal :failed, decision.action, fixture.to_s
+      assert_empty @adapter.resumed_sessions, fixture.to_s
+    end
   end
 
   # The flip of #classifies_exits? is what makes this reachable: a Pi exit that

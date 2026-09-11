@@ -47,6 +47,22 @@ module PiSessionFixtures
     path
   end
 
+  # A transcript whose terminal error carries a wording Zimmer does not know and
+  # no HTTP status — the one shape that reaches the unclassified-failure alert.
+  #
+  # Derived rather than captured, and it has to be: an unknown wording is by
+  # definition one no run has produced. The RECORD is a real one (the 401 run's,
+  # verbatim) and only `errorMessage` is replaced, so what is hypothetical here is
+  # the provider's prose and nothing about Pi's format.
+  UNKNOWN_WORDING = "The inference mesh entered an unrecoverable state."
+
+  def pi_session_with_unknown_error(session_id)
+    lines = pi_session_for(:unauthorized_401, session_id).lines
+    record = JSON.parse(lines.last)
+    record["message"]["errorMessage"] = UNKNOWN_WORDING
+    (lines[0..-2] + [ "#{JSON.generate(record)}\n" ]).join
+  end
+
   # Append a later turn's records to a planted transcript, the way a resumed
   # `pi --session-id` appends to the same file. The fixture's own header and
   # bookkeeping records are dropped, since the file already has them.

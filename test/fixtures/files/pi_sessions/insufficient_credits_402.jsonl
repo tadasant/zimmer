@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"11111111-2222-3333-4444-555555555555","timestamp":"2026-09-11T23:11:12.096Z","cwd":"/workspace/clone"}
+{"type":"model_change","id":"94d5044a","parentId":null,"timestamp":"2026-09-11T23:11:12.214Z","provider":"sim","modelId":"sim-model"}
+{"type":"thinking_level_change","id":"630137d9","parentId":"94d5044a","timestamp":"2026-09-11T23:11:12.214Z","thinkingLevel":"off"}
+{"type":"message","id":"a63cfae5","parentId":"630137d9","timestamp":"2026-09-11T23:11:12.252Z","message":{"role":"user","content":[{"type":"text","text":"say hi"}],"timestamp":1789168272249}}
+{"type":"message","id":"9bae4e16","parentId":"a63cfae5","timestamp":"2026-09-11T23:11:12.427Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"sim","model":"sim-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1789168272298,"errorMessage":"402: {\"message\":\"Insufficient credits. Add more using https://openrouter.ai/settings/credits\",\"code\":402}"}}

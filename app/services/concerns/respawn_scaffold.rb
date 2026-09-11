@@ -379,7 +379,7 @@ module RespawnScaffold
   # --- The runtime's own record of how its turn ended ---------------------------
   #
   # A runtime whose transcript records each turn's error in structured form
-  # (TranscriptSource#records_turn_errors? — Codex) is asked for that instead of
+  # (TranscriptSource#records_turn_errors? — Codex and Pi) is asked for that instead of
   # having its transcript scanned for Claude's `isApiErrorMessage` envelope,
   # which it does not write. See RecordedTurnError.
 

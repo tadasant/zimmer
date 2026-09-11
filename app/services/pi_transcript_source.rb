@@ -186,8 +186,12 @@ class PiTranscriptSource < TranscriptSource
 
   # @see TranscriptSource#terminal_turn_error
   #
-  # Read raw rather than through #read: nothing here is stored or displayed, and
-  # the redaction cache is keyed for the poller's reads, not these.
+  # Read raw rather than through #read, because the redaction cache is keyed for
+  # the poller's sequential reads and this is a one-shot backwards scan. Note
+  # that the error's text does not stop here — ProcessLifecycleManager logs it on
+  # the session and puts it in the ExitDecision — so it is unredacted where the
+  # polled transcript is redacted. That is the same trade CodexTranscriptSource
+  # makes, and it is the provider's error wording rather than conversation.
   def terminal_turn_error(session:, working_directory:)
     path = locate(session: session, working_directory: working_directory)
     return nil unless path && file_system.exists?(path)

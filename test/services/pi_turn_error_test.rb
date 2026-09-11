@@ -108,12 +108,82 @@ class PiTurnErrorTest < ActiveSupport::TestCase
 
   # --- what is genuinely unknown ------------------------------------------------
 
-  test "a 400 that is not about context length is unclassified, so it pages" do
+  # A 4xx Zimmer has no more specific name for is still a status it READ, so it
+  # is recognized: terminal, named, and not an unknown failure mode. Paging on it
+  # would mean paging on every provider whose error body Zimmer has not memorized.
+  test "a 400 that is not about context length is a recognized rejection, not a page" do
     error = PiTurnError.terminal(pi_session(:bad_request_400))
 
-    assert_equal :unclassified, error.kind
-    assert_not error.recognized?
+    assert_equal :request_rejected, error.kind
+    assert error.recognized?
     assert_match(/Invalid value for 'temperature'/, error.message)
+  end
+
+  # The reason #kind reads the status and not the body: production Pi talks to
+  # OpenRouter, whose context-window refusal carries a numeric `"code":400` and
+  # no `context_length_exceeded` anywhere. It must still fail quietly rather than
+  # page, even though the more precise name is out of reach.
+  test "an OpenRouter-shaped context refusal is a recognized rejection, not a page" do
+    error = PiTurnError.terminal(pi_session(:openrouter_context_400))
+
+    assert_equal :request_rejected, error.kind
+    assert error.recognized?, "an uncharacterized 400 body must not become a standing page"
+    assert_equal 400, error.http_status
+  end
+
+  test "a 402 is terminal: an exhausted balance does not refill on a backoff" do
+    error = PiTurnError.terminal(pi_session(:insufficient_credits_402))
+
+    assert_equal :auth_terminal, error.kind
+    assert error.recognized?
+    assert_match(/Insufficient credits/, error.message)
+  end
+
+  test "a 408 is retryable: the status itself means the request timed out" do
+    error = PiTurnError.terminal(pi_session(:timeout_408))
+
+    assert_equal :retryable, error.kind
+    assert_equal 408, error.http_status
+    assert_not error.rate_limited?
+  end
+
+  # A non-HTTP reply and a socket destroyed before any response both collapse to
+  # the same `Connection error.` the refused connection produces — the SDK
+  # normalizes them, which is why the wording list is two entries and not ten.
+  test "a non-HTTP reply is the same transport failure as a refused connection" do
+    error = PiTurnError.terminal(pi_session(:connection_error_garbage))
+
+    assert_equal :retryable, error.kind
+    assert_equal "Connection error.", error.message
+  end
+
+  # Every status class, so a provider dialect Zimmer has not seen still lands
+  # somewhere deliberate rather than in the alert.
+  test "the status decides, in any dialect" do
+    {
+      "500: anything at all" => :retryable,
+      "599 whatever" => :retryable,
+      "429 {}" => :retryable,
+      "408: {}" => :retryable,
+      "401 {}" => :auth_terminal,
+      "402 {}" => :auth_terminal,
+      "403 {}" => :auth_terminal,
+      "404: not found" => :request_rejected,
+      "413: payload too large" => :request_rejected,
+      "422 unprocessable" => :request_rejected
+    }.each do |text, expected|
+      serialized = replace_terminal_message(:unauthorized_401) { |m| m["errorMessage"] = text }
+
+      assert_equal expected, PiTurnError.terminal(serialized).kind, text
+    end
+  end
+
+  # A status outside 4xx/5xx on a turn Pi called failed is a shape nothing here
+  # predicts, and that IS news.
+  test "a success status on a failed turn is unclassified" do
+    serialized = replace_terminal_message(:unauthorized_401) { |m| m["errorMessage"] = "200: ok?" }
+
+    assert_equal :unclassified, PiTurnError.terminal(serialized).kind
   end
 
   # The negative case for the context-length match: a 500 whose prose happens to
@@ -127,6 +197,16 @@ class PiTurnErrorTest < ActiveSupport::TestCase
     error = PiTurnError.terminal(serialized)
     assert_equal :retryable, error.kind
     assert_equal 500, error.http_status
+  end
+
+  # The body never overrides the status — it only refines a 400. Even the exact
+  # code field under a 5xx stays retryable.
+  test "the context-length code under a 5xx does not make it a context failure" do
+    serialized = replace_terminal_message(:server_500) do |m|
+      m["errorMessage"] = %(503: {"message":"upstream said","code":"context_length_exceeded"})
+    end
+
+    assert_equal :retryable, PiTurnError.terminal(serialized).kind
   end
 
   # --- turns that did not end on an error ---------------------------------------
@@ -227,6 +307,9 @@ class PiTurnErrorTest < ActiveSupport::TestCase
     assert_nil PiTurnError.terminal(serialized)
   end
 
+  # The one shape that pages: no status Zimmer could read, and no transport
+  # wording it knows. That is the alert doing its job — the signal to characterize
+  # the wording and add it.
   test "an unprefixed error message with no known transport wording is unclassified" do
     serialized = replace_terminal_message(:unauthorized_401) do |m|
       m["errorMessage"] = "The provider melted."
@@ -234,7 +317,29 @@ class PiTurnErrorTest < ActiveSupport::TestCase
 
     error = PiTurnError.terminal(serialized)
     assert_equal :unclassified, error.kind
+    assert_not error.recognized?
     assert_nil error.http_status
+  end
+
+  # The transport match is anchored to the whole message, so a provider error
+  # that merely contains the word is not mistaken for one.
+  test "a message that merely mentions a transport wording is not a transport failure" do
+    serialized = replace_terminal_message(:unauthorized_401) do |m|
+      m["errorMessage"] = "the upstream worker terminated the job"
+    end
+
+    assert_equal :unclassified, PiTurnError.terminal(serialized).kind
+  end
+
+  # A leading newline must not cost the status, or a 500 would stop being retried.
+  test "a status behind leading whitespace is still read" do
+    serialized = replace_terminal_message(:server_500) do |m|
+      m["errorMessage"] = "\n  500: {\"message\":\"boom\"}"
+    end
+
+    error = PiTurnError.terminal(serialized)
+    assert_equal 500, error.http_status
+    assert_equal :retryable, error.kind
   end
 
   # Digits that are not a status prefix must not be read as one — `4000: …` is

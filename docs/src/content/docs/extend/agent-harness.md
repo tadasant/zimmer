@@ -589,10 +589,21 @@ recovery ladder is walked on the door marked "the turn completed"
 `PiTurnError` parses that record and classifies it; `PiTranscriptSource` answers
 `records_turn_errors? => true`, so `ApiErrorRetryService` asks for it instead of
 scanning for Claude's `isApiErrorMessage` envelope. A 5xx, a 429 (rate limit or
-`insufficient_quota`), a `terminated` stream and a `Connection error.` are
+`insufficient_quota`), a 408, a `terminated` stream and a `Connection error.` are
 `:retryable` and get the six-attempt backoff, bounded by the same `RetryBudget`
 the Claude path uses. The handled-turn marker means a respawn that dies before
 writing anything cannot spend a second retry on the same dead turn.
+
+**It classifies on the HTTP status, not the error body, and that generalizes.**
+The characterization drove an OpenAI-dialect stub, but production Pi talks to
+OpenRouter, which words its bodies differently — so a body-keyed classifier would
+misroute the provider Zimmer actually ships. A status is the runtime's own
+framing and is provider-independent; a 4xx Zimmer cannot name more precisely is
+`:request_rejected`, which is *recognized* and terminal rather than unclassified.
+That distinction is the one worth copying into a new runtime: `recognized?` means
+"failing on this is not news", and reserving `false` for shapes you genuinely
+cannot read is what keeps `classifies_exits?` from converting every unfamiliar
+provider dialect into a standing page.
 
 **Two kinds route nowhere, and say so.** `PiTurnError` gives a 401/403 the kind
 `:auth_terminal` and a 400 `context_length_exceeded` the kind
@@ -601,7 +612,9 @@ be reached however the ladder is rearranged later:
 
 - `PiAuthProvider` pools no accounts, so `AuthRecoveryService` has no credential
   to rewrite and nothing to rotate to. Answering `auth_recovery_needed?` would
-  park a human in front of a pool that does not exist.
+  park a human in front of a pool that does not exist. A 402 (balance exhausted)
+  joins the 401 and 403 here rather than in the retryable set, because a balance
+  does not refill on a backoff.
 - Pi has no `/compact`, and unlike Codex it does not compact on a plain resume:
   `PiRuntimeAdapter.compacts_on_resume?` is `false` because resuming a session
   that died on a context-length 400 wrote no compaction record and re-sent the
