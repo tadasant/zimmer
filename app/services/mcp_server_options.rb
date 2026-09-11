@@ -44,7 +44,7 @@ class McpServerOptions
   # through the provider chain, which holds a 60-second namespace snapshot.
   # Measured at ~50ms cold and ~14ms warm for an 18-server catalog, in 2 queries.
   #
-  # @return [Array<Hash>] `{name:, title:, description:, unavailable:, unavailable_reason:}`
+  # @return [Array<Hash>] `{name:, title:, description:, unavailable:, unavailable_reason:, startup_timeout_sec:}`
   def self.all
     Cache.options ||= build
   end
@@ -80,7 +80,15 @@ class McpServerOptions
       title: server.title,
       description: server.description,
       unavailable: unavailable,
-      unavailable_reason: unavailable ? status.unavailable_reason(markdown: false) : nil
+      unavailable_reason: unavailable ? status.unavailable_reason(markdown: false) : nil,
+      # The startup budget this entry declares for itself, or nil when it
+      # declares none and McpStartupTimeout::SECONDS applies. Carried here
+      # because it is otherwise invisible: the value is authored in the catalog
+      # repository, a declared one Zimmer refuses is only a log line, and the
+      # config file it lands in sits in a session clone nobody can reach without
+      # a shell. This list is rendered by /api/v1/configs and /api/v1/mcp_servers,
+      # so "did my number take effect" has an answer that needs no box access.
+      startup_timeout_sec: server.startup_timeout_seconds
     }
   end
   private_class_method :option

@@ -102,6 +102,18 @@ class RetryBudgetTest < ActiveSupport::TestCase
       "grows with it — the window has to clear the longest one a catalog is allowed to ask for"
   end
 
+  # The other sweep that measures the same silence. A session bringing MCP servers
+  # up writes no timeline entry, and this one terminates and restarts a `running`
+  # session that has been quiet for INACTIVITY_THRESHOLD — so the longest budget a
+  # catalog may declare has to stay well under it, or the sweep kills sessions
+  # whose servers are still legitimately starting.
+  test "the hung-session sweep outlasts the longest startup budget a catalog can ask for" do
+    assert CleanupOrphanedSessionsJob::INACTIVITY_THRESHOLD > McpStartupTimeout::MAX_SECONDS.seconds,
+      "a session in MCP startup is silent, and this sweep reads silence as a hung process"
+    assert_equal 300, CleanupOrphanedSessionsJob::INACTIVITY_THRESHOLD - McpStartupTimeout::MAX_SECONDS.seconds,
+      "five minutes of margin: raising MAX_SECONDS without raising the threshold spends it"
+  end
+
   # The negative half of #727: a session-id conflict that repeats inside one turn
   # must still exhaust its budget. Conflicts are spawn-time refusals seconds apart,
   # so no reset can land between them.

@@ -21,10 +21,10 @@ module ClaudeSpawnEnv
   # Shared with Codex and Pi through McpStartupTimeout so the three runtimes
   # cannot drift into giving the same cold clone different amounts of room.
   #
-  # The FLOOR, not the whole answer: a session whose catalog entries declare a
-  # longer `startup_timeout_sec` is spawned with the longest of them instead (see
-  # #configure_mcp_env). A session where nothing declares anything — every
-  # session in the catalog today — is spawned with exactly this.
+  # The budget a session gets when none of its catalog entries declares one of its
+  # own, and the floor under the value when one does: #configure_mcp_env spawns
+  # with the longest `startup_timeout_sec` any of the session's servers declares,
+  # or this, whichever is larger.
   MCP_TIMEOUT_MS = McpStartupTimeout::MILLISECONDS
 
   private
@@ -133,7 +133,7 @@ module ClaudeSpawnEnv
   # the `.mcp.json` the post-processor has already written — the same file Claude
   # itself is about to read, so the set cannot drift from what the runtime brings
   # up. A session whose config was never written (no MCP servers, or a resume
-  # before prepare) yields none, and the flat default applies.
+  # before prepare) yields none, and the default applies.
   #
   # Why this is needed at all: `MCP_TIMEOUT` is one value for the whole Claude
   # process, so the per-server budgets have to be collapsed into a single number
@@ -141,9 +141,13 @@ module ClaudeSpawnEnv
   # so no server is given less room than its catalog entry asks for.
   #
   # Never fatal. An unreadable or malformed config costs the per-server budgets,
-  # not the session: the ceiling falls back to the flat default, which is what
-  # every session got before the field existed.
+  # not the session: the ceiling falls back to the default.
   def configured_mcp_server_names(working_dir)
+    # `<working_dir>/.mcp.json` rather than the `mcp_config_path` the adapter was
+    # handed: `spawn_process` takes only the `has_mcp` boolean, and every caller
+    # that computes that path builds this exact one (AgentSessionJob,
+    # ProcessLifecycleManager). A caller that ever passed a different path would
+    # get the default budget rather than a wrong one.
     path = File.join(working_dir.to_s, McpJsonConfigFormat::MCP_CONFIG_FILENAME)
     return [] unless @file_system.exists?(path)
 

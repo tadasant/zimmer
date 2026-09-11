@@ -26,8 +26,8 @@
 #   Pi            requestTimeoutMs = 180000     per `.mcp.json` entry, milliseconds
 #                 (PiMcpConfigPostProcessor#apply_startup_timeouts!)
 #
-# 180 is the DEFAULT rather than the whole story — a catalog entry can name its
-# own budget, which is the bottom half of this file.
+# 180 is the default a server gets with nothing declared for it; the per-server
+# field is the bottom half of this file.
 #
 # Each runtime's own default was measured against the pinned binary rather than
 # read off a doc. Codex's is 30 seconds (`@openai/codex@0.146.0`), which leaves
@@ -47,24 +47,34 @@
 # holds the handshake for three minutes rather than thirty seconds. That is the
 # deliberate trade — a slow start is recoverable, a dropped server is not.
 #
-# A single flat number for every server is the coarse answer, and
-# [#113](https://github.com/tadasant/zimmer/issues/113) is where it stopped being
-# the only one: a catalog entry may declare `startup_timeout_sec` and get its own
-# budget, with the 180 above as the answer when it does not. What a runtime can
-# do with that varies, and only two of the three can act on it per server:
+# A catalog entry may name its own budget — `startup_timeout_sec` on the
+# `mcp.json` entry ([#113](https://github.com/tadasant/zimmer/issues/113)) — and
+# the 180 above is what a server gets when its entry names nothing. What a
+# runtime does with a declared value is decided by the knob it has, and only one
+# of the three can shorten a single server's budget without shortening something
+# else:
 #
-#   Codex   writes the entry's own value into its `[mcp_servers.*]` table.
-#   Pi      writes the entry's own value into its `.mcp.json` entry.
-#   Claude  cannot. `MCP_TIMEOUT` is one value for the whole process and nothing
-#           per-server reaches it — measured, not read off a doc: a `.mcp.json`
-#           entry carrying Claude's own `startupTimeoutSec` key (which its
-#           settings schema defines, 5-600s) times out at `MCP_TIMEOUT` and not
-#           at the entry's value, and a `mcpServers` table in project or user
-#           `settings.json` registers no server at all. So Zimmer hands Claude
-#           the LARGEST budget any of the session's servers asks for: a slow
-#           server still gets its room, and the fast ones get more than they
-#           asked for rather than less. Fast-fail for one server among many is
-#           not achievable on Claude today.
+#   Codex   writes the value into that server's `[mcp_servers.*]` table.
+#           `startup_timeout_sec` is startup-scoped and per server, so a fast
+#           server failing fast beside a slow one works here and only here.
+#   Pi      writes it into that server's `.mcp.json` entry, but only when it is
+#           LONGER than the default. `requestTimeoutMs` is the budget for every
+#           request on the connection, tool calls included, so writing a short
+#           one to make a startup fail fast would also kill that server's tool
+#           calls at the same number. See
+#           PiMcpConfigPostProcessor#apply_startup_timeouts!.
+#   Claude  takes the LARGEST budget any of the session's servers asks for,
+#           because `MCP_TIMEOUT` is one value for the whole process and nothing
+#           per-server reaches it. Measured against CLI 2.1.268 rather than read
+#           off a doc: a `.mcp.json` entry carrying Claude's own
+#           `startupTimeoutSec` key (which its settings schema defines, 5-600s)
+#           times out at `MCP_TIMEOUT` and not at the entry's value, and a
+#           `mcpServers` table in project or user `settings.json` registers no
+#           server at all.
+#
+# So a declared value shorter than the default reaches Codex alone, and a longer
+# one reaches all three. Both directions are floored and capped (MIN_SECONDS,
+# MAX_SECONDS), and an unusable value is ignored rather than coerced.
 module McpStartupTimeout
   # The budget itself, in the coarser of the two units. Declared in seconds and
   # multiplied up rather than declared in milliseconds and divided down: integer
@@ -73,9 +83,8 @@ module McpStartupTimeout
   # drops the server rather than merely delaying it. The one unit that cannot
   # lose precision is the one the number is written in.
   #
-  # This is the DEFAULT now rather than the only value: it is what a server gets
-  # when its catalog entry declares nothing, which is every server in the catalog
-  # until one declares otherwise.
+  # It is the DEFAULT: what a server gets when its catalog entry declares no
+  # budget of its own.
   SECONDS = 180
 
   # The same budget for the two runtimes that spell it in milliseconds: Claude's
@@ -100,42 +109,46 @@ module McpStartupTimeout
   #
   # The floor matters more than it looks: a budget below a few seconds fails a
   # server that is merely starting, and the failure arrives as "server dropped"
-  # rather than "your timeout is too short". The ceiling keeps one entry from
-  # holding a session open indefinitely — and stays clear of
-  # RetryBudget::EMPTY_TURN_RESET_AFTER (30 minutes), which has to outlast the
-  # whole startup dead zone to keep an empty-turn restart bounded.
+  # rather than "your timeout is too short".
+  #
+  # The ceiling is set by what else measures the silence a starting server makes.
+  # The startup dead zone — a runtime up, MCP servers connecting, nothing written
+  # to the timeline yet — is as long as the longest budget any server on the
+  # session gets, and two sweeps act on exactly that silence:
+  # `RetryBudget::EMPTY_TURN_RESET_AFTER` (30 min) must outlast it or an
+  # empty-turn restart becomes an unbounded loop, and
+  # `CleanupOrphanedSessionsJob::INACTIVITY_THRESHOLD` (15 min) terminates and
+  # restarts a `running` session whose timeline has been quiet that long. 600
+  # seconds leaves the tighter of the two five minutes of margin, and
+  # test/services/retry_budget_test.rb asserts both orderings so a change to any
+  # of the three has to face the other two.
   MIN_SECONDS = 5
   MAX_SECONDS = 600
 
   class << self
-    # The budget for one server, in seconds: what its catalog entry declares, or
-    # the flat default when it declares nothing usable.
+    # What each of these servers declares, validated — `{ name => seconds }`,
+    # carrying only the ones that declare something usable.
     #
-    # @param server_name [String] the catalog entry's name
-    # @return [Integer] seconds
-    def seconds_for(server_name)
-      declared_seconds(server_name) || SECONDS
-    end
+    # A map rather than a lookup per name because both post-processors ask about
+    # every entry in a config, on the prepare path: `ServersConfig.all` rebuilds
+    # every Server object on each call and, when the catalog will not resolve,
+    # re-runs the `air resolve` subprocess behind it. Once per config is once.
+    #
+    # A server the catalog does not know — an auto-injected Zimmer entry, a
+    # repo's own checked-in config — is absent from the map and gets the default,
+    # which is what it got before this field existed.
+    #
+    # @param server_names [Array<String>] catalog names
+    # @return [Hash{String => Integer}] seconds, for the entries that declare one
+    def declared_seconds_map(server_names)
+      names = Array(server_names).compact
+      return {} if names.empty?
 
-    # The same answer in milliseconds, for the runtimes that spell it that way.
-    #
-    # @return [Integer] milliseconds
-    def milliseconds_for(server_name)
-      seconds_for(server_name) * 1000
-    end
-
-    # What this server's catalog entry declares, validated — or nil when it
-    # declares nothing, or declares something unusable.
-    #
-    # A server the catalog does not know (an auto-injected Zimmer entry, a repo's
-    # own checked-in config) declares nothing and gets the default, which is what
-    # it got before this field existed.
-    #
-    # @return [Integer, nil] seconds
-    def declared_seconds(server_name)
-      return nil if server_name.blank?
-
-      ServersConfig.find(server_name)&.startup_timeout_seconds
+      by_name = ServersConfig.all.index_by(&:name)
+      names.each_with_object({}) do |name, map|
+        declared = by_name[name]&.startup_timeout_seconds
+        map[name] = declared if declared
+      end
     end
 
     # The one budget that has to cover every server in a set — the largest any of
@@ -146,16 +159,10 @@ module McpStartupTimeout
     # means no server is ever given LESS room than its entry asks for; the cost is
     # that a fast server in a session with a slow one does not fail fast.
     #
-    # Indexes the catalog once rather than looking each name up separately: this
-    # runs on the spawn path, for every server the session has.
-    #
     # @param server_names [Array<String>] catalog names of the session's servers
     # @return [Integer] seconds
     def ceiling_seconds(server_names)
-      by_name = ServersConfig.all.index_by(&:name)
-      declared = Array(server_names).filter_map { |name| by_name[name]&.startup_timeout_seconds }
-
-      declared.push(SECONDS).max
+      declared_seconds_map(server_names).values.push(SECONDS).max
     end
 
     # @return [Integer] milliseconds

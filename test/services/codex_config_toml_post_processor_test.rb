@@ -895,6 +895,15 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       "a string is a catalog typo, not an intent Zimmer can act on"
   end
 
+  test "ensure_baseline! honors a declared budget on a stdio server left on the clone" do
+    declare_in_catalog("context7" => 20)
+    write_config("context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] })
+
+    build_processor.ensure_baseline!
+
+    assert_equal 20, read_config.dig("mcp_servers", "context7", "startup_timeout_sec")
+  end
+
   test "post_process! prefers a timeout already in the config over the catalog's" do
     declare_in_catalog("explicit-sec" => 30)
     write_config(

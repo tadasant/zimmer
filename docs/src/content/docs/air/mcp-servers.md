@@ -89,19 +89,26 @@ doing OAuth may need more. An entry can name its own budget instead
 
 - **Type:** integer seconds, between 5 and 600 inclusive. The bounds are Claude Code's own
   `startupTimeoutSec` bounds, reused rather than invented. A value outside them, a string (`"20"`),
-  or a fraction is **ignored** and logged, and the server falls back to the flat default — the
-  value is written in another repository, so Zimmer saying so in the session log is the only way
-  its author finds out that nothing happened.
-- **Absent** means the flat default, which is what every entry in the catalog means today: nothing
+  or a fraction is **ignored** and warned about in the application log, and the server falls back to
+  the default.
+- **Absent** means the default, which is what every entry in the catalog means today: nothing
   declares one yet. Declaring actual values is the catalog's own follow-up, not Zimmer's.
-- **Two runtimes can act on it per server, and one cannot.** Codex writes it into that server's
-  `[mcp_servers.*]` table and Pi into that server's `.mcp.json` entry, so a fast server fails fast
-  beside a slow one. Claude's `MCP_TIMEOUT` is a property of the agent process, so Zimmer hands it
-  the **largest** budget any of the session's servers asks for and never less than the default:
-  a slow server still gets its room, and fast-fail for one server among many is not achievable
-  there. See [Timeouts and caching](#timeouts-and-caching).
+- **Check what took effect without a shell.** `startup_timeout_sec` is carried on every server in
+  `GET /api/v1/mcp_servers` and `GET /api/v1/configs` — the value Zimmer read, so an entry whose
+  number was refused reports `null` there rather than the number the catalog wrote.
+- **A longer budget reaches all three runtimes; a shorter one reaches Codex alone.** Codex writes it
+  into that server's `[mcp_servers.*]` table, where `startup_timeout_sec` is startup-scoped and the
+  tool budget is a separate `tool_timeout_sec` — so a fast server fails fast beside a slow one.
+  **Pi only ever lengthens**: its one key, `requestTimeoutMs`, is the budget for every request on
+  the connection, so honoring a declared 15 there would cap that server's *tool calls* at 15 seconds
+  rather than making its startup fail fast, and a declared value below the default is left on the
+  floor. **Claude cannot shorten one server's at all**: `MCP_TIMEOUT` is a property of the agent
+  process, so Zimmer hands it the **largest** budget any of the session's servers asks for, never
+  less than the default. See [Timeouts and caching](#timeouts-and-caching).
 - **Default only.** A timeout a repo already wrote into its own checked-in `.codex/config.toml` or
-  `.mcp.json` wins over the catalog's, the same way every other local value does.
+  `.mcp.json` wins over the catalog's, the same way every other local value does. So does one Zimmer
+  itself wrote on an earlier prepare — a clone keeps the budget it was prepared with, and picks up a
+  newly declared one when its config is regenerated rather than in place.
 - **It reaches a runtime only because Zimmer writes it.** AIR validates the entry (its server
   schema sets no `additionalProperties: false`) and `air resolve` returns the field verbatim, but
   neither the Claude nor the Codex adapter copies it into a runtime config — both translate a fixed
@@ -405,10 +412,12 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   because they share no mechanism. Claude reads `MCP_TIMEOUT=180000` off the agent process's environment
   (`ClaudeSpawnEnv#configure_mcp_env`), which reaches every server it spawns. Codex has no such
   variable: it reads `startup_timeout_sec` out of each `[mcp_servers.*]` table, so
-  `CodexConfigTomlPostProcessor` writes `startup_timeout_sec = 180` onto every **stdio** entry.
+  `CodexConfigTomlPostProcessor` writes `startup_timeout_sec = 180` onto every **stdio** entry that
+  declares nothing of its own.
   Pi has no such variable either, and no MCP of its own — its client is the `pi-mcp-adapter`
   extension, whose knob is per-entry `requestTimeoutMs`, so `PiMcpConfigPostProcessor` writes
-  `"requestTimeoutMs": 180000` onto every **stdio** entry of the `.mcp.json` it seeds. The adapter
+  `"requestTimeoutMs": 180000` onto every **stdio** entry of the `.mcp.json` it seeds that declares
+  nothing longer. The adapter
   also has a global `settings.requestTimeoutMs`, which Zimmer does not use: it would widen HTTP
   entries too, and those are exactly the ones left out.
   On both of those two, HTTP entries get none — they reach a server that is already running, and a
@@ -449,10 +458,11 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   value — a timeout a repo wrote into its own checked-in `.codex/config.toml` or `.mcp.json`, which
   AIR merges around rather than replaces. That is a different source from the catalog field below,
   and the local file wins over it.
-- **A catalog entry can declare its own budget**, and where it does, that is what the server gets:
-  `"startup_timeout_sec": 20` on the entry. Codex and Pi both spell the timeout per server already,
-  so the declared value goes to that server and nothing else — a fast server failing fast beside a
-  slow one is achievable on both. **Claude cannot do that**, and the reason is measured rather than
+- **A catalog entry can declare its own budget**: `"startup_timeout_sec": 20` on the entry. Codex
+  honors it in both directions, because its key is startup-scoped and its tool budget is the
+  separate `tool_timeout_sec`. Pi honors only a **longer** one: `requestTimeoutMs` covers every
+  request on the connection, so a shorter value would cap that server's tool calls rather than its
+  startup. **Claude cannot shorten one server's at all**, and the reason is measured rather than
   read off a doc: against CLI 2.1.268, a `.mcp.json` entry carrying Claude's own `startupTimeoutSec`
   key times out at `MCP_TIMEOUT` (60.6s with `MCP_TIMEOUT=60000` and `startupTimeoutSec: 6`), and a
   `mcpServers` table in project or user `settings.json` registers no server at all. So on Claude,
