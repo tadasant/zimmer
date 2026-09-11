@@ -570,9 +570,44 @@ the fix is a different one. Nor does it look at `db/cable_migrate`, the cable da
 migrations path, which is not a directory in this repo.
 
 More importantly, a branch-local check sees a duplicate that exists *on that branch*. Two
-independent branches each adding `…180000` each pass, which is exactly how the incident happened.
-Closing that requires branches to be up to date with `main` before merging, so the collision is on the
-branch by the time CI runs — a repository setting, not a check this repo can ship.
+independent branches each adding `…180000` each pass, which is exactly how the incident happened —
+and how it happened again on 2026-09-11, when
+[#1155](https://github.com/tadasant/zimmer/pull/1155) and
+[#1156](https://github.com/tadasant/zimmer/pull/1156) both hand-wrote `20260912120000` and
+[#1163](https://github.com/tadasant/zimmer/pull/1163) renumbered the second one.
+
+Closing it takes a repository setting, not a check this repo can ship: require branches to be up to
+date with `main` before merging, or put a merge queue in front of it, so the collision is on the
+branch by the time CI runs. Neither is configured here — `main` is not a protected branch and no
+workflow has a `merge_group` trigger.
+
+Reading `origin/main`'s migrations alongside the branch's would *narrow* the window, not close it,
+and the 2026-09-11 recurrence is the proof: `lint` last ran on #1156's head at 19:05 UTC, three
+minutes before #1155 put the colliding migration on `main`, and nothing re-ran it in the 59 minutes
+before #1156 merged. A union check catches the second PR only when CI happens to run after the first
+one lands, which is exactly what no setting currently guarantees.
+
+### Renumbering safely
+
+Renumber the migration that landed **second**. The one that landed first held the version alone for
+a while, so a database that migrated in that window recorded the shared version *for it*; renumbering
+that one would leave such a database skipping the other migration forever and re-running the first
+against a column it already added.
+
+That reasoning covers `db:migrate`, which validates duplicates in `Migrator#initialize` and so
+applies nothing at all while the collision is live. It does **not** cover a schema *load*. Loading
+`db/schema.rb` into a database that does not exist yet ends in `assume_migrated_upto_version`, which
+validates duplicates only over versions strictly *below* the schema version — and a collision at the
+newest migration is not below it. So a database **created** during the window comes up perfectly
+cleanly, with both migrations' columns present (the dumped schema has them) and a single row standing
+in for both versions. The renumbered migration is then pending against it, and the column it adds is
+already there.
+
+Give the renumbered migration `if_not_exists:` whenever a database could have been created that way,
+which is any window longer than a moment: every agent-session clone builds its dev and test databases
+by loading the schema. `add_column`, `add_index`, `add_foreign_key`, `add_check_constraint` and
+`create_table` take that option; anything else — a `change_column_null`, a raw `execute` — needs a
+`column_exists?` guard written by hand.
 
 ## One-time post-deploy tasks
 
