@@ -235,6 +235,52 @@ Only the ERROR moves. The caller, `TranscriptPollerService#poll_and_broadcast`, 
 own WARN for the same poll and still returns `false` — a pre-spawn poll leaves a record in
 VictoriaLogs either way. WARN does not page, which is the whole difference.
 
+### A missing INFO line is not evidence that nothing ran
+
+Every rule above is about which level a record deserves. This one is about what those
+choices cost together, because each is right on its own and the pair leaves a hole.
+
+The exporter ships WARN and above, and the convention above puts expected,
+self-resolving outcomes at INFO. So a periodic job that is working perfectly writes
+nothing the log store keeps, and the only records it ever produces are its exceptions.
+`StatusSummaryBackstopJob` is the worked example. It runs every five minutes — about
+4,000 ticks in a fortnight — and in the fourteen days to 2026-09-11 VictoriaLogs held
+147 records for it, every one of them WARN:
+
+```logsql
+{service.name="zimmer"} "[StatusSummaryBackstopJob]" | stats by (severity_text) count() lines
+```
+
+Its one summary line is `Rails.logger.info`, so **an empty result means "unknown", not
+"it never ran"** — and during a real RCA it was read as the second
+([#584](https://github.com/tadasant/zimmer/issues/584)). Zero rows about a periodic job
+is the expected answer when the job is healthy.
+
+**The threshold is not the thing to change.** Exempting periodic-job summary lines from
+it would put one record per tick per key — about 23,000 a day across the 50 keys in
+`config/cron_schedule.rb` — into the same export path that carried 28,329 records in the
+24 hours to 2026-09-11. That is an 82% increase in volume aimed at a `SizedQueue` of
+`MAX_QUEUE_SIZE` (1,000) drained 64 at a time, and a full queue **drops silently**
+(`enqueue` rescues `ThreadError` and returns). The records lost would be whichever ones
+arrived while it was full — including the WARN and ERROR lines the threshold exists to
+protect. The arrival shape makes it worse rather than better: every key on a
+minute-boundary cadence fires at the same instant, so the load is a burst, not a trickle.
+
+**Ask the cron freshness reading instead.** `CronFreshness` reads `good_jobs.cron_at`,
+which every tick writes whatever the job logs, so it answers the question from the
+substrate rather than from prose. It carries both halves: whether each key is enqueuing
+*now*, and whether it stopped at any point in the last 24 hours and recovered — the case
+that reads `fresh` on every live signal and that no log line would have shown either.
+
+| You want to know | Read |
+| --- | --- |
+| is sweep X still running | `get_system_health`'s `Cron freshness` line, `/health`'s **Cron Freshness** card, or `GET /api/v1/health` |
+| has sweep X been running all day | the same surfaces: each key's `ticks_in_window`, and `stopped_in_window` with the silence that earned it |
+| what sweep X *did* on a given tick | `/jobs` (the GoodJob dashboard), which has the row. The INFO line is on container stdout and there is no shell to read it with |
+
+The rule, and the reason it is one rule rather than a threshold per subsystem, is in
+[A sweep that stops is noticed: cron freshness](/operate/background-jobs/#a-sweep-that-stops-is-noticed-cron-freshness).
+
 ## How environments, builds and containers are told apart
 
 Every batch carries four resource attributes:
