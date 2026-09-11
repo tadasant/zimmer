@@ -1666,10 +1666,11 @@ a newly created box gets host CPU/memory/disk/load history for free, but the att
 in the provider — setting it on
 a droplet that already exists is a replace, not an update, and both environments apply with
 `-auto-approve`. Ignoring it keeps a routine `apply` from destroying the host over a metrics agent.
-The trade is that an existing droplet only gets the agent when it is rebuilt: DigitalOcean offers no
-API action to enable it, and its documented remedy is a root shell on the box, which this deployment
-does not have. See
-[Known limitations](/limitations/#the-digitalocean-metrics-agent-reaches-only-a-droplet-terraform-creates-never-one-that-exists).
+The trade is that Terraform never gives the agent to an existing droplet, and DigitalOcean offers no
+API action to enable it, so an existing droplet has to get it from a deploy-time converge step. That
+step belongs in the production deploy, in the companion repository. Staging needs none, because every
+staging droplet is created by this module. See
+[Known limitations](/limitations/#terraform-gives-the-digitalocean-metrics-agent-only-to-a-droplet-it-creates).
 
 `ignore_changes = [user_data]` now gates a second create-time-only feature the same way.
 `var.node_exporter_enabled` puts a tailnet-bound Prometheus `node_exporter` in cloud-init, so setting
