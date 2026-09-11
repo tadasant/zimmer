@@ -81,6 +81,31 @@ class Zimmer::ExtensionRegistryTest < ActiveSupport::TestCase
     refute_includes ids, "definitely_not_a_real_extension_constant"
   end
 
+  # The list is non-empty for real now: it names PtyTransportExtension, whose code lives
+  # outside this repository and arrives in production as a bind mount. So the skip above
+  # is no longer a hypothetical about a deleted directory -- it is the path THIS build
+  # takes at boot, and the two assertions below pin both halves of it: boot does not
+  # raise, and nothing registers, so every seam stays native. If an extension is ever
+  # vendored into this repo, this test is the one that should be rewritten deliberately.
+  test "the real built-in list registers nothing in this checkout" do
+    Zimmer::ExtensionRegistry.reset!
+    assert_nothing_raised { Zimmer::ExtensionRegistry.register_builtins! }
+
+    assert_empty Zimmer::ExtensionRegistry.all,
+      "No extension's code ships in this repository, so register_builtins! must register " \
+      "nothing here. A registration means an extension directory was added without " \
+      "updating this test."
+  end
+
+  test "every built-in class name is absent from this repository by design" do
+    unresolved = Zimmer::ExtensionRegistry::BUILTIN_EXTENSION_CLASSES.reject { |n| n.safe_constantize }
+
+    assert_equal Zimmer::ExtensionRegistry::BUILTIN_EXTENSION_CLASSES, unresolved,
+      "A built-in name resolves here. That is fine in itself, but it means the OSS build " \
+      "no longer falls back to native for that seam -- check the docs claim in " \
+      "docs/src/content/docs/extend/extensions.md before changing this."
+  end
+
   test "enabled filters to extensions whose persisted state is on" do
     Zimmer::ExtensionRegistry.register(FakeExtA.new)
     Zimmer::ExtensionRegistry.register(FakeExtB.new)

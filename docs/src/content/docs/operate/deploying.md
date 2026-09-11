@@ -168,7 +168,8 @@ with "no rollout found".
 **To add a mount everywhere, add it to `config/deploy.yml`. To add one for a single destination,
 use that destination's top-level `volumes:` key** — Kamal appends it to every app role's
 `docker run`, so it stacks with the shared list instead of replacing it. Production does exactly
-that for the two `/opt/zimmer` bind mounts `artifacts-sync-prod` delivers.
+that for the three `/opt/zimmer` bind mounts `artifacts-sync-prod` delivers — the catalog, its
+encrypted credentials, and the [private extension](#an-extension-can-also-arrive-from-outside-the-image).
 `test/config/kamal_deploy_config_test.rb` asserts the merged result for both destinations, so
 getting this wrong fails CI rather than a deploy.
 
@@ -943,7 +944,9 @@ The line is gone, and the opt-in mechanism it implied — `scripts/install-exten
 into a running container plus a restart — is deleted with it. It wanted a shell on the production
 host, which [Ops actions ship with the deploy](#ops-actions-ship-with-the-deploy) calls a defect to
 design out; and whatever it installed vanished at the next deploy. An extension merged to `main` is
-now in the next image, and an operator turns it on from Settings → Experimental. Nothing else.
+now in the next image, and an operator turns it on from Settings → Experimental. Nothing else. (One
+extension is not merged to `main` and never will be — see
+[An extension can also arrive from outside the image](#an-extension-can-also-arrive-from-outside-the-image).)
 
 Enablement, not presence, is the safety property. A directory in `app/extensions/` does nothing
 unless its class name is also in `Zimmer::ExtensionRegistry::BUILTIN_EXTENSION_CLASSES` — a core edit
@@ -978,6 +981,41 @@ depth 1 would see `pty_transport/` still holding `lib/` and call the tree health
 that the detector detects (including the exact tree the old rule produced, so it cannot pass
 vacuously), that it does not fire on a healthy tree, that the canary is where the script looks, that
 `.dockerignore` carries no pattern naming the path, and that both callers are still wired up.
+
+### An extension can also arrive from outside the image
+
+The rule above is about extensions whose code is *in the repository*. One is not:
+`PtyTransportExtension` (id `pty_transport`) depends on internal-only techniques that are
+deliberately not published, so `BUILTIN_EXTENSION_CLASSES` names the class and this repository
+carries none of its code. Production gets it as a read-only bind mount, delivered to the host by
+`artifacts-sync-prod` alongside the catalog:
+
+```yaml
+# config/deploy.production.yml
+volumes:
+  - /opt/zimmer/extensions/pty_transport:/rails/app/extensions/pty_transport:ro
+```
+
+Mount **the extension's own subdirectory**, never `/rails/app/extensions`. Mounting the parent
+replaces the in-image tree with the host's, which hides `app/extensions/CLAUDE.md` and
+`app/extensions/image_canary/` — and the canary is the one thing the build guardrail above looks
+for, so the guardrail would go on passing (it runs at build time, against a tree no mount has
+touched) while the directory it protects was invisible at runtime.
+
+A **missing or empty** host directory is inert: Docker creates the path, Zeitwerk's
+`collapse("app/extensions/*")` finds no files, `safe_constantize` returns `nil`, the registry skips
+the name, and headless inference stays on native `claude -p`. That is what makes the mount safe to
+carry on a host where nothing has been delivered yet — which is every host but this one.
+
+Production eager-loads, so the code has to be on disk when the container boots. Populating or
+updating the host directory therefore takes effect on the next health-gated `kamal deploy` cutover
+rather than on a restart of a running container — the same delivery path everything else here uses,
+and one that needs no shell on the box.
+
+`test/config/kamal_deploy_config_test.rb` asserts the merged mount on both roles, and that nothing
+mounts over `/rails/app/extensions` itself. `test/services/zimmer/extension_registry_test.rb`
+asserts the other half: in this repository no built-in name resolves, so `register_builtins!`
+registers nothing and every seam is native.
 
 ### Static files in `public/` are not digest stamped
 
