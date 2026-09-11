@@ -29,7 +29,82 @@ module Sessions
   # reconsider. Their discards are still recorded by the retirement callback,
   # which runs on the transition itself and so covers every path.
   module ArchiveGuard
+    # Raised by guarded_archive! when messages are queued and the caller did not
+    # force. Carries them, so the surface can render its own refusal.
+    class Refused < StandardError
+      attr_reader :messages
+
+      def initialize(messages)
+        @messages = messages
+        super("#{messages.size} queued message(s) would be discarded")
+      end
+    end
+
     module_function
+
+    # Archive +session+ unless that would discard a queued message, with the
+    # check and the transition under one row lock.
+    #
+    # THE DEFECT THIS EXISTS FOR (#1139). Reading the queue unlocked and then
+    # calling `archive!` loses a race: a wake that commits a pending row in
+    # between is neither refused nor delivered, because the archive's retirement
+    # callback finds it, strands it, and pages. Production session 16494 hit it
+    # at 10:47:02Z on 2026-09-11, when a held backstop wake came due in the same
+    # second its woken turn self-archived.
+    #
+    # The lock is the session row, taken `FOR UPDATE`. That serializes the
+    # archive against every enqueuer, not only the ones that lock the session
+    # themselves (Trigger#follow_up_session!, EnqueuedMessageProcessorService):
+    # the insert's foreign-key check takes `FOR KEY SHARE` on the same row, which
+    # `FOR UPDATE` conflicts with. So an enqueue that committed first is read
+    # here and refused, and one that arrives later waits for the archive to
+    # commit. What it meets then is the enqueuer's own business —
+    # Trigger#follow_up_session! re-reads the status under its lock and drops
+    # the fire, while the plain create surfaces have no status guard (#549).
+    #
+    # This is a stronger lock than the transition takes on its own. The status
+    # `UPDATE` holds `FOR NO KEY UPDATE`, which does not block that foreign-key
+    # check — which is why an unlocked read lost the race. `FOR UPDATE` blocks
+    # every child-row insert on this session (logs, enqueued messages) until the
+    # archive commits, `after` callbacks included. Those callbacks write on this
+    # same connection, so they are not blocked; none of them may wait on another
+    # connection that writes a child row of this session. The pages and triggers
+    # they raise are deferred to after commit, so they fire once the lock is
+    # released. Lock order is unchanged: the session row still comes before
+    # anything the callbacks lock.
+    #
+    # The block, if given, runs under the same lock after the queue check and
+    # before the transition. It is where a surface puts its other refusals —
+    # the live-turn one — so they cannot come ahead of this one: a caller told
+    # about the live turn first would send `force`, and `force` skips the queue
+    # check without ever showing the queue. Raise from it to refuse. Keep it to
+    # decisions on values read before the lock: a statement that fails in here
+    # aborts the transaction, and the archive with it.
+    #
+    # @param session [Session] reloaded by the lock, so it reflects the row as
+    #   the transition sees it
+    # @param force [Boolean] the caller has read the queue and is discarding it
+    # @param actor [String] how the archive line names whoever asked
+    # @return [Boolean] true if it archived; false if, once the lock was held,
+    #   the session could no longer be archived (a concurrent archive won)
+    # @raise [Refused] when messages are queued and +force+ is false
+    def guarded_archive!(session, force:, actor:)
+      session.with_lock do
+        next false unless session.may_archive?
+
+        unless force
+          queued = pending_messages(session)
+          raise Refused, queued if queued.any?
+        end
+
+        yield if block_given?
+
+        session.archive_actor = actor
+        session.archive_forced = force
+        session.archive!
+        true
+      end
+    end
 
     # The messages an archive of +session+ would discard.
     #

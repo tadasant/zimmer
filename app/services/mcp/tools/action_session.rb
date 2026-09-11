@@ -682,13 +682,15 @@ module Mcp
           raise ToolError, "Session cannot be trashed from current status: #{session.status}"
         end
 
-        refuse_archive_over_queued_messages(session, args)
-        destroyed_turn = refuse_archive_over_live_turn(session, args)
-
         actor = archive_actor_phrase(args)
-        session.archive_actor = actor
-        session.archive_forced = boolean(args["force"])
-        session.archive!
+        in_flight = Sessions::LiveTurn.in_flight?(session)
+        destroyed_turn = false
+        archived = guarded_archive(session, args, actor: actor) do
+          destroyed_turn = refuse_archive_over_live_turn(session, args, in_flight: in_flight)
+        end
+        # A concurrent archive won the lock.
+        raise ToolError, "Session cannot be trashed from current status: #{session.status}" unless archived
+
         # After the transition, not before: a line claiming a turn was destroyed
         # must not outlive an archive that then raised and left the session
         # running.
@@ -745,10 +747,15 @@ module Mcp
       # a refusal none of them could reconsider would be a fleet-wide stuck state
       # with no human in the loop to clear it.
       #
+      # +in_flight+ is read by the caller before the archive lock is taken, and
+      # this runs under it: the read is a GoodJob query that swallows its own
+      # errors, and a failed statement inside the lock's transaction would abort
+      # the archive rather than answer the question.
+      #
       # @return [Boolean] true when a live turn is being destroyed anyway because
       #   the caller forced it, so the caller can record and report the loss
-      def refuse_archive_over_live_turn(session, args, batch: false)
-        return false unless Sessions::LiveTurn.in_flight?(session)
+      def refuse_archive_over_live_turn(session, args, in_flight:, batch: false)
+        return false unless in_flight
         return false if archiving_own_session?(session)
         return true if boolean(args["force"])
 
@@ -773,8 +780,9 @@ module Mcp
                            "on session #{session.id}: #{e.message}")
       end
 
-      # Refuse to archive a session that still has messages queued for it,
-      # unless the caller explicitly forced it.
+      # Archive +session+, refusing if messages are still queued for it unless
+      # the caller explicitly forced it. The block runs under the same lock,
+      # after the queue check — see Sessions::ArchiveGuard.guarded_archive!.
       #
       # Archiving is what cancels the delivery: AgentSessionJob's monitoring loop
       # sees `archived?` and terminates the process instead of pausing and
@@ -787,13 +795,12 @@ module Mcp
       # certain rather than merely likely — and `force` is what keeps a certain
       # discard from being a trap, so the refusal can apply wherever the loss is
       # real rather than only where it is recoverable.
-      def refuse_archive_over_queued_messages(session, args, batch: false)
-        return if boolean(args["force"])
-
-        queued = Sessions::ArchiveGuard.pending_messages(session)
-        return if queued.empty?
-
-        raise ToolError, Sessions::ArchiveGuard.refusal_message(session, queued, batch: batch)
+      #
+      # @return [Boolean] whether it archived
+      def guarded_archive(session, args, batch: false, actor: archive_actor_phrase(args), &)
+        Sessions::ArchiveGuard.guarded_archive!(session, force: boolean(args["force"]), actor: actor, &)
+      rescue Sessions::ArchiveGuard::Refused => e
+        raise ToolError, Sessions::ArchiveGuard.refusal_message(session, e.messages, batch: batch)
       end
 
       def unarchive(session)
@@ -1431,27 +1438,24 @@ module Mcp
         destroyed_turns = []
 
         Session.where(id: session_ids).where.not(status: :archived).each do |session|
-          if session.may_archive?
-            begin
-              # Same refusal as the single-session action: a queue about to be
-              # discarded is no less discarded for being archived in a batch.
-              # Reported per session rather than aborting the batch, and
-              # `force` applies to the whole batch because the argument is one
-              # flag.
-              refuse_archive_over_queued_messages(session, args, batch: true)
-              # Same refusal as the single-session action, for the same
-              # reason: a turn killed mid-flight is no less killed for being
-              # archived in a batch.
-              destroyed_turn = refuse_archive_over_live_turn(session, args, batch: true)
-            rescue ToolError => e
-              errors << { id: session.id, error: e.message }
-              next
+          actor = "#{archive_actor_phrase(args)} (bulk)"
+          in_flight = Sessions::LiveTurn.in_flight?(session)
+          destroyed_turn = false
+          begin
+            # Same refusals as the single-session action: a queue about to be
+            # discarded, or a turn killed mid-flight, is no less lost for being
+            # archived in a batch. Reported per session rather than aborting the
+            # batch, and `force` applies to the whole batch because the argument
+            # is one flag.
+            archived = guarded_archive(session, args, batch: true, actor: actor) do
+              destroyed_turn = refuse_archive_over_live_turn(session, args, in_flight: in_flight, batch: true)
             end
+          rescue ToolError => e
+            errors << { id: session.id, error: e.message }
+            next
+          end
 
-            actor = "#{archive_actor_phrase(args)} (bulk)"
-            session.archive_actor = actor
-            session.archive_forced = boolean(args["force"])
-            session.archive!
+          if archived
             # After the transition, for the same reason as the single-session action.
             if destroyed_turn
               note_archive_over_live_turn(session, actor)

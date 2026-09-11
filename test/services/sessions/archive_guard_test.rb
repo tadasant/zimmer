@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class Sessions::ArchiveGuardTest < ActiveSupport::TestCase
   test "a session with nothing queued is not blocked" do
@@ -110,6 +111,117 @@ class Sessions::ArchiveGuardTest < ActiveSupport::TestCase
 
     assert_not_includes single, "every session in the batch"
     assert_includes batch, "applies to every session in the batch"
+  end
+
+  # --- guarded_archive! (#1139) ---------------------------------------------
+  #
+  # Production session 16494, 2026-09-11T10:47:02Z: a held backstop wake was
+  # enqueued in the same second the woken turn self-archived. The guard had read
+  # an empty queue unlocked, the archive went through, and the retirement
+  # callback stranded the wake and paged. The helper's queue read has to happen
+  # under the row lock the enqueuers serialize on.
+
+  # Simulates an enqueuer that held the session row, inserted, and committed just
+  # before the archive took the lock — the interleaving the unlocked read lost.
+  # Outside the lock's transaction, so the refusal's rollback does not take the
+  # row with it: the real enqueuer had already committed.
+  def enqueue_as_the_lock_is_taken(session, content)
+    session.define_singleton_method(:with_lock) do |*args, **kwargs, &block|
+      enqueued_messages.create!(content: content, position: 1, status: "pending")
+      super(*args, **kwargs, &block)
+    end
+  end
+
+  test "guarded_archive! refuses a message that was committed just before the lock" do
+    session = sessions(:running)
+    enqueue_as_the_lock_is_taken(session, "Backstop wake: re-poll child")
+    ErrorReporter.expects(:report_message).never
+
+    error = assert_raises(Sessions::ArchiveGuard::Refused) do
+      Sessions::ArchiveGuard.guarded_archive!(session, force: false, actor: "a test")
+    end
+
+    assert_equal [ "Backstop wake: re-poll child" ], error.messages.map(&:content)
+    assert_equal "running", session.reload.status, "a refusal must not archive"
+    assert_equal "pending", session.enqueued_messages.sole.status, "the wake is still owed delivery"
+  end
+
+  test "guarded_archive! reads the queue only after taking the row lock" do
+    session = sessions(:running)
+    sql = []
+    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+      sql << payload[:sql]
+    end
+    Sessions::ArchiveGuard.guarded_archive!(session, force: false, actor: "a test")
+    ActiveSupport::Notifications.unsubscribe(subscriber)
+
+    lock_at = sql.index { |query| query.match?(/FROM "sessions".*FOR UPDATE/m) }
+    queue_at = sql.index { |query| query.match?(/SELECT "enqueued_messages"\.\* FROM "enqueued_messages"/) }
+    transition_at = sql.index { |query| query.match?(/UPDATE "sessions" SET "status"/) }
+    assert lock_at, "expected a FOR UPDATE on the session row, got: #{sql.inspect}"
+    assert queue_at, "expected a read of the pending queue, got: #{sql.inspect}"
+    assert transition_at, "expected the status transition, got: #{sql.inspect}"
+    assert_operator lock_at, :<, queue_at, "the queue must be read under the lock, not before it"
+    assert_operator queue_at, :<, transition_at
+    # Tests run inside a transaction, so the lock's own transaction is a
+    # savepoint: releasing it before the transition is the lock ending early.
+    assert sql[lock_at...transition_at].none? { |query| query.match?(/\A(RELEASE|COMMIT)/) },
+      "the transition must happen inside the lock's transaction, got: #{sql[lock_at..transition_at].inspect}"
+  end
+
+  test "guarded_archive! archives an empty queue and records the actor" do
+    session = sessions(:running)
+
+    assert Sessions::ArchiveGuard.guarded_archive!(session, force: false, actor: "a test caller")
+
+    assert_equal "archived", session.reload.status
+    assert session.logs.where("content LIKE ?", "%Session moved to trash by a test caller%").exists?
+  end
+
+  # The forced branch still retires and records rather than pages — the
+  # strand callback's own specs cover the ledger line.
+  test "guarded_archive! with force archives over the queue without paging" do
+    session = sessions(:running)
+    queued = session.enqueued_messages.create!(content: "read and discarded", position: 1, status: "pending")
+    ErrorReporter.expects(:report_message).never
+
+    assert Sessions::ArchiveGuard.guarded_archive!(session, force: true, actor: "a test")
+
+    assert_equal "archived", session.reload.status
+    assert_equal "undelivered", queued.reload.status
+  end
+
+  test "guarded_archive! runs the caller's block after the queue check and before the transition" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "queued", position: 1, status: "pending")
+    ran = false
+
+    assert_raises(Sessions::ArchiveGuard::Refused) do
+      Sessions::ArchiveGuard.guarded_archive!(session, force: false, actor: "a test") { ran = true }
+    end
+    assert_not ran, "a live-turn refusal must not come ahead of the queue refusal"
+
+    statuses = []
+    Sessions::ArchiveGuard.guarded_archive!(session, force: true, actor: "a test") { statuses << session.status }
+    assert_equal [ "running" ], statuses
+    assert_equal "archived", session.reload.status
+  end
+
+  test "guarded_archive! lets the block refuse without archiving" do
+    session = sessions(:running)
+
+    assert_raises(RuntimeError) do
+      Sessions::ArchiveGuard.guarded_archive!(session, force: false, actor: "a test") { raise "live turn" }
+    end
+    assert_equal "running", session.reload.status
+  end
+
+  test "guarded_archive! answers false when a concurrent archive won the lock" do
+    session = sessions(:running)
+    Session.find(session.id).archive!
+
+    assert_equal false, Sessions::ArchiveGuard.guarded_archive!(session, force: false, actor: "a test")
+    assert_equal "archived", session.status, "the lock reloaded the row"
   end
 
   test "message_count is not part of the module's surface" do
