@@ -33,8 +33,9 @@ module Mcp
 
         **Actions:**
         - **set_session_defaults**: Set the global base runtime and/or model (Settings → Session
-          Defaults). A session gets these only when neither its creator nor its agent root names a
-          runtime or model — and a `start_session` call with no `agent_root` skips them entirely.
+          Defaults) — the bottom of the fallback chain, each half on its own: a new session gets the
+          global runtime when neither its creator nor its agent root names one, and the global model
+          when neither names a model valid for its runtime.
           Pass `runtime`, `model`, or both; an omitted one is left alone, and an
           empty string clears that half of the override so it falls back to the shipped default
           (Claude Code, and the runtime's own default model). The pair is validated exactly as the
@@ -47,10 +48,13 @@ module Mcp
           Extension. An unknown key, or an extension that is not registered, is refused. Every
           session is tagged with each toggle's value as it runs, and the Costs page compares those
           cohorts — so switching a setting back and forth is how its cohorts come to interleave in
-          time rather than split at one date.
+          time rather than split at one date. `session_scoped_credentials` takes effect beyond new
+          spawns: the credential sync and account rotation read it live, so it changes how the
+          shared credentials file is maintained immediately, for sessions already running too.
 
         Every change is echoed back as before → after, and recorded on an `[AppSettings]` audit log
-        line naming this tool, the action and the calling session.
+        line naming this tool, the action and the calling session. A call that sets a value to what
+        it already is changes nothing and says so.
 
         The spot/priority policy and backlog top-up live on the same row but are changed with
         `action_spot_policy`.
@@ -116,13 +120,15 @@ module Mcp
         setting.default_runtime = args["runtime"].to_s.strip.presence unless args["runtime"].nil?
         setting.default_model = args["model"].to_s.strip.presence unless args["model"].nil?
 
+        return "Session defaults unchanged: #{before}." unless setting.changed?
+
         unless setting.save
           raise ToolError, "Session defaults not saved: #{setting.errors.full_messages.join(', ')}. " \
                            "#{valid_models_hint(setting.default_runtime)}"
         end
 
         "Session defaults updated.\n\n- **Before:** #{before}\n- **After:** #{session_defaults_phrase(setting)}\n\n" \
-          "Applies to sessions created from now on whose creator and agent root name no runtime or model."
+          "Applies to sessions created from now on, wherever neither their creator nor their agent root names one."
       end
 
       # Keyed off ExperimentalSettingsRegistry — the list Settings → Experimental
@@ -141,6 +147,13 @@ module Mcp
 
         enabled = ActiveModel::Type::Boolean.new.cast(args["enabled"])
         before = experimental.current_value
+        default = ExperimentalSettingsRegistry.default_on?(experimental)
+        # Before any write, so a no-op cannot pin an extension's default into
+        # extension_states as an explicit value.
+        if enabled == before
+          return "#{experimental.title} (`#{experimental.key}`) is already **#{on_off(enabled)}** — nothing changed " \
+                 "(shipped default #{on_off(default)})."
+        end
 
         setting = AppSetting.editable
         setting.policy_change_source = change_source("set_experimental_setting")
@@ -151,7 +164,6 @@ module Mcp
         end
         raise ToolError, "Setting not saved: #{setting.errors.full_messages.join(', ')}" unless setting.save
 
-        default = ExperimentalSettingsRegistry.default_on?(experimental)
         "#{experimental.title} (`#{experimental.key}`) is now **#{on_off(enabled)}** (was #{on_off(before)}; " \
           "shipped default #{on_off(default)}). Sessions spawned from now on run with it #{on_off(enabled)}, " \
           "and are tagged that way for the Costs page."
