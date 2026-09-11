@@ -2399,8 +2399,9 @@ or an array of them.
 
 ### Card order is yours to set, and it stays set
 
-Inside a section, cards are ordered by where you dragged them — `sessions.sort_order` ascending,
-newest-first for anything nobody has placed. Grab a card by the grip bar at the top of it and drop
+Inside a section, cards are ordered by where you dragged them — `sessions.sort_order` ascending.
+A card nobody has placed sits where it arrived, which is newest-first: every session Zimmer creates
+is stamped as it is created. Grab a card by the grip bar at the top of it and drop
 it where you want it, in its own section or in another one. The drop POSTs the section's order to
 `POST /sessions/reorder`, naming the card you moved, so it survives a reload, a trip into a session
 and back, and paging the section.
@@ -2417,8 +2418,10 @@ How that is stored (`SessionCardOrder`):
 - **An arrival goes on top.** A new session, a card the auto-categorizer or `set_category` moves,
   and the cards of a deleted category all take one below their new section's lowest `sort_order`,
   so they appear at the top the way a new session always has, and nobody else's row is rewritten to
-  make room. A section nobody has ever reordered is one big tie at the column default `0`, broken by
-  `created_at DESC` — newest first.
+  make room. Rows nothing has ever placed tie at the column default `0` and fall back to
+  `created_at DESC`. Note what "on top" means once you have arranged a section by hand: a new
+  session outranks the card you dragged to the top, because the alternative — inserting it by
+  `created_at` into an order you chose — has no defined answer.
 - **A drag rewrites what moved, not the section.** The section's existing values are handed back out
   along the new order, so only the cards whose rank changed are written — dragging a card from 40th
   to 1st writes 41 rows, not the thousands of archived sessions sharing its section. The exception
