@@ -1361,6 +1361,22 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_not_includes session.prompt, "dropped"
   end
 
+  test "invoke accepts the Slack identifiers, and the schema says which keys it reads" do
+    stub_session_creation
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(prompt_template: "Reply in {{channel_id}} under {{thread_ts}} to {{author_id}}")
+
+    @tool.call(
+      "action" => "invoke",
+      "id" => trigger.id,
+      "variables" => { "channel_id" => "C0A6BF8T45R", "thread_ts" => "1704067000.000100", "author_id" => "not an id" }
+    )
+
+    assert_equal "Reply in C0A6BF8T45R under 1704067000.000100 to ", Session.last.prompt
+    description = Mcp::Tools::ActionTrigger.input_schema.to_h.deep_symbolize_keys[:properties][:variables][:description]
+    %w[channel_id message_ts thread_ts author_id].each { |key| assert_includes description, key }
+  end
+
   test "a session invoked over MCP carries the api genesis" do
     stub_session_creation
 

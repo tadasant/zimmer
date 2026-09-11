@@ -865,6 +865,14 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     visit trigger_path(trigger)
     assert_text "Run Now"
     assert_no_horizontal_overflow("trigger detail")
+
+    # The prompt-template help lists every placeholder, with inline <code> tokens
+    # like {{text|untrusted}} that do not break.
+    visit new_trigger_path
+    assert_text "{{text|untrusted}}"
+    assert_no_horizontal_overflow("new trigger form")
+    page.execute_script("document.querySelector('[data-trigger-form-target=\"promptHelp\"]').scrollIntoView({ block: 'end' })")
+    page.save_screenshot("tmp/screenshots/proof-trigger-form-prompt-help-375.png")
   end
 
   # A failed trigger renders an error string it did not choose — an exception
@@ -1080,7 +1088,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     assert_no_horizontal_overflow("health dashboard (outage)")
 
-    page.execute_script("document.evaluate(\"//h3[text()='Process Health']\", document, null, 9, null).singleNodeValue.scrollIntoView()")
+    page.execute_script("document.evaluate(\"//h3[text()='Process Health']\", document, null, 9, null).singleNodeValue.scrollIntoView({ block: 'end' })")
     page.save_screenshot("tmp/screenshots/health-outage-panels-375.png")
   end
 
@@ -1105,7 +1113,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     # Captured as PR evidence — scrolled to the panel, since a viewport screenshot
     # of a page this long otherwise shows only the header.
-    page.execute_script("document.evaluate(\"//h3[text()='Queued Job Maintenance']\", document, null, 9, null).singleNodeValue.scrollIntoView()")
+    page.execute_script("document.evaluate(\"//h3[text()='Queued Job Maintenance']\", document, null, 9, null).singleNodeValue.scrollIntoView({ block: 'end' })")
     page.save_screenshot("tmp/screenshots/health-queued-job-maintenance-375.png")
   end
 
@@ -1151,7 +1159,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     # Captured as PR evidence — scrolled to the panel, since a viewport screenshot
     # of a page this long otherwise shows only the header.
-    page.execute_script("document.evaluate(\"//h3[text()='Retry Budgets']\", document, null, 9, null).singleNodeValue.scrollIntoView()")
+    page.execute_script("document.evaluate(\"//h3[text()='Retry Budgets']\", document, null, 9, null).singleNodeValue.scrollIntoView({ block: 'end' })")
     page.save_screenshot("tmp/screenshots/health-retry-budgets-375.png")
   end
 
