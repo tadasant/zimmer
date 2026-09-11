@@ -347,7 +347,7 @@ class SigtermRetryServiceTest < ActiveSupport::TestCase
     log_contents = logs.map(&:content).join("\n")
 
     assert_match(/SIGTERM.*auto-retry/, log_contents)
-    assert_match(/Spawned new Claude CLI process/, log_contents)
+    assert_match(/Spawned new agent process with PID 12345 for SIGTERM retry attempt 1/, log_contents)
     assert_match(/retry.*successful/, log_contents)
   end
 

@@ -512,75 +512,21 @@ class ApiErrorRetryService
   # @param retry_attempt [Integer] Current retry attempt number
   # @return [Symbol] :success, :exhausted, :aborted
   def spawn_and_verify_retry(working_directory, retry_attempt)
-    # Final status check before spawning
-    abort_result = check_session_status(resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY)
-    return :aborted if abort_result == :aborted
+    respawn_and_verify(working_directory, retry_attempt, resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY) do
+      add_log("Resuming session after API error", level: "info")
 
-    add_log("Resuming session after API error", level: "info")
-
-    # Always resume (not fresh start) - API errors only occur during active conversations
-    # since they require at least one API call to have been made.
-    # Regenerate system prompt for retry consistency
-    system_prompt = OrchestratorSystemPromptBuilder.build(
-      session: session,
-      working_directory: session.working_directory
-    )
-
-    spawn_result = cli_adapter.resume(
-      session_id: session.session_id,
-      prompt: AutomatedPrompts::SYSTEM_RECOVERY,
-      working_dir: working_directory,
-      append_system_prompt: system_prompt,
-      model: session.config&.dig("model"),
-      auto_compact_window: session.auto_compact_window
-    )
-
-    new_pid = spawn_result[:pid]
-
-    add_log(
-      "Spawned new Claude CLI process with PID #{new_pid} for API error retry attempt #{retry_attempt}",
-      level: "info"
-    )
-
-    # Update session metadata with new process PID
-    with_db_retry do
-      session.record_agent_process!(new_pid)
+      # Always resume (not fresh start) - API errors only occur during active
+      # conversations since they require at least one API call to have been made.
+      resume_for_recovery(working_directory, prompt: AutomatedPrompts::SYSTEM_RECOVERY)
     end
+  end
 
-    # Verify the process stays running
-    if verify_process_running(new_pid, retry_attempt)
-      add_log(
-        "API error retry #{retry_attempt} successful - process #{new_pid} verified running for #{SUCCESS_THRESHOLD}s",
-        level: "info"
-      )
-      log_buffer.flush
-      @logger.info("API error retry successful", retry_attempt: retry_attempt, new_pid: new_pid)
-      return :success
-    end
+  # The scaffold's rescue reads this to tell an intermediate failure from the final one.
+  def recovery_attempt_limit = BUDGET.max
 
-    # Process died during verification - try next retry
-    attempt_next_retry(working_directory)
-  rescue => e
-    if retry_attempt >= BUDGET.max
-      # Final attempt failed and no retries remain — this is a genuine failure,
-      # so log at error (which surfaces to GlitchTip, with a backtrace).
-      add_log(
-        "Error during API error retry attempt #{retry_attempt}: #{e.message}",
-        level: "error"
-      )
-      log_buffer.flush
-      @logger.error("Error during API error retry", retry_attempt: retry_attempt, error: e.message, exception: e)
-      return :exhausted
-    end
-
-    # Intermediate attempt failed but retries remain; this is expected/transient
-    # and will self-resolve on the next attempt, so log at info (no alert).
-    add_log(
-      "Error during API error retry attempt #{retry_attempt}: #{e.message}",
-      level: "info"
-    )
-    log_buffer.flush
-    @logger.info("Error during API error retry", retry_attempt: retry_attempt, error: e.message)
+  # Straight back to the retry loop, skipping detection: the error that started
+  # this is already known, and re-detecting it would spend the cursor twice.
+  def next_recovery_attempt(working_directory)
     attempt_next_retry(working_directory)
   end
 
@@ -662,47 +608,6 @@ class ApiErrorRetryService
     end
 
     spawn_and_verify_retry(working_directory, retry_attempt)
-  end
-
-  # Find the transcript file path for the session
-  def find_transcript_path(working_directory)
-    source = TranscriptRuntime.source_for(session, file_system: file_system)
-    transcript_dir = source.transcript_directory(working_directory: working_directory)
-    return nil unless transcript_dir
-    return nil unless file_system.directory?(transcript_dir)
-
-    source.find_main_transcript(transcript_directory: transcript_dir, session: session)
-  rescue => e
-    @logger.error("Error finding transcript path", error: e.message)
-    nil
-  end
-
-  # Extract text content from a transcript message entry
-  def extract_message_text(entry)
-    message = entry["message"]
-    return "" unless message.is_a?(Hash)
-
-    content = message["content"]
-    return "" unless content.is_a?(Array)
-
-    content.filter_map do |block|
-      block["text"] if block.is_a?(Hash) && block["type"] == "text"
-    end.join(" ")
-  end
-
-  # Get the current line count of the transcript file
-  def get_transcript_line_count(working_directory)
-    transcript_path = find_transcript_path(working_directory)
-    return 0 unless transcript_path
-    return 0 unless file_system.exists?(transcript_path)
-
-    content = file_system.read(transcript_path)
-    return 0 if content.blank?
-
-    content.lines.count
-  rescue => e
-    @logger.error("Error getting transcript line count", error: e.message)
-    0
   end
 
   # Check if an error is retryable (server error or rate limit)
