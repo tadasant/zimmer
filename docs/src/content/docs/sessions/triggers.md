@@ -1206,7 +1206,7 @@ swallows on its way to that prose, and reports one of four states:
 
 Only `:unconfigured` keeps the original wording, because it is the only state that ever deserved it.
 None of them alerts: a preflight failure is by construction the *total* case, and the total case is
-already reported by the stale heartbeat that `GithubTriggerHealthCheckJob` pages on within 15
+already reported by the stale heartbeat that `TriggerPollerLivenessCheckJob` pages on within 15
 minutes. What changed is that the WARNs an operator reads while that counts down now name the right
 fault — a credential to provision, a credential to rotate, or githubstatus.com.
 :::
@@ -1235,8 +1235,8 @@ A degradation that does *not* clear still surfaces, by two routes. One condition
 an expensive query the index keeps timing out on — pages once its consecutive-skip streak reaches
 `CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT` (5 ticks ≈ 5 minutes, tracked per condition in Redis and
 cleared by any clean poll). Every condition stuck on it stamps no heartbeat at all, so
-`GithubTriggerHealthCheckJob` pages on the stale value — see
-[background jobs](/operate/background-jobs/#trigger-poll-liveness).
+`TriggerPollerLivenessCheckJob` pages on the stale value — see
+[background jobs](/operate/background-jobs/#trigger-poll-liveness-and-freshness).
 :::
 
 :::note[A request that fails is retried before it pages — and pages just as loudly if it keeps failing]
@@ -2342,7 +2342,9 @@ offer; polling needs nothing but the outbound `gh` credential that is already th
 | `ScheduleTriggerJob` | every minute |
 | `GithubTriggerPollerJob` | every minute |
 | `GithubPrPollPassJob` | every 30 seconds (the merge-conflict evaluator inside it, every 2 minutes) |
-| `SlackTriggerHealthCheckJob` | hourly at :45 |
+| `SlackTriggerHealthCheckJob` | hourly at :45 — per-condition freshness for Slack feeds |
+| `GithubTriggerHealthCheckJob` | hourly at :35 — per-condition freshness for GitHub conditions |
+| `TriggerPollerLivenessCheckJob` | every 5 minutes — is each poller polling at all, from the heartbeat each stamps |
 | `CleanupStaleTriggersJob` | hourly at :15 — reaps leftovers, parks undelivered wakes |
 | `StrandedSleepSweepJob` | every 5 minutes — resumes a session asleep on a wake that can never fire |
 
