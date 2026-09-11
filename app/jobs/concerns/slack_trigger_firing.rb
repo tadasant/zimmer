@@ -347,11 +347,21 @@ module SlackTriggerFiring
     permalink = get_message_permalink(channel_id, head.ts)
     channel_name = dm ? "DM" : (condition.channel_name.presence || resolve_channel_name(channel_id))
 
+    # {{text}}, {{author}} and {{channel}} are what a person typed or named. The
+    # identifiers after them are what this pass read off Slack's own fields — the
+    # conversation it asked for, and the message's ts, thread and user — so a
+    # template can give the agent the place to act without it trusting the text
+    # (Trigger::TRUSTED_IDENTIFIER_FORMATS). {{thread_ts}} is the thread to reply
+    # into: the parent's ts for a reply, the message's own ts for a top-level one.
     prompt = trigger.interpolate_prompt(
       link: permalink,
       text: head.text || "",
       author: get_author_name(head),
-      channel: channel_name
+      channel: channel_name,
+      channel_id: channel_id,
+      message_ts: head.ts,
+      thread_ts: head.thread_ts.presence || head.ts,
+      author_id: head.user
     )
 
     # The messages this one is standing in for. Appended AFTER interpolation, not
