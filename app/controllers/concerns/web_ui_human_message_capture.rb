@@ -10,7 +10,9 @@
 #
 # Api::BaseController descendants — the REST API, and McpController with it —
 # must NOT include this. They authenticate an API key shared by the whole agent
-# fleet, which establishes a caller but not a person. An agent session issuing
+# fleet, which establishes a caller but not a person. (The one API route that
+# records a human, Api::V1::QuickRouterController, calls HumanMessageCapture
+# directly, for a reason stated there: its key is a browser's, not the fleet's.) An agent session issuing
 # `follow_up` over MCP and Tadas clicking Send in the browser produce the same
 # `user`-role turn through the same delivery path; the controller that accepted
 # the request is the only thing that tells them apart, so it is where the

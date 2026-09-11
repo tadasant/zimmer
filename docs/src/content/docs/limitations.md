@@ -2719,6 +2719,18 @@ Fixed in [#67](https://github.com/tadasant/zimmer/issues/67): `agent-orchestrato
 that actually holds the catalog they maintain. The catalog now ships ten roots and every one of them
 clones. What the fix did *not* remove is the reverse-lookup ambiguity below — it widened it.
 
+### Page content from the browser extension is untrusted text in a priority prompt
+
+The [browser extension](/extend/browser-extension/) puts whatever page you pinned — any site, not
+just Zimmer's own — into a router session's prompt, and that session is `web_ui` genesis and runs as
+priority. A page can carry text written for the agent that reads it. What stands in the way is
+narrow: the extension captures only text a reader could see (so a `display:none`, off-screen or
+pixel-clipped payload never leaves the browser; text in the page's colour on the page's background
+still does), Zimmer neutralizes the block's own tags in page-supplied text so the page cannot close the
+block and forge the human's message, and the block says its contents are data, never instructions.
+Visible text that argues with the agent is still visible text, and nothing sandboxes a router
+session that decides to act on it. Pin pages you would be comfortable having an agent read.
+
 ### The baseline orchestrator root can't spawn downstream sessions out of the box
 
 🔴 `zimmer-orchestrator` — the root behind every quick-router / chat-bubble submission — ships with **no**

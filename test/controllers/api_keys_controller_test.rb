@@ -111,13 +111,15 @@ class ApiKeysControllerTest < ActionDispatch::IntegrationTest
     assert_select "##{dom_id(api_key)}", text: /Quick Router only/
   end
 
-  test "no grant, or a tampered one, mints a full-API key" do
+  test "no grant mints a full-API key; an unknown one mints nothing" do
     post api_keys_path, params: { api_key: { name: "plain" } }, headers: operator_headers
     assert_equal ApiKey::API_GRANT, ApiKey.find_by!(name: "plain").grant
 
-    post api_keys_path, params: { api_key: { name: "tampered", grant: "everything" } }, headers: operator_headers
-    assert_response :success
-    assert_equal ApiKey::API_GRANT, ApiKey.find_by!(name: "tampered").grant
+    assert_no_difference("ApiKey.count") do
+      post api_keys_path, params: { api_key: { name: "tampered", grant: "everything" } }, headers: operator_headers
+    end
+    assert_response :unprocessable_entity
+    assert_includes response.body, "Grant is not included in the list"
   end
 
   test "creating a key with a taken name re-renders with the error" do

@@ -23,10 +23,6 @@
 # out of every agent session's reach, and its only holder is the browser of the
 # one human the deployment serves. The actor at this boundary is established.
 class Api::V1::QuickRouterController < Api::BaseController
-  # Server-side cap on the page, the same as the in-app bubble's. The pin's own
-  # fields are capped separately in QuickRouterPrompt, so a long page never
-  # truncates away the thing that was pinned.
-  PAGE_CONTEXT_MAX_LENGTH = QuickRouterPrompt::PAGE_CONTEXT_MAX_LENGTH
   PAGE_URL_MAX_LENGTH = 2_048
   PAGE_TITLE_MAX_LENGTH = 300
 
@@ -54,7 +50,9 @@ class Api::V1::QuickRouterController < Api::BaseController
 
     page_url = params[:page_url].to_s.strip.truncate(PAGE_URL_MAX_LENGTH)
     page_title = params[:page_title].to_s.strip.truncate(PAGE_TITLE_MAX_LENGTH)
-    page_context = params[:page_context].to_s.strip.truncate(PAGE_CONTEXT_MAX_LENGTH)
+    # The pin's own fields are capped separately in QuickRouterPrompt, so a long
+    # page never truncates away the thing that was pinned.
+    page_context = params[:page_context].to_s.strip.truncate(QuickRouterPrompt::PAGE_CONTEXT_MAX_LENGTH)
     pin = QuickRouterPrompt.normalize_pin(params[:pin])
 
     augmented_prompt = QuickRouterPrompt.augment(

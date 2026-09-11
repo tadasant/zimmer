@@ -37,7 +37,7 @@
 
     <form class="card" id="form">
       <label for="baseUrl">Zimmer URL</label>
-      <input id="baseUrl" type="url" placeholder="https://zimmer.example.com" autocomplete="off" spellcheck="false" required>
+      <input id="baseUrl" type="text" inputmode="url" placeholder="https://zimmer.example.com" autocomplete="off" spellcheck="false" required>
       <p class="help">The instance this browser can reach — on the tailnet, that is its tailnet address. Saving asks Chrome for permission to talk to that one origin.</p>
 
       <label for="apiKey">Quick Router key</label>
@@ -61,7 +61,7 @@
         <li>Click the thing your feedback is about. <kbd>Enter</kbd> skips the pin; <kbd>Esc</kbd> cancels.</li>
         <li>Type, then <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd>. A toast links to the session Zimmer started.</li>
       </ol>
-      <p>What is sent: your message, the page URL and title, the page reduced to markdown (capped at 20,000 characters), and — for the pin — the element under it, a selector for it, its text, and the content around it. All of it lands in the session's prompt, so mind what page you are on.</p>
+      <p>What is sent: your message, the page URL and title, the visible page reduced to markdown (capped at 20,000 characters; form contents are never sent), and — for the pin — the element under it, a selector for it, its text, and the content around it. All of it lands in the session's prompt, so mind what page you are on.</p>
     </div>
   </main>
   <script src="settings.js"></script>

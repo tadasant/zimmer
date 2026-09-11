@@ -68,7 +68,7 @@
                 Create key
               </button>
             </div>
-            <% attempted_grant = @attempted_grant || ApiKey::API_GRANT %>
+            <% attempted_grant = ApiKey::GRANTS.include?(@attempted_grant) ? @attempted_grant : ApiKey::API_GRANT %>
             <fieldset class="mt-4">
               <legend class="text-sm font-medium text-gray-700">What it opens</legend>
               <div class="mt-2 space-y-2">
