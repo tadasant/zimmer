@@ -88,6 +88,13 @@ class ApplicationWorkflowTest < ActiveSupport::TestCase
     end
   end
 
+  test "a param named after one of the input's own methods is refused at declaration" do
+    %i[workflow errors to_h attributes].each do |reserved|
+      error = assert_raises(ArgumentError, reserved.to_s) { build_workflow { param reserved, :string } }
+      assert_match "would shadow Workflow::Input##{reserved}", error.message
+    end
+  end
+
   test "each workflow validates against its own params only" do
     one = build_workflow { param :message, :text, required: true }
     other = build_workflow { param :count, :integer, required: true }
@@ -183,6 +190,13 @@ class ApplicationWorkflowTest < ActiveSupport::TestCase
       { "text" => "hi", "count" => nil, "dry_run" => true, "for_date" => nil, "tone" => nil },
       input.to_h
     )
+  end
+
+  test "to_h is JSON, so it reads the same before and after the jsonb column" do
+    input = typed_workflow.build_input!(text: "hi", dry_run: true, count: "3", for_date: "2026-09-11")
+
+    assert_equal Date.new(2026, 9, 11), input.for_date
+    assert_equal({ "text" => "hi", "count" => 3, "dry_run" => true, "for_date" => "2026-09-11", "tone" => nil }, input.to_h)
   end
 
   # --- The plan --------------------------------------------------------------

@@ -883,6 +883,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_180100) do
     t.index ["last_session_id"], name: "index_triggers_on_last_session_id"
     t.index ["status"], name: "index_triggers_on_status"
     t.check_constraint "num_nonnulls(prompt_template, workflow_id) = 1", name: "triggers_prompt_template_xor_workflow_id"
+    t.check_constraint "workflow_id IS NULL OR reuse_session = false", name: "triggers_workflow_trigger_never_reuses_session"
   end
 
   create_table "users", force: :cascade do |t|

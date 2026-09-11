@@ -235,6 +235,9 @@ class Trigger < ApplicationRecord
 
   # "" is no workflow, not a workflow named empty string.
   normalizes :workflow_id, with: ->(value) { value.strip.presence }
+  # And on a workflow trigger, "" is no template: every edit form submits the
+  # template field, and anything but NULL would trip the check constraint.
+  before_validation :clear_blank_template_on_workflow_trigger
 
   # A form's "Use the default" option submits "", which means "derive it", not a
   # class named empty string or a precedence of zero.
@@ -552,7 +555,8 @@ class Trigger < ApplicationRecord
   end
 
   # Whether this trigger runs a workflow (#18) instead of rendering a
-  # `prompt_template`. Only WorkflowRunner fires one; no firing site does yet.
+  # `prompt_template`. WorkflowRunner fires one; the template firing sites
+  # refuse it (#interpolate_prompt).
   def workflow_backed?
     workflow_id.present?
   end
@@ -734,11 +738,6 @@ class Trigger < ApplicationRecord
   #   fire. WorkflowRunner's to pass, and required exactly when this trigger is
   #   workflow-backed; it is saved against the session the fire spawns.
   def create_session!(prompt:, genesis: nil, workflow_run: nil)
-    if workflow_backed? == workflow_run.nil?
-      raise ArgumentError, workflow_backed? ? workflow_fire_mismatch_message : "Trigger '#{name}' (ID: #{id}) runs no workflow, so its fire carries no workflow run"
-    end
-
-    @fire_workflow_run = workflow_run
     @last_fire_burst_suppressed = false
     @last_fire_pending_session = nil
     # Reset with its siblings, and for the same reason: a caller reads it after
@@ -752,6 +751,20 @@ class Trigger < ApplicationRecord
     # this fire's outcome.
     @last_follow_up_status = nil
     @genesis_override = genesis
+    @fire_workflow_run = nil
+
+    # After the resets, so a caller reading them after this raise does not read
+    # an earlier fire's outcome.
+    if workflow_backed? == workflow_run.nil?
+      raise ArgumentError, workflow_backed? ? workflow_fire_mismatch_message : "Trigger '#{name}' (ID: #{id}) runs no workflow, so its fire carries no workflow run"
+    end
+    # The reuse ban is a validation and a check constraint too. It is enforced
+    # here as well because a reuse fire is where it matters: it would hand the
+    # workflow's instructions to a conversation already running, with no run
+    # recorded for it.
+    raise ArgumentError, "Trigger '#{name}' (ID: #{id}) runs a workflow, and a workflow trigger never reuses a session" if workflow_backed? && reuse_session
+
+    @fire_workflow_run = workflow_run
 
     # Reconcile the catalog-artifact references against the catalog before
     # creating or reusing a session, and announce any that have newly stopped
@@ -783,7 +796,13 @@ class Trigger < ApplicationRecord
     # RAISING here is what was wrong. An unhealable name is only a problem for a
     # fire that was about to hand it to Session.create_from_agent_root!, and
     # this call runs before we know whether this is one.
-    heal_stale_agent_root!(raise_when_unhealable: false)
+    #
+    # Neither half runs for a workflow trigger. Its agent root is the one its
+    # workflow declares — checked against the catalog in CI — or the one an
+    # operator chose for a root-agnostic workflow, and repointing it silently
+    # would start the run in a root nobody reviewed it for. A root the catalog
+    # does not carry raises at spawn instead, in Session.create_from_agent_root!.
+    heal_stale_agent_root!(raise_when_unhealable: false) unless workflow_backed?
 
     if reuse_session && last_session_id.present?
       session = Session.find_by(id: last_session_id)
@@ -842,7 +861,7 @@ class Trigger < ApplicationRecord
     # or one whose root has since left. `"claude_code"` is not a root, so such a
     # wake could only ever raise: ScheduleTriggerJob parked it `failed`, every
     # firing path filters on `enabled`, and the session slept forever.
-    heal_stale_agent_root!
+    heal_stale_agent_root! unless workflow_backed?
 
     spawned = spawn_unless_pending_session!(prompt: prompt)
     # A trigger that spawned a REAL session has somewhere to talk to again, and
@@ -2407,6 +2426,10 @@ class Trigger < ApplicationRecord
     if declared_root && agent_root_name != declared_root
       errors.add(:agent_root_name, "must be #{declared_root.inspect}, the agent root workflow #{workflow_id.inspect} declares")
     end
+  end
+
+  def clear_blank_template_on_workflow_trigger
+    self.prompt_template = nil if workflow_backed? && prompt_template.blank?
   end
 
   def workflow_fire_mismatch_message

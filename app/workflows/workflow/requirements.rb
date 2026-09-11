@@ -37,7 +37,7 @@ module Workflow
     # A UNION with the root's defaults, not an override: the root's baseline plus
     # what the procedure additionally needs. That is the safe default and an open
     # question on #18 — a workflow that wants a narrower surface than its root
-    # cannot have one yet. Hooks and plugins are not declarable, so they stay the
+    # cannot have one. Hooks and plugins are not declarable, so they stay the
     # root's defaults. The goal is passed as its catalog id, which AgentSessionJob
     # resolves to the goal's text at spawn.
     #

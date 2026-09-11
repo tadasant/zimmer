@@ -113,6 +113,38 @@ class TriggerWorkflowTest < ActiveSupport::TestCase
     end
   end
 
+  test "a blank template on a workflow trigger is no template, as every edit form submits one" do
+    trigger = workflow_trigger(prompt_template: "")
+
+    assert trigger.save, trigger.errors.full_messages.to_sentence
+    assert_nil trigger.reload.prompt_template
+
+    assert trigger.update(prompt_template: "  ", name: "Echo, renamed")
+    assert_nil trigger.reload.prompt_template
+  end
+
+  test "the database refuses a workflow trigger that reuses a session, whatever skips the model" do
+    trigger = workflow_trigger
+    trigger.save!
+
+    assert_raises(ActiveRecord::CheckViolation) do
+      Trigger.transaction(requires_new: true) { trigger.update_column(:reuse_session, true) }
+    end
+  end
+
+  test "a workflow trigger refuses a reuse fire even when its reuse flag was never saved" do
+    trigger = workflow_trigger
+    trigger.save!
+    trigger.reuse_session = true
+
+    assert_no_difference([ "Session.count", "WorkflowRun.count" ]) do
+      error = assert_raises(ArgumentError) do
+        trigger.create_session!(prompt: "hi", workflow_run: WorkflowRun.new(workflow_id: "echo", trigger: trigger))
+      end
+      assert_match "never reuses a session", error.message
+    end
+  end
+
   test "a workflow trigger refuses a template fire, loudly, and spawns nothing" do
     trigger = workflow_trigger
     trigger.save!

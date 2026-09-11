@@ -17,8 +17,8 @@ class CreateWorkflowRuns < ActiveRecord::Migration[8.0]
   def change
     create_table :workflow_runs do |t|
       t.references :session, null: false, foreign_key: { on_delete: :cascade }, index: { unique: true }
-      # NULL for a run no trigger fired. Nothing starts one of those yet; the
-      # column is nullable now so that a manual or API run later needs no migration.
+      # NULL for a run no trigger fired: a manual or API run, which is Phase 2
+      # of #18. Nullable so that phase needs no migration.
       t.references :trigger, null: true, foreign_key: { on_delete: :nullify }
       t.string :workflow_id, null: false
       t.jsonb :input, null: false, default: {}

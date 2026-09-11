@@ -15,5 +15,9 @@ class AddWorkflowIdToTriggers < ActiveRecord::Migration[8.0]
     change_column_null :triggers, :prompt_template, true
     add_check_constraint :triggers, "num_nonnulls(prompt_template, workflow_id) = 1",
       name: "triggers_prompt_template_xor_workflow_id"
+    # A workflow trigger never reuses a session (Trigger#validate_workflow says
+    # why), held here too so that no write that skips the model can make one.
+    add_check_constraint :triggers, "workflow_id IS NULL OR reuse_session = false",
+      name: "triggers_workflow_trigger_never_reuses_session"
   end
 end

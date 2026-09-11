@@ -12,8 +12,9 @@
 # says can change it.
 #
 # A run is therefore written once, by Trigger#create_session! on WorkflowRunner's
-# behalf, and is read-only from then on: no path updates one, and #readonly?
-# makes sure no path can by accident. Removal is the database's job — the
+# behalf, and is read-only from then on: #readonly? refuses every write through a
+# record — save, update!, update_columns. (A class-level update_all bypasses it,
+# as it bypasses every model rule.) Removal is the database's job — the
 # session foreign key cascades and the trigger one nullifies — so neither a
 # session purge nor a trigger cleanup trips over a row that refuses to be touched.
 class WorkflowRun < ApplicationRecord

@@ -70,6 +70,9 @@ class ApplicationWorkflow
       key = key.to_sym
       raise ArgumentError, "#{name}: param #{key.inspect} has unknown type #{type.inspect}" unless Workflow::Input::TYPES.key?(type)
       raise ArgumentError, "#{name}: param #{key.inspect} is declared twice" if params.any? { |param| param.key == key }
+      # A param is a reader on the input, so one named `workflow`, `errors` or
+      # `to_h` would silently replace the method the validation itself calls.
+      raise ArgumentError, "#{name}: param #{key.inspect} would shadow Workflow::Input##{key}" if Workflow::Input.method_defined?(key)
 
       params << Workflow::Param.new(
         key: key, type: type, required: required, label: label || key.to_s.humanize,
