@@ -224,6 +224,24 @@ env:
     # droplet's 8 vCPU as though it had the box to itself, and eight of them multiply. A
     # mitigation, not a bound -- the pool above is the bound. 0 turns it off.
     ZIMMER_SESSION_PARALLEL_WORKERS: "<%= ENV.fetch("ZIMMER_SESSION_PARALLEL_WORKERS", "2") %>"
+    # Which of Zimmer's `mcp_secrets` reach a session clone's `.env`. Unset (the
+    # default) means SCOPED: a session gets the secrets its own MCP servers, skills
+    # and hooks declare, and nothing else -- see SessionSecretScope. Before
+    # tadasant/zimmer#372 every clone got all ~90, so a session provisioned with
+    # nothing but `grafana` could still read SLACK_BOT_TOKEN, the Cloudflare
+    # read-write pair and three GCS service-account keys.
+    #
+    # "all" is the break-glass: it restores the pre-#372 behaviour exactly, fleet-wide,
+    # as one deploy-time variable. Reach for it if a narrowing turns out to have taken
+    # a credential something genuinely needed and you need every session working again
+    # in one deploy. The narrower fixes, in order of preference: attach the MCP server
+    # that declares the variable to the affected session (which rewrites its `.env` on
+    # the next turn), or name the variable in ZIMMER_SESSION_ENV_EXTRA_KEYS below.
+    ZIMMER_SESSION_ENV_SCOPE: "<%= ENV.fetch("ZIMMER_SESSION_ENV_SCOPE", "scoped") %>"
+    # Comma-separated secret names every clone gets regardless of what its artifacts
+    # declare. Empty by default -- nothing in the bundle is needed by a clone for a
+    # reason no artifact states. This is the surgical half of the break-glass above.
+    ZIMMER_SESSION_ENV_EXTRA_KEYS: "<%= ENV.fetch("ZIMMER_SESSION_ENV_EXTRA_KEYS", "") %>"
     APP_HOST: zimmer.tadasant.com
     # Read the catalog from the mounted production catalog (delivered by
     # artifacts-sync-prod). production.rb falls back to the in-image catalog when this

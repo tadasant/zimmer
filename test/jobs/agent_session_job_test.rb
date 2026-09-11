@@ -4943,8 +4943,15 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
   end
 
-  # Test secrets injection into .env file
-  test "injects secrets from Rails credentials into .env file in working directory" do
+  # Test secrets injection into .env file. The bundle is NOT written whole: the
+  # clone gets the secrets this session's own artifacts declare and nothing else
+  # (SessionSecretScope, tadasant/zimmer#372).
+  test "injects only the secrets this session's MCP servers declare into the .env file" do
+    # Carried on custom_metadata rather than mcp_servers so this test keeps
+    # exercising the baseline-config branch (an explicit server list would send
+    # the job through a real `air prepare`). Both columns feed the same
+    # Session#all_mcp_servers the scope is computed from.
+    @session.update!(custom_metadata: { "injected_mcp_servers" => [ "slack-workspace" ] })
     job = AgentSessionJob.new
 
     # Inject mock dependencies
@@ -4964,10 +4971,12 @@ class AgentSessionJobTest < ActiveJob::TestCase
       [ pid, MockProcessManager::MockStatus.new(0) ]
     end
 
-    # Mock SecretsLoader to return test secrets
+    # The deployment's whole bundle. Only SLACK_BOT_TOKEN is declared by the one
+    # server this session has; the other two are the blast radius being closed.
     mock_secrets = {
-      "API_KEY" => "test-api-key-123",
-      "DATABASE_URL" => "postgres://localhost/test"
+      "SLACK_BOT_TOKEN" => "value-for-SLACK_BOT_TOKEN",
+      "CLOUDFLARE_API_TOKEN_DNS_READWRITE" => "value-for-CLOUDFLARE_API_TOKEN_DNS_READWRITE",
+      "GCS_ADMIN_SERVICE_ACCOUNT_KEY_JSON" => "value-for-GCS_ADMIN_SERVICE_ACCOUNT_KEY_JSON"
     }
 
     GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
@@ -4990,19 +4999,26 @@ class AgentSessionJobTest < ActiveJob::TestCase
       end
     end
 
-    # Verify .env file was created with secrets (values should be quoted)
+    # Verify .env holds exactly the one key this session's server asked for.
     assert mock_fs.exists?("/tmp/test-clone/.env"), "Expected .env file to be created"
-    env_content = mock_fs.read("/tmp/test-clone/.env")
-    assert_includes env_content, 'API_KEY="test-api-key-123"'
-    assert_includes env_content, 'DATABASE_URL="postgres://localhost/test"'
+    written = EnvFile.parse(mock_fs.read("/tmp/test-clone/.env"))
 
-    # Verify log was created about secrets injection
+    assert_equal [ "SLACK_BOT_TOKEN" ], written.keys
+    assert_not_includes written.keys, "CLOUDFLARE_API_TOKEN_DNS_READWRITE"
+    assert_not_includes written.keys, "GCS_ADMIN_SERVICE_ACCOUNT_KEY_JSON"
+
+    # Verify log names the narrowing, and names the key rather than its value
     @session.reload
-    secrets_log = @session.logs.find { |log| log.content.include?("Injected 2 secret(s) into .env file") }
+    secrets_log = @session.logs.find { |log| log.content.include?("Injected 1 of 3 secret(s) into .env") }
     assert_not_nil secrets_log, "Expected log about secrets injection"
+    assert_includes secrets_log.content, "SLACK_BOT_TOKEN"
+    assert_not_includes secrets_log.content, "value-for-SLACK_BOT_TOKEN"
   end
 
   test "escapes special characters in secret values" do
+    @session.update!(custom_metadata: {
+      "injected_mcp_servers" => [ "slack-workspace", "zimmer-sessions", "secrets-service-account" ]
+    })
     job = AgentSessionJob.new
 
     # Inject mock dependencies
@@ -5022,12 +5038,12 @@ class AgentSessionJobTest < ActiveJob::TestCase
       [ pid, MockProcessManager::MockStatus.new(0) ]
     end
 
-    # Mock SecretsLoader with special characters in values
+    # Names the session's servers declare, so scoping keeps all four; the values
+    # are the point of this test, not the names.
     mock_secrets = {
-      "PASSWORD" => 'pass="word',
-      "MULTILINE" => "line1\nline2",
-      "BACKSLASH" => 'path\\to\\file',
-      "EQUALS" => "foo=bar=baz"
+      "SLACK_BOT_TOKEN" => 'pass="word=x',
+      "ZIMMER_PROD_API_KEY" => "line1\nline2",
+      "STRAD_API_KEY" => 'path\\to\\file'
     }
 
     GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
@@ -5054,14 +5070,12 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert mock_fs.exists?("/tmp/test-clone/.env"), "Expected .env file to be created"
     env_content = mock_fs.read("/tmp/test-clone/.env")
 
-    # Double quotes should be escaped with backslash
-    assert_includes env_content, 'PASSWORD="pass=\"word"'
+    # Double quotes escaped with a backslash; equals signs fine within quotes
+    assert_includes env_content, 'SLACK_BOT_TOKEN="pass=\"word=x"'
     # Newlines should be escaped
-    assert_includes env_content, 'MULTILINE="line1\\nline2"'
+    assert_includes env_content, 'ZIMMER_PROD_API_KEY="line1\\nline2"'
     # Backslashes should be escaped
-    assert_includes env_content, 'BACKSLASH="path\\\\to\\\\file"'
-    # Equals signs in values are fine within quotes
-    assert_includes env_content, 'EQUALS="foo=bar=baz"'
+    assert_includes env_content, 'STRAD_API_KEY="path\\\\to\\\\file"'
   end
 
   test "does not create .env file when no secrets are configured" do
@@ -5135,7 +5149,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
 
     # Mock SecretsLoader to return test secrets
-    mock_secrets = { "API_KEY" => "test-key" }
+    mock_secrets = { "SLACK_BOT_TOKEN" => "value-for-SLACK_BOT_TOKEN" }
 
     # Make write fail for .env file
     original_write = mock_fs.method(:write)

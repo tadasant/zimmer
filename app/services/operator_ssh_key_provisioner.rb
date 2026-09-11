@@ -22,10 +22,11 @@
 # truncated at its first line break. A raw PEM is still accepted — for a developer
 # who exports the variable by hand — so the encoding is sniffed, not assumed.
 #
-# Deliberately ENV-only, and NOT read from Zimmer's `mcp_secrets`:
-# AgentSessionJob#inject_secrets_to_env_file writes every mcp_secret in plaintext
-# into the session clone's `.env`, inside the git working tree the agent operates on.
-# Key material has no business there. CliSpawnEnv also unsets this variable for the
+# Deliberately ENV-only, and NOT read from Zimmer's `mcp_secrets`: SessionEnvFile
+# writes mcp_secrets in plaintext into the session clone's `.env`, inside the git
+# working tree the agent operates on. SessionSecretScope narrows WHICH sessions get
+# which of them, but key material has no business in that bundle at all — a scope is
+# a decision about who, and this is a decision about what. CliSpawnEnv also unsets this variable for the
 # agent process for the same reason: a session needs the key's PATH, never its bytes.
 #
 # WHY A FILE, AND NOT JUST AN ENV VAR
