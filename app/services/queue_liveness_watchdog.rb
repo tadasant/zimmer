@@ -8,7 +8,7 @@
 # on the GoodJob queue it is supposed to watch -- SystemHealthMonitorJob (pollers),
 # ZombieReaperJob, the trigger health checks, EgressHealthCheckJob, and the rest of
 # app/jobs/. That is fine when the queue is merely busy, but it means a queue that is
-# executing *nothing at all* disables its own recovery: during the 2026-08-02 outage
+# executing *nothing at all* disables its own recovery: during the 2026-08-13 outage
 # (tadasant/zimmer#426) the worker container could not open a database connection, so
 # GoodJob executed nothing for ~10 hours, and every one of those watchdogs was
 # unrunnable for exactly the same reason everything else was. Six sessions sat
@@ -68,6 +68,10 @@
 # Grafana rule pages on *recent* ERROR records, so a single log line ten hours ago
 # would not keep an alert firing through the outage. GlitchTip dedupes the repeats to a
 # single issue that notifies once. This mirrors SystemHealthMonitorJob's own behaviour.
+#
+# A failed READ carries its own separate streak, under the same confirmation count, so a
+# database blip lasting a tick does not page either. A failed read never resets the stall
+# streak: it is "unknown", not "healthy".
 class QueueLivenessWatchdog
   # Consecutive stall observations required before the first page. With the supervisor's
   # default 60-second interval this is ~2 minutes of confirmed silence, on top of the
@@ -82,9 +86,17 @@ class QueueLivenessWatchdog
   # when the in-band monitor could not.
   ALERT_TITLE = "Queue executing nothing (out-of-band watchdog)"
 
-  def initialize(health_monitor: HealthMonitorService.new)
+  # @param health_monitor [#system_health, nil] nil means "build a fresh
+  #   HealthMonitorService for every tick", which is what production does.
+  #   HealthMonitorService memoises per instance and documents itself as built per
+  #   request; this is its first long-lived caller, so holding one across ticks would
+  #   freeze the watchdog's view the moment anything under `system_health` starts
+  #   memoising. Construction is a SystemProcessManager and a logger -- cheap beside the
+  #   dozen queries a tick already runs. Tests inject a fake.
+  def initialize(health_monitor: nil)
     @health_monitor = health_monitor
     @consecutive_stalls = 0
+    @consecutive_errors = 0
   end
 
   # Evaluate the queue's liveness once and page if it has been executing nothing for
@@ -97,6 +109,7 @@ class QueueLivenessWatchdog
   def check!
     health = health_monitor.system_health
     status = health[:status]
+    @consecutive_errors = 0
 
     if stalled?(status)
       observe_stall(health, status)
@@ -105,26 +118,17 @@ class QueueLivenessWatchdog
       :healthy
     end
   rescue => e
-    # The read itself failed -- most likely the web process cannot reach the database.
-    # That is a different failure domain than "the queue is dead", but it is still an
-    # outage the web process can see and nothing else here would, so page on it too.
-    Rails.logger.error(
-      "[QueueLivenessWatchdog] Liveness read failed: #{e.class}: #{e.message}"
-    )
-    ErrorReporter.report_exception(
-      e,
-      level: :error,
-      context: { source: "QueueLivenessWatchdog", note: "liveness read failed" }
-    )
-    :error
+    observe_error(e)
   end
 
-  # Exposed for the supervisor's log line and for tests; not part of paging.
-  attr_reader :consecutive_stalls
+  # Exposed for tests and for `system_health`'s reading; not part of paging.
+  attr_reader :consecutive_stalls, :consecutive_errors
 
   private
 
-  attr_reader :health_monitor
+  def health_monitor
+    @health_monitor || HealthMonitorService.new
+  end
 
   # The critical execution-stall status, and only that. The `:paused` variant is a
   # `warning` (a deliberate halt under queue recovery mode), so `critical?` excludes it;
@@ -132,6 +136,40 @@ class QueueLivenessWatchdog
   # page on.
   def stalled?(status)
     status.critical? && status.code == HealthMonitorService::EXECUTION_STALL_CODE
+  end
+
+  # The read itself failed -- most likely the web process cannot reach the database.
+  # That is a different failure domain from "the queue is dead", but it is still an
+  # outage this process can see and nothing else here would, so it pages too.
+  #
+  # It gets the SAME confirmation the stall path gets, and for the same reason: a
+  # Postgres failover, a `db:prepare` hiccup or a checkout timeout off the web's
+  # five-slot pool is over in a tick or two, and paging on the first one would fire the
+  # "any non-staging ERROR record" Grafana rule for a condition that had already cleared.
+  # Without the streak a persistent raise would also emit 1,440 ERROR records a day.
+  #
+  # The stall streak is deliberately left ALONE here rather than reset: a failed read is
+  # "unknown", not "healthy", and a stall either side of one transient error is still two
+  # consecutive observations of a stall. Only a successful read that comes back
+  # not-stalled clears it.
+  def observe_error(error)
+    @consecutive_errors += 1
+    return :error if @consecutive_errors < CONSECUTIVE_STALLS_TO_ALERT
+
+    Rails.logger.error(
+      "[QueueLivenessWatchdog] Liveness read failed: #{error.class}: #{error.message} " \
+      "(#{@consecutive_errors} consecutive check(s))"
+    )
+    ErrorReporter.report_exception(
+      error,
+      level: :error,
+      context: {
+        source: "QueueLivenessWatchdog",
+        note: "liveness read failed -- the out-of-band watchdog cannot see the queue",
+        consecutive_checks: @consecutive_errors
+      }
+    )
+    :error
   end
 
   def observe_stall(health, status)

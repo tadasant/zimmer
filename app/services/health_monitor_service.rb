@@ -712,8 +712,32 @@ class HealthMonitorService
       worker_stats: worker_stats,
       recent_errors: recent_errors,
       database_status: database_health_status,
+      queue_liveness_watchdog: queue_liveness_watchdog_status,
       status: system_health_status(queue_stats, active_workers: worker_stats[:active_workers])
     }
+  end
+
+  # Is the out-of-band queue-liveness watchdog actually running in this process?
+  #
+  # Everything else on this report is a fact about the fleet; this one is a fact about
+  # the process answering, because the watchdog is a thread inside the web process and
+  # `/health`, `GET /api/v1/health` and `get_system_health` are served by that same
+  # process. That is exactly the reading you want: the question is whether THIS web
+  # container took up the job.
+  #
+  # It exists because the watchdog's entire value is a boolean nobody could otherwise
+  # see. Its gate (`should_start?`) could silently stop being true — a changed web
+  # `CMD`, a flipped escape hatch — and Zimmer would be back in the #427 hole with no
+  # log line, no field and no failing test. `expected` is that gate, so a reader can
+  # tell "not running because it is not supposed to" from "not running and it should
+  # be". Reported rather than paged on: a page whose own precondition is a thread in
+  # the process raising it is the circularity this whole change is about.
+  def queue_liveness_watchdog_status
+    { expected: QueueLivenessSupervisor.should_start?, running: QueueLivenessSupervisor.running? }
+  rescue => e
+    # A health surface that dies because it could not read a boolean is the failure
+    # mode the issue behind it is about.
+    { expected: nil, running: nil, error: e.message }
   end
 
   # Network-egress (DNS) health, read from the shared cache EgressHealthCheckJob

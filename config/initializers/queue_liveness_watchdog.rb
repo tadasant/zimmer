@@ -8,22 +8,17 @@
 # in a separate container, from the worker -- so it keeps checking even when the queue
 # is dead. See QueueLivenessWatchdog for the full rationale.
 #
-# Started ONLY in the web server process. `Rails::Server` is defined under
-# `bin/rails server` (the web container's CMD) but not under `good_job start` (worker),
-# rake, console, runner, or an agent session -- the same gate the deleted
-# PeriodicCatalogRefresher used, proven in production. The worker already runs
-# SystemHealthMonitorJob on its cron, and the worker is the failure domain this exists
-# to escape, so a watchdog thread there would add nothing.
+# The gate lives in QueueLivenessSupervisor.should_start? rather than inline here, so it
+# can be tested from a process that is none of the things it asks about, and so
+# `system_health` can report the same predicate beside `running?`. In short: the web
+# server process only, in the alerting environments only, unless the escape hatch is set.
 #
-# Scoped to the alerting environments (production, staging): those are the only ones
-# with the obs pipeline this pages through, and the only ones where web and worker are
-# genuinely separate processes. In development GoodJob runs `:async` inside Puma, so the
-# web IS the worker and the out-of-band property does not exist; test drives the
-# watchdog directly. QUEUE_LIVENESS_WATCHDOG_DISABLED=true is an escape hatch.
-if defined?(Rails::Server) &&
-   AlertingEnvironments::ALL.include?(Rails.env.to_s) &&
-   ENV["QUEUE_LIVENESS_WATCHDOG_DISABLED"] != "true"
-  Rails.application.config.after_initialize do
-    QueueLivenessSupervisor.start!
-  end
+# BOTH the gate call and the start MUST stay inside `after_initialize`. Rails runs
+# config/initializers/*.rb from `:load_config_initializers`, which is BEFORE
+# `:setup_main_autoloader`, so an `app/` constant referenced from an initializer body
+# raises `NameError: uninitialized constant` every time -- that is what #1121 shipped,
+# and it broke every production deploy. `QueueLivenessSupervisor` is an `app/` constant.
+# See config/alerting_environments.rb's header for the full account.
+Rails.application.config.after_initialize do
+  QueueLivenessSupervisor.start! if QueueLivenessSupervisor.should_start?
 end

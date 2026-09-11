@@ -2043,7 +2043,7 @@ reading into an alert nobody has to be looking at is the out-of-band watchdog be
 
 Every check above is a GoodJob job, and `SystemHealthMonitorJob` — the one that pages on
 `execution_stalled` — runs on `pollers`. So the exact outage it exists to report is the one that
-stops it: during the 2026-08-02 incident ([#426](https://github.com/tadasant/zimmer/issues/426)) the
+stops it: during the 2026-08-13 incident ([#426](https://github.com/tadasant/zimmer/issues/426)) the
 worker could not open a database connection, GoodJob executed nothing for ~10 hours, and every
 watchdog in `app/jobs/` was unrunnable for the same reason everything else was. Six sessions sat
 untouched; a user message went unanswered for 1h46m; what restored service was a human noticing and
@@ -2052,11 +2052,30 @@ deploying. A watchdog that shares a failure domain with the thing it watches is 
 
 `QueueLivenessWatchdog` is the answer to that, and the only health path that is **not** a job.
 `QueueLivenessSupervisor` runs it on a single background thread inside the **web (Puma) process** —
-started from `config/initializers/queue_liveness_watchdog.rb`, gated on `defined?(Rails::Server)` so
-it runs in `web` and nowhere else (not the worker, not rake/console/runner/an agent session). The web
-process is a separate process in a separate container from the worker; it stayed up through #426 and
-kept reaching the database (that is *why* `/health` read correctly the whole time). So a check driven
-from it does not depend on GoodJob executing anything.
+started from `config/initializers/queue_liveness_watchdog.rb`. The web process is a separate process
+in a separate container from the worker; it stayed up through #426 and kept reaching the database
+(that is *why* `/health` read correctly the whole time). So a check driven from it does not depend on
+GoodJob executing anything.
+
+The gate is `QueueLivenessSupervisor.should_start?`, and it is three conditions, all of which must
+hold:
+
+| Condition | Why |
+| --- | --- |
+| `defined?(Rails::Server)` | The web server process and nowhere else. Defined under `bin/rails server` (the web container's `CMD`) but not under `good_job start`, rake, console, runner, or an agent session. A thread in the worker would buy nothing — the worker is the failure domain being escaped |
+| `Rails.env` is in `AlertingEnvironments::ALL` | `production` and `staging` — the only environments with the obs pipeline this pages through. In development GoodJob runs `:async` *inside* Puma, so the web **is** the worker and the out-of-band property does not exist; the test suite drives the watchdog directly, which is what keeps a real thread out of every suite run |
+| `QUEUE_LIVENESS_WATCHDOG_DISABLED != "true"` | The escape hatch. Only that exact string disables it |
+
+`QUEUE_LIVENESS_WATCHDOG_INTERVAL_SECONDS` overrides the 60-second cadence. It is read through
+`ConnectionBudget.int_env`, so a blank value falls back to the default rather than raising (Kamal
+renders an unset `env: clear:` variable to `""`), `"060"` is 60 rather than octal 48, and a
+non-positive value fails loudly at boot instead of spinning the thread against the database.
+
+The gate lives in a predicate rather than inline in the initializer for two reasons: it can be
+tested from a process that is none of those things, and `system_health` reports it — see
+[Confirming it is running](#confirming-it-is-running) below. Both the call and the `start!` sit
+inside `after_initialize`, because `QueueLivenessSupervisor` is an `app/` constant and initializer
+bodies run before Zeitwerk is set up.
 
 Every 60 seconds it calls the same `HealthMonitorService#system_health` the page is served from and
 pages on exactly one status: the critical `execution_stalled` code — the "is the queue executing
@@ -2068,10 +2087,12 @@ healthy; in the total-outage case only this one can fire.
 
 It pages the same way `SystemHealthMonitorJob` does — an ERROR `Rails.logger` line (which trips the
 Grafana rule) plus an `ErrorReporter` GlitchTip event under the fixed title **"Queue executing
-nothing (out-of-band watchdog)"** — from the web process, which is the process whose logs were still
-flowing at ~36/min throughout #426. Hysteresis mirrors the monitor's: the stall must read critical on
+nothing (out-of-band watchdog)"** — but emitted from the web process, which during #426 was both up
+and able to reach the database. Hysteresis mirrors the monitor's: the stall must read critical on
 `CONSECUTIVE_STALLS_TO_ALERT` (2) consecutive checks before the first page, and a single healthy check
-resets the streak. The streak lives in memory on the one long-lived watchdog instance rather than in
+resets the streak. A failed *read* carries its own separate streak under the same count, so a
+Postgres failover or a checkout timeout lasting one tick does not page either; a failed read never
+resets the stall streak, because it is "unknown", not "healthy". The streak lives in memory on the one long-lived watchdog instance rather than in
 Redis — there is one thread, so no cross-process coordination is needed, and it keeps the watchdog
 dependent on nothing but the database it reads and the log pipeline it writes. Once confirmed it
 re-logs every tick while the stall persists, because the Grafana rule pages on *recent* ERROR
@@ -2084,6 +2105,27 @@ Automated remediation of that kind is a materially bigger question (#427 names i
 out-of-band-observability half that matches Zimmer's existing model. A complementary Grafana rule over
 the same log stream — which lives in `tadasant-internal`, a different repo — remains a belt to this
 brace, but is no longer the *only* thing standing between a dead queue and a human noticing.
+
+#### Confirming it is running
+
+The watchdog's entire value is a boolean, and a boolean nobody can see is worth nothing: the gate
+above could silently stop being true — a changed web `CMD`, a flipped escape hatch — and Zimmer would
+be back in the #427 hole with no log line, no field, and no failing test. Two things answer it, both
+reachable without a shell on the box:
+
+- **A log line at startup.** `start!` logs at INFO — *"Out-of-band queue-liveness watchdog started
+  (interval=60s) in this web process"* — so the obs pipeline carries a record of each web container
+  taking up the job.
+- **`system_health.queue_liveness_watchdog`**, carrying `expected` (the gate) and `running` (the
+  thread). It is on `/health`, `GET /api/v1/health`, `get_system_health` and
+  `/health/export_diagnostics`. `expected` is what separates *"not running, because this process is
+  not supposed to"* from *"not running, and it should be"*.
+
+Unlike everything else on that report this reading is about the **process answering**, not the
+fleet — the thread lives in one web process and `/health` is served by that same process, so the
+question it answers is "did *this* web container take up the job". It is reported rather than paged
+on, deliberately: a page whose own precondition is a thread inside the process raising it would be
+the same circularity this whole section is about.
 
 What it does not cover: if the **database itself** is unreachable from the web process, the watchdog's
 own read fails — a different failure domain (`web` would also be failing its `/up` healthcheck). Even

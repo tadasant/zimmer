@@ -26,15 +26,55 @@ class QueueLivenessSupervisorTest < ActiveSupport::TestCase
     end
   end
 
-  test "the initializer does not start the watchdog in this (test) environment" do
-    # config/initializers/queue_liveness_watchdog.rb gates on
-    # AlertingEnvironments::ALL, which is production + staging only. The test suite
-    # therefore never gets a real background thread from boot -- it drives the watchdog
-    # directly -- so the initializer's env gate is what keeps this suite thread-free.
-    assert_not_includes AlertingEnvironments::ALL, "test",
-      "if test were an alerting environment the initializer would leak a thread into every run"
-    assert_includes AlertingEnvironments::ALL, "production"
-    assert_includes AlertingEnvironments::ALL, "staging"
+  # The initializer's whole gate, exercised from a process that is none of the things it
+  # asks about. This is the highest-blast-radius test in the file: if the gate silently
+  # stops being true, Zimmer is back in the #427 hole with no log line and no failure.
+  test "should_start? is true only in a web server process in an alerting environment" do
+    assert QueueLivenessSupervisor.should_start?(server: true, env: "production", disabled: nil)
+    assert QueueLivenessSupervisor.should_start?(server: true, env: "staging", disabled: nil)
+  end
+
+  test "should_start? is false outside the web server process" do
+    # The worker runs `good_job start`, rake/console/runner and agent sessions run
+    # neither -- none of them defines Rails::Server. The worker is the failure domain
+    # this exists to escape, so a thread there would buy nothing.
+    assert_not QueueLivenessSupervisor.should_start?(server: false, env: "production", disabled: nil)
+  end
+
+  test "should_start? is false outside the alerting environments" do
+    # Development runs GoodJob `:async` inside Puma, so the web IS the worker and the
+    # out-of-band property does not exist; test drives the watchdog directly. This is
+    # also what keeps a real background thread out of every suite run.
+    assert_not QueueLivenessSupervisor.should_start?(server: true, env: "development", disabled: nil)
+    assert_not QueueLivenessSupervisor.should_start?(server: true, env: "test", disabled: nil)
+    assert_not_includes AlertingEnvironments::ALL, "test"
+  end
+
+  test "should_start? honours the escape hatch" do
+    assert_not QueueLivenessSupervisor.should_start?(server: true, env: "production", disabled: "true")
+    # Only the exact string disables it, so a stray value cannot silently switch the
+    # watchdog off.
+    assert QueueLivenessSupervisor.should_start?(server: true, env: "production", disabled: "false")
+    assert QueueLivenessSupervisor.should_start?(server: true, env: "production", disabled: "1")
+  end
+
+  test "should_start? defaults report this process, which is not a web server" do
+    assert_not QueueLivenessSupervisor.should_start?,
+      "the suite must never satisfy the gate, or boot would leak a thread into every run"
+  end
+
+  test "the interval is read through ConnectionBudget.int_env" do
+    # Evaluated at eager-load, so a malformed value takes the web container down before
+    # it can pass a health check. int_env treats blank as absent (Kamal renders an unset
+    # env: clear: variable to ""), parses base 10, and refuses a non-positive value.
+    assert_equal 60, QueueLivenessSupervisor::DEFAULT_INTERVAL_SECONDS
+    assert_equal 60, ConnectionBudget.int_env("QUEUE_LIVENESS_WATCHDOG_INTERVAL_SECONDS_ABSENT", 60)
+    assert_raises(ArgumentError) do
+      ENV["QLW_TEST_INTERVAL"] = "0"
+      ConnectionBudget.int_env("QLW_TEST_INTERVAL", 60)
+    ensure
+      ENV.delete("QLW_TEST_INTERVAL")
+    end
   end
 
   test "start! returns a live thread and reports running?" do
@@ -84,6 +124,59 @@ class QueueLivenessSupervisorTest < ActiveSupport::TestCase
 
     assert_equal true, QueueLivenessSupervisor.stop!
     refute QueueLivenessSupervisor.running?
+  end
+
+  test "stop! reports failure and keeps its handle when a tick outlasts the join" do
+    # Dropping the handles would make running? lie while a thread is still alive. The
+    # event stays set, so the thread exits as soon as its tick returns.
+    started = Queue.new
+    release = Queue.new
+
+    slow = Object.new
+    slow.define_singleton_method(:check!) do
+      started << true
+      release.pop
+      :healthy
+    end
+
+    first = QueueLivenessSupervisor.start!(interval: 0.01, watchdog: slow)
+    Timeout.timeout(10) { started.pop }
+
+    assert_equal false, QueueLivenessSupervisor.stop!(timeout: 0.1),
+      "stop! must report that the thread outlasted the join"
+    assert QueueLivenessSupervisor.running?,
+      "running? must not claim the thread is gone while it is still alive"
+
+    # And start! must NOT adopt that dying thread: its stop event is already set, so it
+    # would exit the moment its tick returned and the process would silently have no
+    # watchdog at all.
+    second = QueueLivenessSupervisor.start!(interval: 60, watchdog: RecordingWatchdog.new)
+    assert_not_same first, second,
+      "start! must build a fresh thread rather than adopt one that is already stopping"
+    assert QueueLivenessSupervisor.running?
+  ensure
+    release << true
+  end
+
+  test "a tick runs inside the Rails executor so it returns its database connection" do
+    # Without executor.wrap the thread leases a connection out of the web's five-slot
+    # pool and never gives it back. Pin it with a tick that really touches the database,
+    # then assert the thread owns no pooled connection once it has stopped.
+    ticked = Queue.new
+
+    toucher = Object.new
+    toucher.define_singleton_method(:check!) do
+      GoodJob::Job.count
+      ticked << true
+      :healthy
+    end
+
+    thread = QueueLivenessSupervisor.start!(interval: 0.01, watchdog: toucher)
+    Timeout.timeout(10) { ticked.pop }
+    QueueLivenessSupervisor.stop!
+
+    assert_not ActiveRecord::Base.connection_pool.connections.any? { |conn| conn.owner == thread },
+      "the watchdog thread must not still own a pooled connection after its tick"
   end
 
   test "stop! lets an in-flight tick finish instead of killing the thread" do
