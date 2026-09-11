@@ -468,28 +468,52 @@ class QueuedJobMaintenance
 
     # A bulk write against `good_jobs` should be legible to somebody who was not
     # reading the transcript it happened in. Never fatal: the rows are already
-    # written by the time this runs, and a Slack outage must not make a completed
-    # action look like a failed one.
+    # written by the time this runs, and a failure to announce must not make a
+    # completed action look like a failed one.
+    #
+    # Both halves of a page, emitted here: the ERROR log record that ships over
+    # OTLP and trips `zimmer_backend_log_errors` into `#alerts`, and a GlitchTip
+    # event for the condition itself. ERROR rather than WARN because reaching
+    # `#alerts` is the point — this is a human-initiated bulk write against the
+    # queue, and a discard of it is not recoverable. See
+    # docs/operate/observability.md.
+    #
+    # There is no dedup key any more: the hand-rolled hour-long window this used
+    # to carry was AlertService's, and the obs pipeline groups by its own
+    # fingerprint. The scope and the instant that keyed it are in the context
+    # below, where they are still what tells two discards in the same second
+    # apart.
     def alert(result)
       return if result.affected.zero?
 
       verb = result.action == :discard ? "discarded" : "rescheduled"
-      AlertService.raise_alert(
-        "Queued jobs #{verb}: #{result.affected} row#{'s' unless result.affected == 1}",
-        details: [
-          "*#{result.affected}* queued job#{'s' unless result.affected == 1} #{verb} by #{result.actor || 'unknown'}.",
-          "By class: #{format_counts(result.by_job_class)}",
-          result.action == :reschedule ? "New scheduled_at: #{result.scheduled_at&.iso8601}" : nil,
-          result.action == :discard ? "A discard is not recoverable — those jobs will never run." : nil,
-          result.skipped_total.positive? ? "Skipped #{result.skipped_total} row(s) that changed state mid-call." : nil
-        ].compact.join("\n"),
-        source: name,
-        # Keyed by the scope AND the instant. The instant alone collides for two
-        # discards of different classes in the same second, and AlertService's
-        # dedup window is an hour — so the second incident would go unannounced
-        # for the rest of it, which is the opposite of what this alert is for.
-        dedup_key: "queued_job_maintenance:#{result.action}:#{result.job_class}:" \
-          "#{result.queue_name}:#{result.performed_at.to_i}"
+      # Stable by SHAPE, with the numbers in the context below: GlitchTip groups
+      # `report_message` by its message and notifies once per issue, so a count in
+      # the title would make every distinct count its own one-shot issue.
+      title = "Queued jobs #{verb}"
+      lines = [
+        "#{result.affected} queued job#{'s' unless result.affected == 1} #{verb} by #{result.actor || 'unknown'}.",
+        "By class: #{format_counts(result.by_job_class)}",
+        result.action == :reschedule ? "New scheduled_at: #{result.scheduled_at&.iso8601}" : nil,
+        result.action == :discard ? "A discard is not recoverable — those jobs will never run." : nil,
+        result.skipped_total.positive? ? "Skipped #{result.skipped_total} row(s) that changed state mid-call." : nil
+      ].compact
+
+      Rails.logger.error("[queued_job_maintenance] #{title}: #{lines.join(' ')}")
+      ErrorReporter.report_message(
+        title,
+        level: :error,
+        context: {
+          source: name,
+          details: lines.join("\n"),
+          action: result.action,
+          affected: result.affected,
+          skipped: result.skipped_total,
+          actor: result.actor,
+          job_class: result.job_class,
+          queue_name: result.queue_name,
+          acted_at: result.performed_at&.iso8601
+        }
       )
     rescue StandardError => e
       Rails.logger.error("[queued_job_maintenance] could not deliver alert: #{e.message}")

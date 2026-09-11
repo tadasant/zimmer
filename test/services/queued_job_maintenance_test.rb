@@ -11,7 +11,6 @@ require "mocha/minitest"
 # from the outside, with real rows, rather than trusted from a reading of the SQL.
 class QueuedJobMaintenanceTest < ActiveSupport::TestCase
   setup do
-    AlertService.stubs(:raise_alert).returns(true)
     GoodJob::Job.delete_all
   end
 
@@ -443,30 +442,43 @@ class QueuedJobMaintenanceTest < ActiveSupport::TestCase
 
   # === Auditability ===
 
-  test "a discard raises an alert naming the count and the classes" do
-    AlertService.unstub(:raise_alert)
-    AlertService.expects(:raise_alert).with do |title, opts|
-      title.include?("discarded") && opts[:details].include?("CanaryJob=2") &&
-        opts[:details].include?("not recoverable")
-    end.returns(true)
-
-    2.times { build_job }
-    QueuedJobMaintenance.discard!(job_class: "CanaryJob", expected_count: 2, actor: "test")
-  end
-
-  test "a refusal raises no alert — nothing happened" do
-    AlertService.unstub(:raise_alert)
-    AlertService.expects(:raise_alert).never
-
-    build_job
-    assert_raises(QueuedJobMaintenance::Refused) do
-      QueuedJobMaintenance.discard!(job_class: "CanaryJob", expected_count: 99, actor: "test")
+  test "a discard pages, naming the count and the classes" do
+    # Both halves, because they fail independently: the ERROR log record is what
+    # trips the Grafana rule into #alerts, and the GlitchTip event is what carries
+    # the detail. A test that asserted only the second would stay green if this
+    # were softened to .warn and the page stopped arriving.
+    reports = nil
+    entries = capture_log_entries do
+      reports = capture_error_reports do
+        2.times { build_job }
+        QueuedJobMaintenance.discard!(job_class: "CanaryJob", expected_count: 2, actor: "test")
+      end
     end
+
+    pages = entries.select { |severity, message| severity == "ERROR" && message.include?("Queued jobs discarded") }
+    assert_equal 1, pages.size, "the ERROR record is the page, and it is emitted"
+    assert_includes pages.first.last, "CanaryJob=2"
+
+    report = reports.find { |r| r.message.include?("discarded") }
+    assert report, "a bulk discard has to reach somebody who was not reading the transcript"
+    assert_equal :error, report.level, "the GlitchTip event is at :error"
+    assert_includes report.context[:details], "CanaryJob=2"
+    assert_includes report.context[:details], "not recoverable"
   end
 
-  test "a failing alert does not turn a completed discard into an error" do
-    AlertService.unstub(:raise_alert)
-    AlertService.stubs(:raise_alert).raises(StandardError, "slack down")
+  test "a refusal pages nobody — nothing happened" do
+    reports = capture_error_reports do
+      build_job
+      assert_raises(QueuedJobMaintenance::Refused) do
+        QueuedJobMaintenance.discard!(job_class: "CanaryJob", expected_count: 99, actor: "test")
+      end
+    end
+
+    assert_empty reports
+  end
+
+  test "a failing page does not turn a completed discard into an error" do
+    ErrorReporter.stubs(:report_message).raises(StandardError, "glitchtip down")
 
     build_job
     result = QueuedJobMaintenance.discard!(job_class: "CanaryJob", expected_count: 1, actor: "test")

@@ -29,8 +29,9 @@
 # ---------------------------------
 #   1. Writes an incident record to the state dir (forensics, survives everything).
 #   2. Logs it to journald at error level.
-#   3. Raises a Slack alert through the healthy web container's Rails process, using
-#      Zimmer's own AlertService -- no new secret and no new endpoint.
+#   3. Pages through the healthy web container's Rails process, using Zimmer's own
+#      obs pipeline -- an ERROR log record plus a GlitchTip event, which is what
+#      reaches #alerts. No new secret and no new endpoint.
 #   4. Optionally clears the wedge, but ONLY when the container is provably empty.
 #
 # THE GUARD ON RECOVERY
