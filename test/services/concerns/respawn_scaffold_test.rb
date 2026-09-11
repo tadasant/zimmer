@@ -85,6 +85,16 @@ class RespawnScaffoldTest < ActiveJob::TestCase
     @session.logs.reload.map { |log| [ log.level, log.content ] }
   end
 
+  # What the session's timeline holds RIGHT NOW, without flushing first — the only
+  # way to observe whether the code under test flushed. `check_session_status`
+  # documents flush ordering as load-bearing (a buffered line is stamped at flush
+  # time, so an unflushed explanation lands after the event it explains), and a
+  # `logged` that flushes on the test's behalf cannot tell a missing flush from a
+  # present one.
+  def already_persisted
+    @session.logs.reload.map(&:content)
+  end
+
   # Turn @session into a status-summary fork of a freshly created source.
   def make_fork
     @source = Session.create!(
@@ -295,6 +305,43 @@ class RespawnScaffoldTest < ActiveJob::TestCase
     assert_includes contents, "Test recovery 2 successful - process 4242 verified running for 5s"
   end
 
+  # The resume prompt is forwarded to `check_session_status`, not dropped: that
+  # check is the SECOND DOOR of #724, and the prompt — not the fork marker — is
+  # what it tests. Passing nil here would pause every status-summary fork whose
+  # respawn carries its own never-spent summary request.
+  test "respawn_and_verify refuses a fork whose respawn would replay its source" do
+    make_fork
+    spawned = false
+
+    result = @host.respawn("/tmp/clone", 1, prompt: AutomatedPrompts::SYSTEM_RECOVERY) do
+      spawned = true
+      { pid: 4242 }
+    end
+
+    assert_equal :aborted, result
+    refute spawned, "resuming here replays the source's task and re-issues its side effects"
+  end
+
+  test "respawn_and_verify still re-spawns a fork carrying its own summary request" do
+    make_fork
+    host = verifying_host
+
+    assert_equal :success, host.respawn("/tmp/clone", 1, prompt: summary_request) { { pid: 4242 } },
+                 "the prompt is the test, not the fork — a never-spent turn must still run"
+    assert @session.reload.running?
+  end
+
+  test "respawn_and_verify flushes the timeline on its way out, on every path" do
+    host = verifying_host
+    assert_equal :success, host.respawn("/tmp/clone", 1, prompt: AutomatedPrompts::SYSTEM_RECOVERY) { { pid: 4242 } }
+    assert_includes already_persisted, "Test recovery 1 successful - process 4242 verified running for 5s",
+                    "a success nobody flushed is a success nobody reads"
+
+    @host.attempt_limit = 1
+    assert_equal :exhausted, @host.respawn("/tmp/clone", 1, prompt: AutomatedPrompts::SYSTEM_RECOVERY) { raise "boom" }
+    assert_includes already_persisted, "Error during test recovery attempt 1: boom"
+  end
+
   test "respawn_and_verify aborts before spawning when the session is no longer running" do
     @session.update!(status: :needs_input)
     spawned = false
@@ -404,7 +451,9 @@ class RespawnScaffoldTest < ActiveJob::TestCase
     file_system = MockFileSystemAdapter.new
     host = TestHost.new(@session, @process_manager, @log_buffer, file_system: file_system)
 
-    CodexTranscriptSource.any_instance.stubs(:locate).returns("/codex/rollout.jsonl")
+    CodexTranscriptSource.any_instance.expects(:locate)
+      .with(session: @session, working_directory: "/tmp/clone")
+      .returns("/codex/rollout.jsonl")
 
     assert_equal "/codex/rollout.jsonl", host.transcript_path("/tmp/clone")
   end
