@@ -231,7 +231,7 @@ env:
     # nothing but `grafana` could still read SLACK_BOT_TOKEN, the Cloudflare
     # read-write pair and three GCS service-account keys.
     #
-    # "all" is the break-glass: it restores the pre-#372 behaviour exactly, fleet-wide,
+    # "all" is the break-glass: every clone gets the whole bundle again, fleet-wide,
     # as one deploy-time variable. Reach for it if a narrowing turns out to have taken
     # a credential something genuinely needed and you need every session working again
     # in one deploy. The narrower fixes, in order of preference: attach the MCP server

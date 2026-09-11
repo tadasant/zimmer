@@ -80,10 +80,10 @@ class SessionSecretScopeTest < ActiveSupport::TestCase
     assert_equal %w[SLACK_BOT_TOKEN STRAD_API_KEY], allowed(session(mcp_servers: %w[acme]))
   end
 
-  test "a plugin-bundled server counts as wired" do
+  test "a plugin-bundled server counts as selected" do
     plugin_session = session(catalog_plugins: %w[screenshots-videos])
 
-    assert_includes plugin_session.all_mcp_servers, "remote-fs-screenshots",
+    assert_includes plugin_session.user_selected_mcp_servers, "remote-fs-screenshots",
       "the plugin is what puts this server on the session"
 
     # Stubbed rather than read off the catalog: what is being asserted is that a
@@ -100,10 +100,17 @@ class SessionSecretScopeTest < ActiveSupport::TestCase
     assert_equal %w[STRAD_API_KEY], allowed(plugin_session)
   end
 
-  test "an auto-injected server counts as wired" do
+  test "an auto-injected Zimmer server does not hand its API key to the clone" do
+    # zimmer-self-session is injected into every session and its catalog entry
+    # authenticates with ${ZIMMER_PROD_API_KEY}; Zimmer resolves that into the
+    # entry's own header, so the shell never needs it.
     injected = session(custom_metadata: { "injected_mcp_servers" => %w[zimmer-self-session] })
 
-    assert_equal %w[ZIMMER_PROD_API_KEY], allowed(injected)
+    assert_empty allowed(injected)
+  end
+
+  test "a Zimmer server someone selected by name does bring its key" do
+    assert_equal %w[ZIMMER_PROD_API_KEY], allowed(session(mcp_servers: %w[zimmer-sessions]))
   end
 
   test "an unknown server id contributes nothing instead of raising" do
@@ -167,6 +174,19 @@ class SessionSecretScopeTest < ActiveSupport::TestCase
         .returns(HooksConfig::Hook.new("noisy-hook", "path" => dir))
 
       assert_equal %w[ZIMMER_PROD_API_KEY], allowed(session(catalog_hooks: %w[noisy-hook]))
+    end
+  end
+
+  test "a symlink inside a skill directory is not followed" do
+    Dir.mktmpdir("outside") do |outside|
+      File.write(File.join(outside, "elsewhere.md"), "$STRAD_API_KEY")
+      with_artifact_dir("SKILL.md" => "nothing here") do |dir|
+        File.symlink(File.join(outside, "elsewhere.md"), File.join(dir, "linked.md"))
+        SkillsConfig.stubs(:find).with("linky-skill")
+          .returns(SkillsConfig::Skill.new("linky-skill", "path" => dir))
+
+        assert_empty allowed(session(catalog_skills: %w[linky-skill]))
+      end
     end
   end
 

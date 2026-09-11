@@ -357,6 +357,12 @@ Three things that scope does **not** claim:
   does not name in `${VAR}` — or a skill that names one without a `$` — is invisible to it. Both fail
   toward writing fewer keys, which is the right direction and still a gap between what an artifact
   needs and what the rule can see.
+- **A session can read every other session's clone.** Every clone is `0600`, owned by `rails`, under
+  one `~/.zimmer/clones` directory, and every agent process runs as `rails` — so a session with no Slack
+  server can still `cat` the `.env` of a sibling that has one. The scope limits what a session is
+  *handed*, not what it can *reach*; the same-Unix-user boundary is the one described for elicitation
+  tokens below, and closing it needs a per-session user or a filesystem namespace, which Zimmer does
+  not have.
 - **`CliSpawnEnv`'s denylist is still a denylist.** Everything else in the worker's own environment is
   inherited verbatim by an agent process. Narrowing the `.env` narrows one channel.
 

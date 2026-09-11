@@ -924,6 +924,57 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal spawned_prompt, command[-1], "Prompt must be the trailing positional argument"
   end
 
+  # A clone reused after a job retry spawns without a prepare, so the job itself
+  # has to rewrite the `.env` there — otherwise a clone written before scoping
+  # (the whole bundle) would keep it across every retry (#372).
+  test "reusing an existing clone rewrites its .env to the session's scope" do
+    clone_path = "/tmp/test-clone-env-rescope"
+    @session.update!(
+      prompt: "Carry on",
+      session_id: SecureRandom.uuid,
+      status: :waiting,
+      metadata: { "clone_path" => clone_path, "working_directory" => clone_path }
+    )
+    SessionSecretScope.stubs(:allowed_keys).returns([ "SLACK_BOT_TOKEN" ])
+
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    mock_fs.mkdir_p(clone_path)
+    mock_fs.write("#{clone_path}/claude_stderr.log", "")
+    # The file shape an unscoped write left behind.
+    mock_fs.write("#{clone_path}/.env",
+      "SLACK_BOT_TOKEN=\"old\"\nGCS_ADMIN_SERVICE_ACCOUNT_KEY_JSON=\"old\"\n")
+    mock_process_manager.wait_hook = ->(pid, flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+
+    SecretsLoader.stub(:all, {
+      "SLACK_BOT_TOKEN" => "value-for-SLACK_BOT_TOKEN",
+      "GCS_ADMIN_SERVICE_ACCOUNT_KEY_JSON" => "value-for-GCS_ADMIN_SERVICE_ACCOUNT_KEY_JSON"
+    }) do
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; end
+        mock_poller
+      }) do
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.perform(@session.id)
+        end
+      end
+    end
+
+    assert_equal [ "SLACK_BOT_TOKEN" ], EnvFile.parse(mock_fs.read("#{clone_path}/.env")).keys
+  end
+
   # Regression test for the OAuth re-injection gap on the reused-clone path.
   #
   # When a session fails at the OAuth gate, the operator completes the OAuth flow,
@@ -4946,12 +4997,12 @@ class AgentSessionJobTest < ActiveJob::TestCase
   # Test secrets injection into .env file. The bundle is NOT written whole: the
   # clone gets the secrets this session's own artifacts declare and nothing else
   # (SessionSecretScope, tadasant/zimmer#372).
-  test "injects only the secrets this session's MCP servers declare into the .env file" do
-    # Carried on custom_metadata rather than mcp_servers so this test keeps
-    # exercising the baseline-config branch (an explicit server list would send
-    # the job through a real `air prepare`). Both columns feed the same
-    # Session#all_mcp_servers the scope is computed from.
-    @session.update!(custom_metadata: { "injected_mcp_servers" => [ "slack-workspace" ] })
+  test "injects only the secrets this session's scope allows into the .env file" do
+    # The scope is stubbed rather than reached through a server list: an explicit
+    # mcp_servers would send the job through a real `air prepare`. What is under
+    # test here is that the job writes the scoped subset and logs it by name; the
+    # rule that computes the subset is session_secret_scope_test.rb's.
+    SessionSecretScope.stubs(:allowed_keys).returns([ "SLACK_BOT_TOKEN" ])
     job = AgentSessionJob.new
 
     # Inject mock dependencies
@@ -4971,8 +5022,8 @@ class AgentSessionJobTest < ActiveJob::TestCase
       [ pid, MockProcessManager::MockStatus.new(0) ]
     end
 
-    # The deployment's whole bundle. Only SLACK_BOT_TOKEN is declared by the one
-    # server this session has; the other two are the blast radius being closed.
+    # The deployment's whole bundle. Only SLACK_BOT_TOKEN is in this session's
+    # scope; the other two are the blast radius being closed.
     mock_secrets = {
       "SLACK_BOT_TOKEN" => "value-for-SLACK_BOT_TOKEN",
       "CLOUDFLARE_API_TOKEN_DNS_READWRITE" => "value-for-CLOUDFLARE_API_TOKEN_DNS_READWRITE",
@@ -4999,7 +5050,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       end
     end
 
-    # Verify .env holds exactly the one key this session's server asked for.
+    # Verify .env holds exactly the one key the scope allowed.
     assert mock_fs.exists?("/tmp/test-clone/.env"), "Expected .env file to be created"
     written = EnvFile.parse(mock_fs.read("/tmp/test-clone/.env"))
 
@@ -5016,9 +5067,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   test "escapes special characters in secret values" do
-    @session.update!(custom_metadata: {
-      "injected_mcp_servers" => [ "slack-workspace", "zimmer-sessions", "secrets-service-account" ]
-    })
+    SessionSecretScope.stubs(:allowed_keys).returns([ "SLACK_BOT_TOKEN", "ZIMMER_PROD_API_KEY", "STRAD_API_KEY" ])
     job = AgentSessionJob.new
 
     # Inject mock dependencies
@@ -5038,8 +5087,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       [ pid, MockProcessManager::MockStatus.new(0) ]
     end
 
-    # Names the session's servers declare, so scoping keeps all four; the values
-    # are the point of this test, not the names.
+    # All three are in scope; the values are the point of this test, not the names.
     mock_secrets = {
       "SLACK_BOT_TOKEN" => 'pass="word=x',
       "ZIMMER_PROD_API_KEY" => "line1\nline2",

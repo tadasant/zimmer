@@ -20,9 +20,9 @@
 #
 # A session gets the secrets its own artifacts ask for, and nothing else:
 #
-#   1. Every `${VAR}` named by a catalog MCP server the session has wired —
+#   1. Every `${VAR}` named by a catalog MCP server the session has selected —
 #      `ServersConfig::Server#required_variables` + `#optional_variables`, over
-#      `Session#all_mcp_servers` (explicit + plugin-bundled + auto-injected).
+#      `Session#user_selected_mcp_servers` (explicit + plugin-bundled).
 #      This is the bulk of it: 66 of the 86 production catalog entries declare
 #      their credential this way, and that declaration is already how the server
 #      gets its value at all (SecretsInterpolator resolves it into the entry's
@@ -62,8 +62,8 @@
 #      the next prepare, which is the next turn.
 #   2. **Fleet-wide, one variable** — `ZIMMER_SESSION_ENV_EXTRA_KEYS=A,B` in the
 #      deploy config.
-#   3. **Fleet-wide, everything** — `ZIMMER_SESSION_ENV_SCOPE=all` restores the
-#      pre-#372 behaviour exactly. One deploy-time variable, no code change and
+#   3. **Fleet-wide, everything** — `ZIMMER_SESSION_ENV_SCOPE=all` hands every
+#      clone the whole bundle again. One deploy-time variable, no code change and
 #      no shell on the box.
 class SessionSecretScope
   # Deploy-time switch. Anything other than `all` (the default being unset) means
@@ -73,8 +73,8 @@ class SessionSecretScope
   UNSCOPED_MODE = "all"
 
   # Comma-separated secret names every clone gets regardless of its artifacts.
-  # Empty by default: today nothing in the bundle is needed by a clone for a
-  # reason no artifact declares.
+  # Empty by default: nothing in the bundle is needed by a clone for a reason no
+  # artifact declares.
   EXTRA_KEYS_VARIABLE = "ZIMMER_SESSION_ENV_EXTRA_KEYS"
 
   # `$VAR` or `${VAR}` (with or without a `:-default`) inside an artifact's own
@@ -115,7 +115,7 @@ class SessionSecretScope
       env[MODE_VARIABLE].to_s.strip.downcase == UNSCOPED_MODE
     end
 
-    # Every `${VAR}` the session's wired MCP servers declare — the catalog's own
+    # Every `${VAR}` the session's selected MCP servers declare — the catalog's own
     # server→credential map, read through the same objects that decide whether a
     # server is configured at all.
     #
@@ -149,13 +149,18 @@ class SessionSecretScope
 
     private
 
-    # Explicit + plugin-bundled + auto-injected. The injected Zimmer servers
-    # carry their own generated API key rather than a catalog `${VAR}`, so they
-    # contribute nothing here — they are included because the set is "what this
-    # session has wired", and narrowing it by hand is how the next server to grow
-    # a credential gets missed.
+    # Explicit + plugin-bundled — the servers someone chose for this session.
+    #
+    # The auto-injected Zimmer servers are deliberately left out. The self-session
+    # server is injected into EVERY session, and its catalog entry authenticates
+    # with `${ZIMMER_PROD_API_KEY}` — a key to Zimmer's whole API — so counting it
+    # would hand that key to every clone. The agent does not need it in its shell:
+    # RuntimeConfigPostProcessor resolves the key straight into the injected
+    # entry's own header, and that is the only place the server reads it from. A
+    # session that was given a Zimmer server by name still gets the key, because
+    # someone decided it should.
     def server_names(session)
-      session.all_mcp_servers
+      session.user_selected_mcp_servers
     end
 
     def artifact_paths(session)
@@ -169,8 +174,10 @@ class SessionSecretScope
     def variables_in_directory(path)
       return [] if path.blank? || !File.directory?(path)
 
+      # Symlinks are skipped: a link inside a skill directory could otherwise put
+      # an arbitrary file outside it in front of the scan.
       Dir.glob(File.join(path, "**", "*"))
-        .select { |entry| File.file?(entry) }
+        .select { |entry| File.file?(entry) && !File.symlink?(entry) }
         .sort
         .first(MAX_FILES_PER_ARTIFACT)
         .flat_map { |entry| variables_in_file(entry) }
