@@ -68,8 +68,10 @@ class SystemHealthMonitorJob < ApplicationJob
   STREAK_CACHE_KEY = "system_health_monitor:consecutive_critical_queue"
   STREAK_TTL = 1.hour
 
-  # The cron-freshness streak. Separate from the backlog's, so one condition clearing
-  # never resets the other's confirmation.
+  # The cron-freshness streak, `{ key => consecutive stale checks }`. Separate from the
+  # backlog's, so one condition clearing never resets the other's confirmation, and
+  # counted per key, so key A stale on one check and key B on the next is two readings
+  # of one check each rather than a confirmed finding about B.
   CRON_STREAK_CACHE_KEY = "system_health_monitor:consecutive_stale_cron"
 
   def perform
@@ -101,16 +103,19 @@ class SystemHealthMonitorJob < ApplicationJob
       return
     end
 
-    streak = Rails.cache.read(CRON_STREAK_CACHE_KEY).to_i + 1
-    Rails.cache.write(CRON_STREAK_CACHE_KEY, streak, expires_in: STREAK_TTL)
-    return if streak < CONSECUTIVE_CRITICAL_TO_ALERT
+    previous = Rails.cache.read(CRON_STREAK_CACHE_KEY) || {}
+    streaks = stale.to_h { |r| [ r[:key], previous.fetch(r[:key], 0) + 1 ] }
+    Rails.cache.write(CRON_STREAK_CACHE_KEY, streaks, expires_in: STREAK_TTL)
+
+    confirmed = stale.select { |r| streaks[r[:key]] >= CONSECUTIVE_CRITICAL_TO_ALERT }
+    return if confirmed.empty?
 
     # .error for the same reason as the backlog page: this line is what trips the
     # Grafana rule. The keys go in the message because the message is all a phone
     # shows; the GlitchTip title below stays fixed so every firing groups as one issue.
     Rails.logger.error(
-      "[SystemHealthMonitorJob] Cron schedule stale: #{stale.map { |r| r[:key] }.join(', ')} " \
-      "stopped producing jobs (for #{streak} consecutive check(s))"
+      "[SystemHealthMonitorJob] Cron schedule stale: #{confirmed.map { |r| r[:key] }.join(', ')} " \
+      "stopped producing jobs (each stale on #{CONSECUTIVE_CRITICAL_TO_ALERT}+ consecutive checks)"
     )
 
     ErrorReporter.report_message(
@@ -118,9 +123,9 @@ class SystemHealthMonitorJob < ApplicationJob
       level: :error,
       context: {
         source: "SystemHealthMonitorJob",
-        details: build_cron_details(stale),
-        stale_keys: stale.map { |r| r[:key] },
-        consecutive_checks: streak
+        details: build_cron_details(confirmed),
+        stale_keys: confirmed.map { |r| r[:key] },
+        consecutive_checks: streaks.slice(*confirmed.map { |r| r[:key] })
       }
     )
   end
@@ -146,14 +151,16 @@ class SystemHealthMonitorJob < ApplicationJob
       *stale.map { |r| "• #{r[:key]} (#{r[:job_class]}, `#{r[:cron]}`): #{r[:reason]}" },
       "",
       "A key is stale once the tick it owes is more than two of its own intervals late " \
-        "(never less than 30 minutes, never more than 2 hours). \"Held by a run\" is a " \
-        "perform that has not returned: the job is a singleton, so GoodJob refuses every " \
-        "tick while that one row is unfinished, and nothing frees it but the run ending or " \
-        "its worker process exiting — a deploy restarts the worker, and GoodJob reclaims the " \
-        "row. \"Keeps failing\" is a copy waiting out retry backoff; its error is on the " \
-        "row at /jobs. \"Nothing enqueued\" means the cron manager is not producing this " \
-        "key at all: a job class that no longer loads, an enqueue that raises on every " \
-        "tick, or a copy enqueued outside cron holding the singleton slot.",
+        "(never less than 30 minutes, never more than 2 hours), counting only ticks at which " \
+        "other keys show the cron manager was running. \"Held by a run\" is a perform that " \
+        "has not returned: the job is a singleton, so GoodJob refuses every tick while that " \
+        "one row is unfinished, and nothing frees it but the run ending or its worker " \
+        "process exiting — a deploy restarts the worker, and GoodJob reclaims the row. " \
+        "\"Enqueued outside cron\" is the same, for a copy a `perform_later` or a dashboard " \
+        "\"run now\" put in the slot. \"Keeps failing\" is a copy waiting out retry backoff; " \
+        "its error is on the row at /jobs. \"Nothing enqueued\" means the cron manager is " \
+        "not producing this key at all, with nothing holding its slot: a job class that no " \
+        "longer loads, or an enqueue that raises on every tick.",
       "",
       "Every key's reading is live under `cron_health` in the `get_system_health` MCP " \
         "tool and on /health, including keys that are behind but not paged on (a copy " \

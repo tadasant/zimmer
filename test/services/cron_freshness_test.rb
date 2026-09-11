@@ -3,8 +3,9 @@
 require "test_helper"
 
 # CronFreshness reads the newest job each cron key produced and judges it against that
-# key's own cadence. These drive it with real `good_jobs` rows, because the answer is
-# GoodJob's own `last_jobs_by_key` lateral join and a stub of that would test nothing.
+# key's own cadence. These drive it with real `good_jobs` rows, because the answer is a
+# lateral join and a witness probe over that table, and a stub of either would test
+# nothing.
 class CronFreshnessTest < ActiveSupport::TestCase
   # A fixed instant so every cadence lands on a boundary. Local time, because fire
   # times are computed in the process's zone the way GoodJob computes them.
@@ -31,6 +32,19 @@ class CronFreshnessTest < ActiveSupport::TestCase
       locked_by_id: running_since && SecureRandom.uuid, locked_at: running_since,
       executions_count: executions
     } ])
+  end
+
+  # A healthy key that enqueued on every tick in `window` — which also makes it the
+  # witness that a cron manager was running at each of those ticks.
+  def ticking(key, every:, window:, job_class: "PlaceholderJob")
+    tick = window.end
+    rows = []
+    while tick >= window.begin
+      rows << { queue_name: "default", job_class: job_class, cron_key: key, cron_at: tick,
+                created_at: tick, updated_at: tick, scheduled_at: tick, finished_at: tick + 1 }
+      tick -= every
+    end
+    GoodJob::Job.insert_all(rows)
   end
 
   def report(entries, now: NOW, cron_running_since: NOW - 1.day, exemptions: {})
@@ -102,13 +116,106 @@ class CronFreshnessTest < ActiveSupport::TestCase
     assert_equal :stale, reading(at_eight_thirty, :daily)[:state]
   end
 
+  # The ticks a key owes only count if a cron manager was up to fire them: another key
+  # stamped with the same fire time is the evidence. Here nothing ticked between the
+  # sweep's last row at 09:50 and 11:40, when the worker came back.
+  test "ticks that fell while no cron manager was running are excused" do
+    cron_row("sweep", enqueued: NOW - 2.hours - 10.minutes, finished: NOW - 2.hours - 10.minutes + 5)
+    ticking("clock", every: 1.minute, window: (NOW - 20.minutes)..NOW)
+    entries = [ entry(:sweep, "*/5 * * * *"), entry(:clock, "* * * * *") ]
+
+    down = reading(report(entries), :sweep)
+    assert_equal :fresh, down[:state], "every tick it owes before 11:30 fell while nothing was ticking"
+    assert_operator down[:due_at], :>, NOW - 30.minutes
+
+    ticking("clock", every: 1.minute, window: (NOW - 60.minutes)..(NOW - 50.minutes))
+    assert_equal :stale, reading(report(entries), :sweep)[:state], "11:00-11:10 were ticked, and it owed those"
+  end
+
+  # The case that rules out "count from the worker's start": deploys land every half hour
+  # on a busy day, so a clock restarted by each one would never reach a daily key's grace.
+  test "a daily key that missed a tick the cron manager fired is stale however recently the worker restarted" do
+    yesterday = Time.new(2026, 9, 10, 6, 0, 0)
+    cron_row("daily", enqueued: yesterday, finished: yesterday + 30)
+    ticking("clock", every: 1.minute, window: (Time.new(2026, 9, 11, 5, 55, 0))..(Time.new(2026, 9, 11, 6, 5, 0)))
+
+    result = report([ entry(:daily, "0 6 * * *"), entry(:clock, "* * * * *") ],
+                    now: Time.new(2026, 9, 11, 12, 0, 0), cron_running_since: Time.new(2026, 9, 11, 11, 50, 0))
+
+    assert_equal :stale, reading(result, :daily)[:state]
+  end
+
+  # Disabling a key stops its rows; re-enabling it must not read the days it was off as
+  # days it stopped.
+  test "a key re-enabled in the dashboard is owed nothing from before it was switched back on" do
+    cron_row("sweep", enqueued: NOW - 3.days, finished: NOW - 3.days + 5)
+    GoodJob::Setting.cron_key_disable(:sweep)
+    GoodJob::Setting.cron_key_enable(:sweep)
+    GoodJob::Setting.update_all(updated_at: NOW - 10.minutes)
+
+    assert_equal :fresh, reading(report([ entry(:sweep, "*/5 * * * *") ]), :sweep)[:state]
+
+    GoodJob::Setting.update_all(updated_at: NOW - 3.hours)
+    assert_equal :stale, reading(report([ entry(:sweep, "*/5 * * * *") ]), :sweep)[:state]
+  end
+
+  # A `perform_later` or a dashboard "run now" of a singleton takes the same slot the
+  # cron copy would, so GoodJob refuses every tick behind it. It is judged by what it is
+  # doing, not reported as cron failing to enqueue.
+  test "a copy enqueued outside cron holding a singleton's slot is judged like a cron copy" do
+    cron_row("post_deploy_tasks", enqueued: NOW - 2.hours, finished: NOW - 2.hours + 5, job_class: "PostDeployTaskJob")
+    GoodJob::Job.where(cron_key: "post_deploy_tasks").update_all(concurrency_key: "PostDeployTaskJob")
+    stray = { queue_name: "default", job_class: "PostDeployTaskJob", cron_key: nil, cron_at: nil,
+              concurrency_key: "PostDeployTaskJob", created_at: NOW - 110.minutes, updated_at: NOW - 110.minutes,
+              scheduled_at: NOW - 110.minutes }
+    GoodJob::Job.insert_all([ stray ])
+    entries = [ entry(:post_deploy_tasks, "*/2 * * * *", "PostDeployTaskJob") ]
+
+    waiting = reading(report(entries), :post_deploy_tasks)
+    assert_equal :overdue, waiting[:state], "a queued copy is the queue gates' to page on, whoever enqueued it"
+    assert waiting[:outside_cron]
+    assert_match(/A copy enqueued outside cron has waited 1h 50m for a worker on default/, waiting[:reason])
+
+    GoodJob::Job.where(cron_key: nil).update_all(locked_by_id: SecureRandom.uuid, locked_at: NOW - 100.minutes,
+                                                 performed_at: NOW - 100.minutes)
+    held = reading(report(entries), :post_deploy_tasks)
+    assert_equal :stale, held[:state]
+    assert_match(/Held by a run enqueued outside cron on default that started 1h 40m ago/, held[:reason])
+  end
+
+  test "a stray copy of a class with no enqueue limit is not what stops its ticks" do
+    cron_row("refresh", enqueued: NOW - 2.hours, finished: NOW - 2.hours + 5, job_class: "RefreshMcpOauthTokensJob")
+    GoodJob::Job.update_all(concurrency_key: "anything")
+    GoodJob::Job.insert_all([ { queue_name: "default", job_class: "RefreshMcpOauthTokensJob", concurrency_key: "anything",
+                                created_at: NOW - 1.hour, updated_at: NOW - 1.hour, scheduled_at: NOW - 1.hour } ])
+
+    refresh = reading(report([ entry(:refresh, "*/5 * * * *", "RefreshMcpOauthTokensJob") ]), :refresh)
+
+    assert_equal :stale, refresh[:state]
+    assert_not refresh[:outside_cron]
+    assert_match(/nothing holds its slot, so cron is not enqueuing this key/, refresh[:reason])
+  end
+
+  test "the newest of a key's ticks is the one it is judged by" do
+    cron_row("sweep", enqueued: NOW - 3.hours, finished: NOW - 3.hours + 5)
+    cron_row("sweep", enqueued: NOW - 5.minutes, finished: NOW - 5.minutes + 5)
+
+    sweep = reading(report([ entry(:sweep, "*/5 * * * *") ]), :sweep)
+
+    assert_equal :fresh, sweep[:state]
+    assert_equal NOW - 5.minutes, sweep[:last_enqueued_at]
+  end
+
   test "a deploy that spans a daily key's fire time does not make it late" do
     yesterday = Time.new(2026, 9, 10, 6, 0, 0)
     cron_row("daily", enqueued: yesterday, finished: yesterday + 30)
 
-    # The worker restarted at 06:30 today, so no cron manager was running at 06:00 and
-    # GoodJob does not catch the tick up. The key is next due tomorrow.
-    result = report([ entry(:daily, "0 6 * * *") ],
+    # The worker was down from 05:50 until 06:30 today, so nothing ticked at 06:00 and
+    # GoodJob does not catch the tick up. The every-minute key shows the gap; the daily
+    # key is excused 06:00 and is next due tomorrow.
+    ticking("clock", every: 1.minute, window: Time.new(2026, 9, 11, 5, 0, 0)..Time.new(2026, 9, 11, 5, 50, 0))
+    ticking("clock", every: 1.minute, window: Time.new(2026, 9, 11, 6, 30, 0)..Time.new(2026, 9, 11, 12, 0, 0))
+    result = report([ entry(:daily, "0 6 * * *"), entry(:clock, "* * * * *") ],
                     now: Time.new(2026, 9, 11, 12, 0, 0), cron_running_since: Time.new(2026, 9, 11, 6, 30, 0))
 
     assert_equal :fresh, reading(result, :daily)[:state]
@@ -195,7 +302,7 @@ class CronFreshnessTest < ActiveSupport::TestCase
   end
 
   test "keys are listed worst first, and counted by state" do
-    cron_row("ok", enqueued: NOW - 1.minute)
+    ticking("ok", every: 5.minutes, window: (NOW - 4.hours)..(NOW - 5.minutes))
     cron_row("dead", enqueued: NOW - 3.hours, finished: NOW - 3.hours + 1)
     cron_row("queued", enqueued: NOW - 3.hours)
 

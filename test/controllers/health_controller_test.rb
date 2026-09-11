@@ -124,11 +124,17 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     GoodJob::Job.insert_all([
       { queue_name: "maintenance", job_class: "DockerCleanupJob", cron_key: "docker_cleanup", cron_at: hung,
         created_at: hung, updated_at: hung, scheduled_at: hung, performed_at: hung,
-        locked_by_id: SecureRandom.uuid, locked_at: hung, finished_at: nil },
-      { queue_name: "default", job_class: "ZombieReaperJob", cron_key: "zombie_reaper", cron_at: 1.minute.ago,
-        created_at: 1.minute.ago, updated_at: 1.minute.ago, scheduled_at: 1.minute.ago, performed_at: 1.minute.ago,
-        locked_by_id: nil, locked_at: nil, finished_at: 1.minute.ago }
+        locked_by_id: SecureRandom.uuid, locked_at: hung, finished_at: nil }
     ])
+    # ZombieReaperJob ticked every five minutes throughout, which is also the evidence that a
+    # cron manager was running at the six-hourly tick DockerCleanupJob owes.
+    last_tick = Time.current.beginning_of_minute - (Time.current.min % 5).minutes
+    GoodJob::Job.insert_all(Array.new(120) do |i|
+      at = last_tick - (i * 5).minutes
+      { queue_name: "default", job_class: "ZombieReaperJob", cron_key: "zombie_reaper", cron_at: at,
+        created_at: at, updated_at: at, scheduled_at: at, performed_at: at,
+        locked_by_id: nil, locked_at: nil, finished_at: at + 1 }
+    end)
 
     get health_dashboard_url
     assert_response :success
