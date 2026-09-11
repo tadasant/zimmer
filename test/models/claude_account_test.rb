@@ -2403,6 +2403,50 @@ class ClaudeAccountTest < ActiveSupport::TestCase
       "a 401 about the token we sent must not be persisted as a refusal of the one that replaced it"
   end
 
+  # Production's Sentry SDK records every `sql.active_record` statement's text as
+  # a breadcrumb, so a token that appears in SQL text rides into GlitchTip with
+  # the next event in the same scope.
+  #
+  # Whether a string `where("... = ?", token)` puts the value in the text depends
+  # on the connection: with prepared statements on it travels as a bind (`$3`),
+  # and with them off — `unprepared_statement`, or a pooler that disables them —
+  # it is quoted straight into the statement. So this runs under
+  # `unprepared_statement`, the case that leaks, and passes only because the
+  # token never reaches SQL at all. Against a direct token comparison it fails.
+  test "recording a verdict never puts the access token into SQL text" do
+    account = claude_accounts(:primary)
+    token = account.claude_access_token
+    statements = []
+    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+      statements << payload[:sql].to_s
+    end
+
+    begin
+      ActiveRecord::Base.connection.unprepared_statement do
+        assert_equal :verified, account.record_credential_probe!(honored_probe, probed_token: token)
+        assert_equal :rejected, account.record_credential_probe!(refused_probe, probed_token: token)
+      end
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
+    assert statements.any? { |sql| sql.include?("credential_") }, "the verdict writes were observed"
+    leaking = statements.select { |sql| sql.include?(token) }
+    assert_empty leaking, "an access token in statement text is a credential in every Sentry breadcrumb"
+  end
+
+  test "the digest comparison still refuses a verdict about a token the row no longer holds" do
+    account = claude_accounts(:primary)
+    stale = account.claude_access_token
+    config = account.oauth_config.deep_dup
+    config["credentials_json"]["claudeAiOauth"]["accessToken"] = "rotated-after-the-probe"
+    account.update!(oauth_config: config)
+
+    assert_nil account.record_credential_probe!(refused_probe, probed_token: stale)
+    assert_equal :rejected, account.record_credential_probe!(refused_probe, probed_token: "rotated-after-the-probe"),
+      "the comparison is on the digest of the stored token, so the current one still matches"
+  end
+
   test "a blank token is never recorded as an Anthropic refusal" do
     account = claude_accounts(:unconfigured)
 
