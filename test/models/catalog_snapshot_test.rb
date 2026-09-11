@@ -55,6 +55,26 @@ class CatalogSnapshotTest < ActiveSupport::TestCase
     assert_nil CatalogSnapshot.latest.failure
   end
 
+  test "record_failure! leaves a snapshot that superseded the failed attempt alone" do
+    attempted_at = Time.utc(2026, 9, 11, 10)
+    # A pin save (or another container's refresh) resolved successfully AFTER
+    # this attempt began: the newest tree is fresh, so the failure is stale news.
+    CatalogSnapshot.store!({ skills: { "fresh" => {} } })
+    CatalogSnapshot.update_all(resolved_at: attempted_at + 2.seconds)
+
+    assert_equal 0, CatalogSnapshot.record_failure!("air update failed", attempted_at: attempted_at)
+    assert_nil CatalogSnapshot.latest.failure
+  end
+
+  test "record_failure! marks a snapshot the failed attempt was trying to supersede" do
+    attempted_at = Time.utc(2026, 9, 11, 10)
+    CatalogSnapshot.store!({ skills: { "stale" => {} } })
+    CatalogSnapshot.update_all(resolved_at: attempted_at - 2.seconds)
+
+    assert_equal 1, CatalogSnapshot.record_failure!("air update failed", attempted_at: attempted_at)
+    assert_equal "air update failed", CatalogSnapshot.latest.failure[:message]
+  end
+
   test "record_failure! is a no-op when no snapshot exists" do
     assert_equal 0, CatalogSnapshot.record_failure!("boom")
   end

@@ -52,9 +52,17 @@ class CatalogSnapshot < ApplicationRecord
   # is serving a last-known-good tree. Cleared by the next store!, which writes
   # a fresh row. `message` must already be scrubbed of credentials. Returns the
   # number of rows updated (0 when no snapshot exists yet).
-  def self.record_failure!(message, at: Time.current)
-    where(id: order(resolved_at: :desc).limit(1).select(:id))
-      .update_all(failed_at: at, failure_message: message)
+  #
+  # `attempted_at` is when the failed attempt began, and a row resolved after it
+  # is left alone: that row is a *success* by another process that landed while
+  # this attempt was failing, so it is fresh, and stamping it would tell the
+  # whole fleet a current catalog is degraded. A pin save and the worker's cron
+  # seconds apart is the case that produces it.
+  def self.record_failure!(message, at: Time.current, attempted_at: nil)
+    newest = order(resolved_at: :desc).limit(1)
+    newest = newest.where(resolved_at: ..attempted_at) if attempted_at
+
+    where(id: newest.select(:id)).update_all(failed_at: at, failure_message: message)
   end
 
   # The recorded failure as the {message:, at:} hash AirCatalogService exposes

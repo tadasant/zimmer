@@ -685,6 +685,54 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     assert_includes failure[:message], "[REDACTED:AIR_GITHUB_TOKEN]"
   end
 
+  # A refresh that fails must not mark a snapshot that another process resolved
+  # successfully while it was failing — that row is fresh, and stamping it would
+  # tell every process a current catalog is degraded (fresh-eyes review of #1150).
+  test "a failed refresh does not mark a snapshot that superseded the attempt" do
+    CatalogSnapshot.store!({ skills: { "fresh" => {} } })
+    CatalogSnapshot.update_all(resolved_at: 1.minute.from_now)
+
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, @fake_binary) do
+        Open3.stub(:capture3, ->(*) { [ "", "network is unreachable", fake_status(1) ] }) do
+          assert_raises(AirCatalogService::CatalogError) { AirCatalogService.refresh! }
+        end
+      end
+    end
+
+    assert_nil CatalogSnapshot.latest.failure,
+      "the snapshot stored after this attempt began is fresh and must not be marked degraded"
+  end
+
+  test "a failed refresh marks the snapshot it was trying to supersede" do
+    CatalogSnapshot.store!({ skills: { "stale" => {} } })
+    CatalogSnapshot.update_all(resolved_at: 1.minute.ago)
+
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, @fake_binary) do
+        Open3.stub(:capture3, ->(*) { [ "", "network is unreachable", fake_status(1) ] }) do
+          assert_raises(AirCatalogService::CatalogError) { AirCatalogService.refresh! }
+        end
+      end
+    end
+
+    assert_match(/network is unreachable/, CatalogSnapshot.latest.failure[:message])
+  end
+
+  # store! prunes every other row, so a newest row this process did not write is
+  # a supersede however its clock reads. Decided on identity, not on a timestamp
+  # from another container (fresh-eyes review of #1150).
+  test "adopts a superseding snapshot whose resolved_at reads earlier than the one it serves" do
+    CatalogSnapshot.store!({ skills: { "mine" => {} } })
+    assert_equal [ "mine" ], AirCatalogService.entries_for(:skills).keys
+
+    # Another process stores its own row, with a clock that reads behind ours.
+    CatalogSnapshot.delete_all
+    CatalogSnapshot.create!(entries: { skills: { "theirs" => {} } }, resolved_at: 2.minutes.ago)
+
+    expire_ttl { assert_equal [ "theirs" ], AirCatalogService.entries_for(:skills).keys }
+  end
+
   test "keeps a tree it resolved itself over an older snapshot when its own write failed" do
     CatalogSnapshot.store!({ skills: { "old" => {} } })
     CatalogSnapshot.update_all(resolved_at: 1.hour.ago)
