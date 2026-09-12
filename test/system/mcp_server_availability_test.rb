@@ -29,8 +29,8 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
   def open_picker
     with_mixed_availability_catalog do
       visit new_session_path
-      find("[data-mcp-server-select-target='input']").click
-      assert_selector ".server-item", minimum: 1
+      find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+      assert_selector ".catalog-multiselect-item", minimum: 1
       yield
     end
   end
@@ -41,23 +41,23 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
       assert_text "Strad Secrets Staging"
       assert_text "STRAD_STAGING_API_KEY unresolved"
       assert_text "The endpoint accepts only static bearer tokens and exposes no OAuth discovery."
-      assert_selector ".server-item", text: "Unavailable", count: 2
+      assert_selector ".catalog-multiselect-item", text: "Unavailable", count: 2
     end
   end
 
   test "an available server is unchanged — no badge, no reason, still pickable" do
     open_picker do
-      row = find(".server-item", text: "Context7")
+      row = find(".catalog-multiselect-item", text: "Context7")
       refute_includes row.text, "Unavailable"
 
       row.click
-      assert_selector "[data-mcp-server-select-target='selectedContainer']", text: "Context7"
+      assert_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer']", text: "Context7"
     end
   end
 
   test "unavailable servers sort below the ones that work" do
     open_picker do
-      titles = all(".server-item").map { |row| row.text.lines.first.strip }
+      titles = all(".catalog-multiselect-item").map { |row| row.text.lines.first.strip }
 
       assert_equal "Context7", titles.first
       assert_equal [ "Strad Secrets Staging", "Strad Secrets (OAuth)" ].sort, titles.last(2).sort,
@@ -69,9 +69,9 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
   # job is to say. What it must not do is let the pick pass unmarked.
   test "picking an unavailable server carries the warning onto the selected tag" do
     open_picker do
-      find(".server-item", text: "Strad Secrets Staging").click
+      find(".catalog-multiselect-item", text: "Strad Secrets Staging").click
 
-      tag = find("[data-mcp-server-select-target='selectedContainer'] span", text: "Strad Secrets Staging")
+      tag = find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer'] span", text: "Strad Secrets Staging")
       assert_includes tag[:class], "bg-amber-100", "a warned pick must not look like an ordinary one"
       assert_includes tag[:title], "STRAD_STAGING_API_KEY unresolved"
     end
@@ -79,7 +79,7 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
 
   test "the reason renders as text, not as the markdown get_configs emits" do
     open_picker do
-      refute_includes find(".server-item", text: "Strad Secrets Staging").text, "`"
+      refute_includes find(".catalog-multiselect-item", text: "Strad Secrets Staging").text, "`"
     end
   end
 
@@ -97,15 +97,15 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
       .returns(SecretsInterpolator::Resolution.new(state: :found, source: "a stubbed provider"))
 
     visit new_session_path
-    find("[data-mcp-server-select-target='input']").click
-    assert_selector ".server-item", minimum: 1
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+    assert_selector ".catalog-multiselect-item", minimum: 1
 
-    row = find(".server-item[data-name='strad-secrets-oauth']")
+    row = find(".catalog-multiselect-item[data-key='strad-secrets-oauth']")
     assert_includes row.text, hostile, "the reason is shown verbatim, as text"
     assert_includes row[:title], hostile, "and survives intact in the title property"
     assert_equal 0, page.all("img[src='x']", visible: :all).size,
       "nothing in the reason may become an element"
-    assert_no_selector ".server-item[onerror]"
+    assert_no_selector ".catalog-multiselect-item[onerror]"
   end
 
   # The session detail page drives a second controller over the same payload, and
@@ -140,15 +140,15 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
 
     with_mixed_availability_catalog do
       visit new_session_path
-      input = find("[data-mcp-server-select-target='input']")
+      input = find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']")
       input.click
-      assert_selector ".server-item", minimum: 1
+      assert_selector ".catalog-multiselect-item", minimum: 1
       assert_text "STRAD_STAGING_API_KEY unresolved"
       assert_no_horizontal_overflow("the new session form with a flagged MCP server in the dropdown")
 
       # And with one picked, so the amber chip is measured too.
-      find(".server-item", text: "Strad Secrets Staging").click
-      assert_selector "[data-mcp-server-select-target='selectedContainer']", text: "Strad Secrets Staging"
+      find(".catalog-multiselect-item", text: "Strad Secrets Staging").click
+      assert_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer']", text: "Strad Secrets Staging"
       assert_no_horizontal_overflow("the new session form with an unavailable MCP server selected")
     end
   ensure
@@ -165,11 +165,11 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
     )
     with_mixed_availability_catalog(resolution: outage) do
       visit new_session_path
-      find("[data-mcp-server-select-target='input']").click
-      assert_selector ".server-item", minimum: 1
+      find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+      assert_selector ".catalog-multiselect-item", minimum: 1
 
-      refute_includes find(".server-item", text: "Strad Secrets Staging").text, "Unavailable"
-      assert_selector ".server-item", text: "Unavailable", count: 1, exact_text: false
+      refute_includes find(".catalog-multiselect-item", text: "Strad Secrets Staging").text, "Unavailable"
+      assert_selector ".catalog-multiselect-item", text: "Unavailable", count: 1, exact_text: false
     end
   end
 
@@ -187,8 +187,8 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
       visit new_session_path
       fill_in "session[prompt]", with: "Work on the thing"
 
-      find("[data-mcp-server-select-target='input']").click
-      find(".server-item[data-name='strad-secrets-staging-rw']").click
+      find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+      find(".catalog-multiselect-item[data-key='strad-secrets-staging-rw']").click
       find("label", text: "Initial Prompt").click
 
       js_click(find_button("Create Session", match: :first))

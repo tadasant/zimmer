@@ -151,19 +151,21 @@ class SmokeTest < ApplicationSystemTestCase
 
         # Remove any auto-selected default MCP servers from the agent root
         # (e.g. some MCP servers require env vars not available in CI)
-        all("[data-mcp-server-select-target='selectedContainer'] button[data-action*='removeServerFromTag']").each(&:click)
+        all("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer'] button[data-action*='removeItemFromTag']").each(&:click)
 
         # Select the playwright-custom MCP server using the multi-select dropdown
         # Click on the input to show the dropdown
-        find("[data-mcp-server-select-target='input']").click
+        find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
         # Click on the playwright-custom server in the dropdown
-        find(".server-item[data-name='playwright-custom']").click
+        find(".catalog-multiselect-item[data-key='playwright-custom']").click
         # Wait for the selection to be added (look for the tag with title)
-        assert_selector "[data-mcp-server-select-target='selectedContainer'] span", text: "Playwright Custom"
-        # Click elsewhere to close the dropdown (click on the Initial Prompt label)
-        find("label", text: "Initial Prompt").click
+        assert_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer'] span", text: "Playwright Custom"
+        # Escape, the way a person closes it. Clicking a label above the input no
+        # longer works: a dropdown with no room below it opens UPWARD and covers
+        # exactly that label (see repositionDropdown).
+        find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").send_keys(:escape)
         # Wait for dropdown to close
-        assert_no_selector "[data-mcp-server-select-target='dropdown']:not(.hidden)"
+        assert_no_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='dropdown']:not(.hidden)"
 
         # Submit the form
         click_button "Create Session"

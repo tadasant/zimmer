@@ -356,10 +356,10 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   # Select an agent root via the agent-root-select Stimulus controller.
   #
   # The radios on the new session form are hidden — they exist only to
-  # preserve change-event listeners on dependent controllers (goal,
-  # mcp-server-select, skills-select, etc.). Capybara's `choose` cannot
-  # interact with hidden inputs, so we drive the same code path the
-  # autocomplete dropdown uses in production.
+  # preserve change-event listeners on the goal controller. Capybara's `choose`
+  # cannot interact with hidden inputs, so we drive the same code path the
+  # autocomplete dropdown uses in production — which is also what broadcasts
+  # `ao:agent-root-changed` to the catalog multi-selects and model-select.
   def select_agent_root(name)
     page.execute_script(<<~JS)
       (() => {

@@ -49,6 +49,22 @@ export const UNAVAILABLE = {
   chipRemove: "text-amber-700 hover:text-amber-900"
 }
 
+// The tone a chip carries when the deployment's catalog does not carry the
+// selected key AT ALL — a rename or a removal since it was stored. Red rather
+// than amber: an unavailable artifact exists and might come back, a missing one
+// has to be replaced or dropped by hand. Only the form mode raises it, and only
+// when `preserveUnknown` says the selection is a stored column rather than a
+// root's defaults (zimmer#853).
+export const MISSING = {
+  chip: "bg-red-100 text-red-900",
+  chipRemove: "text-red-700 hover:text-red-900"
+}
+
+// What a chip's tooltip says in that case.
+export const MISSING_TITLE =
+  "Not in this deployment's catalog — it was renamed or removed. " +
+  "Replace it with its new name, or remove it. It is kept until you do."
+
 // Fall back to green rather than throwing: an unknown accent should render a
 // usable widget, not a blank one.
 export function accentClasses(name) {
