@@ -7,6 +7,7 @@ require "support/work_backlog_helpers"
 # the load-bearing half — that it concludes it without moving anything.
 class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
   include WorkBacklogHelpers
+  include ActiveSupport::Testing::TimeHelpers
 
   setup do
     @dead_session = sessions(:archived)
@@ -199,27 +200,140 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
 
   # --- what it says ----------------------------------------------------------
 
-  test "alerts when the oldest stranded row is past the threshold" do
+  test "alerts when the oldest stranded row is past the threshold, on both surfaces" do
     started_row(started_at: (WorkBacklog::LivenessSweep::ALERT_AFTER + 2.days).ago)
-    alerted = []
 
-    ErrorReporter.stub(:report_message, ->(message, **kwargs) { alerted << [ message, kwargs ] }) do
+    with_alerts do |alerts|
       sweep(probes: { 1 => probe(references: []) })
-    end
 
-    assert_equal 1, alerted.size
-    assert_match(/stranded/, alerted.first.first)
+      # The ERROR log record is the page: it is what trips the
+      # `zimmer_backend_log_errors` Grafana rule, the surface that re-fires and
+      # then resolves. Without it this alert reaches a human once and never again.
+      assert_equal 1, alerts.pages.size
+      assert_match(/9\.0 days/, alerts.pages.first)
+
+      assert_equal 1, alerts.events.size
+      assert_match(/stranded for over 1 week\z/, alerts.events.first[:message])
+      assert_equal [ WorkBacklog::LivenessSweep::ALERT_FINGERPRINT, "weeks-1", "rows-1" ],
+                   alerts.events.first[:fingerprint]
+    end
   end
 
   test "does not alert while the oldest stranded row is young" do
     started_row(started_at: 1.day.ago)
-    alerted = []
 
-    ErrorReporter.stub(:report_message, ->(*, **) { alerted << true }) do
+    with_alerts do |alerts|
       sweep(probes: { 1 => probe(references: []) })
+
+      assert_empty alerts.pages
+      assert_empty alerts.events
+    end
+  end
+
+  # The flood-protection half, and the property not to regress: the sweep runs
+  # HOURLY, and a population that has not changed must not page on every pass.
+  test "a population that has not changed does not page again on later passes" do
+    started_row(started_at: 9.days.ago)
+
+    with_alerts do |alerts|
+      3.times { sweep(probes: { 1 => probe(references: []) }) }
+
+      assert_equal 1, alerts.pages.size, "a steady population pages once, not once an hour"
+      assert_equal 1, alerts.events.size
+    end
+  end
+
+  # The defect (#1175): past the first notification the old alert was silent for
+  # ever, because one constant fingerprint plus GlitchTip's at-most-once
+  # ProjectAlert can reach a human exactly once.
+  test "a population that ages into the next week pages again" do
+    started_row(started_at: 9.days.ago)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe(references: []) })
+      travel 7.days do
+        sweep(probes: { 1 => probe(references: []) })
+      end
+
+      assert_equal 2, alerts.pages.size
+      assert_equal [ "weeks-1", "weeks-2" ], alerts.events.map { |event| event[:fingerprint][1] }
+      assert_match(/stranded for over 2 weeks\z/, alerts.events.last[:message])
+    end
+  end
+
+  test "a population that grows through a size band pages again without waiting for the week" do
+    started_row(key: "zimmer#1", number: 1, started_at: 9.days.ago)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe(references: []) })
+
+      (2..10).each { |n| started_row(key: "zimmer##{n}", number: n, started_at: 8.days.ago) }
+      sweep(probes: { 1 => probe(references: []) })
+
+      assert_equal 2, alerts.pages.size
+      assert_equal [ "rows-1", "rows-10" ], alerts.events.map { |event| event[:fingerprint][2] }
+      assert_equal 10, alerts.events.last[:context][:stranded_rows]
+    end
+  end
+
+  # Triage takes the oldest rows off first, so the band DROPS. Weighing the
+  # remainder against a band it can no longer reach would take this back to
+  # silence — three weeks of it, in this case.
+  test "a population that shrinks is remembered without paging, so the remainder can page again" do
+    oldest = started_row(key: "zimmer#1", number: 1, started_at: 22.days.ago)
+    started_row(key: "zimmer#2", number: 2, started_at: 8.days.ago)
+
+    with_alerts do |alerts|
+      sweep
+      assert_equal [ "weeks-3" ], alerts.events.map { |event| event[:fingerprint][1] }
+
+      oldest.destroy!
+      sweep
+      assert_equal 1, alerts.pages.size, "an improvement is not a page"
+
+      travel 7.days do
+        sweep
+      end
+      assert_equal 2, alerts.pages.size
+      assert_equal "weeks-2", alerts.events.last[:fingerprint][1],
+                   "the remainder is measured against the band it is actually in"
+    end
+  end
+
+  # The resolve half. Nothing closes a GlitchTip issue, but the Grafana rule
+  # resolves once the ERROR records stop — and the band has to be forgotten with
+  # it, or the NEXT population is weighed against one that no longer exists.
+  test "a cleared population forgets its band, so the next one pages from its first week" do
+    item = started_row(started_at: 9.days.ago)
+
+    with_alerts do |alerts|
+      sweep
+      assert_equal 1, alerts.pages.size
+
+      item.destroy!
+      sweep
+      assert_equal 1, alerts.pages.size, "an empty population says nothing"
+
+      started_row(key: "zimmer#2", number: 2, started_at: 9.days.ago)
+      sweep
+
+      assert_equal 2, alerts.pages.size
+      assert_equal "weeks-1", alerts.events.last[:fingerprint][1]
+    end
+  end
+
+  # A store that cannot remember cannot be throttled against, and an hourly page
+  # nothing throttles would flood `#alerts` — the channel every real page travels.
+  # The test env's :null_store is that store, so this needs no stubbing.
+  test "a cache that cannot remember stays silent rather than paging every pass" do
+    started_row(started_at: 9.days.ago)
+    events = []
+
+    ErrorReporter.stub(:report_message, ->(*, **) { events << true }) do
+      2.times { sweep(probes: { 1 => probe(references: []) }) }
     end
 
-    assert_empty alerted
+    assert_empty events
   end
 
   test "reports the age of the oldest stranded row, and a resolved row does not count" do
@@ -263,6 +377,29 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
 
   def reference(state:, updated_at:, number: 500)
     Github::IssueLinkProbe::Reference.new(number: number, state: state, updated_at: updated_at)
+  end
+
+  # What one or more passes said, on both surfaces. `pages` are the ERROR log
+  # records — the Grafana rule fires on those, and they are the half that can
+  # reach a human more than once; `events` are the GlitchTip reports.
+  Alerts = Struct.new(:log, :events) do
+    def pages = log.string.lines.grep(/ERROR/).grep(/stranded, oldest/)
+  end
+
+  # Runs a block against a cache that can actually remember. The test env's
+  # :null_store cannot, and the sweep deliberately stays silent against a store
+  # that cannot — see `remember_alert_band`.
+  def with_alerts
+    log = StringIO.new
+    events = []
+
+    Rails.stub(:cache, ActiveSupport::Cache::MemoryStore.new) do
+      Rails.stub(:logger, Logger.new(log)) do
+        ErrorReporter.stub(:report_message, ->(message, **kwargs) { events << kwargs.merge(message: message) }) do
+          yield Alerts.new(log, events)
+        end
+      end
+    end
   end
 
   # One pass with the GitHub probe stubbed. `probes` is keyed by issue number, as

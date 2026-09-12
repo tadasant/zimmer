@@ -95,11 +95,34 @@ module WorkBacklog
     # How old the oldest unresolved row may get before a human is told. The point
     # of the alert is that this population used to have no upper bound at all —
     # the worst row observed had sat for 37 days.
+    #
+    # It doubles as the WIDTH of a severity band: a population nobody triages ages
+    # into a new band every week, and a new band pages again. See
+    # `alert_if_overdue`.
     ALERT_AFTER = 7.days
 
+    # The population sizes that count as a step change. A count climbing through
+    # one of these pages again without waiting for the week to roll over; one
+    # drifting between two of them does not. Coarse on purpose — the question a
+    # second page has to answer is "is this materially worse than when I was last
+    # told", and 21 rows against 23 is not.
+    ALERT_ROW_BANDS = [ 1, 10, 25, 50, 100, 250, 500, 1000 ].freeze
+
     # The fingerprint every occurrence of this alert shares, so the obs pipeline
-    # groups them into one issue rather than one per pass.
+    # groups them into one issue rather than one per pass. The severity band is
+    # appended to it, which is what keeps a WORSE population from being folded
+    # into the issue a milder one already used up — see `alert_if_overdue`.
     ALERT_FINGERPRINT = "work-backlog-stranded-rows"
+
+    # Where the band the last page was sent for is remembered, so a steady
+    # population is silent between bands. Redis in production; a store that cannot
+    # remember is handled in `remember_alert_band` rather than assumed away.
+    ALERT_BAND_CACHE_KEY = "work_backlog_liveness_sweep:alerted_band"
+
+    # Long enough that a population ageing a week at a time never forgets its band
+    # between hourly passes, short enough that a band nothing has re-confirmed for
+    # two months cannot suppress a page for ever.
+    ALERT_BAND_TTL = 60.days
 
     # What one pass found. `repos_failed` is separate from the outcome counts
     # because a repo nobody could read is a fault, where an `unknown` row might
@@ -113,23 +136,12 @@ module WorkBacklog
       # @param logger [StructuredLogger, Logger]
       # @return [Result]
       def sweep!(now: Time.current, logger: Rails.logger)
-        candidates = candidates(now)
-        return report(empty_result(now), logger) if candidates.empty?
+        rows = candidates(now)
+        result = rows.empty? ? empty_result(now) : examine(rows, now, logger)
 
-        outcomes = Hash.new(0)
-        failed = []
-
-        candidates.group_by(&:repo).each do |repo, rows|
-          probes = probe(repo, rows, logger) { failed << repo }
-          rows.each do |item|
-            state = classify(item, probes && probes[item.issue_number], now)
-            outcomes[state] += 1
-            record(item, state, now, logger)
-          end
-        end
-
-        result = Result.new(examined: candidates.size, outcomes: outcomes,
-                            oldest_stranded_age: oldest_stranded_age(now), repos_failed: failed)
+        # On EVERY pass, the empty one included. A population that has just been
+        # triaged away leaves nothing to examine, and that is precisely the pass
+        # that has to notice the condition is over — see `alert_if_overdue`.
         alert_if_overdue(result)
         report(result, logger)
       end
@@ -169,6 +181,25 @@ module WorkBacklog
       end
 
       private
+
+      # One pass over the rows worth a look: probe each repo once, classify every
+      # row it came back with, and write each verdict down.
+      def examine(rows, now, logger)
+        outcomes = Hash.new(0)
+        failed = []
+
+        rows.group_by(&:repo).each do |repo, repo_rows|
+          probes = probe(repo, repo_rows, logger) { failed << repo }
+          repo_rows.each do |item|
+            state = classify(item, probes && probes[item.issue_number], now)
+            outcomes[state] += 1
+            record(item, state, now, logger)
+          end
+        end
+
+        Result.new(examined: rows.size, outcomes: outcomes,
+                   oldest_stranded_age: oldest_stranded_age(now), repos_failed: failed)
+      end
 
       # One row's verdict, written so that one bad row cannot cost every other.
       # `update!` validates, and a legacy row that fails validation for an
@@ -231,15 +262,112 @@ module WorkBacklog
       #
       # Through ErrorReporter rather than a Slack call of its own: operational
       # alerts go to the obs pipeline since AlertService was retired (#189).
+      #
+      # == Reaching a human MORE THAN ONCE (#1175)
+      #
+      # The first version of this reported one constant fingerprint through
+      # ErrorReporter and did nothing else, so it could page exactly once in its
+      # life. GlitchTip's "new issue → Slack" alert notifies an issue AT MOST ONCE,
+      # EVER — `process_event_alerts` excludes issues that already produced a
+      # Notification for that alert — which is the property that keeps a crash loop
+      # from flooding `#alerts`, and which turned this hourly detector into a
+      # one-shot. GlitchTip issue 95 read `count = 1`, `first_seen == last_seen`
+      # while the population it bounds sat at 21 rows. That is the invisible growth
+      # #1127 was written to end, so it must not be how the detector itself fails.
+      #
+      # Two surfaces now, each doing a different half:
+      #
+      #   * THE PAGE IS AN ERROR LOG RECORD. A non-staging Zimmer ERROR record
+      #     trips the `zimmer_backend_log_errors` Grafana rule, which — unlike a
+      #     GlitchTip issue — re-fires after it has resolved and RESOLVES when the
+      #     records stop. Triaging the rows is what clears it; nobody has to
+      #     remember to close anything. SystemHealthMonitorJob pages the same way,
+      #     for the same reason, and its comment says so in as many words.
+      #   * THE GLITCHTIP EVENT CARRIES THE BAND in its fingerprint, so a worse
+      #     population is a genuinely new issue with its own one-time notification
+      #     while a steady one keeps the issue it already has.
+      #
+      # What bounds the noise is that a page costs a real step change: a week of
+      # further ageing, or a climb through ALERT_ROW_BANDS. A population sitting
+      # still is silent until its oldest row ages into the next week — one page a
+      # week, never the hourly flood that "report every pass" would be, and never
+      # the permanent silence this replaces. An IMPROVED band is remembered without
+      # paging, so triaging the oldest rows does not leave the remainder measured
+      # against a three-week band it can no longer reach.
       def alert_if_overdue(result)
         age = result.oldest_stranded_age
-        return if age.nil? || age < ALERT_AFTER
+        if age.nil? || age < ALERT_AFTER
+          # The condition is over. Forgetting the band is what makes the NEXT
+          # population page from band one instead of being weighed against a worse
+          # one that no longer exists.
+          Rails.cache.delete(ALERT_BAND_CACHE_KEY)
+          return
+        end
 
+        rows = WorkBacklogItem.stranded.count
+        band = severity_band(age, rows)
+        previous = Rails.cache.read(ALERT_BAND_CACHE_KEY)
+        return unless remember_alert_band(band)
+        return unless worse_band?(band, previous)
+
+        page_stranded_rows(band, age, rows)
+      end
+
+      # The band a population is in: the week its oldest row's age has reached, and
+      # the step of the size ladder its count has reached. Coarse in both
+      # dimensions so that only a real change moves it.
+      def severity_band(age, rows)
+        { weeks: age / ALERT_AFTER.to_i, rows: ALERT_ROW_BANDS.select { |n| rows >= n }.max.to_i }
+      end
+
+      # Worse in EITHER dimension — a population can get older without growing, and
+      # grow without getting older, and both are news. No memory at all is worse
+      # than any band: that is a population's first page.
+      def worse_band?(band, previous)
+        return true if previous.nil?
+
+        band.any? { |dimension, value| value > previous[dimension].to_i }
+      end
+
+      # Write the band down, then read it back. A store that cannot remember — the
+      # `:null_store` outside production, or a Redis that has stopped answering —
+      # gives back something other than what was written, and that is the one case
+      # this stays silent on purpose. An hourly page nothing can throttle would
+      # flood `#alerts`, the channel every real page on this deployment travels,
+      # and a cache that has stopped answering is loudly alerted on in its own
+      # right rather than needing this to notice it.
+      def remember_alert_band(band)
+        Rails.cache.write(ALERT_BAND_CACHE_KEY, band, expires_in: ALERT_BAND_TTL)
+        Rails.cache.read(ALERT_BAND_CACHE_KEY) == band
+      end
+
+      def page_stranded_rows(band, age, rows)
+        days = (age / 86_400.0).round(1)
+
+        # `.error`, because THIS LINE is the page. It is what trips the
+        # `zimmer_backend_log_errors` Grafana rule — the only surface here that
+        # fires again after it has resolved — so demoting it to `.warn` takes this
+        # alert back to reaching a human once and never again.
+        #
+        # Rails.logger rather than the sweep's injected logger: the job hands the
+        # sweep a StructuredLogger, whose #error reports to GlitchTip itself, and
+        # that would file a second issue keyed on this line's text beside the
+        # banded one below.
+        Rails.logger.error(
+          "[WorkBacklog::LivenessSweep] #{rows} work backlog row(s) stranded, oldest #{days} days " \
+          "(band: #{band[:weeks]}w/#{band[:rows]}+ rows) — nothing re-queues these automatically. " \
+          "Triage them on the Issues page under Stranded, or with get_work_backlog status: \"stranded\"."
+        )
+
+        # Level stays :warning: this is a triage queue, not a fault, and the
+        # matching Grafana rule is a warning too. The ERROR above is the paging
+        # MECHANISM, not a claim about severity.
         ErrorReporter.report_message(
-          "Work backlog rows have been stranded for over #{ALERT_AFTER.inspect}",
+          "Work backlog rows have been stranded for over #{band[:weeks]} #{"week".pluralize(band[:weeks])}",
           context: {
-            oldest_stranded_days: (age / 86_400.0).round(1),
-            stranded_rows: WorkBacklogItem.stranded.count,
+            oldest_stranded_days: days,
+            stranded_rows: rows,
+            severity_band: band,
             source: "WorkBacklog::LivenessSweep",
             what_to_do: "Nothing re-queues these automatically — telling a finished issue from one " \
                         "with a deliberate remainder needs a judgement per issue. Triage them on the " \
@@ -247,7 +375,8 @@ module WorkBacklog
                         "and put the ones with work left back with append_work_backlog_item.",
             fingerprint: ALERT_FINGERPRINT
           },
-          level: :warning
+          level: :warning,
+          fingerprint: [ ALERT_FINGERPRINT, "weeks-#{band[:weeks]}", "rows-#{band[:rows]}" ]
         )
       end
     end
