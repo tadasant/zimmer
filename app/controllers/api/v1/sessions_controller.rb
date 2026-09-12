@@ -38,22 +38,16 @@ class Api::V1::SessionsController < Api::BaseController
     database_unavailable: "Service unavailable"
   }.freeze
 
-  # The same split for `POST /api/v1/sessions/:id/restart`'s from-scratch branch,
-  # keyed by the code Sessions::RestartFromScratch returns. A dropped connection
-  # is a transport failure the caller should retry, not a rejected request — so it
-  # answers 503 rather than the 500 this endpoint used to raise before the retry
-  # moved into the service.
-  RESTART_FROM_SCRATCH_ERRORS = {
+  # The same split for `POST /api/v1/sessions/:id/restart`, keyed by the code its
+  # service returned — Sessions::RestartFromScratch's when there was no
+  # conversation to prompt into, Sessions::RestartWithPrompt's when there was.
+  # One table for both branches: the codes are disjoint, and every lookup falls
+  # back to `:failed`. A dropped connection is a transport failure the caller
+  # should retry, not a rejected request — so it answers 503 rather than the 500
+  # this endpoint used to raise before the retry moved into the services.
+  RESTART_ERRORS = {
     no_git_root: { title: "Cannot restart", status: :unprocessable_entity },
-    database_unavailable: { title: "Service unavailable", status: :service_unavailable },
-    failed: { title: "Cannot restart", status: :internal_server_error }
-  }.freeze
-
-  # And the same again for the branch that resumes an existing conversation,
-  # keyed by the code Sessions::RestartWithPrompt returns. Same reasoning: a
-  # dropped connection is a transport failure the caller should retry, not a
-  # rejected request.
-  RESTART_WITH_PROMPT_ERRORS = {
+    not_resumable: { title: "Cannot restart", status: :unprocessable_entity },
     database_unavailable: { title: "Service unavailable", status: :service_unavailable },
     failed: { title: "Cannot restart", status: :internal_server_error }
   }.freeze
@@ -660,7 +654,7 @@ class Api::V1::SessionsController < Api::BaseController
     result = Sessions::RestartWithPrompt.call(@session, actor: :api)
 
     unless result.ok?
-      answer = RESTART_WITH_PROMPT_ERRORS.fetch(result.error_code, RESTART_WITH_PROMPT_ERRORS[:failed])
+      answer = RESTART_ERRORS.fetch(result.error_code, RESTART_ERRORS[:failed])
       render_api_error(answer[:title], result.error, status: answer[:status])
       return
     end
@@ -1373,7 +1367,7 @@ class Api::V1::SessionsController < Api::BaseController
     result = Sessions::RestartFromScratch.call(session, actor: :api)
 
     unless result.ok?
-      answer = RESTART_FROM_SCRATCH_ERRORS.fetch(result.error_code, RESTART_FROM_SCRATCH_ERRORS[:failed])
+      answer = RESTART_ERRORS.fetch(result.error_code, RESTART_ERRORS[:failed])
       render_api_error(answer[:title], result.error, status: answer[:status])
       return
     end
