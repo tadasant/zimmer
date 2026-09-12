@@ -315,7 +315,7 @@ class ChunkedTranscriptTest < ActiveSupport::TestCase
     content = jsonl(3)
     @session.update!(transcript: content)
 
-    assert Session.find(@session.id).transcript_matches?(content.sub("event", "ev ent")),
+    assert Session.find(@session.id).transcript_matches?(content.sub("event", "ev\u0000ent")),
       "a NUL byte the setter strips is not a difference worth a write"
   end
 
@@ -333,6 +333,43 @@ class ChunkedTranscriptTest < ActiveSupport::TestCase
 
     assert @session.transcript_matches?(jsonl(4))
     assert_not @session.transcript_matches?(jsonl(3))
+  end
+
+  test "transcript_matches? never matches a legacy Array row against JSONL" do
+    events = [ { "type" => "user", "n" => 1 } ]
+    store_legacy_transcript(@session, events)
+
+    assert_not @session.transcript_matches?(Session.normalize_transcript(events))
+  end
+
+  test "transcript_matches? reads the chunks when the row has no digest" do
+    content = jsonl(5)
+    @session.update!(transcript: content)
+    Session.where(id: @session.id).update_all(transcript_digest: nil)
+    fresh = Session.find(@session.id)
+
+    assert fresh.transcript_matches?(content)
+    assert_not fresh.transcript_matches?(jsonl(5, start: 1))
+  end
+
+  test "a no-op write from a stale copy does not overwrite a newer transcript" do
+    # Two holders of one session. The second writes a longer transcript; the first
+    # then saves the value it last read. Nothing on the row changes, so no UPDATE
+    # takes the row lock, and the chunk set must be left describing the newer write
+    # the row's digest vouches for — otherwise `transcript_matches?` would trust a
+    # digest the chunks no longer agree with.
+    original = jsonl(5)
+    @session.update!(transcript: original)
+    stale = Session.find(@session.id)
+    newer = original + jsonl(3, start: 5)
+    Session.find(@session.id).update!(transcript: newer)
+
+    stale.update!(transcript: original)
+
+    fresh = Session.find(@session.id)
+    assert_equal newer, stored_bytes(@session)
+    assert_equal newer, fresh.transcript
+    assert fresh.transcript_matches?(newer)
   end
 
   test "an empty session matches an empty read" do

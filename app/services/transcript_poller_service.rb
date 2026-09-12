@@ -440,6 +440,10 @@ class TranscriptPollerService
     branch_id = @source.rekeyed_branch_id(session: @session, transcript_path: main_transcript_file)
     record_rekeyed_branch(branch_id, main_transcript_file, metadata_updates)
     return [ transcript_content, new_messages ] if branch_id.blank?
+    # An idle poll on a followed branch: the branch is what is stored, so the splice
+    # would return it unchanged. Decided from the row rather than by reading the
+    # stored transcript back on every poll.
+    return [ transcript_content, new_messages ] if @session.transcript_matches?(transcript_content)
 
     spliced = RekeyedTranscriptBranch.splice(stored: @session.transcript, branch: transcript_content)
     # The ordinary re-key — a branch seeded with the whole recorded file — lands
@@ -603,6 +607,15 @@ class TranscriptPollerService
   # @return [String] the history prefix, or "" when there is none
   def carryover_prefix(main_transcript_file, live_content, metadata_updates)
     return "" unless @source.rotates_transcript_files?
+
+    # The steady state, answered before the stored transcript is read: the same file
+    # as last poll, and no history carried over from an earlier one. Every branch
+    # below returns "" for it, and reading the transcript here would pull the whole
+    # conversation out of the chunk table on every poll of every running session.
+    if @session.metadata&.dig("transcript_source_path") == main_transcript_file &&
+       @session.metadata&.dig("transcript_carryover_event_count").to_i.zero?
+      return ""
+    end
 
     # Carrying over is line surgery on JSONL text. The legacy transcript format is
     # an Array of events (Session.transcript_line_count branches on it), and slicing
