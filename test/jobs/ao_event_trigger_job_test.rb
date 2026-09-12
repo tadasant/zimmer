@@ -691,6 +691,95 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     end
   end
 
+  # The same wake group, fired at a requester that is still RUNNING — session
+  # 17044's incident, end to end through the three components that produced it.
+  # https://github.com/tadasant/zimmer/issues/1172
+  #
+  # The fire cannot resume a running session, so it queues the wake and holds the
+  # group. AgentSessionJob then hands the finished turn straight to the queued
+  # message instead of pausing, which is the only turn boundary in Zimmer that
+  # runs neither `pause` nor `resume` — so nothing consumes the `pending_sleep`
+  # the wake arming wrote. The woken turn armed nothing, its pause retired the
+  # whole group, and the leftover intent slept the session into `waiting` with no
+  # trigger left in the world. It sat inert for 15.5 minutes.
+  test "a wake fired into a running requester leaves it in needs_input when the woken turn arms nothing" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    watched_session = Session.create!(
+      status: :needs_input,
+      prompt: "Watched",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+
+    requester = Session.create!(
+      prompt: "Requester mid-turn",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      status: :running,
+      session_id: SecureRandom.uuid,
+      metadata: {}
+    )
+
+    watcher = Trigger.create!(
+      name: "Wake on watched needs_input",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go {{event}}",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "ao_event",
+          configuration: { "event_name" => "session_needs_input", "watched_session_id" => watched_session.id } }
+      ]
+    )
+
+    backstop = Trigger.create!(
+      name: "Deadline backstop wake",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 40.minutes.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    assert_equal true, requester.reload.metadata["pending_sleep"],
+      "arming wakes against a running session marks it to sleep at the end of THAT turn"
+
+    AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
+
+    assert_equal 1, requester.enqueued_messages.pending.count,
+      "a wake cannot resume a running session, so it is queued"
+    assert_not_nil watcher.reload.wake_held_at
+    assert_not_nil backstop.reload.wake_held_at
+
+    # AgentSessionJob's pre-pause handoff: the finished turn hands straight to the
+    # queued message, so neither `pause` nor `resume` runs.
+    assert EnqueuedMessageProcessorService.new(requester.reload).process_next_message
+    assert_equal "waiting", requester.reload.status
+
+    # The woken turn runs and comes to rest having armed nothing of its own.
+    requester.reload.start!
+    requester.pause!
+
+    requester.reload
+    assert requester.needs_input?,
+      "with its whole wake group retired the session must rest where the operator can see it, " \
+      "not strand in `waiting` for StrandedSleepRescue to page about"
+    assert_not Trigger.exists?(watcher.id)
+    assert_not Trigger.exists?(backstop.id)
+    assert_nil requester.metadata["pending_sleep"]
+    assert_not requester.awaiting_scheduled_wake?
+  end
+
   test "sibling cleanup leaves triggers for unrelated requesters intact" do
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)

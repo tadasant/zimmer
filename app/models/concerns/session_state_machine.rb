@@ -127,6 +127,25 @@ module SessionStateMachine
   # which is executed whether or not any wake-up exists.
   PENDING_SLEEP_REQUIRES_WAKE = "pending_sleep_requires_wake"
 
+  # The `pending_sleep_reason` values that carry the same condition as the marker
+  # above, without needing a marker of their own: a sleep intent whose whole
+  # justification is a wake-up is void once that wake-up cannot fire.
+  #
+  # `scheduled_wake` is `Trigger#sleep_target_session_if_applicable` marking a
+  # RUNNING session to sleep at its turn end because a wake was just armed against
+  # it. If the wake set is gone by the time that turn ends, honouring the intent
+  # puts the session in `waiting` with nothing to come back on — the #1172 strand.
+  #
+  # The rest of the reasons are deliberately absent, each for its own reason. A
+  # `deliberate_sleep` (`POST /api/v1/sessions/:id/sleep`) arms nothing by
+  # definition and must still sleep. A `spot_pause` or an `auth_outage_park` is a
+  # dormancy with a marker and a sweep of its own, and refusing to sleep it would
+  # run a session the platform had just stood down.
+  PENDING_SLEEP_REASONS_REQUIRING_WAKE = [
+    Sessions::StopRecord::SCHEDULED_WAKE,
+    Sessions::StopRecord::SYSTEM_RECOVERY_RESLEEP
+  ].freeze
+
   # Who fired `archive`, in the words the session's own timeline will use.
   #
   # Every other transition has one obvious cause: a process spawned, a turn
@@ -2021,20 +2040,45 @@ module SessionStateMachine
   def execute_pending_sleep
     return unless metadata&.dig("pending_sleep") == true
 
-    # A sleep intent recorded by the system-recovery preserve branch is only
-    # valid while the wake-ups it was recorded for are still armed. They may not
-    # be: a backstop whose wall time elapsed during the outage is due the moment
-    # recovery resumes the session, so it can fire mid-recovery-turn, destroy its
-    # siblings, and hand off to a new turn without ever pausing. Sleeping on that
-    # stale intent would put the session in `waiting` with nothing armed and no
-    # `paused_by` — invisible to both recovery sweeps, which is a worse stall than
-    # the one this preserve branch exists to prevent. Drop the intent instead and
-    # let the session come to rest in needs_input, where the operator can see it.
-    if metadata[PENDING_SLEEP_REQUIRES_WAKE] && !armed_one_time_wake?
+    # A sleep intent whose whole justification is a wake-up is only valid while
+    # that wake-up is still armed. Two shapes reach here that way, and both can
+    # arrive with the wake already gone.
+    #
+    # The system-recovery preserve branch is the first: a backstop whose wall time
+    # elapsed during the outage is due the moment recovery resumes the session, so
+    # it can fire mid-recovery-turn, destroy its siblings, and hand off to a new
+    # turn without ever pausing.
+    #
+    # A `scheduled_wake` intent is the second, and #1172 is what it costs. The
+    # intent is written on a RUNNING session the instant a wake is armed against
+    # it, and it is consumed by that turn's `pause`. A turn that ends WITHOUT
+    # pausing — the enqueued-message handoff, which hands straight off to the next
+    # job so no `pause` and no `resume` run — carries the flag into a turn it was
+    # never about. If a wake then fires into that turn, `retire_held_wake_triggers`
+    # destroys the whole held group at its pause, microseconds before this runs on
+    # the leftover intent.
+    #
+    # Sleeping either one would put the session in `waiting` with nothing armed and
+    # no `paused_by` — invisible to every recovery sweep but StrandedSleepRescue,
+    # which finds it fifteen minutes later and pages for it. Drop the intent
+    # instead and let the session come to rest in needs_input, where the operator
+    # can see it.
+    if pending_sleep_requires_wake? && !armed_one_time_wake?
+      reason = metadata[Sessions::StopRecord::PENDING_SLEEP_REASON].presence || "unstamped"
       remove_metadata!("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE, Sessions::StopRecord::PENDING_SLEEP_REASON)
       Rails.logger.info(
-        "[SessionStateMachine] Dropped the preserved re-sleep for session #{id} — its wake-ups " \
-        "fired or were destroyed during the recovery turn, so sleeping would strand it"
+        "[SessionStateMachine] Dropped the conditional re-sleep (#{reason}) for session #{id} — its " \
+        "wake-ups fired or were destroyed before this turn came to rest, so sleeping would strand it"
+      )
+      # A session log row as well as a Rails one. Production ships only WARN and
+      # above off the box, so an INFO line here is unreadable at exactly the
+      # moment somebody is asking why a session rested in `needs_input` instead
+      # of sleeping — which is the question #1172 was reconstructed from.
+      logs.create!(
+        content: "Did not go back to sleep: the wake-up this sleep was arranged for " \
+          "(#{reason}) had already fired or been retired, so sleeping would have stranded " \
+          "this session. Resting in needs_input instead.",
+        level: "info"
       )
       return
     end
@@ -2046,6 +2090,26 @@ module SessionStateMachine
     # the user's homepage as if it wanted attention, and the pending_sleep flag
     # survives to surprise-sleep it after some later turn.
     report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
+  # Whether this session's `pending_sleep` is conditional on a wake-up still
+  # being armed when the turn ends.
+  #
+  # Two spellings, both load-bearing. PENDING_SLEEP_REQUIRES_WAKE is the explicit
+  # marker the system-recovery preserve branch sets. The reason stamp is what
+  # every writer records in the same statement as the flag
+  # (`Sessions::StopRecord.pending_sleep`), so the condition reads off provenance
+  # rather than needing a second marker per writer.
+  #
+  # An unstamped flag reads as unconditional. No writer produces one, and the safe
+  # reading of an intent with no provenance is the one that honours it: the
+  # populations that sleep without arming anything (a deliberate sleep, a spot
+  # pause, an auth-outage park) are worse served by being kept awake than a strand
+  # is by being slept.
+  def pending_sleep_requires_wake?
+    return true if metadata&.dig(PENDING_SLEEP_REQUIRES_WAKE)
+
+    PENDING_SLEEP_REASONS_REQUIRING_WAKE.include?(metadata&.dig(Sessions::StopRecord::PENDING_SLEEP_REASON))
   end
 
   # Cancel any pending one-time wake-up conditions that were targeting this
