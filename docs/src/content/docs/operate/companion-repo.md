@@ -314,6 +314,8 @@ jobs:
           cp ../<service>/.kamal/secrets.production .kamal/secrets.production
           gem install kamal
           kamal accessory boot all -d production
+          # Zimmer only -- its volume-less scratch accessory. A new service reboots
+          # whichever of its own accessories (if any) is disposable, or nothing at all.
           kamal accessory reboot devdb -d production
           kamal deploy -d production
 ```

@@ -1478,10 +1478,10 @@ used](#staging-is-torn-down-on-the-days-it-is-not-used).) `deploy-staging.yml`:
    `test/config/devdb_accessory_test.rb` fails the build if that line ever names an accessory that
    does. Production's pipeline, in the companion repo, runs **both** lines before its own deploy —
    `accessory boot all` and then the same single-accessory reboot — so a deploy is the recovery path
-   on both destinations. What neither destination has is a health check or an alert on the accessory,
-   so recovery happens at deploy time and nowhere else; see
-   [Limitations](/limitations/#nothing-notices-a-stopped-devdb-until-the-next-deploy).
-   kamal-proxy boots the new container
+   on both destinations. Nothing else is: neither destination health-checks or alerts on that
+   accessory, so recovery happens at deploy time and nowhere else
+   ([Limitations](/limitations/#nothing-notices-a-stopped-devdb-until-the-next-deploy)).
+   Then the app rolls: kamal-proxy boots the new **app** container
    alongside the old one, health-checks it on `/up`, and only then flips traffic. A container that
    never goes healthy leaves the old one serving.
 5. Re-verifies `/up` over the tailnet and asserts the **worker** container is running too — the
