@@ -27,6 +27,24 @@ class Sessions::StopRecordTest < ActiveSupport::TestCase
     session.reload.metadata[Sessions::StopRecord::REASON]
   end
 
+  # A real, fireable one-time wake aimed at +session+, so a `scheduled_wake` sleep
+  # intent is one #execute_pending_sleep will honour rather than drop.
+  def arm_wake_for(session)
+    Trigger.create!(
+      name: "Wake ##{session.id}",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Wake",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule",
+          configuration: { "scheduled_at" => 30.minutes.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+    session.reload
+  end
+
   # ---------------------------------------------------------------------------
   # The invariant itself
   # ---------------------------------------------------------------------------
@@ -222,7 +240,12 @@ class Sessions::StopRecordTest < ActiveSupport::TestCase
     assert_nil @session.metadata[Sessions::StopRecord::REASON]
   end
 
+  # The wake has to be really armed, not just intended: since #1172 a
+  # `scheduled_wake` intent with nothing armed is DROPPED rather than executed, so
+  # a session with no trigger rows would take that branch and never reach the
+  # sleep this test is about.
   test "the sleep intent and its provenance are cleared together" do
+    arm_wake_for(@session)
     @session.merge_metadata!(
       Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE)
     )
@@ -230,17 +253,20 @@ class Sessions::StopRecordTest < ActiveSupport::TestCase
     @session.pause!
 
     reloaded = @session.reload
+    assert_equal "waiting", reloaded.status, "this test is about the executed sleep, not the dropped intent"
     assert_nil reloaded.metadata["pending_sleep"]
     assert_nil reloaded.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON],
       "a provenance stamp outliving its flag would attribute the NEXT stop to this one"
   end
 
   test "a resume clears the sleep intent and its provenance together" do
+    arm_wake_for(@session)
     @session.merge_metadata!(
       Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE)
     )
     @session.pause!
     @session.reload
+    assert_equal "waiting", @session.status
     # Put the pair back on a needs_input row, as a failed pause would leave it.
     @session.update!(status: :needs_input)
     @session.merge_metadata!(

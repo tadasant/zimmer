@@ -3149,6 +3149,61 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal "waiting", target.status
   end
 
+  # Since #1172 `pending_sleep_reason` is a control signal, not only a record:
+  # SessionStateMachine#pending_sleep_requires_wake? reads it to decide whether a
+  # sleep intent survives a turn that ends with nothing armed. Restamping a
+  # platform dormancy as `scheduled_wake` would make that unconditional stop
+  # conditional, and an unfireable wake would then cancel it.
+  test "after_create does not restamp a sleep intent the platform already imposed" do
+    target = Session.create!(
+      git_root: "https://github.com/test/repo", agent_runtime: "claude_code", branch: "main",
+      status: :running,
+      metadata: Sessions::StopRecord.pending_sleep(Sessions::StopRecord::AUTH_OUTAGE_PARK)
+    )
+
+    Trigger.create!(
+      name: "Per-session wake",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Wake up",
+      reuse_session: true,
+      last_session_id: target.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 1.hour.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    target.reload
+    assert_equal true, target.metadata["pending_sleep"], "the session still sleeps at its turn end"
+    assert_equal Sessions::StopRecord::AUTH_OUTAGE_PARK,
+      target.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON],
+      "the park owns this stop; a wake arriving mid-turn must not rewrite it"
+  end
+
+  test "after_create stamps scheduled_wake on a running session with no intent of its own" do
+    target = Session.create!(
+      git_root: "https://github.com/test/repo", agent_runtime: "claude_code", branch: "main",
+      status: :running
+    )
+
+    Trigger.create!(
+      name: "Per-session wake",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Wake up",
+      reuse_session: true,
+      last_session_id: target.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 1.hour.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    target.reload
+    assert_equal true, target.metadata["pending_sleep"]
+    assert_equal Sessions::StopRecord::SCHEDULED_WAKE,
+      target.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
+  end
+
   # === Tests for hold_wake_group! ===
 
   test "hold_wake_group! holds the firing trigger and every sibling with the same last_session_id" do

@@ -1429,11 +1429,29 @@ class Trigger < ApplicationRecord
         level: "info"
       )
     elsif session.running?
-      session.merge_metadata!(Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE))
-      session.logs.create!(
-        content: "[Trigger##{id}] pending_sleep set — session will transition to waiting after current turn",
-        level: "info"
-      )
+      # Never over-stamp an intent already on the row. Since #1172 the
+      # `pending_sleep_reason` is a control signal and not only a record:
+      # SessionStateMachine#pending_sleep_requires_wake? reads it to decide whether
+      # the sleep survives a turn that ends with nothing armed. A session already
+      # marked by a platform dormancy — a spot pause, an auth-outage park, a halted
+      # turn — that then arms a wake would have that unconditional intent rewritten
+      # as a conditional one, and an unfireable wake would then cancel a stop the
+      # platform imposed. The existing mark already sleeps this session at its turn
+      # end, which is all this callback wants.
+      if session.metadata&.dig("pending_sleep") == true
+        session.logs.create!(
+          content: "[Trigger##{id}] session is already marked to sleep after this turn " \
+            "(#{session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON].presence || 'unstamped'}) — " \
+            "this wake did not restamp it",
+          level: "info"
+        )
+      else
+        session.merge_metadata!(Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE))
+        session.logs.create!(
+          content: "[Trigger##{id}] pending_sleep set — session will transition to waiting after current turn",
+          level: "info"
+        )
+      end
     else
       Rails.logger.info(
         "[Trigger#sleep_target_session_if_applicable] Skipping auto-sleep for trigger #{id} — " \

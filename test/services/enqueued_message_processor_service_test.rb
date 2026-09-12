@@ -158,6 +158,81 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     assert_nil @session.running_job_id
   end
 
+  # https://github.com/tadasant/zimmer/issues/1172. The post-pause path consumes
+  # `pending_sleep` at the pause it skips here, so leaving it standing carries one
+  # turn's sleep intent into the next turn and sleeps the session at THAT turn's
+  # end — with, in the filed case, its whole wake group already retired.
+  test "process_next_message handoff from running drops the finished turn's scheduled-wake sleep intent" do
+    @session.update!(
+      status: :running,
+      metadata: (@session.metadata || {}).merge(
+        Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE)
+      )
+    )
+    @session.enqueued_messages.create!(content: "Wake: #123 changed state", position: 1)
+
+    service = EnqueuedMessageProcessorService.new(@session)
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      assert service.process_next_message
+    end
+
+    @session.reload
+    assert_nil @session.metadata["pending_sleep"],
+      "the sleep intent belonged to the turn that just ended, not to the one the message takes"
+    assert_nil @session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
+  end
+
+  # The scoping that keeps the drop above from running a session the platform
+  # stood down. A spot pause and an auth-outage park both mark a RUNNING session
+  # `pending_sleep`, and both mean "stop", not "sleep until your wake fires".
+  test "process_next_message handoff from running leaves a platform-imposed sleep intent alone" do
+    @session.update!(
+      status: :running,
+      metadata: (@session.metadata || {}).merge(
+        Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SPOT_PAUSE)
+      )
+    )
+    @session.enqueued_messages.create!(content: "Follow up prompt", position: 1)
+
+    service = EnqueuedMessageProcessorService.new(@session)
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      assert service.process_next_message
+    end
+
+    @session.reload
+    assert_equal true, @session.metadata["pending_sleep"]
+    assert_equal Sessions::StopRecord::SPOT_PAUSE,
+      @session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
+  end
+
+  # The marker travels with the flag. Left behind it would make the session's NEXT
+  # sleep intent conditional — and a deliberate sleep arms nothing by definition,
+  # so it would be refused and the session would sit in needs_input forever.
+  test "process_next_message handoff from running leaves no orphaned requires-wake marker" do
+    @session.update!(
+      status: :running,
+      metadata: (@session.metadata || {}).merge(
+        Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SYSTEM_RECOVERY_RESLEEP).merge(
+          SessionStateMachine::PENDING_SLEEP_REQUIRES_WAKE => true
+        )
+      )
+    )
+    @session.enqueued_messages.create!(content: "Follow up prompt", position: 1)
+
+    service = EnqueuedMessageProcessorService.new(@session)
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      assert service.process_next_message
+    end
+
+    @session.reload
+    SessionStateMachine::PENDING_SLEEP_KEYS.each do |key|
+      assert_nil @session.metadata[key], "#{key} must not survive the handoff"
+    end
+  end
+
   test "process_next_message returns false when session is failed" do
     @session.update!(status: :failed)
     @session.enqueued_messages.create!(
