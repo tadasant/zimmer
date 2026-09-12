@@ -5694,38 +5694,38 @@ But "$412 of spot budget left" is a model output, not a bill, and should be read
 
 `AddGenesisToSessions` does an `add_index` plus four full-table `UPDATE`s — one of them looped up to
 ten times over a self-join — inside a single migration transaction, holding a lock on `sessions`
-throughout. The lineage passes also filter on `metadata::jsonb->>'forked_from_session_id'`, which no
-index can serve because `metadata` is `json` rather than `jsonb`. On a small deployment this is a
-second; on a large `sessions` table it is a write-blocking pause. It was left transactional
+throughout. The lineage passes also filter on `metadata::jsonb->>'forked_from_session_id'`, for which
+there is no index. On a small deployment this is a second; on a large `sessions` table it is a
+write-blocking pause. It was left transactional
 deliberately — a half-applied backfill would leave rows classified by nothing — but a deployment
 with a large table should expect the lock.
 
 ---
 
-## Five `sessions` columns are written twice, and one of them is still the only one read
+## Ten dead columns on `sessions` are waiting for one more deploy
 
-`sessions` carries the last `json` (not `jsonb`) columns in the schema. `config`, `mcp_servers`,
-`mcp_server_env`, `mcp_server_headers` and `metadata` are being moved to `jsonb`, and for the
-duration of that move each is written to twice — once to the live `json` column that everything
-still reads, and once to a `<name>_jsonb` shadow that nothing reads yet. `JsonbDualWrite` covers
-the three write paths (ordinary saves, `update_column`/`update_columns`, and the raw UPDATE in
-`AtomicJsonMetadata`); `BackfillSessionsJsonb` copies the rows that existed before the shadows did.
+`config`, `mcp_servers`, `mcp_server_env`, `mcp_server_headers` and `metadata` are `jsonb`. Getting
+them there took an expand-and-contract, and the contract half
+(`20260912140000_swap_sessions_jsonb_shadows_into_place`) deliberately left two dead columns behind
+per conversion rather than dropping anything:
 
-The sharp edge is what is **not** covered: `update_all` and hand-written SQL are relation- and
-connection-level and cannot be intercepted from a model concern. Nothing writes these five
-columns either way today, and a new writer that did would leave the shadow stale — silently,
-because nothing reads it, right up until the follow-up PR swaps the readers over. Until that
-lands, write these columns through the model. `BackfillSessionsJsonb`'s predicate converges rather
-than merely filling NULLs, so it repairs a diverged row it happens to run after — but it runs once,
-so it is not a standing guarantee.
+- `<name>_json_legacy` is the original `json` column, renamed aside. It still holds the
+  pre-cutover values, which is the point — it is the undo for the convergence the migration ran
+  under its lock, and no deployment here has a shell to inspect that from after the fact.
+- `<name>_jsonb` is the shadow name, **re-added empty**. The containers from the previous image
+  keep writing it for the length of the swap window — three code paths do, and `columns_hash` was
+  cached at boot — so removing the name would have made every save from an old container a
+  `PG::UndefinedColumn`.
 
-The window is not free. Every atomic metadata merge now evaluates its jsonb expression twice in one
-statement (repeating it is what keeps the merge atomic — see the comment in `AtomicJsonMetadata`),
-and every row carries these five values twice on disk until the follow-up PR drops the originals.
+`Session` ignores all ten, so nothing in either image selects or inserts them. They cost ten
+catalog entries and nothing per row. A follow-up PR drops them under
+[the two-phase drop](/operate/deploying/#dropping-a-column-takes-two-deploys) and removes the
+`ignored_columns` line; until it lands, `\d sessions` reads stranger than the model does.
 
 `transcript` is deliberately staying `json`: it is a single opaque blob, never queried by key,
 routinely multiple megabytes, and `jsonb` would cost more to write for a document that size. If it
 moves it should move out of the row entirely ([#714](https://github.com/tadasant/zimmer/issues/714)).
+So the schema still has one `json` column, and that is the intended end state.
 
 Tracked in [#847](https://github.com/tadasant/zimmer/issues/847).
 

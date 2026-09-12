@@ -3,12 +3,16 @@
 require "test_helper"
 
 # #930: a metadata query returned different sets seconds apart, and the omissions were
-# false negatives on sessions that plainly matched. The cause is that `sessions.metadata`
-# is a `json` column, which stores the writer's bytes verbatim — so the same logical
+# false negatives on sessions that plainly matched. The cause was that `sessions.metadata`
+# was a `json` column, which stores the writer's bytes verbatim — so the same logical
 # blob rendered two ways depending on which of the app's two writers touched the row
-# last. These tests pin the two properties that failure violated: the rendering the
-# search reads is the same whoever wrote the row, and both spellings of a JSON query
-# find it.
+# last. #847 retyped the column to `jsonb`, which normalises on write, so the two writers
+# now agree at the source; `SessionSearchable` still spells `::jsonb::text` so that a
+# future column of either type reads the same way.
+#
+# These tests pin the two properties that failure violated, and they are the same two
+# either way: the rendering the search reads is the same whoever wrote the row, and both
+# spellings of a JSON query find it.
 class SessionSearchableTest < ActiveSupport::TestCase
   include SessionSearchable
 
@@ -17,8 +21,9 @@ class SessionSearchableTest < ActiveSupport::TestCase
   COMPACT = %("agent_root_key":"#{ROOT_KEY}")
 
   # The two writers, both on the hot path. `create!` goes through the attribute type,
-  # which serialises compactly; `merge_metadata!` computes in jsonb and casts back,
-  # which serialises canonically. Nothing else about the rows differs.
+  # which serialises compactly; `merge_metadata!` computes the merge in the database.
+  # Nothing else about the rows differs — and since #847 neither does the stored text,
+  # because `jsonb` normalises whatever either of them sends.
   def session_written_by_active_record
     build_session.tap { |s| s.update!(metadata: { "agent_root_key" => ROOT_KEY }) }
   end
@@ -51,17 +56,31 @@ class SessionSearchableTest < ActiveSupport::TestCase
     )
   end
 
-  test "the two writers really do store different bytes for the same metadata" do
-    # If this ever stops being true the rest of the file is testing nothing, so assert
-    # the premise rather than trusting it.
+  test "the two writers store the same bytes for the same metadata" do
+    # The premise, asserted rather than trusted — it is the half of #930 that #847
+    # fixed at the source. Before the column was `jsonb` these two came back as
+    # `{"agent_root_key":"zimmer-router"}` and `{"agent_root_key": "zimmer-router"}`
+    # respectively, and which one a row held decided whether a query spanning the
+    # colon found it. `jsonb` normalises on write, so both are now the spaced form
+    # and neither is the compact one.
     by_active_record = stored_metadata_text(session_written_by_active_record)
     by_merge = stored_metadata_text(session_written_by_atomic_merge)
 
-    assert_includes by_active_record, COMPACT
-    assert_not_includes by_active_record, SPACED
+    # Not `assert_equal` on the two blobs: `update!` replaces the whole column while
+    # `merge_metadata!` merges into it, so the row written by the first has lost the
+    # `auto_generated_title` key `set_default_title` stamped on it. The rendering is
+    # what this asserts, key by key.
+    assert_includes by_active_record, SPACED
+    assert_not_includes by_active_record, COMPACT
     assert_includes by_merge, SPACED
     assert_not_includes by_merge, COMPACT
   end
+
+  # The searches below are what actually protects a caller, and neither of them leans
+  # on the premise above: the whole point of `:q_json` is that a caller who types the
+  # spelling the column does NOT hold still finds the row. That was the compact writer
+  # before #847 and it is every compact query now, which is the commoner case, not a
+  # rarer one.
 
   test "a key/value query finds a row whichever writer serialised it" do
     by_active_record = session_written_by_active_record
