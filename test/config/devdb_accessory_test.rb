@@ -102,9 +102,10 @@ class DevdbAccessoryTest < ActiveSupport::TestCase
   # `kamal accessory boot` is idempotent by EXISTENCE, not by health: it runs `docker ps -a`
   # and skips any host that already has a container, stopped ones included. So a boot-only
   # deploy never revives a stopped `devdb`, and a session cannot revive it either -- the host
-  # Docker socket is deliberately NOT mounted into the worker (deploy-staging.yml's smoke
-  # test fails the deploy if it ever is), so the only daemon a session reaches is the nested
-  # one, which cannot see host accessories (#409). Both deploys therefore REBOOT devdb
+  # Docker socket is deliberately NOT mounted into the worker (nested_docker_switch_test.rb
+  # asserts its absence for both destinations, switch either way), so the only daemon a
+  # session reaches is the nested one, which cannot see host accessories (#409).
+  # Both deploys therefore REBOOT devdb
   # rather than booting it -- staging here, production in the companion repo's
   # zimmer-deploy-prod.yml, guarded there by scripts/test-devdb-reboot-scope.sh.
   #

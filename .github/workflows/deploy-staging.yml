@@ -566,8 +566,8 @@ jobs:
           #
           # Widening this line to `db`, `redis` or `all` would take staging's own Postgres
           # and Redis down mid-deploy and move each along its moving image tag, unreviewed,
-          # on every deploy. Not data loss -- `prune` removes containers, and `zimmer_pgdata`
-          # and `zimmer_redisdata` outlive theirs -- but not something to find out here.
+          # on every deploy -- i.e. it would break staging. Not data loss, though: `prune`
+          # removes containers, and `zimmer_pgdata` and `zimmer_redisdata` outlive theirs.
           # `test/config/devdb_accessory_test.rb` fails the build if the name rebooted here
           # is ever an accessory that declares a volume, so the guard is not this comment.
           kamal accessory reboot devdb -d staging

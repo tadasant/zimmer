@@ -5831,10 +5831,10 @@ deploy, unconditionally. An accessory the destination declares gets created by t
 Nor is a stopped `devdb` unrecoverable any more. `kamal accessory boot` is idempotent by *existence*,
 not by health: it runs `docker ps -a` per host and skips any host where a container is already there,
 and a **stopped** container is still there. Docker's own `--restart unless-stopped`, which is what
-Kamal boots accessories with, covers a crash or a daemon restart; a container that is stopped and
-stays stopped is the one case that policy is named for, so booting alone skipped right over it on
-every later deploy. **Both destinations now `reboot` `devdb` rather than booting it**, so re-running
-the deploy is the recovery path:
+Kamal boots accessories with, covers a crash or a daemon restart, and deliberately does *not*
+restart a container that was stopped — that exception is what `unless-stopped` names. So booting
+alone skips right over one, which is why both destinations now **reboot** `devdb` rather than booting
+it, and why re-running the deploy is the recovery path:
 [#1054](https://github.com/tadasant/zimmer/pull/1054) added `kamal accessory reboot devdb -d staging`
 to `deploy-staging.yml`, and
 [tadasant/tadasant-internal#2715](https://github.com/tadasant/tadasant-internal/pull/2715) added
@@ -5855,23 +5855,27 @@ anything else.
 Two costs come with it, both deliberate, on both destinations. The pull is unconditional and raises,
 so a deploy now depends on `postgres:16` being pullable — a Docker Hub outage or rate-limit fails the
 deploy, loudly, where before it would have been skipped over. And the scratch Postgres follows that
-moving tag, patch release by patch release, where `db` and `redis` stay on whatever was pulled when
-they were first created.
+moving tag, patch release by patch release, where staging's `db`, and `redis` on both, stay on
+whatever was pulled when they were first created.
 
-**The residual gap is that a deploy is the *only* thing that notices.** Neither destination
+The residual gap is that a deploy is the *only* thing that notices. Neither destination
 health-checks `devdb` and nothing alerts when it stops, so a `devdb` that goes down mid-session stays
 down until the next deploy, and the session that hit it sees only `bin/agent-dev`'s preflight failing
 to find Postgres at `zimmer-devdb:5432`. A session cannot repair it either: no host Docker socket is
-mounted into the worker — the staging deploy's smoke test asserts that it is not, deliberately, since
-the host socket is root-equivalent — so the only daemon a session can reach is the worker's own
+mounted into the worker, deliberately, since the host socket is root-equivalent
+(`test/config/nested_docker_switch_test.rb` asserts its absence for both destinations and with the
+nested-Docker switch either way). So the only daemon a session can reach is the worker's own
 [nested one](/operate/nested-docker/), which cannot see host accessories, and with nested Docker off,
 none at all ([#409](https://github.com/tadasant/zimmer/issues/409)). There is no root either.
 
 How long "until the next deploy" is differs by destination, and staging has the worse end of it.
 Production is deployed on every image publish, so any merge to `main` that builds an image recovers
-it without anyone deciding to (a docs-only merge does not — `release-image.yml` carries
-`paths-ignore: ["**/*.md", "docs/**"]`). `Deploy staging` is `workflow_dispatch`-only, so a stopped
-staging `devdb` stays down until somebody dispatches a deploy.
+it without anyone deciding to. Two caveats on that: a docs-only merge publishes no image
+(`release-image.yml` carries `paths-ignore: ["**/*.md", "docs/**"]`), and the deploy is triggered by a
+`repository_dispatch` that `release-image.yml` sends best-effort — it is skipped when the dispatch
+repo or token is unset, and a non-2xx only warns, so a publish does not guarantee a deploy.
+`Deploy staging` is `workflow_dispatch`-only, so a stopped staging `devdb` stays down until somebody
+dispatches a deploy.
 
 ---
 

@@ -188,6 +188,8 @@ Re-running the deploy fixes either case. Both workflows follow the boot with
 one. On production the next image publish does it; \`Deploy staging\` is
 dispatch-only, so staging needs someone to run it. Nothing health-checks this
 accessory, so a deploy is the only thing that notices (tadasant/zimmer#419).
+Note that the deploy replaces this worker container too, so this session goes
+with it, and the reboot discards every scratch \`zimmer_dev_*\` database.
 
 Faster, from an operator shell:
 
