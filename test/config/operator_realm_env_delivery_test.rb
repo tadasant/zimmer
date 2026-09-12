@@ -5,38 +5,36 @@ require "erb"
 require "yaml"
 
 # Delivering the operator realm's credential is a chain -- a GitHub Actions secret, the
-# deploy workflow's `env:` allowlist, the Kamal mapping, the env.secret list -- and
-# production got exactly as far as the controller. `OperatorHttpBasicAuth` shipped in
-# #269 (2026-08-01) and fails closed, so for the six weeks to 2026-09-12 `/supervisor`,
-# `/settings/api_keys` and the mutating `POST /health/*` actions answered 401 to
-# everyone including the operator, while the only thing missing was the two lines this
-# test now pins.
+# deploy workflow's `env:` allowlist and `-e` passthrough, the Kamal mapping, the
+# env.secret list -- and in production it got exactly as far as the controller. #269 put
+# HTTP Basic on Supervisor::ApplicationController on 2026-08-01 and it fails closed, so
+# `/supervisor` answered 401 to everyone including the operator for the six weeks to
+# 2026-09-12. #1094 extended the realm to the mutating POST /health/* actions on
+# 2026-09-06 and #1145 to /settings/api_keys on 2026-09-11, so each of those arrived
+# already shut. The only thing missing throughout was the two lines this test pins.
 #
-# Failing closed is why nothing paged: the app was behaving exactly as designed, and the
-# leftover step was recorded in #269's ledger entry rather than in anything executable.
+# Nothing paged, and nothing could have. The app behaved exactly as designed, and the
+# deploy cannot report the gap either: Kamal::Secrets#[] fetches from a Dotenv.parse of
+# .kamal/secrets.production and raises only on a missing LINE, so an unset deploy-side
+# variable resolves to "" and ships a blank password with a green deploy. The leftover
+# step was recorded in #269's ledger entry, in prose, and prose is what failed.
 #
-# These tests assert every link that is a FILE in this repo. The Actions secret itself is
-# a repository setting, and production's deploy workflow lives in tadasant-internal, so
-# neither can be asserted from here -- which is the whole reason the PR that adds these
-# lines has to land AFTER the secret exists.
+# These tests assert every link that is a FILE in this repo. The Actions secret is a
+# repository setting and production's deploy workflow lives in tadasant-internal, so
+# neither can be asserted from here.
 class OperatorRealmEnvDeliveryTest < ActiveSupport::TestCase
   PROD_SECRETS = Rails.root.join(".kamal/secrets.production")
   PROD_DEPLOY = Rails.root.join("config/deploy.production.yml")
 
   PASSWORD = OperatorHttpBasicAuth::PASSWORD_ENV
-  USERNAME = OperatorHttpBasicAuth::USERNAME_ENV
-  # Both halves of the realm share it, so it is what the sweep below matches on.
+  # Both halves of the realm carry it, so it is what the sweep below matches on -- the
+  # point being to catch a realm variable added later, not only the two that exist.
   REALM_PREFIX = "SUPERVISOR_"
-
-  test "both halves of the realm carry the prefix the sweep below matches on" do
-    assert PASSWORD.start_with?(REALM_PREFIX)
-    assert USERNAME.start_with?(REALM_PREFIX)
-  end
 
   test "Kamal maps the operator realm password from the PROD_ deploy secret" do
     assert_match(/^#{PASSWORD}=\$PROD_#{PASSWORD}$/, PROD_SECRETS.read,
       "#{PROD_SECRETS} must map #{PASSWORD}, or the container never gets the credential " \
-      "and the realm stays shut -- which is what production shipped as.")
+      "and all three operator surfaces stay shut.")
   end
 
   test "the operator realm password is exposed to the container as a Kamal secret" do
@@ -45,6 +43,12 @@ class OperatorRealmEnvDeliveryTest < ActiveSupport::TestCase
       "#{PROD_SECRETS} alone does nothing -- Kamal only injects what env.secret names."
   end
 
+  # Only the password half is mapped. Unset and blank are the same thing to the realm
+  # (`ENV[...].presence || DEFAULT_USERNAME`), so mapping the username against a deploy
+  # variable nobody set would change nothing -- which makes leaving it out reversible
+  # rather than a contract, and is why nothing here asserts its absence. The behaviour
+  # that justifies it is pinned in supervisor/application_controller_test.rb.
+  #
   # env.clear is argumentized into `--env` flags on the `docker run` command line, so a
   # credential there lands in `ps` and in the printed deploy command. env.secret goes
   # through an env-file instead.
@@ -73,25 +77,11 @@ class OperatorRealmEnvDeliveryTest < ActiveSupport::TestCase
     end
   end
 
-  # The username half is deliberately NOT mapped: it is not a credential, it defaults to
-  # "supervisor" when absent, and every name in .kamal/secrets.production is one Kamal
-  # fails the deploy on when the deploy environment cannot resolve it. Mapping it would
-  # cost a second human-created Actions secret to buy nothing.
-  test "the username half is absent, and absent means the documented default" do
-    assert_not_includes prod_env_secrets, USERNAME
-    assert_not_includes prod_env_clear.keys, USERNAME
-    assert_no_match(/^#{USERNAME}=/, PROD_SECRETS.read)
-
-    assert_equal "supervisor", OperatorHttpBasicAuth::DEFAULT_USERNAME,
-      "Production authenticates as this name. Changing it silently changes what the " \
-      "operator has to type, because nothing in the deploy pins it."
-  end
-
   private
 
   # The deploy file is ERB (hosts come from ENV at deploy time). Rendering with the vars
   # unset yields nils, which is fine -- nothing read here is interpolated.
-  def prod_deploy = YAML.safe_load(ERB.new(PROD_DEPLOY.read).result, aliases: true)
+  def prod_deploy = @prod_deploy ||= YAML.safe_load(ERB.new(PROD_DEPLOY.read).result, aliases: true)
   def prod_env_secrets = prod_deploy.dig("env", "secret") || []
   def prod_env_clear = prod_deploy.dig("env", "clear") || {}
 end
