@@ -300,10 +300,10 @@ re-checked when the alert is computed, as long as there are fewer than `MAX_EXAM
 (200) of them. The other two can be up to one pass behind the page. See
 [Limitations](/limitations/#stranded-reads-outside-the-issues-view-lag-by-up-to-a-sweep-pass).
 
-Before settled rows went last, the lag had no upper bound. The candidate population only grows,
-because a row whose issue closed stays a candidate, and a plain least-recently-checked round-robin
-spent most of each pass's 200 re-confirming closed issues. That left a stranded row waiting several
-passes for its turn.
+Settled rows go last because the candidate population only grows: a row whose issue closed stays
+a candidate for good. In a plain least-recently-checked round-robin, most of each pass's 200 would
+go to re-confirming closed issues, and a stranded row would wait several passes for its turn, with
+no upper bound on the lag.
 
 Every pass logs what it examined and the age of the oldest stranded row — at WARN when a repo could
 not be read, INFO otherwise, since production exports WARN and above

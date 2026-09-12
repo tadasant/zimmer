@@ -312,9 +312,9 @@ module Issues
     # pass, which is what `get_work_backlog` and the alert read.
     def live_stranded
       @live_stranded ||= begin
-        closed = WorkBacklogItem.stranded.distinct.pluck(:issue_url)
-                                .select { |issue_url| @github_by_url[issue_url]&.open? == false }
-        WorkBacklogItem.stranded.where.not(issue_url: closed)
+        stored = WorkBacklogItem.stranded
+        closed = stored.distinct.pluck(:issue_url).select { |issue_url| @github_by_url[issue_url]&.open? == false }
+        stored.where.not(issue_url: closed)
       end
     end
 

@@ -141,7 +141,7 @@ class WorkBacklogItem < ApplicationRecord
   # either one makes the row stranded again. A closed issue is rarely reopened
   # and a superseded row stays superseded. WorkBacklog::LivenessSweep re-checks
   # these rows only after every other candidate, because the candidate population
-  # never shrinks: every started row whose issue closed stays a candidate for good.
+  # never shrinks: a candidate whose issue closed stays a candidate for good.
   SETTLED_LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_SUPERSEDED ].freeze
 
   # The keys in the file's item schema that have a column here. Everything else
