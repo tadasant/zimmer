@@ -264,6 +264,47 @@ class McpStatusPersistingTest < ActiveSupport::TestCase
     assert_empty @logger.calls.select { |c| c[:message].to_s.include?("reconnected") }
   end
 
+  # --- the one injected server whose loss IS the session (issue #1166) --------
+  #
+  # `zimmer-self-session` is auto-injected into nearly every session and is never
+  # in `mcp_servers`, so on the configured-only rule the single server whose loss
+  # silences a session was the one failure that escalated nowhere: no ladder, no
+  # write-off, no `<unavailable-mcp-servers>` block. The session ran on with no
+  # way to archive, reach its parent, re-arm a wake, or spawn work — and looked
+  # perfectly healthy doing it.
+
+  test "an injected self-session server failure escalates, because the session cannot run without it" do
+    @session.update!(
+      mcp_servers: [],
+      custom_metadata: { "injected_mcp_servers" => [ SelfSessionInjector::SELF_SESSION_SERVER_NAME ] }
+    )
+
+    any_failed = @host.update_session_mcp_status(
+      SelfSessionInjector::SELF_SESSION_SERVER_NAME => {
+        status: "failed",
+        error: "SdkHttpError dialing https://zimmer.example.com/mcp?session_id=1"
+      }
+    )
+
+    assert any_failed, "losing the session's own lifecycle surface must escalate even though nobody selected it"
+    @session.reload
+    assert @session.custom_metadata["should_fail_session"]
+    assert_equal [ SelfSessionInjector::SELF_SESSION_SERVER_NAME ],
+      @session.custom_metadata["mcp_failed_servers"].map { |s| s["name"] }
+    assert_equal :info, @logger.level_for("detected as failed"),
+      "the detection is still intermediate — AgentSessionJob decides what it costs"
+  end
+
+  test "an injected zimmer server scoped away from self_session still does not escalate" do
+    # zimmer-fleet carries `tool_groups=sessions,health_readonly`. Losing it costs a
+    # capability the agent can report and work around, which is #521's case, not this one.
+    @session.update!(mcp_servers: [], custom_metadata: { "injected_mcp_servers" => [ "zimmer-fleet" ] })
+
+    refute @host.update_session_mcp_status("zimmer-fleet" => { status: "failed", error: "Connection closed" })
+
+    assert_nil @session.reload.custom_metadata["should_fail_session"]
+  end
+
   test "an injected (non-configured) server failure neither escalates nor logs" do
     @session.update!(mcp_servers: [], custom_metadata: { "injected_mcp_servers" => [ "playwright-custom" ] })
 
