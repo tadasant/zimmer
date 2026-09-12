@@ -124,6 +124,34 @@ A *rate* of CSRF rejections is the exception, and it is handled separately — s
 [a rate of CSRF rejections pages, a single one does not](#a-rate-of-csrf-rejections-pages-a-single-one-does-not).
 :::
 
+### An ERROR record is the alert that can fire twice
+
+The two alert paths out of this pipeline are not interchangeable, and the difference decides where
+a *standing* condition has to be reported.
+
+| | GlitchTip (`ErrorReporter`) | Grafana (`zimmer_backend_log_errors`, over ERROR records) |
+| --- | --- | --- |
+| Fires on | a Sentry event | any non-staging Zimmer ERROR record in the window |
+| Notifies Slack | **at most once per issue, ever** | every time the rule goes from normal to alerting |
+| Resolves | never — an issue is closed by a human, or not at all | when the records stop |
+
+GlitchTip's at-most-once rule is deliberate: it is what keeps a crash loop from flooding `#alerts`.
+For an exception that either happens or does not, once is the right number. For a condition that
+**persists and gets worse** — a queue that is still backed up, a population of stranded rows that is
+still growing — once is silence, and the thing being watched grows behind it.
+
+So a standing condition pages with a deliberate `Rails.logger.error`, and the GlitchTip event beside
+it carries the detail rather than the notification. `SystemHealthMonitorJob` does this for a critical
+queue backlog, and `WorkBacklog::LivenessSweep` for [stranded backlog
+rows](/operate/work-backlog/#the-alert-has-to-reach-a-human-more-than-once). Demoting either of those
+lines to WARN takes the alert to zero.
+
+Two obligations come with paging this way, because the rule counts records rather than conditions.
+The caller has to **throttle itself** — an hourly job that logs ERROR on every pass floods the
+channel every real page travels — and it has to **stop** once the condition clears, which is what
+lets the rule resolve. A condition that pages by exception report has no equivalent of resolving at
+all.
+
 ### WARN is also how a deliberate change gets a record
 
 Not every WARN is a failure. `[FleetPolicy]` lines are the other use of the level: one per
