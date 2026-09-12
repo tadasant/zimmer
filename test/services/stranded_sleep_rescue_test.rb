@@ -339,6 +339,109 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
       "a session with no runtime id has no conversation to resume into"
   end
 
+  # --- status-summary forks take the other repair ------------------------------
+
+  # A fork reaches this sweep in the same shape as anything else — `waiting`,
+  # nothing armed, nothing queued — because the turn the generator dispatched to
+  # it went missing. But AgentSessionJob refuses any turn a fork is handed that is
+  # not the summary request, so a rescue is a turn that cannot run: session 16994
+  # was resumed at 22:40:16, refused at 22:40:17, and the ERROR record in between
+  # paged #alerts. https://github.com/tadasant/zimmer/issues/1168
+  def summary_fork(source: nil, **attributes)
+    sleeping_session(
+      metadata: { SessionStatusSummaryGenerator::FORK_MARKER => (source || other_session).id },
+      **attributes
+    )
+  end
+
+  test "a status-summary fork is sent to the harvest instead of being resumed" do
+    fork = summary_fork
+
+    result = nil
+    assert_enqueued_with(job: SessionStatusSummaryHarvestJob, args: ->(args) { args.first == fork.id }) do
+      assert_no_enqueued_jobs(only: AgentSessionJob) do
+        result = StrandedSleepRescue.sweep!
+      end
+    end
+
+    assert_equal 1, result.harvested
+    assert_equal 0, result.rescued, "a turn that cannot run is not a rescue, and reporting one is the defect"
+    assert_equal "waiting", fork.reload.status
+  end
+
+  # The emission that paged: StructuredLogger#error writes the ERROR record that
+  # fires the Grafana rule and opens a GlitchTip issue. Disposing of a fork is
+  # Zimmer working as intended and must not reach it.
+  test "disposing of a status-summary fork does not alert" do
+    summary_fork
+    logger = mock("logger")
+    logger.stubs(:info)
+    logger.stubs(:warn)
+    logger.expects(:error).never
+
+    assert_equal 1, StrandedSleepRescue.sweep!(logger: logger).harvested
+  end
+
+  # The harvest is a job, and one that fails to archive the fork would otherwise
+  # leave it at the head of the oldest-first ordering, re-enqueued on every pass
+  # and consuming one of MAX_ACTIONS_PER_SWEEP forever. So a harvest spends the
+  # same budget a rescue does — which is also what moves `updated_at`.
+  test "a harvest spends the budget and cools the fork down for a grace" do
+    fork = summary_fork
+
+    assert_equal 1, StrandedSleepRescue.sweep!.harvested
+    assert_equal 1, fork.reload.metadata[StrandedSleepRescue::RESCUE_COUNT]
+    assert_operator fork.updated_at, :>, StrandedSleepRescue::GRACE.ago
+    assert_not_includes StrandedSleepRescue.candidates.to_a, fork
+  end
+
+  # A fork the harvest will not take is the one fork-shaped thing worth a page:
+  # not a fork resting as designed, but a disposal that is not working while a
+  # repository clone sits behind it.
+  test "a status-summary fork the harvest will not take is abandoned with an alert, not harvested forever" do
+    fork = summary_fork
+    fork.merge_metadata!(StrandedSleepRescue::RESCUE_COUNT => StrandedSleepRescue::MAX_RESCUES)
+    back_date(fork)
+    logger = mock("logger")
+    logger.stubs(:info)
+    logger.stubs(:warn)
+    logger.expects(:error).with { |message, **| message == "A status-summary fork will not harvest" }.once
+
+    result = nil
+    assert_no_enqueued_jobs(only: SessionStatusSummaryHarvestJob) do
+      result = StrandedSleepRescue.sweep!(logger: logger)
+    end
+
+    assert_equal 1, result.abandoned
+    assert_equal 0, result.harvested
+    assert_not_nil fork.reload.metadata[StrandedSleepRescue::ABANDONED]
+    assert_not_includes StrandedSleepRescue.candidates.to_a, fork
+    assert_equal "error", fork.logs.order(:id).last.level
+  end
+
+  # The fork branch sits behind #repair!'s not-stranded re-check. #find_stranded
+  # already filters a fork asleep on a live wake out of the page, so reaching the
+  # re-check takes the race it exists for: a wake armed between the page read and
+  # the repair. Stubbing the batched predicate empty is that race.
+  test "a status-summary fork that armed a wake after the page was read is left alone, not harvested" do
+    fork = summary_fork
+    watched = other_session(status: :running)
+    arm_wake!(fork, [ ao_event_condition(watched) ])
+    back_date(fork)
+    Session.stubs(:ids_awaiting_scheduled_wake).returns(Set.new)
+
+    result = nil
+    assert_no_enqueued_jobs(only: SessionStatusSummaryHarvestJob) do
+      result = StrandedSleepRescue.sweep!
+    end
+
+    assert_equal 0, result.harvested
+    assert_equal 1, result.refused
+    assert_nil fork.reload.metadata[StrandedSleepRescue::RESCUE_COUNT]
+  end
+
+  # --- the markers other sweeps own --------------------------------------------
+
   StrandedSleepRescue::DORMANT_MARKERS.each do |marker|
     test "a session carrying #{marker} is left to the sweep that owns it" do
       session = sleeping_session

@@ -79,6 +79,14 @@ require "automated_prompts"
 # After MAX_RESCUES it stops and alerts instead: whatever keeps putting the
 # session back to sleep with nothing armed is not something more turns will fix,
 # and a human should see it.
+#
+# One population in this set takes a different repair. A status-summary fork
+# whose dispatched turn went missing is stranded in exactly the same shape, but
+# `AgentSessionJob` refuses any turn a fork is handed that is not the summary
+# request — so a rescue is a turn that cannot run, and reporting one is what
+# paged #alerts about a fork behaving as designed (#1168). Such a fork is sent to
+# `SessionStatusSummaryHarvestJob` instead, which is the disposal that refusal
+# would have reached anyway; see #harvest_summary_fork!.
 class StrandedSleepRescue
   # How long a `waiting` session with no fireable wake is given the benefit of the
   # doubt.
@@ -99,8 +107,9 @@ class StrandedSleepRescue
   # SessionStateMachine::SCHEDULE_FIRE_SETTLE.
   GRACE = 15.minutes
 
-  # How many times one session may be rescued before Zimmer stops and leaves it
-  # for a human. Each rescue is at least GRACE apart.
+  # How many times one session may be rescued — or a status-summary fork
+  # harvested — before Zimmer stops and leaves it for a human. Each attempt is at
+  # least GRACE apart.
   MAX_RESCUES = 3
 
   # Bounds on one pass. Every action here spends an agent turn, so the action
@@ -123,9 +132,10 @@ class StrandedSleepRescue
   PAGE_SIZE = 100
   MAX_EXAMINED_PER_SWEEP = 1_000
 
-  # How many times this sweep has rescued this session. Listed in
-  # Session::STALE_RETRY_METADATA_KEYS so an ordinary resume or restart clears it
-  # — the budget is about repeated rescues of the same stall, not a lifetime cap.
+  # How many times this sweep has acted on this session — a rescue, or for a
+  # status-summary fork a harvest. Listed in Session::STALE_RETRY_METADATA_KEYS
+  # so an ordinary resume or restart clears it — the budget is about repeated
+  # repairs of the same stall, not a lifetime cap.
   RESCUE_COUNT = "stranded_sleep_rescues"
 
   # Records that this sweep gave up on a session, and when. Also in
@@ -155,7 +165,13 @@ class StrandedSleepRescue
   # examined: 100` is a pass that stopped early, `found: 0, examined: 1000` is a
   # pass that spent its whole budget and saw nothing. A single field claiming to
   # be the size of the problem would be lying in both directions.
-  Sweep = Data.define(:rescued, :abandoned, :refused, :found, :examined)
+  #
+  # `harvested` is counted apart from `rescued` because the two are different
+  # repairs: a rescue hands the session an agent turn, and a harvest hands a
+  # status-summary fork to SessionStatusSummaryHarvestJob without spending one.
+  # Folding them together is how a fork disposal came to be reported — and
+  # alerted — as a rescue (#1168).
+  Sweep = Data.define(:rescued, :abandoned, :refused, :harvested, :found, :examined)
 
   class << self
     # `waiting` sessions that have run, are not dormant by anyone's marker, have
@@ -211,12 +227,13 @@ class StrandedSleepRescue
       log_exhausted_scan(logger, examined, batch.size) if exhausted
 
       if batch.empty?
-        return Sweep.new(rescued: 0, abandoned: 0, refused: 0, found: 0, examined: examined)
+        return Sweep.new(rescued: 0, abandoned: 0, refused: 0, harvested: 0, found: 0, examined: examined)
       end
 
       rescued = 0
       abandoned = 0
       refused = 0
+      harvested = 0
       # One ERROR record per session, each naming its own session id. A pass is
       # capped at MAX_ACTIONS_PER_SWEEP, and the obs pipeline collapses the burst:
       # GlitchTip groups them into one issue, Grafana groups by alertname over a
@@ -225,19 +242,20 @@ class StrandedSleepRescue
         case repair!(session, logger)
         when :rescued then rescued += 1
         when :abandoned then abandoned += 1
+        when :harvested then harvested += 1
         else refused += 1
         end
       end
 
-      logger.warn("Resumed sessions that were asleep on a wake that can never fire",
+      logger.warn("Acted on sessions that were asleep on a wake that can never fire",
         found: batch.size, examined: examined,
-        rescued: rescued, abandoned: abandoned, refused: refused)
+        rescued: rescued, abandoned: abandoned, refused: refused, harvested: harvested)
 
       Sweep.new(rescued: rescued, abandoned: abandoned, refused: refused,
-                found: batch.size, examined: examined)
+                harvested: harvested, found: batch.size, examined: examined)
     rescue StandardError => e
       logger.warn("Stranded-sleep sweep failed", error: "#{e.class}: #{e.message}")
-      Sweep.new(rescued: 0, abandoned: 0, refused: 0, found: 0, examined: 0)
+      Sweep.new(rescued: 0, abandoned: 0, refused: 0, harvested: 0, found: 0, examined: 0)
     end
 
     private
@@ -346,7 +364,7 @@ class StrandedSleepRescue
 
     # Wake one stranded session, or stop trying.
     #
-    # @return [Symbol] :rescued, :abandoned, or :refused
+    # @return [Symbol] :rescued, :harvested, :abandoned, or :refused
     def repair!(session, logger)
       session.reload
       count = (session.metadata || {})[RESCUE_COUNT].to_i
@@ -360,6 +378,8 @@ class StrandedSleepRescue
         logger.info("Left a session alone — it is not stranded after all", session_id: session.id)
         return :refused
       end
+
+      return harvest_summary_fork!(session, logger, count) if session.status_summary_fork?
 
       return give_up!(session, logger, count) if count >= MAX_RESCUES
 
@@ -441,6 +461,123 @@ class StrandedSleepRescue
       # those and the sweep is blind again, which is the failure the paging above
       # exists to prevent, arriving through the one door paging does not cover.
       cool_down(session, logger)
+      :refused
+    end
+
+    # Dispose of a status-summary fork instead of resuming it.
+    #
+    # A fork reaches this sweep the same way anything else does — it is in
+    # `waiting` with nothing armed and nothing queued, because the turn
+    # SessionStatusSummaryGenerator dispatched to it went missing. What is
+    # different is the repair. AgentSessionJob refuses any turn a fork is handed
+    # that is not the summary request, so the SYSTEM_RECOVERY nudge #repair!
+    # would send is a turn that cannot run: the budget is spent, `:rescued` is
+    # reported for a turn refused a second later, and the ERROR record pages
+    # #alerts about a fork behaving exactly as designed. That is #1168, and
+    # session 16994 is the worked example.
+    #
+    # What that refusal does AFTER saying no is the part worth keeping, and it
+    # is the reason a fork is disposed of here rather than skipped: `waiting` is
+    # the one resting state that harvests nothing — `sleep` fires no hook — so
+    # AgentSessionJob enqueues SessionStatusSummaryHarvestJob directly rather
+    # than leave the fork asleep forever holding its clone. Nothing else reaches
+    # this shape. AbandonedStatusSummaryForkSweepJob owns the fork that was
+    # NEVER dispatched, and its predicate excludes this one by construction
+    # (`running_job_id` and `pending_follow_up_prompt` are both stamped by
+    # Session#deliver_follow_up! and neither is cleared when the job is lost);
+    # StatusSummaryBackstopJob repairs the SOURCE's summary record and re-forks.
+    # So this sweep calls the harvest itself: same disposal, no agent turn, no
+    # page. The harvest publishes whatever answer the fork did give, marks the
+    # record failed when it gave none, and archives the fork.
+    #
+    # Disposal rather than re-delivery, deliberately. The summary request is
+    # still on the row in `pending_follow_up_prompt`, and AgentSessionJob's
+    # follow-up arm prefers it over the job's own argument, so a bare turn
+    # enqueued here would be accepted by the fork guard and could produce the
+    # summary on a clone that is already on disk. It costs a fork that has
+    # already lost one turn another one, with no bound on how often, against a
+    # backstop that re-forks the source anyway. The conservative repair is the
+    # one the refusal path already takes.
+    #
+    # Budgeted through RESCUE_COUNT like every other repair here, because the
+    # harvest is a job and SessionStatusSummaryHarvestJob swallows its own
+    # archive failure. A fork it cannot archive stays `waiting`, at the head of
+    # the oldest-first ordering, consuming one of MAX_ACTIONS_PER_SWEEP on every
+    # pass — silently, since nothing on this path logs above `info`. Spending
+    # the budget bounds that at MAX_RESCUES and ends it somewhere a human can
+    # see. The write is also what moves `updated_at`, so a fork waiting on a
+    # harvest that is merely slow is out of the population for a GRACE.
+    #
+    # @return [Symbol] :harvested, :abandoned, or :refused
+    def harvest_summary_fork!(session, logger, count)
+      return give_up_on_fork!(session, logger, count) if count >= MAX_RESCUES
+
+      SessionStatusSummaryHarvestJob.perform_later(session.id)
+      session.merge_metadata!(RESCUE_COUNT => count + 1)
+
+      # Outside the counted region, like the rescue path's own reporting: the
+      # harvest is enqueued and the budget is spent, and a failure to write the
+      # timeline entry must not make the sweep report `:refused` for a fork it
+      # demonstrably disposed of.
+      begin
+        session.logs.create!(
+          level: "info",
+          content: "This session is a status-summary fork that was left in `waiting` with no turn " \
+                   "coming and no wake-up that could still fire. Zimmer did not resume it — a summary " \
+                   "fork answers one question and stops — and sent it to the status-summary harvest " \
+                   "instead, which publishes whatever answer it gave and archives it."
+        )
+        logger.info("Sent a status-summary fork to the harvest instead of resuming it",
+          session_id: session.id, source_session_id: session.status_summary_source_id)
+      rescue StandardError => e
+        logger.warn("Harvested a status-summary fork but could not record it",
+          session_id: session.id, error: "#{e.class}: #{e.message}")
+      end
+
+      :harvested
+    rescue StandardError => e
+      logger.warn("Could not harvest a stranded status-summary fork",
+        session_id: session.id, error: "#{e.class}: #{e.message}")
+      cool_down(session, logger)
+      :refused
+    end
+
+    # Stop harvesting a fork the harvest will not take, and say so.
+    #
+    # #give_up!'s sibling, and it alerts for the same reason that one does: a
+    # fork handed to SessionStatusSummaryHarvestJob MAX_RESCUES times that is
+    # still sitting in `waiting` is a defect nobody has explained, and it is
+    # holding a full copy of a repository while it sits there. Unlike #1168 this
+    # is worth a page — the alert is for a disposal that is not working, not for
+    # a fork resting as designed.
+    #
+    # ABANDONED takes it out of #candidates, so the sweep stops spending one of
+    # MAX_ACTIONS_PER_SWEEP on it every pass; the marker is in
+    # Session::STALE_RETRY_METADATA_KEYS, so anything that resumes or restarts
+    # the fork puts it back in scope.
+    #
+    # @return [Symbol]
+    def give_up_on_fork!(session, logger, count)
+      session.merge_metadata!(ABANDONED => Time.current.iso8601)
+
+      session.logs.create!(
+        level: "error",
+        content: "Zimmer has sent this status-summary fork to the harvest #{count} times and it is " \
+                 "still in `waiting`, holding its clone. Zimmer has stopped trying; a human needs to " \
+                 "look at why the harvest is not archiving it."
+      )
+      logger.error("A status-summary fork will not harvest",
+        session_id: session.id, harvests: count,
+        details: "Session #{session.id} is a status-summary fork of " \
+                 "#{session.status_summary_source_id} that has been handed to " \
+                 "SessionStatusSummaryHarvestJob #{count} times and is still asleep in `waiting` " \
+                 "with no turn coming, holding a repository clone. Zimmer has stopped trying. Its " \
+                 "summary record is StatusSummaryBackstopJob's and is unaffected.")
+
+      :abandoned
+    rescue StandardError => e
+      logger.warn("Could not abandon a status-summary fork the harvest would not take",
+        session_id: session.id, error: "#{e.class}: #{e.message}")
       :refused
     end
 
