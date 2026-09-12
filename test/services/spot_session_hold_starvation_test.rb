@@ -393,11 +393,39 @@ class SpotSessionHoldStarvationLaneRaceTest < ActiveSupport::TestCase
   self.use_transactional_tests = false
 
   setup do
-    AppSetting.editable.update!(spot_gating_enabled: false, spot_starvation_age_ceiling_hours: 24)
+    # `AppSetting.editable` is `order(:id).first || new`, so this line CREATES the
+    # singleton row when there is none — and this class is non-transactional, so
+    # the row outlives the test and every later one in this parallel worker sees
+    # it. That is not a cosmetic leak: `only_one_row` is a create-context
+    # validation, so `AppSetting.new(...).valid?` is FALSE while any row exists,
+    # and AppSettingTest's positive cases fail wherever the split happens to put
+    # them. Two of them did, on the `main` CI run that went red after PR #1180
+    # merged — a run whose diff touches nothing near AppSetting.
+    #
+    # Captured verbatim and put back in teardown, exactly as
+    # QuotaAvailabilityMonitorConcurrencyTest does it — which documented this
+    # hazard before this class reproduced it.
+    # `@sessions` first, so a setup that raises between here and the end still
+    # leaves the teardown something to iterate.
     @sessions = []
+
+    existing = AppSetting.order(:id).first
+    @previous_setting = existing&.slice(:spot_gating_enabled, :spot_starvation_age_ceiling_hours)
+
+    AppSetting.editable.update!(spot_gating_enabled: false, spot_starvation_age_ceiling_hours: 24)
   end
 
   teardown do
+    # The setting goes back FIRST. ActiveSupport stops the teardown chain at the
+    # first callback that raises, and this block is one callback — so a restore
+    # placed after the session cleanup is a restore that a failing `destroy_all`
+    # skips, which is exactly the leak this teardown exists to prevent.
+    if @previous_setting
+      AppSetting.editable.update!(@previous_setting)
+    else
+      AppSetting.delete_all
+    end
+
     ids = @sessions.map(&:id)
     GoodJob::Job.where("serialized_params -> 'arguments' ->> 0 IN (?)", ids.map(&:to_s)).delete_all
     Session.where(id: ids).destroy_all

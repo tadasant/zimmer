@@ -403,6 +403,59 @@ raise, and make the restore tolerate a `setup` that never got there:
 teardown { Rails.cache = @original_cache if @original_cache }
 ```
 
+### A non-transactional test that creates the `app_settings` singleton
+
+The third global is a database row. Most tests run inside a transaction that is rolled back, so
+whatever they write is gone by the next test. A handful of classes turn that off —
+`use_transactional_tests = false` — because the thing they pin is a race between two real database
+connections, and under a shared, locked connection the two transactions nest and nothing is
+concurrent. Those classes own their cleanup entirely.
+
+`AppSetting` is the singleton settings row, and `AppSetting.editable` is `order(:id).first || new`.
+So `AppSetting.editable.update!(...)` **creates** the row when there is none. A non-transactional
+class that writes a setting in `setup` and does not put it back leaves the row there for the rest of
+its worker.
+
+That row is not inert. `only_one_row` is a **create-context** validation, so `AppSetting.new(...)
+.valid?` is `false` for as long as any row exists — and `AppSettingTest` has five cases asserting
+that a valid runtime/model pairing *is* valid. They fail, naming a model that is working perfectly,
+and which of the five fail depends entirely on which parallel worker drew them.
+
+It happened on `main` in September 2026: `SpotSessionHoldStarvationLaneRaceTest` created the row in
+`setup`, cleaned up its sessions and GoodJob rows in `teardown` and not the setting, and `main` went
+red on two `AppSettingTest` cases in a merge whose diff touched nothing near `AppSetting`.
+
+`test/support/app_setting_isolation_guard.rb` is the same shape as the cache guard and for the same
+reasons: a boot baseline captured before `parallelize` forks, a `teardown` check that deletes any row
+that appeared during the test and blames that test, and a prepended `setup` check that catches a leak
+whose own teardown raised before the first check could run. Neither raises; each records its failure.
+Both edges are charged only to tests running **outside** a transaction — `run_in_transaction?`, not
+the class flag, so a per-test `uses_transaction` opt-out is covered too — because a test inside one
+cannot leak and the suite has ~16,500 of those.
+
+The guard catches a row that *appeared*, not a column that changed. A non-transactional test that
+mutates a row which was already there still leaks that value, so capture and restore rather than
+relying on the guard:
+
+```ruby
+setup do
+  existing = AppSetting.order(:id).first
+  @previous_setting = existing&.slice(:the_columns_you_write)
+  AppSetting.editable.update!(the_columns_you_write)
+end
+
+teardown do
+  # First in the teardown, not last: ActiveSupport stops the chain at the first
+  # callback that raises, so a restore placed after other cleanup is one that a
+  # failing `destroy_all` skips.
+  if @previous_setting
+    AppSetting.editable.update!(@previous_setting)
+  else
+    AppSetting.delete_all
+  end
+end
+```
+
 ### The browser suite has its own root cause: the moving target
 
 The system suite flakes for a different reason, and it has its own one-line answer.
