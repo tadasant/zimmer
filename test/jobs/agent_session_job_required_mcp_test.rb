@@ -85,8 +85,12 @@ class AgentSessionJobRequiredMcpTest < ActiveJob::TestCase
 
     # The two surfaces a human reads.
     assert_includes @session.failure_summary, ZIMMER_SELF_SESSION
-    assert_includes @session.failure_summary, "lifecycle tools"
+    # One clause: SessionTitleJob titles the session with the first 100 characters of
+    # it and SendPushNotificationJob builds the push body from the first 200, with
+    # the detail appended after — so a paragraph here costs the per-server error.
+    assert_operator @session.failure_summary.length, :<=, 100
     assert_includes @session.failure_detail.to_s, "SdkHttpError"
+    assert_includes @session.failure_detail.to_s, "Restart it once"
 
     log_buffer.flush
     log_text = @session.logs.pluck(:content).join("\n")
@@ -117,11 +121,34 @@ class AgentSessionJobRequiredMcpTest < ActiveJob::TestCase
     assert_enqueued_with(job: AgentSessionJob)
   end
 
-  test "a required server whose credentials were rejected fails the session with no ladder" do
-    # The #1167 shape: Zimmer's own entry authenticates with a static X-API-Key, so
-    # a rejected key is definitive on the first attempt. Riding the ladder would only
-    # delay the same verdict by three and a half minutes.
-    flag_failure!(ZIMMER_SELF_SESSION, error: "HTTP 401 unauthorized: invalid_token")
+  test "an auth-shaped error on a required server rides the ladder instead of fast-failing" do
+    # AUTH_ERROR_PATTERN is a substring match and a transport error quotes the URL it
+    # was dialing — which ends `&session_id=<id>`. So a session whose id merely
+    # CONTAINS "401" reads as an auth failure on an ordinary connect error, and the
+    # no-retry route for a rejected static credential would kill it for its id.
+    # Zimmer's own key is also the one credential a retry can fix: it is resolved
+    # fresh on every spawn, so a rotation or a mid-deploy blip heals on the ladder.
+    flag_failure!(
+      ZIMMER_SELF_SESSION,
+      error: "SdkHttpError dialing https://zimmer.example.com/mcp?tool_groups=self_session&session_id=4013 (401)"
+    )
+    log_buffer = LogBuffer.new(@session)
+
+    assert_equal true, build_job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
+
+    @session.reload
+    assert_equal "needs_input", @session.status, "an auth-shaped error must not skip the ladder here"
+    assert_equal 1, @session.metadata["mcp_retry_count"]
+    assert_nil @session.metadata["failure_reason"]
+    assert_empty @session.degraded_mcp_servers, "nothing is written off on the first attempt"
+  end
+
+  test "an auth-shaped error on a required server is still fatal once the ladder is spent" do
+    flag_failure!(
+      ZIMMER_SELF_SESSION,
+      error: "SdkHttpError dialing https://zimmer.example.com/mcp?session_id=4013 (401)",
+      retry_count: RetryBudget::MCP_CONNECTION.max
+    )
     log_buffer = LogBuffer.new(@session)
 
     assert_equal true, build_job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
@@ -129,7 +156,65 @@ class AgentSessionJobRequiredMcpTest < ActiveJob::TestCase
     @session.reload
     assert_equal "failed", @session.status
     assert_equal AgentSessionJob::REQUIRED_MCP_SERVER_LOST_FAILURE_REASON, @session.metadata["failure_reason"]
-    assert_nil @session.metadata["mcp_retry_count"], "a rejected credential is not retried"
+  end
+
+  # The write-off record deliberately survives a restart (Session#degraded_mcp_servers
+  # says why), and the already-degraded short-circuit at the top of
+  # check_and_handle_mcp_failure consumes the flag and lets the turn run. Together
+  # those would hand a human who restarts a still-broken session exactly the silent
+  # no-op this whole change exists to end — reached through the fix for it.
+  test "a restart with the required server still down is failed again, not resumed silently" do
+    flag_failure!(
+      ZIMMER_SELF_SESSION,
+      error: "Connection failed after 94ms",
+      retry_count: RetryBudget::MCP_CONNECTION.max
+    )
+    build_job.send(:check_and_handle_mcp_failure, @session, 12345, LogBuffer.new(@session))
+    assert_equal "failed", @session.reload.status
+    assert_equal [ ZIMMER_SELF_SESSION ], @session.degraded_mcp_server_names
+
+    # What a restart does, and then the same server failing again on the new spawn.
+    @session.remove_metadata!(Session::STALE_RETRY_METADATA_KEYS)
+    @session.update!(status: :running)
+    flag_failure!(ZIMMER_SELF_SESSION, error: "Connection failed after 94ms")
+    log_buffer = LogBuffer.new(@session)
+
+    assert_equal true, build_job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer),
+      "an already-written-off REQUIRED server must not be waved through as old news"
+
+    @session.reload
+    # The ladder starts over on a restart, so this attempt retries rather than failing
+    # outright — what matters is that it was not silently resumed with the tools gone.
+    assert_equal "needs_input", @session.status
+    assert_equal 1, @session.metadata["mcp_retry_count"]
+
+    # And at the end of that ladder it is fatal again.
+    @session.update!(
+      status: :running,
+      metadata: @session.metadata.merge("mcp_retry_count" => RetryBudget::MCP_CONNECTION.max)
+    )
+    build_job.send(:check_and_handle_mcp_failure, @session, 12345, LogBuffer.new(@session))
+    assert_equal "failed", @session.reload.status
+    assert_equal AgentSessionJob::REQUIRED_MCP_SERVER_LOST_FAILURE_REASON, @session.metadata["failure_reason"]
+  end
+
+  test "an already-degraded ORDINARY server is still waved through as old news" do
+    # The short-circuit above is narrowed for required servers only — #521's
+    # terminate-and-resume loop guard has to keep working for everything else.
+    @session.update!(
+      mcp_servers: [ "context7" ],
+      metadata: (@session.metadata || {}).merge(
+        "mcp_degraded_servers" => [ { "name" => "context7", "error" => "Connection closed" } ]
+      )
+    )
+    flag_failure!("context7", error: "Connection closed")
+
+    assert_equal false,
+      build_job.send(:check_and_handle_mcp_failure, @session, 12345, LogBuffer.new(@session))
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert_nil @session.custom_metadata["should_fail_session"]
   end
 
   test "a non-required server exhausting the ladder still degrades and resumes" do

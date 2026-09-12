@@ -1993,15 +1993,18 @@ class Session < ApplicationRecord
       end
     when AgentSessionJob::REQUIRED_MCP_SERVER_LOST_FAILURE_REASON
       # `humanize` would render "Required mcp server lost", which names the
-      # mechanism and hides the two facts a reader needs: what the session can no
-      # longer do, and that restarting is the action once the server is back. The
-      # servers are named because "Zimmer's MCP server" is several entries.
+      # mechanism and hides what the session can no longer do. The servers are
+      # named because "Zimmer's MCP server" is several entries.
+      #
+      # One clause, like every other branch here, because this string is not only
+      # read on the session page: SessionTitleJob truncates it to 100 characters
+      # to title the session, and SendPushNotificationJob to 200 for the push
+      # body — with #failure_detail appended AFTER it, so a paragraph here would
+      # push the per-server error off the end of the notification. The rest of
+      # what a reader needs is in #failure_detail, which has room for it.
       servers = required_mcp_servers_lost
       named = servers.any? ? servers.to_sentence : "Zimmer's own MCP server"
-      "This session lost #{named}, which carries its own lifecycle tools — archiving itself, " \
-        "messaging its parent, scheduling its wake-ups, spawning work. It can neither finish nor " \
-        "hand off what it was doing, so it was failed rather than left running and silently doing " \
-        "nothing. Restart it once /connectors shows the server connecting again"
+      "Lost #{named} — this session's own archive, message-parent and wake-up tools are gone"
     when "oauth_required"
       servers = oauth_required_server_names
       servers.any? ? "OAuth authorization required: #{servers.join(', ')}" : "OAuth authorization required"
@@ -2078,6 +2081,18 @@ class Session < ApplicationRecord
       error = server["error"].presence
       error ? "#{server['name']}: #{error}" : nil
     end
+
+    # The one branch that says something beyond the per-server errors, because
+    # the summary above deliberately does not have room for it: what the loss
+    # cost, and what to do about it. Prepended rather than appended so it
+    # survives the push body's own truncation.
+    if metadata&.dig("failure_reason") == AgentSessionJob::REQUIRED_MCP_SERVER_LOST_FAILURE_REASON
+      details.unshift(
+        "It could neither finish nor hand off its work, so it was failed rather than left running " \
+        "and silently doing nothing. Restart it once /connectors shows the server connecting again."
+      )
+    end
+
     details.any? ? details.join("; ") : nil
   end
 

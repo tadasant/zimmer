@@ -41,13 +41,19 @@
 # where there is not (the two auto-injected entries are not catalog rows on every
 # deployment).
 #
-# ## Everything unknown is not required
+# ## What it does when it cannot read the catalog
 #
-# A name the catalog does not know, a URL that will not parse, a catalog that
-# will not resolve at all: all answer `false`. The consequence of this predicate
-# saying `true` is a failed session, so the bet has to run the other way — a
-# wrong `false` reproduces today's behaviour, while a wrong `true` kills sessions
-# during a catalog blip.
+# The catalog is a subprocess away (`AirCatalogService` shells out to `air
+# resolve`) and degrades to an empty list rather than raising, so "no entry for
+# this name" and "no catalog at all" arrive here identically. Both fall back to
+# the injector's own knowledge, which is the point: Zimmer WROTE those two
+# entries and does not need a catalog to know what is in them, so a catalog blip
+# cannot quietly reclassify a session's own lifecycle surface as optional.
+#
+# Every other `zimmer-*` name answers `false` when the catalog cannot be read —
+# there is nothing else to go on, and the consequence of this predicate saying
+# `true` is a failed session. A wrong `false` reproduces the behaviour that was
+# already there; a wrong `true` kills sessions.
 class RequiredMcpServers
   # The tool group that makes an entry a session's own lifecycle surface. An
   # entry scoped to it, or scoped to nothing at all (the full surface includes
@@ -69,10 +75,9 @@ class RequiredMcpServers
 
       groups.empty? || groups.include?(SELF_SESSION_TOOL_GROUP)
     rescue => e
-      # The catalog read below is a subprocess away (AirCatalogService shells out
-      # to `air resolve`), so this can fail for reasons that have nothing to do
-      # with the session. Say "not required" and leave the caller on the #521
-      # path it would have taken anyway.
+      # Nothing below is expected to raise — the catalog read has its own rescue
+      # — so this is the backstop for the unforeseen. Say "not required" and
+      # leave the caller on the #521 path it would have taken anyway.
       Rails.logger.warn "[RequiredMcpServers] could not classify #{server_name.inspect}: #{e.class}: #{e.message}"
       false
     end
@@ -87,19 +92,41 @@ class RequiredMcpServers
 
     # The tool groups this entry's endpoint is scoped to.
     #
+    # The catalog first, because a deployment's own entry is the authority on
+    # what its own endpoint serves. The injector's knowledge second, for the two
+    # entries `RuntimeConfigPostProcessor` writes itself — which is also what
+    # answers when the catalog cannot be read at all.
+    #
     # @return [Array<String>, nil] `[]` for the full surface, nil when there is
     #   no way to tell
     def tool_groups_for(name)
-      url = ServersConfig.find(name)&.url
-      return SelfSessionInjector.tool_groups_in(url) if url.present?
+      url = catalog_url(name)
+      return SelfSessionInjector.tool_groups_in(url) if url
 
-      # No catalog row: the only Zimmer entries that reach a session without one
-      # are the two `RuntimeConfigPostProcessor` injects, and the injector decides
-      # their scope itself.
       case name
       when SelfSessionInjector::SELF_SESSION_SERVER_NAME then [ SELF_SESSION_TOOL_GROUP ]
       when SelfSessionInjector::SUBAGENT_SERVER_NAME then []
       end
+    end
+
+    # This entry's URL, only when there really is one and it can be read.
+    #
+    # A URL that will not parse is not a scope Zimmer can reason about, and
+    # `SelfSessionInjector.tool_groups_in` reports one as `[]` — the full
+    # surface, which is the *most* required answer there is. Returning nil sends
+    # it to the name fallback instead.
+    #
+    # @return [String, nil]
+    def catalog_url(name)
+      url = ServersConfig.find(name)&.url
+      return nil if url.blank?
+
+      URI.parse(url)
+      url
+    rescue => e
+      Rails.logger.warn "[RequiredMcpServers] could not read the catalog entry for " \
+                        "#{name.inspect}: #{e.class}: #{e.message}"
+      nil
     end
   end
 end

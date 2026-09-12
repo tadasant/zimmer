@@ -4763,7 +4763,18 @@ class AgentSessionJob < ApplicationJob
     # a loop. Consume the flag and let the turn run: the status is already
     # recorded as failed, and the agent was already told on the resume that
     # degraded it.
-    if failed_servers.any? && new_mcp_failures(session, failed_servers).empty?
+    #
+    # A REQUIRED server is the exception, and it has to be. The write-off record
+    # is deliberately not cleared by a restart (Session#degraded_mcp_servers says
+    # why), so a human restarting a session whose Zimmer server is still down
+    # would arrive here with nothing "new" — and this short-circuit would hand
+    # them back exactly the silent no-op session that #1166 is about, reached
+    # through the fix for it. A required server that is still failing gets the
+    # whole classification below again: the ladder, and a fresh verdict at the
+    # end of it. That cannot loop, because the verdict is `fail`, which enqueues
+    # nothing.
+    if failed_servers.any? && new_mcp_failures(session, failed_servers).empty? &&
+        RequiredMcpServers.among(failed_servers.filter_map { |server| server["name"] }).empty?
       log_buffer.add(
         "MCP connection failure detected for already-degraded server(s) " \
         "#{failed_servers.map { |s| s['name'] }.join(', ')} — already reported to the agent, " \
@@ -4882,6 +4893,36 @@ class AgentSessionJob < ApplicationJob
     end
     static_credential_failures += stderr_credential_failures
 
+    # A REQUIRED server never takes the no-retry route, whatever its error text
+    # looked like. Two reasons, and either alone would be enough:
+    #
+    #   AUTH_ERROR_PATTERN is a substring match, and a transport error quotes the
+    #   URL it was dialing — which for a Zimmer entry ends `…&session_id=<id>`. A
+    #   session whose id merely CONTAINS "401" therefore reads as an auth failure
+    #   on an ordinary connect error, and fast-failing on that would kill a
+    #   perfectly recoverable session for its id.
+    #
+    #   And where the rejection is real, it is the one credential retrying can
+    #   actually fix: `X-API-Key` is Zimmer's own key, resolved fresh on every
+    #   spawn, so a rotation or a mid-deploy blip heals on the next attempt —
+    #   unlike a third-party token, which is what this branch was written for.
+    #
+    # They stay in `failed_servers`, so dropping them here puts them straight
+    # back into `retryable_failures` below. The verdict is not softened, only
+    # postponed to the end of the ladder, where #degrade_mcp_servers! fails the
+    # session.
+    required_credential_failures, static_credential_failures =
+      static_credential_failures.partition { |server| RequiredMcpServers.required?(server["name"]) }
+
+    if required_credential_failures.any?
+      log_buffer.add(
+        "MCP server(s) #{required_credential_failures.map { |s| s['name'] }.join(', ')} failed with an " \
+        "auth-shaped error, but this session cannot run without them and their credential is Zimmer's " \
+        "own — retrying rather than writing them off on the first attempt.",
+        level: "warning"
+      )
+    end
+
     if already_authorized.any?
       names = already_authorized.map { |s| s["name"] }
       log_buffer.add(
@@ -4980,14 +5021,6 @@ class AgentSessionJob < ApplicationJob
       end
 
       degradations = mcp_degradations(newly_rejected, "their credentials were rejected")
-
-      # A rejected credential is definitive on the spot, so a required server that
-      # earned this verdict is already lost — whatever happens to the servers still
-      # owed the ladder. Stop here rather than putting the session back to work for
-      # the length of a retry it can no longer benefit from.
-      if (required_lost = required_mcp_degradations(degradations)).any?
-        return fail_for_lost_required_mcp!(session, degradations, required_lost, log_buffer)
-      end
 
       # The exclusion is drawn from EVERY rejected server, not just the newly-recorded
       # ones: a verdict already on the record is still a verdict, and putting that
@@ -5490,7 +5523,19 @@ class AgentSessionJob < ApplicationJob
   def fail_for_lost_required_mcp!(session, degradations, required_lost, log_buffer)
     names = required_lost.filter_map { |degradation| degradation[:server]["name"] }.uniq
 
-    log_mcp_degradations(degradations - required_lost, log_buffer)
+    # The co-failing servers are recorded but NOT announced through
+    # #log_mcp_degradations, whose sentence ends "the session continues on the
+    # servers that did connect" — which is about to be false.
+    others = (degradations - required_lost).filter_map { |degradation| degradation[:server]["name"] }.uniq
+    if others.any?
+      log_buffer.add(
+        "MCP server(s) #{others.join(', ')} also failed to connect in the same handshake and are " \
+        "recorded as failed; the session is being failed for the loss below rather than continuing " \
+        "without any of them.",
+        level: "warning"
+      )
+    end
+
     log_buffer.add(
       "MCP server(s) #{names.join(', ')} could not connect, and this session cannot run without them: " \
       "they carry its own lifecycle tools — archiving itself, messaging its parent, scheduling its " \
