@@ -224,8 +224,7 @@ module Mcp
       # OPT-IN, AND NOT IN `health` BESIDE THE SPOT POLICY THAT SHARES ITS ROW.
       # The spot policy decides how much work the fleet does; these decide what
       # every later session is created UNDER — which model it runs, whether it
-      # searches MCP tools on demand, how its Claude credentials reach it, which
-      # extensions reshape its spawn. A session that can write them changes the
+      # searches MCP tools on demand, which extensions reshape its spawn. A session that can write them changes the
       # harness its successors run in, so the write must not ride along on the
       # unscoped `zimmer` surface, and never on `self_session`. A connection
       # names `settings` to get the write; `settings_readonly` gets the read

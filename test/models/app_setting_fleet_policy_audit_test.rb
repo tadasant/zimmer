@@ -152,11 +152,32 @@ class AppSettingFleetPolicyAuditTest < ActiveSupport::TestCase
     assert_empty entries.select { |_severity, message| message.include?("[AppSettings]") }
   end
 
-  # The coverage guard for that half: every toggle Settings → Experimental
-  # renders from an AppSetting column, and both halves of the session default,
-  # have to be recorded when they move.
+  # No MCP tool can write the MCP Apps pair, and that is exactly why the record
+  # matters: it is the one Settings change that lets a third party's HTML run in
+  # an operator's browser, and it reached /settings recorded by nothing.
+  test "opening the MCP Apps trust boundary from the page is recorded" do
+    setting = AppSetting.editable
+    setting.save!
+
+    entries = capture_log_entries do
+      setting.policy_change_source = AppSettingsController::CHANGE_SOURCE
+      setting.update!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "some-server" ])
+    end
+
+    line = entries.map(&:last).find { |message| message.include?("[AppSettings]") }
+    assert line, "the MCP Apps switch moved and nothing recorded it"
+    assert_match(/mcp_apps_enabled false -> true/, line)
+    assert_match(/mcp_apps_allowed_servers .* -> \["some-server"\]/, line)
+    assert_match(/changed via #{Regexp.escape(AppSettingsController::CHANGE_SOURCE)}/, line)
+  end
+
+  # The coverage guard for that half: every column AppSettingsController writes
+  # has to be recorded when it moves. The registry supplies the Experimental
+  # toggles; the rest are named here because nothing enumerates them — which is
+  # how the MCP Apps pair reached /settings recorded by nothing.
   test "every Settings page column is in SESSION_SETTING_ATTRIBUTES" do
-    reachable = %w[default_runtime default_model extension_states] +
+    reachable = %w[default_runtime default_model extension_states
+                   mcp_apps_enabled mcp_apps_allowed_servers] +
       ExperimentalSettingsRegistry::BUILT_INS.map { |experimental| experimental.attribute.to_s }
 
     assert_empty reachable - AppSetting::SESSION_SETTING_ATTRIBUTES,

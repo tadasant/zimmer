@@ -2497,13 +2497,14 @@ Nothing throttles or coalesces this today. If it becomes a problem the shape of 
 ### An agent can change what every later session runs under, and nothing announces it
 
 `action_app_settings` (the opt-in `settings` tool group) writes the Settings page's global
-defaults: the base runtime and model, MCP tool search, and experimental extension enablement. A session holding it can therefore change the harness its
-successors are created under, which is the point of the tool and also its risk.
+defaults: the base runtime and model, MCP tool search, and experimental extension enablement. A
+session holding it can therefore change the harness its successors are created under, which is the
+point of the tool and also its risk.
 
 - **Opt-in is a scoping boundary, not an authorization one.** The unscoped `zimmer` entry and the
   injected `zimmer-self-session` do not carry the write, but the fleet's API key is shared and
   written into every session's config, so any session could compose `?tool_groups=settings` for
-  itself ([API keys have no scope](#api-keys-have-no-scope-identity-or-audit-trail)).
+  itself ([API keys have no scope](#api-keys-have-names-but-no-scope-and-the-whole-fleet-shares-one)).
 - **Every write is recorded and none is announced.** Each change leaves an `[AppSettings]` WARN
   line naming the surface, the calling session and the values that moved (see
   [Observability](/operate/observability/)). Nothing counts those lines or alerts on them, so

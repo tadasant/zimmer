@@ -144,18 +144,26 @@ class AppSetting < ApplicationRecord
     genesis_class_overrides
   ].freeze
 
-  # The Settings page's fields: the global base runtime + model and the
+  # Every field the Settings page writes: the global base runtime + model, the
   # Settings → Experimental toggles (an experimental extension's toggle lives in
-  # `extension_states`). These are what every later session is created under, so
-  # they are recorded the way FLEET_POLICY_ATTRIBUTES are, by
-  # #log_session_settings_change — and for a sharper reason: `action_app_settings`
-  # lets an agent session move them, and a session changing the harness its
-  # successors run in is exactly the change an audit line is for.
+  # `extension_states`), and the MCP Apps pair. They are recorded the way
+  # FLEET_POLICY_ATTRIBUTES are, by #log_session_settings_change — and for a
+  # sharper reason: most of them are what every later session is created under,
+  # and `action_app_settings` lets an agent session move them, so a session
+  # changing the harness its successors run in is exactly the change an audit
+  # line is for.
+  #
+  # The MCP Apps pair is here for the opposite reason — no MCP tool can write it,
+  # deliberately (McpApps::Policy) — but it is the one Settings change that opts a
+  # third party into running HTML in an operator's browser, so "when did this open,
+  # and from where" has to be answerable. Only `/settings` ever moves it.
   SESSION_SETTING_ATTRIBUTES = %w[
     default_runtime
     default_model
     mcp_tool_search_enabled
     extension_states
+    mcp_apps_enabled
+    mcp_apps_allowed_servers
   ].freeze
 
   # What #policy_change_source says when nobody set one. A write with no named
