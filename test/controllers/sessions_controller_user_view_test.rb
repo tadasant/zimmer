@@ -316,6 +316,26 @@ class SessionsControllerUserViewTest < ActionDispatch::IntegrationTest
     assert_equal first_session_id, trigger.reload.last_session_id
   end
 
+  # A burst-suppressed, pending-session or not-reusable fire is not a success, and
+  # it must not name a session as re-ranking the board when none was given the job.
+  test "a Reprioritize press that does not fire says so as an alert and names no session" do
+    trigger = Sessions::DashboardReprioritizer.trigger!
+    stale = make_session(status: :needs_input)
+    not_fired = Triggers::ManualFire::Result.new(
+      trigger: trigger, session: stale, outcome: :pending_session,
+      message: "Trigger \"#{trigger.name}\" created no session — a session it already spawned is still pending."
+    )
+    Triggers::ManualFire.stubs(:call).returns(not_fired)
+
+    post reprioritize_sessions_path, as: :turbo_stream
+
+    assert_response :success
+    assert_match(/created no session/, response.body)
+    assert_no_match(/Working in/, response.body,
+      "the panel must not claim a session is re-ranking the board after a non-fire")
+    assert_match(/Alert/i, response.body, "a non-fire is reported as an alert, not a notice")
+  end
+
   # ---- Scale -----------------------------------------------------------------
 
   # There is no paginator on purpose — a drag between two rows means nothing if

@@ -85,6 +85,7 @@ module Sessions
 
     Result = Data.define(:session, :outcome, :message) do
       def session? = !session.nil?
+      def fired? = outcome == :fired
     end
 
     # @return [Result]

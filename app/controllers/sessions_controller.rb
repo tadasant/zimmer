@@ -2527,18 +2527,26 @@ class SessionsController < ApplicationController
   def reprioritize
     result = Sessions::DashboardReprioritizer.call
 
+    # Only a fire hands the board to a session. The other outcomes — burst
+    # suppressed, a burst notice, a pending session, a target that is no longer
+    # reusable — can still carry a session, and naming it in the panel would tell
+    # the operator a session is re-ranking their board when none was given the job.
+    # They are also not successes, so they are said as an alert.
+    fired = result.fired?
+    flash_kind = fired ? { notice: result.message } : { alert: result.message }
+
     respond_to do |format|
       format.turbo_stream do
         render turbo_stream: [
           turbo_stream.replace(
             "user_view_reprioritize",
             partial: "sessions/user_view_reprioritize",
-            locals: { reprioritizer_session: result.session }
+            locals: { reprioritizer_session: (result.session if fired) }
           ),
-          flash_stream(notice: result.message)
+          flash_stream(**flash_kind)
         ]
       end
-      format.html { redirect_to root_path(view: VIEW_MODE_USER), notice: result.message }
+      format.html { redirect_to root_path(view: VIEW_MODE_USER), **flash_kind }
     end
   rescue => e
     Rails.logger.error "[SessionsController#reprioritize] #{e.class}: #{e.message}"
