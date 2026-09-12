@@ -1376,6 +1376,157 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/Restore/, response.body)
   end
 
+  # === Trashing a session from its own detail page navigates home ===
+  #
+  # The detail page of a session that has just been trashed is a dead end, so
+  # that one affordance redirects to the dashboard. The referer is what tells the
+  # two apart: the drawer and the cards sit on the dashboard's URL, the full page
+  # is the only caller whose referer is the session's own path.
+
+  test "archive from the session's own detail page redirects to the dashboard" do
+    session = sessions(:failed)
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => session_url(session) }
+
+    assert session.reload.archived?
+    assert_redirected_to root_path
+    assert_response :see_other, "a form submission's redirect is a 303, the status Turbo documents for it"
+  end
+
+  # The detail page has two URLs. `session_path` is the slug, but #show resolves
+  # the numeric id too and does not canonicalize it — and the id form is what
+  # Slack and push notifications link to. Fixtures carry no slug, so without
+  # setting one here the two spellings coincide and this case goes untested.
+  test "archive from the detail page redirects home whether the page was reached by slug or by id" do
+    session = sessions(:failed)
+    session.update!(slug: "fix-the-poller-20260830-1102")
+    assert_equal "/sessions/fix-the-poller-20260830-1102", session_path(session)
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => session_url(session.id) }
+
+    assert_redirected_to root_path, "the id-form URL a notification links to is the same page"
+
+    session.update_columns(status: Session.statuses[:failed], archived_at: nil)
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => session_url(session) }
+
+    assert_redirected_to root_path, "the slug-form URL is the same page"
+  end
+
+  test "archive with a cross-origin referer on a matching path stays put" do
+    session = sessions(:failed)
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => "https://elsewhere.example/sessions/#{session.id}" }
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="remove"\s+target="session_#{session.id}"/, response.body)
+  end
+
+  # The redirect is what carries the toast: with no stream to land in #flash, the
+  # notice has to ride the flash so the dashboard renders Undo on arrival.
+  test "archive from the detail page carries the Undo affordance in the flash" do
+    session = sessions(:failed)
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => session_url(session) }
+
+    assert_includes flash[:notice], "Session moved to trash."
+    assert_includes flash[:notice], "undo_archive"
+    assert_includes flash[:notice], session.id.to_s
+
+    follow_redirect!
+    assert_response :success
+    assert_match %r{action="#{Regexp.escape(undo_archive_session_path(session))}"}, response.body
+    assert_match(/>Undo</, response.body)
+  end
+
+  # A query string on the detail page — a tab, a scroll anchor — is still the
+  # detail page.
+  test "archive from the detail page redirects home even with a query string" do
+    session = sessions(:failed)
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => "#{session_url(session)}?tab=metadata" }
+
+    assert_redirected_to root_path
+  end
+
+  test "archive from the dashboard still streams the card away in place" do
+    session = sessions(:failed)
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => root_url }
+
+    assert_response :success
+    assert_equal "text/vnd.turbo-stream.html; charset=utf-8", response.content_type
+    assert_match(/<turbo-stream\s+action="remove"\s+target="session_#{session.id}"/, response.body)
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/>Undo</, response.body)
+  end
+
+  # A detail page can show cards for other sessions. Trashing one of those is a
+  # list interaction, not the dead end this redirect exists for.
+  test "archive of another session from a detail page stays put" do
+    session = sessions(:failed)
+    other = sessions(:running)
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => session_url(other) }
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="remove"\s+target="session_#{session.id}"/, response.body)
+  end
+
+  test "archive with an unparseable referer falls back to the in-place stream" do
+    session = sessions(:failed)
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => "http://[not a uri" }
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="remove"\s+target="session_#{session.id}"/, response.body)
+  end
+
+  # An error must not navigate away as though it had worked: the refusal and the
+  # already-archived reply both leave the user on the page they clicked from.
+  test "archive refused on the detail page does not redirect home" do
+    session = sessions(:failed)
+    session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => session_url(session) }
+
+    assert_response :success
+    assert_not session.reload.archived?
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/>Archive anyway</, response.body)
+  end
+
+  test "archive of an already-archived session from its detail page does not redirect home" do
+    session = sessions(:archived)
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => session_url(session) }
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/Session is already in trash\./, response.body)
+  end
+
   test "archive should render idempotent turbo_stream for already-archived session" do
     session = sessions(:archived)
 
