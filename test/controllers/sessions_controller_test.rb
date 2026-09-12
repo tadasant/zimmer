@@ -381,8 +381,10 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   # The Stimulus value is JSON in a data attribute; parse it rather than regexing
   # the escaped HTML, so the assertion is about the payload and not its encoding.
+  # The picker is the shared catalog-multiselect, whose items are normalised to
+  # `key` (CatalogMultiselectHelper#catalog_multiselect_items).
   def picker_servers
-    value = css_select("[data-mcp-server-select-servers-value]").first["data-mcp-server-select-servers-value"]
+    value = css_select("[data-catalog-field='mcp_servers']").first["data-catalog-multiselect-items-value"]
     JSON.parse(value)
   end
 
@@ -392,15 +394,15 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     servers = picker_servers
 
-    healthy = servers.find { |s| s["name"] == "context7" }
+    healthy = servers.find { |s| s["key"] == "context7" }
     assert_equal false, healthy["unavailable"]
     assert_nil healthy["unavailable_reason"]
 
-    unseeded = servers.find { |s| s["name"] == "strad-secrets-staging-rw" }
+    unseeded = servers.find { |s| s["key"] == "strad-secrets-staging-rw" }
     assert_equal true, unseeded["unavailable"]
     assert_equal "STRAD_STAGING_API_KEY unresolved", unseeded["unavailable_reason"]
 
-    declared = servers.find { |s| s["name"] == "strad-secrets-oauth" }
+    declared = servers.find { |s| s["key"] == "strad-secrets-oauth" }
     assert_equal true, declared["unavailable"]
     assert_equal "The endpoint accepts only static bearer tokens and exposes no OAuth discovery.",
       declared["unavailable_reason"]
@@ -415,14 +417,14 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     assert_equal %w[context7 zimmer-self-session strad-secrets-staging-rw strad-secrets-oauth],
-      picker_servers.map { |s| s["name"] }
+      picker_servers.map { |s| s["key"] }
   end
 
   test "the picker's reason is plain text, not the markdown get_configs renders" do
     with_mixed_availability_catalog { get new_session_url }
     assert_response :success
 
-    reason = picker_servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable_reason"]
+    reason = picker_servers.find { |s| s["key"] == "strad-secrets-staging-rw" }["unavailable_reason"]
     refute_includes reason, "`", "a backtick renders as a backtick in a dropdown row"
   end
 
@@ -435,7 +437,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     with_mixed_availability_catalog(resolution: outage) { get new_session_url }
     assert_response :success
 
-    assert_equal false, picker_servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable"]
+    assert_equal false, picker_servers.find { |s| s["key"] == "strad-secrets-staging-rw" }["unavailable"]
   end
 
   # The form must render even if readiness cannot be computed at all: a picker

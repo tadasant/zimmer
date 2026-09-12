@@ -61,6 +61,20 @@ export default class extends Controller {
     })
   }
 
+  // Re-broadcast an agent-root change as the document-level event the catalog
+  // multi-selects listen for, so they can reset to that root's defaults.
+  //
+  // They cannot take a plain `change->` action off the select: each renders its
+  // own `data-controller="catalog-multiselect"` element (Stimulus registers an
+  // identifier once per element, and there are four of them), which puts the
+  // select outside every one of them. The new-session form gets the same event
+  // from agent-root-select#selectRoot.
+  announceAgentRoot(event) {
+    document.dispatchEvent(
+      new CustomEvent("ao:agent-root-changed", { detail: { agentRootName: event.target.value } })
+    )
+  }
+
   // Show/hide reuse sub-options when the reuse_session checkbox is toggled
   toggleReuseSubOptions(event) {
     if (this.hasReuseSubOptionsTarget) {

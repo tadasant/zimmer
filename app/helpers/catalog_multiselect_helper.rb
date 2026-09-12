@@ -62,19 +62,24 @@ module CatalogMultiselectHelper
   # @param items [Array<Hash>] from `catalog_multiselect_items`
   # @param selected [Array<String>] currently persisted keys
   # @param accent [String] accent token
-  # @param persist_url [String] the PATCH endpoint for this artifact type
-  # @param payload_key [String] the key the endpoint expects the array under
-  # @param variant [Symbol] `:inline` (desktop meta row) or `:stacked` (mobile card)
+  # @param payload_key [String] the key the endpoint expects the array under —
+  #   and, in form mode, the name the widget announces itself under
+  # @param variant [Symbol] `:inline` (desktop meta row), `:stacked` (mobile
+  #   card) or `:field` (a form field — no display region, so no display chips)
+  # @param persist_url [String] blank for a widget that submits with a form;
+  #   its presence is what puts the controller in inline-edit mode
+  # @param input_name [String] form mode: the `name` on every hidden input
+  # @param agent_root_defaults [Hash] form mode: `{ root_name => [key, ...] }`
   #
   # `display_chip_class` goes unread when `turbo_stream:` is true: MCP servers
   # re-render their display region server-side, so the controller never rewrites
   # a chip there. Emitted anyway rather than special-cased, so every widget
   # carries the same attributes.
-  def catalog_multiselect_attributes(items:, selected:, accent:, persist_url:, payload_key:,
-                                     variant:, injected: [], group_by_category: false,
-                                     show_description: false, turbo_stream: false)
-    chip_key = variant.to_sym == :inline ? :display_chip_inline : :display_chip_stacked
-
+  def catalog_multiselect_attributes(items:, selected:, accent:, payload_key:, variant:,
+                                     persist_url: "", injected: [], group_by_category: false,
+                                     show_description: false, turbo_stream: false,
+                                     input_name: "", preserve_unknown: false,
+                                     emit_empty_input: false, agent_root_defaults: {})
     {
       controller: "catalog-multiselect",
       catalog_multiselect_items_value: items.to_json,
@@ -83,17 +88,32 @@ module CatalogMultiselectHelper
       catalog_multiselect_accent_value: accent,
       catalog_multiselect_group_by_category_value: group_by_category,
       catalog_multiselect_show_description_value: show_description,
-      catalog_multiselect_display_chip_class_value: catalog_multiselect_accent(accent).fetch(chip_key),
+      catalog_multiselect_display_chip_class_value: catalog_multiselect_display_chip_class(accent, variant),
       catalog_multiselect_persist_url_value: persist_url,
       catalog_multiselect_payload_key_value: payload_key,
-      catalog_multiselect_turbo_stream_value: turbo_stream
+      catalog_multiselect_turbo_stream_value: turbo_stream,
+      catalog_multiselect_input_name_value: input_name,
+      catalog_multiselect_preserve_unknown_value: preserve_unknown,
+      catalog_multiselect_emit_empty_input_value: emit_empty_input,
+      catalog_multiselect_agent_root_defaults_value: agent_root_defaults.to_json
     }
+  end
+
+  # The `:field` variant has no display region at all, so there is no chip class
+  # to resolve — empty rather than an arbitrary one, so a future reader does not
+  # read it as meaningful.
+  def catalog_multiselect_display_chip_class(accent, variant)
+    case variant.to_sym
+    when :stacked then catalog_multiselect_accent(accent).fetch(:display_chip_stacked)
+    when :field then ""
+    else catalog_multiselect_accent(accent).fetch(:display_chip_inline)
+    end
   end
 
   # @param options [Array<Hash>, nil] whatever the catalog's `*_for_select`
   #   builder produced
   # @param key [Symbol] the field that identifies an artifact of this type
-  # @return [Array<Hash>] `{ key:, title:, description:, category:,
+  # @return [Array<Hash>] `{ key:, title:, description:, category:, scope:,
   #   unavailable:, unavailable_reason: }`, with blanks dropped
   def catalog_multiselect_items(options, key:)
     Array(options).filter_map do |option|
@@ -108,6 +128,10 @@ module CatalogMultiselectHelper
         title: option[:title].presence || identity,
         description: option[:description],
         category: option[:category],
+        # Only MCP servers set this, and only when two composed catalogs
+        # contribute the same short id — the case where two chips would
+        # otherwise both read "Slack".
+        scope: option[:scope],
         unavailable: option[:unavailable],
         unavailable_reason: option[:unavailable_reason]
       }.compact

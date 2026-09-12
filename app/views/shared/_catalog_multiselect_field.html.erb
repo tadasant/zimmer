@@ -1,0 +1,81 @@
+<%#
+  The FORM variant of the catalog multi-select widget — a labelled field with
+  chips, a search box, a dropdown and the hidden inputs that actually submit.
+  One partial for what used to be eight near-identical blocks across the
+  new-session form and the trigger form, backed by four copy-pasted Stimulus
+  controllers (zimmer#456).
+
+  It renders its OWN `data-controller="catalog-multiselect"` wrapper, unlike the
+  inline-edit partials whose caller owns theirs. That is not a style choice:
+  Stimulus registers an identifier once per element, and the four widgets used to
+  share the <form> element. Each needs its own.
+
+  Which also puts the agent-root control OUTSIDE this element, so it cannot reach
+  the widget with an ordinary `change->` action. The wrapper listens for
+  `ao:agent-root-changed` on the document instead — agent-root-select dispatches
+  it on the new-session form, trigger-form#announceAgentRoot on the trigger form.
+
+  Locals:
+    label               - "Skills", "MCP Servers", …
+    accent              - accent token; see CatalogMultiselectHelper::ACCENT_CLASSES
+    placeholder         - search box placeholder
+    items               - from `catalog_multiselect_items`
+    selected            - keys to start with
+    input_name          - the `name` on every hidden input, e.g. "session[catalog_skills][]"
+    payload_key         - "catalog_skills", "mcp_servers", … — identifies this
+                          widget to `catalog-multiselect:selectionChanged` listeners
+    agent_root_defaults - { root_name => [key, ...] }
+    help                - optional caption under the field
+    group_by_category   - optional; skills are the only catalog worth grouping
+    show_description    - optional; a second line per dropdown row
+    preserve_unknown    - optional; keep and mark keys the catalog no longer carries
+    emit_empty_input    - optional; post one blank input when nothing is selected
+    wrapper_class       - optional classes for the outer element
+%>
+<% classes = catalog_multiselect_accent(accent) %>
+<% field_id = "catalog-multiselect-#{payload_key.to_s.dasherize}" %>
+
+<div class="<%= local_assigns.fetch(:wrapper_class, "") %>"
+     data-catalog-field="<%= payload_key %>"
+     <%= tag.attributes(data: catalog_multiselect_attributes(
+           items: items,
+           selected: selected,
+           accent: accent,
+           variant: :field,
+           payload_key: payload_key,
+           input_name: input_name,
+           agent_root_defaults: local_assigns.fetch(:agent_root_defaults, {}),
+           group_by_category: local_assigns.fetch(:group_by_category, false),
+           show_description: local_assigns.fetch(:show_description, false),
+           preserve_unknown: local_assigns.fetch(:preserve_unknown, false),
+           emit_empty_input: local_assigns.fetch(:emit_empty_input, false)
+         ).merge(action: "ao:agent-root-changed@document->catalog-multiselect#handleAgentRootChange")) %>>
+
+  <label for="<%= field_id %>" class="block text-sm font-medium text-gray-700 mb-2"><%= label %></label>
+
+  <div data-catalog-multiselect-target="selectedContainer" class="flex flex-wrap mb-2"></div>
+
+  <%# The controller rewrites this on every change; it is what the form posts. %>
+  <div data-catalog-multiselect-target="hiddenInputs"></div>
+
+  <input type="text"
+         id="<%= field_id %>"
+         data-catalog-multiselect-target="input"
+         <%# `click` as well as `focus`, so a click on an already-focused input reopens
+             the list. A second `focus` never fires, so `focus` alone leaves no way back
+             after Escape but to type. %>
+         data-action="focus->catalog-multiselect#showDropdown click->catalog-multiselect#showDropdown input->catalog-multiselect#filter keydown->catalog-multiselect#handleKeydown"
+         placeholder="<%= placeholder %>"
+         autocomplete="off"
+         class="shadow-sm block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 <%= classes[:input] %>">
+
+  <%# `fixed`, positioned against the viewport by the controller — the widget can
+      sit inside a scrolling container, and an absolutely-positioned dropdown
+      overflows the right edge of a 375px phone. %>
+  <div data-catalog-multiselect-target="dropdown"
+       class="hidden fixed bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+
+  <% if local_assigns[:help].present? %>
+    <p class="mt-2 text-sm text-gray-500"><%= help %></p>
+  <% end %>
+</div>

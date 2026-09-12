@@ -99,30 +99,30 @@ class SessionsTest < ApplicationSystemTestCase
     visit new_session_url
 
     # Should have the multi-select dropdown component
-    assert_selector "[data-controller~='mcp-server-select']"
-    assert_selector "[data-mcp-server-select-target='input']"
+    assert_selector "[data-catalog-field='mcp_servers']"
+    assert_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']"
   end
 
   test "MCP server dropdown shows servers when clicked" do
     visit new_session_url
 
     # Click on the dropdown input to show options
-    find("[data-mcp-server-select-target='input']").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
 
-    # Dropdown caps the unfiltered view at 10 results (see mcp_server_select_controller.js).
+    # Dropdown caps the unfiltered view at 10 results (see catalog_multiselect_controller.js).
     # Spot-check that a couple of catalog servers render in that initial slice.
     # Other servers are exercised by typing into the input to filter (next test).
-    assert_selector ".server-item[data-name='context7']"
-    assert_selector ".server-item[data-name='playwright-custom']"
+    assert_selector ".catalog-multiselect-item[data-key='context7']"
+    assert_selector ".catalog-multiselect-item[data-key='playwright-custom']"
   end
 
   test "MCP server dropdown filtering surfaces servers by exact-name query" do
     visit new_session_url
 
     # The dropdown caps rendered results at 10 even when filtered (see
-    # mcp_server_select_controller.js). Search for each entry by its full name to
+    # catalog_multiselect_controller.js). Search for each entry by its full name to
     # keep this robust as the catalog grows.
-    input = find("[data-mcp-server-select-target='input']")
+    input = find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']")
     [
       "linear",
       "notion",
@@ -130,7 +130,7 @@ class SessionsTest < ApplicationSystemTestCase
     ].each do |name|
       input.click
       input.fill_in with: name
-      assert_selector ".server-item[data-name='#{name}']"
+      assert_selector ".catalog-multiselect-item[data-key='#{name}']"
       input.fill_in with: ""
     end
   end
@@ -147,13 +147,15 @@ class SessionsTest < ApplicationSystemTestCase
     fill_in "session[prompt]", with: "Build a user authentication system"
 
     # Select MCP servers using the multi-select dropdown
-    find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='context7']").click
-    find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='playwright-custom']").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+    find(".catalog-multiselect-item[data-key='context7']").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+    find(".catalog-multiselect-item[data-key='playwright-custom']").click
 
-    # Click elsewhere to close the dropdown
-    find("label", text: "Initial Prompt").click
+    # Escape, the way a person closes it. Clicking a label above the input no
+    # longer works: a dropdown with no room below it opens UPWARD and covers
+    # exactly that label (see repositionDropdown).
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").send_keys(:escape)
 
     # Submit the form
     click_button "Create Session"
@@ -183,13 +185,15 @@ class SessionsTest < ApplicationSystemTestCase
     fill_in "session[prompt]", with: "Test with all servers"
 
     # Select all available servers using multi-select dropdown
-    find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='context7']").click
-    find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='playwright-custom']").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+    find(".catalog-multiselect-item[data-key='context7']").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+    find(".catalog-multiselect-item[data-key='playwright-custom']").click
 
-    # Click elsewhere to close the dropdown
-    find("label", text: "Initial Prompt").click
+    # Escape, the way a person closes it. Clicking a label above the input no
+    # longer works: a dropdown with no room below it opens UPWARD and covers
+    # exactly that label (see repositionDropdown).
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").send_keys(:escape)
 
     click_button "Create Session"
 
@@ -210,15 +214,17 @@ class SessionsTest < ApplicationSystemTestCase
     # Select two catalog MCP servers by name. The dropdown renders only the first
     # 10 matches, so a server further down the catalog (notion) is not visible until
     # the input filters the list — type its name to narrow before clicking.
-    find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='linear']").click
-    notion_input = find("[data-mcp-server-select-target='input']")
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+    find(".catalog-multiselect-item[data-key='linear']").click
+    notion_input = find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']")
     notion_input.click
     notion_input.send_keys("notion")
-    find(".server-item[data-name='notion']").click
+    find(".catalog-multiselect-item[data-key='notion']").click
 
-    # Click elsewhere to close the dropdown
-    find("label", text: "Initial Prompt").click
+    # Escape, the way a person closes it. Clicking a label above the input no
+    # longer works: a dropdown with no room below it opens UPWARD and covers
+    # exactly that label (see repositionDropdown).
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").send_keys(:escape)
 
     click_button "Create Session"
 
@@ -301,9 +307,9 @@ class SessionsTest < ApplicationSystemTestCase
     fill_in "session[prompt]", with: "Test session for viewing"
 
     # Select server using multi-select dropdown
-    find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='context7']").click
-    find("label", text: "Initial Prompt").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+    find(".catalog-multiselect-item[data-key='context7']").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").send_keys(:escape)
 
     click_button "Create Session"
 
@@ -349,8 +355,8 @@ class SessionsTest < ApplicationSystemTestCase
     visit new_session_url
 
     # Click to open the dropdown
-    find("[data-mcp-server-select-target='input']").click
-    assert_selector ".server-item", minimum: 2
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+    assert_selector ".catalog-multiselect-item", minimum: 2
 
     # Every row the dropdown shows carries a title on the left and its slug on the
     # right. Asserted against the rows actually rendered rather than against
@@ -359,9 +365,9 @@ class SessionsTest < ApplicationSystemTestCase
     # entries, not the first ten in catalog order. Which servers are startable
     # depends on which secrets the environment has — in CI none are — so pinning
     # the catalog's own order made this test a function of the runner's config.
-    all(".server-item").each do |row|
-      server = ServersConfig.find(row["data-name"])
-      assert_not_nil server, "dropdown row #{row['data-name'].inspect} is not a catalog server"
+    all(".catalog-multiselect-item").each do |row|
+      server = ServersConfig.find(row["data-key"])
+      assert_not_nil server, "dropdown row #{row['data-key'].inspect} is not a catalog server"
       assert_includes row.text, server.title
       assert_includes row.text, server.name # slug shown on right side
     end
@@ -371,10 +377,10 @@ class SessionsTest < ApplicationSystemTestCase
     visit new_session_url
 
     # Click to open the dropdown
-    find("[data-mcp-server-select-target='input']").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
 
     # Should show server titles in the dropdown
-    assert_selector ".server-item", minimum: 2
+    assert_selector ".catalog-multiselect-item", minimum: 2
     # Verify the dropdown renders server titles (not slugs). Assert against the first
     # couple of servers from the catalog itself so this stays correct as the catalog
     # changes; both fall within the dropdown's 10-item display cap.
@@ -430,11 +436,11 @@ class SessionsTest < ApplicationSystemTestCase
     fill_in "session[prompt]", with: "Complete workflow test session"
 
     # Select servers using multi-select dropdown
-    find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='context7']").click
-    find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='playwright-custom']").click
-    find("label", text: "Initial Prompt").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+    find(".catalog-multiselect-item[data-key='context7']").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
+    find(".catalog-multiselect-item[data-key='playwright-custom']").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").send_keys(:escape)
 
     # Create session
     click_button "Create Session"
@@ -469,7 +475,7 @@ class SessionsTest < ApplicationSystemTestCase
     # MCP server multi-select should have a label
     assert_selector "label", text: "MCP Servers"
     # The multi-select dropdown should be present
-    assert_selector "[data-controller~='mcp-server-select']"
+    assert_selector "[data-catalog-field='mcp_servers']"
   end
 
   # Test slug functionality
@@ -783,19 +789,19 @@ class SessionsTest < ApplicationSystemTestCase
     default_agent_root = AgentRootsConfig.default
 
     # The selected container should always exist (use visible: :all since it may be empty)
-    assert_selector "[data-mcp-server-select-target='selectedContainer']", visible: :all
+    assert_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer']", visible: :all
 
     # If the default agent root has default MCP servers, verify they're selected
     if default_agent_root&.default_mcp_servers.present?
       default_agent_root.default_mcp_servers.each do |server_name|
         if ServersConfig.exists?(server_name)
           # Check that the server is shown in the selected container
-          assert_selector "[data-mcp-server-select-target='selectedContainer'] span", text: ServersConfig.find(server_name).title
+          assert_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer'] span", text: ServersConfig.find(server_name).title
         end
       end
     else
       # No default servers means the container should be empty (no span tags inside)
-      assert_no_selector "[data-mcp-server-select-target='selectedContainer'] span"
+      assert_no_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer'] span"
     end
   end
 
@@ -807,9 +813,9 @@ class SessionsTest < ApplicationSystemTestCase
 
     skip "No agent roots with default MCP servers configured" unless agent_root_with_servers
 
-    # Directly invoke the Stimulus controller method since Capybara's choose/click
-    # doesn't reliably trigger Stimulus data-action handlers in headless Chrome
-    page.execute_script("var radio = document.getElementById('agent_root_#{agent_root_with_servers.name}'); radio.checked = true; var container = document.querySelector('[data-controller*=\"mcp-server-select\"]'); var stimulusController = window.Stimulus.getControllerForElementAndIdentifier(container, 'mcp-server-select'); stimulusController.handleAgentRootChange({ target: radio });")
+    # Drive the same path the autocomplete uses, which is what broadcasts
+    # `ao:agent-root-changed` to the catalog multi-selects.
+    select_agent_root(agent_root_with_servers.name)
 
     # Wait for JavaScript to execute
     sleep 0.1
@@ -818,7 +824,7 @@ class SessionsTest < ApplicationSystemTestCase
     agent_root_with_servers.default_mcp_servers.each do |server_name|
       if ServersConfig.exists?(server_name)
         server = ServersConfig.find(server_name)
-        assert_selector "[data-mcp-server-select-target='selectedContainer'] span", text: server.title
+        assert_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer'] span", text: server.title
       end
     end
   end
@@ -834,27 +840,27 @@ class SessionsTest < ApplicationSystemTestCase
     first_agent_root = agent_roots_with_servers.first
     second_agent_root = agent_roots_with_servers.second
 
-    # Directly invoke the Stimulus controller method for first agent root
-    page.execute_script("var radio = document.getElementById('agent_root_#{first_agent_root.name}'); radio.checked = true; var container = document.querySelector('[data-controller*=\"mcp-server-select\"]'); var stimulusController = window.Stimulus.getControllerForElementAndIdentifier(container, 'mcp-server-select'); stimulusController.handleAgentRootChange({ target: radio });")
+    # first agent root
+    select_agent_root(first_agent_root.name)
     sleep 0.1
 
     # Verify first agent root's MCP servers are shown
     first_agent_root.default_mcp_servers.each do |server_name|
       if ServersConfig.exists?(server_name)
         server = ServersConfig.find(server_name)
-        assert_selector "[data-mcp-server-select-target='selectedContainer'] span", text: server.title
+        assert_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer'] span", text: server.title
       end
     end
 
-    # Directly invoke the Stimulus controller method for second agent root
-    page.execute_script("var radio = document.getElementById('agent_root_#{second_agent_root.name}'); radio.checked = true; var container = document.querySelector('[data-controller*=\"mcp-server-select\"]'); var stimulusController = window.Stimulus.getControllerForElementAndIdentifier(container, 'mcp-server-select'); stimulusController.handleAgentRootChange({ target: radio });")
+    # second agent root
+    select_agent_root(second_agent_root.name)
     sleep 0.1
 
     # Verify second agent root's MCP servers are shown
     second_agent_root.default_mcp_servers.each do |server_name|
       if ServersConfig.exists?(server_name)
         server = ServersConfig.find(server_name)
-        assert_selector "[data-mcp-server-select-target='selectedContainer'] span", text: server.title
+        assert_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer'] span", text: server.title
       end
     end
   end
@@ -871,24 +877,24 @@ class SessionsTest < ApplicationSystemTestCase
 
     skip "Need agent roots with and without MCP servers" unless agent_root_with_servers && agent_root_without_servers
 
-    # Directly invoke the Stimulus controller method for agent root with MCP servers
-    page.execute_script("var radio = document.getElementById('agent_root_#{agent_root_with_servers.name}'); radio.checked = true; var container = document.querySelector('[data-controller*=\"mcp-server-select\"]'); var stimulusController = window.Stimulus.getControllerForElementAndIdentifier(container, 'mcp-server-select'); stimulusController.handleAgentRootChange({ target: radio });")
+    # agent root with MCP servers
+    select_agent_root(agent_root_with_servers.name)
     sleep 0.1
 
     # Verify MCP servers are populated
     agent_root_with_servers.default_mcp_servers.each do |server_name|
       if ServersConfig.exists?(server_name)
         server = ServersConfig.find(server_name)
-        assert_selector "[data-mcp-server-select-target='selectedContainer'] span", text: server.title
+        assert_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer'] span", text: server.title
       end
     end
 
-    # Directly invoke the Stimulus controller method for agent root without MCP servers
-    page.execute_script("var radio = document.getElementById('agent_root_#{agent_root_without_servers.name}'); radio.checked = true; var container = document.querySelector('[data-controller*=\"mcp-server-select\"]'); var stimulusController = window.Stimulus.getControllerForElementAndIdentifier(container, 'mcp-server-select'); stimulusController.handleAgentRootChange({ target: radio });")
+    # agent root without MCP servers
+    select_agent_root(agent_root_without_servers.name)
     sleep 0.1
 
     # Verify MCP server selection is cleared - the container should have no span tags
-    assert_no_selector "[data-mcp-server-select-target='selectedContainer'] span"
+    assert_no_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer'] span"
   end
 
   test "user can manually add MCP servers after auto-selection" do
@@ -899,22 +905,22 @@ class SessionsTest < ApplicationSystemTestCase
 
     skip "No agent roots with default MCP servers configured" unless agent_root_with_servers
 
-    # Directly invoke the Stimulus controller method for agent root with MCP servers
-    page.execute_script("var radio = document.getElementById('agent_root_#{agent_root_with_servers.name}'); radio.checked = true; var container = document.querySelector('[data-controller*=\"mcp-server-select\"]'); var stimulusController = window.Stimulus.getControllerForElementAndIdentifier(container, 'mcp-server-select'); stimulusController.handleAgentRootChange({ target: radio });")
+    # agent root with MCP servers
+    select_agent_root(agent_root_with_servers.name)
     sleep 0.1
 
     # Open the dropdown and select an additional server
-    find("[data-mcp-server-select-target='input']").click
+    find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
 
     # Find a server that's NOT in the default list
     additional_server = ServersConfig.all.find { |s| !agent_root_with_servers.default_mcp_servers.include?(s.name) }
 
     skip "No additional servers available to add" unless additional_server
 
-    find(".server-item[data-name='#{additional_server.name}']").click
+    find(".catalog-multiselect-item[data-key='#{additional_server.name}']").click
 
     # Verify both default and manually added servers are shown
-    assert_selector "[data-mcp-server-select-target='selectedContainer'] span", text: additional_server.title
+    assert_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='selectedContainer'] span", text: additional_server.title
   end
 
   # === Tests for the session recovery banner
