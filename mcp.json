@@ -118,7 +118,7 @@
   },
   "zimmer-settings-readonly": {
     "title": "Zimmer Settings (read-only)",
-    "description": "Zimmer's native MCP server, scoped to reading the Settings page's global defaults: get_app_settings reports the global base runtime and model, and every Settings → Experimental toggle (MCP tool search, session-scoped Claude credentials, experimental extensions), each marked as the shipped default or an operator override. Read-only by construction — the settings group's write tool is excluded. The spot/priority policy on the same row is the health group's get_spot_policy, not this.",
+    "description": "Zimmer's native MCP server, scoped to reading the Settings page's global defaults: get_app_settings reports the global base runtime and model, and every Settings → Experimental toggle (MCP tool search, experimental extensions), each marked as the shipped default or an operator override. Read-only by construction — the settings group's write tool is excluded. The spot/priority policy on the same row is the health group's get_spot_policy, not this.",
     "type": "streamable-http",
     "url": "https://zimmer.example.com/mcp?tool_groups=settings_readonly",
     "headers": {

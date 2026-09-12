@@ -155,7 +155,6 @@ class AppSetting < ApplicationRecord
     default_runtime
     default_model
     mcp_tool_search_enabled
-    session_scoped_credentials_enabled
     extension_states
   ].freeze
 

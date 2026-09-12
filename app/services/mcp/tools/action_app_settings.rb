@@ -44,20 +44,19 @@ module Mcp
           is stored is refused for that reason — pass the new `model` with it, or `model: ""`.
         - **set_experimental_setting**: Turn one Settings → Experimental toggle on or off (requires
           `setting` and `enabled`). `setting` is the key `get_app_settings` lists: `mcp_tool_search`,
-          `session_scoped_credentials`, or `extension.<id>` for a registered experimental Zimmer
-          Extension. An unknown key, or an extension that is not registered, is refused. Every
+          or `extension.<id>` for a registered experimental Zimmer Extension. An unknown key, or an
+          extension that is not registered, is refused. Every
           session is tagged with each toggle's value as it runs, and the Costs page compares those
           cohorts — so switching a setting back and forth is how its cohorts come to interleave in
-          time rather than split at one date. `session_scoped_credentials` takes effect beyond new
-          spawns: the credential sync and account rotation read it live, so it changes how the
-          shared credentials file is maintained immediately, for sessions already running too.
+          time rather than split at one date.
 
         Every change is echoed back as before → after, and recorded on an `[AppSettings]` audit log
         line naming this tool, the action and the calling session. A call that sets a value to what
         it already is changes nothing and says so.
 
         The spot/priority policy and backlog top-up live on the same row but are changed with
-        `action_spot_policy`.
+        `action_spot_policy`. The MCP Apps switch and its allowlist are not on this surface at all:
+        trusting a server to render HTML in an operator's browser is a human's call.
       DESC
 
       input_schema({
@@ -82,7 +81,7 @@ module Mcp
           setting: {
             type: "string",
             description: "set_experimental_setting: the toggle's key, as `get_app_settings` lists it " \
-                         "(`mcp_tool_search`, `session_scoped_credentials`, or `extension.<id>`)."
+                         "(`mcp_tool_search`, or `extension.<id>`)."
           },
           enabled: {
             type: "boolean",
