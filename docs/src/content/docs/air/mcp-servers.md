@@ -296,13 +296,14 @@ raises, `McpServerReadiness` says nothing and the session is created exactly as 
 ## When a server cannot connect, the server is left out — not the session
 
 A handshake that fails is a lost *capability*, not a lost session. `AgentSessionJob#check_and_handle_mcp_failure`
-classifies the failure and takes one of three routes:
+classifies the failure and takes one of four routes:
 
 | Failure class | What happens |
 | --- | --- |
-| An **OAuth-capable** server needs authorization | `session.fail!` with `failure_reason: oauth_required`. The one fatal class, because a human clicking Authorize is the fix. |
+| An **OAuth-capable** server needs authorization | `session.fail!` with `failure_reason: oauth_required`. Fatal because a human clicking Authorize is the fix. |
 | Anything else, first three times | The retry ladder: `RetryBudget::MCP_CONNECTION` (3 attempts), backing off 30s / 60s / 120s. Most connect failures are transient — a server still starting after a deploy, an `npx` cache race — and self-heal here. |
 | Anything else, definitively | The server is **left out** and the session runs on. Also taken immediately, with no retries, for a static credential the provider rejected: a wrong API token does not become right in 30 seconds. |
+| The lost server carries the session's **own lifecycle** | `session.fail!` with `failure_reason: required_mcp_server_lost`. The second fatal class — see [below](#except-the-one-server-whose-loss-is-the-session). |
 
 **The route is chosen per server, not per handshake.** One handshake can fail several servers for
 several different reasons, and the verdict belongs to the server. A session whose Slack token was
@@ -365,6 +366,81 @@ Before this, exhausting the ladder killed the session. A last-resort fallback se
 — and never would have — could orphan two hours of completed work on a stale credential belonging to something
 else entirely ([#521](https://github.com/tadasant/zimmer/issues/521)). An agent that genuinely needs the missing
 capability can now say so and stop, which is a far cheaper failure than losing the transcript.
+
+## Except the one server whose loss IS the session
+
+"The server, not the session" holds for every server whose tools the *work* uses. It does not hold
+for the one that carries the session's own lifecycle, and `RequiredMcpServers` is where that line is
+drawn.
+
+Zimmer's self-session surface is not a capability an agent can report and work around.
+`action_session` is how a session archives itself and how it reaches its parent; `wake_me_up_later`
+and `wake_me_up_when_session_changes_state` are how it waits; `get_session` is how it reads what a
+child it spawned transitioned to; the full-surface entry adds `start_session`. A session that loses
+those can neither finish nor hand off, so leaving it out and resuming is not a smaller failure than
+stopping — it is a session that looks healthy, runs to completion, and does nothing:
+
+- An alert router with no `start_session` reads the alert, posts a comment, and parks, having
+  started none of the triage the trigger fired for. On the occurrence that filed
+  [#1166](https://github.com/tadasant/zimmer/issues/1166) the `#alerts` trigger produced four
+  consecutive routers that way, on one message.
+- Worse mid-wait-loop: an orchestrator that has already spawned a child cannot read what the child
+  transitioned to, and cannot re-register the wake — Zimmer's firing path destroys the sibling wakes
+  when one fires — so the child runs unwatched with nobody following it up, and the re-prompted
+  parent re-parks having accomplished nothing, once per prompt, indefinitely.
+
+So a definitive loss of one of these fails the session (`failure_reason: required_mcp_server_lost`).
+Failing is what makes it loud without inventing a new signal: `fail` fires the `session_failed`
+AO-event triggers, so a parent that armed a wake on this session is woken by the very transition it
+was watching for; it enqueues the failure push notification; and it ends the resume loop, which
+parking does not. `Session#failure_summary` names the server and says what the session can no longer
+do. And when the session was created by a trigger, `fail` is what puts it in front of
+[`OrphanedTriggerFire`](/sessions/lifecycle/#a-triggers-session-that-fails-takes-the-work-item-with-it) — so the
+alert router that started none of its triage now says so in `#alerts` instead of looking like a
+session that ran and finished.
+
+**What counts as required is deliberately narrow.** A Zimmer-native MCP entry — decided by *name*,
+`zimmer` or `zimmer-*`, the same rule `SelfSessionInjector` uses, so a third-party server served at
+some `/mcp` cannot be mistaken for one of ours — whose endpoint carries the `self_session` tool
+group, either scoped to it or unscoped and therefore full-surface. `zimmer-fleet`,
+`zimmer-sessions` and `zimmer-gate-decisions` are scoped to groups that do not include it, and
+losing one of those is #521's case, not this one. A `zimmer-*` name the catalog does not know, or
+whose URL will not parse, answers *not required*: a wrong `true` kills a session, while a wrong
+`false` is the behaviour that was there before. The two entries Zimmer **injects** are the exception,
+and stay required even when the catalog cannot be read at all — Zimmer wrote them itself and does not
+need a catalog to know what is in them, so a catalog blip cannot quietly reclassify a session's own
+lifecycle surface as optional.
+
+**A required server always gets the whole ladder.** Every failure rides `RetryBudget::MCP_CONNECTION`
+(30s / 60s / 120s) before anything is definitive, because the common cause is a server still starting
+after a deploy — and unlike an ordinary server, a required one is not written off early even for an
+auth-shaped error. Two reasons. `AUTH_ERROR_PATTERN` is a substring match and a transport error
+quotes the URL it was dialing, which for a Zimmer entry ends `&session_id=<id>` — so a session whose
+id merely *contains* `401` reads as an auth failure on an ordinary connect error, and fast-failing
+would kill a recoverable session for its id. And where the rejection is real it is the one credential
+a retry can fix: `X-API-Key` is Zimmer's own key, resolved fresh on every spawn, so a rotation or a
+mid-deploy blip heals on the next attempt. The verdict is not softened, only postponed to the end of
+the ladder.
+
+**And the escalation itself is the other half of the fix.** `McpStatusPersisting` escalates a failed
+server when it was *user-selected* — which the self-session entry never is, because Zimmer injects
+it. On that rule alone the one server whose loss silences a session was the one failure that
+escalated nowhere: no ladder, no write-off record, no `<unavailable-mcp-servers>` block in the
+prompt. It now escalates on either test, selected **or** required.
+
+**Nothing latches.** The write-off is recorded even on the fail path, because that record is what
+names the loss on the session page and what `McpStatusPersisting` retires the moment the server
+reports `connected` again. `failure_reason` and `required_mcp_servers_lost` are both in
+`Session::STALE_RETRY_METADATA_KEYS`, so a restart drops the previous run's verdict and reaches its
+own.
+
+That record outliving the restart is also why the "already written off, nothing new here" short-circuit
+at the top of `check_and_handle_mcp_failure` — the one that stops a degraded server re-triggering
+terminate-and-resume forever — is **narrowed for required servers**. Without that, a human restarting
+a session whose Zimmer server is still down would arrive with nothing "new", be waved through, and get
+back exactly the silent no-op session this section is about, reached through the fix for it. A required
+server that is still failing is re-classified from scratch: the ladder, and a fresh verdict at the end
+of it. It cannot loop, because the verdict is `fail`, which enqueues nothing.
 
 ## Remote servers and OAuth
 

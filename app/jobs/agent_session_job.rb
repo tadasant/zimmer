@@ -193,6 +193,24 @@ class AgentSessionJob < ApplicationJob
   # that was never written.
   BOOTSTRAP_EXHAUSTED_FAILURE_REASON = "bootstrap_retries_exhausted"
 
+  # Stamped when a definitively-lost MCP server is one the session cannot run
+  # without — `RequiredMcpServers`, which today means Zimmer's own self-session
+  # surface. #521's answer to a lost server is to leave it out and carry on, and
+  # this is the one class where carrying on is worse than stopping: the tools that
+  # are gone are how the session archives itself, reaches its parent, re-arms a
+  # wake, and spawns work, so it can neither finish nor hand off (#1166).
+  #
+  # Deliberately NOT a member of `Session::PRE_PROMPT_FAILURE_REASONS`. Every
+  # member of that list can only be set on a session with no conversation, and
+  # this one is the opposite: the archetype lost the server on a resume some
+  # hours in, having already spawned a child. Claiming it failed before its
+  # initial prompt would send a restart down `use_initial_prompt`, spawning fresh
+  # against a runtime session id that already names a conversation.
+  REQUIRED_MCP_SERVER_LOST_FAILURE_REASON = "required_mcp_server_lost"
+
+  # Where the names of the lost servers are kept, for `Session#failure_summary`.
+  REQUIRED_MCP_SERVERS_LOST_KEY = "required_mcp_servers_lost"
+
   # Budget for replaying a start job that was interrupted while its session was
   # still queued. See #requeue_interrupted_start: the session never left `waiting`,
   # so the fix is to run the job again rather than to "recover" one that never started.
@@ -4745,7 +4763,18 @@ class AgentSessionJob < ApplicationJob
     # a loop. Consume the flag and let the turn run: the status is already
     # recorded as failed, and the agent was already told on the resume that
     # degraded it.
-    if failed_servers.any? && new_mcp_failures(session, failed_servers).empty?
+    #
+    # A REQUIRED server is the exception, and it has to be. The write-off record
+    # is deliberately not cleared by a restart (Session#degraded_mcp_servers says
+    # why), so a human restarting a session whose Zimmer server is still down
+    # would arrive here with nothing "new" — and this short-circuit would hand
+    # them back exactly the silent no-op session that #1166 is about, reached
+    # through the fix for it. A required server that is still failing gets the
+    # whole classification below again: the ladder, and a fresh verdict at the
+    # end of it. That cannot loop, because the verdict is `fail`, which enqueues
+    # nothing.
+    if failed_servers.any? && new_mcp_failures(session, failed_servers).empty? &&
+        RequiredMcpServers.among(failed_servers.filter_map { |server| server["name"] }).empty?
       log_buffer.add(
         "MCP connection failure detected for already-degraded server(s) " \
         "#{failed_servers.map { |s| s['name'] }.join(', ')} — already reported to the agent, " \
@@ -4863,6 +4892,36 @@ class AgentSessionJob < ApplicationJob
         !McpOauthCredentialInjector.oauth_capable_server?(server["name"])
     end
     static_credential_failures += stderr_credential_failures
+
+    # A REQUIRED server never takes the no-retry route, whatever its error text
+    # looked like. Two reasons, and either alone would be enough:
+    #
+    #   AUTH_ERROR_PATTERN is a substring match, and a transport error quotes the
+    #   URL it was dialing — which for a Zimmer entry ends `…&session_id=<id>`. A
+    #   session whose id merely CONTAINS "401" therefore reads as an auth failure
+    #   on an ordinary connect error, and fast-failing on that would kill a
+    #   perfectly recoverable session for its id.
+    #
+    #   And where the rejection is real, it is the one credential retrying can
+    #   actually fix: `X-API-Key` is Zimmer's own key, resolved fresh on every
+    #   spawn, so a rotation or a mid-deploy blip heals on the next attempt —
+    #   unlike a third-party token, which is what this branch was written for.
+    #
+    # They stay in `failed_servers`, so dropping them here puts them straight
+    # back into `retryable_failures` below. The verdict is not softened, only
+    # postponed to the end of the ladder, where #degrade_mcp_servers! fails the
+    # session.
+    required_credential_failures, static_credential_failures =
+      static_credential_failures.partition { |server| RequiredMcpServers.required?(server["name"]) }
+
+    if required_credential_failures.any?
+      log_buffer.add(
+        "MCP server(s) #{required_credential_failures.map { |s| s['name'] }.join(', ')} failed with an " \
+        "auth-shaped error, but this session cannot run without them and their credential is Zimmer's " \
+        "own — retrying rather than writing them off on the first attempt.",
+        level: "warning"
+      )
+    end
 
     if already_authorized.any?
       names = already_authorized.map { |s| s["name"] }
@@ -5020,22 +5079,28 @@ class AgentSessionJob < ApplicationJob
           level: "warning"
         )
 
+        degradations += mcp_degradations(
+          retryable_failures,
+          "they did not connect after #{MCP_BUDGET.max} retries"
+        )
+
         # .warn, not .error: the session is no longer orphaned by this, so it is not
         # an incident and must not page on-call. It is still the loudest MCP-connect
         # signal Zimmer emits — a capability the session was configured with is gone
         # for the rest of its life — so it stays on Rails.logger, shipped to obs /
         # VictoriaLogs via the OTLP exporter, where the per-server error is greppable.
         # See GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109.
-        Rails.logger.warn(
-          "MCP servers failed to connect after #{MCP_BUDGET.max} retries — left out, " \
-          "session continues | session_id=#{session.id} " \
-          "failed_servers=#{retryable_failures.map { |s| s["name"] }.join(",")}"
-        )
-
-        degradations += mcp_degradations(
-          retryable_failures,
-          "they did not connect after #{MCP_BUDGET.max} retries"
-        )
+        #
+        # Emitted only when the session really is continuing. #degrade_mcp_servers!
+        # fails it instead when one of these servers is required, and two
+        # contradictory lines about the same handshake is worse in obs than one.
+        if required_mcp_degradations(degradations).empty?
+          Rails.logger.warn(
+            "MCP servers failed to connect after #{MCP_BUDGET.max} retries — left out, " \
+            "session continues | session_id=#{session.id} " \
+            "failed_servers=#{retryable_failures.map { |s| s["name"] }.join(",")}"
+          )
+        end
       end
 
       return degrade_mcp_servers!(session, degradations, log_buffer)
@@ -5362,6 +5427,13 @@ class AgentSessionJob < ApplicationJob
   def degrade_mcp_servers!(session, degradations, log_buffer)
     require "automated_prompts"
 
+    # The one class of loss this method must not resume through: a server whose
+    # tools ARE the session's ability to finish and hand off. See
+    # #fail_for_lost_required_mcp!.
+    if (required_lost = required_mcp_degradations(degradations)).any?
+      return fail_for_lost_required_mcp!(session, degradations, required_lost, log_buffer)
+    end
+
     names = degradations.filter_map { |degradation| degradation[:server]["name"] }.uniq
     entries = merged_degraded_entries(session, degradations)
 
@@ -5403,6 +5475,103 @@ class AgentSessionJob < ApplicationJob
   # @return [Array<Hash>] entries shaped { server:, reason: }
   def mcp_degradations(failed_servers, reason)
     failed_servers.map { |server| { server: server, reason: reason } }
+  end
+
+  # Those of these write-offs that take away a capability the session cannot run
+  # without, rather than one it can report and work around.
+  #
+  # @param degradations [Array<Hash>] entries shaped { server:, reason: }
+  # @return [Array<Hash>] the required subset, same shape
+  def required_mcp_degradations(degradations)
+    degradations.select { |degradation| RequiredMcpServers.required?(degradation[:server]["name"]) }
+  end
+
+  # Fail the session, because what it just lost is how it ends.
+  #
+  # The whole of #521 says a lost server costs the capability and not the session,
+  # and that holds for every server whose tools the work merely uses. It does not
+  # hold for Zimmer's own self-session surface: `action_session` (archive,
+  # `message_parent`), the `wake_me_up_*` tools, `get_session`, and — on the
+  # full-surface entry — `start_session`. Those are not capabilities the work
+  # needs, they are how the session finishes, waits, and hands off.
+  #
+  # Resuming through that loss is the failure this replaces, and it is silent in
+  # both directions. The session runs, reports healthy, and does nothing: an alert
+  # router reads the alert, posts a comment and parks, having started none of the
+  # triage the trigger fired for. Worse mid-wait-loop, where an orchestrator that
+  # has already spawned a child cannot read what the child transitioned to and
+  # cannot re-register the wake that firing just spent — so the child runs
+  # unwatched, and the re-prompted parent re-parks having accomplished nothing,
+  # once per prompt, indefinitely (#1166).
+  #
+  # Failing is what makes it loud without inventing a new signal: `fail` fires the
+  # `session_failed` AO-event triggers (so a parent that armed a wake on this
+  # session is woken by the very transition it was watching for), enqueues the
+  # failure push notification, and puts the session on the surfaces a human reads
+  # for failures. It also ends the resume loop, which parking does not.
+  #
+  # The write-off record is still written, and deliberately so: it names which
+  # server was lost and why on the session page and in the JSON, and it is what
+  # `McpStatusPersisting` retires when that server reports `connected` again — so
+  # a restart that reconnects clears it rather than inheriting a stale verdict.
+  #
+  # @param session [Session]
+  # @param degradations [Array<Hash>] every write-off from this pass, required or not
+  # @param required_lost [Array<Hash>] the subset that is required
+  # @param log_buffer [LogBuffer]
+  # @return [Boolean] always true (the MCP failure was handled)
+  def fail_for_lost_required_mcp!(session, degradations, required_lost, log_buffer)
+    names = required_lost.filter_map { |degradation| degradation[:server]["name"] }.uniq
+
+    # The co-failing servers are recorded but NOT announced through
+    # #log_mcp_degradations, whose sentence ends "the session continues on the
+    # servers that did connect" — which is about to be false.
+    others = (degradations - required_lost).filter_map { |degradation| degradation[:server]["name"] }.uniq
+    if others.any?
+      log_buffer.add(
+        "MCP server(s) #{others.join(', ')} also failed to connect in the same handshake and are " \
+        "recorded as failed; the session is being failed for the loss below rather than continuing " \
+        "without any of them.",
+        level: "warning"
+      )
+    end
+
+    log_buffer.add(
+      "MCP server(s) #{names.join(', ')} could not connect, and this session cannot run without them: " \
+      "they carry its own lifecycle tools — archiving itself, messaging its parent, scheduling its " \
+      "wake-ups, and spawning work. Failing the session rather than resuming it without them, because " \
+      "a session that can neither finish nor hand off its work would otherwise look healthy and do " \
+      "nothing.",
+      level: "error"
+    )
+    log_buffer.flush
+
+    # .warn rather than .error, for the same reason every other MCP-connect path
+    # stops short of .error: one session losing one server must not trip the
+    # global prod-ERROR alert and page on-call. The session's own failure is the
+    # signal — it push-notifies and wakes any parent watching it — and this line
+    # is what makes the server name greppable in obs.
+    Rails.logger.warn(
+      "Required MCP server(s) lost — failing the session rather than running it without them " \
+      "| session_id=#{session.id} required_servers=#{names.join(',')}"
+    )
+
+    session.merge_metadata!(
+      "failure_reason" => REQUIRED_MCP_SERVER_LOST_FAILURE_REASON,
+      REQUIRED_MCP_SERVERS_LOST_KEY => names,
+      "mcp_degraded_servers" => merged_degraded_entries(session, degradations)
+    )
+    session.update!(running_job_id: nil)
+    session.fail! if session.may_fail?
+
+    remove_running_loader(session)
+
+    log_buffer.add(
+      "[DIAGNOSTIC] Exiting monitoring loop - required MCP server(s) #{names.join(', ')} lost",
+      level: "debug"
+    )
+
+    true
   end
 
   # Fold the degradations into the session's existing `mcp_degraded_servers` record,
