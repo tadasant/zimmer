@@ -183,13 +183,20 @@ class EnqueuedMessageProcessorService
           # until StrandedSleepRescue pages fifteen minutes later
           # (https://github.com/tadasant/zimmer/issues/1172).
           #
-          # Only `scheduled_wake` is dropped. The other `pending_sleep` writers are
-          # dormancies the platform imposed rather than intents the turn expressed —
-          # a spot pause, an auth-outage park — and clearing one of those would run a
-          # session that was deliberately stood down.
-          if session.metadata&.dig(Sessions::StopRecord::PENDING_SLEEP_REASON) ==
-             Sessions::StopRecord::SCHEDULED_WAKE
-            session.remove_metadata!("pending_sleep", Sessions::StopRecord::PENDING_SLEEP_REASON)
+          # Scoped to the intents that exist FOR a wake —
+          # `Session#pending_sleep_requires_wake?`, the same rule
+          # `execute_pending_sleep` gates on, rather than a second list free to
+          # drift from it. Those are the ones a message legitimately supersedes:
+          # the wake they were arranged for is still armed and still the session's
+          # own to come back on, and a session that answers a question and then
+          # goes straight back to sleep has hidden the answer (#898).
+          #
+          # Every other `pending_sleep` writer is a dormancy the platform imposed
+          # rather than an intent the turn expressed — a spot pause, an auth-outage
+          # park, a halted turn — and clearing one of those would run a session
+          # that was deliberately stood down.
+          if session.metadata&.dig("pending_sleep") == true && session.pending_sleep_requires_wake?
+            session.remove_metadata!(SessionStateMachine::PENDING_SLEEP_KEYS)
             add_log(
               "Dropped the pending auto-sleep from the finished turn — a queued message took the " \
               "next turn, and the wake-up that sleep was arranged for is still the session's own to keep",

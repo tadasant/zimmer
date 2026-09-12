@@ -458,10 +458,13 @@ system-recovery resume deliberately preserves survive the handoff exactly as the
 `scheduled_wake` mark written earlier in the finished turn crossed into the next one and slept the
 session at *its* end instead ([#1172](https://github.com/tadasant/zimmer/issues/1172), and
 [the rule it produced](#any-sleep-intent-that-exists-for-a-wake-dies-with-that-wake)). The handoff
-drops that mark, which is exactly what the post-pause path does with the same message a few hundred
-milliseconds later; leaving it standing made a session's resting state depend on which side of a
-race the message landed. Only `scheduled_wake` is dropped — a `spot_pause` or an `auth_outage_park`
-is the platform standing the session down, not the turn expressing an intent.
+drops that mark, which lands the session where the post-pause path lands it when the same message
+arrives a few hundred milliseconds later (that path *executes* the sleep and the drain resumes out
+of it, but the resting state after the message turn is the same `needs_input`); leaving it standing
+made a session's resting state depend on which side of a race the message landed. What it drops is
+`Session#pending_sleep_requires_wake?` — the same rule `execute_pending_sleep` gates on, so the two
+cannot drift. A `spot_pause` or an `auth_outage_park` is the platform standing the session down, not
+the turn expressing an intent, and is left alone.
 
 The per-turn markers `pending_follow_up_prompt` /
 `pending_follow_up_sent_at` are dropped **before** the handoff, because the follow-up arm reads
@@ -1128,13 +1131,22 @@ turn armed nothing, its `pause` retired the group, and the leftover intent slept
 nothing left in the world to wake it. Session 17044 sat inert for 15.5 minutes until
 [`StrandedSleepSweepJob`](/operate/background-jobs/) resumed it and paged `#alerts` — correctly.
 
-The handoff now drops a `scheduled_wake` intent as it hands over, so the flag cannot cross the
-boundary in the first place, and the guard in `execute_pending_sleep` is the backstop rather than
-the fix. Both are scoped by the `pending_sleep_reason` stamp, and what the scoping keeps out matters
-as much as what it catches: a deliberate sleep (`POST /api/v1/sessions/:id/sleep`) arms nothing by
-definition and must still sleep, and a `spot_pause` or an `auth_outage_park` is a dormancy the
-platform imposed — refusing to sleep one of those would run a session that was deliberately stood
-down.
+The handoff now drops such an intent as it hands over, so the flag cannot cross the boundary in the
+first place, and the guard in `execute_pending_sleep` is the backstop rather than the fix. Both ask
+`Session#pending_sleep_requires_wake?`, which is true for a `pending_sleep_reason` of
+`scheduled_wake` or `system_recovery_resleep`, or for the standalone `pending_sleep_requires_wake`
+marker. What that keeps out matters as much as what it catches: a deliberate sleep
+(`POST /api/v1/sessions/:id/sleep`) arms nothing by definition and must still sleep, and a
+`spot_pause` or an `auth_outage_park` is a dormancy the platform imposed — refusing to sleep one of
+those would run a session that was deliberately stood down.
+
+Because the stamp now decides behaviour rather than only describing it, `Trigger#sleep_target_session_if_applicable`
+no longer writes one over an intent already on the row. A session the platform has marked to stop,
+which then arms a wake in the remainder of its turn, would otherwise have that unconditional stop
+rewritten as a conditional one — and an unfireable wake would cancel it. The flag, the marker and
+the stamp are also cleared as a set (`SessionStateMachine::PENDING_SLEEP_KEYS`) everywhere a sleep
+intent ends: an orphaned marker makes the *next* intent conditional, which would refuse a deliberate
+sleep outright.
 
 #### A wake-fire resume holds the wake-ups until the turn it starts is over
 

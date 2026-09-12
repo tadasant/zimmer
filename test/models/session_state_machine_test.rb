@@ -2522,8 +2522,13 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       "the held group is retired by this pause"
     assert_nil session.metadata["pending_sleep"]
     assert_nil session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
+    assert_nil session.metadata[SessionStateMachine::PENDING_SLEEP_REQUIRES_WAKE]
     assert_not session.awaiting_scheduled_wake?,
       "and it is not left looking like a session asleep on a wake — that is what StrandedSleepRescue pages for"
+    # Production ships only WARN and above off the box, so the Rails INFO line is
+    # unreadable at exactly the moment somebody asks why this session did not sleep.
+    assert session.logs.exists?([ "content LIKE ?", "Did not go back to sleep:%" ]),
+      "the drop has to be legible on the session's own timeline"
   end
 
   # The inverse regression the fix must not cause: a turn that DID deliberately
