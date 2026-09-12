@@ -52,18 +52,22 @@ module SessionSearchable
   # truthful of the two, and it stops being a difference at all once
   # `BackfillSessionTranscriptChunks` has emptied the column.
   #
-  # Both JSON columns are read through `::jsonb::text`, never `::text` directly.
-  # `metadata` is a `json` column and `custom_metadata` a `jsonb` one, and on `json`
-  # that difference decided what a query matched: `json` keeps the writer's bytes
-  # verbatim, so one row rendered two ways depending on who wrote it last. An ordinary
-  # attribute write emits `{"agent_root_key":"zimmer-router"}`; the atomic
-  # `merge_metadata!` UPDATE computes in jsonb and casts back, emitting
+  # Both JSON columns are read through `::jsonb::text`, never `::text` directly, and
+  # on both it is now a no-op: `custom_metadata` has been `jsonb` since the day it was
+  # added and `metadata` became `jsonb` in #847. The cast is kept because the property
+  # the rest of this comment depends on is the canonical rendering, not the column type
+  # that happens to supply it — spell it and a column retyped back, or a third column
+  # added as `json`, cannot quietly reintroduce #930.
+  #
+  # #930 is what the canonical rendering is for, and it was `json` keeping the writer's
+  # bytes verbatim: one row rendered two ways depending on who wrote it last. An
+  # ordinary attribute write emitted `{"agent_root_key":"zimmer-router"}`; the atomic
+  # `merge_metadata!` UPDATE computed in jsonb and cast back, emitting
   # `{"agent_root_key": "zimmer-router"}`. Both writers are on the hot path, so a query
   # spanning a structural colon found a session or did not depending on which one had
   # touched it most recently — the same query, seconds apart, returning different sets,
-  # with no signal that the answer was partial (#930). `::jsonb::text` renders
-  # Postgres's canonical form whatever the writer did. It is a no-op for
-  # `custom_metadata`, already jsonb, and stays one when `metadata` becomes jsonb (#847).
+  # with no signal that the answer was partial. Under `jsonb` the column itself stores
+  # one rendering, so the two writers agree at the source.
   #
   # The cast normalises more than spacing: `1e2` becomes `100`, an escaped unicode
   # sequence becomes the character it names, `\/` becomes `/`, a pretty-printed blob
@@ -78,12 +82,13 @@ module SessionSearchable
   # is now dependably one way, which is worth stating rather than leaving as a surprise.
   # docs/src/content/docs/limitations.md says it where callers read.
   #
-  # The cast cannot fail on a `metadata` row, and the reason is an index rather than the
-  # type. `jsonb` rejects a `\u0000` inside a string where `json` accepts it happily — but
+  # The cast cannot fail on a `metadata` row, and since #847 the reason is the type
+  # itself: `jsonb` rejects a `\u0000` inside a string, so a value that is in the column
+  # at all has already survived that check. It was true before the conversion too, but
+  # for a narrower reason worth remembering if a `json` column is ever searched again —
   # `index_sessions_on_agent_root_key` is an unconditional expression index over
-  # `metadata ->> 'agent_root_key'`, and `->>` rejects that byte too, so every write to
-  # this column already has to survive the same check. Drop or narrow that index and
-  # this guarantee goes with it.
+  # `metadata ->> 'agent_root_key'` and `->>` rejects that byte as well, so the index was
+  # doing the work the type does now.
   #
   # `transcript` is deliberately NOT canonicalised, for two reasons, and the second is
   # the one that bites. Parsing a multi-megabyte document into jsonb per row would spend

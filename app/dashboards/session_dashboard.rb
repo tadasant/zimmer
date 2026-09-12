@@ -90,18 +90,7 @@ class SessionDashboard < Administrate::BaseDashboard
     # SHA-256 of the whole transcript, used by the append fast path to recognise
     # that an incoming value extends the stored one. A 64-character hex string
     # tells a human nothing the two counters above it do not.
-    :transcript_digest,
-    # The jsonb shadows of the five columns above them in ATTRIBUTE_TYPES, written
-    # by JsonbDualWrite while #847's conversion is in flight. Nothing reads them
-    # yet and their contents are by construction identical to the columns already
-    # rendered, so a panel showing both would be a panel showing everything twice.
-    # PR 2 renames them over the originals, at which point the entries above cover
-    # them and these come out.
-    :config_jsonb,
-    :mcp_servers_jsonb,
-    :mcp_server_env_jsonb,
-    :mcp_server_headers_jsonb,
-    :metadata_jsonb
+    :transcript_digest
   ].freeze
 
   # COLLECTION_ATTRIBUTES
