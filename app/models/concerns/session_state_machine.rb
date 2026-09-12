@@ -146,6 +146,14 @@ module SessionStateMachine
     Sessions::StopRecord::SYSTEM_RECOVERY_RESLEEP
   ].freeze
 
+  # The `pending_sleep` trio, cleared together by every path that ends a sleep
+  # intent. Leaving the marker behind while dropping the flag is a strand of its
+  # own: it makes the NEXT intent on that session conditional, so a deliberate
+  # sleep — which arms nothing by definition — would be refused.
+  PENDING_SLEEP_KEYS = [
+    "pending_sleep", PENDING_SLEEP_REQUIRES_WAKE, Sessions::StopRecord::PENDING_SLEEP_REASON
+  ].freeze
+
   # Who fired `archive`, in the words the session's own timeline will use.
   #
   # Every other transition has one obvious cause: a process spawned, a turn
@@ -958,6 +966,15 @@ module SessionStateMachine
   # unreadable is visible on the homepage; one that sleeps on a wake nobody could
   # confirm is not.
   #
+  # The population that direction reaches is every deferred sleep whose reason is
+  # a wake, not only the recovery-preserved ones: a transient
+  # `ActiveRecordError` at a pause turns an ordinary `wake_me_up_later` sleep into
+  # a rest in `needs_input`. That is still the right way to be wrong — the trigger
+  # row survives and fires on its own wall time, whereas the opposite error
+  # strands the session until a sweep pages — but it is a visible pause rather
+  # than a silent one, and the push and the `session_needs_input` fan-out go with
+  # it.
+  #
   # That direction is also what makes this — and NOT #awaiting_scheduled_wake? —
   # the predicate for the two surfaces that REPORT a preserved wake to a
   # follow-up's sender. Telling a router "this session wakes itself" on the
@@ -976,6 +993,33 @@ module SessionStateMachine
       "[SessionStateMachine] Failed to check armed wake-ups for session #{id}: #{e.message}"
     )
     false
+  end
+
+  # Whether this session's `pending_sleep` is conditional on a wake-up still being
+  # armed when the turn ends — as opposed to an unconditional "stop".
+  #
+  # Two spellings, both load-bearing. PENDING_SLEEP_REQUIRES_WAKE is the explicit
+  # marker the system-recovery preserve branch sets. The reason stamp is what
+  # every writer records in the same statement as the flag
+  # (`Sessions::StopRecord.pending_sleep`), so the condition reads off provenance
+  # rather than needing a second marker per writer. Either spelling means the
+  # intent is void once nothing can wake the session, and either way the flag,
+  # the marker and the stamp are cleared as a set — an orphaned marker would make
+  # a later unconditional intent conditional, which is a strand of its own.
+  #
+  # An unstamped flag reads as unconditional. No writer produces one, and the safe
+  # reading of an intent with no provenance is the one that honours it: the
+  # populations that sleep without arming anything (a deliberate sleep, a spot
+  # pause, an auth-outage park) are worse served by being kept awake than a strand
+  # is by being slept.
+  #
+  # Public because #execute_pending_sleep is not the only reader — the
+  # enqueued-message handoff drops exactly this class of intent as it hands one
+  # turn to the next, and two spellings of one rule would be free to drift.
+  def pending_sleep_requires_wake?
+    return true if metadata&.dig(PENDING_SLEEP_REQUIRES_WAKE)
+
+    PENDING_SLEEP_REASONS_REQUIRING_WAKE.include?(metadata&.dig(Sessions::StopRecord::PENDING_SLEEP_REASON))
   end
 
   # Whether a manual refresh of this session should send the automated continue
@@ -2065,7 +2109,7 @@ module SessionStateMachine
     # can see it.
     if pending_sleep_requires_wake? && !armed_one_time_wake?
       reason = metadata[Sessions::StopRecord::PENDING_SLEEP_REASON].presence || "unstamped"
-      remove_metadata!("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE, Sessions::StopRecord::PENDING_SLEEP_REASON)
+      remove_metadata!(PENDING_SLEEP_KEYS)
       Rails.logger.info(
         "[SessionStateMachine] Dropped the conditional re-sleep (#{reason}) for session #{id} — its " \
         "wake-ups fired or were destroyed before this turn came to rest, so sleeping would strand it"
@@ -2074,17 +2118,24 @@ module SessionStateMachine
       # above off the box, so an INFO line here is unreadable at exactly the
       # moment somebody is asking why a session rested in `needs_input` instead
       # of sleeping — which is the question #1172 was reconstructed from.
-      logs.create!(
-        content: "Did not go back to sleep: the wake-up this sleep was arranged for " \
-          "(#{reason}) had already fired or been retired, so sleeping would have stranded " \
-          "this session. Resting in needs_input instead.",
-        level: "info"
-      )
+      #
+      # Savepointed for the reason Sessions::StopRecord#record! is: this runs
+      # inside the `pause` transaction, and a DB-level failure here would leave
+      # that transaction ABORTED, rolling back the very pause the drop above just
+      # made correct.
+      self.class.transaction(requires_new: true) do
+        logs.create!(
+          content: "Did not go back to sleep: the wake-up this sleep was arranged for " \
+            "(#{reason}) had already fired or been retired, so sleeping would have stranded " \
+            "this session. Resting in needs_input instead.",
+          level: "info"
+        )
+      end
       return
     end
 
     sleep!
-    remove_metadata!("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE, Sessions::StopRecord::PENDING_SLEEP_REASON)
+    remove_metadata!(PENDING_SLEEP_KEYS)
   rescue => e
     # Alert: the session asked to sleep and did not. It sits in needs_input on
     # the user's homepage as if it wanted attention, and the pending_sleep flag
@@ -2092,25 +2143,6 @@ module SessionStateMachine
     report_swallowed_side_effect(__method__, e, alert: true)
   end
 
-  # Whether this session's `pending_sleep` is conditional on a wake-up still
-  # being armed when the turn ends.
-  #
-  # Two spellings, both load-bearing. PENDING_SLEEP_REQUIRES_WAKE is the explicit
-  # marker the system-recovery preserve branch sets. The reason stamp is what
-  # every writer records in the same statement as the flag
-  # (`Sessions::StopRecord.pending_sleep`), so the condition reads off provenance
-  # rather than needing a second marker per writer.
-  #
-  # An unstamped flag reads as unconditional. No writer produces one, and the safe
-  # reading of an intent with no provenance is the one that honours it: the
-  # populations that sleep without arming anything (a deliberate sleep, a spot
-  # pause, an auth-outage park) are worse served by being kept awake than a strand
-  # is by being slept.
-  def pending_sleep_requires_wake?
-    return true if metadata&.dig(PENDING_SLEEP_REQUIRES_WAKE)
-
-    PENDING_SLEEP_REASONS_REQUIRING_WAKE.include?(metadata&.dig(Sessions::StopRecord::PENDING_SLEEP_REASON))
-  end
 
   # Cancel any pending one-time wake-up conditions that were targeting this
   # session. When a session is deliberately resumed (user follow-up,
@@ -2378,14 +2410,15 @@ module SessionStateMachine
   # Clearing on resume makes the user's explicit "keep this active" action
   # win over any stale auto-sleep intent.
   def clear_pending_sleep
-    # The stamp is dropped whenever it is present, not only alongside a live flag.
-    # SessionRecoveryService strips `pending_sleep` on its own, so a resume that
-    # keyed on the flag would leave the stamp on a RUNNING session — where it would
-    # then name the cause of some later, unrelated stop.
+    # The stamp and the marker are dropped whenever either is present, not only
+    # alongside a live flag. SessionRecoveryService strips `pending_sleep` on its
+    # own, so a resume that keyed on the flag would leave the stamp on a RUNNING
+    # session — where it would then name the cause of some later, unrelated stop —
+    # and would leave the marker to make that later stop's intent conditional.
     return unless metadata&.dig("pending_sleep") == true ||
-                  metadata&.key?(Sessions::StopRecord::PENDING_SLEEP_REASON)
+                  PENDING_SLEEP_KEYS.any? { |key| metadata&.key?(key) }
 
-    remove_metadata!("pending_sleep", Sessions::StopRecord::PENDING_SLEEP_REASON)
+    remove_metadata!(PENDING_SLEEP_KEYS)
     Rails.logger.info "[SessionStateMachine] Cleared pending_sleep on resume for session #{id}"
   rescue => e
     # Alert: the user explicitly said "keep this active" and the stale auto-sleep

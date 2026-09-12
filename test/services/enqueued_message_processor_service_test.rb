@@ -207,6 +207,32 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
       @session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
   end
 
+  # The marker travels with the flag. Left behind it would make the session's NEXT
+  # sleep intent conditional — and a deliberate sleep arms nothing by definition,
+  # so it would be refused and the session would sit in needs_input forever.
+  test "process_next_message handoff from running leaves no orphaned requires-wake marker" do
+    @session.update!(
+      status: :running,
+      metadata: (@session.metadata || {}).merge(
+        Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SYSTEM_RECOVERY_RESLEEP).merge(
+          SessionStateMachine::PENDING_SLEEP_REQUIRES_WAKE => true
+        )
+      )
+    )
+    @session.enqueued_messages.create!(content: "Follow up prompt", position: 1)
+
+    service = EnqueuedMessageProcessorService.new(@session)
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      assert service.process_next_message
+    end
+
+    @session.reload
+    SessionStateMachine::PENDING_SLEEP_KEYS.each do |key|
+      assert_nil @session.metadata[key], "#{key} must not survive the handoff"
+    end
+  end
+
   test "process_next_message returns false when session is failed" do
     @session.update!(status: :failed)
     @session.enqueued_messages.create!(
