@@ -393,6 +393,21 @@ class SpotSessionHoldStarvationLaneRaceTest < ActiveSupport::TestCase
   self.use_transactional_tests = false
 
   setup do
+    # `AppSetting.editable` is `order(:id).first || new`, so this line CREATES the
+    # singleton row when there is none — and this class is non-transactional, so
+    # the row outlives the test and every later one in this parallel worker sees
+    # it. That is not a cosmetic leak: `only_one_row` is a create-context
+    # validation, so `AppSetting.new(...).valid?` is FALSE while any row exists,
+    # and AppSettingTest's positive cases fail wherever the split happens to put
+    # them. Two of them did, on the `main` CI run that went red after PR #1180
+    # merged — a run whose diff touches nothing near AppSetting.
+    #
+    # Captured verbatim and put back in teardown, exactly as
+    # QuotaAvailabilityMonitorConcurrencyTest does it — which documented this
+    # hazard before this class reproduced it.
+    existing = AppSetting.order(:id).first
+    @previous_setting = existing&.slice(:spot_gating_enabled, :spot_starvation_age_ceiling_hours)
+
     AppSetting.editable.update!(spot_gating_enabled: false, spot_starvation_age_ceiling_hours: 24)
     @sessions = []
   end
@@ -401,6 +416,12 @@ class SpotSessionHoldStarvationLaneRaceTest < ActiveSupport::TestCase
     ids = @sessions.map(&:id)
     GoodJob::Job.where("serialized_params -> 'arguments' ->> 0 IN (?)", ids.map(&:to_s)).delete_all
     Session.where(id: ids).destroy_all
+
+    if @previous_setting
+      AppSetting.editable.update!(@previous_setting)
+    else
+      AppSetting.delete_all
+    end
   end
 
   def starved_session(since:, count:)
