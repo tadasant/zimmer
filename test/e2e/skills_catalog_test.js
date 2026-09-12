@@ -110,7 +110,7 @@ const { chromium } = require('playwright');
       console.log(`    - "${text.trim().replace(/\s+/g, ' ')}"`);
     }
     // Check for category headers
-    const categoryHeaders = dropdown.locator('.skill-category-header');
+    const categoryHeaders = dropdown.locator('[data-role="catalog-category"]');
     const headerCount = await categoryHeaders.count();
     console.log(`  Category headers: ${headerCount}`);
     if (headerCount > 0) {
@@ -146,7 +146,7 @@ const { chromium } = require('playwright');
   if (catDropdownVisible) {
     const catItems = dropdown.locator('.catalog-multiselect-item');
     const catItemCount = await catItems.count();
-    const catHeaders = dropdown.locator('.skill-category-header');
+    const catHeaders = dropdown.locator('[data-role="catalog-category"]');
     const catHeaderCount = await catHeaders.count();
     console.log(`  "travel" search: ${catItemCount} skills, ${catHeaderCount} headers`);
     if (catItemCount > 0) {

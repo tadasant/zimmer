@@ -51,8 +51,9 @@ On the two surfaces that resolve a root's defaults — the MCP `start_session` t
 Omitted and `[]` are two different requests and Zimmer keeps them apart. A non-empty list is a
 *replacement*, never a union: a caller that names one server on a root declaring two gets one, and
 nothing warns it about the other. (The new-session form is the third surface that distinguishes an
-explicit `[]` from an accident, but it never reaches the "omitted" row: its multi-selects always
-submit a key, so what a human sees on screen is what the session gets.)
+explicit `[]` from an accident, and its MCP picker never reaches the "omitted" row: that one submits
+a blank entry when nothing is selected, so the key is always present and what a human sees on screen
+is what the session gets.)
 
 This matters most for MCP servers, and it cuts both ways. A root's defaults can carry real privilege
 (SSH access to a production host, a secrets store), so a caller that narrows to `[]` is asking for

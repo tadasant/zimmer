@@ -189,7 +189,9 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
 
       find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").click
       find(".catalog-multiselect-item[data-key='strad-secrets-staging-rw']").click
-      find("label", text: "Initial Prompt").click
+      # Escape, not a click on a label above the input: a dropdown with no room
+      # below it opens UPWARD and covers exactly that label (see repositionDropdown).
+      find("[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='input']").send_keys(:escape)
 
       js_click(find_button("Create Session", match: :first))
 
