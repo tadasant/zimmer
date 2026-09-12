@@ -10,7 +10,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
 
   test "PR URL appears in session card when custom_metadata is updated" do
     @session.update!(git_root: "https://github.com/owner/repo.git")
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     # Initially no PR link visible
     within "turbo-frame#session_#{@session.id}" do
@@ -27,7 +27,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
   test "PR icon shows gray color for unknown status" do
     @session.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     within "turbo-frame#session_#{@session.id}" do
       # Gray color for unknown status (color is on the SVG icon)
@@ -44,7 +44,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
       "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/123" => "open" }
     })
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     within "turbo-frame#session_#{@session.id}" do
       pr_link = find("a[href='https://github.com/owner/repo/pull/123']")
@@ -60,7 +60,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
       "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/123" => "merged" }
     })
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     within "turbo-frame#session_#{@session.id}" do
       pr_link = find("a[href='https://github.com/owner/repo/pull/123']")
@@ -76,7 +76,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
       "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/123" => "closed" }
     })
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     within "turbo-frame#session_#{@session.id}" do
       pr_link = find("a[href='https://github.com/owner/repo/pull/123']")
@@ -96,7 +96,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
       "github_pull_request_statuses" => { url => "merged" }
     })
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     within "turbo-frame#session_#{@session.id}" do
       pr_link = find("a[href='#{url}']")
@@ -159,7 +159,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
       "github_pull_request_ci_statuses" => { second => "pass" }
     })
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     within "turbo-frame#session_#{@session.id}" do
       trigger = find("[data-controller='dropdown'] > button")
@@ -200,7 +200,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
       "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/123" => "open" }
     })
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     # Verify initial green (open) status (color is on the SVG icon)
     within "turbo-frame#session_#{@session.id}" do
@@ -227,7 +227,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
       "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/456" => "merged" }
     })
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     # Verify PR link is present
     within "turbo-frame#session_#{@session.id}" do
@@ -235,7 +235,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     end
 
     # Refresh the page
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     # Verify PR link is still present after refresh
     within "turbo-frame#session_#{@session.id}" do
@@ -271,7 +271,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     @session.archive!
 
     # Archived sessions are hidden until the status filter names them.
-    visit root_path(every_status_params(status: [ "archived" ]))
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, status: [ "archived" ]))
 
     within "turbo-frame#session_#{@session.id}" do
       # Footer should be visible with border
@@ -299,7 +299,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     # Sanity: before the click the session is on the slow cadence.
     assert_equal 24.hours.to_i, PollBackoff.poll_interval(@session, base_interval: 30)
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     pr_link = nil
     within "turbo-frame#session_#{@session.id}" do
@@ -332,7 +332,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     # Start with a session with no PR metadata
     assert_nil @session.custom_metadata["github_pull_request_urls"]
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     wait_for_turbo_streams_connected
 
     # No PR link initially
@@ -392,7 +392,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     end
 
     # Verify persists after refresh
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     within "turbo-frame#session_#{@session.id}" do
       pr_link = find("a[href='https://github.com/test/repo/pull/999']")

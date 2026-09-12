@@ -26,7 +26,7 @@ class SessionDrawerLogFilterTest < ApplicationSystemTestCase
   end
 
   test "opening the drawer with a saved log level re-filters the drawer instead of navigating the dashboard" do
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     dashboard_url = page.current_url
 
     # The reader has previously moved the log level off the default. This is the
@@ -54,7 +54,7 @@ class SessionDrawerLogFilterTest < ApplicationSystemTestCase
   end
 
   test "changing the log level inside the drawer re-filters the drawer in place" do
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     dashboard_url = page.current_url
 
     find("a[aria-label='View session #{@session.id}']").click
@@ -86,7 +86,7 @@ class SessionDrawerLogFilterTest < ApplicationSystemTestCase
   # and the level really did change, but nothing on screen shows it, which is
   # indistinguishable from a filter that did nothing.
   test "changing the log level with the transcript open leaves it open at the new level" do
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     dashboard_url = page.current_url
 
     find("a[aria-label='View session #{@session.id}']").click
@@ -121,7 +121,7 @@ class SessionDrawerLogFilterTest < ApplicationSystemTestCase
   # The state travels, it does not stick: a reader who never opened the
   # transcript is not handed one open by a filter change.
   test "changing the log level with the transcript closed leaves it closed" do
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     find("a[aria-label='View session #{@session.id}']").click
     assert_selector "turbo-frame#session_detail [data-current-session-id='#{@session.id}']"

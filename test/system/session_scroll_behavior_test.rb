@@ -411,7 +411,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
   test "opening a session in the dashboard drawer scrolls to the bottom of the transcript" do
     session = create_session_with_many_messages(count: 50)
 
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     find("a[aria-label='View session #{session.id}']").click
 
@@ -449,7 +449,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
   test "dashboard drawer auto-scroll controller resolves the drawer scroll container" do
     session = create_session_with_many_messages(count: 50)
 
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     find("a[aria-label='View session #{session.id}']").click
 
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']"
@@ -519,7 +519,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     target = create_session_with_many_messages(count: 10)
 
     page.current_window.resize_to(1000, 760)
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     assert_selector "a[aria-label='View session #{target.id}']", visible: :all
 
