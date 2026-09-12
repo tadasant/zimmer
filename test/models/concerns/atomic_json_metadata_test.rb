@@ -18,6 +18,20 @@ class AtomicJsonMetadataTest < ActiveSupport::TestCase
   # against something real rather than asserted in a vacuum. If this ever stops failing
   # to preserve the key, the `metadata:` column stopped being a whole-column write and
   # the rest of this file is testing nothing.
+  # The SQL this concern emits is `jsonb` SQL with no cast in either direction, which
+  # is only correct while every mergeable column really is `jsonb`. Until #847 it was
+  # not: `metadata` was `json`, so the merge looked up `columns_hash[name].sql_type`
+  # and cast the result back per column, on the hottest write path in the app. That
+  # lookup is gone, and this is what keeps its absence honest — a mergeable column
+  # added as `json`, or this one retyped back, fails here instead of failing in
+  # production with `operator does not exist: json - text[]`.
+  test "every mergeable column is jsonb, which is what lets the merge carry no cast" do
+    AtomicJsonMetadata::MERGEABLE_JSON_COLUMNS.each do |name|
+      assert_equal "jsonb", Session.columns_hash.fetch(name).sql_type,
+        "#{name} must be jsonb for the uncast merge expression in execute_json_merge to work"
+    end
+  end
+
   test "the whole-column read-modify-write this replaces loses a concurrent writer's key" do
     stale = Session.find(@session.id)
 
