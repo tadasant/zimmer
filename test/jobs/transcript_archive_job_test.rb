@@ -701,4 +701,170 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
       end
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # #1160 — `build_archive` deletes its temp in an `ensure`, which covers an
+  # exception and not a SIGKILL. This job is killed routinely (OOM: #495, #719;
+  # and the worker container is swapped on every deploy), and every run picks a
+  # fresh random name, so nothing ever reclaimed the previous run's file:
+  # production held 219 orphans totalling 233.3 GiB, took the 309 GB root
+  # filesystem to 100%, and CloneDiskGuard stopped letting the fleet clone.
+  # ---------------------------------------------------------------------------
+
+  # Both forms, because a killed run leaks up to two files: the job's own temp and
+  # rubyzip's, which `Zip::File#commit` writes beside it with a trailing suffix. Of
+  # the 219 production orphans 118 were the first form and 101 the second, so a
+  # pattern that stops at `.zip.tmp` leaves about half the leak on disk.
+  def orphan!(name, age)
+    path = @archive_dir.join(name)
+    File.write(path, "PK\x03\x04orphan")
+    FileUtils.touch(path, mtime: age.ago.to_time)
+    path
+  end
+
+  test "reclaims both forms of temp file that a killed run leaves behind" do
+    job_temp = orphan!("latest_b3e54e39c18c331b.zip.tmp", 3.hours)
+    zip_temp = orphan!("latest_b3e54e39c18c331b.zip.tmp20260910-82-anpqpv", 3.hours)
+
+    TranscriptArchiveJob.perform_now
+
+    assert_not File.exist?(job_temp), "the job's own orphaned temp must be reclaimed"
+    assert_not File.exist?(zip_temp), "rubyzip's sibling temp is half the leak and must be reclaimed too"
+  end
+
+  # The destructive-mistake case. These two files are the live artifact and its
+  # sidecar; a pattern that reaches either of them destroys the production archive.
+  test "never removes the live archive or its metadata" do
+    TranscriptArchiveJob.perform_now
+    assert File.exist?(@archive_path)
+    assert File.exist?(@metadata_path)
+
+    # Older than any floor, so nothing but the pattern is keeping them alive.
+    FileUtils.touch(@archive_path, mtime: 30.days.ago.to_time)
+    FileUtils.touch(@metadata_path, mtime: 30.days.ago.to_time)
+    archive_bytes = File.size(@archive_path)
+
+    TranscriptArchiveJob.perform_now
+
+    assert File.exist?(@archive_path), "latest.zip is the live archive and must never be swept"
+    assert File.exist?(@metadata_path), "latest_metadata.json is the live sidecar and must never be swept"
+    assert_operator File.size(@archive_path), :>=, archive_bytes
+  end
+
+  # Read directly rather than through a run, so the guarantee is stated about the
+  # pattern itself and not about the two filenames a particular run happens to leave.
+  test "the temp pattern cannot match a live artifact name" do
+    %w[
+      latest.zip
+      latest_metadata.json
+      latest.zip.tmp
+      manifest.json
+      sessions
+    ].each do |name|
+      assert_no_match TranscriptArchiveJob::TEMP_FILE_PATTERN, name,
+        "#{name} must be unreachable by the sweep"
+    end
+
+    %w[
+      latest_b3e54e39c18c331b.zip.tmp
+      latest_028ef6c44b916dee.zip.tmp20260905-79-gxf7ka
+    ].each do |name|
+      assert_match TranscriptArchiveJob::TEMP_FILE_PATTERN, name,
+        "#{name} is a leaked temp file and must be swept"
+    end
+  end
+
+  # The other destructive-mistake case: a build that is running right now owns a temp
+  # file, and taking it corrupts that build.
+  test "leaves a temp file that is younger than the age floor" do
+    fresh = orphan!("latest_aaaaaaaaaaaaaaaa.zip.tmp", 1.minute)
+    just_inside = orphan!("latest_bbbbbbbbbbbbbbbb.zip.tmp", TranscriptArchiveJob::TEMP_FILE_MIN_AGE - 1.minute)
+    just_outside = orphan!("latest_cccccccccccccccc.zip.tmp", TranscriptArchiveJob::TEMP_FILE_MIN_AGE + 1.minute)
+
+    TranscriptArchiveJob.perform_now
+
+    assert File.exist?(fresh), "a temp written a minute ago can belong to a live build"
+    assert File.exist?(just_inside), "the floor is a floor: inside it, keep"
+    assert_not File.exist?(just_outside), "past the floor there is no build left to own it"
+  end
+
+  # The sweep is at the top of `perform`, not inside `build_archive`, precisely so that
+  # it survives this path — a tick with nothing to archive returns before the build, and
+  # a steady-state corpus is the normal case the job is trying to reach.
+  test "sweeps on a tick that detects no changes and skips the rebuild" do
+    TranscriptArchiveJob.perform_now
+    orphan = orphan!("latest_dddddddddddddddd.zip.tmp", 2.hours)
+    archive_mtime = File.mtime(@archive_path)
+
+    TranscriptArchiveJob.perform_now
+
+    assert_not File.exist?(orphan), "an orphan must be reclaimed even when the run rebuilds nothing"
+    assert_equal archive_mtime, File.mtime(@archive_path), "this run should not have rebuilt the archive"
+  end
+
+  # Same reasoning as the deferral line: production ships only WARN and above to
+  # VictoriaLogs, and this is the only surface that says the leak is being reclaimed.
+  test "reports what it reclaimed at the severity production actually ships" do
+    orphan!("latest_eeeeeeeeeeeeeeee.zip.tmp", 2.hours)
+
+    Rails.logger.stubs(:warn)
+    Rails.logger.expects(:warn).with(regexp_matches(/\[TranscriptArchiveJob\] swept 1 orphaned temp file/)).once
+
+    TranscriptArchiveJob.perform_now
+  end
+
+  test "says nothing when there is nothing to sweep" do
+    Rails.logger.stubs(:warn)
+    Rails.logger.expects(:warn).with(regexp_matches(/orphaned temp file/)).never
+
+    TranscriptArchiveJob.perform_now
+  end
+
+  # The sweep is a courtesy the build extends to its predecessors, not a precondition
+  # of the build. A directory it cannot list is logged and stepped over, and the tick
+  # goes on to do its real job.
+  test "an unlistable archive directory is logged and does not stop the run" do
+    Dir.stubs(:children).with(@archive_dir).raises(Errno::EACCES, @archive_dir.to_s)
+
+    Rails.logger.stubs(:error)
+    Rails.logger.expects(:error).with(regexp_matches(/\[TranscriptArchiveJob\] Failed to list .* for the temp sweep/)).once
+
+    assert_nothing_raised { TranscriptArchiveJob.perform_now }
+    assert File.exist?(@archive_path), "the build must still run when the sweep could not"
+  ensure
+    # Teardown's rm_rf lists the directory too, with arguments the stub does not cover.
+    Dir.unstub(:children)
+  end
+
+  # One entry that cannot be unlinked is not a reason to leave the rest of the leak in
+  # place — the next entry is still swept.
+  test "an entry that cannot be removed is logged and the sweep continues" do
+    stuck = orphan!("latest_2222222222222222.zip.tmp", 3.hours)
+    orphan = orphan!("latest_3333333333333333.zip.tmp", 3.hours)
+
+    # Names sort `2222…` before `3333…`, so the stuck one is met first. The catch-all
+    # stub absorbs the build's own `ensure` delete; the two expectations are the test.
+    File.stubs(:delete)
+    File.expects(:delete).with(stuck).raises(Errno::EPERM, stuck.to_s)
+    File.expects(:delete).with(orphan).returns(1)
+
+    Rails.logger.stubs(:error)
+    Rails.logger.expects(:error).with(regexp_matches(/Failed to remove orphaned temp latest_2222222222222222\.zip\.tmp/)).once
+
+    TranscriptArchiveJob.perform_now
+  end
+
+  # A name that matches but is not a file is not something to unlink — and the sweep
+  # must not abandon the rest of the directory over it.
+  test "steps over a directory whose name matches, and keeps sweeping" do
+    decoy = @archive_dir.join("latest_ffffffffffffffff.zip.tmp.d")
+    FileUtils.mkdir_p(decoy)
+    FileUtils.touch(decoy, mtime: 2.hours.ago.to_time)
+    orphan = orphan!("latest_1111111111111111.zip.tmp", 2.hours)
+
+    TranscriptArchiveJob.perform_now
+
+    assert File.directory?(decoy), "only files are unlinked"
+    assert_not File.exist?(orphan), "one skipped entry must not end the sweep"
+  end
 end

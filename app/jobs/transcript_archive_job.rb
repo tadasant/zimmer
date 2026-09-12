@@ -6,18 +6,20 @@ require "fileutils"
 # Periodic job that incrementally builds/updates a zip file containing all session transcripts.
 #
 # Runs every 10 minutes. On each run, it:
-# 1. Loads metadata from the previous run to identify already-archived sessions
-# 2. Queries all sessions with transcripts, finding new or changed ones
-# 3. Updates at most MAX_SESSIONS_PER_RUN changed entries in the zip file, one session
+# 1. Reclaims the temp files earlier runs were killed before they could delete
+#    (#sweep_orphaned_temp_files)
+# 2. Loads metadata from the previous run to identify already-archived sessions
+# 3. Queries all sessions with transcripts, finding new or changed ones
+# 4. Updates at most MAX_SESSIONS_PER_RUN changed entries in the zip file, one session
 #    resident at a time, deferring any remainder to the next tick
-# 4. Writes atomically via temp file + rename
+# 5. Writes atomically via temp file + rename
 #
-# Steps 3 and 4 are load-bearing rather than incidental, and #719 is why. A transcript
+# Steps 4 and 5 are load-bearing rather than incidental, and #719 is why. A transcript
 # is a single large payload, so the job's peak memory is decided entirely by how many of
 # them it holds at once; it used to hold every changed session simultaneously, which on
 # a corpus that has never been archived means all of them. Every method below that
 # touches a transcript takes session *ids* and loads rows one at a time, and the cap
-# guarantees each run reaches step 4 and records its progress. Handing any of them a
+# guarantees each run reaches step 5 and records its progress. Handing any of them a
 # collection of Session objects reintroduces the OOM.
 #
 # The resulting zip is served by Api::V1::TranscriptArchivesController and located
@@ -85,6 +87,59 @@ class TranscriptArchiveJob < ApplicationJob
   # succeeding is visible before anyone acts on the data.
   STALE_AFTER = 1.hour
 
+  # The build's own scratch files, matched for the sweep in #sweep_orphaned_temp_files.
+  #
+  # A regex over `Dir.children`, not a glob, and anchored: the two files in this
+  # directory that must never be deleted are `latest.zip` and `latest_metadata.json`,
+  # and neither can reach this pattern — the name has to carry a `latest_<hex>` stem
+  # AND the `.zip.tmp` infix. A `Dir.glob` of `latest_*.zip.tmp*` also spares them, but
+  # only by the shape of the two names it happens to be pointed at; this cannot match
+  # them at all. A wrong match here destroys the live archive.
+  #
+  # Unanchored at the END, and that is what reaches rubyzip's own temp.
+  # `Zip::File#commit` writes its replacement beside the file it is rewriting, named
+  # `<path><timestamp>-<pid>-<rand>`, and renames it over — so one killed run leaks up
+  # to TWO files of the same multi-GB size: `latest_<hex>.zip.tmp` and
+  # `latest_<hex>.zip.tmp20260910-82-anpqpv`. Of the 219 orphans measured on production
+  # on 2026-09-11, 118 were the first form and 101 the second, so a pattern that ends
+  # at `.zip.tmp` leaves about half the leak on disk (#1160).
+  #
+  # Those two are what a kill leaves in THIS directory. rubyzip also stages every
+  # entry written through `get_output_stream` in its own `Tempfile` under `Dir.tmpdir`
+  # until `commit`, so a killed run leaves up to MAX_SESSIONS_PER_RUN of those in the
+  # container's /tmp as well. That is the overlay layer, recreated on every deploy,
+  # not the durable volume this sweep covers — it is out of this sweep's reach by
+  # design, not by oversight.
+  #
+  # `\h+` rather than `\h{16}` so a later change to the `SecureRandom.hex(8)` width
+  # does not silently strand a generation of orphans.
+  TEMP_FILE_PATTERN = /\Alatest_\h+\.zip\.tmp/
+
+  # How long a temp file has to have sat untouched before the sweep will take it.
+  #
+  # This is the guard against deleting a build's own in-flight temp, and it is
+  # belt-and-braces rather than the primary protection. The sweep runs at the top of
+  # `perform`, before this run has created its temp, and SingletonSweep holds the job
+  # to one copy queued-or-running — so under cron there is no other build whose temp
+  # could be resident. The floor is what covers the paths that bypass that: a manual
+  # `perform_now` racing the cron copy, or a future caller that drops the concurrency
+  # key.
+  #
+  # Read the mtime for what it is. The job's temp is written once by `FileUtils.cp`
+  # near the start of the build and then not touched again until rubyzip's `commit`
+  # renames its sibling over it at the end — so for the whole of the middle, the
+  # session loop, its mtime is frozen at the copy. The floor therefore has to exceed
+  # the longest that loop can run, not one tick. An hour is six ticks, and it is the
+  # same bar TranscriptArchiveStatus judges the archive stale by (STALE_AFTER): a
+  # build still in its loop an hour after copying is one the job already reports as
+  # a fault. If the floor ever does bind on a live build, what fails is that tick —
+  # rubyzip raises ENOENT reading an entry from a file that is gone and `ensure`
+  # runs — and `latest.zip`, which is only ever replaced by the final rename, is left
+  # as it was. Erring long costs only reclaim latency: a kill leaks about 8 GiB, so at
+  # one kill per tick an hour defers under 50 GiB of a 309 GiB volume, and at the peak
+  # rate actually measured (82.4 GiB in a day) about 3.5 GiB.
+  TEMP_FILE_MIN_AGE = 1.hour
+
   class << self
     # Resolved at call time (never memoized) so tests that stub HOME and ops that
     # set the override are both honored without a process restart.
@@ -102,6 +157,8 @@ class TranscriptArchiveJob < ApplicationJob
 
   def perform
     FileUtils.mkdir_p(archive_dir)
+
+    sweep_orphaned_temp_files
 
     previous_metadata = load_metadata
 
@@ -277,6 +334,71 @@ class TranscriptArchiveJob < ApplicationJob
   rescue JSON::ParserError => e
     Rails.logger.error "[TranscriptArchiveJob] Failed to parse metadata: #{e.message}"
     {}
+  end
+
+  # Reclaims the temp files that earlier runs were killed before they could delete.
+  #
+  # `build_archive` removes its own temp in an `ensure`, which covers an exception but
+  # not a SIGKILL — and this job is killed routinely: it has an OOM history (#495,
+  # #719) and the worker container is swapped on every deploy. Because each run picks a
+  # fresh random name, nothing ever reclaimed the previous run's file. By 2026-09-11
+  # production held 219 orphans totalling 233.3 GiB, which took the 309 GB root
+  # filesystem to 100% and stopped CloneDiskGuard letting the fleet clone (#1160).
+  # Nothing else sweeps this path: DockerCleanupJob prunes Docker resources and
+  # OrphanTranscriptDirectoryCleanupJob handles transcript *directories*.
+  #
+  # Here rather than in a maintenance job of its own because this job is the only
+  # writer of these files and already runs every ten minutes. The sweep is
+  # level-triggered and holds no state, so a skipped tick costs nothing, and at the top
+  # of `perform` the run that is about to allocate the disk is the one that frees it
+  # first.
+  #
+  # Deliberately outside `build_archive`: a tick that detects no changes returns before
+  # that call, so a sweep that ran only on rebuilds would leave the last kill's orphan
+  # resident for as long as the corpus stayed quiet — which is exactly the steady state
+  # this job is supposed to reach.
+  def sweep_orphaned_temp_files
+    floor = TEMP_FILE_MIN_AGE.ago
+    removed = 0
+    bytes = 0
+
+    entries = begin
+      Dir.children(archive_dir)
+    rescue SystemCallError => e
+      Rails.logger.error "[TranscriptArchiveJob] Failed to list #{archive_dir} for the temp sweep: " \
+        "#{e.class} - #{e.message}"
+      return
+    end
+
+    entries.each do |entry|
+      next unless entry.match?(TEMP_FILE_PATTERN)
+
+      path = archive_dir.join(entry)
+      next unless File.file?(path)
+      next if File.mtime(path) > floor
+
+      size = File.size(path)
+      File.delete(path)
+      removed += 1
+      bytes += size
+    rescue Errno::ENOENT
+      # Removed underneath us, which is the outcome this wanted anyway.
+      next
+    rescue SystemCallError => e
+      # One unreadable entry is not a reason to abandon the rest of the sweep.
+      Rails.logger.error "[TranscriptArchiveJob] Failed to remove orphaned temp #{entry}: " \
+        "#{e.class} - #{e.message}"
+      next
+    end
+
+    return if removed.zero?
+
+    # WARN for the same reason the deferral line above is: production ships only WARN
+    # and above to VictoriaLogs, and this is the only surface that says the leak is
+    # being reclaimed. A run that finds nothing logs nothing, so it is not standing
+    # noise — once the backlog is worked off this goes quiet except after a kill.
+    Rails.logger.warn "[TranscriptArchiveJob] swept #{removed} orphaned temp file(s), #{bytes} bytes, " \
+      "last written more than #{TEMP_FILE_MIN_AGE.inspect} ago, from #{archive_dir}"
   end
 
   def build_archive(changed_ids, previous_sessions, removed_session_ids, subagent_maxima:, deferred_count: 0)
