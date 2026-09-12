@@ -1003,6 +1003,31 @@ extension and exit each emit their own page, and the TTL auto-exits. The one thi
 know is that halting `pollers` also stops `SystemHealthMonitorJob`, so *backlog* alerting is quiet
 for the duration.
 
+### A missing operator password is silent all the way down the deploy chain
+
+🟡 The realm fails closed loudly enough at the HTTP layer — a 401 whose body names
+`SUPERVISOR_PASSWORD`, and a log line. The *delivery* of that variable is where the quiet is.
+
+`config/deploy.production.yml` names `SUPERVISOR_PASSWORD` in `env.secret` and
+`.kamal/secrets.production` maps it to `$PROD_SUPERVISOR_PASSWORD`, but Kamal only raises when the
+mapping **line** is missing: `Kamal::Secrets#[]` fetches from a `Dotenv.parse` of the file, and an
+unset deploy-side variable resolves to `""` rather than to an error. No validator checks for blank
+afterwards. So a deploy whose environment never supplied `PROD_SUPERVISOR_PASSWORD` writes
+`SUPERVISOR_PASSWORD=` into the container's env-file, reports success, and leaves `/supervisor`,
+`/settings/api_keys` and the mutating `POST /health/*` actions returning 401 — with nothing
+anywhere in the deploy saying so.
+
+That is the same silent shape as [the Parameter Store resolver
+key](/operate/secrets-parameter-store/#set-the-secret), reached the same way, and it is why the
+private deploy workflow has to name the variable in *both* the Kamal step's `env:` block and the
+`-e` passthrough of its `kamal()` wrapper. A `: "${PROD_SUPERVISOR_PASSWORD:?}"` assert in that
+step is the one thing that converts it into a failed deploy.
+
+Two consequences worth holding onto. The mapping is **safe to land before the value exists** —
+it cannot break a deploy, it can only fail to open the realm. And the only way to find out whether
+it worked is to load one of the three surfaces and see whether you get a Basic prompt or a 401;
+there is no panel, health row or deploy line that reports the realm's configured state.
+
 ### Transcript redaction is defense in depth, not a guarantee
 
 🟡 `TranscriptRedactor` runs on every transcript as it is read, before anything is stored, rendered or

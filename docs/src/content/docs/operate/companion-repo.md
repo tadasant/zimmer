@@ -347,6 +347,13 @@ jobs:
    file `gcloud` writes is pretty-printed. Getting it wrong is quiet: the store just never turns
    on. See [deliver the key to
    Zimmer](/operate/secrets-parameter-store/#base64-and-why-it-is-not-optional).
+9. If the service has an operator surface behind HTTP Basic, set its password as a GitHub Actions
+   secret here (for Zimmer, `PROD_SUPERVISOR_PASSWORD`) and name it in **both** places the deploy
+   job enumerates secrets — the step's `env:` block and the `-e` passthrough in the `kamal()`
+   wrapper. Getting it wrong is quiet, for the same reason as item 8 and by the same mechanism:
+   Kamal resolves an unset `FOO=$FOO` mapping to blank rather than raising, so the deploy goes
+   green and the realm stays shut. A `: "${PROD_SUPERVISOR_PASSWORD:?}"` assert in the deploy step
+   is what makes it loud. See [Configuration](/start/configuration/#required-in-production).
 
 Keep the shape identical across services. The consistency is what lets one deploy workflow —
 and one mental model — cover everything you run.
