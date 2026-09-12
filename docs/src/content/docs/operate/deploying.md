@@ -513,12 +513,16 @@ breaks:
   drop: no image ever shipped with it in `ignored_columns`, so the `two-phase-drop` annotation would
   be a claim about a deploy that never happened. Renaming retires the name, keeps the values for one
   deploy as the undo, and makes deploy 3's annotation true.
-- **Converging the shadow first, in the same transaction.** A backfill that reads `succeeded` proves
-  the rows that existed when it ran, not the rows as they are now — a writer reaching the original
-  through `update_all` or raw SQL leaves a shadow that is stale and *not* null, and the rename would
-  promote it silently. The `UPDATE … WHERE <shadow> IS DISTINCT FROM <original>::jsonb` runs under
-  the lock the migration already holds, so nothing can race it and the equality is a fact afterwards
-  rather than an argument.
+- **Converging the shadow first, behind an explicit `LOCK TABLE`.** A backfill that reads
+  `succeeded` proves the rows that existed when it ran, not the rows as they are now — a writer
+  reaching the original through `update_all` or raw SQL leaves a shadow that is stale and *not*
+  null, and the rename would promote it silently. So deploy 2 re-runs the predicate as an
+  `UPDATE … WHERE <shadow> IS DISTINCT FROM <original>::jsonb`. **Take `ACCESS EXCLUSIVE`
+  explicitly, as the first statement of `up`**: an `UPDATE` on its own takes only `ROW EXCLUSIVE`,
+  so without it a one-sided writer can commit in the gap between the convergence and the first DDL
+  statement, and the rename promotes exactly the stale shadow the convergence was there to catch.
+  Taking the strongest lock up front instead of upgrading into it mid-transaction also removes the
+  lock-upgrade deadlock the sequence would otherwise be shaped like.
 
 The old containers read the swapped column happily, which is the part that makes the whole shape
 work: Active Record casts `json` and `jsonb` to the same Ruby Hash, the wire format is text either

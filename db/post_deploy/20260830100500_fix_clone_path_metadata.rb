@@ -20,15 +20,21 @@
 # ahead of time — an unsliced version that turned out to match a lot of rows
 # would hold a worker thread for as long as it took.
 class FixClonePathMetadata < PostDeployTask
-  # `metadata` is `json`, not `jsonb`, so this is `json_typeof`. A NULL metadata
-  # or a missing key yields NULL, which is not 'object', so both are skipped.
+  # `jsonb_typeof`, because `metadata` is `jsonb` (#847). It said `json_typeof`
+  # while the column was `json`, and the two functions are not interchangeable:
+  # `json_typeof(jsonb)` is `function ... does not exist`, not a silent wrong
+  # answer. Safe to change outright rather than to branch on the type, because a
+  # post-deploy task never runs interleaved with migrations — `PostDeployTaskJob`
+  # ticks from the new image, minutes after `db:prepare` has applied every one of
+  # them — so this file has only ever one column type to see. A NULL metadata or a
+  # missing key yields NULL, which is not 'object', so both are still skipped.
   #
   # Unindexed, deliberately: an index built for a repair that runs once is a
   # bigger thing to leave behind than the scan it saves. `sweep` only checks the
   # budget between batches, so the last query — the one that proves nothing is
   # left — is a scan of `sessions`. That is seconds on a table of this size, and
   # it happens once per environment, ever.
-  BROKEN = "json_typeof(metadata->'clone_path') = 'object'"
+  BROKEN = "jsonb_typeof(metadata->'clone_path') = 'object'"
 
   def up
     checkpoint!(repaired: stats.fetch("repaired", 0))
