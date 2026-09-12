@@ -2510,59 +2510,32 @@ Two behaviours are worth knowing:
   status summary sits directly above the search box so the narrowing is visible rather than
   surprising.
 
-The **scheduling class** is a filter rather than a search: it narrows whichever view you are in
-and leaves the category grid in place. A free-text query, an agent root, or a genesis *is* a
-search, and replaces the grid with a flat result list.
+The **scheduling class** is a filter rather than a search: it narrows whichever view you are in and
+leaves that view's presentation alone. So does a free-text query, an agent root and a genesis — in
+the [User view](/sessions/user-view/) and the Ranked view a search narrows the list you are already
+reading rather than replacing it with a separate results presentation. The two flat sort views still
+render their results as a paginated card grid, because that is what they are.
 
 The equivalent for an agent is `quick_search_sessions`, whose `status` argument takes one status
 or an array of them.
 
-### Card order is yours to set, and it stays set
+### Card order is a stored rank with no dashboard that reads it
 
-Inside a section, cards are ordered by where you dragged them — `sessions.sort_order` ascending.
-A card nobody has placed sits where it arrived, which is newest-first: every session Zimmer creates
-is stamped as it is created. Grab a card by the grip bar at the top of it and drop
-it where you want it, in its own section or in another one. The drop POSTs the section's order to
-`POST /sessions/reorder`, naming the card you moved, so it survives a reload, a trip into a session
-and back, and paging the section.
+`sessions.sort_order` is a card's rank inside its category bucket, and `SessionCardOrder` is the
+logic that writes it: a move places one card next to its neighbour and moves nothing else, an
+arrival goes on top of its bucket, and a move rewrites only the rows whose rank changed rather than
+renumbering the section. Drags that touch the same bucket are serialized with an advisory lock.
 
-How that is stored (`SessionCardOrder`):
+**Nothing in the web UI reads it today.** It was the ordering of the category-grouped card grid, and
+that grid was replaced by the [User view](/sessions/user-view/), which is ordered by scheduling class
+and [precedence](/sessions/spot-and-priority/) instead. The two writers that remain are both agent
+surfaces — `manage_categories`' `reorder_sessions` action over MCP and `POST /api/v1/sessions/reorder`
+over REST — so an agent can still set a card order, and no human-facing screen currently renders it.
+That is recorded in [Limitations](/limitations/).
 
-- **A drag moves one card, next to its neighbour.** The server puts the moved card immediately
-  above the card that is now below it (or immediately below the card above it, if you dropped it
-  last) and moves nothing else. It never reads a card's index in the posted list as its position:
-  sections paginate at 50 independently, and the browser's copy of a page can hold cards the server
-  would render elsewhere — a new session a broadcast prepended onto page 2, say. Anchoring on the
-  neighbour means a drag on page 2 cannot renumber page 1, and a card you did not touch stays put —
-  including one the status filter is hiding, and a favorited card rendered up in **Starred**.
-- **An arrival goes on top.** A new session, a card the auto-categorizer or `set_category` moves,
-  and the cards of a deleted category all take one below their new section's lowest `sort_order`,
-  so they appear at the top the way a new session always has, and nobody else's row is rewritten to
-  make room. Rows nothing has ever placed tie at the column default `0` and fall back to
-  `created_at DESC`. Note what "on top" means once you have arranged a section by hand: a new
-  session outranks the card you dragged to the top, because the alternative — inserting it by
-  `created_at` into an order you chose — has no defined answer.
-- **A drag rewrites what moved, not the section.** The section's existing values are handed back out
-  along the new order, so only the cards whose rank changed are written — dragging a card from 40th
-  to 1st writes 41 rows, not the thousands of archived sessions sharing its section. The exception
-  is a section whose values tie — one nobody has reordered, or one where two sessions arrived in the
-  same instant and read the same minimum — which is renumbered once on its next drag. Drags that
-  touch the same section, including both ends of a cross-section drag, are serialized with an
-  advisory lock; creating a session takes no lock, which is why that tie can happen at all.
-- **The order is global, not yours.** Zimmer is a single circle of trust with no `User` model, so
-  there is no principal to hang a per-viewer order on — the position lives on the session row, the
-  same way `position` lives on the category. Everyone sees the board you arranged.
-- **Starred cards are not drag-orderable, and lose nothing by it.** A favorited card floats out of
-  its section into the pinned group, which sits outside the drag-and-drop controller and carries no
-  grip bar — its category placement is invisible while it is starred. Starring does not touch
-  `sort_order`, so unstarring puts the card back where it was.
-
-A cross-section drag is one write, not two: the moved card's category change and its placement land
-in the same transaction. Right-clicking a card's grip bar opens the same move as a menu, which puts
-the card at the top of the page of that section you have open.
-
-The equivalents for an agent are `manage_categories`' `reorder_sessions` action over MCP and
-`POST /api/v1/sessions/reorder` over REST.
+The order was always global rather than per-viewer, and still is: Zimmer is a single circle of trust
+with no `User` model, so there is no principal to hang a per-viewer order on and the position lives
+on the session row.
 
 ## Manual refresh
 
@@ -2573,21 +2546,18 @@ are four of them, and they all end up in `SessionsController`:
 | --- | --- | --- |
 | The per-card icon next to a session's status badge | `#refresh` | that one session |
 | "Refresh all" in the header | `#refresh_all` | every non-archived session outside a frozen category |
-| The icon in a category section header | `#refresh_category` | that category's non-archived sessions |
-| The icon in the **Starred** group header | `#refresh_starred` | every non-archived favorited session |
 
-`#refresh_starred` deliberately does *not* skip frozen categories the way `#refresh_all` does.
-The Starred group renders every favorited session regardless of its category, so the button acts
-on exactly the cards sitting under it — starring is a per-session opt-in that outranks the
-category's parked flag.
+There were two more — a per-category button and one on the **Starred** group — and both went with
+the category grid that carried them, along with the `#refresh_category` and `#refresh_starred`
+actions they were the only callers of.
 
 The per-card icon is hidden for a `running` session. A running session is already streaming into
 its card; there is nothing a refresh would tell you that the card does not.
 
 ### How the dashboard answers
 
-Every mutating dashboard control — the four refresh buttons plus Trash, Undo, Restore, bulk
-trash, Pause and the category moves — responds to a Turbo request with a Turbo Stream, not a
+Every mutating dashboard control — the two refresh buttons plus Trash, Undo, Restore, bulk
+trash and Pause — responds to a Turbo request with a Turbo Stream, not a
 redirect. The stream replaces one element: `#flash`, the layout's single toast container
 (`app/views/shared/_flash.html.erb`). The cards themselves are not in the response, because they
 re-render on their own over the `sessions_index_individual` and `session_<id>_status` broadcast
@@ -2595,12 +2565,19 @@ channels. The redirect existed only to carry the message.
 
 Two actions stream a card as well, because a broadcast cannot reach one:
 
-- **Trash** removes the card it just archived, and streams the "Session moved to trash." toast
-  carrying the **Undo** button. The toast needs the `#flash` target to land in — before that id
-  existed, the card vanished with no way to undo it.
-- **Undo** prepends the card back into the grid it belongs to (`#sessions_grid` for
-  Uncategorized, `#category_grid_<id>` for a category). Its own restore broadcast is a `replace`,
-  and there is nothing left in the DOM to replace.
+- **Trash** removes what the page is showing the session as, and streams the "Session moved to
+  trash." toast carrying the **Undo** button. It sends *two* removals — the card
+  (`#session_<id>`) and the [User view](/sessions/user-view/) row (`#user_view_row_<id>`) — because
+  the reply goes to whichever page made the request and the server does not know which of the two it
+  is looking at; a `remove` for an id that is not in the DOM is a silent no-op. That it is
+  server-driven rather than optimistic is the point: the first click over a session with queued
+  messages does **not** archive, it offers an "Archive anyway" speed bump, and a row the browser had
+  already taken away would have claimed otherwise.
+- **Undo** puts it back, on both surfaces for the same reason: it prepends the card into
+  `#sessions_grid` and a row into `#user_view_list`. Its own restore broadcast is a `replace`, and
+  there is nothing left in the DOM to replace. The restored row lands at the top of the list and the
+  User view's own controller re-sorts it into place, so it goes where the order says rather than
+  where the stream put it.
 
 `#archive`, `#unarchive` and `#pause` stream one more thing: the session page's own status badge
 and header actions. `Session#broadcast_status_change` already pushes both over the cable, but a

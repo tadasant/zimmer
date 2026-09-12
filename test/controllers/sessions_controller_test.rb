@@ -59,10 +59,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Create enough sessions to require pagination
     55.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test session #{i}") }
 
-    get root_url(every_status_params)
+    # The paginated card grid lives in the two flat sort views now; the User view
+    # is deliberately unpaginated (a drag between two rows means nothing if one of
+    # them is on another page).
+    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_response :success
 
-    # Should show 50 session cards on the page (one for each session)
     assert_select "#sessions_grid turbo-frame", count: 50
   end
 
@@ -76,18 +78,16 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Create enough sessions for pagination
     60.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test session #{i}") }
 
-    # Uncategorized's page key is the "uncategorized" sentinel, not a global ?page=.
-    get root_url(every_status_params(page: { uncategorized: 2 }))
+    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, page: 2))
     assert_response :success
 
     # Should show remaining 10 sessions on second page
     assert_select "#sessions_grid turbo-frame", count: 10
   end
 
-  # Malformed or legacy page params must not 500. A scalar (?page=2) or array
-  # (?page[]=2) is not a keyed hash, so every section falls back to page 1 rather
-  # than raising when indexed with a string key.
-  test "non-hash page params fall back to page 1 without raising" do
+  # Malformed page params must not 500. Anything that is not a scalar is dropped
+  # rather than handed to Kaminari, which would raise when it tried to index it.
+  test "non-scalar page params fall back to page 1 without raising" do
     McpOauthPendingFlow.delete_all
     Notification.delete_all
     Log.delete_all
@@ -95,66 +95,15 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     60.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test session #{i}") }
 
-    # Legacy scalar bookmark: ignored, Uncategorized renders its first 50.
-    get root_url(every_status_params(page: "2"))
+    # A namespaced hash left over from the removed per-category paginator.
+    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, page: { uncategorized: 2 }))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 50
 
     # Malformed array param must not raise a TypeError.
-    get root_url(every_status_params("page[]" => "2"))
+    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, "page[]" => "2"))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 50
-  end
-
-  test "paginating one category does not disturb another" do
-    McpOauthPendingFlow.delete_all
-    Notification.delete_all
-    Log.delete_all
-    Session.delete_all
-
-    cat_a = Category.create!(name: "Alpha")
-    cat_b = Category.create!(name: "Beta")
-
-    # Each category gets more than one page worth of sessions.
-    60.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "A#{i}", category: cat_a) }
-    60.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "B#{i}", category: cat_b) }
-
-    # Advance only category A to page 2; category B's key is absent, so it stays page 1.
-    get root_url(every_status_params(page: { cat_a.id.to_s => 2 }))
-    assert_response :success
-
-    # Category A's frame shows its remaining 10 cards (page 2 of 60).
-    assert_select "##{ActionView::RecordIdentifier.dom_id(cat_a)} turbo-frame.category-collapse-body turbo-frame", count: 10
-    # Category B is untouched: still its first 50 cards.
-    assert_select "##{ActionView::RecordIdentifier.dom_id(cat_b)} turbo-frame.category-collapse-body turbo-frame", count: 50
-
-    # Each header's count badge shows the section's unpaginated total (60), not the
-    # current page size — so a collapsed section still reports how many are inside.
-    assert_select "[data-category-count-id='#{cat_a.id}']", text: "60"
-    assert_select "[data-category-count-id='#{cat_b.id}']", text: "60"
-  end
-
-  test "each category section renders its own collapse toggle and pagination frame" do
-    McpOauthPendingFlow.delete_all
-    Notification.delete_all
-    Log.delete_all
-    Session.delete_all
-
-    category = Category.create!(name: "Gamma")
-    Session.create!(git_root: "https://github.com/test/repo.git", prompt: "G", category: category)
-
-    get root_url(every_status_params)
-    assert_response :success
-
-    # Both the Uncategorized bucket and the real category are collapsible.
-    assert_select "section[data-controller='category-collapse'][data-category-collapse-key-value='uncategorized']"
-    assert_select "section[data-controller='category-collapse'][data-category-collapse-key-value='#{category.id}']"
-    # Each section's body is wrapped in its own per-category turbo-frame.
-    assert_select "turbo-frame#category_frame_uncategorized.category-collapse-body"
-    assert_select "turbo-frame#category_frame_#{category.id}.category-collapse-body"
-    # Each header carries a session-count badge (visible even when collapsed).
-    assert_select "[data-category-count-id='uncategorized']"
-    assert_select "[data-category-count-id='#{category.id}']", text: "1"
   end
 
   # Test search functionality
@@ -174,7 +123,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     # Should find sessions with "Alpha" in title
-    assert_select "#sessions_grid turbo-frame", count: 2
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 2
   end
 
   test "should search sessions by metadata" do
@@ -193,7 +142,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     # Should find session with matching metadata
-    assert_select "#sessions_grid turbo-frame", count: 1
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
   end
 
   test "should search transcript content when search_contents is enabled" do
@@ -211,12 +160,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Without search_contents, should not find by transcript
     get root_url(every_status_params(q: "unique content", search_contents: "0"))
     assert_response :success
-    assert_match /No sessions found/, response.body
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 0
 
     # With search_contents, should find by transcript
     get root_url(every_status_params(q: "unique content", search_contents: "1"))
     assert_response :success
-    assert_select "#sessions_grid turbo-frame", count: 1
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
     # A bounded scan owes the reader the difference between "no matches" and
     # "I stopped looking" — see SessionContentSearch.
     assert_match(/Transcript scan complete/, response.body)
@@ -224,7 +173,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # The REST API's spelling works here too, so a URL copied either way behaves the same.
     get root_url(every_status_params(q: "unique content", search_contents: "true"))
     assert_response :success
-    assert_select "#sessions_grid turbo-frame", count: 1
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
   end
 
   test "the content scan runs after the agent-root and genesis filters, not before" do
@@ -245,7 +194,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get root_url(every_status_params(q: "unique content", search_contents: "1", genesis: "web_ui"))
     assert_response :success
 
-    assert_select "#sessions_grid turbo-frame", count: 1
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
     assert_match(/the one session\s+matching these filters was searched/, response.body)
   end
 
@@ -276,17 +225,17 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Ticking nothing means every status, so a search spans both.
     get root_url(every_status_params(q: "Test"))
     assert_response :success
-    assert_select "#sessions_grid turbo-frame", count: 2
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 2
 
     # Naming one status narrows the same search to it.
     get root_url(every_status_params(q: "Test", status: [ "waiting" ]))
     assert_response :success
-    assert_select "#sessions_grid turbo-frame", count: 1
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
 
     # And naming archived is how the trash is searched.
     get root_url(every_status_params(q: "Test", status: [ "archived" ]))
     assert_response :success
-    assert_select "#sessions_grid turbo-frame", count: 1
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
   end
 
   test "should display search query in form" do
@@ -298,7 +247,11 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "should show empty state when no search results" do
     get root_url(q: "nonexistent12345")
     assert_response :success
-    assert_match /No sessions found/, response.body
+    # The User view keeps its list in the DOM whether or not it has rows — that is
+    # where an undone Trash puts a row back — so its own placeholder is the empty
+    # state, not the page-level one.
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 0
+    assert_select "[data-user-view-target='empty']", text: /No sessions match these filters/
   end
 
   # Test new action
@@ -1727,57 +1680,16 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/Session restored from trash\./, response.body)
   end
 
-  test "undo_archive turbo_stream returns a categorized card to its own category grid" do
-    category = Category.create!(name: "Turbo stream target")
-    session = sessions(:failed)
-    session.update!(category_id: category.id, status: :archived, archived_at: 1.second.ago)
-
-    post undo_archive_session_url(session), as: :turbo_stream
-
-    assert_response :success
-    assert_match(/<turbo-stream\s+action="prepend"\s+target="category_grid_#{category.id}"/, response.body)
-  end
-
-  test "undo_archive turbo_stream sends a categorized card to the flat grid in a flat view" do
-    # The flat sort views render one #sessions_grid and no per-category grids, so
-    # prepending to category_grid_<id> there would drop the card silently.
-    category = Category.create!(name: "Flat view target")
-    session = sessions(:failed)
-    session.update!(category_id: category.id, status: :archived, archived_at: 1.second.ago)
-
-    cookies[SessionsController::VIEW_MODE_COOKIE] = SessionsController::VIEW_MODE_LAST_TOUCHED
-    post undo_archive_session_url(session), as: :turbo_stream
-
-    assert_response :success
-    assert_match(/<turbo-stream\s+action="prepend"\s+target="sessions_grid"/, response.body)
-    assert_no_match(/target="category_grid_#{category.id}"/, response.body)
-  end
-
-  test "undo_archive turbo_stream sends a categorized card to the flat grid while searching" do
-    category = Category.create!(name: "Search view target")
-    session = sessions(:failed)
-    session.update!(category_id: category.id, status: :archived, archived_at: 1.second.ago)
-
-    cookies[SessionsController::VIEW_MODE_COOKIE] = SessionsController::VIEW_MODE_CATEGORIES
-    post undo_archive_session_url(session),
-      headers: { "HTTP_REFERER" => root_url(q: "anything") },
-      as: :turbo_stream
-
-    assert_response :success
-    assert_match(/<turbo-stream\s+action="prepend"\s+target="sessions_grid"/, response.body)
-    assert_no_match(/target="category_grid_#{category.id}"/, response.body)
-  end
-
   test "a flash message containing a pipe is shown whole, not truncated at it" do
     # "text|action|id" is how the archive notice attaches its Undo button. A
-    # message whose own prose contains a pipe must not be parsed as one.
-    category = Category.create!(name: "Design|Research")
-    session = sessions(:running)
+    # message whose own prose contains a pipe must not be parsed as one — the
+    # third field has to look like an id, and "Research" does not.
+    Sessions::DashboardReprioritizer.stubs(:call).raises(RuntimeError, "Design|Research|blew up")
 
-    patch set_category_session_url(session), params: { category_id: category.id }, as: :turbo_stream
+    post reprioritize_sessions_url, as: :turbo_stream
 
     assert_response :success
-    assert_match(/Moved to &quot;Design\|Research&quot;\./, response.body)
+    assert_match(/Design\|Research\|blew up/, response.body)
     assert_no_match(/>Undo</, response.body)
   end
 
@@ -1859,23 +1771,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/No non-archived sessions to refresh/, response.body)
   end
 
-  test "refresh_category turbo_stream streams the unknown-category alert" do
-    post refresh_category_sessions_url, params: { category_id: 999_999 }, as: :turbo_stream
-
-    assert_response :success
-    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
-    assert_match(/Category not found/, response.body)
-  end
-
-  test "refresh_category turbo_stream streams the frozen-category refusal" do
-    category = Category.create!(name: "Parked", is_frozen: true)
-
-    post refresh_category_sessions_url, params: { category_id: category.id }, as: :turbo_stream
-
-    assert_response :success
-    assert_match(/Frozen categories are excluded from refresh/, response.body)
-  end
-
   test "pause turbo_stream streams the not-running refusal" do
     session = sessions(:needs_input)
 
@@ -1939,30 +1834,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
     assert_match(/Session is not in trash\./, response.body)
-  end
-
-  test "set_category turbo_stream confirms the move" do
-    category = Category.create!(name: "Streamed move")
-    session = sessions(:running)
-
-    patch set_category_session_url(session), params: { category_id: category.id }, as: :turbo_stream
-
-    assert_response :success
-    assert_equal category.id, session.reload.category_id
-    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
-    assert_match(/Moved to &quot;Streamed move&quot;\./, response.body)
-  end
-
-  test "set_category turbo_stream confirms a move back to Uncategorized" do
-    category = Category.create!(name: "Streamed move back")
-    session = sessions(:running)
-    session.update!(category_id: category.id)
-
-    patch set_category_session_url(session), params: { category_id: "" }, as: :turbo_stream
-
-    assert_response :success
-    assert_nil session.reload.category_id
-    assert_match(/Moved to Uncategorized\./, response.body)
   end
 
   test "a streamed flash is not also replayed on the next page load" do
@@ -4883,111 +4754,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     )
   end
 
-  # Route test for refresh_category
-  test "should route to refresh_category" do
-    assert_routing(
-      { method: :post, path: "/sessions/refresh_category" },
-      { controller: "sessions", action: "refresh_category" }
-    )
-  end
-
-  # Per-category refresh restarts only the target category's failed sessions and leaves
-  # sessions in other categories untouched — the core scoping guarantee of the feature.
-  test "refresh_category only restarts failed sessions in the target category" do
-    Session.where.not(status: :archived).update_all(status: :archived)
-
-    target_cat = Category.create!(name: "target cat")
-    other_cat = Category.create!(name: "other cat")
-
-    target_failed = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "Target failed",
-      status: :failed,
-      session_id: SecureRandom.uuid,
-      category: target_cat,
-      metadata: { "working_directory" => "/tmp/target" }
-    )
-    other_failed = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "Other failed",
-      status: :failed,
-      session_id: SecureRandom.uuid,
-      category: other_cat,
-      metadata: { "working_directory" => "/tmp/other" }
-    )
-
-    Dir.stubs(:exist?).returns(true)
-
-    post refresh_category_sessions_url, params: { category_id: target_cat.id }
-
-    assert_redirected_to root_path
-    assert_match /Restarted 1 failed session/, flash[:notice]
-    # Target category's failed session was restarted; the other category was untouched.
-    assert_equal "waiting", target_failed.reload.status
-    assert_equal "failed", other_failed.reload.status
-  end
-
-  # The "uncategorized" sentinel targets sessions with no category_id, without touching
-  # sessions that belong to a real category.
-  test "refresh_category with uncategorized sentinel only restarts sessions with no category" do
-    Session.where.not(status: :archived).update_all(status: :archived)
-
-    real_cat = Category.create!(name: "real cat")
-
-    uncategorized_failed = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "Uncategorized failed",
-      status: :failed,
-      session_id: SecureRandom.uuid,
-      category: nil,
-      metadata: { "working_directory" => "/tmp/uncat" }
-    )
-    categorized_failed = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "Categorized failed",
-      status: :failed,
-      session_id: SecureRandom.uuid,
-      category: real_cat,
-      metadata: { "working_directory" => "/tmp/cat" }
-    )
-
-    Dir.stubs(:exist?).returns(true)
-
-    post refresh_category_sessions_url, params: { category_id: "uncategorized" }
-
-    assert_redirected_to root_path
-    assert_equal "waiting", uncategorized_failed.reload.status
-    assert_equal "failed", categorized_failed.reload.status
-  end
-
-  # Frozen categories are a parked bucket excluded from refresh — the action refuses
-  # them server-side even if a request is crafted directly.
-  test "refresh_category refuses a frozen category and leaves its sessions untouched" do
-    frozen_cat = Category.create!(name: "parked", is_frozen: true)
-    frozen_failed = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "parked failed",
-      status: :failed,
-      session_id: SecureRandom.uuid,
-      category: frozen_cat,
-      metadata: { "working_directory" => "/tmp/frozen" }
-    )
-
-    post refresh_category_sessions_url, params: { category_id: frozen_cat.id }
-
-    assert_redirected_to root_path
-    assert_match /Frozen categories are excluded/, flash[:alert]
-    assert_equal "failed", frozen_failed.reload.status
-  end
-
-  # An unknown category id is rejected rather than silently refreshing nothing.
-  test "refresh_category with unknown category id redirects with an alert" do
-    post refresh_category_sessions_url, params: { category_id: 999_999 }
-
-    assert_redirected_to root_path
-    assert_match /Category not found/, flash[:alert]
-  end
-
   # Frozen-category sessions are a parked bucket excluded from bulk refresh.
   test "refresh_all leaves a failed session in a frozen category untouched" do
     frozen_cat = Category.create!(name: "parked backlog", is_frozen: true)
@@ -6007,54 +5773,13 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   # Test favorites sorted first in index
-  test "should list favorited sessions before non-favorited sessions" do
-    # Clean up to ensure we have control over session order
-    McpOauthPendingFlow.delete_all
-    Notification.delete_all
-    Log.delete_all
-    Session.delete_all
-
-    # Created oldest-first, as a real board fills up. That matters for the unfavorited
-    # pair: they render in the category grid, where a card nobody has dragged sits where
-    # it arrived (SessionCardOrder) — which is newest-first for every session Zimmer
-    # creates, because it stamps created_at at creation. Inserting a row with an older
-    # created_at than one already on the board is a thing only a test can do, and it
-    # would land on top here; the ordering this test is about is unaffected either way.
-    old_favorited = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Old Favorited", created_at: 2.days.ago, favorited: true)
-    old_unfavorited = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Old Unfavorited", created_at: 1.day.ago, favorited: false)
-    new_unfavorited = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "New Unfavorited", created_at: 1.hour.ago, favorited: false)
-    new_favorited = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "New Favorited", created_at: 1.minute.ago, favorited: true)
-
-    get root_url(every_status_params)
-    assert_response :success
-
-    # Get the order of sessions in the response
-    # The session IDs should appear in order: favorited first (by created_at desc), then unfavorited (by created_at desc)
-    response_body = response.body
-
-    # Find positions of each session ID in the response
-    new_favorited_pos = response_body.index(new_favorited.id.to_s)
-    old_favorited_pos = response_body.index(old_favorited.id.to_s)
-    new_unfavorited_pos = response_body.index(new_unfavorited.id.to_s)
-    old_unfavorited_pos = response_body.index(old_unfavorited.id.to_s)
-
-    # Favorited sessions should appear before unfavorited ones
-    assert new_favorited_pos < new_unfavorited_pos, "New favorited should appear before new unfavorited"
-    assert new_favorited_pos < old_unfavorited_pos, "New favorited should appear before old unfavorited"
-    assert old_favorited_pos < new_unfavorited_pos, "Old favorited should appear before new unfavorited"
-    assert old_favorited_pos < old_unfavorited_pos, "Old favorited should appear before old unfavorited"
-
-    # Within favorited, newer should come first
-    assert new_favorited_pos < old_favorited_pos, "New favorited should appear before old favorited"
-
-    # Within unfavorited, newer should come first
-    assert new_unfavorited_pos < old_unfavorited_pos, "New unfavorited should appear before old unfavorited"
-  end
-
+  # The star lives on the card, and cards are rendered by the two flat sort views.
+  # (The User view renders rows, and nothing on this board floats favourites: it is
+  # ordered by scheduling class and precedence, top to bottom.)
   test "favorite star should appear in session card" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
 
-    get root_url(every_status_params)
+    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_response :success
 
     # Should have the toggle_favorite form/button
@@ -6965,8 +6690,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get root_url
     assert_response :success
 
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(active)}"
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(archived)}", count: 0
+    assert_select "#user_view_row_#{active.id}"
+    assert_select "#user_view_row_#{archived.id}", count: 0
   end
 
   test "index shows archived sessions when the status filter selects them" do
@@ -6975,7 +6700,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get root_url(every_status_params(status: [ "archived" ]))
     assert_response :success
 
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(archived)}"
+    assert_select "#user_view_row_#{archived.id}"
   end
 
   # The dashboard "View" link is a real <a> to the full session page (so
@@ -7221,80 +6946,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   # Starred-scoped refresh-all (#refresh_starred)
   # ---------------------------------------------------------------------------
 
-  # The Starred group's Refresh button acts on favorited sessions and nothing else —
-  # the core scoping guarantee of the control.
-  test "refresh_starred only restarts favorited sessions" do
-    Session.where.not(status: :archived).update_all(status: :archived)
-
-    starred_failed = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "Starred failed",
-      status: :failed,
-      session_id: SecureRandom.uuid,
-      favorited: true,
-      metadata: { "working_directory" => "/tmp/starred" }
-    )
-    unstarred_failed = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "Unstarred failed",
-      status: :failed,
-      session_id: SecureRandom.uuid,
-      favorited: false,
-      metadata: { "working_directory" => "/tmp/unstarred" }
-    )
-
-    Dir.stubs(:exist?).returns(true)
-
-    post refresh_starred_sessions_url
-
-    assert_redirected_to root_path
-    assert_match(/Restarted 1 failed session/, flash[:notice])
-    assert_equal "waiting", starred_failed.reload.status
-    assert_equal "failed", unstarred_failed.reload.status
-  end
-
-  # Unlike refresh_all, refresh_starred does not skip frozen categories: the Starred
-  # group renders every favorited session regardless of category, so the button must
-  # act on exactly the cards under it.
-  test "refresh_starred includes a starred session in a frozen category" do
-    Session.where.not(status: :archived).update_all(status: :archived)
-
-    frozen_cat = Category.create!(name: "frozen cat", is_frozen: true)
-    starred_frozen = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "Starred in frozen category",
-      status: :failed,
-      session_id: SecureRandom.uuid,
-      favorited: true,
-      category: frozen_cat,
-      metadata: { "working_directory" => "/tmp/starred-frozen" }
-    )
-
-    Dir.stubs(:exist?).returns(true)
-
-    post refresh_starred_sessions_url
-
-    assert_redirected_to root_path
-    assert_match(/Restarted 1 failed session/, flash[:notice])
-    assert_equal "waiting", starred_frozen.reload.status
-  end
-
-  test "refresh_starred with no starred sessions reports nothing to do" do
-    Session.update_all(favorited: false)
-
-    post refresh_starred_sessions_url
-
-    assert_redirected_to root_path
-    assert_match(/No non-archived starred sessions to refresh/, flash[:notice])
-  end
-
-  test "should route to refresh_starred" do
-    assert_routing(
-      { method: :post, path: "/sessions/refresh_starred" },
-      { controller: "sessions", action: "refresh_starred" }
-    )
-  end
-
   # ---------------------------------------------------------------------------
   # Refreshing a waiting session sends the continue nudge
   # ---------------------------------------------------------------------------
@@ -7372,51 +7023,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "waiting", session.reload.status
   end
 
-  # The same per-session rule applies to every bulk control, so "refresh all starred"
-  # over a mix of statuses does the right thing per session.
-  test "refresh_starred continues a stalled waiting session and skips a sleeping one" do
-    Session.where.not(status: :archived).update_all(status: :archived)
-
-    stalled = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "Starred stalled waiting",
-      status: :waiting,
-      session_id: SecureRandom.uuid,
-      favorited: true,
-      metadata: { "working_directory" => "/tmp/stalled" }
-    )
-    sleeping = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "Starred sleeping",
-      status: :needs_input,
-      session_id: SecureRandom.uuid,
-      favorited: true,
-      metadata: { "working_directory" => "/tmp/sleeping-bulk", "paused_by" => "user" }
-    )
-    Trigger.create!(
-      name: "Wake session ##{sleeping.id}",
-      status: "enabled",
-      agent_root_name: "zimmer",
-      prompt_template: "Wake up",
-      reuse_session: true,
-      last_session_id: sleeping.id,
-      trigger_conditions_attributes: [
-        { condition_type: "schedule", configuration: { "scheduled_at" => 1.hour.from_now.iso8601, "timezone" => "UTC" } }
-      ]
-    )
-    assert_equal "waiting", sleeping.reload.status
-
-    Dir.stubs(:exist?).returns(true)
-    AgentSessionJob.expects(:enqueue_with_prompt).with(stalled.id, AutomatedPrompts::SYSTEM_RECOVERY).once
-
-    post refresh_starred_sessions_url
-
-    assert_redirected_to root_path
-    assert_match(/Continued 1 waiting session/, flash[:notice])
-    assert_equal "waiting", stalled.reload.status
-    assert_equal "waiting", sleeping.reload.status
-  end
-
   # ---------------------------------------------------------------------------
   # Per-session refresh icon on the dashboard cards
   # ---------------------------------------------------------------------------
@@ -7449,7 +7055,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     failed = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Failed card", status: :failed)
     running = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Running card", status: :running)
 
-    get root_url(every_status_params)
+    # The per-card refresh button is on the card, which the two flat sort views
+    # render; the User view's rows carry Merge / Snooze / Trash instead.
+    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_response :success
 
     [ waiting, needs_input, failed ].each do |session|
@@ -7473,17 +7081,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       "the running session's card must be rendered for the absence assertion below to mean anything"
     assert_select "form[action=?]", refresh_session_path(running), { count: 0 },
       "a running session must not get an inline refresh button"
-  end
-
-  test "starred group renders its own refresh-all control" do
-    Session.where.not(status: :archived).update_all(status: :archived)
-    Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Starred card", status: :waiting, favorited: true)
-
-    get root_url(every_status_params)
-    assert_response :success
-
-    assert_select "#pinned_section form[action=?]", refresh_starred_sessions_path, { count: 1 },
-      "the Starred group needs its own refresh-all button"
   end
 
   private

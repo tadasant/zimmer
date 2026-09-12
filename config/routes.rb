@@ -226,8 +226,7 @@ Rails.application.routes.draw do
           post :toggle_favorite
           patch :visibility, action: :update_visibility
           patch :heartbeat, action: :update_heartbeat
-          patch :set_category
-        end
+            end
 
         resources :logs
         resources :subagent_transcripts
@@ -583,6 +582,10 @@ Rails.application.routes.draw do
       # queue is managed. Named :start_now rather than :start so the helper does
       # not read like the new-session form.
       post :start_now
+      # The User view's Merge button. A human's click is the sign-off that lets
+      # the session holding the PR merge its own work — see
+      # Sessions::AuthorizeMerge.
+      post :authorize_merge
       post :touch_activity
       patch :update_title
       patch :update_notes
@@ -624,12 +627,10 @@ Rails.application.routes.draw do
     end
     collection do
       post :bulk_archive
-      # Persist a drag-and-drop reordering of one dashboard section's cards.
-      # Accepts the section's new top-to-bottom order of session ids.
-      post :reorder
+      # The User view's Reprioritize button: hand the board to the deployment's
+      # durable reprioritizing session.
+      post :reprioritize
       post :refresh_all
-      post :refresh_category
-      post :refresh_starred
       post :quick_prompt
       post :chat_bubble
       post :upload_images, as: :upload_images_new_session
@@ -668,14 +669,11 @@ Rails.application.routes.draw do
     end
   end
 
-  # Organizational categories for the sessions dashboard.
-  resources :categories, only: [ :create, :update, :destroy ] do
-    collection do
-      # Persist a drag-and-drop / context-menu reordering of the whole category
-      # stack. Accepts the new top-to-bottom order of category ids.
-      post :reorder
-    end
-  end
+  # No browser-facing category routes. Categories are still a live data concept —
+  # CategorizationService writes them, and the MCP `manage_categories` tool, the
+  # REST API under /api/v1/categories and the /supervisor dashboards all manage
+  # them — but the dashboard's category-grouped grid was replaced by the User
+  # view, and it was the only thing that reached these.
 
   # Defines the root path route ("/")
   root "sessions#index"

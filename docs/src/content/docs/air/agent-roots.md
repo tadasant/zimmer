@@ -1,6 +1,6 @@
 ---
 title: Agent roots
-description: What a root is, the ten that ship, subagent roots, and how a root's defaults seed a session.
+description: What a root is, the eleven that ship, subagent roots, and how a root's defaults seed a session.
 sidebar:
   order: 3
 ---
@@ -89,7 +89,7 @@ Two things are deliberately outside that rule:
   declare `default_subagent_roots`) are added by `SelfSessionInjector`, not by this resolution. A
   session spawned with `mcp_servers: []` still receives them, by design.
 
-## The ten roots that ship
+## The eleven roots that ship
 
 | Root | Invocable | Repo | Notes |
 | --- | --- | --- | --- |
@@ -98,6 +98,7 @@ Two things are deliberately outside that rule:
 | `zimmer-router` | ❌ | `tadasant/zimmer` | Deprecated alias of `zimmer-orchestrator`, kept so sessions created before the rename still resolve their root ([how](#the-router-roots-two-names)). Nothing new is created against it. |
 | `general-agent` | ✅ | `tadasant/zimmer` | The catch-all. `AgentRootsConfig::DEFAULT_ROOT`. |
 | `fleet-maintenance` | ❌ | `tadasant/zimmer` | The deployment's own scheduler. The `quota_available` trigger dispatches it; it runs `awaken-waiting-sessions` and starts parked spot work in precedence order. Defaults to the `zimmer-fleet` server, which is the only thing that gives it the tools that skill calls. |
+| `dashboard-reprioritizer` | ❌ | `tadasant/zimmer` | The durable session behind the [User view](/sessions/user-view/)'s **Reprioritize** button. Reads the board with `get_user_view` and writes its order back with `reorder_user_view`; defaults to the `zimmer-sessions` server, which is what carries those two tools. Reused across presses rather than spawned per click — the button fires a `reuse_session` trigger. |
 | `catalog-management` | ❌ | `tadasant/zimmer` | Lead root; fans out to the four below. Maintains this repo's own AIR catalog, and is the catalog's worked example of `default_subagent_roots`. |
 | `catalog-mgmt-research` | ❌ | ↳ subagent phase | `default_in_roots: [catalog-management]`, model `sonnet` |
 | `catalog-mgmt-configs` | ❌ | ↳ subagent phase | same |
@@ -121,7 +122,7 @@ The other five kept their names and moved to `tadasant/zimmer`, which is where t
 describe maintaining actually lives.
 
 One consequence to know about: `AgentRootsConfig#find_for_session` resolves a root *backwards* from
-`(url, subdirectory)`, and all ten roots that ship occupy one location. That fallback is
+`(url, subdirectory)`, and all eleven roots that ship occupy one location. That fallback is
 first-match, so it cannot tell `catalog-management` from `zimmer`. It is only reached by rows that
 never stored an `agent_root_key` — everything created through `create_from_agent_root!` carries the
 key, and the key wins.

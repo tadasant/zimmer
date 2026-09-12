@@ -2,14 +2,14 @@ require "test_helper"
 require "mocha/minitest"
 
 # Tests for the dashboard view modes on SessionsController#index. Besides the
-# default category-grouped grid, the dashboard supports two flat sort modes
-# selected via ?view=:
+# default User view, the dashboard supports two flat sort modes selected via
+# ?view=:
 #   - last_touched  → single list ordered by last_user_activity_at (metadata,
 #                     falling back to created_at), most-recent first
 #   - created_desc  → single list ordered purely by created_at desc
-# Both flatten the presentation: no category grouping, no custom/per-category
-# ordering, and no pinned favorites float. Desktop defaults to categories,
-# mobile defaults to last_touched, and an explicit choice persists via cookie.
+# Both flatten the presentation into a paginated card grid sorted by one factor.
+# Desktop defaults to the User view, mobile defaults to last_touched, and an
+# explicit choice persists via cookie.
 class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
   DESKTOP_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36".freeze
   MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1".freeze
@@ -49,14 +49,27 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
 
   # ---- Defaults --------------------------------------------------------------
 
-  test "desktop default is the category-grouped view" do
+  test "desktop default is the User view" do
     make_session
 
     get root_path, headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
-    assert_select "#category_sections", true, "desktop default should render the category grid"
+    assert_select "#user_view_list", true, "desktop default should render the User view's board"
     assert_select "#flat_sessions", false, "desktop default should not render the flat list"
+  end
+
+  test "a cookie left by the removed categories view lands on the User view" do
+    make_session
+
+    # Written by a previous release; "categories" is no longer a valid mode.
+    cookies[:sessions_view] = "categories"
+    get root_path, headers: { "User-Agent" => MOBILE_UA }
+
+    assert_response :success
+    assert_select "#user_view_list", true,
+      "a stale `categories` cookie should remap to the view that replaced it, not fall through to the mobile default"
+    assert_select "#flat_sessions", false
   end
 
   test "mobile default is the last touched flat view" do
@@ -66,8 +79,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "#flat_sessions", true, "mobile default should render the flat list"
-    assert_select "#category_sections", false, "mobile default should not render the category grid"
-    assert_select "#pinned_section", false, "flat view should not float pinned favorites"
+    assert_select "#user_view_list", false, "mobile default should not render the User view"
   end
 
   # ---- Explicit selection + persistence -------------------------------------
@@ -79,7 +91,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "#flat_sessions", true
-    assert_select "#category_sections", false
+    assert_select "#user_view_list", false
   end
 
   test "explicit view choice persists via cookie across navigation" do
@@ -93,7 +105,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     get root_path, headers: { "User-Agent" => DESKTOP_UA }
     assert_response :success
     assert_select "#flat_sessions", true, "the persisted explicit choice should survive navigation"
-    assert_select "#category_sections", false
+    assert_select "#user_view_list", false
   end
 
   test "an invalid view param falls back to the default" do
@@ -102,7 +114,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     get root_path(view: "bogus"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
-    assert_select "#category_sections", true, "invalid view should fall back to desktop default"
+    assert_select "#user_view_list", true, "invalid view should fall back to desktop default"
     assert_select "#flat_sessions", false
   end
 
@@ -151,7 +163,6 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     # Strict last-touched order ignores the favorite flag: the newer plain
     # session sorts above the older favorited one.
     assert_equal [ "session_#{plain_new.id}", "session_#{favorited_old.id}" ], flat_card_ids
-    assert_select "#pinned_section", false
   end
 
   # ---- created_desc ordering -------------------------------------------------
@@ -171,8 +182,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal [ "session_#{c.id}", "session_#{b.id}", "session_#{a.id}" ], flat_card_ids
-    assert_select "#category_sections", false
-    assert_select "#pinned_section", false
+    assert_select "#user_view_list", false
   end
 
   test "last touched view degrades to created_at on a malformed stored timestamp" do
