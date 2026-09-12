@@ -163,6 +163,47 @@ class EnqueuedMessageProcessorService
         session.resume_for_follow_up!
 
         if handoff_from_running
+          # The outgoing turn's sleep intent dies with the outgoing turn.
+          #
+          # `Trigger#sleep_target_session_if_applicable` marks a RUNNING session
+          # `pending_sleep` the moment a wake is armed against it, and that mark is
+          # meant to be consumed by the very next `pause`. This path has no `pause`
+          # and no `resume` — it hands one turn straight to the next — so the flag
+          # survives into a turn that never asked for it and sleeps the session at
+          # THAT turn's end instead. On the post-pause path the identical event (the
+          # same message, arriving a few hundred milliseconds later) leaves the
+          # session in `needs_input`, so leaving the flag standing here makes the
+          # resting state of a session depend on which side of a race the message
+          # landed.
+          #
+          # Worse than untidy when the queued message is itself a WAKE that fired
+          # into the running turn: AoEventTriggerJob has already held the whole wake
+          # group, the next turn's `pause` retires it, and the leftover intent then
+          # sleeps the session with nothing left to wake it — invisible in `waiting`
+          # until StrandedSleepRescue pages fifteen minutes later
+          # (https://github.com/tadasant/zimmer/issues/1172).
+          #
+          # Scoped to the intents that exist FOR a wake —
+          # `Session#pending_sleep_requires_wake?`, the same rule
+          # `execute_pending_sleep` gates on, rather than a second list free to
+          # drift from it. Those are the ones a message legitimately supersedes:
+          # the wake they were arranged for is still armed and still the session's
+          # own to come back on, and a session that answers a question and then
+          # goes straight back to sleep has hidden the answer (#898).
+          #
+          # Every other `pending_sleep` writer is a dormancy the platform imposed
+          # rather than an intent the turn expressed — a spot pause, an auth-outage
+          # park, a halted turn — and clearing one of those would run a session
+          # that was deliberately stood down.
+          if session.metadata&.dig("pending_sleep") == true && session.pending_sleep_requires_wake?
+            session.remove_metadata!(SessionStateMachine::PENDING_SLEEP_KEYS)
+            add_log(
+              "Dropped the pending auto-sleep from the finished turn — a queued message took the " \
+              "next turn, and the wake-up that sleep was arranged for is still the session's own to keep",
+              level: "info"
+            )
+          end
+
           # Handoff path: clear the outgoing job's lock, refresh the elapsed-time
           # counter for the new turn, and put the session back in `waiting`.
           #
