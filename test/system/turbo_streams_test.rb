@@ -12,7 +12,8 @@ class TurboStreamsTest < ApplicationSystemTestCase
   end
 
   test "session cards are wrapped in turbo frames" do
-    visit root_path
+    # Cards live in the flat sort views; the default User view renders rows.
+    visit root_path(view: SessionsController::VIEW_MODE_CREATED_DESC)
 
     # Verify all session cards are wrapped in turbo frames
     all("[id^='session_']").each do |session_element|
@@ -23,14 +24,16 @@ class TurboStreamsTest < ApplicationSystemTestCase
   end
 
   test "sessions grid container has correct ID for broadcasts" do
-    visit root_path
+    # #sessions_grid is the card grid's broadcast target, rendered by the flat sort views.
+    visit root_path(view: SessionsController::VIEW_MODE_CREATED_DESC)
 
     # Verify the grid has the ID that broadcasts target
     assert_selector "#sessions_grid"
   end
 
   test "timestamp has data attributes for JavaScript updater" do
-    visit root_path
+    # The relative timestamp is on the session card, which the flat sort views render.
+    visit root_path(view: SessionsController::VIEW_MODE_CREATED_DESC)
 
     # Verify timestamps have the required data attributes
     # At least one timestamp should exist on the page
