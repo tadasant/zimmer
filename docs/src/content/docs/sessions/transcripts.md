@@ -52,6 +52,22 @@ is a hash of a value the caller already has in memory. `sessions.transcript_line
 row for the same reason: the regression guard below compares line counts, and computing that used
 to mean detoasting megabytes to count newlines.
 
+"Byte-identical" is decided the same way, by `Session#transcript_matches?`. Most polls find nothing
+new, so this check runs more than any other. The agent loop reloads the session before every poll,
+which drops whatever was read last time, so comparing `transcript != incoming` would read the whole
+conversation out of the chunk table on every poll of every running session. With twenty-odd sessions
+running, that saturated production Postgres on 2026-09-12 and wedged the `default` lane behind it
+(GlitchTip #99). The check compares the size and SHA-256 of the normalised incoming value against
+the row instead. It reads the stored text back only for a row that cannot vouch for its bytes: one
+the backfill has not reached, or one with no digest. The same holds on the poller's other per-poll
+paths. A Codex session still on the rollout it was on last poll, with no history carried over, does
+not read the stored transcript. Neither does an idle poll on a followed [re-keyed
+branch](#a-re-keyed-transcript-and-why-the-name-is-only-a-preference).
+
+A write from a stale copy of the session cannot desynchronise the two either. If a writer re-saves
+the value it last read after another writer has committed a newer transcript, nothing on the row
+changes, and the chunk set is left describing the newer transcript the row's digest vouches for.
+
 Two invariants the writer maintains, both relied on elsewhere:
 
 1. **Every chunk but the last ends at a line break.** Content search matches per chunk, and a

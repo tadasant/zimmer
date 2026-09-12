@@ -281,6 +281,103 @@ class ChunkedTranscriptTest < ActiveSupport::TestCase
     assert_empty selects, "the guard must answer from the session row alone"
   end
 
+  # --- transcript_matches?, the idle poll's question ----------------------
+
+  test "transcript_matches? answers an identical transcript without reading the chunk table" do
+    content = jsonl(2_000, text: "m" * 200)
+    @session.update!(transcript: content)
+    fresh = Session.find(@session.id)
+
+    selects = chunk_selects_during { assert fresh.transcript_matches?(content.dup) }
+
+    assert_empty selects, "an idle poll must answer from the session row alone: #{selects.inspect}"
+  end
+
+  test "transcript_matches? is false for any difference, without reading the chunk table" do
+    content = jsonl(10)
+    @session.update!(transcript: content)
+    fresh = Session.find(@session.id)
+    same_size_edit = content.sub('"n":9', '"n":8')
+    assert_equal content.bytesize, same_size_edit.bytesize, "the fixture must isolate the digest check"
+
+    selects = chunk_selects_during do
+      assert_not fresh.transcript_matches?(same_size_edit), "same length, different bytes"
+      assert_not fresh.transcript_matches?(content + jsonl(1, start: 10)), "an extension"
+      assert_not fresh.transcript_matches?(jsonl(9)), "a truncation"
+      assert_not fresh.transcript_matches?(""), "an empty read"
+      assert_not fresh.transcript_matches?(nil), "no read at all"
+    end
+
+    assert_empty selects, selects.inspect
+  end
+
+  test "transcript_matches? compares what a write would store" do
+    content = jsonl(3)
+    @session.update!(transcript: content)
+
+    assert Session.find(@session.id).transcript_matches?(content.sub("event", "ev\u0000ent")),
+      "a NUL byte the setter strips is not a difference worth a write"
+  end
+
+  test "transcript_matches? falls back to the stored text on a row the backfill has not reached" do
+    legacy = jsonl(4)
+    store_legacy_transcript(@session, legacy)
+
+    assert @session.transcript_matches?(legacy)
+    assert_not @session.transcript_matches?(legacy + jsonl(1, start: 4))
+  end
+
+  test "transcript_matches? sees an unsaved assignment" do
+    @session.update!(transcript: jsonl(3))
+    @session.transcript = jsonl(4)
+
+    assert @session.transcript_matches?(jsonl(4))
+    assert_not @session.transcript_matches?(jsonl(3))
+  end
+
+  test "transcript_matches? never matches a legacy Array row against JSONL" do
+    events = [ { "type" => "user", "n" => 1 } ]
+    store_legacy_transcript(@session, events)
+
+    assert_not @session.transcript_matches?(Session.normalize_transcript(events))
+  end
+
+  test "transcript_matches? reads the chunks when the row has no digest" do
+    content = jsonl(5)
+    @session.update!(transcript: content)
+    Session.where(id: @session.id).update_all(transcript_digest: nil)
+    fresh = Session.find(@session.id)
+
+    assert fresh.transcript_matches?(content)
+    assert_not fresh.transcript_matches?(jsonl(5, start: 1))
+  end
+
+  test "a no-op write from a stale copy does not overwrite a newer transcript" do
+    # Two holders of one session. The second writes a longer transcript; the first
+    # then saves the value it last read. Nothing on the row changes, so no UPDATE
+    # takes the row lock, and the chunk set must be left describing the newer write
+    # the row's digest vouches for — otherwise `transcript_matches?` would trust a
+    # digest the chunks no longer agree with.
+    original = jsonl(5)
+    @session.update!(transcript: original)
+    stale = Session.find(@session.id)
+    newer = original + jsonl(3, start: 5)
+    Session.find(@session.id).update!(transcript: newer)
+
+    stale.update!(transcript: original)
+
+    fresh = Session.find(@session.id)
+    assert_equal newer, stored_bytes(@session)
+    assert_equal newer, fresh.transcript
+    assert fresh.transcript_matches?(newer)
+  end
+
+  test "an empty session matches an empty read" do
+    assert @session.transcript_matches?(nil)
+    assert @session.transcript_matches?("")
+    assert_not @session.transcript_matches?(jsonl(1))
+  end
+
   test "a poll that refuses a regression leaves every stored byte in place" do
     # The end-to-end shape of the guard: the shorter value never reaches the
     # setter, so the chunk set is untouched and the transcript is still whole.

@@ -147,6 +147,38 @@ module ChunkedTranscript
     self.class.transcript_line_count(incoming) < transcript_line_count
   end
 
+  # True when +incoming+ is exactly what is stored, decided from the row's
+  # `transcript_byte_size` and `transcript_digest` instead of by reading the
+  # transcript back.
+  #
+  # This is the question every idle transcript poll asks, and it is asked a lot:
+  # the agent loop polls each running session every half second, reloads the
+  # session first (which drops the memoised read), and on a poll that found no
+  # new messages compares the file on disk with what is stored. Answering that
+  # with `transcript != incoming` pulls the whole conversation out of
+  # `session_transcript_chunks` twice a second per running session — megabytes a
+  # read on a long session. Twenty-odd sessions doing that saturate Postgres, and
+  # every lane waiting on the database backs up behind it (GlitchTip #99, where
+  # the provenance fan-out held the `default` lane for 20+ minutes).
+  #
+  # Compares the NORMALISED value, because that is what a write would store: a NUL
+  # byte the setter strips is not a difference worth a write. Falls back to the
+  # read when the row cannot vouch for its bytes — a legacy row the backfill has
+  # not reached, a row without a digest, or a value already in memory anyway.
+  def transcript_matches?(incoming)
+    normalized = self.class.normalize_transcript(incoming)
+
+    if defined?(@staged_transcript) || defined?(@chunked_transcript_text) ||
+       !chunked_transcript? || !has_attribute?(:transcript_digest) || read_attribute(:transcript_digest).blank?
+      return transcript == normalized
+    end
+
+    return false if normalized.nil?
+    return false unless normalized.bytesize == read_attribute(:transcript_byte_size).to_i
+
+    Digest::SHA256.hexdigest(normalized) == read_attribute(:transcript_digest)
+  end
+
   def reload(*)
     forget_transcript_cache
     super
@@ -254,6 +286,15 @@ module ChunkedTranscript
           base_digest.present? && Digest::SHA256.hexdigest(value) == base_digest
       # Byte-identical to what is stored. Every poll that finds nothing new lands
       # here, so it must not touch the chunk table.
+    elsif superseded_resave?(value, base_bytes, base_digest, stored_bytes)
+      # This writer re-saved the value it last read, and another writer has since
+      # committed a different transcript. Nothing on this row changed, so no UPDATE
+      # ran and the row still vouches for the newer bytes. Replacing the chunks
+      # here would leave `transcript_digest` describing a document the chunk table
+      # no longer holds, and `transcript_matches?` trusts that digest.
+      forget_transcript_cache
+      transcript_chunks.reset
+      return
     else
       replace_transcript_chunks(value, base_bytes: stored_bytes, base_is_chunked: stored_bytes.positive?)
     end
@@ -263,6 +304,20 @@ module ChunkedTranscript
     # append; leave them and the next `transcript_chunks` read is a lie.
     transcript_chunks.reset
     remove_instance_variable(:@staged_transcript)
+  end
+
+  # True when the incoming value is exactly the base this record was loaded with,
+  # but the chunk set has moved on AND the row in the database agrees with the
+  # chunk set. The last condition is what tells a stale in-memory copy apart from
+  # a chunk set that disagrees with its own row, which a replace should repair.
+  # Rare by construction, so the one primary-key read it costs is not on any
+  # ordinary path.
+  def superseded_resave?(value, base_bytes, base_digest, stored_bytes)
+    return false if value.nil? || base_digest.blank? || !base_bytes.positive?
+    return false if stored_bytes == base_bytes
+    return false unless value.bytesize == base_bytes && Digest::SHA256.hexdigest(value) == base_digest
+
+    self.class.where(id: id).pick(:transcript_byte_size).to_i == stored_bytes
   end
 
   # The only path that destroys stored transcript bytes. Rare by construction — a
