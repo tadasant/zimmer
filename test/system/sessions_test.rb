@@ -14,7 +14,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Sessions from fixtures should be visible
     assert_text "Agent Sessions"
-    assert_selector "#sessions_grid" # Container for sessions
+    assert_selector "#user_view_list" # The board the default User view renders
   end
 
   test "home page shows empty state when no sessions" do
@@ -25,7 +25,8 @@ class SessionsTest < ApplicationSystemTestCase
     visit root_url
 
     assert_text "No sessions"
-    assert_text "Get started by creating a new agent session"
+    # The User view keeps its list in the DOM and says so inside it.
+    assert_text "No sessions match these filters"
   end
 
   # Test creating a new session
@@ -410,7 +411,7 @@ class SessionsTest < ApplicationSystemTestCase
       created_at: 1.hour.ago
     )
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     # Should show newer session first (in HTML order)
     page_text = page.text
@@ -517,7 +518,7 @@ class SessionsTest < ApplicationSystemTestCase
       slug: "test-title-20251114-1230"
     )
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     # Session ID should be displayed
     assert_text "##{session.id}"
@@ -588,7 +589,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     within("#session_#{session.id}") do
       assert_link "Trash"
@@ -602,7 +603,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :archived
     )
 
-    visit root_path(every_status_params(status: [ "archived" ]))
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, status: [ "archived" ]))
 
     within("#session_#{session.id}") do
       # Check that there's no link pointing to the archive action
@@ -1039,7 +1040,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     view_link = "a[aria-label='View session #{session.id}']"
 
     # Close via the in-drawer Close control.
@@ -1083,7 +1084,7 @@ class SessionsTest < ApplicationSystemTestCase
     # Below the sm: 640px breakpoint the controller treats the viewport as mobile.
     page.driver.browser.manage.window.resize_to(375, 812)
     begin
-      visit root_url(every_status_params)
+      visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
       # The drawer panel starts dismissed.
       assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
@@ -1112,7 +1113,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     find("a[aria-label='View session #{session.id}']").click
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']"
 
@@ -1151,7 +1152,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     view_link = "a[aria-label='View session #{session.id}']"
     find(view_link).click
 
@@ -1185,7 +1186,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     emulate_reduced_motion
     begin
-      visit root_url(every_status_params)
+      visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
       # Fail loudly rather than vacuously if the emulation didn't take.
       assert page.evaluate_script("window.matchMedia('(prefers-reduced-motion: reduce)').matches"),
@@ -1216,7 +1217,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     find("a[aria-label='View session #{session.id}']").click
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']:not(.pointer-events-none)"
     assert_selector "turbo-frame#session_detail [data-current-session-id='#{session.id}']"
@@ -1240,7 +1241,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     find("a[aria-label='View session #{session.id}']").click
     assert_selector "turbo-frame#session_detail [data-current-session-id='#{session.id}']"
 

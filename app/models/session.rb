@@ -2695,7 +2695,7 @@ class Session < ApplicationRecord
   # which is why the queue's statuses went stale until the page was reloaded.
   #
   # Its own stream rather than a second payload on the index one, so a dashboard
-  # in Categories view does not receive a message it has no element for.
+  # in a flat sort view does not receive a message it has no element for.
   RANKED_STREAM = "sessions_ranked".freeze
 
   # Postgres advisory lock namespace for per-session serialization. Different

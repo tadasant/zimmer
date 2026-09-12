@@ -72,10 +72,12 @@ module Mcp
       # Note what is NOT here, and deliberately: there is no tool for the User
       # view's **Merge** button. That button is the one sanctioned route to an
       # agent merging its own work, and what sanctions it is that a human clicked
-      # it — a tool would let an agent authorize its own merge, which is exactly
-      # what the button exists to rule out. Same reasoning as the gate ledger's
-      # human feedback below: one writer, the browser controller, unreachable from
-      # this endpoint. See Sessions::AuthorizeMerge.
+      # it. Be precise about what that buys: it is not a wall. The web UI has no
+      # login (the network perimeter is the boundary) and `action_session`'s
+      # `follow_up` delivers any text, the `[HUMAN-AUTHORIZED MERGE]` marker
+      # included. What an agent cannot produce from this endpoint is the
+      # HumanMessage the browser writes for the click, and that record — not the
+      # marker — is the provenance an audit keys on. See Sessions::AuthorizeMerge.
       Definition.new(klass: "Mcp::Tools::GetUserView", group: "sessions", write: false),
 
       # Sessions — writes
