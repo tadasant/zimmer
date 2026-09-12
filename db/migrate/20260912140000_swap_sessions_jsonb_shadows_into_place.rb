@@ -53,6 +53,8 @@
 #
 # Everything here is catalog-only (`RENAME COLUMN`, `ADD COLUMN` with no default,
 # `SET DEFAULT`) except the convergence UPDATE and the eight index rebuilds.
+# The whole of it runs in one transaction, holding `ACCESS EXCLUSIVE` on
+# `sessions` from the explicit `LOCK TABLE` that opens `up` to the commit.
 # `sessions` is ~15k rows — `BackfillSessionsJsonb` copied 15,005 — and the heap
 # scan does not touch `transcript`, which is TOASTed out of line. Seconds at the
 # outside. The hazard that remains is the one every migration against this table
@@ -96,6 +98,22 @@ class SwapSessionsJsonbShadowsIntoPlace < ActiveRecord::Migration[8.0]
   ].freeze
 
   def up
+    # Taken explicitly, and BEFORE the convergence rather than as a side effect of
+    # the first `rename_column`. Two reasons, and the first is a correctness bug
+    # this migration had without it: an `UPDATE` on its own takes only
+    # `ROW EXCLUSIVE`, so a writer reaching a converted column outside the model
+    # — `update_all`, hand-written SQL, the two paths `JsonbDualWrite` could never
+    # intercept — could commit a one-sided write in the gap between `converge!`
+    # returning and the first DDL statement asking for the upgrade, and the rename
+    # would promote that stale shadow. The window is a few round-trips wide and no
+    # call site in the app writes these columns that way today, which is exactly
+    # the kind of "nothing can reach it" that stops being true without anyone
+    # noticing. Second, taking the strongest lock up front rather than upgrading
+    # to it mid-transaction removes the lock-upgrade deadlock this would otherwise
+    # be shaped like. It costs the duration of one bounded `UPDATE` on a ~15k-row
+    # table, inside a transaction that is about to hold the same lock anyway.
+    execute "LOCK TABLE sessions IN ACCESS EXCLUSIVE MODE"
+
     converge!
 
     drop_converted_indexes!
@@ -140,9 +158,10 @@ class SwapSessionsJsonbShadowsIntoPlace < ActiveRecord::Migration[8.0]
   # concern cannot intercept — would be promoted silently by the rename below.
   # #1018 said in as many words that this PR had to re-check the predicate rather
   # than trust that run, and this deployment offers no shell to check it from, so
-  # the check is the repair: under the ACCESS EXCLUSIVE lock this migration
-  # already holds, no writer can race it, and afterwards every shadow equals its
-  # source by construction rather than by argument.
+  # the check is the repair: behind the explicit `LOCK TABLE` in `up` no writer
+  # can race it, and afterwards every shadow equals its source by construction
+  # rather than by argument. The lock is taken in `up` rather than here precisely
+  # so that claim is true of this method — see the comment on it.
   #
   # `IS DISTINCT FROM`, so a genuinely NULL source is left NULL rather than
   # written — `NULL IS DISTINCT FROM NULL` is false.
