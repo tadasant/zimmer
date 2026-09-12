@@ -19,33 +19,6 @@
     border-radius: 0.5rem;
     opacity: 0.95;
   }
-  /* An empty category grid still needs to read as a drop target. Show a dashed
-     "Drop sessions here" hint only while it has no cards. */
-  .category-grid:not(:has(*))::after {
-    content: "Drop sessions here";
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 5rem;
-    color: #9ca3af;
-    font-size: 0.875rem;
-    border: 2px dashed #e5e7eb;
-    border-radius: 0.5rem;
-  }
-  /* Collapsible category sections. The category-collapse controller toggles
-     `category-collapsed` on the <section> and persists it to localStorage; the chevron
-     (in the header) lives outside the section's turbo-frame so it survives pagination
-     swaps. Hiding the frame collapses the grid and its pagination together. */
-  .category-collapse-chevron {
-    transition: transform 0.2s ease;
-  }
-  .category-collapsed .category-collapse-chevron {
-    transform: rotate(-90deg);
-  }
-  .category-collapsed .category-collapse-body {
-    display: none;
-  }
 </style>
 <%# data-board-visibility-filter states which board this is, so that a card
     snoozed or hidden from its own menu knows whether to leave the page: it
@@ -672,43 +645,18 @@
         <% end %>
       </div>
 
-      <%# View Mode Switcher — top-right toolbar above the session list. Flattens the
-          dashboard from the category-grouped grid into a single list sorted solely by
-          last-touched or created time. The chosen mode rides in ?view= (persisted via
-          cookie server-side); each link preserves the current search/filter params and
-          drops pagination since the flat and per-category paginators use different
-          schemes. Sits in the main content column so it lands at the top-right of the
+      <%# View Mode Switcher — top-right toolbar above the session list. The chosen
+          mode rides in ?view= (persisted via cookie server-side); each link
+          preserves the current search/filter params and drops pagination, since the
+          flat paginator's page numbers mean nothing in the two unpaginated views.
+          Sits in the main content column so it lands at the top-right of the
           dashboard on every screen size. %>
       <div class="mb-6 flex items-center gap-3">
-        <%# Collapse all / Expand all: a single toggle that drives every section's
-            category-collapse controller via the Stimulus outlets API. The button element is
-            the collapse-all controller; its outlet selector matches every <section> that
-            mounts category-collapse, so persistence stays owned by that controller (the
-            single source of truth) and never drifts. The label/aria flip between "Collapse
-            all" and "Expand all" based on whether every section is already collapsed.
-            Only meaningful in the categories view (the only view with category sections),
-            so it is rendered as a peer of the view-mode tabs there and omitted in the flat
-            sort views and while a search is active. %>
-        <% if @view_mode == SessionsController::VIEW_MODE_CATEGORIES && !@search_active %>
-          <button type="button"
-                  data-controller="collapse-all"
-                  data-collapse-all-category-collapse-outlet="[data-controller~='category-collapse']"
-                  data-action="click->collapse-all#toggle category-collapse:changed@window->collapse-all#syncLabel"
-                  class="inline-flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                  aria-controls="category_sections"
-                  aria-expanded="true"
-                  aria-label="Collapse all categories">
-            <svg class="h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fill-rule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd" />
-            </svg>
-            <span data-collapse-all-target="label">Collapse all</span>
-          </button>
-        <% end %>
         <div class="inline-flex items-center gap-1 rounded-lg bg-gray-100 p-1 shadow-inner max-w-full overflow-x-auto ml-auto"
              role="group" aria-label="Dashboard view mode">
           <%
             view_modes = [
-              [ SessionsController::VIEW_MODE_CATEGORIES, "Categories" ],
+              [ SessionsController::VIEW_MODE_USER, "Your board" ],
               [ SessionsController::VIEW_MODE_LAST_TOUCHED, "Last Touched" ],
               [ SessionsController::VIEW_MODE_CREATED_DESC, "Created" ],
               [ SessionsController::VIEW_MODE_RANKED, "Ranked" ]
@@ -727,7 +675,18 @@
         </div>
       </div>
 
-      <% if @view_mode == SessionsController::VIEW_MODE_RANKED %>
+      <% if @view_mode == SessionsController::VIEW_MODE_USER %>
+        <%# The User view: one list of everything the filters match, worked top to
+            bottom. Search narrows it exactly as the status and visibility filters
+            do — there is no separate "search results" presentation to bounce the
+            operator into. %>
+        <%= render "sessions/content_scan_notice", scan: @content_scan %>
+        <%= render "sessions/user_view_sessions",
+              sessions: @user_view_sessions,
+              limit: @user_view_limit,
+              truncated: @user_view_truncated,
+              visibility_filter: @visibility_filter %>
+      <% elsif @view_mode == SessionsController::VIEW_MODE_RANKED %>
         <%# The Ranked view: priority above, the spot queue below it in precedence
             order, both editable in place. Honors the same filters as every other
             view — with its own default, since a queue of work that has not started
@@ -745,174 +704,21 @@
               priority_class_filter: @priority_class_filter,
               visibility_filter: @visibility_filter,
               live_insert: !@search_active %>
-      <% elsif @view_mode == SessionsController::VIEW_MODE_LAST_TOUCHED || @view_mode == SessionsController::VIEW_MODE_CREATED_DESC %>
-        <%# Flat sort views: a single list sorted solely by the chosen factor
-            (last touched, or created desc). No category grouping, no custom/
-            per-category ordering, and no pinned favorites float. Honors the same
-            filters/search as every other view. %>
+      <% else %>
+        <%# Flat sort views: a single list of cards sorted solely by the chosen
+            factor (last touched, or created desc). Honors the same filters/search
+            as every other view. %>
         <% if @any_sessions %>
+          <%= render "sessions/content_scan_notice", scan: @content_scan %>
           <%= render "sessions/flat_sessions", sessions: @flat_sessions, title: @flat_view_title %>
         <% end %>
-      <% elsif @search_active %>
-        <%# Flat search results: a single ordered list (favorites first, then newest) of
-            every session matching the active search. The category grid and its
-            drag-and-drop are intentionally hidden while searching. %>
-        <% if @any_sessions %>
-          <section class="mb-8" id="search_results">
-            <%= render "sessions/content_scan_notice", scan: @content_scan %>
-            <div class="flex items-center gap-2 min-w-0 mb-3">
-              <h2 class="text-lg font-semibold text-gray-800 truncate">Search results</h2>
-              <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 min-w-[1.5rem]"
-                    title="<%= pluralize(@search_results.total_count, "session") %>"><%= @search_results.total_count %></span>
-            </div>
-            <%# Grid keeps id="sessions_grid" so real-time broadcasts that prepend new
-                cards still land here while a search is active (the category grid that
-                normally owns this id is not rendered during search). %>
-            <div id="sessions_grid" data-live-region="sync"
-                 data-live-page="<%= @search_results.respond_to?(:current_page) ? @search_results.current_page : 1 %>"
-                 class="<%= session_card_grid_classes %>">
-              <% preload_session_costs(@search_results) %>
-              <% @search_results.each do |session| %>
-                <%= turbo_frame_tag dom_id(session) do %>
-                  <%= render "session_card", agent_session: session %>
-                <% end %>
-              <% end %>
-            </div>
-            <% if @search_results.total_pages > 1 %>
-              <div class="mt-6 flex justify-center">
-                <%= paginate @search_results %>
-              </div>
-            <% end %>
-          </section>
-        <% end %>
-      <% else %>
-      <%# Starred (favorited) sessions pinned above every category section. Rendered
-          outside the category-dnd controller so it is neither draggable nor a drop
-          target — it is derived purely from favorite state. Omitted when nothing is
-          starred. %>
-      <% if @pinned_sessions.any? %>
-        <%= render "sessions/pinned_section", sessions: @pinned_sessions %>
       <% end %>
 
-      <!-- Sessions List: drag-and-drop category sections -->
-      <%# The whole grid is one drag-and-drop controller. Every section (Uncategorized
-          plus each category) is a Sortable list sharing a group, so a card can be
-          dragged from any section into any other, and reordered within one. Every drop
-          POSTs the destination section's new card order — carrying the moved card's id
-          when it crossed sections, so the category change and the position are one
-          write — and both survive a reload. %>
-      <div data-controller="category-dnd category-edit"
-           data-category-dnd-reorder-cards-url-value="<%= reorder_sessions_path %>"
-           data-category-dnd-reorder-url-value="<%= reorder_categories_path %>"
-           data-category-edit-update-url-template-value="<%= category_path("__ID__") %>"
-           data-category-edit-create-url-value="<%= categories_path %>">
-        <%# The Sortable "sections" target: each child <section> is a draggable unit
-            grabbed by its .category-drag-handle, and a reorder POSTs the new
-            top-to-bottom id order so the stacking survives reload. Uncategorized and
-            the custom categories are interleaved here by @ordered_sections, so the
-            Uncategorized bucket can be dragged anywhere in the stack — not pinned to
-            the top. New category sections are appended here by the "+" button. Each
-            section paginates independently and is collapsible (see its partial). %>
-        <div id="category_sections" data-category-dnd-target="sections">
-          <% @ordered_sections.each do |section| %>
-            <% if section == :uncategorized %>
-              <%= render "sessions/uncategorized_section", sessions: @uncategorized_sessions %>
-            <% else %>
-              <%= render "sessions/category_section", category: section, sessions: @sessions_by_category[section.id] %>
-            <% end %>
-          <% end %>
-        </div>
-
-        <%# Divider with a "+" button at the top-right that creates a new category. %>
-        <div class="relative my-8">
-          <div class="absolute inset-0 flex items-center" aria-hidden="true">
-            <div class="w-full border-t border-gray-300"></div>
-          </div>
-          <div class="relative flex justify-end">
-            <button type="button"
-                    data-action="category-edit#openCreate"
-                    class="inline-flex items-center gap-1 rounded-full border border-gray-300 bg-white px-3 py-1 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50 hover:text-indigo-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                    title="Add category">
-              <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
-              </svg>
-              New category
-            </button>
-          </div>
-        </div>
-
-        <%# Shared right-click "move" menu. Hidden until openCardMenu/openCategoryMenu
-            populate and position it at the cursor; dismissed on outside-click or Escape.
-            One element is reused for every handle so there's no per-card menu markup. %>
-        <div data-category-dnd-target="menu"
-             class="hidden fixed z-50 min-w-[12rem] max-h-[20rem] overflow-auto rounded-md border border-gray-200 bg-white py-1 shadow-lg text-sm"
-             role="menu"></div>
-        <%# Edit-category modal. Hidden until the category-edit controller opens it,
-            at which point its fields are prefilled from the clicked Edit button's
-            data params. Submitting PATCHes /categories/:id and patches the section
-            header name in place on success. %>
-        <div data-category-edit-target="modal"
-             class="hidden fixed inset-0 z-[80] flex items-center justify-center p-4"
-             data-action="keydown->category-edit#closeOnEscape">
-          <div class="absolute inset-0 bg-black/40" data-action="click->category-edit#close"></div>
-          <div class="relative bg-white rounded-lg shadow-xl w-full max-w-md p-6">
-            <div class="flex items-center justify-between mb-4">
-              <h3 class="text-lg font-semibold text-gray-900" data-category-edit-target="title">Edit category</h3>
-              <button type="button" class="text-gray-400 hover:text-gray-600" data-action="category-edit#close" aria-label="Close">
-                <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            <form data-action="submit->category-edit#submit">
-              <div class="mb-4">
-                <label class="block text-sm font-medium text-gray-700 mb-1" for="category-edit-name">Name</label>
-                <input type="text" id="category-edit-name"
-                       data-category-edit-target="nameInput"
-                       class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                       maxlength="100" required />
-              </div>
-              <div class="mb-4">
-                <label class="block text-sm font-medium text-gray-700 mb-1" for="category-edit-description">
-                  Description <span class="text-gray-400 font-normal">(optional)</span>
-                </label>
-                <textarea id="category-edit-description"
-                          data-category-edit-target="descriptionInput"
-                          rows="3" maxlength="1000"
-                          placeholder="What belongs in this category? Used to auto-sort new sessions."
-                          class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 resize-y focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
-              </div>
-              <div class="mb-4" data-category-edit-target="frozenField">
-                <label class="flex items-start gap-2 cursor-pointer">
-                  <input type="checkbox" id="category-edit-frozen"
-                         data-category-edit-target="frozenInput"
-                         class="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" />
-                  <span class="text-sm">
-                    <span class="font-medium text-gray-700">Freeze this category</span>
-                    <span class="block text-gray-400 font-normal">Its sessions are skipped by "Refresh all" and automatic recovery. Useful for a parked backlog.</span>
-                  </span>
-                </label>
-              </div>
-              <p data-category-edit-target="error" class="hidden mb-3 text-sm text-red-600"></p>
-              <div class="flex justify-end gap-2">
-                <button type="button" data-action="category-edit#close"
-                        class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                  Cancel
-                </button>
-                <button type="submit" data-category-edit-target="submit"
-                        class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                  Save
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      </div>
-      <% end %>
-
-      <%# Pagination is now per-category — each section renders its own controls inside
-          its turbo-frame (see _category_pagination). Only the empty state remains here. %>
-      <% unless @any_sessions %>
+      <%# The page-level empty state. Not rendered in the User view, which carries its
+          own placeholder INSIDE the list section — the list has to stay in the DOM
+          there so it remains a drop target and somewhere an undone Trash can put a
+          row back, so the section is rendered whether or not it has rows. %>
+      <% if !@any_sessions && @view_mode != SessionsController::VIEW_MODE_USER %>
         <!-- Empty State -->
         <div class="text-center py-12">
           <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">

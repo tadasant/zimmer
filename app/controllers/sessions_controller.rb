@@ -28,18 +28,33 @@ class SessionsController < ApplicationController
   # page[uncategorized]=2 alongside page[<category_id>]=2.
   UNCATEGORIZED_PAGE_KEY = "uncategorized".freeze
 
-  # Dashboard view modes. "categories" is the existing category-grouped grid
-  # (favorites pinned, custom drag ordering). The two flat modes completely
-  # flatten that presentation into a single list sorted solely by one factor —
-  # no category grouping, no per-category/custom ordering, no pinned float.
-  VIEW_MODE_CATEGORIES = "categories".freeze
+  # Dashboard view modes.
+  #
+  # "user" is the default and the dashboard's centre of gravity: one unified list
+  # of every session the filters match, each row carrying enough — status, root,
+  # the generated status blurb, the PR and its CI colour — that a decision can be
+  # taken ON the row. Trash, Snooze and Merge are all inline, so the board is
+  # worked top to bottom without opening a session.
+  #
+  # It REPLACES the old "categories" grid, which asked the operator to open a
+  # card to learn anything about it. The Category model is untouched — it is a
+  # data concept the MCP surface, the REST API and /supervisor still use — but
+  # nothing renders a category-grouped dashboard any more.
+  VIEW_MODE_USER = "user".freeze
+  # The two flat modes flatten the presentation into a single list sorted solely
+  # by one factor — no grouping, no custom ordering, no pinned float.
   VIEW_MODE_LAST_TOUCHED = "last_touched".freeze
   VIEW_MODE_CREATED_DESC = "created_desc".freeze
   # The spot queue, in the order it will be worked. Not a sort of the same grid:
   # it is a two-section list (priority above, spot below, ranked) whose rows are
   # editable — this is where a queue is MANAGED rather than read.
   VIEW_MODE_RANKED = "ranked".freeze
-  VALID_VIEW_MODES = [ VIEW_MODE_CATEGORIES, VIEW_MODE_LAST_TOUCHED, VIEW_MODE_CREATED_DESC, VIEW_MODE_RANKED ].freeze
+  VALID_VIEW_MODES = [ VIEW_MODE_USER, VIEW_MODE_LAST_TOUCHED, VIEW_MODE_CREATED_DESC, VIEW_MODE_RANKED ].freeze
+
+  # Cookie values a previous release wrote that no longer name a view. Remapped
+  # rather than dropped, so an operator who had deliberately chosen the grid lands
+  # on the view that replaced it instead of silently on the mobile default.
+  LEGACY_VIEW_MODES = { "categories" => VIEW_MODE_USER }.freeze
 
   # Cookie that persists an explicitly-chosen view mode across navigation. Only
   # written when the user picks a view via ?view=; absent until then so the
@@ -71,6 +86,20 @@ class SessionsController < ApplicationController
   # there on purpose — a drag between two rows means nothing if one of them is on
   # another page — so this is a cap, and the view says when it has truncated.
   RANKED_SECTION_LIMIT = 200
+
+  # How many rows the User view renders. Same reasoning as RANKED_SECTION_LIMIT —
+  # a drag between two rows means nothing if one of them is on another page, so
+  # there is no paginator and the view says when it has truncated — but the number
+  # is an order of magnitude larger, because this view's whole job is to show
+  # EVERYTHING the filters match. The default filter (`needs_input` alone) is the
+  # population it exists for, and that is tens of rows, not hundreds.
+  #
+  # It is a safety rail rather than a target: each row costs one <li> with no
+  # nested frames and no per-row query (the status summary and the category come
+  # from two eager-loaded joins), so a full 500 renders in well under a second.
+  # Past that the drag-and-drop and the browser's own layout, not the server, are
+  # what degrade.
+  USER_VIEW_LIMIT = 500
 
   # The Filters section's board-visibility control — the reveal affordance for the
   # second, presentation-only axis. "On board" is the default and hides the
@@ -280,89 +309,37 @@ class SessionsController < ApplicationController
       return
     end
 
-    # The flat search results list: favorites first, then newest. A search replaces
-    # the category grid with one list nobody can drag, so the dragged order below has
-    # no meaning here.
-    ordered = sessions.order(favorited: :desc, created_at: :desc)
+    # The User view. One unified list of every session the filters match, ordered
+    # so a priority session outranks every spot one and precedence is respected
+    # all the way down.
+    #
+    # The ordering rule itself is Sessions::UserView's, shared with the
+    # `get_user_view` MCP tool so the reprioritizing session reads exactly the
+    # board the human is looking at.
+    #
+    # The select drops `transcript`. It is a legacy JSON column on `sessions`
+    # (transcripts live in session_transcript_chunks now) and this view renders an
+    # order of magnitude more rows than the card grid did, so a row that still
+    # carries one would be paid for on every one of them. Nothing this view
+    # renders reads it — `transcript_line_count` and `transcript_byte_size` are
+    # their own columns, and ChunkedTranscript's `has_attribute?` guards degrade
+    # correctly when the column is not selected.
+    if @view_mode == VIEW_MODE_USER
+      user_scope = sessions
+        .select(Session.column_names - [ "transcript" ])
+        .includes(:status_summary)
 
-    # When a search is active, render a single flat results list and skip the
-    # category-grouped grid entirely. The category sections (and their
-    # drag-and-drop grid) only appear when no search is active.
-    if @search_active
-      @search_results = ordered.page(scalar_page_param).per(SESSIONS_PER_PAGE)
-      @any_sessions = @search_results.any?
+      @user_view_sessions = Sessions::UserView.rows(scope: user_scope, limit: USER_VIEW_LIMIT)
+      @user_view_limit = USER_VIEW_LIMIT
+      @user_view_truncated = @user_view_sessions.size >= USER_VIEW_LIMIT
+      @any_sessions = @user_view_sessions.any?
       return
     end
 
-    # The category grid's own ordering: where the operator dragged each card. A card
-    # that arrived without being placed — created, or re-categorized — went on top of
-    # its section, and cards nothing has ever placed tie at the column default and fall
-    # back to newest-first. See SessionCardOrder.
-    carded = sessions.card_ordered
-
-    # Per-category pagination. Each category section — including the "Uncategorized"
-    # bucket — paginates its own sessions independently so paging one section never
-    # disturbs the others. Page state is namespaced under page[...] so multiple
-    # sections can sit on different pages at once without colliding:
-    #   page[uncategorized]=2  → Uncategorized on page 2
-    #   page[<category_id>]=3  → that category on page 3
-    # A legacy/bookmarked scalar (?page=2) or a malformed array (?page[]=2) is not a
-    # keyed hash, so it's ignored and every section falls back to page 1. Gate on the
-    # concrete hash-like types — String and Array both respond to :[] but indexing them
-    # with a string key would raise, so respond_to? is not a sufficient guard.
-    page_params = params[:page]
-    page_params = {} unless page_params.is_a?(ActionController::Parameters) || page_params.is_a?(Hash)
-
-    @categories = Category.ordered.to_a
-
-    # Starred (favorited) sessions are pinned into a single group above every category
-    # section, regardless of which category they belong to, so the user's most important
-    # sessions are immediately visible without scrolling. Every favorited session in the
-    # current visibility scope is pinned (not just those on one global page — per-category
-    # pagination has no single global page), and they are excluded from the per-category
-    # windows below so each starred session appears exactly once, in the pinned group.
-    #
-    # The Starred group is NOT drag-orderable: it renders outside the drag-and-drop
-    # controller and its cards carry no handle, because a card's category placement is
-    # invisible while it is starred. So it keeps the newest-first ordering rather than
-    # the dragged one — a card dragged, then starred, is back where it was dragged to
-    # the moment it is unstarred, because starring does not disturb its sort_order.
-    @pinned_sessions = ordered.where(favorited: true)
-
-    # Everything else feeds the paginated category sections. Favorited sessions are
-    # filtered out here because they render in the pinned group above.
-    unpinned = carded.where(favorited: false)
-
-    # Uncategorized: every non-favorited session with a NULL category_id. Keeps its own
-    # Kaminari window driven by the "uncategorized" sentinel key.
-    @uncategorized_sessions = unpinned.where(category_id: nil)
-      .page(page_params[UNCATEGORIZED_PAGE_KEY]).per(SESSIONS_PER_PAGE)
-
-    # One independent paginated window per category, keyed by the category id. Every
-    # category renders a section — even empty ones — so it stays a valid drop target.
-    @sessions_by_category = @categories.to_h do |category|
-      [ category.id, unpinned.where(category_id: category.id)
-        .page(page_params[category.id.to_s]).per(SESSIONS_PER_PAGE) ]
-    end
-
-    # Whether any session is visible at all (the pinned group plus every section's
-    # current page), used to decide between the grid and the empty state. Each
-    # per-section relation is its own paginated query (Kaminari also adds a COUNT for
-    # total_pages), so this scans one window per category plus the pinned scope — fine at
-    # the dashboard's category count; revisit with a single grouped query if categories
-    # ever grow large.
-    @any_sessions = @pinned_sessions.any? || @uncategorized_sessions.any? || @sessions_by_category.values.any?(&:any?)
-
-    # Interleave the "Uncategorized" bucket (category_id = nil, the :uncategorized
-    # sentinel) with the custom categories into one top-to-bottom stack. Uncategorized
-    # has no Category row, so its slot is persisted separately on AppSetting and merged
-    # in here by position. A tie (only possible before the first-ever reorder, when an
-    # existing category also sits at position 0) puts Uncategorized first, preserving
-    # its historical top slot.
-    uncategorized_position = AppSetting.current.uncategorized_position
-    @ordered_sections = (@categories + [ :uncategorized ]).sort_by do |section|
-      section == :uncategorized ? [ uncategorized_position, 0 ] : [ section.position, 1 ]
-    end
+    # No view mode left. Every branch above returns, and VALID_VIEW_MODES has no
+    # fifth member — so reaching here means a mode was added without a branch, and
+    # an empty dashboard would hide that rather than report it.
+    raise "Unhandled dashboard view mode: #{@view_mode.inspect}"
   end
 
   def new
@@ -968,9 +945,24 @@ class SessionsController < ApplicationController
   # rather than only over a cable that can be silently dead. The full detail page
   # never receives this stream — #archive redirects it home. Both chrome targets
   # are absent when the click came from a dashboard card.
+  #
+  # The two elements a dashboard can be showing this session as: the card (keyed
+  # on dom_id, in the flat sort views) and the User view's row. Both are removed
+  # rather than one, because the removal is sent to whichever page made the
+  # request and the server does not know which of the two it is looking at; a
+  # `remove` for an id that is not in the DOM is a silent no-op.
+  #
+  # Server-driven rather than optimistic on the client, and that is the point:
+  # #archive refuses the first click when the session still has queued messages,
+  # and answers with the "Archive anyway" speed bump instead of these streams. A
+  # row the browser had already taken away on click would leave the operator
+  # believing a session was trashed that was not.
   def archive_remove_streams(session, notice:)
-    [ turbo_stream.remove(dom_id(session)), flash_stream(notice: notice) ] +
-      session_chrome_streams(session)
+    [
+      turbo_stream.remove(dom_id(session)),
+      turbo_stream.remove(helpers.user_view_row_dom_id(session)),
+      flash_stream(notice: notice)
+    ] + session_chrome_streams(session)
   end
   private :archive_remove_streams
 
@@ -1056,7 +1048,7 @@ class SessionsController < ApplicationController
     respond_with_flash(
       notice: "Session restored from trash.",
       location: @session,
-      streams: [ restored_card_stream(@session) ]
+      streams: [ restored_card_stream(@session), restored_row_stream(@session) ]
     )
   end
 
@@ -1072,6 +1064,22 @@ class SessionsController < ApplicationController
     )
   end
   private :restored_card_stream
+
+  # The same restore, for the User view's row list. Prepended rather than slotted
+  # into place: the row carries its precedence and its class, and the view's own
+  # controller re-sorts the list whenever a row arrives, so it lands where the
+  # order says it belongs rather than where this stream put it.
+  #
+  # A no-op on any page that is not the User view — "user_view_list" is not in
+  # the DOM there.
+  def restored_row_stream(session)
+    turbo_stream.prepend(
+      "user_view_list",
+      partial: "sessions/user_view_row",
+      locals: { agent_session: session }
+    )
+  end
+  private :restored_row_stream
 
   # The two bits of session-page chrome that encode a session's status: the badge
   # and the header's action buttons (Restore vs Pause/Trash). Session#broadcast_
@@ -1097,35 +1105,17 @@ class SessionsController < ApplicationController
   end
   private :session_chrome_streams
 
-  # Which grid that is depends on the dashboard view the Undo was clicked from,
-  # because only the categories view renders per-category grids. The flat sort
-  # views and an active search render everything into one "sessions_grid", so a
-  # categorized card has to go there — prepending to a "category_grid_<id>" that
-  # is not in the DOM drops the card silently, and Undo looks like it failed.
+  # Where an Undo puts the card back. There is one grid now: the per-category
+  # grids went with the categories view, and every surface that still renders
+  # cards (the two flat sort views) renders them all into "sessions_grid".
   #
-  # Both signals travel with this POST: the view mode lives in the
-  # VIEW_MODE_COOKIE the browser sends, and the search lives in the query string
-  # of the dashboard page the Undo form sits on, i.e. this request's referer.
-  def restored_card_target(session)
-    return "sessions_grid" if session.category_id.nil?
-    return "sessions_grid" unless resolve_view_mode == VIEW_MODE_CATEGORIES
-    return "sessions_grid" if referer_search_active?
-
-    "category_grid_#{session.category_id}"
+  # The User view renders rows rather than cards and has no "sessions_grid" at
+  # all, so a restore there lands nowhere and the page is reloaded instead — see
+  # #undo_archive.
+  def restored_card_target(_session)
+    "sessions_grid"
   end
   private :restored_card_target
-
-  # True when the referring dashboard had a search or agent-root filter applied,
-  # which collapses the category sections into a single flat results grid.
-  def referer_search_active?
-    return false if request.referer.blank?
-
-    query = Rack::Utils.parse_nested_query(URI.parse(request.referer).query.to_s)
-    query["q"].to_s.strip.present? || query["agent_root"].to_s.strip.present?
-  rescue URI::InvalidURIError
-    false
-  end
-  private :referer_search_active?
 
   def bulk_archive
     # No per-user authorization: there is no "their own sessions" to scope to.
@@ -1306,52 +1296,7 @@ class SessionsController < ApplicationController
     bulk_refresh_sessions(sessions, empty_notice: "No non-archived sessions to refresh")
   end
 
-  # Refresh only the non-archived starred (favorited) sessions, applying the exact same
-  # restart/continue/transcript-refresh behavior as #refresh_all (both share
-  # #bulk_refresh_sessions). Triggered by the Refresh button in the dashboard's "Starred"
-  # group header.
-  #
-  # Unlike #refresh_all, this does NOT exclude frozen categories: the Starred group
-  # renders every favorited session regardless of category, so scoping the button to
-  # exactly what the group shows keeps it honest. Starring is a deliberate per-session
-  # opt-in that outranks the category's parked flag.
-  def refresh_starred
-    sessions = Session.where(favorited: true).where.not(status: :archived)
-    bulk_refresh_sessions(sessions, empty_notice: "No non-archived starred sessions to refresh")
-  end
-
-  # Refresh only the non-archived sessions belonging to a single category, applying the
-  # exact same restart/continue/transcript-refresh behavior as #refresh_all (both share
-  # #bulk_refresh_sessions). Triggered by the per-category Refresh button in each
-  # dashboard section header. The category is identified by the +category_id+ param; a
-  # blank value or the "uncategorized" sentinel targets sessions with no category (the
-  # Uncategorized section). Frozen categories are a parked bucket excluded from bulk
-  # refresh, so the per-category button is not rendered for them and this action also
-  # refuses them server-side, mirroring #refresh_all's exclusion.
-  def refresh_category
-    category_id = params[:category_id].to_s.presence
-
-    if category_id.nil? || category_id == "uncategorized"
-      sessions = Session.where(category_id: nil).where.not(status: :archived)
-      empty_notice = "No non-archived uncategorized sessions to refresh"
-    else
-      category = Category.find_by(id: category_id)
-      if category.nil?
-        respond_with_flash(alert: "Category not found", location: root_path)
-        return
-      end
-      if category.is_frozen?
-        respond_with_flash(alert: "Frozen categories are excluded from refresh", location: root_path)
-        return
-      end
-      sessions = category.sessions.where.not(status: :archived)
-      empty_notice = "No non-archived sessions to refresh in \"#{category.name}\""
-    end
-
-    bulk_refresh_sessions(sessions, empty_notice: empty_notice)
-  end
-
-  # Shared implementation behind #refresh_all, #refresh_category and #refresh_starred.
+  # Shared implementation behind #refresh_all.
   # Given a relation of candidate sessions (already scoped to exclude archived sessions
   # and any frozen bucket), it (1) restarts failed sessions, (2) continues
   # auto-continuable needs_input sessions (those NOT paused by the user), (3) continues
@@ -2127,82 +2072,6 @@ class SessionsController < ApplicationController
     end
   end
 
-  # Assign (or clear) a session's organizational category. Called when a card is
-  # dragged into a category section on the dashboard. A blank/absent category_id
-  # moves the session back to "Uncategorized".
-  def set_category
-    @session = find_session
-    category_id = params[:category_id].presence&.to_i
-
-    if category_id
-      category = Category.find_by(id: category_id)
-      unless category
-        respond_to do |format|
-          # 200, not 404: Turbo renders a failed form submission's body as a full
-          # page rather than applying its streams, which would blow the dashboard
-          # away to say "category not found". The JSON branch keeps the real status.
-          format.turbo_stream { render turbo_stream: flash_stream(alert: "Category ##{category_id} not found") }
-          format.html { redirect_back fallback_location: root_path, alert: "Category ##{category_id} not found" }
-          format.json { render json: { error: "Category ##{category_id} not found" }, status: :not_found }
-        end
-        return
-      end
-      # Named so the change is recorded as a human correction of whatever the
-      # categorizer answered, rather than as an anonymous UPDATE — see
-      # SessionCategorization.
-      @session.category_change_source = CategoryFeedbackEvent::WEB_UI
-      @session.update!(category_id: category.id)
-      respond_to do |format|
-        format.turbo_stream { render turbo_stream: flash_stream(notice: "Moved to \"#{category.name}\".") }
-        format.html { redirect_back fallback_location: root_path }
-        format.json { render json: { success: true, session_id: @session.id, category_id: category.id } }
-      end
-    else
-      @session.category_change_source = CategoryFeedbackEvent::WEB_UI
-      @session.update!(category_id: nil)
-      respond_to do |format|
-        format.turbo_stream { render turbo_stream: flash_stream(notice: "Moved to Uncategorized.") }
-        format.html { redirect_back fallback_location: root_path }
-        format.json { render json: { success: true, session_id: @session.id, category_id: nil } }
-      end
-    end
-  end
-
-  # POST /sessions/reorder — persist the top-to-bottom order of one dashboard
-  # section's cards after a drag.
-  #
-  # The body is `{ ids: [...], category_id: "<id>"|"", session_id: "<id>" }`: the
-  # destination section's live DOM order, the section it is (empty or the
-  # "uncategorized" sentinel for the Uncategorized bucket), and the card that moved
-  # — so when the drag crossed sections, one request persists both the category
-  # change and the new position. `ids` is one PAGE of the section as the browser
-  # holds it, so its indices are never read as positions: the moved card is placed
-  # next to its neighbour in it and nothing else moves; see SessionCardOrder.
-  def reorder
-    category_id = params[:category_id].to_s.strip
-
-    if category_id.present? && category_id != Category::UNCATEGORIZED_SENTINEL
-      category = Category.find_by(id: category_id.to_i)
-      unless category
-        render json: { error: "Category ##{category_id} not found" }, status: :not_found
-        return
-      end
-    end
-
-    # By id or slug, and a miss is a 404 like every other session lookup, rather than
-    # a 2xx that quietly skipped the move.
-    moved = Session.locate!(params[:session_id]) if params[:session_id].present?
-
-    Session.reorder_cards!(
-      params[:ids],
-      category_id: category&.id,
-      moved_session_id: moved&.id,
-      source: CategoryFeedbackEvent::WEB_UI
-    )
-
-    head :no_content
-  end
-
   def toggle_push_notifications
     @session = find_session
 
@@ -2646,6 +2515,92 @@ class SessionsController < ApplicationController
   end
   private :start_notice
 
+  # POST /sessions/reprioritize
+  #
+  # The Reprioritize button at the top of the User view. Hands the board to the
+  # deployment's durable reprioritizing session — reused rather than spawned
+  # fresh, the way a trigger reuses a session — and reports which session took it
+  # so the operator can watch it work.
+  #
+  # See Sessions::DashboardReprioritizer for why it is a trigger rather than a
+  # bare `start_session`.
+  def reprioritize
+    result = Sessions::DashboardReprioritizer.call
+
+    respond_to do |format|
+      format.turbo_stream do
+        render turbo_stream: [
+          turbo_stream.replace(
+            "user_view_reprioritize",
+            partial: "sessions/user_view_reprioritize",
+            locals: { reprioritizer_session: result.session }
+          ),
+          flash_stream(notice: result.message)
+        ]
+      end
+      format.html { redirect_to root_path(view: VIEW_MODE_USER), notice: result.message }
+    end
+  rescue => e
+    Rails.logger.error "[SessionsController#reprioritize] #{e.class}: #{e.message}"
+    respond_with_flash(alert: "Could not start the reprioritizer: #{e.message}", location: root_path(view: VIEW_MODE_USER))
+  end
+
+  # POST /sessions/:id/authorize_merge
+  #
+  # The User view's Merge button. A human has decided this PR should land, and
+  # the click is the sign-off — see Sessions::AuthorizeMerge for why this is the
+  # one sanctioned route to an agent merging its own work, and for everything the
+  # authorization records.
+  #
+  # Answers with the row's button re-rendered in its new state rather than with a
+  # redirect, so the operator keeps their place on a board they are working top to
+  # bottom. Double-clicking is harmless: the second call finds the PR already
+  # authorized and reports that instead of sending a second message.
+  def authorize_merge
+    @session = find_session
+
+    result = Sessions::AuthorizeMerge.call(session: @session)
+
+    # The human's own words are the click. Recorded through the same capture every
+    # other web-UI input goes through, so the session's provenance says a PERSON
+    # authorized this rather than leaving the merge attributable only to the agent
+    # that performed it.
+    if result.sent?
+      capture_web_ui_human_message(
+        @session,
+        "Merge #{result.pr_url}",
+        "web_ui.authorize_merge"
+      )
+    end
+
+    respond_to do |format|
+      format.turbo_stream do
+        render turbo_stream: [
+          turbo_stream.replace(
+            "user_view_merge_#{@session.id}",
+            partial: "sessions/user_view_merge_button",
+            locals: { agent_session: @session }
+          ),
+          flash_stream(
+            notice: (result.ok? ? result.message : nil),
+            alert: (result.ok? ? nil : result.message)
+          )
+        ]
+      end
+      format.json do
+        render json: { outcome: result.outcome, message: result.message, pr_url: result.pr_url },
+          status: (result.ok? ? :ok : :unprocessable_entity)
+      end
+      format.html do
+        respond_with_flash(
+          notice: (result.ok? ? result.message : nil),
+          alert: (result.ok? ? nil : result.message),
+          location: @session
+        )
+      end
+    end
+  end
+
   # POST /sessions/:id/start_now
   # "Start it now" from the Ranked view's ⋮ menu: take this waiting session's
   # next turn immediately rather than when the scheduler gets round to it.
@@ -2916,9 +2871,10 @@ class SessionsController < ApplicationController
   # Resolve the dashboard view mode for #index, in precedence order:
   #   1. An explicit, valid ?view= param — honored and persisted to a cookie so
   #      the choice survives subsequent navigation back to the dashboard.
-  #   2. A previously-persisted valid cookie value (the user's last explicit pick).
-  #   3. The default: "last_touched" on mobile, "categories" on desktop. The
-  #      default only applies when the user has never explicitly chosen a view.
+  #   2. A previously-persisted valid cookie value (the user's last explicit pick),
+  #      or a LEGACY_VIEW_MODES name remapped to the view that replaced it.
+  #   3. The default: "last_touched" on mobile, "user" on desktop. The default
+  #      only applies when the user has never explicitly chosen a view.
   def resolve_view_mode
     requested = params[:view].to_s
     if VALID_VIEW_MODES.include?(requested)
@@ -2928,8 +2884,9 @@ class SessionsController < ApplicationController
 
     persisted = cookies[VIEW_MODE_COOKIE].to_s
     return persisted if VALID_VIEW_MODES.include?(persisted)
+    return LEGACY_VIEW_MODES[persisted] if LEGACY_VIEW_MODES.key?(persisted)
 
-    mobile_request? ? VIEW_MODE_LAST_TOUCHED : VIEW_MODE_CATEGORIES
+    mobile_request? ? VIEW_MODE_LAST_TOUCHED : VIEW_MODE_USER
   end
 
   # "Reset filters" is a GET that drops the persisted Filters choice and redirects to

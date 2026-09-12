@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 31 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 33 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -201,17 +201,30 @@ production.
 
 ## The tool surface
 
-31 tools, seven domains — 24 of them on the unscoped surface.
+33 tools, seven domains — 26 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
-| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_categories`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis` |
+| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_categories`, `reorder_user_view`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
 | `gate_decisions` (opt-in) | `search_gate_decisions`, `get_gate_decision_feedback`, `record_gate_decision` |
 | `work_backlog` (opt-in) | `get_work_backlog`, `append_work_backlog_item`, `pull_work_backlog_items` |
 | `outcome_analyses` (opt-in) | `action_outcome_analysis` (its read, `get_outcome_analysis`, is in `sessions`) |
+
+`get_user_view` and `reorder_user_view` are the read and write halves of the dashboard's
+[User view](/sessions/user-view/) — the human's decision board. The read returns the board in the
+order it is drawn, with the three facts a decision on it turns on that a session listing does not
+carry: the agent root, the cached status-summary blurb, and the session's most recent PR with its
+lifecycle state and CI verdict. The write takes a whole ordering as one argument and applies it in
+one transaction.
+
+They are a pair, and neither is a convenience over `quick_search_sessions` + `action_session`.
+Assembling the board out of those means a `get_session` per row, and reordering it with
+`change_precedence` means a call per row *and* an absolute rank computed against a board that has
+moved since it was read. `reorder_user_view` is what the dashboard's **Reprioritize** button's
+session uses.
 
 `quick_search_sessions` matches session titles plus the `metadata` and `custom_metadata` JSON by
 default, and `search_contents: true` widens it to the **transcript** — this is the MCP route to

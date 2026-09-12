@@ -69,11 +69,15 @@ predicate, and the two disagreeing would put a card on screen that the page beli
 
 ## Using it
 
-**On a card.** The ⋮ menu on every session card — in the category grid, the Starred group, both flat
-sort views and the search results — offers *Snooze until…* and *Hide*. The snooze panel holds a
+**On a card.** The ⋮ menu on every session card — in both flat sort views — offers *Snooze until…*
+and *Hide*. The snooze panel holds a
 handful of presets (later today, tomorrow, in 3 days, this weekend, next week) and a
 date/time picker for anything else. The presets are computed in **your browser's** timezone, so
 "Tomorrow" means your 9am.
+
+**In the User view.** Every row carries a **Snooze** button of its own, next to Merge and Trash —
+the same panel, opened inline rather than from behind a ⋮. That view is the board an operator is
+actually tidying, so the control is one click rather than two.
 
 **In the Ranked view.** The compact row's ⋮ menu carries the same two entries and the same panel.
 The ranked queue is a list of work that has not started, which makes it exactly the list worth

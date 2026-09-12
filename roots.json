@@ -33,6 +33,14 @@
     "default_branch": "main",
     "user_invocable": false
   },
+  "dashboard-reprioritizer": {
+    "name": "dashboard-reprioritizer",
+    "display_name": "Dashboard Reprioritizer",
+    "description": "The durable session behind the dashboard's Reprioritize button. It reads the User view over MCP (`get_user_view`) and writes the board's order back (`reorder_user_view`) so the rows the human is most likely to want next sit at the top. It ranks work; it does not do any. Not user-invocable — the button's trigger dispatches it.",
+    "url": "https://github.com/tadasant/zimmer.git",
+    "default_branch": "main",
+    "user_invocable": false
+  },
   "catalog-management": {
     "name": "catalog-management",
     "display_name": "Catalog Management",

@@ -133,7 +133,10 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
 
-    visit root_path(every_status_params)
+    # A flat sort view, explicitly: the dashboard's default is the User view, which
+    # renders ROWS rather than cards and so has no grid track to measure. The card
+    # grid this test is about lives in the two flat sort views now.
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_text LONG_TOKEN_TITLE
     assert_text "Short one"
 
@@ -169,15 +172,13 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # on the page is outside the column. Comparing the card against its grid — not
   # against the viewport — is what sees that.
   #
-  # Every card grid on the page is measured, not just the first: the flat lists and
-  # the search results render as `#sessions_grid`, and the category sections and the
-  # uncategorized bucket as `.category-grid`. They all render through one helper
-  # today, so measuring one would usually do — but the point of a regression test is
-  # to notice the day one of them stops doing that.
+  # Every card grid on the page is measured, not just the first. There is one today
+  # — the flat sort views render `#sessions_grid` — but the point of a regression
+  # test is to notice the day that stops being true.
   def cards_outside_their_grid
     page.evaluate_script(<<~JS)
       (function () {
-        const grids = document.querySelectorAll("#sessions_grid, .category-grid");
+        const grids = document.querySelectorAll("#sessions_grid");
         if (!grids.length) return ["no card grid on the page"];
         return Array.from(grids).flatMap((grid) => {
           const g = grid.getBoundingClientRect();
@@ -192,6 +193,42 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
         });
       })()
     JS
+  end
+
+  # The User view is the dashboard's default and the densest row in the app: a
+  # wrapping identity line, a clamped summary paragraph, and an action line holding
+  # the agent root, the precedence, the PR button, Merge, Snooze and Trash. Every one
+  # of those is a control, and the reported failure mode is the LAST control in a row
+  # landing past the right edge — so this is exactly the shape that regresses.
+  test "the User view's board does not overflow horizontally on a phone" do
+    url = "https://github.com/o/r/pull/9"
+    create_session(status: :needs_input, scheduling_class: SessionGenesis::PRIORITY, precedence: 900,
+      custom_metadata: {
+        "github_pull_request_urls" => [ url ],
+        "github_pull_request_statuses" => { url => "open" },
+        "github_pull_request_ci_statuses" => { url => "pass" }
+      })
+    create_session(title: "Short one", status: :needs_input,
+      scheduling_class: SessionGenesis::SPOT, precedence: 10)
+
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_USER))
+    assert_text LONG_TOKEN_TITLE
+    assert_text "Short one"
+    # The row with every control on it, so the assertion is about a full row rather
+    # than a bare one.
+    assert_selector "#user_view_list button", text: "Merge"
+
+    assert_no_horizontal_overflow("the User view")
+    page.save_screenshot(Rails.root.join("tmp/screenshots/proof-user-view-375.png").to_s)
+
+    # And at the narrowest phone still in use, where the action line has to wrap
+    # onto more lines rather than widen.
+    page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_USER))
+    assert_selector "#user_view_list button", text: "Merge"
+
+    assert_no_horizontal_overflow("the User view at #{NARROW_WIDTH}px")
+    page.save_screenshot(Rails.root.join("tmp/screenshots/proof-user-view-320.png").to_s)
   end
 
   # The transcript-scan notice is new markup on the busiest page, and it is the one

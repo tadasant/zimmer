@@ -86,16 +86,22 @@ class ZimmerIntegrationCatalogCountsTest < ActiveSupport::TestCase
     # Each claim is checked in both directions: the catalog declares what the
     # page says, and the page still names it. Without the second half a reword
     # could move an id to the wrong root and leave this test green.
+    reprioritizer = roots.fetch("dashboard-reprioritizer")
+
     { "playwright-custom" => zimmer.fetch("default_mcp_servers"),
       "awaken-waiting-sessions" => fleet.fetch("default_skills"),
-      "zimmer-fleet" => fleet.fetch("default_mcp_servers") }.each do |id, declared|
+      "zimmer-fleet" => fleet.fetch("default_mcp_servers"),
+      "zimmer-sessions" => reprioritizer.fetch("default_mcp_servers") }.each do |id, declared|
       assert_equal [ id ], declared, "the paragraph names #{id} as the sole entry here"
       assert_includes paragraph, "`#{id}`", "the paragraph no longer names #{id}"
     end
 
-    # "instead" claims these two roots are the only ones with defaults at all.
+    # The paragraph accounts for every root that declares defaults at all, so a
+    # fourth one appearing has to be added to the sentence rather than silently
+    # contradicting it.
     with_defaults = roots.select { |_id, root| root.values_at("default_skills", "default_mcp_servers").any?(&:present?) }
-    assert_equal %w[fleet-maintenance zimmer], with_defaults.keys.sort,
-                 "another root declares defaults; the paragraph accounts only for zimmer and fleet-maintenance"
+    assert_equal %w[dashboard-reprioritizer fleet-maintenance zimmer], with_defaults.keys.sort,
+                 "another root declares defaults; the paragraph accounts only for zimmer, " \
+                 "fleet-maintenance and dashboard-reprioritizer"
   end
 end

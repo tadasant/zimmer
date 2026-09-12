@@ -1,0 +1,131 @@
+<%# One row of the User view — the dashboard's decision board.
+
+    The whole premise of this screen is that a decision can be taken ON the row.
+    So everything the decision turns on is inline: what the session is, where it
+    stands in its own words, whether its PR is green, and the three buttons that
+    act on it (Merge, Snooze, Trash). Nothing here opens a session to find out
+    anything.
+
+    Layout is mobile-first and single-column inside the row: a flex-wrapping
+    header line, the generated status blurb, then a flex-wrapping action line.
+    Wrapping rather than a grid is what keeps it inside 375px without any of the
+    buttons sliding off the right edge — every child is `shrink-0` except the
+    title, which is the one thing allowed to take the remaining width.
+
+    Locals:
+      agent_session - the session %>
+<%
+  pr = Sessions::PrSummary.for(agent_session)
+  priority_class = agent_session.priority_class(cached_genesis_overrides)
+  is_priority = priority_class == SessionGenesis::PRIORITY
+  summary = agent_session.status_summary
+  behind = summary&.messages_since(agent_session.transcript_line_count).to_i
+%>
+<%# `data-visibility-unit` is what lets the shared visibility controller take this
+    row off the board when Snooze or Hide succeeds, with no reload. `data-precedence`
+    and `data-priority-class` are what the user-view controller re-sorts on after a
+    drag or a restore. %>
+<li id="<%= user_view_row_dom_id(agent_session) %>"
+    class="flex items-start gap-2 px-3 py-3 sm:gap-3"
+    data-visibility-unit
+    data-user-view-target="row"
+    data-session-id="<%= agent_session.id %>"
+    data-precedence="<%= agent_session.precedence %>"
+    data-priority-class="<%= priority_class %>">
+
+  <%# Drag handle. Padded into a touch target rather than sized as one — SortableJS
+      only starts a drag from inside this box, and a 16px one on a phone is a box
+      you miss. %>
+  <span class="shrink-0 cursor-grab px-1 py-1 text-gray-300 hover:text-gray-500"
+        data-user-view-target="handle" aria-hidden="true" title="Drag to reorder">
+    <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zM7 9a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zm-6 5a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2z"/></svg>
+  </span>
+
+  <div class="min-w-0 flex-1">
+    <%# ---- Identity line: title, class, status ---- %>
+    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <%# A real <a href> whose plain left-click opens the right-side drawer rather
+          than navigating off the board — the same interception the Ranked view's
+          title uses, and for the same reason: losing your place on a list you are
+          working top to bottom is the one thing this screen must not do. %>
+      <%= link_to agent_session.title.presence || "Untitled session",
+            session_path(agent_session),
+            data: session_drawer_link_data(agent_session, turbo_prefetch: false),
+            class: "min-w-0 flex-1 basis-full break-words text-sm font-medium text-gray-800 hover:text-indigo-600 sm:basis-auto sm:truncate" %>
+
+      <%# The priority/spot affordance. The list is not split into two sections, so
+          this badge is the only thing that says which half of the ordering a row
+          is in — and why a spot row can never be dragged above a priority one. %>
+      <span class="shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium <%= is_priority ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700" %>"
+            title="<%= is_priority ? "Priority — starts whenever it is ready. Priority rows sort above every spot row." : "Spot — starts when there is quota room, highest precedence first." %>">
+        <%= is_priority ? "Priority" : "Spot" %>
+      </span>
+
+      <span class="shrink-0"><%= render "sessions/status_badge", agent_session: agent_session %></span>
+
+      <% unless agent_session.board_visible? %>
+        <span class="shrink-0"><%= render "sessions/visibility_badge", agent_session: agent_session %></span>
+      <% end %>
+    </div>
+
+    <%# ---- The generated status ----
+
+        Zimmer's own cached "where this stands" blurb (SessionStatusSummary),
+        written by an agent when the session comes to rest. Clamped to three lines
+        with the full text on hover, and marked stale by message count rather than
+        by age — a summary does not rot because time passed, it rots because the
+        session said something new. Read straight off the eager-loaded association,
+        so a hundred rows cost one extra query rather than a hundred. %>
+    <% if summary&.summary.present? %>
+      <p class="mt-1 line-clamp-3 break-words text-xs leading-relaxed text-gray-600"
+         title="<%= summary.summary %>"><%= summary.summary %></p>
+      <% if behind.positive? %>
+        <p class="mt-0.5 text-[11px] text-gray-400"><%= pluralize(behind, "message") %> since this was written</p>
+      <% end %>
+    <% else %>
+      <p class="mt-1 text-xs italic text-gray-400">No status summary yet.</p>
+    <% end %>
+
+    <%# ---- Action line ---- %>
+    <div class="mt-2 flex flex-wrap items-center gap-2">
+      <span class="shrink-0 max-w-full truncate rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-500"
+            title="Agent root"><%= agent_session.agent_root_key.presence || agent_session.genesis_key %></span>
+
+      <%# The live precedence readout. The user-view controller rewrites it in place
+          after a drag, so the number never disagrees with where the row is sitting. %>
+      <span class="shrink-0 tabular-nums text-[11px] text-gray-400"
+            data-user-view-precedence
+            title="Precedence — higher is worked sooner">#<%= agent_session.precedence %></span>
+
+      <%# The PR button, with its green / merged affordance: the glyph's shape and
+          colour carry the lifecycle state and the dot beside it carries CI. %>
+      <span class="shrink-0"><%= render "sessions/github_pr_link", agent_session: agent_session %></span>
+
+      <%= render "sessions/user_view_merge_button", agent_session: agent_session %>
+
+      <%# Snooze. Presentation only — it takes the row off the board and changes
+          nothing about when the session runs. The wrapper is `relative` because the
+          popover positions against it. %>
+      <span class="relative shrink-0">
+        <%= render "sessions/visibility_menu", agent_session: agent_session, variant: :button, compact: true %>
+      </span>
+
+      <%# Trash. Posts to the same #archive action every other Trash affordance in
+          the app posts to, so the queued-message speed bump and the Undo toast come
+          with it — and the row leaves over the turbo stream that action already
+          answers with, rather than being taken away optimistically on click. That
+          matters here: the first click over a non-empty queue does NOT archive, and
+          a row the browser had already removed would claim otherwise. %>
+      <%= button_to archive_session_path(agent_session),
+            method: :post,
+            form: { data: { turbo: true }, class: "shrink-0" },
+            class: "inline-flex items-center rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-red-500",
+            title: "Move session #{agent_session.id} to trash" do %>
+        <svg class="-ml-0.5 mr-1.5 h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+        </svg>
+        Trash
+      <% end %>
+    </div>
+  </div>
+</li>
