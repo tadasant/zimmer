@@ -2599,10 +2599,9 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
 
   test "a sweep whose every condition completed but whose fetches Slack threw away does not stamp" do
     # The #522 shape, and the reason the stamp is not "the conditions completed": the
-    # per-unit rescues and #fetch_recent_history swallow a 429 so the sweep can finish
-    # its bookkeeping, so every condition returns normally from a sweep that polled
-    # nothing real. The poller's own record of that — @transient_error — is what keeps
-    # the heartbeat honest.
+    # per-unit rescues swallow a 429 so the sweep can finish its bookkeeping, so every
+    # condition returns normally from a sweep that polled nothing real. The poller's own
+    # record of that — @transient_error — is what keeps the heartbeat honest.
     with_real_cache do
       SlackService.stubs(:configured?).returns(true)
       job = SlackTriggerPollerJob.new
@@ -3078,7 +3077,9 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
                 .raises(production_rate_limit)
 
     job = SlackTriggerPollerJob.new
-    AlertService.expects(:raise_alert).never
+    # Slack is throttling us, not misbehaving: no report, and the poll comes back.
+    ErrorReporter.expects(:report_message).never
+    ErrorReporter.expects(:report_exception).never
     job.expects(:retry_job).with(wait: 30)
 
     lines = capture_log_lines do
