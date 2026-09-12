@@ -16,18 +16,51 @@
 # with two failures in a file it does not touch, on a run whose blast radius
 # depended entirely on which worker drew which test.
 #
-# Scoped to non-transactional classes on purpose. A transactional test cannot
-# leak — its row is rolled back — so checking one would buy nothing and cost a
-# query on each of ~16,500 tests.
+# Scoped to non-transactional tests on purpose. A test inside a transaction
+# cannot leak — its row is rolled back — so checking one would buy nothing and
+# cost a query on each of ~16,500 tests.
 #
 # Snapshot-based rather than "no row may exist at teardown": the guard blames the
-# test that *created* a row, so a deployment whose test database legitimately
-# carries one is not accused by every non-transactional test that runs after it.
+# test that *created* a row, so a database that legitimately carries one is not
+# accused by every non-transactional test that runs after it.
+#
+# Both edges of the test are checked, for the reason CacheIsolationGuard gives:
+#
+#   * `check!` in teardown blames the test that actually leaked.
+#   * `check_boot_baseline!` in setup contains the damage when that check never
+#     ran. ActiveSupport stops the `:teardown` chain at the first callback that
+#     raises, and a test file's own teardown runs before the base's — so a
+#     teardown that raises after creating the row and before restoring it takes
+#     the teardown check down with it. That leak has to be catchable from the
+#     far side too.
+#
+# What it does NOT catch: a non-transactional test that MUTATES a row that was
+# already there. Both classes writing `app_settings` today capture the columns
+# they write and put them back, and the existence hazard is the one that makes an
+# unrelated file fail, so the cheaper check is the one that earns its query.
 module AppSettingIsolationGuard
   class << self
+    # The rows present before `parallelize` forked its workers — the baseline
+    # every worker agrees on. Empty on every deployment today; captured rather
+    # than assumed so a database that ships a row is not mistaken for a leak.
+    attr_reader :boot_ids
+
+    def capture!
+      @boot_ids = AppSetting.pluck(:id)
+    rescue => e
+      Rails.logger.warn "[AppSettingIsolationGuard] could not capture the boot baseline: #{e.class}: #{e.message}"
+      @boot_ids = nil
+    end
+
     # Whether this test can leak at all.
+    #
+    # Rails' own predicate, not the class flag: `use_transactional_tests` is only
+    # half of it, and a per-test `uses_transaction :test_foo` opt-out inside a
+    # transactional class is the other half.
     def applies?(test)
-      !test.class.use_transactional_tests
+      return !test.class.use_transactional_tests unless test.respond_to?(:run_in_transaction?, true)
+
+      !test.send(:run_in_transaction?)
     end
 
     # The rows already there before the test ran, or nil when the table cannot be
@@ -50,16 +83,39 @@ module AppSettingIsolationGuard
     def check!(test, before)
       return if before.nil?
 
-      leaked = AppSetting.where.not(id: before).pluck(:id)
+      delete_and_blame(test, AppSetting.where.not(id: before).pluck(:id)) do
+        failure_message(test)
+      end
+    end
+
+    # The far edge: rows that are here at the START of a test and were not here
+    # at boot. Something earlier in this worker created them and its own teardown
+    # check never got to say so, so this test is the messenger rather than the
+    # cause — and it still runs, because the guard records its failure rather
+    # than raising.
+    def check_boot_baseline!(test)
+      return unless applies?(test)
+      return if boot_ids.nil?
+
+      delete_and_blame(test, AppSetting.where.not(id: boot_ids).pluck(:id)) do
+        messenger_message
+      end
+    end
+
+    private
+
+    def delete_and_blame(test, leaked)
       return if leaked.empty?
 
       AppSetting.where(id: leaked).delete_all
-      test.flunk(failure_message(test))
+      test.flunk(yield)
     rescue Minitest::Assertion => e
       test.failures << e
     rescue => e
       Rails.logger.warn "[AppSettingIsolationGuard] could not check app_settings: #{e.class}: #{e.message}"
     end
+
+    public
 
     def failure_message(test)
       <<~MESSAGE.strip
@@ -88,6 +144,19 @@ module AppSettingIsolationGuard
             end
 
         The leaked row has been deleted, so the rest of this worker is unaffected.
+      MESSAGE
+    end
+
+    def messenger_message
+      <<~MESSAGE.strip
+        An app_settings row was already here when this test started: an earlier test in this
+        worker created one and did not remove it, and its teardown never got to say so — a
+        teardown that raises stops the chain before the check that would have blamed it.
+        This test is the messenger, not the cause.
+
+        `AppSetting.new(...).valid?` is false while ANY row exists, so the row had to go
+        before this test ran. It has been deleted; the rest of this worker is unaffected.
+        Look for a class with `use_transactional_tests = false` that writes AppSetting.
       MESSAGE
     end
   end
