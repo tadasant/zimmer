@@ -113,8 +113,8 @@ Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at 
 
 - **Default runtime** (`claude_code` | `codex` | `pi`) and default model. See
   [Runtimes](/sessions/runtimes/).
-- **Experimental toggles** — MCP tool search, session-scoped Claude credentials, and any
-  experimental extension (the `extension_states` JSONB map). See [Experimental
+- **Experimental toggles** — MCP tool search and any experimental extension (the
+  `extension_states` JSONB map). See [Experimental
   settings](/operate/costs/#experimental-settings) and [Extensions](/extend/extensions/).
 - Catalog refresh controls.
 

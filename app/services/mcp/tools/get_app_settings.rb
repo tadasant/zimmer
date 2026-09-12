@@ -25,9 +25,13 @@ module Mcp
           global model that is not valid for that runtime is never handed to it; the session gets
           its runtime's own default instead. Lists the valid runtimes and each runtime's models.
         - **Experimental settings** — every toggle under Settings → Experimental, by key: MCP tool
-          search, session-scoped Claude credentials, and any registered experimental Zimmer
-          Extension (`extension.<id>`). Each is also recorded on every session as it runs, which is
-          what the Costs page compares cohorts by.
+          search today, plus any registered experimental Zimmer Extension (`extension.<id>`). Each
+          is also recorded on every session as it runs, which is what the Costs page compares
+          cohorts by.
+
+        Not here either: the MCP Apps master switch and its per-server allowlist, on the same page
+        and the same row. Trusting a server to put HTML on an operator's page is a statement only a
+        human can make, so it stays on `/settings`.
 
         Change them with `action_app_settings`. The session defaults apply to sessions created after
         the change. MCP tool search and experimental extensions are read when a session's agent

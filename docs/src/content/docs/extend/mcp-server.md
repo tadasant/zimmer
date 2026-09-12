@@ -358,8 +358,8 @@ group.
 
 `settings` is the Settings page, and it is opt-in because of what it writes. `get_app_settings`
 reports the global base runtime and model and every Settings → Experimental toggle — MCP tool
-search, session-scoped Claude credentials, any registered experimental extension — each marked as
-the shipped default or an operator override. `action_app_settings` changes them: `set_session_defaults`
+search, and any registered experimental extension — each marked as the shipped default or an
+operator override. `action_app_settings` changes them: `set_session_defaults`
 takes a `runtime` and/or `model` (an empty string clears one, as the form's blank input does) and
 saves through the same model validation the form uses, so a pair the page refuses is refused here
 with the same message; `set_experimental_setting` takes a key from `ExperimentalSettingsRegistry`,

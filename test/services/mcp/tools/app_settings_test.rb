@@ -71,7 +71,6 @@ class Mcp::Tools::AppSettingsTest < ActiveSupport::TestCase
     assert_includes output, "**Runtime:** `claude_code` (Claude Code) — shipped default, no override set"
     assert_includes output, "**Model:** `#{ModelCatalog.default_for('claude_code')}` — that runtime's own default, no override set"
     assert_match(/MCP tool search\*\* \(`mcp_tool_search`\): \*\*on\*\* — shipped default\./, output)
-    assert_match(/\(`session_scoped_credentials`\): \*\*off\*\* — shipped default\./, output)
     assert_match(/Fake experiment\*\* \(`extension\.fake_experiment`\): \*\*off\*\* — shipped default\./, output)
   end
 
@@ -254,7 +253,7 @@ class Mcp::Tools::AppSettingsTest < ActiveSupport::TestCase
       action(action: "set_experimental_setting", setting: "spot_gating", enabled: true)
     end
 
-    assert_match(/Unknown experimental setting: spot_gating\. Valid: mcp_tool_search, session_scoped_credentials/, error.message)
+    assert_match(/Unknown experimental setting: spot_gating\. Valid: mcp_tool_search/, error.message)
   end
 
   test "set_experimental_setting requires enabled, and writes nothing without it" do
