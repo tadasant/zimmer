@@ -107,10 +107,19 @@ class UserViewBoardTest < ApplicationSystemTestCase
     )
     handle = find("#user_view_row_#{session.id} [data-user-view-target='handle']")
     target = find("#user_view_row_#{onto.id}")
-    distance = (handle.native.location.y - target.native.location.y) + (target.native.size.height / 2)
+
+    # Stop inside the target row's UPPER third. SortableJS seats the dragged row
+    # above the target once the pointer crosses the target's midpoint, and keeps
+    # swapping upward as long as the pointer keeps climbing — so walking past the
+    # target's top edge carries the row over the row above it too.
+    stop_y = target.native.location.y + (target.native.size.height / 3)
+    climb = (handle.native.location.y + (handle.native.size.height / 2)) - stop_y
 
     action = page.driver.browser.action.move_to(handle.native).click_and_hold.move_by(0, 10)
-    ((distance / 15) + 3).times { action = action.move_by(0, -15) }
+    steps = (climb + 10) / 15
+    steps.times { action = action.move_by(0, -15) }
+    remainder = (climb + 10) - (steps * 15)
+    action = action.move_by(0, -remainder) if remainder.positive?
     action.release.perform
   end
 
