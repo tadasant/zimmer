@@ -619,9 +619,9 @@ declared next to each other on `Session` so the differences read in one place
 
 | Constant | What it is | Who uses it |
 | --- | --- | --- |
-| `STALE_RETRY_METADATA_KEYS` | the default | every ordinary resume and restart |
+| `STALE_RETRY_METADATA_KEYS` | the default | every ordinary resume and restart, `Sessions::RestartWithPrompt` among them |
 | `RESTART_FROM_SCRATCH_KEYS` | the default **plus** `SETUP_ARTIFACT_KEYS` and the spot-hold ladder | `Sessions::RestartFromScratch` |
-| `PRE_PROMPT_RESTART_KEYS` | the default **plus** `runtime_started` | restarting a session that failed before its initial prompt |
+| `PRE_PROMPT_RESTART_KEYS` | the default **plus** `runtime_started` | `Sessions::RestartWithPrompt`, for a session that failed before its initial prompt |
 | `RECOVERY_CONTINUE_KEYS` | the default **minus** `paused_by` | `SessionContinuation`, when it delivers a queued message |
 
 `RESTART_FROM_SCRATCH_KEYS` takes the setup artifacts because the attempt it replaces failed partway
@@ -658,6 +658,26 @@ Refusing a session **asleep on a wake-up it has not reached** stays at the surfa
 genuinely disagree: MCP and the REST API refuse (an agent working a ranked queue must not start a
 session that asked to be left alone), and the Restart button does not (a person clicking it on one
 session is taking that session over).
+
+#### And so is restarting one that still has a conversation
+
+The other branch of the same three doors — the session *does* have a clone and a `session_id`, so the
+restart resumes the conversation rather than replacing it — is `Sessions::RestartWithPrompt`
+([#321](https://github.com/tadasant/zimmer/issues/321)). It owns the same list: the choice between
+re-sending the original prompt and sending `AutomatedPrompts::SYSTEM_RECOVERY`, the key set that
+choice selects (`PRE_PROMPT_RESTART_KEYS` or `STALE_RETRY_METADATA_KEYS`), the transaction and its
+database retry, the two log rows, the `resume` and the enqueue. The web UI's **Refresh** and
+bulk-refresh nudges and the ⋮ menu's **Start it now** reach it through the same button's code path.
+
+It is the same split for the same reason. The three copies had drifted exactly as the from-scratch
+ones had: only the web copy retried a dropped Postgres connection, and only the web copy wrote
+anything to the session's own timeline — so the identical operation asked for over REST or MCP was
+fatal on a connection blip and left no trace of having happened. All three retry now, and all three
+write the same two rows.
+
+Each surface still keeps its own preconditions: the `may_resume?` check, the pause refusal, the
+dispatch into the from-scratch branch, and the refusal of a session that has a transcript but no
+`session_id` to resume it under — three doors, three sentences, each part of that surface's contract.
 
 ##### Which sessions each door restarts
 

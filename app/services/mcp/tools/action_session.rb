@@ -592,23 +592,13 @@ module Mcp
         # not claim it), and is refused rather than silently started over.
         raise ToolError, "Session has no session_id" if session.session_id.blank?
 
-        # Must be read before the stale metadata (which carries failure_reason) is cleared.
-        use_initial_prompt = session.failed_before_initial_prompt? && session.prompt.present?
-        restart_prompt = use_initial_prompt ? session.prompt : AutomatedPrompts::SYSTEM_RECOVERY
-
-        ActiveRecord::Base.transaction do
-          # For pre-prompt failures, drop runtime_started too so the restart uses
-          # --session-id (with --mcp-config) instead of --resume. Both key sets
-          # are declared on Session with the two others — see
-          # Session::PRE_PROMPT_RESTART_KEYS.
-          stale_keys = use_initial_prompt ? Session::PRE_PROMPT_RESTART_KEYS : Session::STALE_RETRY_METADATA_KEYS
-
-          session.remove_metadata!(stale_keys)
-          session.update!(running_job_id: nil)
-          session.resume!
-
-          AgentSessionJob.enqueue_with_prompt(session.id, restart_prompt)
-        end
+        # The operation is Sessions::RestartWithPrompt's, shared with the web UI's
+        # Restart button and `POST /api/v1/sessions/:id/restart` — including the
+        # `with_db_retry` this copy used to go without, so a dropped Postgres
+        # connection is retried here now instead of surfacing as a ToolError on
+        # the one action whose point is recovering an already-broken session.
+        result = Sessions::RestartWithPrompt.call(session, actor: :mcp)
+        raise ToolError, result.error unless result.ok?
 
         summary("Session Restarted", session.reload, status_label: "New Status", message: "Session restarted")
       end

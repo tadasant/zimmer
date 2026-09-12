@@ -49,6 +49,15 @@ class Api::V1::SessionsController < Api::BaseController
     failed: { title: "Cannot restart", status: :internal_server_error }
   }.freeze
 
+  # And the same again for the branch that resumes an existing conversation,
+  # keyed by the code Sessions::RestartWithPrompt returns. Same reasoning: a
+  # dropped connection is a transport failure the caller should retry, not a
+  # rejected request.
+  RESTART_WITH_PROMPT_ERRORS = {
+    database_unavailable: { title: "Service unavailable", status: :service_unavailable },
+    failed: { title: "Cannot restart", status: :internal_server_error }
+  }.freeze
+
   before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat, :set_category ]
 
   # GET /api/v1/sessions
@@ -644,25 +653,16 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
-    # Determine restart prompt: re-send original for pre-prompt failures,
-    # otherwise use system recovery message.
-    # NOTE: This check must happen BEFORE clearing stale metadata (which removes failure_reason).
-    use_initial_prompt = @session.failed_before_initial_prompt? && @session.prompt.present?
-    restart_prompt = use_initial_prompt ? @session.prompt : AutomatedPrompts::SYSTEM_RECOVERY
+    # The operation — prompt choice, key set, transaction, retry, log rows, resume
+    # and enqueue — is Sessions::RestartWithPrompt's, shared with the web UI's
+    # Restart button and MCP `action_session`. Only the rendering is this
+    # controller's.
+    result = Sessions::RestartWithPrompt.call(@session, actor: :api)
 
-    ActiveRecord::Base.transaction do
-      # Clear stale retry and transcript polling metadata before resuming. A
-      # pre-prompt failure also drops runtime_started so the restart uses
-      # --session-id (with --mcp-config) instead of --resume. Both key sets are
-      # declared on Session alongside the two others — see
-      # Session::PRE_PROMPT_RESTART_KEYS.
-      stale_keys = use_initial_prompt ? Session::PRE_PROMPT_RESTART_KEYS : Session::STALE_RETRY_METADATA_KEYS
-
-      @session.remove_metadata!(stale_keys)
-      @session.update!(running_job_id: nil)
-      @session.resume!
-
-      AgentSessionJob.enqueue_with_prompt(@session.id, restart_prompt)
+    unless result.ok?
+      answer = RESTART_WITH_PROMPT_ERRORS.fetch(result.error_code, RESTART_WITH_PROMPT_ERRORS[:failed])
+      render_api_error(answer[:title], result.error, status: answer[:status])
+      return
     end
 
     render json: { session: session_json(@session.reload), message: "Session restarted" }

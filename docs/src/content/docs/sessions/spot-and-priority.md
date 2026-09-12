@@ -709,7 +709,8 @@ here:
   on start, so the next outage begins again at ten minutes rather than resuming where the last one
   left off.
 - **A person asks for this session directly.** Restart, `action_session`'s `restart` and
-  `POST /api/v1/sessions/:id/restart` run one implementation — `Sessions::RestartFromScratch` — so
+  `POST /api/v1/sessions/:id/restart` run one implementation when there is no conversation to prompt
+  into — `Sessions::RestartFromScratch` — so
   the keys they except from the metadata they carry forward are one list,
   `Session::RESTART_FROM_SCRATCH_KEYS`. They have to except them: those paths re-enter the gate
   looking *exactly* like a scheduled re-check —
