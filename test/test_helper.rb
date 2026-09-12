@@ -83,6 +83,11 @@ AUTO_REQUIRED_SUPPORT_FILES.each { |f| require f }
 # swapped in and never put back". See test/support/cache_isolation_guard.rb.
 CacheIsolationGuard.capture!
 
+# The same, for the `app_settings` singleton row. Captured before parallelize()
+# forks so every worker agrees on which rows were there to begin with and which
+# a test created. See test/support/app_setting_isolation_guard.rb.
+AppSettingIsolationGuard.capture!
+
 # Keep every Claude per-session config dir the suite creates out of the real
 # `~/.zimmer/claude-config`, once for the whole run and before parallelize()
 # forks. Every Claude spawn — and every MCP credential write for a Claude
@@ -296,6 +301,22 @@ module ActiveSupport
     end
 
     teardown { CacheIsolationGuard.check!(self, "#{self.class.name}##{name} did not restore it.") }
+
+    # The same shape, and both edges for the same reason, for the other leak a
+    # non-transactional test can cascade through a worker: an `app_settings` row
+    # nothing rolls back. `AppSetting.new(...).valid?` is false while any row
+    # exists, so the row fails tests in files that never mention AppSetting.
+    #
+    # The teardown edge blames the test that created the row. The setup edge
+    # catches a leak whose teardown raised before that check could run — a test
+    # file's own teardown runs before the base's, and a raise there stops the
+    # chain. Both are charged only to tests outside a transaction, which are the
+    # only ones that can leak. See test/support/app_setting_isolation_guard.rb.
+    setup(prepend: true) do
+      AppSettingIsolationGuard.check_boot_baseline!(self)
+      @__app_settings_before = AppSettingIsolationGuard.snapshot(self)
+    end
+    teardown { AppSettingIsolationGuard.check!(self, @__app_settings_before) }
 
     # Include test support helpers
     include MockHelpers
