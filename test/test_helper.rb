@@ -297,6 +297,15 @@ module ActiveSupport
 
     teardown { CacheIsolationGuard.check!(self, "#{self.class.name}##{name} did not restore it.") }
 
+    # The same shape, for the other leak a non-transactional test can cascade
+    # through a worker: an `app_settings` row nothing rolls back. One edge rather
+    # than two, because this one cannot be left in a state that breaks the guard
+    # itself — and only for classes that have turned transactions off, so the
+    # snapshot query is not charged to the ~16,500 tests that cannot leak.
+    # See test/support/app_setting_isolation_guard.rb.
+    setup(prepend: true) { @__app_settings_before = AppSettingIsolationGuard.snapshot(self) }
+    teardown { AppSettingIsolationGuard.check!(self, @__app_settings_before) }
+
     # Include test support helpers
     include MockHelpers
     include ProcessStatusHelpers
