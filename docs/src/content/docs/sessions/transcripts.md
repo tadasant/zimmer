@@ -52,6 +52,16 @@ is a hash of a value the caller already has in memory. `sessions.transcript_line
 row for the same reason: the regression guard below compares line counts, and computing that used
 to mean detoasting megabytes to count newlines.
 
+"Byte-identical" is decided the same way, by `Session#transcript_matches?`, and that is the one that
+runs most. The agent loop reloads the session before every poll, so nothing read on the last poll is
+still in memory. When most polls find nothing new, a `transcript != incoming` comparison read the
+whole conversation back out of the chunk table each time: megabytes per poll, per running
+session. On 2026-09-12 that saturated production Postgres with twenty-odd sessions running, and the
+provenance fan-out queued behind the slow database wedged the `default` lane (GlitchTip #99). The
+check compares the normalised incoming value's size and SHA-256 against the row. It reads the stored
+text only for a row that cannot vouch for its bytes: one the backfill has not reached, or one with no
+digest.
+
 Two invariants the writer maintains, both relied on elsewhere:
 
 1. **Every chunk but the last ends at a line break.** Content search matches per chunk, and a

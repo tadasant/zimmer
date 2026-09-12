@@ -288,7 +288,10 @@ class TranscriptPollerService
       # destroy conversation history. Preserve the longer stored transcript.
       updates = {}
 
-      if @session.transcript != transcript_content
+      # From the row's size and digest, not by reading the stored transcript back:
+      # this runs on every idle poll of every running session. See
+      # ChunkedTranscript#transcript_matches?.
+      unless @session.transcript_matches?(transcript_content)
         if @session.transcript_regression?(transcript_content)
           # Log once per session so a recurring regression doesn't spam every poll.
           unless @session.metadata&.dig("transcript_regression_detected")

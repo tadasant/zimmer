@@ -147,6 +147,38 @@ module ChunkedTranscript
     self.class.transcript_line_count(incoming) < transcript_line_count
   end
 
+  # True when +incoming+ is exactly what is stored, decided from the row's
+  # `transcript_byte_size` and `transcript_digest` instead of by reading the
+  # transcript back.
+  #
+  # This is the question every idle transcript poll asks, and it is asked a lot:
+  # the agent loop polls each running session every half second, reloads the
+  # session first (which drops the memoised read), and on a poll that found no
+  # new messages compares the file on disk with what is stored. Answered with
+  # `transcript != incoming`, that comparison pulled the whole conversation out of
+  # `session_transcript_chunks` twice a second per running session — megabytes a
+  # read on a long session. With twenty-odd sessions running that saturated
+  # Postgres, and the provenance fan-out queued behind the slow database held the
+  # `default` lane for 20+ minutes.
+  #
+  # Compares the NORMALISED value, because that is what a write would store: a NUL
+  # byte the setter strips is not a difference worth a write. Falls back to the
+  # read when the row cannot vouch for its bytes — a legacy row the backfill has
+  # not reached, a row without a digest, or a value already in memory anyway.
+  def transcript_matches?(incoming)
+    normalized = self.class.normalize_transcript(incoming)
+
+    if defined?(@staged_transcript) || defined?(@chunked_transcript_text) ||
+       !chunked_transcript? || !has_attribute?(:transcript_digest) || read_attribute(:transcript_digest).blank?
+      return transcript == normalized
+    end
+
+    return false if normalized.nil?
+    return false unless normalized.bytesize == read_attribute(:transcript_byte_size).to_i
+
+    Digest::SHA256.hexdigest(normalized) == read_attribute(:transcript_digest)
+  end
+
   def reload(*)
     forget_transcript_cache
     super
