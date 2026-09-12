@@ -34,11 +34,8 @@ module Mcp
         human can make, so it stays on `/settings`.
 
         Change them with `action_app_settings`. The session defaults apply to sessions created after
-        the change. MCP tool search and experimental extensions are read when a session's agent
-        process is spawned, so a turn already running keeps what it started with. Session-scoped
-        credentials is the exception: the credential sync, account rotation and auth recovery read it
-        live, so flipping it changes how the shared credentials file is maintained at once, for
-        running sessions too.
+        the change, and the experimental toggles are read when a session's agent process is spawned,
+        so a turn already running keeps what it started with.
 
         Not here: the spot/priority policy and backlog top-up, which live on the same row but are
         read with `get_spot_policy`.
