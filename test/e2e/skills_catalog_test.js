@@ -9,13 +9,13 @@ const { chromium } = require('playwright');
   const page = await context.newPage();
   const BASE_URL = 'http://localhost:3000';
 
-  // Helper: wait for the skills-select Stimulus controller to be fully connected
+  // Helper: wait for the catalog-multiselect Stimulus controller to be fully connected
   async function waitForSkillsController() {
     await page.waitForFunction(() => {
       const app = window.Stimulus;
       if (!app) return false;
       const modules = app.router.modulesByIdentifier;
-      return modules && modules.has('skills-select');
+      return modules && modules.has('catalog-multiselect');
     }, { timeout: 10000 });
   }
 
@@ -27,7 +27,7 @@ const { chromium } = require('playwright');
   // Test 1: New session form loads with skills multi-select
   console.log('Test 1: New session form has skills multi-select...');
   await page.goto(`${BASE_URL}/sessions/new`);
-  await page.waitForSelector('input[data-skills-select-target="input"]', { timeout: 10000 });
+  await page.waitForSelector('[data-catalog-field="catalog_skills"] input[data-catalog-multiselect-target="input"]', { timeout: 10000 });
   await waitForSkillsController();
   console.log('  PASS: Skills input found on new session form');
   passed++;
@@ -36,7 +36,7 @@ const { chromium } = require('playwright');
 
   // Test 2: Default agent root (general-agent) has no default skills
   console.log('\nTest 2: Default agent root (general-agent) has no default skills...');
-  const initialTags = await page.locator('[data-skills-select-target="selectedContainer"] span').count();
+  const initialTags = await page.locator('[data-catalog-field="catalog_skills"] [data-catalog-multiselect-target="selectedContainer"] span').count();
   const defaultRoot = await page.evaluate(() => {
     const checkedRadio = document.querySelector('input[type="radio"][name="session[git_root]"]:checked');
     return checkedRadio ? checkedRadio.dataset.agentRootName : 'none';
@@ -56,7 +56,7 @@ const { chromium } = require('playwright');
   await page.locator('label[for="agent_root_agent-orchestrator"]').click();
   // Wait for the change handler to process
   await page.waitForTimeout(500);
-  const aoTags = page.locator('[data-skills-select-target="selectedContainer"] span');
+  const aoTags = page.locator('[data-catalog-field="catalog_skills"] [data-catalog-multiselect-target="selectedContainer"] span');
   const aoTagCount = await aoTags.count();
   console.log(`  Default skills loaded: ${aoTagCount} tags`);
   if (aoTagCount > 0) {
@@ -77,7 +77,7 @@ const { chromium } = require('playwright');
   console.log('\nTest 4: Switching to general-agent clears skills...');
   await page.locator('label[for="agent_root_general-agent"]').click();
   await page.waitForTimeout(500);
-  const clearedTags = await page.locator('[data-skills-select-target="selectedContainer"] span').count();
+  const clearedTags = await page.locator('[data-catalog-field="catalog_skills"] [data-catalog-multiselect-target="selectedContainer"] span').count();
   console.log(`  Tags after switching to general-agent: ${clearedTags}`);
   if (clearedTags === 0) {
     console.log('  PASS: Skills cleared on agent root change');
@@ -93,16 +93,16 @@ const { chromium } = require('playwright');
 
   // Test 5: Skills search dropdown appears on input with category headers
   console.log('\nTest 5: Skills search dropdown with category headers...');
-  const skillsInput = page.locator('input[data-skills-select-target="input"]');
+  const skillsInput = page.locator('[data-catalog-field="catalog_skills"] input[data-catalog-multiselect-target="input"]');
   await skillsInput.click();
   await page.waitForTimeout(200);
   await skillsInput.fill('grocer');
   await page.waitForTimeout(500);
-  const dropdown = page.locator('[data-skills-select-target="dropdown"]');
+  const dropdown = page.locator('[data-catalog-field="catalog_skills"] [data-catalog-multiselect-target="dropdown"]');
   const isVisible = !(await dropdown.evaluate(el => el.classList.contains('hidden')));
   console.log(`  Dropdown visible after typing "grocer": ${isVisible}`);
   if (isVisible) {
-    const items = dropdown.locator('.skill-item');
+    const items = dropdown.locator('.catalog-multiselect-item');
     const itemCount = await items.count();
     console.log(`  Matching skills: ${itemCount}`);
     for (let i = 0; i < Math.min(itemCount, 3); i++) {
@@ -144,7 +144,7 @@ const { chromium } = require('playwright');
   await page.waitForTimeout(500);
   const catDropdownVisible = !(await dropdown.evaluate(el => el.classList.contains('hidden')));
   if (catDropdownVisible) {
-    const catItems = dropdown.locator('.skill-item');
+    const catItems = dropdown.locator('.catalog-multiselect-item');
     const catItemCount = await catItems.count();
     const catHeaders = dropdown.locator('.skill-category-header');
     const catHeaderCount = await catHeaders.count();
@@ -168,18 +168,18 @@ const { chromium } = require('playwright');
   // Test 6: Select a skill from dropdown
   console.log('\nTest 6: Selecting a skill from dropdown...');
   if (isVisible) {
-    const firstItem = dropdown.locator('.skill-item').first();
+    const firstItem = dropdown.locator('.catalog-multiselect-item').first();
     if (await firstItem.count() > 0) {
-      const skillName = await firstItem.getAttribute('data-name');
+      const skillName = await firstItem.getAttribute('data-key');
       console.log(`  Clicking skill: ${skillName}`);
       await firstItem.click();
       await page.waitForTimeout(300);
-      const selectedTags = page.locator('[data-skills-select-target="selectedContainer"] span');
+      const selectedTags = page.locator('[data-catalog-field="catalog_skills"] [data-catalog-multiselect-target="selectedContainer"] span');
       const selectedCount = await selectedTags.count();
       console.log(`  Total selected skills: ${selectedCount}`);
 
       // Check hidden inputs
-      const hiddenInputs = page.locator('[data-skills-select-target="hiddenInputs"] input[type="hidden"]');
+      const hiddenInputs = page.locator('[data-catalog-field="catalog_skills"] [data-catalog-multiselect-target="hiddenInputs"] input[type="hidden"]');
       const hiddenCount = await hiddenInputs.count();
       console.log(`  Hidden inputs for form submission: ${hiddenCount}`);
       if (hiddenCount > 0) {
@@ -219,13 +219,13 @@ const { chromium } = require('playwright');
 
   // Test 8: Remove a skill by clicking the X button
   console.log('\nTest 8: Remove a skill by clicking X...');
-  const removeButtons = page.locator('[data-skills-select-target="selectedContainer"] button[data-action="click->skills-select#removeSkillFromTag"]');
+  const removeButtons = page.locator('[data-catalog-field="catalog_skills"] [data-catalog-multiselect-target="selectedContainer"] button[data-action="click->catalog-multiselect#removeItemFromTag"]');
   const removeCount = await removeButtons.count();
   if (removeCount > 0) {
-    const beforeCount = await page.locator('[data-skills-select-target="selectedContainer"] span').count();
+    const beforeCount = await page.locator('[data-catalog-field="catalog_skills"] [data-catalog-multiselect-target="selectedContainer"] span').count();
     await removeButtons.first().click();
     await page.waitForTimeout(200);
-    const afterCount = await page.locator('[data-skills-select-target="selectedContainer"] span').count();
+    const afterCount = await page.locator('[data-catalog-field="catalog_skills"] [data-catalog-multiselect-target="selectedContainer"] span').count();
     console.log(`  Before: ${beforeCount} skills, After: ${afterCount} skills`);
     if (afterCount < beforeCount) {
       console.log('  PASS: Skill removed');

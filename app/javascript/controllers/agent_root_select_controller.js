@@ -1,9 +1,11 @@
 import { Controller } from "@hotwired/stimulus"
 
 // Single-select autocomplete for the agent root field on the new session form.
-// Renders hidden radio inputs so existing change-event listeners on other
-// controllers (goal, mcp-server-select, skills-select, hooks-select,
-// plugins-select, model-select) keep working unchanged.
+// Renders hidden radio inputs so change-event listeners on the goal controller
+// keep working, and dispatches `ao:agent-root-changed` on the document for the
+// controllers that sit outside this element — model-select, and the four
+// catalog multi-selects, each of which owns its own `catalog-multiselect`
+// element and so cannot be reached by an action on the radio.
 //
 // The root list is intentionally NOT filtered by the selected runtime: a
 // session's runtime is a per-session override (sessions.agent_runtime), so any
@@ -144,8 +146,9 @@ export default class extends Controller {
 
     radio.dispatchEvent(new Event("change", { bubbles: true }))
 
-    // Broadcast so the model selector (a sibling subtree) can adopt this root's
-    // default model when it is valid for the active runtime.
+    // Broadcast so the sibling subtrees can react: the model selector adopts
+    // this root's default model when it is valid for the active runtime, and the
+    // four catalog multi-selects reset to this root's defaults.
     document.dispatchEvent(
       new CustomEvent("ao:agent-root-changed", { detail: { agentRootName: name } })
     )

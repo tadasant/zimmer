@@ -4,8 +4,8 @@ import { Controller } from "@hotwired/stimulus"
 // Inline typeahead for Claude skills/commands when typing "/" in a textarea.
 //
 // Receives the full catalog skills list via catalogSkillsValue and dynamically
-// derives the typeahead from the skills-select controller's current selection.
-// Listens for skills-select:skillsChanged events to rebuild the list.
+// derives the typeahead from the skills multi-select's current selection.
+// Listens for catalog-multiselect:selectionChanged events to rebuild the list.
 // Only user-invocable skills appear in the typeahead.
 //
 // When user types "/" at the start of a line or after whitespace, the dropdown appears.
@@ -23,7 +23,7 @@ export default class extends Controller {
     this.selectedSkillNames = new Set()
 
     // If skills are provided directly (follow-up form), use them immediately.
-    // Otherwise, wait for skills-select events (session creation page).
+    // Otherwise, wait for catalog-multiselect events (session creation page).
     this.skillsList = this.filterUserInvocableSkills(this.skillsValue)
     this.filteredItems = []
     this.selectedIndex = -1
@@ -424,11 +424,13 @@ export default class extends Controller {
     return div.innerHTML
   }
 
-  // Handle skills-select controller dispatching skillsChanged event.
-  // Derives the typeahead list from the currently-selected catalog skills,
-  // filtered to only user-invocable ones.
+  // Handle a catalog multi-select announcing its selection. All four widgets on
+  // the new-session form announce through the same event, so the payload key is
+  // what picks out the skills one.
   handleSelectedSkillsChanged(event) {
-    const selectedNames = event.detail?.selectedSkills || []
+    if (event.detail?.payloadKey !== "catalog_skills") return
+
+    const selectedNames = event.detail?.selected || []
     this.selectedSkillNames = new Set(selectedNames)
     this.rebuildSkillsList()
 
