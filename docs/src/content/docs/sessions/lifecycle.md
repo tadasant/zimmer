@@ -2609,9 +2609,8 @@ The direct reply to the user's click cannot be lost, so a status-changing action
 chrome rather than trusting the socket. Both targets are absent when the click came from a
 dashboard card, where those streams are a no-op.
 
-That chrome is what makes trashing from the session page itself work: it leaves you on the page,
-with the toast and its **Undo**, and the button you just clicked turns into **Restore**. Only the
-dashboard card's Trash takes something out from under you, and all it takes is the card.
+That chrome is what makes trashing from the **drawer** work: the dashboard behind it keeps its
+place, the toast and its **Undo** arrive, and the button you just clicked turns into **Restore**.
 
 A stream only happens if the client asks for one, and that is a client-side property, not a
 controller one. The card's Trash link carries `data-turbo-method`, so Turbo builds the request
@@ -2625,7 +2624,34 @@ offset the drawer was opened over.
 Every one of these actions keeps its `format.html` branch, which still redirects with a real
 flash. That is what a non-Turbo client — and most of the controller test suite — gets.
 
-The session detail page is on the same footing: it carries a `cable-reconnect` Stimulus
+### Trash on a session's own page navigates home
+
+The full detail page is the one exception to all of the above: its Trash answers with a redirect
+rather than a stream. A session you have just trashed is in the bin, so its page is a dead end —
+it shows you something you can no longer act on. That one click lands you back on the dashboard
+instead.
+
+Nothing in the markup can tell the page and the drawer apart. `_session_header_actions` is the
+same partial in both, and `Session#broadcast_status_change` re-renders it from a background job
+with no request to read a context out of, so a server-rendered "I am the full page" flag would be
+overwritten by the next status change. What separates them is the **referer**: the drawer loads
+`/sessions/:id/drawer` into a frame without advancing history, so it is still on the dashboard's
+URL, and only the full page's referer is the session's own path. `#archive` compares against *that
+session's* path rather than any `/sessions/:id`, so trashing one session's card from another
+session's page still streams in place.
+
+The redirect is also what carries the toast across the navigation. With no page left to stream
+`#flash` into, the notice rides the real flash instead, and the dashboard renders **Undo** on
+arrival — the undo window survives the move. It is a `303 See Other`, which is what makes both
+Turbo's `fetch` and a native form POST follow it with a `GET`.
+
+Only the success path redirects. A refusal over a queued message, and a click on a session
+something else already archived, both answer the way they always did and leave you where you
+clicked: an error must not navigate away as though it had worked.
+
+### The detail page keeps its own cable alive
+
+The session detail page carries a `cable-reconnect` Stimulus
 controller that watches each `<turbo-cable-stream-source>` for the `connected` attribute
 turbo-rails sets and clears, and re-subscribes any source still dark after a grace window
 (backing off up to 30s). It replaced a `<meta http-equiv="refresh">` that fired on a
