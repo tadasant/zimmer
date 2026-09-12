@@ -499,7 +499,7 @@ without a single call site changing.
 | Deploy | Migration | Code |
 | --- | --- | --- |
 | 1 — **expand** ([#1018](https://github.com/tadasant/zimmer/pull/1018)) | `add_column :sessions, :metadata_jsonb, :jsonb` — catalog-only, plus a post-deploy task that backfills it | every write path fills both; nothing reads the shadow |
-| 2 — **swap** (PRNUMPLACEHOLDER) | converge the shadow, `rename_column :metadata, :metadata_json_legacy`, `rename_column :metadata_jsonb, :metadata`, then `add_column :metadata_jsonb` **again, empty**; rebuild the expression indexes the first rename carried away | the dual-write goes; all ten dead names go into `ignored_columns` |
+| 2 — **swap** ([#1179](https://github.com/tadasant/zimmer/pull/1179)) | converge the shadow, `rename_column :metadata, :metadata_json_legacy`, `rename_column :metadata_jsonb, :metadata`, then `add_column :metadata_jsonb` **again, empty**; rebuild the expression indexes the first rename carried away | the dual-write goes; all ten dead names go into `ignored_columns` |
 | 3 — **contract** | `remove_column` on the ten dead names, annotated `# two-phase-drop: phase 2 of #<deploy-2 PR>` | the `ignored_columns` line goes |
 
 Three things in deploy 2 are what make it survivable, and each one is a way the obvious version
