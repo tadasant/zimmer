@@ -46,10 +46,17 @@ module ErrorReporter
   end
 
   # Report a contextual message when there is no exception object to attach.
-  def report_message(message, context: {}, level: :error)
+  #
+  # `fingerprint:` overrides GlitchTip's grouping exactly as it does on
+  # {report_exception}; left nil, a message groups on its own text. Pass one when
+  # the message is a standing condition whose SEVERITY changes, because a
+  # GlitchTip issue notifies Slack at most once ever: a fingerprint that varies
+  # with the severity is what lets a worsening condition reach a human a second
+  # time. WorkBacklog::LivenessSweep is the worked case (#1175).
+  def report_message(message, context: {}, level: :error, fingerprint: nil)
     return unless reporting_enabled?
 
-    Sentry.capture_message(message, level: level, extra: context.compact)
+    Sentry.capture_message(message, level: level, extra: context.compact, fingerprint: fingerprint)
   rescue => reporting_error
     Rails.logger.error("[ErrorReporter] Failed to report message: #{reporting_error.message}")
     nil
