@@ -564,7 +564,10 @@ jobs:
           # scratch Postgres follows the moving `postgres:16` tag, which is what a
           # throwaway database should do.
           #
-          # Widening this line to `db`, `redis` or `all` would destroy staging's own data.
+          # Widening this line to `db`, `redis` or `all` would take staging's own Postgres
+          # and Redis down mid-deploy and move each along its moving image tag, unreviewed,
+          # on every deploy. Not data loss -- `prune` removes containers, and `zimmer_pgdata`
+          # and `zimmer_redisdata` outlive theirs -- but not something to find out here.
           # `test/config/devdb_accessory_test.rb` fails the build if the name rebooted here
           # is ever an accessory that declares a volume, so the guard is not this comment.
           kamal accessory reboot devdb -d staging

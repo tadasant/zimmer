@@ -297,6 +297,13 @@ jobs:
         # `devdb`, say) would otherwise never get it without a manual command. Repeating it
         # is free: boot skips a host that already has the container, and creates it where
         # there is none.
+        #
+        # That skip is by EXISTENCE, not by health -- `docker ps -a`, so a STOPPED container
+        # counts as present -- which is why `devdb` and ONLY `devdb` is rebooted after it.
+        # `reboot` is pull + stop + `docker container prune` + boot, so it is safe for that
+        # accessory alone: it declares no volume and holds nothing but scratch databases.
+        # Widened to a data-bearing accessory, or to `all`, it takes a live service down
+        # mid-deploy. See tadasant/zimmer#419.
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
           SECRET_KEY_BASE: ${{ secrets.PROD_SECRET_KEY_BASE }}
@@ -307,6 +314,7 @@ jobs:
           cp ../<service>/.kamal/secrets.production .kamal/secrets.production
           gem install kamal
           kamal accessory boot all -d production
+          kamal accessory reboot devdb -d production
           kamal deploy -d production
 ```
 

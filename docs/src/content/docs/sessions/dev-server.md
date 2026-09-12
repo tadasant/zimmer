@@ -87,7 +87,7 @@ It is deliberately **not** staging's `db` accessory. That one holds staging's ow
 a durable volume, and a session running a feature branch's migrations has no business in
 it.
 
-:::note[The deploy boots it on both destinations — no manual step is owed]
+:::note[The deploy creates it on both destinations, and revives one that stopped]
 Bare `kamal deploy` does not boot accessories. That is a true Kamal fact, and it is
 where a recurring wrong conclusion about this deployment comes from, because **neither
 destination deploys with bare `kamal deploy`.** Staging's `deploy-staging.yml` runs
@@ -102,20 +102,25 @@ and leaves the host alone if one is there. That is what makes running it every t
 and it is also why booting alone never revives a `devdb` that **stopped**, since a stopped
 container is still an existing one ([#419](https://github.com/tadasant/zimmer/issues/419)).
 
-So staging's deploy follows the boot with `kamal accessory reboot devdb -d staging`, which
-stops, prunes and re-creates the container unconditionally. That is safe for this accessory
-and this one only: it is volume-less, so there is nothing to preserve. Re-running the
-staging deploy is therefore the recovery path for a preflight failure.
+So each deploy follows the boot with a reboot of `devdb`: `kamal accessory reboot devdb -d
+staging` in `deploy-staging.yml`, and `kamal accessory reboot devdb -d production` in the
+companion repo's `zimmer-deploy-prod.yml`. Reboot stops, prunes and re-creates the container
+unconditionally. That is safe for this accessory and this one only: it is volume-less, so
+there is nothing to preserve — never for staging's `db`, never for `redis`, never for `all`.
+Re-running the deploy is therefore the recovery path for a preflight failure, on both
+destinations.
 
-The price is that every staging deploy discards every `zimmer_dev_<clone>` database along
-with the container. Usually that costs nothing, because the same deploy replaces the worker
-container those sessions run in anyway, and `bin/agent-dev` re-runs `db:prepare` on its next
-boot. The exception is a deploy that fails its health check: kamal-proxy leaves the old
-containers serving, so a session survives — but its scratch database went with the reboot
-that ran before the deploy, and it has to re-run `bin/agent-dev`. Production's
-pipeline (in the companion repo) still only boots, so there the next step is `kamal
-accessory reboot devdb -d production` from an operator shell — never a setup command, since
-the accessory is already declared.
+What a deploy does not give you is continuous health. Nothing health-checks `devdb` and
+nothing alerts when it stops, so recovery happens at deploy time and nowhere else — and
+`Deploy staging` is `workflow_dispatch`-only, so on staging that means until somebody
+dispatches one. See [Limitations](/limitations/#nothing-notices-a-stopped-devdb-until-the-next-deploy).
+
+The price of the reboot is that every deploy discards every `zimmer_dev_<clone>` database
+along with the container. Usually that costs nothing, because the same deploy replaces the
+worker container those sessions run in anyway, and `bin/agent-dev` re-runs `db:prepare` on
+its next boot. The exception is a deploy that fails its health check: kamal-proxy leaves the
+old containers serving, so a session survives — but its scratch database went with the
+reboot that ran before the deploy, and it has to re-run `bin/agent-dev`.
 :::
 
 ### Every clone shares one database server
