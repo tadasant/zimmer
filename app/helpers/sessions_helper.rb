@@ -547,10 +547,12 @@ module SessionsHelper
   # should be told before it happens, because Restart is a takeover — it resumes
   # the session and enqueues a turn the session did not ask for.
   #
-  # Which turn it enqueues is `SessionsController#restart_with_continue_prompt`'s
-  # decision, and the three branches say three different things, so they get three
-  # different sentences rather than one hedged one. The branch order here mirrors
-  # that method's: from scratch, then the original prompt, then the continue nudge.
+  # Which turn it enqueues is decided in two places —
+  # `SessionsController#restart_with_continue_prompt` dispatches the from-scratch
+  # case, and `Sessions::RestartWithPrompt` chooses between the original prompt and
+  # the continue nudge — and the three branches say three different things, so they
+  # get three different sentences rather than one hedged one. The branch order here
+  # mirrors theirs: from scratch, then the original prompt, then the continue nudge.
   def restart_confirmation(session)
     return nil if session.failed?
 

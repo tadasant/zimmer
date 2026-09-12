@@ -49,6 +49,7 @@ module Sessions
   class RestartWithPrompt
     include DatabaseRetry
 
+    # `not_resumable`        - the row moved out of a resumable state under us
     # `database_unavailable` - the write kept failing on a dropped connection
     # `failed`               - anything else the sequence raised
     Result = Struct.new(:ok, :error, :error_code, keyword_init: true) do
@@ -73,6 +74,8 @@ module Sessions
     end
 
     def call
+      description = nil
+
       # `base_delay` is the controller helper's, not the job helper's. All three
       # doors are request/response — a browser, an HTTP client, an MCP tool call —
       # so somebody is waiting, and 0.3s/0.6s is the budget the web copy always
@@ -90,11 +93,23 @@ module Sessions
         # `pending_sleep` (in none of the reset key sets) would survive to drop the
         # session to `waiting` at its next pause.
         @session.reload
-        ActiveRecord::Base.transaction { restart! }
+
+        # Checked HERE rather than only at the surface, because the surfaces check
+        # it on the object they loaded and this is the row as it stands now. A
+        # session that a worker picked up in that window is `running`, and
+        # proceeding would clear its metadata, blank the LIVE turn's
+        # `running_job_id` — defeating AgentSessionJob's own concurrency guard,
+        # which keys on `running_job_id != job_id` — and enqueue a second turn
+        # against a session that already has a process. Refusing is the only
+        # answer that leaves the row alone; a guarded `resume!` on its own would
+        # do all of that and report success.
+        return not_resumable_error unless @session.may_resume?
+
+        ActiveRecord::Base.transaction { description = restart! }
       end
 
       Rails.logger.info(
-        "[Sessions::RestartWithPrompt] #{@action_description} initiated for session #{@session.id} " \
+        "[Sessions::RestartWithPrompt] #{description} initiated for session #{@session.id} " \
         "(requested through #{ACTOR_LABELS.fetch(@actor)})"
       )
       Result.new(ok: true)
@@ -106,15 +121,18 @@ module Sessions
 
     private
 
+    # @return [String] the description this restart was logged under, for the
+    #   caller's own log line — the status it names is gone by the time `call`
+    #   reads it back.
     def restart!
       # Both readings have to happen before anything below changes the row:
       # the prompt choice reads `failure_reason` (cleared just below), and the
       # description reads the status `resume!` is about to move off.
       use_initial_prompt = @session.failed_before_initial_prompt? && @session.prompt.present?
-      @action_description = action_description
+      description = action_description
 
       @session.logs.create!(
-        content: "#{@action_description}: " \
+        content: "#{description}: " \
                  "#{use_initial_prompt ? 're-sending initial prompt' : 'sending automated recovery prompt'}",
         level: "info"
       )
@@ -131,8 +149,9 @@ module Sessions
       # Hand the turn over BEFORE enqueuing the job (the session queues in
       # `waiting`; a worker's `start` runs it). This ensures the resume! callbacks
       # run — clearing the MCP failure flags, the stop record and any armed wake —
-      # before the job starts and reads them.
-      @session.resume! if @session.may_resume?
+      # before the job starts and reads them. Unguarded: `call` refused anything
+      # this transition would raise on before it opened the transaction.
+      @session.resume!
 
       AgentSessionJob.enqueue_with_prompt(
         @session.id, use_initial_prompt ? @session.prompt : AutomatedPrompts::SYSTEM_RECOVERY
@@ -142,6 +161,8 @@ module Sessions
         content: "Session resumed - its turn is queued for a worker",
         level: "info"
       )
+
+      description
     end
 
     # Named for the state the session was asked from rather than for the `waiting`
@@ -153,6 +174,17 @@ module Sessions
       return "Continuing waiting session" if @session.waiting?
 
       "Continuing paused session"
+    end
+
+    # No timeline row: nothing happened to the session, and the reason it did not
+    # is that something else is happening to it right now.
+    def not_resumable_error
+      message = "cannot restart: session is #{@session.status}"
+      Rails.logger.warn(
+        "[Sessions::RestartWithPrompt] session #{@session.id} left a resumable state before the " \
+        "restart could claim it (now #{@session.status}); nothing was changed"
+      )
+      Result.new(ok: false, error: message, error_code: :not_resumable)
     end
 
     def database_unavailable_error(error)

@@ -1161,6 +1161,7 @@ class SessionsController < ApplicationController
     # still owned by the spawn pipeline) and one sleeping on an unfired wake-up trigger.
     if @session.continue_nudge_on_refresh?
       success, error_message = restart_with_continue_prompt(@session)
+      return if performed?
 
       if success
         redirect_to refresh_redirect_target(@session), notice: "Continuing waiting session..."
@@ -1373,6 +1374,10 @@ class SessionsController < ApplicationController
     # Restart failed sessions
     failed_sessions.each do |session|
       success, error_message = restart_with_continue_prompt(session)
+      # The refusal's log row still goes through ControllerDatabaseRetry, which
+      # redirects when it exhausts its retries; keep going and we would
+      # double-render at the summary redirect below.
+      return if performed?
 
       if success
         restarted_count += 1
@@ -1385,6 +1390,7 @@ class SessionsController < ApplicationController
     # Continue needs_input sessions (e.g., after deployment killed their processes)
     needs_input_sessions.each do |session|
       success, error_message = restart_with_continue_prompt(session)
+      return if performed?
 
       if success
         continued_count += 1
@@ -1397,6 +1403,7 @@ class SessionsController < ApplicationController
     # Continue stalled waiting sessions with the automated nudge
     waiting_sessions.each do |session|
       success, error_message = restart_with_continue_prompt(session)
+      return if performed?
 
       if success
         continued_waiting_count += 1
@@ -2606,6 +2613,7 @@ class SessionsController < ApplicationController
     # does too rather than reporting a dead end.
     if result.nothing_queued?
       success, error_message = restart_with_continue_prompt(@session)
+      return if performed?
 
       return respond_with_flash(
         notice: (success ? "Continuing session #{@session.id}." : nil),

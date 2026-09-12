@@ -104,6 +104,31 @@ class Sessions::RestartWithPromptTest < ActiveSupport::TestCase
     end
   end
 
+  # --- the row moving under us ------------------------------------------------
+
+  test "refuses a session that left a resumable state after the surface checked it" do
+    session = failed_session
+    # The shape of the race: the surface checked `may_resume?` on the object it
+    # loaded, and a worker picked the session up before the service reloaded it.
+    session.update_columns(status: "running", running_job_id: "the-live-turn")
+
+    result = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      result = Sessions::RestartWithPrompt.call(session, actor: :api)
+    end
+
+    assert_not result.ok?
+    assert_equal :not_resumable, result.error_code
+    assert_equal "cannot restart: session is running", result.error
+
+    session.reload
+    assert_equal "running", session.status, "refusing must leave the row alone"
+    assert_equal "the-live-turn", session.running_job_id,
+      "blanking the live turn's job id defeats AgentSessionJob's concurrency guard"
+    assert_equal "process_crashed", session.metadata["failure_reason"], "the metadata was cleared anyway"
+    assert_empty session.logs, "nothing happened to the session, so nothing belongs on its timeline"
+  end
+
   # --- the failure paths ------------------------------------------------------
 
   test "retries a dropped connection and rolls the restart back when it gives up" do
@@ -124,6 +149,32 @@ class Sessions::RestartWithPromptTest < ActiveSupport::TestCase
     assert_match(/high server activity/, result.error)
     assert_equal "failed", session.reload.status, "the restart was not rolled back"
     assert_equal "process_crashed", session.metadata["failure_reason"], "the metadata clear was not rolled back"
+  end
+
+  # The reload before every attempt, including the retries, is what makes a second
+  # attempt see the row rather than the attributes AASM left dirty when the first
+  # one rolled back. Without it the retry writes `status` through `update!` with no
+  # state machine, skips `resume!`, and silently drops its callbacks.
+  test "a retry that succeeds leaves the session resumed, not half-written" do
+    Sessions::RestartWithPrompt.any_instance.stubs(:sleep)
+    session = failed_session
+    attempts = 0
+
+    result = AgentSessionJob.stub(:enqueue_with_prompt, ->(*, **) {
+      attempts += 1
+      raise ActiveRecord::ConnectionNotEstablished, "connection lost" if attempts == 1
+
+      true
+    }) do
+      Sessions::RestartWithPrompt.call(session, actor: :web)
+    end
+
+    assert_equal 2, attempts
+    assert result.ok?
+    assert_equal "waiting", session.reload.status, "the second attempt did not go through the state machine"
+    assert_nil session.metadata["failure_reason"]
+    assert_equal 1, session.logs.where(content: "Session resumed - its turn is queued for a worker").count,
+      "the rolled-back attempt's log row survived"
   end
 
   test "reports an unexpected failure rather than letting it escape to the surface" do

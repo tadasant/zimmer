@@ -49,7 +49,10 @@ class RestartWithPromptParityTest < ActionDispatch::IntegrationTest
         "clone_path" => "/tmp/a-real-clone",
         "working_directory" => "/tmp/a-real-clone",
         "runtime_started" => true,
-        "process_pid" => 4242,
+        # High enough that `Process.kill(0, pid)` is ESRCH rather than a live
+        # process in the test container: the web door probes the pid before it
+        # dispatches, and a signalable one sends it down the reconnect branch.
+        "process_pid" => 2_147_483_646,
         "api_error_retry_count" => 3,
         "paused_by" => "recovery",
         "api_error_last_checked_line" => 91
