@@ -23,11 +23,6 @@ class SessionsController < ApplicationController
   # bounded because every additional match costs another transcript detoasted.
   CONTENT_SEARCH_LIMIT = SESSIONS_PER_PAGE * 2
 
-  # Sentinel page key for the "Uncategorized" bucket (sessions with NULL category_id),
-  # which has no Category record to key on. Namespaced page params look like
-  # page[uncategorized]=2 alongside page[<category_id>]=2.
-  UNCATEGORIZED_PAGE_KEY = "uncategorized".freeze
-
   # Dashboard view modes.
   #
   # "user" is the default and the dashboard's centre of gravity: one unified list
@@ -329,9 +324,12 @@ class SessionsController < ApplicationController
         .select(Session.column_names - [ "transcript" ])
         .includes(:status_summary)
 
-      @user_view_sessions = Sessions::UserView.rows(scope: user_scope, limit: USER_VIEW_LIMIT)
+      # One more than the cap, so the "showing the first N" notice appears only when
+      # a row was actually cut off rather than whenever exactly N sessions match.
+      fetched = Sessions::UserView.rows(scope: user_scope, limit: USER_VIEW_LIMIT + 1)
+      @user_view_truncated = fetched.size > USER_VIEW_LIMIT
+      @user_view_sessions = fetched.first(USER_VIEW_LIMIT)
       @user_view_limit = USER_VIEW_LIMIT
-      @user_view_truncated = @user_view_sessions.size >= USER_VIEW_LIMIT
       @any_sessions = @user_view_sessions.any?
       return
     end
@@ -1110,8 +1108,8 @@ class SessionsController < ApplicationController
   # cards (the two flat sort views) renders them all into "sessions_grid".
   #
   # The User view renders rows rather than cards and has no "sessions_grid" at
-  # all, so a restore there lands nowhere and the page is reloaded instead — see
-  # #undo_archive.
+  # all, so this prepend is a no-op there; #restored_row_stream is what puts the
+  # row back on that page.
   def restored_card_target(_session)
     "sessions_grid"
   end
@@ -2877,14 +2875,18 @@ class SessionsController < ApplicationController
   private
 
   # Resolve the dashboard view mode for #index, in precedence order:
-  #   1. An explicit, valid ?view= param — honored and persisted to a cookie so
-  #      the choice survives subsequent navigation back to the dashboard.
+  #   1. An explicit, valid ?view= param (or a LEGACY_VIEW_MODES name, remapped) —
+  #      honored and persisted to a cookie so the choice survives subsequent
+  #      navigation back to the dashboard.
   #   2. A previously-persisted valid cookie value (the user's last explicit pick),
   #      or a LEGACY_VIEW_MODES name remapped to the view that replaced it.
   #   3. The default: "last_touched" on mobile, "user" on desktop. The default
   #      only applies when the user has never explicitly chosen a view.
   def resolve_view_mode
     requested = params[:view].to_s
+    # A bookmarked ?view=categories lands on the view that replaced it, the same as
+    # a stale cookie does — and is persisted under its new name.
+    requested = LEGACY_VIEW_MODES.fetch(requested, requested)
     if VALID_VIEW_MODES.include?(requested)
       cookies[VIEW_MODE_COOKIE] = { value: requested, expires: 1.year }
       return requested

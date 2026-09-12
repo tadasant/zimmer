@@ -133,4 +133,62 @@ class Sessions::AuthorizeMergeTest < ActiveSupport::TestCase
     assert_equal :undeliverable, result.outcome
     assert_nil Sessions::AuthorizeMerge.authorized_at(session.reload, URL)
   end
+
+  # Two requests landing together each loaded their own copy of the session before
+  # either wrote. The claim has to be re-read under the row lock, or both pass the
+  # check and two merge messages go out.
+  test "a claim made through a stale copy of the session does not send a second message" do
+    first_copy = session_with_green_pr(status: :running)
+    stale_copy = Session.find(first_copy.id)
+
+    assert Sessions::AuthorizeMerge.call(session: first_copy).sent?
+    second = Sessions::AuthorizeMerge.call(session: stale_copy)
+
+    assert_equal :already_sent, second.outcome
+    assert_equal 1, first_copy.enqueued_messages.count
+  end
+
+  # The message tells the agent to come back to needs_input when it cannot merge.
+  # If the marker never cleared, that row would read "Merge sent" forever and the
+  # server would refuse the one click that could retry.
+  test "an authorization the session came back to rest from without merging offers Merge again" do
+    session = session_with_green_pr(status: :running)
+    assert Sessions::AuthorizeMerge.call(session: session).sent?
+
+    # It took the turn, did not merge, and parked for the human.
+    session.enqueued_messages.pending.update_all(status: "sent")
+    session.update_columns(status: Session.statuses[:needs_input],
+                           transcript_line_count: session.transcript_line_count + 12,
+                           transcript_byte_size: 900)
+    session.reload
+
+    assert_nil Sessions::AuthorizeMerge.authorized_at(session, URL),
+      "a session back at rest after the merge turn must be offered Merge again"
+
+    session.stubs(:deliver_follow_up!)
+    assert Sessions::AuthorizeMerge.call(session: session).sent?
+  end
+
+  # A session that came to rest from OTHER work before the queued authorization
+  # drained has not answered it yet, so it must keep reading "Merge sent".
+  test "an authorization still queued undelivered is live even once the session is at rest" do
+    session = session_with_green_pr(status: :running)
+    assert Sessions::AuthorizeMerge.call(session: session).sent?
+
+    session.update_columns(status: Session.statuses[:needs_input],
+                           transcript_line_count: session.transcript_line_count + 12,
+                           transcript_byte_size: 900)
+    session.reload
+
+    assert Sessions::AuthorizeMerge.authorized_at(session, URL).present?
+  end
+
+  # A click on a session that has not moved since is not a failure to act on.
+  test "an authorization on a session that has not taken a turn yet stays live" do
+    session = session_with_green_pr(status: :needs_input)
+    session.stubs(:deliver_follow_up!)
+    assert Sessions::AuthorizeMerge.call(session: session).sent?
+
+    assert Sessions::AuthorizeMerge.authorized_at(session.reload, URL).present?
+  end
 end

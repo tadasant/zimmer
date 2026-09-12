@@ -95,6 +95,25 @@ class UserViewBoardTest < ApplicationSystemTestCase
     page.driver.browser.action.release.perform
   end
 
+  # A complete drag through SortableJS with a real driver: press the handle, walk
+  # the pointer up across the target row, release. This is the test that would have
+  # caught the list's MutationObserver re-sorting a row mid-drag — the row snapped
+  # back, SortableJS reported the index it started at, and nothing was saved — which
+  # #drop_row_between cannot see, because it moves the row itself.
+  def drag_row_through_sortable(session, onto:)
+    wait_for_drag_and_drop
+    page.execute_script(
+      "document.getElementById(#{"user_view_row_#{session.id}".to_json}).scrollIntoView({ block: 'center' })"
+    )
+    handle = find("#user_view_row_#{session.id} [data-user-view-target='handle']")
+    target = find("#user_view_row_#{onto.id}")
+    distance = (handle.native.location.y - target.native.location.y) + (target.native.size.height / 2)
+
+    action = page.driver.browser.action.move_to(handle.native).click_and_hold.move_by(0, 10)
+    ((distance / 15) + 3).times { action = action.move_by(0, -15) }
+    action.release.perform
+  end
+
   # A drop, driven at the seam SortableJS hands the controller: the row is moved in
   # the DOM and `persistDrop` is called with the indices SortableJS would report.
   #
@@ -157,6 +176,27 @@ class UserViewBoardTest < ApplicationSystemTestCase
     visit_board
     assert_row_order([ "user_view_row_#{top.id}", "user_view_row_#{bottom.id}", "user_view_row_#{middle.id}" ],
       "the dropped order has to survive a reload — it is stored, not a display preference")
+  end
+
+  test "a real drag through SortableJS saves the new order" do
+    top = spot(900, title: "Top of the board")
+    middle = spot(500, title: "Middle of the board")
+    bottom = spot(100, title: "Bottom of the board")
+
+    visit_board
+    assert_row_order([ "user_view_row_#{top.id}", "user_view_row_#{middle.id}", "user_view_row_#{bottom.id}" ],
+      "the board should open in precedence order")
+
+    drag_row_through_sortable(bottom, onto: middle)
+
+    assert_row_order([ "user_view_row_#{top.id}", "user_view_row_#{bottom.id}", "user_view_row_#{middle.id}" ],
+      "a real drag has to leave the row where it was dropped, not snap it back")
+
+    # And the PATCH actually went out: the reload is what proves it was stored.
+    visit_board
+    assert_row_order([ "user_view_row_#{top.id}", "user_view_row_#{bottom.id}", "user_view_row_#{middle.id}" ],
+      "the dragged order has to survive a reload")
+    assert_operator bottom.reload.precedence, :>, middle.reload.precedence
   end
 
   # Precedence cannot express "this spot session outranks that priority one", so a

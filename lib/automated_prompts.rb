@@ -431,12 +431,15 @@ module AutomatedPrompts
   # Sessions::AuthorizeMerge, behind the Merge button on the dashboard's User view
   # — and that button is only ever rendered next to a PR that is open and CI-green.
   #
-  # So the provenance has to be unmistakable in the text itself, because the text
-  # is all the merging session sees. Three things carry it: the marker line below,
-  # the named surface ("the Merge button ... in the Zimmer dashboard"), and the
-  # explicit statement that the click IS the sign-off. An agent that merges without
-  # one of these in its transcript merged on its own judgement, and anyone auditing
-  # later can tell the two apart by searching for MERGE_AUTHORIZATION_MARKER.
+  # So the authorization has to be unmistakable in the text itself, because the
+  # text is all the merging session sees. Three things carry it: the marker line
+  # below, the named surface ("the Merge button ... in the Zimmer dashboard"), and
+  # the explicit statement that the click IS the sign-off.
+  #
+  # The marker is what the MERGING SESSION reads; it is not what an AUDIT trusts.
+  # Any caller of `action_session` → `follow_up` can type this text. The record an
+  # auditor keys on is the HumanMessage with entry_point `web_ui.authorize_merge`,
+  # which only the browser controllers write — see Sessions::AuthorizeMerge.
   #
   # The conditions are NOT advisory. A green PR can still be un-mergeable — a base
   # branch that moved under it is the common case — so the message spends most of

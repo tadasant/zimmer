@@ -47,7 +47,7 @@ module Mcp
 
         **Per row:** title, status, scheduling class, precedence, agent root, board visibility, the generated status summary (Zimmer's own cached "where this stands" blurb, with how many messages have landed since it was written), and the session's most recent pull request with its state (`open`/`merged`/`closed`) and CI verdict (`pass`/`fail`/`pending`). A row marked **Mergeable: yes** is one whose Merge button the user is being offered right now — open, and CI green; one marked **Merge already authorized** is one they have already pressed it on.
 
-        **There is no tool for pressing that button, deliberately.** The Merge button is the one sanctioned route to an agent merging its own work, and it is sanctioned precisely because a human clicked it. An MCP tool for it would let an agent authorize its own merge, which is the thing the button exists to rule out — the same reason no tool writes gate-decision feedback. Rank the row; do not try to action it.
+        **There is no tool for pressing that button, deliberately.** The Merge button is the one sanctioned route to an agent merging its own work, and it is sanctioned precisely because a human clicked it. What proves a human did is the `HumanMessage` the browser writes for the click — not the `[HUMAN-AUTHORIZED MERGE]` text in the message, which any caller can type. Rank the row; do not try to action it, and never send that marker yourself.
 
         **Filters default to the board's own defaults**: status `needs_input`, on-board only. That is the population the view exists for — sessions parked waiting on a human. Widen deliberately.
 
@@ -98,7 +98,11 @@ module Mcp
       })
 
       def call(args)
-        rows = Sessions::UserView.rows(scope: filtered_scope(args), limit: MAX_ROWS)
+        # One more than the cap, so "capped" is only claimed when a row was actually
+        # cut off rather than whenever exactly MAX_ROWS sessions match.
+        fetched = Sessions::UserView.rows(scope: filtered_scope(args), limit: MAX_ROWS + 1)
+        capped = fetched.size > MAX_ROWS
+        rows = fetched.first(MAX_ROWS)
 
         page, per_page = pagination(args)
         total_pages = [ (rows.size.to_f / per_page).ceil, 1 ].max
@@ -112,7 +116,7 @@ module Mcp
         lines = [
           "## User view (the dashboard's decision board)",
           "",
-          "#{rows.size} row(s)#{rows.size >= MAX_ROWS ? " — capped at #{MAX_ROWS}, narrow the filters to see the rest" : ''}, page #{page} of #{total_pages}.",
+          "#{rows.size} row(s)#{capped ? " — capped at #{MAX_ROWS}, narrow the filters to see the rest" : ''}, page #{page} of #{total_pages}.",
           "Ordered top to bottom exactly as the human sees it: priority above spot, then precedence descending.",
           ""
         ]
@@ -137,7 +141,11 @@ module Mcp
       private
 
       def filtered_scope(args)
-        scope = Session.excluding_status_summary_forks.includes(:status_summary)
+        # `transcript` is a legacy JSON column still on `sessions`, and this reads up
+        # to MAX_ROWS rows before it pages — the same reason the web view drops it.
+        scope = Session.excluding_status_summary_forks
+          .select(Session.column_names - [ "transcript" ])
+          .includes(:status_summary)
 
         statuses = requested_statuses(args)
         scope = scope.where(status: statuses) if statuses.any?

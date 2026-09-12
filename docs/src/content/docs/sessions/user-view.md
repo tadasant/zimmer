@@ -70,17 +70,25 @@ sends the session a message (`AutomatedPrompts.merge_authorization_message`) tha
 confirm the PR is still open, **resolve any merge conflict with the base branch first**, merge, and
 then archive itself.
 
-Three records carry the provenance, so a human-authorized merge can always be told from an agent
-deciding on its own:
+Three records are written, and they are not equal:
 
-- the message itself is marked `[HUMAN-AUTHORIZED MERGE]` and names the surface;
-- a `HumanMessage` row, written through the same capture every web-UI input goes through, which is
-  what says a *person* did this;
-- `merge_authorized_prs` on the session's `custom_metadata`, keyed by PR url.
+- a `HumanMessage` row, written through the same capture every web-UI input goes through. **This is
+  the provenance record.** Only the browser controllers write one; the MCP and REST surfaces cannot.
+- the message itself, marked `[HUMAN-AUTHORIZED MERGE]` and naming the surface. That marker is what
+  the merging session reads, but it is not proof on its own — `action_session`'s `follow_up` can
+  deliver any text, marker included — so an audit keys on the `HumanMessage`, not the marker.
+- `merge_authorized_prs` on the session's `custom_metadata`, keyed by PR url, which is what the
+  button reads to show **Merge sent**.
 
-That last one is also what makes a double-click harmless: the second click finds the PR already
-authorized and the button reads **Merge sent** rather than sending a second copy. Once the poller
-sees the PR merge, the button reads **Merged**.
+The claim is taken under the session's row lock with a fresh read, so two requests landing together
+(two tabs, a retried POST) send one message, not two. Once the poller sees the PR merge, the button
+reads **Merged**.
+
+An authorization stops counting once the session has **come back to rest without merging** — it is
+in `needs_input` again, has taken a turn since the click, and holds no undelivered copy of the
+message. That is the path the message itself prescribes when a merge cannot happen (a conflict it
+cannot resolve, CI gone red), and it puts the **Merge** button back so you can retry after fixing
+whatever stopped it, rather than leaving the row reading **Merge sent** forever.
 
 **The message is queued, never an interrupt.** A session parked in `needs_input` — which is the
 population this button exists for — takes it immediately as its next turn. A session mid-turn gets

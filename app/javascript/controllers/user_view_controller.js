@@ -60,7 +60,16 @@ export default class extends Controller {
       // below would then see as a row arriving and try to sort. On the body it is out
       // of the list's way entirely.
       fallbackOnBody: true,
-      onEnd: (event) => this.persistDrop(event)
+      // While a row is in hand, SortableJS moves it inside the list on every pointer
+      // move. The list's MutationObserver would see each of those moves and re-sort
+      // the row straight back into precedence order — so the row snaps back, the
+      // drop reports the index it started at, and nothing is saved. The flag is what
+      // tells `reconcile` to leave a drag alone.
+      onStart: () => { this.dragging = true },
+      onEnd: (event) => {
+        this.dragging = false
+        this.persistDrop(event)
+      }
     })
 
     // Hung off the list so a system test can wait for the drag to be armed before
@@ -74,7 +83,7 @@ export default class extends Controller {
     // Watching the list itself keeps the count and the empty state true whoever
     // moved a row, and re-seats a restored row into its proper place rather than
     // leaving it stranded at the top.
-    this.listObserver = new MutationObserver(() => this.reconcile())
+    this.listObserver = new MutationObserver((records) => this.reconcile(records))
     this.listObserver.observe(this.listTarget, { childList: true })
   }
 
@@ -165,15 +174,22 @@ export default class extends Controller {
 
   // ---- Reconciliation -------------------------------------------------------
 
-  // Runs whenever a row arrives or leaves. Guarded against its own writes: a
-  // re-sort is a series of appendChild calls, which the observer would see as more
-  // mutations, so the flag stops it looping.
-  reconcile() {
-    if (this.reconciling) return
+  // Runs whenever a row arrives or leaves. Three guards, each load-bearing:
+  //
+  //   * Never mid-drag — see `onStart`. Re-sorting under SortableJS is what made a
+  //     real drag snap back and save nothing.
+  //   * Only re-sort when a row ARRIVED (an Undo putting one back). A row leaving —
+  //     Trash, Snooze — cannot put the rest out of order, so it only needs the
+  //     count refreshed.
+  //   * Not against its own writes: a re-sort is a series of appendChild calls,
+  //     which the observer would see as more mutations, so the flag stops it looping.
+  reconcile(records = []) {
+    if (this.dragging || this.reconciling) return
     this.reconciling = true
 
     try {
-      this.sortRows()
+      const rowArrived = records.some((record) => record.addedNodes.length > 0)
+      if (rowArrived) this.sortRows()
       this.refreshCount()
     } finally {
       // Released after the observer has drained the mutations this made.

@@ -13,15 +13,28 @@ module Sessions
   # session and anyone auditing the transcript later can both recognise (see
   # AutomatedPrompts::MERGE_AUTHORIZATION_MARKER).
   #
-  # Three records carry the provenance, deliberately more than one:
+  # Three records are written, and they are not equal:
   #
   #   * a HumanMessage, written through WebUiHumanMessageCapture — the same
-  #     attribution every other thing typed into the web UI gets, and the record
-  #     that says a PERSON did this;
+  #     attribution every other thing typed into the web UI gets. THIS is the
+  #     proof a person did it. It has one writer, the browser controllers; the
+  #     MCP and REST surfaces cannot create one. The `[HUMAN-AUTHORIZED MERGE]`
+  #     marker in the message text is NOT proof on its own — `action_session`'s
+  #     `follow_up` delivers any text, marker included — so an audit keys on the
+  #     HumanMessage, not on the marker;
   #   * a session log line naming the PR and the surface;
   #   * `merge_authorized_prs` on the session's custom_metadata, keyed by PR url,
-  #     which is what makes a second click harmless and what the button reads to
-  #     show itself as already sent.
+  #     which is what the button reads to show itself as already sent.
+  #
+  # == When an authorization stops counting
+  #
+  # The message tells the agent to come back to `needs_input` if it cannot merge —
+  # a conflict it cannot resolve, CI gone red. A marker that never cleared would
+  # leave that row reading "Merge sent" forever, with the server refusing the one
+  # click that could retry. So an authorization is only LIVE while the session has
+  # not yet come back to rest from it: once the session is in `needs_input` again,
+  # has taken a turn since (its transcript grew), and holds no still-undelivered
+  # copy of the message, the button is offered again.
   #
   # == Queued, not an interrupt
   #
@@ -83,19 +96,19 @@ module Sessions
         return Result.new(outcome: :not_mergeable, pr_url: pr_url, message: "Cannot merge: #{reason}")
       end
 
-      if authorized_at(pr_url).present?
+      # Claimed BEFORE the send, and claimed under the session's row lock with a
+      # fresh read. Two requests landing together — two tabs, a retried POST — each
+      # loaded their own copy of the session before either wrote, so a check against
+      # the in-memory copy would let both through and deliver two merge messages. A
+      # send that then fails clears the claim below, so a transient failure does not
+      # brick the button.
+      unless claim_authorization!(pr_url)
         return Result.new(
           outcome: :already_sent,
           pr_url: pr_url,
           message: "Merge already authorized for #{pr_url} — the session has the message."
         )
       end
-
-      # Recorded BEFORE the send, so a double-click that lands while the first is
-      # still delivering finds the marker rather than sending a second copy. A
-      # send that then fails clears it again below, so a transient failure does
-      # not brick the button.
-      record_authorization!(pr_url)
 
       delivered = deliver_automated_message(
         @session,
@@ -120,7 +133,9 @@ module Sessions
       )
     end
 
-    # When this session was last authorized to merge `pr_url`, or nil.
+    # When this session was authorized to merge `pr_url`, or nil when there is no
+    # LIVE authorization — none was ever given, or the session has since come back
+    # to rest without merging (see the class comment).
     #
     # @param session [Session]
     # @param pr_url [String, nil]
@@ -128,18 +143,53 @@ module Sessions
     def self.authorized_at(session, pr_url)
       return nil if pr_url.blank?
 
-      (session.custom_metadata&.dig(METADATA_KEY) || {})[pr_url].presence
+      entry = (session.custom_metadata&.dig(METADATA_KEY) || {})[pr_url]
+      return nil if entry.blank?
+      return nil if stale?(session, entry)
+
+      entry.is_a?(Hash) ? entry["at"] : entry.to_s
     end
+
+    # Whether the session has come back to rest from this authorization without
+    # merging. Three conditions, all required:
+    #
+    #   * it is in `needs_input` — a session still running or queued is working on
+    #     it, and must keep reading "Merge sent";
+    #   * its transcript has grown since the click — it took the turn; a click on a
+    #     session that has not moved yet is not a failure to act on;
+    #   * no undelivered copy of the message is still queued for it — a session that
+    #     came to rest from OTHER work before the queued authorization drained has
+    #     not answered it yet.
+    def self.stale?(session, entry)
+      return false unless entry.is_a?(Hash)
+      return false unless session.needs_input?
+      return false unless session.transcript_line_count.to_i > entry["transcript_line_count"].to_i
+
+      session.enqueued_messages.pending.none? { |message| AutomatedPrompts.merge_authorization?(message.content) }
+    end
+    private_class_method :stale?
 
     private
 
-    def authorized_at(pr_url)
-      self.class.authorized_at(@session, pr_url)
-    end
+    # Records the authorization unless a live one already exists, atomically.
+    #
+    # @return [Boolean] true when this call made the claim, false when a live
+    #   authorization was already in place
+    def claim_authorization!(pr_url)
+      @session.with_lock do
+        return false if self.class.authorized_at(@session, pr_url).present?
 
-    def record_authorization!(pr_url)
-      existing = @session.custom_metadata&.dig(METADATA_KEY) || {}
-      @session.merge_custom_metadata!(METADATA_KEY => existing.merge(pr_url => Time.current.utc.iso8601))
+        existing = @session.custom_metadata&.dig(METADATA_KEY) || {}
+        @session.merge_custom_metadata!(
+          METADATA_KEY => existing.merge(
+            pr_url => {
+              "at" => Time.current.utc.iso8601,
+              "transcript_line_count" => @session.transcript_line_count.to_i
+            }
+          )
+        )
+        true
+      end
     end
 
     def clear_authorization!(pr_url)

@@ -226,6 +226,7 @@ Rails.application.routes.draw do
           post :toggle_favorite
           patch :visibility, action: :update_visibility
           patch :heartbeat, action: :update_heartbeat
+          patch :set_category
             end
 
         resources :logs
@@ -606,7 +607,6 @@ Rails.application.routes.draw do
       patch :toggle_push_notifications
       patch :toggle_heartbeat
       patch :update_heartbeat_interval
-      patch :set_category
       get :timeline_items
       # The dashboard drawer's variant of #show: the same detail body, wrapped in
       # <turbo-frame id="session_detail"> and rendered without the layout. It is a
