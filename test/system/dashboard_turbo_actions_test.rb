@@ -77,6 +77,42 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
     capture("drawer-trash-in-place")
   end
 
+  # The full detail page is the one place Trash takes the page out from under
+  # the user: what is left is a session they can no longer act on. It is also
+  # the one place the drawer's in-place stream is wrong, and the two render the
+  # same partial — only the URL the click came from tells them apart.
+  test "trashing from a session's own detail page lands on the dashboard with Undo intact" do
+    session = sessions(:failed)
+
+    # Same reason as the drawer test above: the header actions sit in a
+    # `hidden md:block` wrapper, and tests share the browser.
+    page.driver.browser.manage.window.resize_to(1400, 900)
+
+    visit session_path(session)
+    assert_selector "[data-controller~='archive-countdown'] button", text: "Trash"
+
+    find("[data-controller~='archive-countdown'] button", text: "Trash").click
+
+    # The dead end is gone...
+    assert_current_path root_path
+    # ...and the toast survived the navigation, because the notice rides the
+    # flash through the redirect rather than a stream into a page being left.
+    assert_selector "#flash", text: "Session moved to trash."
+    assert_selector "#flash", text: "Undo"
+    assert session.reload.archived?
+
+    capture("detail-trash-redirects-home")
+
+    within "#flash" do
+      click_on "Undo"
+    end
+
+    assert_selector "#flash", text: "Session restored from trash."
+    assert_not session.reload.archived?
+
+    capture("detail-trash-undo-restored")
+  end
+
   test "Undo puts the trashed card back without leaving the dashboard" do
     session = sessions(:failed)
 

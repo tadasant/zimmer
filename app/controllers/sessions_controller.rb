@@ -899,11 +899,51 @@ class SessionsController < ApplicationController
 
     undo_notice = "Session moved to trash.|undo_archive|#{@session.id}"
 
+    # Trashing a session from its own detail page leaves the user on a page that
+    # no longer represents anything they can act on, so that one affordance
+    # navigates home. Every other Trash — a dashboard card, a ranked row, the
+    # drawer — is a control inside a list the user is still reading, and stays
+    # put with the card removed in place.
+    #
+    # The referer is what separates them, because the markup cannot: the header
+    # partial is shared with the drawer and re-rendered by broadcasts that have
+    # no request to read a context out of, so a server-rendered "I am the full
+    # page" flag would be overwritten by the next status change. The drawer keeps
+    # the dashboard's URL — it loads /sessions/:id/drawer into a frame without
+    # advancing history — so only the full page's referer matches. Comparing
+    # against *this* session's path rather than any /sessions/:id is deliberate:
+    # trashing one session's card from another session's page stays put.
+    #
+    # The redirect is also what carries the Undo toast across the navigation. The
+    # notice rides the flash instead of a stream, so the dashboard renders the
+    # toast — Undo button and all — on arrival. 303 rather than 302 so that both
+    # Turbo's fetch and a native form POST follow it with a GET.
+    if archived_from_its_own_page?(@session)
+      redirect_to root_path, notice: undo_notice, status: :see_other
+      return
+    end
+
     respond_to do |format|
       format.turbo_stream { render turbo_stream: archive_remove_streams(@session, notice: undo_notice) }
       format.html { redirect_to root_path, notice: undo_notice }
     end
   end
+
+  # True when this POST came from the session's own full detail page. A dashboard
+  # card, a ranked row and the drawer all sit on the dashboard's URL, so they
+  # answer false and keep the in-place stream.
+  #
+  # Only the success path consults this. A refusal and an already-archived click
+  # both keep their existing replies, which leave the user on the page they
+  # clicked from — an error must not navigate away as though it had worked.
+  def archived_from_its_own_page?(session)
+    return false if request.referer.blank?
+
+    URI.parse(request.referer).path == session_path(session)
+  rescue URI::InvalidURIError
+    false
+  end
+  private :archived_from_its_own_page?
 
   # In-place removal for the homepage Trash button. Removes the
   # `dom_id(session)` turbo_frame wrapping the session's card, and streams the

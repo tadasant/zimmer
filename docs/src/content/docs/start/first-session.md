@@ -118,3 +118,8 @@ Archiving leaves a toast with an **Undo** button on it. The button works for as 
 up — 30 seconds — and the two are the same number by construction, so one cannot outlive the other
 (see [the undo window](/sessions/lifecycle/#the-undo-window-is-one-number)). After that, **Restore**
 does the same thing with no time limit.
+
+Trashing a session from its own page takes you back to the dashboard, toast and all — the page of a
+session in the bin shows you nothing you can act on. Trashing a card from the dashboard, or from the
+drawer, leaves you where you were and just removes the card. See
+[Trash on a session's own page navigates home](/sessions/lifecycle/#trash-on-a-sessions-own-page-navigates-home).
