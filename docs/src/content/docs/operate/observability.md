@@ -146,11 +146,14 @@ queue backlog, and `WorkBacklog::LivenessSweep` for [stranded backlog
 rows](/operate/work-backlog/#the-alert-has-to-reach-a-human-more-than-once). Demoting either of those
 lines to WARN takes the alert to zero.
 
-Two obligations come with paging this way, because the rule counts records rather than conditions.
-The caller has to **throttle itself** — an hourly job that logs ERROR on every pass floods the
-channel every real page travels — and it has to **stop** once the condition clears, which is what
-lets the rule resolve. A condition that pages by exception report has no equivalent of resolving at
-all.
+Be precise about what this buys, because it is easy to over-claim. The rule counts *records*, not
+conditions, so a caller that throttles itself to one record per page gets a notification that fires
+and then resolves on its own a few minutes later — not an alert that stays lit until someone fixes
+the thing. What it gets that GlitchTip cannot give is the ability to fire **again**. A caller that
+wanted a standing alert would have to log ERROR on every pass, and an hourly job doing that floods
+the channel every real page travels, so in practice the standing state belongs on a surface a
+responder can read — `/health`, the Issues view, `get_system_health` — and this path carries the
+notification to go and look.
 
 ### WARN is also how a deliberate change gets a record
 

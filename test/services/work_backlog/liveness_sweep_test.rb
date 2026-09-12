@@ -276,10 +276,30 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     end
   end
 
-  # Triage takes the oldest rows off first, so the band DROPS. Weighing the
-  # remainder against a band it can no longer reach would take this back to
-  # silence — three weeks of it, in this case.
-  test "a population that shrinks is remembered without paging, so the remainder can page again" do
+  # The band is a high-water mark, so an improvement is silent — otherwise a count
+  # flickering across a boundary would page on every upward re-crossing.
+  test "a band that drops and climbs back does not page twice" do
+    rows = (1..10).map { |n| started_row(key: "zimmer##{n}", number: n, started_at: 9.days.ago) }
+
+    with_alerts do |alerts|
+      sweep
+      assert_equal [ "rows-10" ], alerts.events.map { |event| event[:fingerprint][2] }
+
+      rows.last.destroy!
+      sweep
+      assert_equal 1, alerts.pages.size, "an improvement is not a page"
+
+      started_row(key: "zimmer#11", number: 11, started_at: 9.days.ago)
+      sweep
+      assert_equal 1, alerts.pages.size, "and re-crossing the same boundary is not a second page"
+    end
+  end
+
+  # ...but a high-water mark that never expired would go quiet for weeks after
+  # triage took the oldest rows off, because the remainder cannot beat a mark it
+  # has already dropped below. The mark expires after ALERT_BAND_TTL, so a
+  # population that is still overdue is told about again on that cadence.
+  test "the remembered band expires, so a population below it is reported again" do
     oldest = started_row(key: "zimmer#1", number: 1, started_at: 22.days.ago)
     started_row(key: "zimmer#2", number: 2, started_at: 8.days.ago)
 
@@ -289,14 +309,30 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
 
       oldest.destroy!
       sweep
-      assert_equal 1, alerts.pages.size, "an improvement is not a page"
+      assert_equal 1, alerts.pages.size, "the remainder is in a lower band, so it says nothing"
 
-      travel 7.days do
-        sweep
-      end
+      travel(WorkBacklog::LivenessSweep::ALERT_BAND_TTL - 1.day) { sweep }
+      assert_equal 1, alerts.pages.size, "still inside the window the last page bought"
+
+      travel(WorkBacklog::LivenessSweep::ALERT_BAND_TTL + 1.hour) { sweep }
       assert_equal 2, alerts.pages.size
       assert_equal "weeks-2", alerts.events.last[:fingerprint][1],
-                   "the remainder is measured against the band it is actually in"
+                   "and it is reported at the band it is actually in"
+    end
+  end
+
+  # Every row a failed probe touched is recorded `unknown`, which counts as
+  # stranded — so a repo nobody could read puts long-closed rows back into the
+  # population at their original age. Paging on that census would be a false page,
+  # and remembering it would suppress the true one for a week.
+  test "a pass that could not read a repo says nothing" do
+    started_row(started_at: 9.days.ago)
+
+    with_alerts do |alerts|
+      sweep(probe_error: "gh api graphql failed")
+
+      assert_empty alerts.pages
+      assert_empty alerts.events
     end
   end
 
@@ -327,13 +363,15 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
   # The test env's :null_store is that store, so this needs no stubbing.
   test "a cache that cannot remember stays silent rather than paging every pass" do
     started_row(started_at: 9.days.ago)
-    events = []
 
-    ErrorReporter.stub(:report_message, ->(*, **) { events << true }) do
+    # Everything `with_alerts` captures, but against the test env's real
+    # :null_store rather than a memory store.
+    with_alerts(cache: ActiveSupport::Cache::NullStore.new) do |alerts|
       2.times { sweep(probes: { 1 => probe(references: []) }) }
-    end
 
-    assert_empty events
+      assert_empty alerts.pages, "the ERROR record IS the page, so it is the one that must not repeat"
+      assert_empty alerts.events
+    end
   end
 
   test "reports the age of the oldest stranded row, and a resolved row does not count" do
@@ -389,11 +427,11 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
   # Runs a block against a cache that can actually remember. The test env's
   # :null_store cannot, and the sweep deliberately stays silent against a store
   # that cannot — see `remember_alert_band`.
-  def with_alerts
+  def with_alerts(cache: ActiveSupport::Cache::MemoryStore.new)
     log = StringIO.new
     events = []
 
-    Rails.stub(:cache, ActiveSupport::Cache::MemoryStore.new) do
+    Rails.stub(:cache, cache) do
       Rails.stub(:logger, Logger.new(log)) do
         ErrorReporter.stub(:report_message, ->(message, **kwargs) { events << kwargs.merge(message: message) }) do
           yield Alerts.new(log, events)

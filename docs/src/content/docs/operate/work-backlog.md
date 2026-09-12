@@ -304,10 +304,11 @@ detector itself fails.
 Two surfaces now, each doing a different half.
 
 **The page is an ERROR log record.** A non-staging Zimmer ERROR trips the
-`zimmer_backend_log_errors` Grafana rule, which — unlike a GlitchTip issue — [fires again after it has
-resolved](/operate/observability/#an-error-record-is-the-alert-that-can-fire-twice), and resolves
-when the records stop. Triaging the rows is what clears it; nobody has to remember to close
-anything.
+`zimmer_backend_log_errors` Grafana rule, and that rule [fires again every time it goes from normal
+to alerting](/operate/observability/#an-error-record-is-the-alert-that-can-fire-twice), where a
+GlitchTip issue notifies once and is then spent for good. It is a *notification*, not a standing
+alert: one record per page means the rule resolves by itself minutes later, and the standing count
+stays where it already lives — the Stranded section of the Issues view, and `get_work_backlog`.
 
 **The GlitchTip event's fingerprint carries a severity band**, so a *worse* population is a
 genuinely new issue with its own one-time notification, and a steady one keeps the issue it already
@@ -318,23 +319,31 @@ has. The band is two coarse numbers:
 | `weeks` | the oldest row's age passes another multiple of `ALERT_AFTER` (7 days) |
 | `rows` | the count climbs through the next step of `ALERT_ROW_BANDS` — 1, 10, 25, 50, 100, 250, 500, 1000 |
 
-A page costs a real step change in one of those, which is what bounds the noise. So a population of
-21 rows whose oldest has sat 9 days pages on the hour it is first seen, says nothing on the next 167
-hourly passes, and pages again when that row reaches 14 days — one page a week, never an hourly
-flood, and never the permanent silence this replaced. A count climbing 21 → 60 pages on the pass
-that crosses 50, without waiting for the week.
+A page costs a real step change in one of those, and the band it was sent for is then remembered for
+`ALERT_BAND_TTL` (also 7 days). So a population of 21 rows whose oldest has sat 9 days pages on the
+hour it is first seen, says nothing for the next five days, and pages again when that row reaches 14
+days — thereafter about one page a week, never an hourly flood, and never the permanent silence this
+replaced. A count climbing 21 → 60 pages on the pass that crosses 50, without waiting for the week.
 
-Two rules keep the band honest. An **improved** band is remembered without paging: triage takes the
-oldest rows off first, and weighing the remainder against a three-week band it can no longer reach
-would take the alert back to silence. And a population that **clears** forgets its band altogether —
-on the empty pass, which is why `alert_if_overdue` runs even when there was nothing to examine — so
-the next population starts from its first week rather than being measured against one that is gone.
+**The remembered band is a high-water mark that expires**, and both halves of that are load-bearing.
+A band that followed the population *down* would page on every upward re-crossing of a boundary, so
+a count flickering 49 ↔ 50 would page hourly. A high-water mark that never expired would instead go
+quiet for weeks after triage took the oldest rows off, because the remainder cannot beat a mark it
+has already dropped below. Expiring the mark after a week gives the second without the first.
 
-The band lives in Redis (`Rails.cache`), and the sweep writes it then reads it back. A store that
-cannot remember — the `:null_store` outside production, a Redis that has stopped answering — fails
-that read-back, and the sweep then stays **silent** on purpose: an hourly page nothing can throttle
-would flood the channel every real page on this deployment travels, and a cache that has stopped
-answering is alerted on loudly in its own right.
+Two more rules. A pass that **could not read a repo** says nothing at all: every row it could not
+probe is recorded `unknown`, which counts as stranded, so rows long since closed re-enter the
+population at their original age and both halves of the band jump — a false page, and a poisoned
+mark if it were remembered. And a population that **clears** forgets its band altogether, on the
+empty pass, which is why `alert_if_overdue` runs even when there was nothing to examine — so the next
+population starts from its first week rather than being measured against one that is gone.
+
+The band lives in `Rails.cache` — Redis everywhere but `test`, which runs a `:null_store`. Before it
+pages, the sweep writes a throwaway token to a probe key and reads it back; a store that cannot
+remember fails that check, and the sweep then stays **silent** on purpose. An hourly page nothing can
+throttle would flood the channel every real page on this deployment travels, and a cache that has
+stopped answering is alerted on loudly in its own right. The probe is a separate key from the band
+precisely so that failing it can never leave a band written that no page went out for.
 
 ## The import
 
