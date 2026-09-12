@@ -2640,14 +2640,23 @@ URL, and only the full page's referer is the session's own path. `#archive` comp
 session's* path rather than any `/sessions/:id`, so trashing one session's card from another
 session's page still streams in place.
 
+That path has two spellings, and both count. `session_path` uses the slug, but `#show` also
+resolves the numeric id without redirecting to the slug — and the id form is what Slack and push
+notifications link to, so it is the URL a human most often lands on. A referer from another host
+never counts, whatever its path.
+
 The redirect is also what carries the toast across the navigation. With no page left to stream
 `#flash` into, the notice rides the real flash instead, and the dashboard renders **Undo** on
-arrival — the undo window survives the move. It is a `303 See Other`, which is what makes both
-Turbo's `fetch` and a native form POST follow it with a `GET`.
+arrival — the undo window survives the move. It is a `303 See Other`, the status that means "`GET`
+this next" for any method and the one Turbo documents for a form submission's redirect.
 
 Only the success path redirects. A refusal over a queued message, and a click on a session
-something else already archived, both answer the way they always did and leave you where you
+something else already archived, both answer with a stream into `#flash` and leave you where you
 clicked: an error must not navigate away as though it had worked.
+
+A browser that sends no referer — a privacy extension, a `no-referrer` policy — gets the stream
+instead of the redirect, and is left on the page. See
+[the limitation](/limitations/#trash-without-a-referer-leaves-you-on-the-trashed-sessions-page).
 
 ### The detail page keeps its own cable alive
 

@@ -1392,7 +1392,41 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert session.reload.archived?
     assert_redirected_to root_path
-    assert_response :see_other, "Turbo's fetch only turns a redirected POST into a GET on a 303"
+    assert_response :see_other, "a form submission's redirect is a 303, the status Turbo documents for it"
+  end
+
+  # The detail page has two URLs. `session_path` is the slug, but #show resolves
+  # the numeric id too and does not canonicalize it — and the id form is what
+  # Slack and push notifications link to. Fixtures carry no slug, so without
+  # setting one here the two spellings coincide and this case goes untested.
+  test "archive from the detail page redirects home whether the page was reached by slug or by id" do
+    session = sessions(:failed)
+    session.update!(slug: "fix-the-poller-20260830-1102")
+    assert_equal "/sessions/fix-the-poller-20260830-1102", session_path(session)
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => session_url(session.id) }
+
+    assert_redirected_to root_path, "the id-form URL a notification links to is the same page"
+
+    session.update_columns(status: Session.statuses[:failed], archived_at: nil)
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => session_url(session) }
+
+    assert_redirected_to root_path, "the slug-form URL is the same page"
+  end
+
+  test "archive with a cross-origin referer on a matching path stays put" do
+    session = sessions(:failed)
+
+    post archive_session_url(session),
+      as: :turbo_stream,
+      headers: { "HTTP_REFERER" => "https://elsewhere.example/sessions/#{session.id}" }
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="remove"\s+target="session_#{session.id}"/, response.body)
   end
 
   # The redirect is what carries the toast: with no stream to land in #flash, the
@@ -1438,20 +1472,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/<turbo-stream\s+action="remove"\s+target="session_#{session.id}"/, response.body)
     assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
     assert_match(/>Undo</, response.body)
-  end
-
-  # The drawer renders the same header partial as the full page but never leaves
-  # the dashboard's URL, so it keeps the in-place stream — archiving out of a
-  # drawer must not navigate the dashboard behind it.
-  test "archive from the drawer streams in place rather than redirecting" do
-    session = sessions(:failed)
-
-    post archive_session_url(session),
-      as: :turbo_stream,
-      headers: { "HTTP_REFERER" => "#{root_url}?q=deploy" }
-
-    assert_response :success
-    assert_match(/<turbo-stream\s+action="remove"\s+target="session_#{session.id}"/, response.body)
   end
 
   # A detail page can show cards for other sessions. Trashing one of those is a

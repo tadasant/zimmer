@@ -916,8 +916,9 @@ class SessionsController < ApplicationController
     #
     # The redirect is also what carries the Undo toast across the navigation. The
     # notice rides the flash instead of a stream, so the dashboard renders the
-    # toast — Undo button and all — on arrival. 303 rather than 302 so that both
-    # Turbo's fetch and a native form POST follow it with a GET.
+    # toast — Undo button and all — on arrival. 303 is the status that means
+    # "GET this next" for any method, which is what Turbo documents for a form
+    # submission's redirect.
     if archived_from_its_own_page?(@session)
       redirect_to root_path, notice: undo_notice, status: :see_other
       return
@@ -933,13 +934,24 @@ class SessionsController < ApplicationController
   # card, a ranked row and the drawer all sit on the dashboard's URL, so they
   # answer false and keep the in-place stream.
   #
+  # The page has two URLs. `session_path` spells it with the slug, but #show
+  # resolves the numeric id too and does not redirect to the canonical form — and
+  # the id form is what Slack and push notifications link to, so it is the one a
+  # human most often arrives on. Both spellings count.
+  #
+  # Same-host only, like #referrer_is_sessions_index?: a cross-origin referer with
+  # a matching path is not this app's page.
+  #
   # Only the success path consults this. A refusal and an already-archived click
-  # both keep their existing replies, which leave the user on the page they
+  # both answer with a stream into #flash, which leaves the user on the page they
   # clicked from — an error must not navigate away as though it had worked.
   def archived_from_its_own_page?(session)
     return false if request.referer.blank?
 
-    URI.parse(request.referer).path == session_path(session)
+    referer = URI.parse(request.referer)
+    return false unless referer.host.nil? || referer.host == request.host
+
+    [ session_path(session), session_path(session.id) ].include?(referer.path)
   rescue URI::InvalidURIError
     false
   end
@@ -951,10 +963,11 @@ class SessionsController < ApplicationController
   # card vanished silently and the Undo button in the toast never appeared.
   #
   # It carries the session page's chrome for the same reason #unarchive and
-  # #pause do: archiving from the session page (or from the drawer showing it)
-  # leaves the user looking at it, so the Trash button has to become Restore in
-  # the reply itself rather than only over a cable that can be silently dead.
-  # Both chrome targets are absent when the click came from a dashboard card.
+  # #pause do: archiving from the drawer showing a session leaves the user
+  # looking at it, so the Trash button has to become Restore in the reply itself
+  # rather than only over a cable that can be silently dead. The full detail page
+  # never receives this stream — #archive redirects it home. Both chrome targets
+  # are absent when the click came from a dashboard card.
   def archive_remove_streams(session, notice:)
     [ turbo_stream.remove(dom_id(session)), flash_stream(notice: notice) ] +
       session_chrome_streams(session)
