@@ -404,15 +404,23 @@ session that ran and finished.
 some `/mcp` cannot be mistaken for one of ours — whose endpoint carries the `self_session` tool
 group, either scoped to it or unscoped and therefore full-surface. `zimmer-fleet`,
 `zimmer-sessions` and `zimmer-gate-decisions` are scoped to groups that do not include it, and
-losing one of those is #521's case, not this one. Anything the catalog cannot classify — an unknown
-name, a URL that will not parse, a catalog that will not resolve — answers *not required*: a wrong
-`true` kills sessions during a catalog blip, while a wrong `false` is the behaviour that was there
-before.
+losing one of those is #521's case, not this one. A `zimmer-*` name the catalog does not know, or
+whose URL will not parse, answers *not required*: a wrong `true` kills a session, while a wrong
+`false` is the behaviour that was there before. The two entries Zimmer **injects** are the exception,
+and stay required even when the catalog cannot be read at all — Zimmer wrote them itself and does not
+need a catalog to know what is in them, so a catalog blip cannot quietly reclassify a session's own
+lifecycle surface as optional.
 
-**The ladder still runs first.** Required or not, a failure rides `RetryBudget::MCP_CONNECTION`
-(30s / 60s / 120s) before anything is definitive, because the common cause is a server still
-starting after a deploy. Only a rejected static credential — Zimmer's own entries authenticate with
-an `X-API-Key` header, so a rejected key is definitive on the first attempt — skips it.
+**A required server always gets the whole ladder.** Every failure rides `RetryBudget::MCP_CONNECTION`
+(30s / 60s / 120s) before anything is definitive, because the common cause is a server still starting
+after a deploy — and unlike an ordinary server, a required one is not written off early even for an
+auth-shaped error. Two reasons. `AUTH_ERROR_PATTERN` is a substring match and a transport error
+quotes the URL it was dialing, which for a Zimmer entry ends `&session_id=<id>` — so a session whose
+id merely *contains* `401` reads as an auth failure on an ordinary connect error, and fast-failing
+would kill a recoverable session for its id. And where the rejection is real it is the one credential
+a retry can fix: `X-API-Key` is Zimmer's own key, resolved fresh on every spawn, so a rotation or a
+mid-deploy blip heals on the next attempt. The verdict is not softened, only postponed to the end of
+the ladder.
 
 **And the escalation itself is the other half of the fix.** `McpStatusPersisting` escalates a failed
 server when it was *user-selected* — which the self-session entry never is, because Zimmer injects
@@ -425,6 +433,14 @@ names the loss on the session page and what `McpStatusPersisting` retires the mo
 reports `connected` again. `failure_reason` and `required_mcp_servers_lost` are both in
 `Session::STALE_RETRY_METADATA_KEYS`, so a restart drops the previous run's verdict and reaches its
 own.
+
+That record outliving the restart is also why the "already written off, nothing new here" short-circuit
+at the top of `check_and_handle_mcp_failure` — the one that stops a degraded server re-triggering
+terminate-and-resume forever — is **narrowed for required servers**. Without that, a human restarting
+a session whose Zimmer server is still down would arrive with nothing "new", be waved through, and get
+back exactly the silent no-op session this section is about, reached through the fix for it. A required
+server that is still failing is re-classified from scratch: the ladder, and a fresh verdict at the end
+of it. It cannot loop, because the verdict is `fail`, which enqueues nothing.
 
 ## Remote servers and OAuth
 

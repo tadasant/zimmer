@@ -44,11 +44,37 @@ class RequiredMcpServersTest < ActiveSupport::TestCase
     refute RequiredMcpServers.required?("zimmer-something-nobody-registered")
   end
 
-  test "a catalog that will not resolve reports nothing as required" do
-    # The consequence of `true` is a failed session, so a catalog blip must not be
-    # able to produce one.
-    ServersConfig.stub(:find, ->(_name) { raise AirCatalogService::CatalogError, "air resolve exploded" }) do
-      refute RequiredMcpServers.required?(SelfSessionInjector::SELF_SESSION_SERVER_NAME)
+  # A catalog that cannot be read reports no entry rather than raising —
+  # ServersConfig rescues CatalogError to an empty list — so both shapes are
+  # pinned, and both fall back to the injector's own knowledge.
+  test "the two entries Zimmer injects stay required when the catalog cannot be read" do
+    [
+      ->(_name) { nil },
+      ->(_name) { raise AirCatalogService::CatalogError, "air resolve exploded" }
+    ].each do |unreadable_catalog|
+      ServersConfig.stub(:find, unreadable_catalog) do
+        assert RequiredMcpServers.required?(SelfSessionInjector::SELF_SESSION_SERVER_NAME),
+          "Zimmer wrote this entry itself and does not need a catalog to know what is in it"
+        assert RequiredMcpServers.required?(SelfSessionInjector::SUBAGENT_SERVER_NAME)
+      end
+    end
+  end
+
+  test "every other zimmer name is not required when the catalog cannot be read" do
+    # Nothing else to go on, and the consequence of `true` is a failed session.
+    ServersConfig.stub(:find, ->(_name) { nil }) do
+      refute RequiredMcpServers.required?("zimmer-fleet")
+      refute RequiredMcpServers.required?("zimmer-gate-decisions")
+    end
+  end
+
+  test "a catalog URL that will not parse is not read as the full surface" do
+    # SelfSessionInjector.tool_groups_in reports an unparseable URL as `[]`, which
+    # means the full surface — the most required answer there is. A `zimmer-*` entry
+    # with an unexpanded ${VAR} in its URL must not be classified on that.
+    unparseable = ServersConfig::Server.new("zimmer-fleet", "url" => "https://zimmer .example.com/mcp")
+    ServersConfig.stub(:find, ->(_name) { unparseable }) do
+      refute RequiredMcpServers.required?("zimmer-fleet")
     end
   end
 
@@ -63,11 +89,11 @@ class RequiredMcpServersTest < ActiveSupport::TestCase
   # scopes its own entries differently gets its own answer rather than Zimmer's.
   test "the answer follows the catalog entry's tool_groups" do
     scoped = ServersConfig::Server.new(
-      SelfSessionInjector::SELF_SESSION_SERVER_NAME,
+      "zimmer-sessions",
       "url" => "https://zimmer.example.com/mcp?tool_groups=sessions"
     )
     ServersConfig.stub(:find, ->(_name) { scoped }) do
-      refute RequiredMcpServers.required?(SelfSessionInjector::SELF_SESSION_SERVER_NAME),
+      refute RequiredMcpServers.required?("zimmer-sessions"),
         "an entry scoped away from self_session carries none of the lifecycle tools"
     end
 

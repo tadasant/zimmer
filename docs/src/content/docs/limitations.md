@@ -2456,6 +2456,19 @@ answer.
 
 ## MCP
 
+### An outage of Zimmer's own `/mcp` now fails every in-flight session at once
+
+`zimmer-self-session` is injected into nearly every session and points at the Zimmer instance serving that session. Losing it is a session-level failure rather than a degradation — that is the point of [Except the one server whose loss IS the session](/air/mcp-servers/#except-the-one-server-whose-loss-is-the-session), and it is what stops a router from running to completion having started nothing. The cost is that the blast radius of an outage of Zimmer's *own* endpoint is now every live session rather than none.
+
+Any outage longer than the retry ladder (`RetryBudget::MCP_CONNECTION`, ~3.5 minutes) does it: a bad deploy, a kamal-proxy gate that stays shut, an `API_KEYS` rotation that leaves the deployed key behind. [#1167](https://github.com/tadasant/zimmer/pull/1167) was exactly this shape and lasted two hours. Before, those sessions ran on uselessly; now they fail. Failing is the better of the two — a failed session is restartable and visible, while a silent no-op is neither — but it is a real change in what an outage costs, and the restarts are a human's to trigger.
+
+Two second-order effects worth knowing before you read the alerts:
+
+- **Each trigger-created session that fails raises its own `error`-level `OrphanedTriggerFire` report.** One Zimmer blip therefore becomes an N-fold ERROR burst in obs and `#alerts`, where N is however many trigger sessions were live. The MCP-connect paths themselves stay at `.warn` precisely to avoid adding to it, but the failures are genuine and each one names a work item that was dropped.
+- **A restart while the endpoint is still down costs a full ladder before it fails again** — ~3.5 minutes per attempt, since `mcp_retry_count` is cleared on restart. Fix the endpoint first, then restart.
+
+Nothing throttles or coalesces this today. If it becomes a problem the shape of the fix is a fleet-level circuit breaker — when *every* session is losing the same Zimmer-native server, that is an outage rather than N per-session verdicts — but a breaker that gets its own outage detection wrong would resurrect the silent no-op, so it is deliberately not guessed at here.
+
 ### A restricted connection is locked out of MCP servers at spawn, but not through a trigger
 
 `allowed_agent_roots` locks a connection to its roots' exact default MCP servers, and
