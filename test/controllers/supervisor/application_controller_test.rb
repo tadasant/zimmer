@@ -198,6 +198,22 @@ module Supervisor
       assert_response :unauthorized
     end
 
+    # Blank and unset are the same thing for the username half, and that is load-bearing
+    # rather than incidental: production maps SUPERVISOR_PASSWORD into Kamal's secrets and
+    # deliberately leaves SUPERVISOR_USERNAME unmapped, on the grounds that mapping it
+    # against a deploy variable nobody set would resolve to "" and change nothing. This is
+    # the assertion that makes that argument true rather than merely plausible.
+    test "a blank SUPERVISOR_USERNAME still authenticates as the default" do
+      ENV[PASSWORD_ENV] = "s3cret"
+
+      [ "", "   " ].each do |blank|
+        ENV[USERNAME_ENV] = blank
+
+        get supervisor_logs_url, headers: basic_auth_headers("supervisor", "s3cret")
+        assert_response :success, "#{USERNAME_ENV}=#{blank.inspect} must fall back to the default"
+      end
+    end
+
     # The gate is on the shared parent, so it covers the token-bearing
     # dashboards — the reason it exists — and not just the one above.
     test "the credential dashboards are gated too" do

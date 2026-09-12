@@ -285,10 +285,10 @@ env:
     - RAILS_MASTER_KEY
     - API_KEYS
     # The operator HTTP Basic realm in front of /supervisor, /settings/api_keys and the
-    # mutating POST /health/* actions. Fails closed: without it those surfaces are 401 for
-    # everyone, which is what production shipped as. CliSpawnEnv clears it from every
-    # spawned session, which is what stops it from reaching the agents this container runs.
-    # See .kamal/secrets.production for why the username half is not here.
+    # mutating POST /health/* actions (OperatorHttpBasicAuth). Fails closed, and a value
+    # that never arrives is silent rather than loud -- see .kamal/secrets.production for
+    # how it is delivered, why the username half is not here, and why CliSpawnEnv has to
+    # clear it from every session this container spawns.
     - SUPERVISOR_PASSWORD
     - DATABASE_PASSWORD
     # The injected prod self-session MCP server calls this instance's own REST API.
