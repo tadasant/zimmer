@@ -4948,6 +4948,19 @@ Also:
   button, because there is no URL to try again; and a miss dispatched after the frame has left the
   document is cancelled silently, because there is nothing left to paint into.
 
+### Trash without a referer leaves you on the trashed session's page
+
+Trashing a session from its own detail page sends you back to the dashboard, and the only thing
+that tells that page apart from the session drawer is the request's `Referer` header (see
+[Trash on a session's own page navigates home](/sessions/lifecycle/#trash-on-a-sessions-own-page-navigates-home)).
+A browser that sends none — a privacy extension that strips it, a `Referrer-Policy: no-referrer`
+somewhere upstream — gets the in-place stream the drawer gets: the session is trashed, the toast
+and its **Undo** appear, the button turns into **Restore**, and you are left on the page of a session
+in the bin. Nothing is lost; you just have to leave by hand.
+
+A path that differs only by a trailing slash (`/sessions/728/`) is treated the same way. Rails
+routes it, but no link in the app produces it.
+
 ---
 
 ## Testing
