@@ -1118,10 +1118,10 @@ class SlackTriggerPollerJob < ApplicationJob
   # nothing is lost.
   #
   # update_column, not update!, and rescued: this runs OUTSIDE the callers' per-thread
-  # rescue, so anything it raises would skip thread checking for the whole channel and
-  # — on the single-channel bot_mention path, which has no unit rescue — alert. What is
-  # at stake does not justify that. A cursor that fails to advance costs the rotation
-  # one step, which the next poll simply repeats.
+  # rescue, so anything it raises would cost the whole channel its thread scan for that
+  # poll through the unit rescue each mention path owns. What is at stake does not
+  # justify that. A cursor that fails to advance costs the rotation one step, which the
+  # next poll simply repeats.
   def advance_recheck_cursor!(condition, channel_id, last_key)
     return if last_key.blank?
 
