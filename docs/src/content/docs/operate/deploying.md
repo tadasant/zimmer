@@ -480,6 +480,57 @@ price. `alias_attribute`, or just living with `stop_condition` in the schema and
 code, costs nothing and strands nobody. Rename when the old name is actively misleading, not when
 the new one is nicer.
 
+### Retyping a column: the shadow takes the old name
+
+Changing a column's *type* is a rename wearing a different hat, and `sessions`' five `json` → `jsonb`
+columns are the worked example ([#847](https://github.com/tadasant/zimmer/issues/847)). The obvious
+migration is the one not to write:
+
+```sql
+ALTER TABLE sessions ALTER COLUMN metadata TYPE jsonb USING metadata::jsonb;  -- DO NOT
+```
+
+`json` and `jsonb` are not binary-coercible, so that rewrites the whole table under
+`ACCESS EXCLUSIVE` — `transcript` and all, which `SessionContentSearch` puts at gigabytes. So it
+goes through a shadow instead, and the twist is in the contract: the new column does not keep its
+scaffolding name, it **takes the old one**, and every reader in the app lands on the new type
+without a single call site changing.
+
+| Deploy | Migration | Code |
+| --- | --- | --- |
+| 1 — **expand** ([#1018](https://github.com/tadasant/zimmer/pull/1018)) | `add_column :sessions, :metadata_jsonb, :jsonb` — catalog-only, plus a post-deploy task that backfills it | every write path fills both; nothing reads the shadow |
+| 2 — **swap** (PRNUMPLACEHOLDER) | converge the shadow, `rename_column :metadata, :metadata_json_legacy`, `rename_column :metadata_jsonb, :metadata`, then `add_column :metadata_jsonb` **again, empty**; rebuild the expression indexes the first rename carried away | the dual-write goes; all ten dead names go into `ignored_columns` |
+| 3 — **contract** | `remove_column` on the ten dead names, annotated `# two-phase-drop: phase 2 of #<deploy-2 PR>` | the `ignored_columns` line goes |
+
+Three things in deploy 2 are what make it survivable, and each one is a way the obvious version
+breaks:
+
+- **Re-adding the shadow name, empty.** The old containers write it from every path the dual-write
+  covered, and `columns_hash` was cached at boot — so they will name that column whether or not it
+  is still there. Drop it and every save from an old container is a `PG::UndefinedColumn` for the
+  length of the swap window.
+- **Renaming the original aside instead of dropping it.** Dropping it here would be a single-phase
+  drop: no image ever shipped with it in `ignored_columns`, so the `two-phase-drop` annotation would
+  be a claim about a deploy that never happened. Renaming retires the name, keeps the values for one
+  deploy as the undo, and makes deploy 3's annotation true.
+- **Converging the shadow first, in the same transaction.** A backfill that reads `succeeded` proves
+  the rows that existed when it ran, not the rows as they are now — a writer reaching the original
+  through `update_all` or raw SQL leaves a shadow that is stale and *not* null, and the rename would
+  promote it silently. The `UPDATE … WHERE <shadow> IS DISTINCT FROM <original>::jsonb` runs under
+  the lock the migration already holds, so nothing can race it and the equality is a fact afterwards
+  rather than an argument.
+
+The old containers read the swapped column happily, which is the part that makes the whole shape
+work: Active Record casts `json` and `jsonb` to the same Ruby Hash, the wire format is text either
+way, and `json` → `jsonb` is an *assignment* cast in PostgreSQL — so even a write that explicitly
+casts its expression back to `::json` lands in the retyped column without complaint. A retype that
+is not assignment-castable in the old direction does not get this recipe.
+
+**`rename_column` carries its indexes with it.** The expression and partial indexes over `metadata`
+followed it to `metadata_json_legacy`, names included, so recreating them against the new column
+collides until the old ones are dropped. `remove_index` then `add_index` in the same migration — an
+index carries no attribute, so neither call strands anything and the guard ignores both.
+
 ### Renaming or dropping a table
 
 A `rename_table` is the same expand-and-contract one level up: create the new table, write both,

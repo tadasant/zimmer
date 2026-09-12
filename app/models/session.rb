@@ -3,9 +3,6 @@ class Session < ApplicationRecord
   include BroadcastsThroughService
   include SessionStateMachine
   include AtomicJsonMetadata
-  # Temporary, for the duration of #847's `json` → `jsonb` conversion. PR 2
-  # deletes both the concern and this line.
-  include JsonbDualWrite
   include SessionGenesisClassification
   include SessionPrecedence
   include SessionCardOrder
@@ -28,6 +25,34 @@ class Session < ApplicationRecord
   # second execution substrate is ever built, the seam is RuntimeRegistry and
   # ProcessLifecycleManager, not a column with one legal value.
   self.ignored_columns += %w[execution_provider]
+
+  # Phase 1 of the two-phase drop of the ten dead names #847's `json` → `jsonb`
+  # conversion left behind. `20260912140000_swap_sessions_jsonb_shadows_into_place`
+  # renamed each `<name>_jsonb` shadow over the `json` original it had been
+  # dual-written from, so `config`, `mcp_servers`, `mcp_server_env`,
+  # `mcp_server_headers` and `metadata` are the jsonb columns now and every reader
+  # in this file already reaches them by those names.
+  #
+  # What that left is two dead columns per conversion, and they are dead for
+  # different reasons:
+  #
+  #   * `<name>_json_legacy` is the original `json` column, renamed aside rather
+  #     than dropped so the values survive a deploy — the pre-cutover data, if the
+  #     convergence in that migration ever has to be second-guessed.
+  #   * `<name>_jsonb` was re-added EMPTY by the same migration, because the
+  #     containers from #1018 keep writing that name for the length of the swap
+  #     window and `columns_hash` was cached at boot. Nothing reads it in either
+  #     image.
+  #
+  # Ignoring all ten is what makes the next deploy safe to drop them in: by then
+  # no image is selecting or inserting any of these names. The follow-up PR drops
+  # the columns and removes this line, annotated `two-phase-drop: phase 2`.
+  self.ignored_columns += %w[
+    config_json_legacy mcp_servers_json_legacy mcp_server_env_json_legacy
+    mcp_server_headers_json_legacy metadata_json_legacy
+    config_jsonb mcp_servers_jsonb mcp_server_env_jsonb
+    mcp_server_headers_jsonb metadata_jsonb
+  ]
 
   has_many :logs, dependent: :destroy
   has_many :subagent_transcripts, dependent: :destroy
