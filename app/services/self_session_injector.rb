@@ -81,8 +81,30 @@ class SelfSessionInjector
   # full-surface) and `zimmer-*` (injected or catalog-resolved scoped variants).
   # Matching on the name rather than the URL keeps a third-party server that
   # happens to be served at /mcp from being mistaken for one of ours.
-  def zimmer_server_name?(name)
+  #
+  # A class method with an instance delegate, because the two rules below are
+  # facts about a name and a URL rather than about a configured injector, and
+  # `RequiredMcpServers` asks both of them with no config to inject: building an
+  # injector to answer them would resolve this instance's BASE_URL and API key
+  # for nothing.
+  def self.zimmer_server_name?(name)
     name.to_s == SUBAGENT_SERVER_NAME || name.to_s.start_with?("#{SUBAGENT_SERVER_NAME}-")
+  end
+
+  # The tool_groups an entry's endpoint URL scopes itself to. An empty list means
+  # the full surface (that is also what a URL-less entry reports, which only
+  # happens for a malformed Zimmer entry).
+  def self.tool_groups_in(url)
+    return [] if url.blank?
+
+    query = URI.parse(url.to_s).query
+    Rack::Utils.parse_query(query)["tool_groups"].to_s.split(",").map(&:strip).reject(&:empty?)
+  rescue URI::InvalidURIError
+    []
+  end
+
+  def zimmer_server_name?(name)
+    self.class.zimmer_server_name?(name)
   end
 
   # The MCP endpoint of the Zimmer instance this Rails process IS, optionally
@@ -117,16 +139,8 @@ class SelfSessionInjector
 
   private
 
-  # The tool_groups an entry's endpoint URL scopes itself to. An empty list means
-  # the full surface (that is also what a URL-less entry reports, which only
-  # happens for a malformed Zimmer entry).
   def tool_groups_in(url)
-    return [] if url.blank?
-
-    query = URI.parse(url.to_s).query
-    Rack::Utils.parse_query(query)["tool_groups"].to_s.split(",").map(&:strip).reject(&:empty?)
-  rescue URI::InvalidURIError
-    []
+    self.class.tool_groups_in(url)
   end
 
   def get_env_value(var_name)

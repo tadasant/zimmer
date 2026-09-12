@@ -6,9 +6,10 @@
 # `function_call` events naming each server (CodexMcpStatusDetector) — but once a
 # detector has produced a `server_statuses` hash, the persistence semantics are
 # identical: write the changed statuses into `custom_metadata["mcp_servers_status"]`,
-# and escalate a *configured* (not merely injected) server failure to a
-# session-level failure. Centralizing that here keeps the two runtimes byte-for-byte
-# consistent in how status is recorded and how failures escalate.
+# and escalate a failure to a session-level failure when the server was either
+# *configured* (not merely injected) or is one the session cannot run without
+# (RequiredMcpServers). Centralizing that here keeps the two runtimes
+# byte-for-byte consistent in how status is recorded and how failures escalate.
 #
 # Including classes must provide:
 # - `@session`  — the Session being tracked
@@ -94,12 +95,24 @@ module McpStatusPersisting
           status_changed = true
         end
 
-        # Only selected-server failures escalate to a session-level failure.
-        # An injected-server failure is still recorded in mcp_servers_status
-        # (so the UI can render it red), but it does not trigger the
-        # should_fail_session path — that semantics is reserved for servers
-        # the user explicitly asked for directly or through a selected plugin.
-        if new_status[:status] == "failed" && configured_servers.include?(server_name)
+        # Which failures escalate to a session-level failure. Two sets qualify,
+        # for two different reasons:
+        #
+        #   - a server the user asked for, directly or through a selected plugin.
+        #     They chose it, so losing it is worth acting on.
+        #   - a server this session cannot run without, chosen or not
+        #     (RequiredMcpServers). Zimmer's self-session surface is the only one
+        #     today, and it is auto-INJECTED into nearly every session — so on the
+        #     configured-only rule the one server whose loss silences a session
+        #     was the one failure that escalated nowhere. No retry ladder, no
+        #     write-off record, no `<unavailable-mcp-servers>` block: the session
+        #     simply ran on with no way to archive, to reach its parent, to
+        #     re-arm a wake, or to spawn the work it existed to spawn (#1166).
+        #
+        # Everything else injected is still recorded in mcp_servers_status (so the
+        # UI can render it red) and still escalates nowhere.
+        if new_status[:status] == "failed" &&
+            (configured_servers.include?(server_name) || RequiredMcpServers.required?(server_name))
           any_failed = true
           failed_servers << { "name" => server_name, "status" => "failed", "error" => new_status[:error] }
         end

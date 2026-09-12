@@ -584,6 +584,10 @@ class Session < ApplicationRecord
     failure_reason
     exit_status
     mcp_failed_servers
+    # AgentSessionJob::REQUIRED_MCP_SERVERS_LOST_KEY — spelled here rather than
+    # referenced, because naming the constant in this class body would autoload
+    # AgentSessionJob while Session is still loading. A test pins the two together.
+    required_mcp_servers_lost
     paused_by
     compact_retry_count
     pending_compact_continuation
@@ -1987,6 +1991,20 @@ class Session < ApplicationRecord
         # when the per-server list was cleared but the summary string remains.
         custom_metadata&.dig("mcp_failure_reason").presence || "MCP server connection failed"
       end
+    when AgentSessionJob::REQUIRED_MCP_SERVER_LOST_FAILURE_REASON
+      # `humanize` would render "Required mcp server lost", which names the
+      # mechanism and hides what the session can no longer do. The servers are
+      # named because "Zimmer's MCP server" is several entries.
+      #
+      # One clause, like every other branch here, because this string is not only
+      # read on the session page: SessionTitleJob truncates it to 100 characters
+      # to title the session, and SendPushNotificationJob to 200 for the push
+      # body — with #failure_detail appended AFTER it, so a paragraph here would
+      # push the per-server error off the end of the notification. The rest of
+      # what a reader needs is in #failure_detail, which has room for it.
+      servers = required_mcp_servers_lost
+      named = servers.any? ? servers.to_sentence : "Zimmer's own MCP server"
+      "Lost #{named} — this session's own archive, message-parent and wake-up tools are gone"
     when "oauth_required"
       servers = oauth_required_server_names
       servers.any? ? "OAuth authorization required: #{servers.join(', ')}" : "OAuth authorization required"
@@ -2047,13 +2065,44 @@ class Session < ApplicationRecord
   #
   # @return [String, nil]
   def failure_detail
-    return nil unless metadata&.dig("failure_reason") == "mcp_connection_failed"
+    entries =
+      case metadata&.dig("failure_reason")
+      when "mcp_connection_failed"
+        custom_metadata&.dig("mcp_failed_servers")
+      when AgentSessionJob::REQUIRED_MCP_SERVER_LOST_FAILURE_REASON
+        # The write-off record, not `custom_metadata["mcp_failed_servers"]`: the
+        # latter is in STALE_MCP_FAILURE_KEYS and so is dropped by the next resume,
+        # while this one is kept precisely because it has to outlive it.
+        lost = required_mcp_servers_lost
+        degraded_mcp_servers.select { |entry| lost.include?(entry["name"]) }
+      end
 
-    details = (custom_metadata&.dig("mcp_failed_servers") || []).filter_map do |server|
+    details = Array(entries).filter_map do |server|
       error = server["error"].presence
       error ? "#{server['name']}: #{error}" : nil
     end
+
+    # The one branch that says something beyond the per-server errors, because
+    # the summary above deliberately does not have room for it: what the loss
+    # cost, and what to do about it. Prepended rather than appended so it
+    # survives the push body's own truncation.
+    if metadata&.dig("failure_reason") == AgentSessionJob::REQUIRED_MCP_SERVER_LOST_FAILURE_REASON
+      details.unshift(
+        "It could neither finish nor hand off its work, so it was failed rather than left running " \
+        "and silently doing nothing. Restart it once /connectors shows the server connecting again."
+      )
+    end
+
     details.any? ? details.join("; ") : nil
+  end
+
+  # Names of the MCP servers whose loss failed this session — the ones
+  # `RequiredMcpServers` classifies as carrying the session's own lifecycle.
+  # Written by AgentSessionJob#fail_for_lost_required_mcp!; empty for every other
+  # failure.
+  # @return [Array<String>]
+  def required_mcp_servers_lost
+    Array(metadata&.dig(AgentSessionJob::REQUIRED_MCP_SERVERS_LOST_KEY)).compact_blank
   end
 
   # Names of MCP servers that failed to connect, from the persisted failure metadata.
