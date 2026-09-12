@@ -2484,6 +2484,119 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_nil session.metadata["pending_sleep"]
   end
 
+  # === The #1172 strand: a scheduled_wake intent that outlived its own turn ===
+
+  # Session 17044's shape, reproduced. It armed a three-event watcher plus a
+  # deadline backstop while running, which marks it `pending_sleep`. The watcher
+  # fired before the turn pauses, so the wake was QUEUED onto the running session
+  # and the whole group was held. The next turn armed nothing, its pause retired
+  # the held group — and the leftover intent then slept the session into `waiting`
+  # with no trigger left in the world. It sat there 15.5 minutes until
+  # StrandedSleepRescue resumed it and paged #alerts.
+  test "a woken turn that arms nothing rests in needs_input rather than sleeping on a retired wake set" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    child = sessions(:running)
+
+    conditions = wake_set_for(session, watched: [ child ])
+    assert_equal true, session.reload.metadata["pending_sleep"],
+      "arming a wake against a running session marks it to sleep at the end of that turn"
+    assert_equal Sessions::StopRecord::SCHEDULED_WAKE,
+      session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
+
+    # The watcher fires into the still-running turn: its condition is spent and
+    # AoEventTriggerJob hands the whole group to the requester's next rest.
+    watcher = conditions.find { |condition| condition.condition_type == "ao_event" }
+    watcher.update!(last_triggered_at: Time.current)
+    watcher.trigger.hold_wake_group!
+    assert conditions.all? { |condition| condition.trigger.reload.wake_held_at.present? },
+      "the fired watcher and its deadline backstop are both held across the woken turn"
+
+    # The woken turn runs and comes to rest having armed nothing.
+    session.reload.pause!
+
+    session.reload
+    assert session.needs_input?,
+      "the turn retired its whole wake set, so the session must rest where the operator can see it"
+    assert_equal 0, Trigger.where(last_session_id: session.id, reuse_session: true).count,
+      "the held group is retired by this pause"
+    assert_nil session.metadata["pending_sleep"]
+    assert_nil session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
+    assert_not session.awaiting_scheduled_wake?,
+      "and it is not left looking like a session asleep on a wake — that is what StrandedSleepRescue pages for"
+  end
+
+  # The inverse regression the fix must not cause: a turn that DID deliberately
+  # re-arm is a turn that meant to sleep, and must.
+  test "a woken turn that re-arms a wake of its own still sleeps" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    child = sessions(:running)
+
+    conditions = wake_set_for(session, watched: [ child ])
+    watcher = conditions.find { |condition| condition.condition_type == "ao_event" }
+    watcher.update!(last_triggered_at: Time.current)
+    watcher.trigger.hold_wake_group!
+
+    # The woken turn arms a fresh backstop for itself. It carries no `wake_held_at`,
+    # so the retirement below leaves it alone.
+    rearmed = wake_set_for(session, watched: [], scheduled_at: 45.minutes.from_now.iso8601).first
+
+    session.reload.pause!
+
+    session.reload
+    assert session.waiting?, "a session that re-armed must go back to sleep on what it armed"
+    assert_nil rearmed.trigger.reload.wake_held_at
+    assert_nil session.metadata["pending_sleep"]
+  end
+
+  # The other half of the same warning: a wake IN FLIGHT is not a wake that was
+  # lost. SCHEDULE_FIRE_SETTLE is the window in which a due-but-unfired schedule
+  # still counts as armed, and reading it as gone would keep a healthy sleeper
+  # awake.
+  test "a schedule that has just come due still counts as armed and the session sleeps" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+
+    wake_set_for(session, watched: [], scheduled_at: 1.minute.ago.iso8601)
+
+    session.reload.pause!
+
+    assert session.reload.waiting?,
+      "a schedule a minute overdue is a wake ScheduleTriggerJob has not reached yet, not a lost one"
+  end
+
+  test "a schedule whose moment passed long ago is not armed and the session rests in needs_input" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+
+    wake_set_for(
+      session, watched: [],
+      scheduled_at: (SessionStateMachine::SCHEDULE_FIRE_SETTLE.ago - 5.minutes).iso8601
+    )
+
+    session.reload.pause!
+
+    assert session.reload.needs_input?,
+      "past the settle window the wake is not coming, and sleeping on it is the #855 strand"
+  end
+
+  # The reason stamp is what scopes the guard, so the dormancies the platform
+  # imposes must be untouched by it. Refusing to sleep one of these would run a
+  # session that was deliberately stood down.
+  test "a spot-pause pending_sleep still sleeps the session with nothing armed" do
+    session = sessions(:waiting)
+    session.update!(
+      status: :running,
+      metadata: Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SPOT_PAUSE)
+    )
+
+    session.reload.pause!
+
+    assert session.reload.waiting?
+    assert_nil session.metadata["pending_sleep"]
+  end
+
   test "resume_for_system_recovery! is a no-op on a session that cannot resume" do
     session = sessions(:waiting)
     session.update!(status: :running)
