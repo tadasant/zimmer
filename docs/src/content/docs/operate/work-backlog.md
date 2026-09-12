@@ -231,8 +231,10 @@ rows. So when the premise expires, the item is neither queued nor being worked, 
 so. On 2026-09-11, 41 of 159 open convergent issues across the gated repos were `started`, and 13
 had been for four days or more.
 
-`WorkBacklogLivenessSweepJob` (hourly, `WorkBacklog::LivenessSweep`) re-checks those rows,
-least-recently-checked first, and records what GitHub currently says in `liveness_state`:
+`WorkBacklogLivenessSweepJob` (hourly, `WorkBacklog::LivenessSweep`) re-checks those rows and
+records what GitHub currently says in `liveness_state`. It takes every row whose verdict can still
+change before any row that is settled (`issue_closed` or `superseded`), and within each group the
+least-recently-checked first:
 
 | Found | `liveness_state` | Stranded? |
 | --- | --- | --- |
@@ -284,6 +286,24 @@ The rows the re-check has not resolved are the `stranded` population: a **Strand
 count on [the Issues view](/operate/issues-view/), `status: "stranded"` in `get_work_backlog` and
 the REST index, and `counts.stranded`. Because nothing clears it automatically, it is a triage
 queue rather than a fault counter.
+
+**The Issues view checks the stored verdict against its live GitHub read.** A row whose issue the
+page's snapshot shows closed is left out of the section and the count, whatever `liveness_state`
+says. `tadasant/zimmer#173` is why: it closed at 21:57 on 2026-09-12 and was still listed as
+stranded, as `pr_merged_issue_open`, over an hour later. The page writes nothing back. An issue the
+snapshot does not hold, and an issue that is still open, keep their stored verdict, because only the
+sweep reads the pull requests that decide whether an open issue is stranded.
+
+`get_work_backlog`, the REST index and the alert read the stored verdict alone. The alert is
+computed straight after a pass, and settled rows go last, so every stranded row has just been
+re-checked when the alert is computed, as long as there are fewer than `MAX_EXAMINED_PER_SWEEP`
+(200) of them. The other two can be up to one pass behind the page. See
+[Limitations](/limitations/#stranded-reads-outside-the-issues-view-lag-by-up-to-a-sweep-pass).
+
+Before settled rows went last, the lag had no upper bound. The candidate population only grows,
+because a row whose issue closed stays a candidate, and a plain least-recently-checked round-robin
+spent most of each pass's 200 re-confirming closed issues. That left a stranded row waiting several
+passes for its turn.
 
 Every pass logs what it examined and the age of the oldest stranded row — at WARN when a repo could
 not be read, INFO otherwise, since production exports WARN and above

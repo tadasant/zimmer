@@ -133,8 +133,12 @@ module Issues
     # `started_at` at all — a mechanically removed row was never started — and
     # Postgres sorts those NULLs to the top of a DESC ordering, pinning every
     # removed row above every started one for no reason a reader could guess.
+    #
+    # Read through #live_stranded, not WorkBacklogItem.stranded directly: the
+    # stored verdict is only as fresh as the sweep's last pass, and the page
+    # already holds a fresher reading of every issue it can see.
     def stranded_rows
-      @stranded_rows ||= WorkBacklogItem.stranded
+      @stranded_rows ||= live_stranded
         .includes(:started_session)
         .order(Arel.sql("COALESCE(started_at, removed_at) ASC"))
         .limit(MAX_STRANDED_ROWS)
@@ -192,7 +196,7 @@ module Issues
         in_flight: WorkBacklogItem.in_flight.count,
         spot_held: WorkBacklogItem.spot_held.count,
         parked: WorkBacklogItem.parked.count,
-        stranded: WorkBacklogItem.stranded.count,
+        stranded: live_stranded.count,
         github_open: snapshot.issues.count(&:open?)
       }
     end
@@ -290,6 +294,28 @@ module Issues
     # comparing "running" against "parked" is comparing the same rows.
     def started_rows(scope)
       scope.includes(:started_session).order(started_at: :desc).map { |item| build_row(item, nil) }
+    end
+
+    # The stranded population with the stored verdict corrected by the snapshot.
+    # The sweep writes `liveness_state` hourly, so an issue closed since its
+    # last check still reads as stranded in the table. The page header promises
+    # live GitHub state, and a closed issue listed under Stranded breaks that
+    # promise: zimmer#173 showed "pr merged issue open" there more than an hour
+    # after it closed.
+    #
+    # Only a CLOSED reading takes a row out. An issue the snapshot does not hold
+    # (a repo that failed to load, or one closed before the trend window) keeps
+    # its stored verdict. So does an open issue: whether it is stranded depends
+    # on its pull requests, and only the sweep reads those.
+    #
+    # Nothing is written back. The sweep records the closed verdict on its next
+    # pass, which is what `get_work_backlog` and the alert read.
+    def live_stranded
+      @live_stranded ||= begin
+        closed = WorkBacklogItem.stranded.distinct.pluck(:issue_url)
+                                .select { |issue_url| @github_by_url[issue_url]&.open? == false }
+        WorkBacklogItem.stranded.where.not(issue_url: closed)
+      end
     end
 
     def open_issue_directions

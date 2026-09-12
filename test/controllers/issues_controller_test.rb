@@ -55,6 +55,32 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # zimmer#173 on 2026-09-12: its stored verdict was "pr merged issue open" from a
+  # check made before the issue closed, and the page listed it as stranded, and
+  # counted it, more than an hour later. The page reads issue state live, so a
+  # closed issue is out of both the section and the tile.
+  test "a stranded row whose issue the live read shows closed is neither listed nor counted" do
+    sessions(:archived).update!(archived_at: 3.days.ago)
+    closed = backlog_item(key: "zimmer#173", title: "Closed since its last check", issue_url: url(173))
+    closed.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    closed.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    still_open = backlog_item(key: "zimmer#847", title: "Merged PR, issue still open", issue_url: url(847))
+    still_open.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    still_open.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+
+    snapshot = github_snapshot(issues: [ github_issue(number: 173, state: "closed", closed_at: 1.hour.ago),
+                                         github_issue(number: 847) ])
+    with_github_snapshot(snapshot) { get issues_path }
+
+    assert_response :success
+    assert_no_match "Closed since its last check", response.body
+    assert_match "Merged PR, issue still open", response.body
+    assert_select "h2", text: /Stranded\s+— 1 off the queue/
+    assert_select "div", text: "Stranded" do |labels|
+      assert_equal "1", labels.first.parent.at_css("div.tabular-nums").text.strip
+    end
+  end
+
   # The number Tadas read off this page, and the number the WIP ceiling is
   # computed against, have to be the same number. A session parked in
   # `needs_input` for a day is counted in neither.

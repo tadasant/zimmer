@@ -55,7 +55,9 @@ on each row — whether a PR references the issue, whether it merged, and whethe
 gone quiet — but **puts nothing back**, because a merged PR with no closing keyword is either
 finished work or a deliberate remainder and no mechanical signal separates them. This is a triage
 list: decide per row, and re-queue the ones with work left. See [When a row leaves the queue and
-goes nowhere](/operate/work-backlog/#when-a-row-leaves-the-queue-and-goes-nowhere).
+goes nowhere](/operate/work-backlog/#when-a-row-leaves-the-queue-and-goes-nowhere). The stored
+verdict can be up to an hour old, so the section is checked against the same live GitHub read as the
+rest of the page: a row whose issue that read shows closed is not listed or counted.
 
 **In GitHub, not on the queue** is every open issue across the six repos with no live backlog row —
 held by the gate, unrated, or simply not picked up yet. This is the half that makes the page "what
