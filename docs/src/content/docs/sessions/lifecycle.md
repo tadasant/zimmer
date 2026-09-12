@@ -619,9 +619,9 @@ declared next to each other on `Session` so the differences read in one place
 
 | Constant | What it is | Who uses it |
 | --- | --- | --- |
-| `STALE_RETRY_METADATA_KEYS` | the default | every ordinary resume and restart |
+| `STALE_RETRY_METADATA_KEYS` | the default | every ordinary resume and restart, `Sessions::RestartWithPrompt` among them |
 | `RESTART_FROM_SCRATCH_KEYS` | the default **plus** `SETUP_ARTIFACT_KEYS` and the spot-hold ladder | `Sessions::RestartFromScratch` |
-| `PRE_PROMPT_RESTART_KEYS` | the default **plus** `runtime_started` | restarting a session that failed before its initial prompt |
+| `PRE_PROMPT_RESTART_KEYS` | the default **plus** `runtime_started` | `Sessions::RestartWithPrompt`, for a session that failed before its initial prompt |
 | `RECOVERY_CONTINUE_KEYS` | the default **minus** `paused_by` | `SessionContinuation`, when it delivers a queued message |
 
 `RESTART_FROM_SCRATCH_KEYS` takes the setup artifacts because the attempt it replaces failed partway
@@ -659,7 +659,38 @@ genuinely disagree: MCP and the REST API refuse (an agent working a ranked queue
 session that asked to be left alone), and the Restart button does not (a person clicking it on one
 session is taking that session over).
 
-##### Which sessions each door restarts
+#### And so is restarting one that still has a conversation
+
+The other branch of the same three doors — the session *does* have a clone and a `session_id`, so the
+restart resumes the conversation rather than replacing it — is `Sessions::RestartWithPrompt`
+([#321](https://github.com/tadasant/zimmer/issues/321)). It owns the same list: the choice between
+re-sending the original prompt and sending `AutomatedPrompts::SYSTEM_RECOVERY`, the key set that
+choice selects (`PRE_PROMPT_RESTART_KEYS` or `STALE_RETRY_METADATA_KEYS`), the transaction and its
+database retry, the two log rows, the `resume` and the enqueue. The web UI's **Refresh** and
+bulk-refresh nudges and the ⋮ menu's **Start it now** reach it through the same button's code path —
+with one exception: Refresh on a `failed` session still goes to the controller's own deprecated
+`#resume_failed_session`, which carries guards the other callers do not (it refuses while a process
+is still alive, and rate-limits repeat attempts) and is the one copy of this sequence left standing.
+
+It is the same split for the same reason. The three copies had drifted exactly as the from-scratch
+ones had: only the web copy retried a dropped Postgres connection, and only the web copy wrote
+anything to the session's own timeline — so the identical operation asked for over REST or MCP was
+fatal on a connection blip and left no trace of having happened. All three retry now, and all three
+write the same two rows.
+
+Each surface still keeps its own preconditions: the pause refusal, the dispatch into the from-scratch
+branch, the refusal of a session that has a transcript but no `session_id` to resume it under — three
+doors, three sentences, each part of that surface's contract — and the entry condition in the table
+below (`may_resume?` for the two non-interactive doors, `restartable_by_hand?` for the button).
+
+The service checks `may_resume?` **again** on the row it reloads, and refuses rather than proceeding.
+The surfaces check it on the object they loaded; a worker that picks the session up in that window
+makes it `running`, and going ahead there would clear the metadata, blank the live turn's
+`running_job_id` — defeating `AgentSessionJob`'s own `running_job_id != job_id` concurrency guard —
+and enqueue a second turn against a session that already has a process. The REST API answers 422 for
+it; MCP raises a `ToolError`.
+
+#### Which sessions each door restarts
 
 The entry conditions are the other thing each surface keeps, and for a long time the web door was
 strictly the narrowest: it re-derived its own `failed?`, so a session stranded in `needs_input` was
@@ -708,8 +739,10 @@ The button is not the same promise in both states it is offered from, so it does
   answers applies: the whole setup pipeline again, from scratch, with the original prompt (the
   never-ran case that produced the issue); that same original prompt into a freshly spawned runtime,
   for a turn that died before its prompt was ever delivered; or an automated `SYSTEM_RECOVERY`
-  continue prompt into the existing conversation. `SessionsHelper#restart_confirmation` branches in
-  that method's order for that reason.
+  continue prompt into the existing conversation. That choice is split across
+  `SessionsController#restart_with_continue_prompt` (the from-scratch dispatch) and
+  `Sessions::RestartWithPrompt` (the other two), and `SessionsHelper#restart_confirmation` branches in
+  that order for that reason.
 
 The three render sites (`_session_header_actions`, `_session_card`, the mobile joystick's sheet) all
 ask the same model predicate and take their dialog copy from the same helper, so what is rendered
