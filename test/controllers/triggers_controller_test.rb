@@ -1523,21 +1523,21 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     with_mixed_availability_catalog { get new_trigger_path }
     assert_response :success
 
-    value = css_select("[data-mcp-server-select-servers-value]").first["data-mcp-server-select-servers-value"]
+    value = css_select("[data-catalog-field='mcp_servers']").first["data-catalog-multiselect-items-value"]
     servers = JSON.parse(value)
 
     assert_equal %w[context7 zimmer-self-session strad-secrets-staging-rw strad-secrets-oauth],
-      servers.map { |s| s["name"] }, "flagged, not hidden"
+      servers.map { |s| s["key"] }, "flagged, not hidden"
 
-    unseeded = servers.find { |s| s["name"] == "strad-secrets-staging-rw" }
+    unseeded = servers.find { |s| s["key"] == "strad-secrets-staging-rw" }
     assert_equal true, unseeded["unavailable"]
     assert_equal "STRAD_STAGING_API_KEY unresolved", unseeded["unavailable_reason"]
-    assert_equal false, servers.find { |s| s["name"] == "context7" }["unavailable"]
+    assert_equal false, servers.find { |s| s["key"] == "context7" }["unavailable"]
   end
 
   # zimmer#853's other half. The heal keeps a name the catalog stopped
   # resolving, and the form is where an operator meets it — so the form's
-  # control posts it back (see `preserve_unknown` on the select controllers) and
+  # control posts it back (see `preserve_unknown` on the catalog multi-select) and
   # the server has to accept that round-trip. If it did not, an edit to some
   # other field would silently delete the very name the alert told them to remap.
   test "an unresolvable MCP server survives an edit that posts it back unchanged" do
