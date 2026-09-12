@@ -1471,13 +1471,17 @@ used](#staging-is-torn-down-on-the-days-it-is-not-used).) `deploy-staging.yml`:
    `kamal deploy -d staging --version=<tag> --skip-push`. The boot line is unconditional, because
    `kamal deploy` on its own does not boot accessories and a newly declared one would otherwise never
    appear; it costs nothing to repeat, since `accessory boot` skips a host that already has the
-   container (production's pipeline, in the companion repo, runs the same line before its own
-   deploy). That skip is by *existence*, though, and a **stopped** container exists — so `devdb`, and
-   only `devdb`, is rebooted rather than booted, making a deploy the way to recover a stopped one
+   container. That skip is by *existence*, though, and a **stopped** container exists — so `devdb`,
+   and only `devdb`, is rebooted rather than booted, making a deploy the way to recover a stopped one
    ([#419](https://github.com/tadasant/zimmer/issues/419)). `reboot` stops and prunes the container
    before re-creating it, which is safe here only because `devdb` declares no volume;
    `test/config/devdb_accessory_test.rb` fails the build if that line ever names an accessory that
-   does. kamal-proxy boots the new container
+   does. Production's pipeline, in the companion repo, runs **both** lines before its own deploy —
+   `accessory boot all` and then the same single-accessory reboot — so a deploy is the recovery path
+   on both destinations. Nothing else is: neither destination health-checks or alerts on that
+   accessory, so recovery happens at deploy time and nowhere else
+   ([Limitations](/limitations/#nothing-notices-a-stopped-devdb-until-the-next-deploy)).
+   Then the app rolls: kamal-proxy boots the new **app** container
    alongside the old one, health-checks it on `/up`, and only then flips traffic. A container that
    never goes healthy leaves the old one serving.
 5. Re-verifies `/up` over the tailnet and asserts the **worker** container is running too — the
