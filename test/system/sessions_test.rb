@@ -1013,7 +1013,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url(every_status_params)
+    visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     # The panel exists in the DOM but is dismissed (translated off-screen).
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
