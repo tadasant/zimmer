@@ -1161,7 +1161,6 @@ class SessionsController < ApplicationController
     # still owned by the spawn pipeline) and one sleeping on an unfired wake-up trigger.
     if @session.continue_nudge_on_refresh?
       success, error_message = restart_with_continue_prompt(@session)
-      return if performed?
 
       if success
         redirect_to refresh_redirect_target(@session), notice: "Continuing waiting session..."
@@ -1374,9 +1373,6 @@ class SessionsController < ApplicationController
     # Restart failed sessions
     failed_sessions.each do |session|
       success, error_message = restart_with_continue_prompt(session)
-      # with_db_retry redirects when it exhausts its retries; keep going and we would
-      # double-render at the summary redirect below.
-      return if performed?
 
       if success
         restarted_count += 1
@@ -1389,7 +1385,6 @@ class SessionsController < ApplicationController
     # Continue needs_input sessions (e.g., after deployment killed their processes)
     needs_input_sessions.each do |session|
       success, error_message = restart_with_continue_prompt(session)
-      return if performed?
 
       if success
         continued_count += 1
@@ -1402,7 +1397,6 @@ class SessionsController < ApplicationController
     # Continue stalled waiting sessions with the automated nudge
     waiting_sessions.each do |session|
       success, error_message = restart_with_continue_prompt(session)
-      return if performed?
 
       if success
         continued_waiting_count += 1
@@ -2612,7 +2606,6 @@ class SessionsController < ApplicationController
     # does too rather than reporting a dead end.
     if result.nothing_queued?
       success, error_message = restart_with_continue_prompt(@session)
-      return if performed?
 
       return respond_with_flash(
         notice: (success ? "Continuing session #{@session.id}." : nil),
@@ -3697,7 +3690,13 @@ class SessionsController < ApplicationController
   # When the session failed before the initial prompt was ever processed (e.g., MCP
   # server connection failure, spawn failure), the original prompt is re-sent so the
   # agent can start its task from scratch. Otherwise, an automated recovery prompt
-  # is sent to nudge the agent to continue where it left off.
+  # is sent to nudge the agent to continue where it left off. That operation — the
+  # prompt choice, the key set, the transaction and its retry, the log rows, the
+  # resume and the enqueue — belongs to Sessions::RestartWithPrompt, shared with the
+  # REST API and the MCP tool so that the same request means the same thing through
+  # every door. This method is only the dispatch to the from-scratch branch, the
+  # session_id precondition, and the translation into the [success, error_message]
+  # tuple the restart callers here already speak.
   #
   # @param session [Session] The failed session to restart
   # @return [Array<Boolean, String|nil>] [success, error_message] tuple
@@ -3727,70 +3726,9 @@ class SessionsController < ApplicationController
       return [ false, error_message ]
     end
 
-    # Determine if this is a failed session restart or a paused session continuation
-    action_description = if session.failed?
-      "Restarting failed session"
-    elsif session.waiting?
-      "Continuing waiting session"
-    else
-      "Continuing paused session"
-    end
+    result = Sessions::RestartWithPrompt.call(session, actor: :web)
 
-    # Determine the prompt to send on restart. If the session failed before the
-    # initial prompt was ever processed (e.g., MCP connection failure, spawn failure),
-    # re-send the original prompt so the agent can start its task. Otherwise, send
-    # a system recovery message to nudge the agent to continue.
-    # NOTE: This check must happen BEFORE clearing stale metadata (which removes failure_reason).
-    use_initial_prompt = session.failed_before_initial_prompt? && session.prompt.present?
-    restart_prompt = if use_initial_prompt
-      session.prompt
-    else
-      AutomatedPrompts::SYSTEM_RECOVERY
-    end
-
-    # Attempt to restart/continue the session
-    result = with_db_retry do
-      ActiveRecord::Base.transaction do
-        prompt_description = use_initial_prompt ? "re-sending initial prompt" : "sending automated recovery prompt"
-        session.logs.create!(
-          content: "#{action_description}: #{prompt_description}",
-          level: "info"
-        )
-
-        # Clear running_job_id and stale retry metadata before enqueuing. A
-        # pre-prompt failure (MCP connection failed, spawn failed, …) also drops
-        # runtime_started so the restart spawns with --session-id instead of
-        # --resume; both policies, and the two others, are declared together on
-        # Session — see Session::PRE_PROMPT_RESTART_KEYS.
-        stale_keys = use_initial_prompt ? Session::PRE_PROMPT_RESTART_KEYS : Session::STALE_RETRY_METADATA_KEYS
-
-        session.remove_metadata!(stale_keys)
-        session.update!(running_job_id: nil)
-        session.resume! if session.may_resume?
-
-        # Enqueue a job with the chosen prompt to resume execution
-        AgentSessionJob.enqueue_with_prompt(session.id, restart_prompt)
-
-        session.logs.create!(
-          content: "Session resumed - its turn is queued for a worker",
-          level: "info"
-        )
-      end
-    end
-
-    return [ false, "database operation failed" ] if result == false
-
-    Rails.logger.info "[SessionsController] #{action_description} initiated for session #{session.id}"
-    [ true, nil ]
-  rescue => e
-    Rails.logger.error "[SessionsController] Error resuming session #{session.id}: #{e.message}"
-    with_db_retry do
-      session.logs.create!(
-        content: "Error resuming session: #{e.message}",
-        level: "error"
-      )
-    end
-    [ false, e.message ]
+    result.ok? ? [ true, nil ] : [ false, result.error ]
   end
 
   # Restart a session from scratch by re-running the full setup pipeline.
