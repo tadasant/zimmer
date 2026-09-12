@@ -363,11 +363,11 @@ export default class extends Controller {
   // right instead would shrink it below its 400px minimum on a wide screen.
   // `clientWidth`, not `innerWidth`, which counts an in-flow scrollbar.
   //
-  // Vertically it FLIPS ABOVE the input when the space below will not hold it.
-  // That is not a nicety: the dropdown is position:fixed, so one opening past
-  // the bottom of the viewport cannot be scrolled to at all — the page moves and
-  // it does not. The bottom-most picker on the new-session form is always in
-  // that position.
+  // Vertically it FLIPS ABOVE the input when the space below will not hold it,
+  // and is clamped into the viewport either way. That is not a nicety: the
+  // dropdown is position:fixed, so one opening past the bottom of the viewport
+  // cannot be scrolled to at all — the page moves and it does not. The
+  // bottom-most picker on the new-session form is always in that position.
   repositionDropdown() {
     const { GAP, MIN_HEIGHT } = this.constructor
     const inputRect = this.inputTarget.getBoundingClientRect()
@@ -389,9 +389,15 @@ export default class extends Controller {
     // Measured after the cap, so a flipped list sits ON the input's top edge
     // rather than wherever its uncapped height would have put it.
     const height = this.dropdownTarget.offsetHeight
-    this.dropdownTarget.style.top = flip
-      ? `${Math.max(GAP, inputRect.top - height - GAP)}px`
-      : `${inputRect.bottom}px`
+    const preferred = flip ? inputRect.top - height - GAP : inputRect.bottom
+
+    // Clamped into the viewport unconditionally, which is what actually makes
+    // the guarantee above true. Neither side has MIN_HEIGHT to spare on a very
+    // short viewport — a phone with the keyboard up — and there the floor wins
+    // over the fit: the list is drawn over its own input rather than off the
+    // bottom edge, because overlapping is recoverable and unreachable is not.
+    const lowest = Math.max(GAP, viewportHeight - height - GAP)
+    this.dropdownTarget.style.top = `${Math.min(Math.max(preferred, GAP), lowest)}px`
   }
 
   handleScroll() {

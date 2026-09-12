@@ -112,9 +112,14 @@ class CatalogMultiselectFormTest < ApplicationSystemTestCase
     }
 
     catalogs.each do |catalog|
-      assert_equal expected.fetch(catalog[:column]), chip_keys(catalog[:field]),
+      wanted = expected.fetch(catalog[:column])
+      # A waiting assertion before the `wait: 0` comparison, so a slow repaint
+      # reads as slow rather than as the wrong selection.
+      wanted.each { |key| assert_selector "#{chips(catalog[:field])} button[data-key='#{key}']" }
+
+      assert_equal wanted, chip_keys(catalog[:field]),
         "#{catalog[:field]} should carry exactly #{root_with_defaults.name}'s defaults"
-      assert_equal expected.fetch(catalog[:column]), submitted_values(catalog[:column]),
+      assert_equal wanted, submitted_values(catalog[:column]),
         "#{catalog[:field]}'s hidden inputs should match its chips"
     end
 
@@ -157,20 +162,34 @@ class CatalogMultiselectFormTest < ApplicationSystemTestCase
 
   # `group_by_category` and `show_description` are the two values that differ
   # per type, which makes them the two most likely to be mis-wired by a
-  # parameterisation — and the trigger form wires them a second time.
-  test "only skills group by category, and only plugins show a description, on both forms" do
+  # parameterisation — and the trigger form wires them a second time. Asserted
+  # as a full four-way matrix, both halves of it: a test that only checks the
+  # types that DO show a description passes while a type that should silently
+  # stops.
+  test "category grouping and row descriptions are wired per type, on both forms" do
+    matrix = {
+      "mcp_servers" => { grouped: false, described: false },
+      "catalog_skills" => { grouped: true,  described: false },
+      "catalog_hooks" => { grouped: false, described: true },
+      "catalog_plugins" => { grouped: false, described: true }
+    }
+
     [ new_session_url, new_trigger_url ].each do |url|
       visit url
 
-      picker_input("catalog_skills").click
-      assert_selector "#{root("catalog_skills")} [data-role='catalog-category']", minimum: 1
-      assert_no_selector "#{root("catalog_skills")} .catalog-multiselect-item [data-role='catalog-description']"
-      dismiss_dropdown("catalog_skills", picker_input("catalog_skills"))
+      matrix.each do |field, expected|
+        input = picker_input(field)
+        input.click
+        assert_selector "#{root(field)} .catalog-multiselect-item", minimum: 1
 
-      picker_input("catalog_plugins").click
-      assert_no_selector "#{root("catalog_plugins")} [data-role='catalog-category']"
-      assert_selector "#{root("catalog_plugins")} .catalog-multiselect-item [data-role='catalog-description']", minimum: 1
-      dismiss_dropdown("catalog_plugins", picker_input("catalog_plugins"))
+        headers = "#{root(field)} [data-role='catalog-category']"
+        expected[:grouped] ? assert_selector(headers, minimum: 1) : assert_no_selector(headers)
+
+        rows = "#{root(field)} .catalog-multiselect-item [data-role='catalog-description']"
+        expected[:described] ? assert_selector(rows, minimum: 1) : assert_no_selector(rows)
+
+        dismiss_dropdown(field, input)
+      end
     end
   end
 
@@ -197,6 +216,10 @@ class CatalogMultiselectFormTest < ApplicationSystemTestCase
 
     trigger = create_trigger
     visit edit_trigger_url(trigger)
+
+    # Wait for the widget to exist before reading a `wait: 0` emptiness off it —
+    # otherwise "no chips" is indistinguishable from "not connected yet".
+    assert_selector "#{root("mcp_servers")} [data-catalog-multiselect-target='input']"
     assert_empty chip_keys("mcp_servers")
 
     # The trigger form's agent root is a plain <select>; trigger-form re-broadcasts
@@ -204,6 +227,8 @@ class CatalogMultiselectFormTest < ApplicationSystemTestCase
     select root_with_defaults.display_name, from: "trigger[agent_root_name]"
 
     expected = root_with_defaults.default_mcp_servers.select { |n| ServersConfig.exists?(n) }
+    expected.each { |key| assert_selector "#{chips("mcp_servers")} button[data-key='#{key}']" }
+
     assert_equal expected, chip_keys("mcp_servers")
     assert_equal expected, submitted_values(:mcp_servers, scope: "trigger")
   end

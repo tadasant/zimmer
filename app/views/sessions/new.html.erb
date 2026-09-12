@@ -363,7 +363,8 @@
                    placeholder: "Search and select hooks...",
                    items: catalog_multiselect_items(@catalog_hooks_for_select, key: :name),
                    selected: @default_catalog_hooks,
-                   agent_root_defaults: @agent_root_catalog_hooks %>
+                   agent_root_defaults: @agent_root_catalog_hooks,
+                   show_description: true %>
 
         <%= render "shared/catalog_multiselect_field",
                    label: "Plugins", accent: "purple", payload_key: "catalog_plugins",
