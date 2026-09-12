@@ -1093,10 +1093,10 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
   end
 
   # The agent loop polls every running session twice a second, reloading it first,
-  # and almost every one of those polls finds nothing new. When that idle poll read
+  # and almost every one of those polls finds nothing new. An idle poll that reads
   # the stored transcript back out of `session_transcript_chunks` to compare it with
-  # the file, twenty-odd running sessions saturated production Postgres and wedged
-  # the `default` lane behind it (GlitchTip #99, 2026-09-12).
+  # the file saturates Postgres once twenty-odd sessions are running, and wedges the
+  # `default` lane behind it (GlitchTip #99, 2026-09-12).
   test "an idle poll neither reads nor writes the stored transcript" do
     stored = (1..200).map { |i| %({"type":"user","message":{"role":"user","content":"msg #{i} #{"x" * 200}"}}) }.join("\n") + "\n"
 
@@ -1108,25 +1108,47 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     transcript_dir = File.join(File.expand_path("~"), ".claude", "projects", "-tmp-test-clone")
     @mock_file_system.mkdir_p(transcript_dir)
     @mock_file_system.write("#{transcript_dir}/sess-idle.jsonl", stored)
-    # The same reload the agent loop does before every poll, which is what drops
-    # the memoised read and made the comparison go back to the database.
+    # The same reload the agent loop does before every poll, which drops the
+    # memoised read — so any comparison against `@session.transcript` would go back
+    # to the database.
     @session.reload
 
-    statements = []
-    callback = lambda do |_name, _start, _finish, _id, payload|
-      sql = payload[:sql].to_s.squish
-      # Any statement at all on the chunk table: a read of the stored transcript, or
-      # the `SUM(byte_size)` a transcript write starts with.
-      statements << sql if sql.include?('"session_transcript_chunks"')
-    end
-
-    result = ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
-      TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+    result = nil
+    statements = chunk_statements_during do
+      result = TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
     end
 
     assert_equal true, result
     assert_empty statements, "an idle poll must not read or write the stored transcript: #{statements.inspect}"
     assert_equal stored, Session.find(@session.id).transcript
+  end
+
+  test "an idle poll on a followed re-keyed branch reads no stored transcript" do
+    stored = rekey_lines("recorded-uuid", 1..5)
+    branch = stored + rekey_lines("branch-uuid", 6..7)
+    write_rekeyed_branch(stored: stored, branch_content: branch)
+    TranscriptPollerService.new(@session.reload, file_system: @mock_file_system).poll_and_broadcast
+    assert_equal branch, Session.find(@session.id).transcript, "the first poll follows the branch"
+
+    statements = chunk_statements_during do
+      TranscriptPollerService.new(@session.reload, file_system: @mock_file_system).poll_and_broadcast
+    end
+
+    assert_empty statements, statements.inspect
+    assert_equal branch, Session.find(@session.id).transcript
+  end
+
+  # Any statement at all on the chunk table: a read of the stored transcript, or the
+  # `SUM(byte_size)` a transcript write starts with.
+  def chunk_statements_during
+    statements = []
+    callback = lambda do |_name, _start, _finish, _id, payload|
+      sql = payload[:sql].to_s.squish
+      statements << sql if sql.include?('"session_transcript_chunks"')
+    end
+
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { yield }
+    statements
   end
 
   # === Rollout rotation continuity (the "session frozen for tens of minutes" bug) ===
@@ -1157,6 +1179,22 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     @session.update_column(:session_id, "rotating-uuid")
 
     [ stored, live ]
+  end
+
+  test "carryover_prefix reads no stored transcript while Codex stays on one rollout" do
+    _stored, live = prepare_codex_rotation(stored_events: 5, live_events: 2)
+    @session.reload
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    updates = {}
+    carryover = nil
+
+    statements = chunk_statements_during do
+      carryover = service.send(:carryover_prefix, "/prior/rollout-old.jsonl", live, updates)
+    end
+
+    assert_equal "", carryover
+    assert_empty updates
+    assert_empty statements, "the steady state must not read the stored transcript: #{statements.inspect}"
   end
 
   test "carryover_prefix carries stored history forward when Codex rotates to a new rollout" do
