@@ -1052,10 +1052,17 @@ class GithubTriggerPollerJob < ApplicationJob
   # login are fields of the API result. The title, labels and body are text people chose,
   # so each renders the way the template renders {{title}}, {{labels}} and {{text}}: fenced,
   # unless the template writes that placeholder bare (Trigger#render_appended_untrusted).
-  # The URL line stays above all three — OrphanedTriggerFire reads the first one.
+  # The URL line stays above all three — OrphanedTriggerFire reads the first one. A cut body's
+  # truncation marker is Zimmer's, so it goes after the fence.
   def context_block(trigger, item, event:)
     labels = labels_for(item).presence&.join(", ")
-    body = body_of(item).presence
+    body = item["body"].to_s
+    body_text = if body.blank?
+      "(no description)"
+    else
+      fenced = trigger.render_appended_untrusted(body[0, MAX_BODY_LENGTH], variable: "text", name: "body")
+      body.length > MAX_BODY_LENGTH ? "#{fenced}\n\n…(truncated)" : fenced
+    end
 
     <<~TEXT.strip
       ## GitHub #{pull_request?(item) ? 'pull request' : 'issue'} (#{event})
@@ -1075,7 +1082,7 @@ class GithubTriggerPollerJob < ApplicationJob
 
       ### Body
 
-      #{body ? trigger.render_appended_untrusted(body, variable: 'text', name: 'body') : '(no description)'}
+      #{body_text}
     TEXT
   end
 

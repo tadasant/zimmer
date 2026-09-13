@@ -2570,7 +2570,7 @@ class Trigger < ApplicationRecord
     prompt_template.to_s.scan(PLACEHOLDER_PATTERN).reject(&:last).map(&:first).uniq
   end
 
-  # The code shared by every fence in one render. Random, so text written before
+  # The code shared by every fence one render of the template writes. Random, so text written before
   # the fire cannot carry a line that closes its fence early; re-drawn in the
   # vanishingly unlikely case a value already contains it.
   def untrusted_boundary(values)

@@ -1490,8 +1490,9 @@ hey, can you help with the deploy?
 [end untrusted text 3f9a2c7d1e8b4a60]
 ```
 
-The code is 16 random hex characters, drawn fresh on every fire and shared by every fence in that
-prompt. The text was written before the fire, so it cannot contain that code, and a line in the
+The code is 16 random hex characters, drawn fresh on every fire and shared by every fence the
+template renders. Text Zimmer appends outside the template draws its own code for each fence (see
+[Event text Zimmer appends](#event-text-zimmer-appends)). The text was written before the fire, so it cannot contain that code, and a line in the
 message that imitates an end marker carries the wrong code. When a
 [burst notice](#burst-control) quotes a prompt cut short, it closes any fence the cut left open, so
 the notice's own instructions stay outside it. The fence is opt-in: `{{text}}` without `|untrusted`
@@ -1515,9 +1516,12 @@ never names it, or only ever writes `{{text|untrusted}}`, gets the appended text
 that writes `{{text}}` bare gets it raw.
 
 The GitHub block's title, labels and body are fenced separately, under names `title`, `labels` and
-`body`. A Slack note puts every message it lists inside one `messages` fence. That includes each
-message's time and link, so those count as claims too. A note's own words stay outside, as does the
-count of messages past the listing cap. Each fence draws its own code.
+`body`. A body cut at 10,000 characters gets its `…(truncated)` marker after the fence. A Slack note
+puts every message it lists inside one `messages` fence, keyed on `{{text}}` alone. That includes
+each message's author name, time and link, so a template that writes `{{text}}` bare gets the author
+names raw too, even if it fences `{{author}}`. A note's own words stay outside, including the channel
+name in its first sentence, as does the count of messages past the listing cap. Each fence draws its
+own code.
 
 The bare case follows the template on purpose. A DM trigger whose template is `{{text}}` hands the
 agent a trusted person's message as the request itself. Fencing the second message of that person's
@@ -1546,8 +1550,8 @@ the [workflow](/sessions/workflows/) primitive's job
 
 Text Zimmer appends outside the template follows the template's own choice
 ([Event text Zimmer appends](#event-text-zimmer-appends)), so event text reaches a session unfenced
-only where the template writes the matching placeholder bare. A template written before fences
-existed writes `{{text}}` bare, and stays that way until someone edits it.
+only where the template writes the matching placeholder bare. A template that writes `{{text}}`
+bare gets that text unfenced until someone edits it.
 
 ## Stale catalog references
 
