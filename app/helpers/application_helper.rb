@@ -121,6 +121,30 @@ module ApplicationHelper
     content_tag(:pre, text, class: "whitespace-pre-wrap text-sm text-gray-700")
   end
 
+  # The inline elements `inline_markdown` keeps. Everything else — paragraphs,
+  # headings, lists, tables, code blocks — is unwrapped to its text.
+  INLINE_MARKDOWN_TAGS = %w[a code strong em del].freeze
+  INLINE_MARKDOWN_ATTRIBUTES = %w[href target rel].freeze
+
+  # Markdown for a one-line slot: a row on a list, where a <p>, a heading or a
+  # code block would break the layout. Rendered by `markdown` — so links keep its
+  # target="_blank" and its safe_links_only filtering — and then narrowed to
+  # INLINE_MARKDOWN_TAGS, which a second sanitizer pass enforces even if the
+  # renderer ever let something else through.
+  def inline_markdown(text)
+    return "" if text.blank?
+
+    sanitize(markdown(text), tags: INLINE_MARKDOWN_TAGS, attributes: INLINE_MARKDOWN_ATTRIBUTES)
+  end
+
+  # The same text with its markup gone, for a `title` attribute or anywhere else
+  # that cannot hold HTML. Unescaped, because the attribute escapes it again.
+  def markdown_plain_text(text)
+    return "" if text.blank?
+
+    CGI.unescapeHTML(strip_tags(markdown(text))).squish
+  end
+
   # Persisted network-egress health for the global banner (see EgressHealthCheck).
   # Returns the status hash when egress is degraded, otherwise nil so the banner
   # renders nothing. Never raises — a cache hiccup must not break page rendering.

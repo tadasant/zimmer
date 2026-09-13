@@ -1,13 +1,13 @@
 ---
 title: The Status summary
-description: The two-or-three sentence "where things stand" blurb at the top of a session page — written by forking the session, cached until the session moves, and regenerated on exactly one automatic trigger.
+description: The three-sentence "what to do, and where things stand" blurb at the top of a session page — written by forking the session, cached until the session moves, and regenerated on exactly one automatic trigger.
 sidebar:
   order: 8
 ---
 
 A long session is expensive to re-enter. You open it, and the answer to "does this need me?" is
 somewhere in four hundred transcript rows. The **Status** panel is the answer stated once, at the
-top, in two or three sentences — and then linked out from there.
+top, in three sentences at most — and then linked out from there.
 
 ## The panel group
 
@@ -28,6 +28,30 @@ The transcript being collapsed is the point of the arrangement: on a session wit
 the three panels above it are what a returning reader wants first, and the transcript is what they
 open once they know which part they need.
 
+## Lead with what to do
+
+The blurb's first sentence is a recommendation to the person reading it: what to do next, imperative
+and specific. *"Merge PR #2825 or drop the `roles.zimmer` grant."* *"Resume it to open the PR."*
+When nothing is needed from them, it says so plainly — *"Nothing needed from you yet."* — rather than
+inventing a chore. The status description follows in one or two sentences.
+
+The order is for skimming. On [Your board](/sessions/user-view/) the blurb is clamped to three lines,
+so the sentence that decides whether a row needs you is the one that is always visible.
+
+The length budget did not grow to make room for it. The recommendation takes the slot that the
+"does this need you" sentence used to fill at the end of a blurb, and the rule says three sentences
+in all, not four. Both prompts carry it as one shared constant,
+`SessionStatusSummaryGenerator::RECOMMENDATION_FIRST_RULE`, for the reason given
+[below](#a-description-of-state-never-a-plan).
+
+The recommendation is addressed to the reader. It is not the session announcing what it will do, so
+it does not get around the rule against narrating intent.
+
+Recommendation-first is prompt-level only. Nothing parses out or bolds the first sentence, because
+finding a sentence boundary in text full of markdown links and URLs is guesswork. Summaries are
+cached, so a blurb written before this rule existed keeps its old shape until the session moves or
+someone presses Regenerate.
+
 ## Link, don't explain
 
 The summary is deliberately short and deliberately link-heavy. The rule the generating agent is given
@@ -42,10 +66,20 @@ Three kinds of link do most of the work:
 - **A pull request, issue, or CI run** that came up in the conversation.
 - **Another Zimmer session**, by its `/sessions/:id` URL.
 
+The blurb is markdown, and it is rendered as markdown wherever it is shown. The session page's
+Status panel renders it in full through the shared renderer. A row on
+[Your board](/sessions/user-view/) renders it inline through `ApplicationHelper#inline_markdown`, which is
+the same renderer narrowed to links, code, bold and italics. A paragraph break, heading, list or code
+block is unwrapped to its text, so it cannot break the row's layout. Both paths keep the
+renderer's `safe_links_only` filtering and its `target="_blank"`, and the inline one runs a
+second sanitizer pass on top. No raw HTML or `javascript:` link survives either path. The board
+row uses the stored text, not `summary_markdown`, so a transcript-message link stays a full
+`/sessions/:id#message-N` URL. Its `#message-N` shorthand only works on the session's own page.
+
 ## A description of state, never a plan
 
 The blurb says where a session stands. It is not allowed to say what the session is going to do
-next. Both prompts — the fork's and the [one-shot path](#the-pool-independent-path)'s — carry two
+next. (Its opening recommendation says what the *reader* should do, which is a different thing.) Both prompts — the fork's and the [one-shot path](#the-pool-independent-path)'s — carry two
 rules to that effect, because a rule is worthless in whichever prompt it is missing from:
 
 - **No first-person claim about an action the session has not already taken** — a scheduled wake, a

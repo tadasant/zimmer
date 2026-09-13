@@ -106,7 +106,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     generate
 
     assert_equal 1, prompts.size
-    assert_match(/2-3 sentences/, prompts.first)
+    assert_includes prompts.first, SessionStatusSummaryGenerator::RECOMMENDATION_FIRST_RULE
     assert_match(%r{#message-INDEX}, prompts.first)
     assert_match(/Do not run any tools/, prompts.first)
   end
@@ -684,6 +684,29 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
 
     assert_match(/first person/, rule)
     assert_match(/wake/, rule)
+  end
+
+  # --- What the blurb leads with ---------------------------------------------
+  #
+  # The panel is skimmed on the board to decide what to act on, so both prompts
+  # ask it to open with a recommendation for the reader — and both, because a
+  # blurb from either path lands in the same row.
+
+  test "the one-shot prompt asks for a recommendation first" do
+    _result, inference = generate_headless("Merge the PR. It is open and CI is green.")
+
+    assert_includes inference.prompts.sole, SessionStatusSummaryGenerator::RECOMMENDATION_FIRST_RULE
+  end
+
+  # Anchors on what the rule says, loose enough that rewording is not a failure:
+  # one sentence first, addressed to the human, allowed to say nothing is needed,
+  # and a budget that did not grow to make room for it.
+  test "the recommendation rule leads with one sentence, allows nothing, and keeps the budget" do
+    rule = SessionStatusSummaryGenerator::RECOMMENDATION_FIRST_RULE.squish
+
+    assert_match(/Open with ONE sentence recommending what the human/, rule)
+    assert_match(/nothing is needed from them, say that plainly/, rule)
+    assert_match(/Three sentences in all\. Not four\./, rule)
   end
 
   # The dashboard broadcasts a card from after_create_commit, so a marker

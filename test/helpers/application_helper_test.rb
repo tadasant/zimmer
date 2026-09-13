@@ -181,4 +181,42 @@ class ApplicationHelperTest < ActionView::TestCase
   test "the Archive anyway toast outlives a bare notice" do
     assert flash_duration_ms("force_archive") > flash_duration_ms(nil)
   end
+  test "inline_markdown keeps links, code and emphasis" do
+    result = inline_markdown("Merge [PR #12](https://github.com/o/r/pull/12) or drop `roles.zimmer`, **now** or _later_.")
+
+    assert_includes result, '<a href="https://github.com/o/r/pull/12" target="_blank" rel="noopener noreferrer">PR #12</a>'
+    assert_includes result, "<code>roles.zimmer</code>"
+    assert_includes result, "<strong>now</strong>"
+    assert_includes result, "<em>later</em>"
+    assert result.html_safe?
+  end
+
+  test "inline_markdown unwraps block elements to their text" do
+    result = inline_markdown("# Heading\n\nFirst.\n\nSecond.\n\n- item\n\n```ruby\nputs 1\n```\n\n| a |\n|---|\n| 1 |")
+
+    %w[<p <h1 <ul <li <pre <table <br <span].each { |tag| assert_not_includes result, tag }
+    assert_includes result, "Heading"
+    assert_includes result, "Second."
+    assert_includes result, "item"
+    assert_includes result, "<code>puts 1"
+  end
+
+  test "inline_markdown lets no raw HTML or script URL through" do
+    result = inline_markdown('[bad](javascript:alert(1)) <script>alert(2)</script> <a href="javascript:alert(3)">x</a> <img src=x onerror=alert(4)>')
+
+    assert_not_includes result, "<script"
+    assert_not_includes result, "<img"
+    assert_no_match(/href="javascript:/i, result)
+    assert_no_match(/<a /, result)
+  end
+
+  test "inline_markdown returns empty string for blank input" do
+    assert_equal "", inline_markdown(nil)
+    assert_equal "", inline_markdown("  ")
+  end
+
+  test "markdown_plain_text drops markup without double-escaping" do
+    assert_equal "Merge PR #12 & drop roles.zimmer.",
+      markdown_plain_text("Merge [PR #12](https://github.com/o/r/pull/12) & drop `roles.zimmer`.")
+  end
 end

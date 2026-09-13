@@ -20,7 +20,7 @@ lifecycle state and CI colour — and three buttons that act without leaving the
 | **Title** | Opens the session in the right-side drawer on a plain click, so you keep your place. Middle-click and ⌘/Ctrl-click still open a new tab. |
 | **Priority / Spot badge** | Which half of the ordering this row is in. The list is not split into sections, so this badge is the only thing that says it. |
 | **Status** | The same status pill the cards carry. |
-| **Generated status** | The cached blurb an agent wrote when the session last came to rest, clamped to three lines with the full text on hover. Marked stale by **message count**, not by age: a summary rots because the session said something new, not because time passed. |
+| **Generated status** | The cached blurb an agent wrote when the session last came to rest. It opens with a one-sentence recommendation of what to do, is rendered as inline markdown so its links are clickable, and is clamped to three lines with the full text on hover. Marked stale by **message count**, not by age: a summary rots because the session said something new, not because time passed. |
 | **Agent root** | Which root the session runs as. |
 | **Precedence** | Where it sits in the queue. Rewritten in place when you drag the row. |
 | **PR** | The session's most recent pull request. The glyph's shape and colour carry the lifecycle state (open / merged / closed) and the dot beside it carries CI. |
