@@ -95,7 +95,7 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
     assert_no_match(/Opened the PR/, @source.status_summary.summary)
   end
 
-  # The prompt asks for 2-3 sentences; this is the backstop for an agent that
+  # The prompt asks for three sentences; this is the backstop for an agent that
   # answered with an essay, so the panel cannot push the page off screen.
   test "an over-long answer is truncated to the panel's cap" do
     fork = build_fork(answer: "word " * 1000)

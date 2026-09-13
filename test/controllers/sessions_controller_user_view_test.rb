@@ -175,6 +175,30 @@ class SessionsControllerUserViewTest < ActionDispatch::IntegrationTest
     get_board
 
     assert_select "#user_view_list", text: /4 messages since this was written/
+    assert_select "#user_view_row_#{session.id} [data-summary-freshness='stale']", text: /Stale/
+  end
+
+  test "a summary written from the latest message says it is up to date" do
+    session = make_session
+    SessionStatusSummary.create!(session: session, state: "ready", summary: "Current news.",
+      transcript_line_count: session.transcript_line_count, generated_at: 2.hours.ago)
+
+    get_board
+
+    assert_select "#user_view_row_#{session.id} [data-summary-freshness='current']", text: /Up to date/
+    assert_select "#user_view_row_#{session.id} [data-summary-freshness]", text: /written about 2 hours ago/
+    assert_select "#user_view_row_#{session.id}", text: /since this was written/, count: 0
+  end
+
+  test "a summary being regenerated says so over the text it will replace" do
+    session = make_session
+    SessionStatusSummary.create!(session: session, state: "pending", requested_at: 1.minute.ago,
+      summary: "Older news.", transcript_line_count: session.transcript_line_count)
+
+    get_board
+
+    assert_select "#user_view_row_#{session.id} [data-summary-freshness='regenerating']", text: /Regenerating/
+    assert_select "#user_view_row_#{session.id}", text: /Older news/
   end
 
   # ---- The Merge button ------------------------------------------------------

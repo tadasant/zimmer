@@ -3,12 +3,12 @@
   group, and the only one that is never collapsed. It answers "where does this
   stand, and does it want me right now?" before the reader has clicked anything.
 
-  Two or three sentences, written by an agent (SessionStatusSummaryGenerator
-  forks the session and asks the fork — or, when no login-pool account is free
-  to run a fork on, asks for the same blurb in one headless completion), cached
-  on SessionStatusSummary, and deliberately link-heavy: a detail worth more than
-  a clause becomes a link to the transcript message, PR, or session where it
-  lives.
+  Three sentences at most, leading with what to do next, written by an agent
+  (SessionStatusSummaryGenerator forks the session and asks the fork — or, when
+  no login-pool account is free to run a fork on, asks for the same blurb in one
+  headless completion), cached on SessionStatusSummary, and deliberately
+  link-heavy: a detail worth more than a clause becomes a link to the transcript
+  message, PR, or session where it lives.
 
   Rendering this NEVER generates. A stale summary shows the cached text plus how
   many messages have landed since, and waits. `unavailable_reason` reads the

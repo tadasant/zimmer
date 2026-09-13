@@ -4951,6 +4951,11 @@ Also:
   one is narrower than it looks, too: **Start now** resumes a spot-queue park but *refuses* a session
   asleep on a wall-clock wake (`Sessions::StartNow` treats an armed wake as outranking the queue),
   and **Restart** is offered only for a `failed` or `needs_input` session, which a sleeping (`waiting`) one is not. The route that works is cancelling the wake at **/triggers**; a **follow-up** sent from the session page is delivered but leaves the wake armed, so it adds to the wait rather than ending it.
+- **A board row's status summary and its freshness chip are as of page load.** When a summary
+  finishes generating, `SessionStatusSummary` re-renders the session's Status panel and nothing
+  else, so on [Your board](/sessions/user-view/) a row keeps its old text and its **Regenerating**
+  or **Stale** chip until you reload. A failed regeneration is not shown on the row at all; the
+  Status panel is where it says so.
 - **Live card updates ignore the status filter.** The dashboard broadcasts on one global stream and
   the server cannot know which statuses a given browser has ticked, so it only special-cases
   `archived`. With the default `needs_input`-only view, a session that transitions out of
