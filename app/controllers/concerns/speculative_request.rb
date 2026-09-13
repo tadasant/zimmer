@@ -5,12 +5,8 @@
 #
 # Turbo Drive prefetches same-origin links on `mouseenter` and has done so by
 # default since Turbo 8 (`config/importmap.rb` pins turbo-rails 2.x). That makes
-# "hovering" a network event, and two parts of the app have to care:
-#
-#   - SessionsController must not count a hover as a human viewing a session;
-#   - Supervisor::ApplicationController must not answer a hover with a Basic-auth
-#     challenge, which the browser turns into a sign-in dialog over a page the
-#     human never tried to leave.
+# "hovering" a network event, and SessionsController must not count a hover as
+# a human viewing a session.
 module SpeculativeRequest
   extend ActiveSupport::Concern
 
@@ -27,10 +23,8 @@ module SpeculativeRequest
   # asked for it. Header-based and therefore advisory, and it can be wrong in
   # both directions. A client that sends nothing is treated as a real request,
   # which costs nothing. A proxy that stamps `Purpose: prefetch` onto a request a
-  # human did make costs a little: the supervisor gate answers with its
-  # interstitial rather than the credential dialog, which is one extra click, and
-  # SessionsController declines to count the page as a view, which self-corrects
-  # on the next one.
+  # human did make costs a little: SessionsController declines to count the page
+  # as a view, which self-corrects on the next one.
   def prefetch_request?
     PREFETCH_HEADERS.any? { |header| request.headers[header].to_s.include?("prefetch") }
   end

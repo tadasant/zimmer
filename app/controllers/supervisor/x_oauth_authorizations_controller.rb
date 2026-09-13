@@ -17,11 +17,12 @@ module Supervisor
   # that flow's verifier and redirect URI. A missing, unknown, replayed or expired
   # state stops there, before anything is sent to X.
   #
-  # The authorization boundary is Supervisor::ApplicationController's operator
-  # realm, on every action including the callback. The callback arrives in the
-  # operator's own browser, which already holds the /supervisor credential, and
-  # the fleet's sessions do not hold it (CliSpawnEnv clears SUPERVISOR_PASSWORD),
-  # so an agent can neither start a flow nor finish one.
+  # There is no authentication on any action, the callback included, the same as
+  # the rest of /supervisor: the network perimeter is the boundary, so anything
+  # that can reach the host, agent sessions included, can start a flow. Finishing
+  # one needs someone signed in to an X account to approve X's consent screen,
+  # and it replaces the credential vended for the env var the flow was started
+  # with.
   class XOauthAuthorizationsController < Supervisor::ApplicationController
     DEFAULT_ACCESS_TOKEN_ENV_VAR = "X_OAUTH_ACCESS_TOKEN"
 

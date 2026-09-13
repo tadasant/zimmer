@@ -121,8 +121,7 @@ Rails.application.routes.draw do
     resources :users
     resources :x_oauth_credentials
     # The X OAuth consent flow that mints and re-mints an XOauthCredential (#852).
-    # Under /supervisor so every leg, the callback included, sits behind the
-    # operator realm the fleet's own sessions do not hold.
+    # Under /supervisor, beside the credential rows it writes.
     get "x_oauth/authorize", to: "x_oauth_authorizations#new", as: :new_x_oauth_authorization
     post "x_oauth/authorize", to: "x_oauth_authorizations#create", as: :x_oauth_authorization
     get "x_oauth/callback", to: "x_oauth_authorizations#callback", as: :x_oauth_callback
@@ -360,9 +359,8 @@ Rails.application.routes.draw do
   post "health/enter_queue_recovery_mode", to: "health#enter_queue_recovery_mode", as: :enter_queue_recovery_mode_health
   post "health/exit_queue_recovery_mode", to: "health#exit_queue_recovery_mode", as: :exit_queue_recovery_mode_health
   post "health/run_post_deploy_tasks", to: "health#run_post_deploy_tasks", as: :run_post_deploy_tasks_health
-  # Queued job maintenance (QueuedJobMaintenance). Both write, so both are behind the
-  # operator realm in HealthController::OPERATOR_GATED_ACTIONS — the read is the panel
-  # the dashboard GET already renders, so it needs no route of its own.
+  # Queued job maintenance (QueuedJobMaintenance). The read is the panel the dashboard
+  # GET already renders, so it needs no route of its own.
   post "health/discard_queued_jobs", to: "health#discard_queued_jobs", as: :discard_queued_jobs_health
   post "health/reschedule_queued_jobs", to: "health#reschedule_queued_jobs", as: :reschedule_queued_jobs_health
 
@@ -397,10 +395,9 @@ Rails.application.routes.draw do
   patch "settings/categorization", to: "categorization#update"
   post "settings/categorization/replay", to: "categorization#replay", as: :categorization_replay
   patch "settings/catalog_pins", to: "catalog_pins#update", as: :catalog_pins
-  # Named API keys (#46): list, mint, revoke, restore. Browser-only and behind the
-  # operator credential by design — no API key and no MCP tool reaches these, so the
-  # credential the fleet shares can neither issue keys nor revoke them. See
-  # ApiKeysController.
+  # Named API keys (#46): list, mint, revoke, restore. Browser-only by design — no
+  # API-key route and no MCP tool reaches these, so key management stays out of the
+  # tools a session is handed. See ApiKeysController.
   get "settings/api_keys", to: "api_keys#index", as: :api_keys
   post "settings/api_keys", to: "api_keys#create"
   post "settings/api_keys/:id/revoke", to: "api_keys#revoke", as: :revoke_api_key

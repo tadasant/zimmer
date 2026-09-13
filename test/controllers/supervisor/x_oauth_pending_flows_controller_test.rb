@@ -4,9 +4,6 @@ require "test_helper"
 
 module Supervisor
   class XOauthPendingFlowsControllerTest < ActionDispatch::IntegrationTest
-    include SupervisorAuthTestHelper
-    include SupervisorAuthTestHelper::AutoBasicAuth
-
     setup do
       @flow = XOauthPendingFlow.start!(account_key: "tadasayy", access_token_env_var: "X_OAUTH_ACCESS_TOKEN")
     end

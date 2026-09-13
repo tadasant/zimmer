@@ -6,13 +6,11 @@ require "mocha/minitest"
 
 # The X consent flow turns an authorization code into a stored live credential,
 # so the paths that matter most are the ones that must NOT reach X's token
-# endpoint: no operator credential, and a state that is missing, wrong, expired
-# or already used. Each of those asserts that no token request was made and no
-# credential was written, not just the status code.
+# endpoint: a state that is missing, wrong, expired or already used. Each of
+# those asserts that no token request was made and no credential was written,
+# not just the status code.
 module Supervisor
   class XOauthAuthorizationsControllerTest < ActionDispatch::IntegrationTest
-    include SupervisorAuthTestHelper
-    include SupervisorAuthTestHelper::AutoBasicAuth
     include XOauthTestHelpers
 
     TOKEN_BODY = {
@@ -51,47 +49,6 @@ module Supervisor
       called = false
       XOauthCredential.stub(:post_token_request, ->(**) { called = true; raise "unexpected token request" }) { yield }
       assert_not called, "the controller sent a token request to X"
-    end
-
-    # --- authorization boundary ---
-
-    test "every leg refuses a request without the operator credential" do
-      use_hosted_callback!
-      flow = start_flow
-      no_auth = { "HTTP_AUTHORIZATION" => "" }
-
-      refute_token_request do
-        get supervisor_new_x_oauth_authorization_path, headers: no_auth
-        assert_response :unauthorized
-
-        post supervisor_x_oauth_authorization_path, headers: no_auth,
-          params: { account_key: "someone", access_token_env_var: "X_SOMEONE_TOKEN" }
-        assert_response :unauthorized
-
-        get supervisor_x_oauth_callback_path(state: flow.state, code: "a-code"), headers: no_auth
-        assert_response :unauthorized
-
-        post supervisor_x_oauth_complete_path, headers: no_auth,
-          params: { redirect_response: "http://localhost:8080/callback?state=#{flow.state}&code=a-code" }
-        assert_response :unauthorized
-      end
-
-      assert XOauthPendingFlow.exists?(flow.id), "an unauthenticated callback consumed the flow"
-      assert_equal 1, XOauthPendingFlow.count, "an unauthenticated POST started a flow"
-      assert_equal 0, XOauthCredential.count
-    end
-
-    test "a wrong operator password is refused on the callback" do
-      use_hosted_callback!
-      flow = start_flow
-      wrong = { "HTTP_AUTHORIZATION" => ActionController::HttpAuthentication::Basic.encode_credentials("supervisor", "nope") }
-
-      refute_token_request do
-        get supervisor_x_oauth_callback_path(state: flow.state, code: "a-code"), headers: wrong
-      end
-
-      assert_response :unauthorized
-      assert XOauthPendingFlow.exists?(flow.id)
     end
 
     # --- starting ---
@@ -316,8 +273,7 @@ module Supervisor
       with_token_endpoint(code: 200, body: TOKEN_BODY) do
         get supervisor_x_oauth_callback_path(state: flow.state, code: "the-code")
       end
-      # follow_redirect! would bypass AutoBasicAuth, so fetch the redirect directly.
-      get response.location
+      follow_redirect!
       assert_response :success
 
       assert_select ".flash b", count: 0

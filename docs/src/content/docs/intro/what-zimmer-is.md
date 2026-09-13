@@ -61,9 +61,8 @@ you run it locally.
 
 It is not secured for the open internet. This is important enough that it has its own
 [known limitation](/limitations/#the-web-ui-has-no-login-by-design-and-the-sharp-edge-that-follows): there is no
-login, and almost nothing authenticates anyone. Two surfaces are excepted — the admin
-panel that displays OAuth tokens, and the mutating maintenance actions on the health
-page — and one shared password in front of them is not a login system either. The
+login, and nothing in the web UI authenticates anyone, including the admin panel that
+displays OAuth tokens and the maintenance actions on the health page. The
 security model is "put it behind Tailscale," and Zimmer's own Terraform does
 exactly that — port 80 is closed at the DigitalOcean firewall and the app is reachable only
 over the tailnet.

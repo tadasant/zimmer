@@ -375,11 +375,14 @@ otherwise make an author depend on row order).
 A Slack trigger's `allowed_user_ids` answers a *different* question. "May fire this trigger" is not
 "is Tadas or Julie", so the author resolves independently.
 
-The roster is editable **only** from the Supervisor panel, which sits behind the HTTP Basic realm. No
-MCP tool reads or writes it, and that asymmetry is deliberate rather than an oversight: `users` is the
-authority on who counts as a human, so an agent that could add a Slack ID or rename a key could
-manufacture the human authorship the record exists to make unforgeable. Agents get the roster's
-context — display names and `notes` — delivered with the record they fetch, and no way to change it.
+The roster is editable **only** from the Supervisor panel, which, like the rest of the web UI, asks for
+no credential. No MCP tool reads or writes it, and that asymmetry is deliberate rather than an
+oversight: `users` is the authority on who counts as a human, so an agent that could add a Slack ID or
+rename a key could manufacture the human authorship the record exists to make unforgeable. Agents get
+the roster's context — display names and `notes` — delivered with the record they fetch, and no tool to
+change it. That keeps the roster out of the tools an agent is handed, not out of its reach: a session's
+shell can drive `/supervisor/users` like any other page on the host. See
+[the web UI does not keep agent sessions out](/limitations/#the-web-ui-does-not-keep-agent-sessions-out).
 
 `email` is a linkage, not yet a capture path. Nothing attributes a message from it. A session's
 `auth_identity_email` in metadata often reads `tadas@tadasant.com`, but that names the pooled Claude

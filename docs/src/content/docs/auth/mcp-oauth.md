@@ -753,13 +753,13 @@ sequenceDiagram
     participant Z as Zimmer /supervisor
     participant X as x.com / api.x.com
 
-    O->>Z: POST /supervisor/x_oauth/authorize (operator realm)
+    O->>Z: POST /supervisor/x_oauth/authorize
     Z->>Z: XOauthPendingFlow.start!<br/>state (16B) + PKCE verifier, expires in 30 min<br/>replaces any flow for the same env var
     alt redirect URI is Zimmer's callback
         Z-->>O: 302 to X consent
         O->>X: approve
         X-->>O: 302 /supervisor/x_oauth/callback?state&code
-        O->>Z: GET callback (operator realm)
+        O->>Z: GET callback
     else redirect URI is anywhere else (the default)
         Z-->>O: consent link + paste box
         O->>X: approve
@@ -775,10 +775,10 @@ sequenceDiagram
 
 Things that hold on every path:
 
-- **Every leg is behind the operator realm**, the callback included. The callback arrives in the
-  operator's own browser, which already holds the `/supervisor` credential, and the fleet's sessions
-  do not hold it (`CliSpawnEnv` clears `SUPERVISOR_PASSWORD`). So an agent can neither start a flow nor
-  finish one. That is a tighter boundary than the MCP flow's, which has
+- **No leg asks for a credential**, the callback included, like the rest of `/supervisor`. Anything
+  that can reach the host, an agent session included, can start a flow. Finishing one needs someone
+  signed in to an X account to approve X's consent screen, and it replaces the credential vended for
+  the env var the flow was started with. That is the same boundary as the MCP flow's, which has
   [none beyond the perimeter](#known-problems).
 - **The `state` X echoes back is the only way to a flow.** A missing, unknown, replaced or expired
   state stops the request before anything is sent to X. Claiming deletes the row, so a replayed
@@ -799,13 +799,13 @@ no API reaches.
 
 Consents in progress are listed at `/supervisor/x_oauth_pending_flows` (verifier not shown), where
 one can be cancelled. There is deliberately no MCP tool for any of this: consent is a browser
-handshake, and keeping the flow behind the operator realm is what keeps agents off it.
+handshake that needs a human signed in to X.
 
 ## Known problems
 
 :::danger[Anyone who can reach the host can start an OAuth flow]
 `McpOauthController` has `skip_forgery_protection only: [:callback, :initiate, :complete]` — and Zimmer has
-[no user authentication at all](/auth/overview/#1-human--zimmer-there-is-no-authentication-except-the-operator-realm).
+[no user authentication at all](/auth/overview/#1-human--zimmer-there-is-no-authentication).
 
 The `state` parameter is the *only* CSRF defense on the callback. On `initiate`, the
 defense is that the request cannot freely invent its target: whenever the catalog has
