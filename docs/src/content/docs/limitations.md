@@ -881,6 +881,11 @@ A dashboard toggle is deliberately not an excuse here, unlike for the live rule.
 key's switch in one settings row, so a key switched off for six hours and back on reads as "stopped
 and recovered" — which it did.
 
+Nor is a held slot. The live rule does not count ticks a singleton refused while its copy waited or
+ran ([#1190](https://github.com/tadasant/zimmer/issues/1190)), but the history reads only the gaps
+between rows. A `*/10` singleton that sat 50 minutes behind a backed-up lane therefore reads as
+"stopped and recovered" against its 40-minute allowance, when what stopped was the lane.
+
 ### The docs guardrail does not look in the image's `tmp/`
 
 🟡 `scripts/assert-docs-excluded.sh` — the check that keeps the documentation site out of the

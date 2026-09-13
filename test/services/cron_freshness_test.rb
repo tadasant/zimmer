@@ -214,11 +214,25 @@ class CronFreshnessTest < ActiveSupport::TestCase
     cron_row("post_deploy_tasks", enqueued: NOW - 2.hours, finished: NOW - 2.hours + 5, job_class: "PostDeployTaskJob")
     GoodJob::Job.where(cron_key: "post_deploy_tasks").update_all(concurrency_key: "PostDeployTaskJob")
     GoodJob::Job.insert_all([ { queue_name: "default", job_class: "PostDeployTaskJob", concurrency_key: "PostDeployTaskJob",
-                                created_at: NOW - 110.minutes, updated_at: NOW - 3.minutes,
-                                scheduled_at: NOW - 110.minutes, finished_at: NOW - 3.minutes } ])
+                                created_at: NOW - 119.minutes, updated_at: NOW - 3.minutes,
+                                scheduled_at: NOW - 119.minutes, finished_at: NOW - 3.minutes } ])
     entries = [ entry(:post_deploy_tasks, "*/2 * * * *", "PostDeployTaskJob"), entry(:clock, "* * * * *") ]
 
     assert_equal :fresh, reading(report(entries), :post_deploy_tasks)[:state]
+  end
+
+  test "a short copy run long after cron stopped enqueuing a singleton does not excuse the ticks before it" do
+    ticking("clock", every: 1.minute, window: (NOW - 3.hours)..NOW)
+    cron_row("post_deploy_tasks", enqueued: NOW - 2.hours, finished: NOW - 2.hours + 5, job_class: "PostDeployTaskJob")
+    GoodJob::Job.where(cron_key: "post_deploy_tasks").update_all(concurrency_key: "PostDeployTaskJob")
+    GoodJob::Job.insert_all([ { queue_name: "default", job_class: "PostDeployTaskJob", concurrency_key: "PostDeployTaskJob",
+                                created_at: NOW - 10.minutes, updated_at: NOW - 10.minutes + 5,
+                                scheduled_at: NOW - 10.minutes, finished_at: NOW - 10.minutes + 5 } ])
+    entries = [ entry(:post_deploy_tasks, "*/2 * * * *", "PostDeployTaskJob"), entry(:clock, "* * * * *") ]
+
+    stopped = reading(report(entries), :post_deploy_tasks)
+    assert_equal :stale, stopped[:state], "the slot was free from 10:00 to 11:50, so those ticks were cron's to produce"
+    assert_equal NOW - 2.hours + 2.minutes, stopped[:due_at]
   end
 
   test "a late finish excuses nothing for a class whose ticks are never refused" do
