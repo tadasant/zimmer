@@ -5836,25 +5836,11 @@ with a large table should expect the lock.
 
 ---
 
-## Ten dead columns on `sessions` are waiting for one more deploy
+## `sessions.transcript` is the one `json` column left
 
-`config`, `mcp_servers`, `mcp_server_env`, `mcp_server_headers` and `metadata` are `jsonb`. Getting
-them there took an expand-and-contract, and the contract half
-(`20260912140000_swap_sessions_jsonb_shadows_into_place`) deliberately left two dead columns behind
-per conversion rather than dropping anything:
-
-- `<name>_json_legacy` is the original `json` column, renamed aside. It still holds the
-  pre-cutover values, which is the point — it is the undo for the convergence the migration ran
-  under its lock, and no deployment here has a shell to inspect that from after the fact.
-- `<name>_jsonb` is the shadow name, **re-added empty**. The containers from the previous image
-  keep writing it for the length of the swap window — three code paths do, and `columns_hash` was
-  cached at boot — so removing the name would have made every save from an old container a
-  `PG::UndefinedColumn`.
-
-`Session` ignores all ten, so nothing in either image selects or inserts them. They cost ten
-catalog entries and nothing per row. A follow-up PR drops them under
-[the two-phase drop](/operate/deploying/#dropping-a-column-takes-two-deploys) and removes the
-`ignored_columns` line; until it lands, `\d sessions` reads stranger than the model does.
+`config`, `mcp_servers`, `mcp_server_env`, `mcp_server_headers` and `metadata` are `jsonb`, which is
+what every other JSON column in the schema is. The conversion took three deploys, described under
+[retyping a column](/operate/deploying/#retyping-a-column-the-shadow-takes-the-old-name).
 
 `transcript` is deliberately staying `json`: it is a single opaque blob, never queried by key,
 routinely multiple megabytes, and `jsonb` would cost more to write for a document that size. If it

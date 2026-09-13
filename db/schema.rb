@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_13_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_13_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -710,8 +710,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_13_010000) do
     t.jsonb "catalog_skills", default: []
     t.bigint "category_id"
     t.jsonb "config"
-    t.json "config_json_legacy"
-    t.jsonb "config_jsonb"
     t.datetime "created_at", null: false
     t.jsonb "custom_metadata", default: {}
     t.string "execution_provider", default: "local_filesystem", null: false
@@ -728,17 +726,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_13_010000) do
     t.datetime "last_broadcast_to_index_at"
     t.datetime "last_timeline_entry_at"
     t.jsonb "mcp_server_env"
-    t.json "mcp_server_env_json_legacy"
-    t.jsonb "mcp_server_env_jsonb"
     t.jsonb "mcp_server_headers"
-    t.json "mcp_server_headers_json_legacy"
-    t.jsonb "mcp_server_headers_jsonb"
     t.jsonb "mcp_servers"
-    t.json "mcp_servers_json_legacy"
-    t.jsonb "mcp_servers_jsonb"
     t.jsonb "metadata", default: {}
-    t.json "metadata_json_legacy"
-    t.jsonb "metadata_jsonb"
     t.bigint "parent_session_id"
     t.integer "precedence", default: 0, null: false
     t.text "prompt"
