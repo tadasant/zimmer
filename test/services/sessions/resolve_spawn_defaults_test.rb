@@ -155,6 +155,26 @@ class Sessions::ResolveSpawnDefaultsTest < ActiveSupport::TestCase
     assert session.mcp_servers_explicitly_empty?
   end
 
+  # The new-session form posts `branch: ""` for a field left empty, which
+  # overwrites the column default before the resolution ever runs.
+  test "a rootless spawn with a blank branch gets main" do
+    session = Session.new(git_root: "https://github.com/someone/scratch.git", branch: "")
+
+    Sessions::ResolveSpawnDefaults.call(session)
+
+    assert_equal "main", session.branch
+  end
+
+  test "a root with no default_branch still gives its session main" do
+    root = OpenStruct.new(name: "branchless-root", url: "https://github.com/test/branchless.git", default_branch: nil)
+    AgentRootsConfig.stubs(:find!).with("branchless-root").returns(root)
+    session = Session.new(branch: nil)
+
+    Sessions::ResolveSpawnDefaults.call(session, agent_root_name: "branchless-root")
+
+    assert_equal "main", session.branch
+  end
+
   test "a rootless spawn that names servers is not marked as deliberately empty" do
     session = Session.new(git_root: "https://github.com/someone/scratch.git", mcp_servers: [ "context7" ])
 

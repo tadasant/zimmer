@@ -2371,10 +2371,11 @@ class Session < ApplicationRecord
   #   the spawned root's default_runtime applies. Lets a caller (e.g. a parent
   #   spawning a subagent) run the new session under a different runtime than the
   #   root declares, without changing the root's catalog entry.
-  # @param mcp_servers [Array<String>, nil] override MCP servers (uses agent root defaults if nil or blank)
-  # @param catalog_skills [Array<String>, nil] override catalog skills (uses agent root defaults if nil)
-  # @param catalog_hooks [Array<String>, nil] override catalog hooks (uses agent root defaults if nil)
-  # @param catalog_plugins [Array<String>, nil] override catalog plugins (uses agent root defaults if nil)
+  # @param mcp_servers [Array<String>, nil] override MCP servers. nil AND [] both take
+  #   the agent root's defaults — see "an empty list is not none" below.
+  # @param catalog_skills [Array<String>, nil] override catalog skills; nil or [] takes the root's
+  # @param catalog_hooks [Array<String>, nil] override catalog hooks; nil or [] takes the root's
+  # @param catalog_plugins [Array<String>, nil] override catalog plugins; nil or [] takes the root's
   # @param goal [String, nil] optional goal
   # @param parent_session_id [Integer, nil] ID of the parent session (used by the dependency graph and forking)
   # @param scheduling_class [String, nil] "spot"/"priority" for this session; nil
@@ -2401,57 +2402,42 @@ class Session < ApplicationRecord
   #   caller does today.
   # @return [Session] the created and enqueued session
   def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil, &on_created)
-    agent_root = AgentRootsConfig.find!(agent_root_name)
+    # An explicit override is normalized through RuntimeRegistry here, so an
+    # unknown runtime fails loudly at the registry (KeyError) rather than tripping
+    # the agent_runtime inclusion validation with a vaguer error.
+    requested_runtime = agent_runtime.presence && RuntimeRegistry.resolve_key(agent_runtime)
 
-    # An explicit override wins over the root's declared runtime; either way the
-    # value is normalized through RuntimeRegistry so a blank/absent runtime
-    # resolves to the default and an unknown runtime fails loudly at the registry
-    # rather than tripping the agent_runtime inclusion validation with a vaguer
-    # error. agent_root.default_runtime already folds in the global base default.
-    resolved_runtime = RuntimeRegistry.resolve_key(agent_runtime.presence || agent_root.default_runtime)
-
-    # agent_root.default_model folds in the global base default, but a root that
-    # explicitly pins a Claude model would carry an invalid model into a Codex
-    # spawn (and vice versa). Self-heal to the global base default for the resolved
-    # runtime (falling back to that runtime's catalog default) so the persisted
-    # model is always valid for the runtime.
-    resolved_model = agent_root.default_model
-    unless ModelCatalog.valid_model?(resolved_runtime, resolved_model)
-      resolved_model = AppSetting.current.resolved_default_model_for(resolved_runtime)
-    end
+    # An empty list is not "none" on this path, and that is deliberate. Its
+    # callers are the dashboard quick prompt, the chat bubble, the work backlog,
+    # outcome analyses and every Trigger fire — and a Trigger's list columns are
+    # `default: [], null: false`, so [] is what an untouched trigger stores, not a
+    # request for none. Reading it as "no servers" would silently strip every
+    # existing trigger's servers at its next fire. So only a NON-EMPTY list counts
+    # as named, and everything else takes the root's defaults.
+    #
+    # The surfaces where a caller can genuinely say "none" — MCP start_session,
+    # POST /api/v1/sessions, the new-session form — mark an explicit [] as named
+    # when they call Sessions::ResolveSpawnDefaults, and the resolution records
+    # the choice via #record_explicit_mcp_servers.
+    #
+    # Persisting catalog_plugins from default_plugins is what makes a later full
+    # AIR prepare! (run with --without-defaults, which builds its server/skill/
+    # hook list ONLY from these columns) reconstruct the plugin-derived MCP
+    # servers — those come from default_plugins, NOT default_mcp_servers.
+    named_lists = {
+      mcp_servers: mcp_servers.present?,
+      skills: catalog_skills.present?,
+      hooks: catalog_hooks.present?,
+      plugins: catalog_plugins.present?
+    }
 
     session = new(
       prompt: prompt,
-      agent_runtime: resolved_runtime,
-      git_root: agent_root.url,
-      branch: agent_root.default_branch,
-      subdirectory: agent_root.subdirectory,
-      # On THIS path, nil and [] both inherit the root's defaults, and that is
-      # deliberate. Its callers are the dashboard quick prompt, the chat bubble,
-      # and Trigger — and a Trigger's mcp_servers column is `default: [], null:
-      # false`, so [] is what an untouched trigger stores, not a request for
-      # none. Reading it as "no servers" would silently strip every existing
-      # trigger's servers.
-      #
-      # The surfaces where a caller can genuinely say "none" — MCP start_session,
-      # POST /api/v1/sessions, the new-session form — build the Session directly
-      # and distinguish an omitted list from an explicit [] there, recording the
-      # choice via #record_explicit_mcp_servers.
-      #
-      # agent_root is guaranteed non-nil here (AgentRootsConfig.find! above raises
-      # otherwise), so dereferencing its defaults is safe. Sessions created without
-      # an agent root use a different path (SessionsController / REST create) and
-      # are unaffected.
-      #
-      # Persisting catalog_plugins from default_plugins is what makes a later full
-      # AIR prepare! (run with --without-defaults, which builds its server/skill/
-      # hook list ONLY from these columns) reconstruct the plugin-derived MCP
-      # servers — those come from default_plugins, NOT default_mcp_servers, so they
-      # must be captured here rather than copied into mcp_servers.
-      mcp_servers: mcp_servers.presence || agent_root.default_mcp_servers || [],
-      catalog_skills: catalog_skills.presence || agent_root.default_skills || [],
-      catalog_hooks: catalog_hooks.presence || agent_root.default_hooks || [],
-      catalog_plugins: catalog_plugins.presence || agent_root.default_plugins || [],
+      agent_runtime: requested_runtime,
+      mcp_servers: mcp_servers.presence,
+      catalog_skills: catalog_skills.presence,
+      catalog_hooks: catalog_hooks.presence,
+      catalog_plugins: catalog_plugins.presence,
       goal: goal,
       parent_session_id: parent_session_id,
       # nil leaves the decision to SessionGenesisClassification#assign_genesis,
@@ -2463,14 +2449,18 @@ class Session < ApplicationRecord
       # nil means nobody ranked this session, so SessionPrecedence lands it just
       # above the session that spawned it.
       precedence: precedence,
-      # The RESOLVED root's name, not the caller's spelling of it. An artifact
-      # has three legal spellings since zimmer#208 (canonical token, qualified
-      # `@scope/id`, bare short id), and what is stored has to be the one
-      # AgentRootsConfig.find, the MCP allowlists and `air prepare --root` all
-      # key on — the canonical token. See ArtifactIdentity.
-      metadata: metadata.merge("agent_root_key" => agent_root.name),
-      custom_metadata: custom_metadata,
-      config: { "model" => resolved_model }
+      metadata: metadata,
+      custom_metadata: custom_metadata
+    )
+
+    # Repository fields, runtime → model, the artifact lists and the
+    # agent_root_key stamp: the one resolution every spawn surface shares. Raises
+    # AgentRootNotFoundError for a root the catalog does not carry.
+    Sessions::ResolveSpawnDefaults.call(
+      session,
+      agent_root_name: agent_root_name,
+      explicit_runtime: requested_runtime.present?,
+      explicit_lists: named_lists
     )
 
     # `ensure`, not a line after #save!, because #save! does not return before the

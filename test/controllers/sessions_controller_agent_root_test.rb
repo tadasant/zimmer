@@ -99,6 +99,19 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
     assert_equal "develop", session.branch
   end
 
+  # The URL fallback resolves a root like any other, so it records which one
+  # (zimmer#454) — before, it filled in the branch and subdirectory and never
+  # stamped the key.
+  test "the URL fallback stamps the root it resolved as agent_root_key" do
+    stub_catalog_with(scoped_root("scoped-app", "apps/scoped-app"))
+
+    post sessions_url, params: {
+      session: { prompt: "Test prompt", git_root: MONOREPO_URL, branch: "", mcp_servers: [] }
+    }
+
+    assert_equal "scoped-app", Session.last.metadata["agent_root_key"]
+  end
+
   test "should handle custom URL without agent_root_name" do
     # When user provides a custom URL that's not in the config
     post sessions_url, params: {
@@ -229,7 +242,7 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
     assert_equal "claude_code", Session.last.agent_runtime
   end
 
-  test "create falls back to default runtime for an unregistered agent_runtime param" do
+  test "create treats an unregistered agent_runtime param as unnamed and takes the root's runtime" do
     post sessions_url, params: {
       session: {
         prompt: "Test prompt",

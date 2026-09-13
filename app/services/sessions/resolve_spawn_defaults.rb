@@ -17,10 +17,15 @@ module Sessions
   # them too. It always leaves an explicit model in `config`, so a spawn never
   # depends on a runtime-side default.
   #
-  # Shared rather than duplicated because the two surfaces have drifted before:
-  # REST honored the Settings-page defaults on a rootless create only after
-  # zimmer#263, and MCP `start_session` had no rootless path at all until
-  # zimmer#265.
+  # It is the only implementation. Every way a new session is built goes through
+  # it — POST /api/v1/sessions, MCP `start_session`, the web new-session form, and
+  # Session.create_from_agent_root! (the quick prompt, the chat bubble, every
+  # trigger fire). Each of those keeps only its own concerns: permitting params,
+  # coercing arguments, and deciding what "the caller named this" means on its
+  # surface. The four used to carry their own copies, and three closed bugs
+  # (zimmer#310, #331, #81) were each one copy disagreeing with the others
+  # (zimmer#454). `test/integration/spawn_defaults_conformance_test.rb` pins
+  # that the four agree.
   class ResolveSpawnDefaults
     # @param session [Session] an unsaved session already carrying whatever the
     #   caller named (git_root, branch, subdirectory, the artifact lists, config)
@@ -32,6 +37,8 @@ module Sessions
     #   back to the root's defaults: a `.blank?` test cannot tell omitted from
     #   explicitly-empty, so it would overwrite a caller's `[]` with the defaults,
     #   handing a session that asked for no MCP servers whatever the root declares.
+    #   What counts as "named" is the caller's decision, not this service's — see
+    #   Session.create_from_agent_root!, where an empty list is deliberately not.
     # @return [Session] the same session, with the defaults applied
     # @raise [AgentRootsConfig::AgentRootNotFoundError] when the named root is not in the catalog
     def self.call(session, agent_root_name: nil, explicit_runtime: false, explicit_branch: false, explicit_lists: {})
@@ -52,7 +59,7 @@ module Sessions
       app_setting = AppSetting.current
 
       resolve_runtime!(root, app_setting)
-      root ? apply_root_defaults!(root) : record_rootless_mcp_servers!
+      root ? apply_root_defaults!(root) : apply_rootless_defaults!
       resolve_model!(root, app_setting)
 
       session
@@ -87,8 +94,20 @@ module Sessions
       session.catalog_skills = root.default_skills || [] unless explicit_lists[:skills]
       session.catalog_hooks = root.default_hooks || [] unless explicit_lists[:hooks]
       session.catalog_plugins = root.default_plugins || [] unless explicit_lists[:plugins]
-      # `root.name`, not the caller's spelling — see Session.create_from_agent_root!.
+      # The RESOLVED root's name, not the caller's spelling of it. An artifact has
+      # three legal spellings since zimmer#208 (canonical token, qualified
+      # `@scope/id`, bare short id), and what is stored has to be the one
+      # AgentRootsConfig.find, the MCP allowlists and `air prepare --root` all key
+      # on — the canonical token. See ArtifactIdentity.
       session.metadata = (session.metadata || {}).merge("agent_root_key" => root.name)
+    end
+
+    # With no root the branch has no root tier either, so a blank one is "main" —
+    # the column default, restated because a form that posts `branch: ""` has
+    # already overwritten it.
+    def apply_rootless_defaults!
+      session.branch = "main" if session.branch.blank? && !explicit_branch
+      record_rootless_mcp_servers!
     end
 
     # A rootless spawn has no root defaults for an omitted mcp_servers to fall back
