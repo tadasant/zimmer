@@ -31,7 +31,7 @@
 #   `POST /api/v1/model_catalog_entries` or with the `manage_models` MCP tool, and
 #   which #models_for appends after the built-in ones. No deploy is needed.
 #
-# Most new models still arrive with a CLI bump, because Pi's and Codex's pinned
+# Most new models arrive with a CLI bump, because Pi's and Codex's pinned
 # CLIs only know the models their release bundled. An added id can name a model
 # the installed CLI does not know, and that would otherwise only show up when a
 # session's first turn fails. So ModelCatalogEntry.add asks the installed CLI
@@ -128,7 +128,7 @@ class ModelCatalog
 
   class << self
     # @return [Array<String>] the runtime keys that have a catalog. Adding a
-    #   runtime is still a MODELS entry; only models are added at runtime.
+    #   runtime is a MODELS entry; only models are added at runtime.
     def runtimes
       MODELS.keys
     end

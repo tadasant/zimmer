@@ -30,7 +30,7 @@ class ModelCatalogEntryTest < ActiveSupport::TestCase
     entry = add
 
     refute entry.persisted?
-    assert entry.errors.of_kind?(:model_id, :unlisted)
+    assert entry.errors.of_kind?(:base, :unlisted)
     assert_includes entry.errors.full_messages.join, "Not in codex 0.146.0's model list."
     assert_equal false, entry.cli_listed
   end
@@ -79,7 +79,7 @@ class ModelCatalogEntryTest < ActiveSupport::TestCase
   end
 
   test "rejects flag-like, whitespace and over-long ids" do
-    [ "-m", "--model", "gpt 5", "a" * 201, "" ].each do |id|
+    [ "-m", "--model", "gpt 5", "a" * 101, "" ].each do |id|
       refute ModelCatalogEntry.new(runtime: "codex", model_id: id, added_via: "api").valid?, id.inspect
     end
   end
@@ -93,6 +93,10 @@ class ModelCatalogEntryTest < ActiveSupport::TestCase
     entry = ModelCatalogEntry.new(runtime: "claude_code", model_id: "claude-opus-9", added_via: "api")
     refute entry.valid?
     assert_includes entry.errors[:model_id].join, "pins a Claude version"
+
+    [ "anthropic/claude-opus-9", "us.anthropic.claude-opus-9" ].each do |id|
+      refute ModelCatalogEntry.new(runtime: "claude_code", model_id: id, added_via: "api").valid?, id
+    end
   end
 
   test "requires a provider-qualified Pi id" do
@@ -130,10 +134,23 @@ class ModelCatalogEntryTest < ActiveSupport::TestCase
     refute ModelCatalogEntry.exists?(entry.id)
   end
 
-  test "shadowed_by_built_in? is true for a row a later deploy made built in" do
+  test "shadowed_by_built_in? is true for a row a later deploy made built in, and such a row can be removed while the default names it" do
     entry = ModelCatalogEntry.new(runtime: "codex", model_id: "gpt-5.5", added_via: "api")
     entry.save!(validate: false)
+    AppSetting.editable.update!(default_runtime: "codex", default_model: "gpt-5.5")
 
     assert entry.shadowed_by_built_in?
+    assert entry.destroy
+    assert AppSetting.editable.valid?
+  end
+
+  test "add reports a unique-index race as a duplicate" do
+    ModelCatalogCliCheck.stubs(:check).returns(LISTED)
+    ModelCatalogEntry.any_instance.stubs(:save).raises(ActiveRecord::RecordNotUnique, "duplicate key")
+
+    entry = add
+
+    refute entry.persisted?
+    assert_includes entry.errors[:model_id].join, "already added"
   end
 end

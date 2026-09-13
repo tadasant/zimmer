@@ -4894,8 +4894,8 @@ A model can be added to a runtime's catalog from Settings → Models, the REST A
 [Adding a model without a deploy](/sessions/runtimes/#adding-a-model-without-a-deploy)). What Zimmer
 cannot do is prove the installed CLI will run it:
 
-- **Claude Code ids are not checked at all.** The CLI has no model list, so a mistyped alias is
-  saved and fails on the session's first turn.
+- **Claude Code ids are not checked against the CLI.** The CLI has no model list, so a mistyped
+  alias that passes the shape rules is saved and fails on the session's first turn.
 - **An unlisted Codex or Pi id is a warning, not an answer.** The check reads the model list bundled
   with the pinned CLI, offline. A model released after that CLI is missing from the list and may
   still work, because both CLIs pass an unknown id to the provider. So the check can only refuse it
@@ -4905,10 +4905,11 @@ cannot do is prove the installed CLI will run it:
   until the model is removed and added again.
 - **A Pi id for a provider Zimmer has no key variable for is unchecked.** Pi only lists a provider
   whose key resolves, and the placeholder key is named from Pi's provider table
-  (`ModelCatalogCliCheck::PI_KEY_VARIABLES`, else `<PROVIDER>_API_KEY`).
+  (`ModelCatalogCliCheck::PI_KEY_VARIABLES`, else `<PROVIDER>_API_KEY`). Cloudflare's two providers
+  also need an account id to list anything, so their ids are always unchecked.
 
 Adding a runtime, changing a built-in model, a runtime's fallback default, or the quota probe's
-`messages_api_id` is still a change to `ModelCatalog::MODELS` and a deploy.
+`messages_api_id` is a change to `ModelCatalog::MODELS` and a deploy.
 
 The quota-probe half of the issue is fixed. `QuotaCheckService::PROBE_MODEL` is looked up from the
 catalog's `haiku` entry (its `messages_api_id`, `claude-haiku-4-5`), and `ModelCatalogTest` fails

@@ -53,6 +53,16 @@ class Mcp::Tools::GetConfigsTest < ActiveSupport::TestCase
     assert_includes result, "`gpt-5.6-luna` (requires OAuth)"
   end
 
+  test "marks added models, and says when the installed CLI does not list one" do
+    ModelCatalogEntry.new(runtime: "codex", model_id: "gpt-9", added_via: "mcp", cli_listed: false).save!(validate: false)
+    ModelCatalogEntry.new(runtime: "claude_code", model_id: "opus[1m]", added_via: "mcp").save!(validate: false)
+
+    result = @tool.call({})
+
+    assert_includes result, "`gpt-9` (added, not in the installed CLI's model list)"
+    assert_includes result, "`opus[1m]` (added)"
+  end
+
   test "warns that empty lists are a resolution failure, not an empty catalog" do
     AirCatalogService.stubs(:resolve_failure).returns({ message: "boom", at: Time.utc(2026, 8, 1, 12, 0, 0) })
     AirCatalogService.stubs(:degraded?).returns(false)

@@ -93,7 +93,7 @@ scanned.
 **Settings → Models** (`/settings/models`) adds a model to a runtime's catalog, and so do
 `POST /api/v1/model_catalog_entries` ([REST](/extend/rest-api/#models)) and the `manage_models` MCP
 tool. All three write through `ModelCatalogEntry.add`, and the model is offered everywhere the
-built-in ones are from the next request on. Adding a runtime is still a `MODELS` entry and a deploy.
+built-in ones are from the next request on. Adding a runtime is a `MODELS` entry and a deploy.
 
 Adding a model installs nothing. The CLI already in the image has to run it, and Pi's and Codex's
 pinned CLIs only know the models their release bundled. So `add` checks what it can before it saves:
@@ -103,10 +103,11 @@ pinned CLIs only know the models their release bundled. So `add` checks what it 
   `ClaudeModelConfigurationAudit` applies, since the bare aliases already follow new releases.
   Pi ids must be `provider/…`. An id that is already built in is refused.
 - **Whether the installed CLI lists the id** (`ModelCatalogCliCheck`). Codex answers from
-  `codex debug models` and Pi from `pi --offline --list-models`, both offline. Pi only lists a
+  `codex debug models --bundled` and Pi from `pi --offline --list-models`, both offline and without refreshing their lists. Pi only lists a
   provider whose key resolves, so the check sets a placeholder key for the provider in the id. The
   network is never called, so the placeholder never leaves the box. Claude Code has no list, so its
-  ids are saved unchecked.
+  ids are saved unchecked against the CLI. The two calls are bounded at 5s and 10s, because they run
+  inside the request that adds the model.
 
 **An id the CLI does not list is refused unless the caller says to add it anyway**
 (`allow_unlisted`). That is a warning, not proof the model is broken. Codex sends an unlisted slug to

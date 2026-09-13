@@ -1168,7 +1168,7 @@ deploy has made the id built-in, and then the row does nothing. `added_via` is `
 `mcp`.
 
 A `POST` is refused with 422 in two ways. `error: "Validation failed"` is the id's shape: whitespace,
-a leading `-`, a dated snapshot, a Claude version pin under `claude_code`, a Pi id with no provider,
+a leading `-`, more than 100 characters, a dated snapshot, a Claude version pin under `claude_code`, a Pi id with no provider,
 a duplicate, or an id that is already built in. `error: "Model not listed by CLI"` means the CLI's
 model list does not name the id. That response also carries `cli_listed`, `cli_version` and
 `cli_note`, and resending with `allow_unlisted: true` adds it anyway.
