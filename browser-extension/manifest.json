@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Zimmer Quick Router",
-  "version": "0.1.0",
-  "description": "Drop a pin on any page, type what you noticed, and a Zimmer agent session picks it up. You never leave the page.",
+  "version": "0.2.0",
+  "description": "On any page, type what you noticed — pinned to the spot, if you like — and a Zimmer agent session picks it up. You never leave the page.",
   "permissions": ["activeTab", "scripting", "storage"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js" },
   "action": {
-    "default_title": "Zimmer Quick Router — drop a pin (Alt+Shift+Z)",
+    "default_title": "Zimmer Quick Router — message Zimmer (Alt+Shift+Z), or drop a pin first (Alt+Shift+X)",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
@@ -19,7 +19,11 @@
   "commands": {
     "_execute_action": {
       "suggested_key": { "default": "Alt+Shift+Z" },
-      "description": "Drop a Quick Router pin on this page"
+      "description": "Message Zimmer about this page"
+    },
+    "drop-pin": {
+      "suggested_key": { "default": "Alt+Shift+X" },
+      "description": "Drop a pin on this page, then message Zimmer about it"
     }
   },
   "icons": {

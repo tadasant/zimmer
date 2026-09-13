@@ -1,6 +1,7 @@
 // The browser extension, end to end: the real unpacked extension loaded into
-// Chromium, armed on a real page, a pin dropped, a message sent, and the
-// session it made read back from Zimmer. Not run in CI (see
+// Chromium, started on a real page both ways — straight to the composer (the
+// icon, Alt+Shift+Z) and through the crosshair (Alt+Shift+X) — a pin dropped, a
+// message sent, and the session it made read back from Zimmer. Not run in CI (see
 // docs/src/content/docs/operate/testing.md) — run it by hand against a local
 // server:
 //
@@ -12,9 +13,15 @@
 //
 // Two things a real install gets interactively that Playwright cannot click
 // through — Chrome's permission bubble for the Zimmer origin, and the toolbar
-// click that grants `activeTab` — the harness grants statically, by loading a
-// copy of the extension whose manifest lists both origins under
+// click or shortcut that grants `activeTab` — the harness grants statically, by
+// loading a copy of the extension whose manifest lists both origins under
 // `host_permissions`. Nothing else in the copy differs from browser-extension/.
+// A shortcut cannot be pressed from here either (Chrome takes it before any
+// page does), so the harness calls the worker's `arm` with what each gesture
+// passes. Nor can it read the bindings: Chrome reports an empty `shortcut` for
+// every command of an extension loaded this way, so step 2 checks the commands
+// are registered and the manifest suggests the right keys, and pressing them is
+// left to a real browser.
 const { chromium } = require('playwright');
 const fs = require('fs');
 const http = require('http');
@@ -84,13 +91,21 @@ const FIXTURE = `<!doctype html><html><head><title>Fixture</title></head><body>
     await shot(options, '01-options');
     await options.close();
 
-    console.log('Step 2: arm on the target page, drop a pin, send...');
+    console.log('Step 2: both gestures are registered commands...');
+    const commands = (await worker.evaluate(() => chrome.commands.getAll())).map((c) => c.name);
+    assert(commands.includes('_execute_action') && commands.includes('drop-pin'), `Chrome registered both commands (${commands.join(', ')})`);
+    const suggested = (name) => manifest.commands[name]?.suggested_key?.default;
+    assert(suggested('_execute_action') === 'Alt+Shift+Z', 'the icon\'s command suggests Alt+Shift+Z');
+    assert(suggested('drop-pin') === 'Alt+Shift+X', 'drop-pin suggests Alt+Shift+X');
+
+    console.log('Step 3: arm on the target page, drop a pin, send...');
     const page = await context.newPage();
     await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    const arm = () => worker.evaluate(async (url) => {
+    const start = (pin) => worker.evaluate(async ([url, pin]) => {
       const [tab] = await chrome.tabs.query({ url: `${new URL(url).origin}/*` });
-      await arm(tab);
-    }, TARGET_URL);
+      await arm(tab, { pin });
+    }, [TARGET_URL, pin]);
+    const arm = () => start(true);
     await arm();
     const host = page.locator('#zimmer-quick-router-host');
     await host.locator('.overlay').waitFor();
@@ -115,7 +130,43 @@ const FIXTURE = `<!doctype html><html><head><title>Fixture</title></head><body>
     await shot(page, '04-toast');
     await host.locator('.toast button').click();
 
-    console.log('Step 3: a wrong key is refused and the text survives...');
+    console.log('Step 4: the icon and Alt+Shift+Z go straight to the composer...');
+    await start(false);
+    await host.locator('.composer').waitFor();
+    assert((await host.locator('.overlay').count()) === 0, 'no crosshair');
+    assert((await host.locator('.anchor').innerText()).includes('No pin'), 'the composer opens with no pin');
+    assert(await host.locator('textarea').evaluate((t) => t.getRootNode().activeElement === t), 'the composer has focus');
+    await shot(page, '05-composer-first');
+    // Typed, not filled: GitHub's single-key shortcuts (`s` is its search) must
+    // not eat characters on their way into the composer.
+    await page.keyboard.type('a draft that survives the pin');
+    assert((await host.locator('textarea').inputValue()) === 'a draft that survives the pin', 'every typed character reaches the composer');
+    await host.locator('.anchor button').click();
+    await host.locator('.overlay').waitFor();
+    assert((await host.locator('.composer').count()) === 0, 'Drop a pin swaps the composer for the crosshair');
+    await start(false);
+    await host.locator('.composer').waitFor();
+    assert((await host.locator('.overlay').count()) === 0 && (await host.locator('.anchor').innerText()).includes('No pin'), 'Alt+Shift+Z over the crosshair skips the pin');
+    assert((await host.locator('textarea').inputValue()) === 'a draft that survives the pin', 'the draft comes back');
+    await start(true);
+    await host.locator('.overlay').waitFor();
+    assert((await host.locator('.composer').count()) === 0, 'Alt+Shift+X with the composer open switches to the crosshair');
+    await target.scrollIntoViewIfNeeded();
+    const again = await target.boundingBox();
+    await page.mouse.click(again.x + Math.min(again.width / 2, 200), again.y + again.height / 2);
+    await host.locator('.composer').waitFor();
+    await start(false);
+    assert((await host.locator('.anchor').innerText()).includes('<p>'), 'Alt+Shift+Z with a pinned composer open keeps the pin');
+    await host.locator('textarea').fill(`e2e ${new Date().toISOString()}: composer-first feedback from the extension`);
+    await host.locator('.anchor button').click(); // Move pin
+    await page.keyboard.press('Enter');
+    await host.locator('.composer').waitFor();
+    await host.locator('.send').click();
+    await host.locator('.toast').waitFor({ timeout: 30000 });
+    assert(/\/sessions\/\d+$/.test((await host.locator('.toast a').getAttribute('href')) || ''), 'a pinless message is sent too');
+    await host.locator('.toast button').click();
+
+    console.log('Step 5: a wrong key is refused and the text survives...');
     await worker.evaluate(() => chrome.storage.local.set({ apiKey: 'zmr_not_the_key' }));
     await arm();
     await host.locator('.overlay').waitFor();
@@ -127,19 +178,19 @@ const FIXTURE = `<!doctype html><html><head><title>Fixture</title></head><body>
     await host.locator('.error').waitFor({ timeout: 30000 });
     assert((await host.locator('.error').innerText()).includes('refused'), 'Zimmer\'s refusal is shown in the composer');
     assert((await host.locator('textarea').inputValue()) === 'will be refused', 'the text is kept for a retry');
-    await shot(page, '05-refused');
+    await shot(page, '06-refused');
     await page.keyboard.press('Escape');
     assert((await host.count()) === 0, 'Esc tears everything down');
     await page.close();
 
-    console.log('Step 4: the session exists in Zimmer...');
+    console.log('Step 6: the session exists in Zimmer...');
     const z = await context.newPage();
     const response = await z.goto(sessionUrl, { waitUntil: 'networkidle' });
     assert(response.ok(), `GET ${sessionUrl} -> ${response.status()}`);
-    await shot(z, '06-session');
+    await shot(z, '07-session');
     await z.close();
 
-    console.log('Step 5: what the capture leaves behind, on a fixture page...');
+    console.log('Step 7: what the capture leaves behind, on a fixture page...');
     await worker.evaluate((k) => chrome.storage.local.set({ apiKey: k }), KEY);
     // Record every body the worker sends, then send it on as normal.
     await worker.evaluate(() => {
@@ -152,7 +203,7 @@ const FIXTURE = `<!doctype html><html><head><title>Fixture</title></head><body>
     await fixture.goto(FIXTURE_URL);
     const armFixture = () => worker.evaluate(async () => {
       const [tab] = await chrome.tabs.query({ url: 'http://127.0.0.1/*' });
-      await arm(tab);
+      await arm(tab, { pin: true });
     });
     const fhost = fixture.locator('#zimmer-quick-router-host');
     await armFixture();
@@ -161,11 +212,13 @@ const FIXTURE = `<!doctype html><html><head><title>Fixture</title></head><body>
     await fixture.mouse.click(pw.x + 20, pw.y + pw.height / 2);
     await fhost.locator('.composer').waitFor();
     await fhost.locator('textarea').fill('pinned the password box');
-    // Twice, fast: one session, not two.
+    // Twice, fast: one session, not two. The second press gets a short timeout:
+    // against a server that answers before it lands, the composer is already
+    // gone, and waiting the default 30s for it would outlast the toast.
     await fhost.locator('textarea').press('Control+Enter');
-    await fhost.locator('textarea').press('Control+Enter').catch(() => {});
+    await fhost.locator('textarea').press('Control+Enter', { timeout: 1000 }).catch(() => {});
     await fhost.locator('.toast').waitFor({ timeout: 30000 });
-    await shot(fixture, '07-fixture-toast');
+    await shot(fixture, '08-fixture-toast');
 
     // Re-arm while the toast is still up; the toast's timer must not tear it down.
     await armFixture();
