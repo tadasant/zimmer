@@ -289,6 +289,16 @@ class Webhooks::SlackControllerTest < ActionDispatch::IntegrationTest
     assert note.start_with?("Another message landed in #eng-ci")
   end
 
+  test "a template that writes {{text}} bare gets the message the webhook folds queued raw" do
+    @trigger.update!(prompt_template: "Do what this asks:\n\n{{text}}")
+    deliver(new_message("1756500000.000100", user: "U_ALERTS", text: "deploy the app"))
+    deliver(new_message("1756500000.600100", user: "U_ALERTS", text: "and then restart the worker"))
+
+    note = Session.order(:id).last.enqueued_messages.sole.content
+    assert_not_includes note, "[begin untrusted"
+    assert_includes note, ": and then restart the worker"
+  end
+
   test "a burst the webhook folded is not re-fired by the poller" do
     deliver(new_message("1756500000.000100", user: "U_ALERTS"))
     deliver(new_message("1756500000.600100", user: "U_ALERTS"))

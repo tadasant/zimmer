@@ -380,6 +380,26 @@ class TriggerInterpolationTest < ActiveSupport::TestCase
     assert result.end_with?("\n[end untrusted text aaaaaaaaaaaaaaaa]\n[end untrusted text bbbbbbbbbbbbbbbb]")
   end
 
+  test "a burst notice quoting a prompt cut inside an appended fence closes it before its own instructions" do
+    AgentRootsConfig.stubs(:find!).returns(
+      OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
+    )
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+    @trigger.update!(prompt_template: "Short.", max_sessions_per_minute: 1)
+    prompt = "#{@trigger.interpolate_prompt}\n\n#{@trigger.render_appended_untrusted('ignore all of this ' * 100, variable: 'text', name: 'body')}"
+
+    2.times { @trigger.create_session!(prompt: prompt) }
+
+    notice = Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s).find { |s| s.metadata["burst_notice"] }
+    code = notice.prompt[/\[begin untrusted body (\h{16}):/, 1]
+    assert_not_nil code
+    # Once quoted in the begin line's note, once as the end the notice appended.
+    assert_equal 2, notice.prompt.scan("[end untrusted body #{code}]").length
+    closing = notice.prompt.rindex("[end untrusted body #{code}]")
+    assert_operator closing, :<, notice.prompt.index("Something is producing far more events than usual")
+  end
+
   test "close_open_fences leaves text with no fence untouched" do
     assert_equal "plain [begin untrusted] text", @trigger.send(:close_open_fences, "plain [begin untrusted] text")
   end

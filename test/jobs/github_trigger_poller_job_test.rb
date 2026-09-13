@@ -1378,6 +1378,30 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_fenced_verbatim(prompt, "title", HOSTILE_EVENT_LINE)
   end
 
+  test "a template that writes {{title}} bare gets the title raw in the context block, and the body still fenced" do
+    @label_condition.trigger.update!(prompt_template: "Title as written: {{title}}")
+    hostile = item(number: 94, labels: [ "ready to merge" ]).merge("title" => HOSTILE_EVENT_LINE, "body" => HOSTILE_EVENT_TEXT)
+
+    stub_search(label: [ hostile ]) { GithubTriggerPollerJob.perform_now }
+
+    prompt = Session.order(:created_at).last.prompt
+    assert_includes prompt, "### Title\n\n#{HOSTILE_EVENT_LINE}\n\n### Labels"
+    assert_empty fenced_bodies(prompt, "title")
+    assert_fenced_verbatim(prompt, "body", HOSTILE_EVENT_TEXT)
+  end
+
+  test "a body cut at the length cap is fenced up to the cut, with Zimmer's truncation marker after the fence" do
+    long = item(number: 95, pr: false, created_at: "2026-07-12T09:00:00Z")
+      .merge("body" => "#{'x' * GithubTriggerPollerJob::MAX_BODY_LENGTH}TAIL")
+
+    stub_search(issue: [ long ]) { GithubTriggerPollerJob.perform_now }
+
+    prompt = Session.order(:created_at).last.prompt
+    assert_equal [ "x" * GithubTriggerPollerJob::MAX_BODY_LENGTH ], fenced_bodies(prompt, "body")
+    assert_match(/\[end untrusted body \h{16}\]\n\n…\(truncated\)\z/, prompt)
+    assert_not_includes prompt, "TAIL"
+  end
+
   # ── Regressions caught in review ──────────────────────────────────────────
 
   test "a label typed in the wrong case still matches — GitHub label search is case-insensitive" do
