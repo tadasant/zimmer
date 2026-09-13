@@ -706,7 +706,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
 
     assert_match(/Open with ONE sentence recommending what the human/, rule)
     assert_match(/nothing is needed from them, say that plainly/, rule)
-    assert_match(/Three sentences in all\. Not four\./, rule)
+    assert_match(/At most three sentences in all\. Not four\./, rule)
   end
 
   # The dashboard broadcasts a card from after_create_commit, so a marker

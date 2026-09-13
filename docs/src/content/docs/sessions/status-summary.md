@@ -38,9 +38,8 @@ inventing a chore. The status description follows in one or two sentences.
 The order is for skimming. On [Your board](/sessions/user-view/) the blurb is clamped to three lines,
 so the sentence that decides whether a row needs you is the one that is always visible.
 
-The length budget did not grow to make room for it. The recommendation takes the slot that the
-"does this need you" sentence used to fill at the end of a blurb, and the rule says three sentences
-in all, not four. Both prompts carry it as one shared constant,
+The recommendation is the blurb's "does this need you" sentence, put first, so the budget counts it:
+at most three sentences in all, not four. Both prompts carry it as one shared constant,
 `SessionStatusSummaryGenerator::RECOMMENDATION_FIRST_RULE`, for the reason given
 [below](#a-description-of-state-never-a-plan).
 
@@ -49,8 +48,8 @@ it does not get around the rule against narrating intent.
 
 Recommendation-first is prompt-level only. Nothing parses out or bolds the first sentence, because
 finding a sentence boundary in text full of markdown links and URLs is guesswork. Summaries are
-cached, so a blurb written before this rule existed keeps its old shape until the session moves or
-someone presses Regenerate.
+cached, so a blurb generated without this rule keeps its shape until the session moves or someone
+presses Regenerate.
 
 ## Link, don't explain
 
@@ -69,8 +68,9 @@ Three kinds of link do most of the work:
 The blurb is markdown, and it is rendered as markdown wherever it is shown. The session page's
 Status panel renders it in full through the shared renderer. A row on
 [Your board](/sessions/user-view/) renders it inline through `ApplicationHelper#inline_markdown`, which is
-the same renderer narrowed to links, code, bold and italics. A paragraph break, heading, list or code
-block is unwrapped to its text, so it cannot break the row's layout. Both paths keep the
+the same renderer narrowed to links, code, bold, italics, strikethrough and quotes. A paragraph
+break, heading, list or table is unwrapped to its text, and a code block keeps only its `<code>`, so
+none of them can break the row's layout. Both paths keep the
 renderer's `safe_links_only` filtering and its `target="_blank"`, and the inline one runs a
 second sanitizer pass on top. No raw HTML or `javascript:` link survives either path. The board
 row uses the stored text, not `summary_markdown`, so a transcript-message link stays a full

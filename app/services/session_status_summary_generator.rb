@@ -123,9 +123,8 @@ class SessionStatusSummaryGenerator
   # to do — and "nothing" is an answer it must be allowed to give, or a session
   # that needs no one gets an invented chore.
   #
-  # The length budget does not grow with it. The recommendation takes the slot
-  # the "does it need you" sentence used to fill at the end of a blurb, so the
-  # panel stays at three sentences at most.
+  # The recommendation IS the panel's "does this need you" sentence, moved to the
+  # front, so the budget is three sentences at most with it included.
   #
   # The recommendation is addressed to the reader. It is not the session saying
   # what it will do next, so it never licenses what STATE_NOT_INTENT_RULE forbids.
@@ -133,10 +132,10 @@ class SessionStatusSummaryGenerator
     - Open with ONE sentence recommending what the human reading this should do
       next. Make it imperative and specific: "Merge [PR #123](URL).", "Answer
       the question in [this message](URL).", "Resume it to open the PR.". When
-      nothing is needed from them, say that plainly — "Nothing to do; archive
-      it.", "Nothing needed from you yet." — rather than inventing an action.
-    - Then 1-2 sentences on where things stand, not how you got here. Three
-      sentences in all. Not four.
+      nothing is needed from them, say that plainly — "Nothing needed from you
+      yet." — rather than inventing an action.
+    - Then 1-2 sentences on where things stand, not how you got here. At most
+      three sentences in all. Not four.
   RULE
 
   # --- The pool-independent path (see #run_headless) --------------------------

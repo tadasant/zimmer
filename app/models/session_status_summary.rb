@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-# The two-or-three sentence "where things stand" blurb shown in the Status panel
-# at the top of a session's detail page, plus the bookkeeping that decides when
-# it is allowed to be regenerated.
+# The three-sentence "what to do, and where things stand" blurb shown in the
+# Status panel at the top of a session's detail page, plus the bookkeeping that
+# decides when it is allowed to be regenerated.
 #
 # The blurb itself is written by an agent — see SessionStatusSummaryGenerator,
 # which forks the session and asks the fork to summarize the conversation it is

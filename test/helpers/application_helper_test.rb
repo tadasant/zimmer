@@ -181,6 +181,7 @@ class ApplicationHelperTest < ActionView::TestCase
   test "the Archive anyway toast outlives a bare notice" do
     assert flash_duration_ms("force_archive") > flash_duration_ms(nil)
   end
+
   test "inline_markdown keeps links, code and emphasis" do
     result = inline_markdown("Merge [PR #12](https://github.com/o/r/pull/12) or drop `roles.zimmer`, **now** or _later_.")
 
@@ -208,6 +209,14 @@ class ApplicationHelperTest < ActionView::TestCase
     assert_not_includes result, "<img"
     assert_no_match(/href="javascript:/i, result)
     assert_no_match(/<a /, result)
+  end
+
+  test "inline_markdown keeps quotation marks the quote extension wraps" do
+    assert_includes inline_markdown('The gate said "too broad" and stopped.'), "<q>too broad</q>"
+  end
+
+  test "markdown_plain_text keeps quotation marks" do
+    assert_equal 'The gate said "too broad" and stopped.', markdown_plain_text('The gate said "too broad" and stopped.')
   end
 
   test "inline_markdown returns empty string for blank input" do
