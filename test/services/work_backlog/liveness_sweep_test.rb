@@ -176,6 +176,65 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     assert_equal WorkBacklogItem::LIVENESS_UNKNOWN, item.reload.liveness_state
   end
 
+  # --- a row whose issue lives in another repo (#1188) -----------------------
+
+  # `repo` is what a session is checked out for, and the gate sets it apart from
+  # the issue's repository on purpose when the fix lives elsewhere. The issue
+  # number belongs to `issue_url`, so that is the repository it is asked about.
+  test "a cross-repo row is probed in its issue's repository, not in its checkout repo" do
+    item = cross_repo_row
+    asked = []
+
+    sweep(probes: { "tadasant/strad" => { 115 => probe(state: "CLOSED", number: 115) } }, calls: asked)
+
+    assert_equal [ [ "tadasant/strad", [ 115 ] ] ], asked
+    assert_equal WorkBacklogItem::LIVENESS_ISSUE_CLOSED, item.reload.liveness_state
+  end
+
+  test "a cross-repo row whose issue has a moving PR is pr_open" do
+    item = cross_repo_row(key: "ti#1760", repo: "pulsemcp/air",
+                          issue_url: "https://github.com/tadasant/tadasant-internal/issues/1760")
+
+    sweep(probes: { "tadasant/tadasant-internal" => {
+            1760 => probe(number: 1760, references: [ reference(state: "OPEN", updated_at: 1.hour.ago) ])
+          } })
+
+    assert_equal WorkBacklogItem::LIVENESS_PR_OPEN, item.reload.liveness_state
+    assert_empty WorkBacklogItem.stranded.where(id: item.id)
+  end
+
+  # The silent shape: the same number is an unrelated, closed issue in the
+  # checkout repo. Taking its state would mark a stranded row resolved and hide it.
+  test "an unrelated issue with the same number in the checkout repo does not decide the row" do
+    item = cross_repo_row
+
+    sweep(probes: {
+            "tadasant/tadasant-internal" => { 115 => probe(state: "CLOSED", number: 115) },
+            "tadasant/strad" => { 115 => probe(number: 115, references: []) }
+          })
+
+    assert_equal WorkBacklogItem::LIVENESS_NO_PR, item.reload.liveness_state
+    assert_includes WorkBacklogItem.stranded.pluck(:id), item.id
+  end
+
+  test "a failed read names the issue's repository" do
+    cross_repo_row
+
+    result = sweep(probe_error: "gh api graphql failed")
+
+    assert_equal [ "tadasant/strad" ], result.repos_failed
+  end
+
+  test "rows sharing an issue repository are probed together whatever their checkout repo" do
+    started_row(key: "zimmer#1", number: 1)
+    cross_repo_row(key: "zimmer#2", repo: "pulsemcp/air", issue_url: issue_url(2))
+    asked = []
+
+    sweep(probes: { 1 => probe(references: []), 2 => probe(number: 2, references: []) }, calls: asked)
+
+    assert_equal [ [ "tadasant/zimmer", [ 1, 2 ] ] ], asked
+  end
+
   # --- ordering and bounds ---------------------------------------------------
 
   test "examines the least-recently-checked rows first" do
@@ -420,6 +479,12 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
                      started_session_id: @dead_session.id, started_at: started_at }.merge(overrides))
   end
 
+  # item 358's shape from #1188: checked out in one repo, tracked in another.
+  def cross_repo_row(key: "strad#115", repo: "tadasant/tadasant-internal",
+                     issue_url: "https://github.com/tadasant/strad/issues/115", **overrides)
+    started_row(key: key, repo: repo, issue_url: issue_url, **overrides)
+  end
+
   def removed_row(reason:, key: "zimmer#1", number: 1, **overrides)
     backlog_item(**{ key: key, issue_url: issue_url(number), status: WorkBacklogItem::REMOVED,
                      removal_reason: reason, removed_by: "session:1",
@@ -459,12 +524,17 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
   end
 
   # One pass with the GitHub probe stubbed. `probes` is keyed by issue number, as
-  # Github::IssueLinkProbe returns; `probe_error` makes the probe raise instead.
-  def sweep(probes: {}, probe_error: nil, logger: Rails.logger)
+  # Github::IssueLinkProbe returns, and answers for tadasant/zimmer; key it by
+  # repository instead (`{ "owner/name" => { number => probe } }`) to answer for
+  # several. `probe_error` makes the probe raise instead, and `calls` collects
+  # each `[repo, numbers]` the sweep asked for.
+  def sweep(probes: {}, probe_error: nil, logger: Rails.logger, calls: [])
+    by_repo = probes.keys.all?(String) && probes.any? ? probes : { "tadasant/zimmer" => probes }
     stub = lambda do |repo:, numbers:|
+      calls << [ repo, numbers ]
       raise Github::IssueLinkProbe::ProbeError, probe_error if probe_error
 
-      probes.slice(*numbers)
+      by_repo.fetch(repo, {}).slice(*numbers)
     end
 
     Github::IssueLinkProbe.stub(:call, stub) do

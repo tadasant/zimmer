@@ -234,7 +234,11 @@ had been for four days or more.
 `WorkBacklogLivenessSweepJob` (hourly, `WorkBacklog::LivenessSweep`) re-checks those rows and
 records what GitHub currently says in `liveness_state`. It takes every row whose verdict can still
 change before any row that is settled (`issue_closed` or `superseded`), and within each group the
-least-recently-checked first:
+least-recently-checked first. Each row is asked about in the repository its `issue_url` names, not
+in its `repo`. `repo` is where a session is checked out, and the gate sets it to a different
+repository when the fix lives somewhere other than the tracking issue. Asked in `repo`, the issue
+number points at a pull request, a 404, or an unrelated issue with the same number
+([#1188](https://github.com/tadasant/zimmer/issues/1188)).
 
 | Found | `liveness_state` | Stranded? |
 | --- | --- | --- |
