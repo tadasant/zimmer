@@ -4568,11 +4568,13 @@ What the webhook does not cover yet:
   and the poller fires the rest, or delivers a later message before an earlier one, the parts
   coalesce separately. Nothing fires twice and nothing is lost, but the one-session-per-burst
   promise holds only for a burst that arrives by one path, in order.
-- **The health summary is 24 hours wide.** The *Webhook Ingest* panel on `/health`, and the same
-  reading in `GET /api/v1/health` and `get_system_health`, counts fires by path over a fixed day and
-  judges them by the mode in force when it is read. Poll fires made while the webhook was on earlier
-  that day are still counted after it is switched off, but no longer warn. Anything finer grained is in
-  `/supervisor/webhook_deliveries` and `/supervisor/trigger_event_claims`.
+- **The health summary is 24 hours wide, and counts claims rather than sessions.** The *Webhook
+  Ingest* panel on `/health`, and the same reading in `GET /api/v1/health` and `get_system_health`,
+  counts claims by path over a fixed day and judges them by the mode in force when it is read. Poll
+  claims made while the webhook was on earlier that day are still counted after it is switched off,
+  but no longer warn. A coalesced burst is one claim per message, and a message two conditions match
+  is two. Anything finer grained is in `/supervisor/webhook_deliveries` and
+  `/supervisor/trigger_event_claims`.
 
 Tracked in [#79](https://github.com/tadasant/zimmer/issues/79); the design is
 [#217](https://github.com/tadasant/zimmer/issues/217).

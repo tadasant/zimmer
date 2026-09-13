@@ -528,10 +528,10 @@ class HealthMonitorService
     }
   end
 
-  # Whether each webhook source is delivering, and how many trigger fires the poller had to make
-  # for it — see Webhooks::IngestSummary.
+  # Whether each webhook source is delivering, and how many of the events its webhook serves the
+  # poller had to claim instead — see Webhooks::IngestSummary.
   #
-  # Deliberately NOT folded into `overall_status`. A poll claim while the webhook is on is a
+  # Deliberately NOT folded into `overall_status`. A poll claim on an event the webhook serves is a
   # message the poller fired a minute late, not one that was lost, and this reading is the
   # evidence for a rollout decision rather than something to page on.
   def inbound_event_health

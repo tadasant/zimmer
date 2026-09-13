@@ -2,7 +2,7 @@
 <%#
   The summary of webhook_deliveries and trigger_event_claims, which /supervisor lists row by row.
   Same object as the REST health report and `get_system_health`. The number that matters is
-  "via poll" while a webhook is on: each one is an event the webhook did not deliver first.
+  "claimed via poll" while a webhook is on: each one is an event the webhook did not deliver first.
   Stacked per source rather than a table, so it fits a phone.
 %>
 <% inbound = health_report[:inbound_event_health] %>
@@ -12,7 +12,7 @@
       <div class="min-w-0">
         <h3 class="text-lg font-medium text-gray-900">Webhook Ingest</h3>
         <p class="mt-1 text-sm text-gray-500">
-          Deliveries per source, and trigger fires by the path that claimed them, over the last
+          Deliveries per source, and trigger events by the path that claimed them, over the last
           <%= inbound[:window_seconds] / 3600 %> hours.
         </p>
       </div>
@@ -39,20 +39,22 @@
         <dl class="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4">
           <div class="text-center">
             <dt class="text-sm font-medium text-gray-500">Last delivery</dt>
-            <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words">
-              <%= source[:last_delivery_at] ? "#{time_ago_in_words(source[:last_delivery_at])} ago" : "—" %>
+            <dd class="mt-1 text-2xl font-semibold text-gray-900">
+              <%= source[:last_delivery_at] ? "#{HealthMonitorService.format_wait(Time.current - source[:last_delivery_at])} ago" : "—" %>
             </dd>
           </div>
           <div class="text-center">
             <dt class="text-sm font-medium text-gray-500">Deliveries</dt>
-            <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= source[:deliveries_in_window] %></dd>
+            <dd class="mt-1 text-2xl font-semibold <%= source[:accepting] && source[:deliveries_in_window].zero? ? 'text-yellow-600' : 'text-gray-900' %>">
+              <%= source[:deliveries_in_window] %>
+            </dd>
           </div>
           <div class="text-center">
-            <dt class="text-sm font-medium text-gray-500">Fired via webhook</dt>
+            <dt class="text-sm font-medium text-gray-500">Claimed via webhook</dt>
             <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= source[:webhook_claims_in_window] %></dd>
           </div>
           <div class="text-center">
-            <dt class="text-sm font-medium text-gray-500">Fired via poll</dt>
+            <dt class="text-sm font-medium text-gray-500">Claimed via poll</dt>
             <dd class="mt-1 text-2xl font-semibold <%= source[:webhook_enabled] && source[:poll_claims_in_window] > 0 ? 'text-yellow-600' : 'text-gray-900' %>">
               <%= source[:poll_claims_in_window] %>
             </dd>

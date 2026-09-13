@@ -27,8 +27,8 @@ class Webhooks::IngestSummaryTest < ActiveSupport::TestCase
     WebhookDelivery.record_first!(source: "slack", delivery_id: id, event_type: "message", now: at)
   end
 
-  def claim(ts, via:, at:)
-    TriggerEventClaim.claim!(@condition, [ TriggerEventClaim.slack_event_key("C1", ts) ], via: via, now: at)
+  def claim(ts, via:, at:, condition: @condition)
+    TriggerEventClaim.claim!(condition, [ TriggerEventClaim.slack_event_key("C1", ts) ], via: via, now: at)
   end
 
   def slack(report)
@@ -64,7 +64,14 @@ class Webhooks::IngestSummaryTest < ActiveSupport::TestCase
     assert_equal 0, reading[:poll_claims_in_window], "a poll claim older than the window is not counted"
   end
 
-  test "a healthy webhook says when it last delivered and that the poller fired nothing" do
+  test "the last delivery is only looked for inside the delivery retention window" do
+    switch_webhook_on
+    deliver("Ev_ancient", at: @now - WebhookDelivery::RETENTION - 1.day)
+
+    assert_nil slack(Webhooks::IngestSummary.report(now: @now))[:last_delivery_at]
+  end
+
+  test "a healthy webhook says when it last delivered and that the poller claimed nothing" do
     switch_webhook_on
     deliver("Ev_1", at: @now - 5.minutes)
     claim("1.0", via: "webhook", at: @now - 5.minutes)
@@ -72,11 +79,13 @@ class Webhooks::IngestSummaryTest < ActiveSupport::TestCase
     status = Webhooks::IngestSummary.report(now: @now)[:status]
 
     assert_predicate status, :healthy?
-    assert_equal "slack: last delivery 5m ago, 1 trigger fire(s) in the last 24h, none by the poller", status.message
+    assert_equal "slack: last delivery 5m ago; the webhook claimed 1 trigger event(s) in the last 24h, the poller none",
+                 status.message
   end
 
   test "a poll claim while the webhook is on is a warning naming how many the webhook missed" do
     switch_webhook_on
+    deliver("Ev_1", at: @now - 1.hour)
     claim("1.0", via: "webhook", at: @now - 1.hour)
     claim("2.0", via: "webhook", at: @now - 1.hour)
     claim("3.0", via: "poll", at: @now - 1.hour)
@@ -85,8 +94,35 @@ class Webhooks::IngestSummaryTest < ActiveSupport::TestCase
 
     assert_equal 1, slack(report)[:poll_claims_in_window]
     assert_predicate report[:status], :warning?
-    assert_equal "slack: 1 of 3 trigger fire(s) in the last 24h were claimed by the poller — events the webhook did not deliver first",
+    assert_equal "slack: the poller claimed 1 of 3 trigger event(s) in the last 24h — events the webhook did not deliver first",
                  report[:status].message
+  end
+
+  # Passive listening is served only by the poller, which claims every one of its fires while the
+  # webhook is on. Those claims are not misses, and counting them would keep the warning on forever.
+  test "poll claims on a condition the webhook does not serve are not counted" do
+    switch_webhook_on
+    deliver("Ev_1", at: @now - 1.hour)
+    passive = trigger_conditions(:passive_listen_all_channels_condition)
+    assert_equal "passive_listen_thread", passive.event_type
+    claim("9.0", via: "poll", at: @now - 1.hour, condition: passive)
+    claim("1.0", via: "webhook", at: @now - 1.hour)
+
+    report = Webhooks::IngestSummary.report(now: @now)
+
+    assert_equal 0, slack(report)[:poll_claims_in_window]
+    assert_equal 1, slack(report)[:webhook_claims_in_window]
+    assert_predicate report[:status], :healthy?
+  end
+
+  test "a condition with no event_type is a new_message condition, which the webhook serves" do
+    switch_webhook_on
+    deliver("Ev_1", at: @now - 1.hour)
+    @condition.update_columns(configuration: @condition.configuration.except("event_type"))
+    assert_equal "new_message", @condition.reload.event_type
+    claim("3.0", via: "poll", at: @now - 1.hour)
+
+    assert_equal 1, slack(Webhooks::IngestSummary.report(now: @now))[:poll_claims_in_window]
   end
 
   test "poll claims left from a webhook since switched off do not warn" do
@@ -105,12 +141,26 @@ class Webhooks::IngestSummaryTest < ActiveSupport::TestCase
 
     refute slack(report)[:accepting]
     assert_predicate report[:status], :warning?
-    assert_match "slack: webhook is switched on but has no signing secret", report[:status].message
+    assert_equal "slack: webhook is switched on but has no signing secret, so its endpoint answers 404", report[:status].message
+  end
+
+  # Slack delivers every message in every channel the bot is in, matched or not, so a day with no
+  # delivery at all while the endpoint is accepting means the provider is not reaching it.
+  test "an accepting webhook that received nothing in the window is a warning" do
+    switch_webhook_on
+    deliver("Ev_old", at: @now - 2.days)
+
+    report = Webhooks::IngestSummary.report(now: @now)
+
+    assert_predicate report[:status], :warning?
+    assert_equal "slack: webhook is accepting but received no delivery in the last 24h — check that the provider can reach its endpoint",
+                 report[:status].message
   end
 
   test "a claim is attributed to its source by its event key prefix" do
     switch_webhook_on
-    TriggerEventClaim.claim!(@condition, [ "github:tadasant/zimmer:issues:1:opened" ], via: "poll", now: @now)
+    deliver("Ev_1", at: @now - 1.hour)
+    TriggerEventClaim.claim!(@condition, [ "github:tadasant/zimmer#1" ], via: "poll", now: @now)
 
     report = Webhooks::IngestSummary.report(now: @now)
 

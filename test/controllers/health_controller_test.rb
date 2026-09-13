@@ -110,23 +110,49 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_select "h3", text: "Maintenance Actions"
   end
 
-  # UI/MCP parity for webhook ingest: `get_system_health` carries the same counts.
-  test "dashboard shows webhook ingest per source" do
-    WebhookDelivery.delete_all
-    TriggerEventClaim.delete_all
-    WebhookDelivery.record_first!(source: "slack", delivery_id: "Ev_dash", event_type: "message", now: 3.minutes.ago)
-    TriggerEventClaim.claim!(trigger_conditions(:enabled_slack_condition), [ "slack:C1:1.0" ], via: "webhook")
-
-    get health_dashboard_url
+  # UI/MCP parity for webhook ingest: `get_system_health` carries the same reading.
+  test "dashboard shows webhook ingest per source, polling by default" do
+    with_slack_ingest_env(mode: nil, secret: nil) do
+      get health_dashboard_url
+    end
     assert_response :success
 
     assert_select "h3", text: "Webhook Ingest"
     assert_select "h4", text: /Slack/
-    assert_select "dt", text: "Fired via webhook"
-    assert_select "dt", text: "Fired via poll"
+    assert_select "dt", text: "Claimed via webhook"
+    assert_select "dt", text: "Claimed via poll"
     assert_select "a[href='#{supervisor_webhook_deliveries_path}']"
     assert_select "a[href='#{supervisor_trigger_event_claims_path}']"
     assert_match "Every source polls; no webhook is switched on", response.body
+  end
+
+  test "dashboard shows the webhook ingest warning when the poller claimed what the webhook missed" do
+    WebhookDelivery.delete_all
+    TriggerEventClaim.delete_all
+    WebhookDelivery.record_first!(source: "slack", delivery_id: "Ev_dash", event_type: "message", now: 3.minutes.ago)
+    condition = trigger_conditions(:enabled_slack_condition)
+    TriggerEventClaim.claim!(condition, [ "slack:C1:1.0" ], via: "webhook")
+    TriggerEventClaim.claim!(condition, [ "slack:C1:2.0" ], via: "poll")
+
+    with_slack_ingest_env(mode: "webhook_with_poll_fallback", secret: "s3cret") do
+      get health_dashboard_url
+    end
+    assert_response :success
+
+    assert_select "h4 span", text: "webhook_with_poll_fallback"
+    assert_select "dd.text-yellow-600", text: "1"
+    assert_match "slack: the poller claimed 1 of 2 trigger event(s) in the last 24h", response.body
+  end
+
+  def with_slack_ingest_env(mode:, secret:)
+    keys = %w[SLACK_TRIGGER_INGEST_MODE SLACK_SIGNING_SECRET]
+    saved = keys.to_h { |key| [ key, ENV[key] ] }
+    { "SLACK_TRIGGER_INGEST_MODE" => mode, "SLACK_SIGNING_SECRET" => secret }.each do |key, value|
+      value.nil? ? ENV.delete(key) : ENV[key] = value
+    end
+    yield
+  ensure
+    saved.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
   end
 
   # UI/MCP parity for cron freshness: `get_system_health` names the keys that stopped
