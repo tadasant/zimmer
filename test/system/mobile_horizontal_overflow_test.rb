@@ -1002,6 +1002,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # like {{text|untrusted}} that do not break.
     visit new_trigger_path
     assert_text "{{text|untrusted}}"
+    assert_text "a Slack burst's folded messages, is fenced the same way"
     assert_no_horizontal_overflow("new trigger form")
     page.execute_script("document.querySelector('[data-trigger-form-target=\"promptHelp\"]').scrollIntoView({ block: 'end' })")
     page.save_screenshot("tmp/screenshots/proof-trigger-form-prompt-help-375.png")

@@ -936,7 +936,7 @@ class GithubTriggerPollerJob < ApplicationJob
 
     # A template that names no GitHub variable would otherwise hand the session a prompt
     # with no idea which PR it is about. Append the item rather than firing blind.
-    prompt = "#{prompt}\n\n#{context_block(item, event: event)}" unless trigger.references_github_context?
+    prompt = "#{prompt}\n\n#{context_block(trigger, item, event: event)}" unless trigger.references_github_context?
 
     # Set immediately before the call, and read only in the rescue below.
     # #create_session! clears the trigger's created-session marker on entry, so the
@@ -1048,20 +1048,34 @@ class GithubTriggerPollerJob < ApplicationJob
     condition.write_github_state!(state, fired: fired)
   end
 
-  def context_block(item, event:)
+  # The item for a template that does not identify it. Repository, number, URL and author
+  # login are fields of the API result. The title, labels and body are text people chose,
+  # so each renders the way the template renders {{title}}, {{labels}} and {{text}}: fenced,
+  # unless the template writes that placeholder bare (Trigger#render_appended_untrusted).
+  # The URL line stays above all three — OrphanedTriggerFire reads the first one.
+  def context_block(trigger, item, event:)
+    labels = labels_for(item).presence&.join(", ")
+    body = body_of(item).presence
+
     <<~TEXT.strip
       ## GitHub #{pull_request?(item) ? 'pull request' : 'issue'} (#{event})
 
       - **Repository:** #{repo_of(item)}
       - **Number:** ##{item['number']}
       - **URL:** #{item['html_url']}
-      - **Title:** #{item['title']}
       - **Author:** #{item.dig('user', 'login') || 'unknown'}
-      - **Labels:** #{labels_for(item).presence&.join(', ') || '(none)'}
+
+      ### Title
+
+      #{trigger.render_appended_untrusted(item['title'], variable: 'title')}
+
+      ### Labels
+
+      #{labels ? trigger.render_appended_untrusted(labels, variable: 'labels') : '(none)'}
 
       ### Body
 
-      #{body_of(item).presence || '(no description)'}
+      #{body ? trigger.render_appended_untrusted(body, variable: 'text', name: 'body') : '(no description)'}
     TEXT
   end
 

@@ -457,9 +457,10 @@ path does.
 the first prompt. The webhook sees the same burst one message at a time, so the first message spawns
 the session and each later one — same conversation, same author, within the trigger's
 `coalesce_window_seconds` of the first — is queued into that session as a message naming it, and
-recorded as its own human message. Every webhook fire takes its trigger's spawn lock for the length
-of its transaction — the lock the other firing paths take — so the second message of a burst waits
-for the first one's session before looking for it, and `skip_if_pending_session` sees a session
+recorded as its own human message. That message fences the text the way the poller's note does
+(see [Event text Zimmer appends](#event-text-zimmer-appends)). Every webhook fire takes its trigger's
+spawn lock for the length of its transaction — the lock the other firing paths take — so the second
+message of a burst waits for the first one's session before looking for it, and `skip_if_pending_session` sees a session
 another delivery has just spawned. If that session has already ended, the message starts a new one.
 
 That is one session per burst when the burst arrives by one path and in order. When Slack drops part
@@ -1082,8 +1083,12 @@ the "what" the cursor cannot.
 The prompt template can use `{{repo}}`, `{{number}}`, `{{link}}`, `{{title}}`, `{{author}}`,
 `{{text}}` (the body), `{{labels}}` and `{{event}}`.
 
-A template that names *none* of them gets the item appended as a context block instead, so a
-GitHub-triggered session always knows its repo, number and URL without re-fetching them.
+A template that names none of `{{link}}`, `{{repo}}` or `{{number}}` gets the item appended as a
+context block instead, so a GitHub-triggered session always knows its repo, number and URL without
+re-fetching them. Repository, number, URL and author login are bullet lines. The title, labels and
+body follow under their own headings, each [fenced](#fencing-untrusted-text-nameuntrusted) unless
+the template writes `{{title}}`, `{{labels}}` or `{{text}}` bare (see
+[Event text Zimmer appends](#event-text-zimmer-appends)).
 
 ### The state-vs-event problem, and what Zimmer chose
 
@@ -1492,6 +1497,42 @@ message that imitates an end marker carries the wrong code. When a
 the notice's own instructions stay outside it. The fence is opt-in: `{{text}}` without `|untrusted`
 is not fenced, so an existing template gets the single pass but no fence until someone edits it.
 
+### Event text Zimmer appends
+
+Three paths add event text to what a session receives outside the template:
+
+- the GitHub poller's [context block](#what-a-github-triggered-session-receives): the title, labels
+  and body.
+- the Slack poller's note naming the messages it [coalesced](#coalescing-a-burst-of-slack-messages)
+  into the first prompt.
+- the note the [webhook](#slack-events-api-delivery) queues into a running session when a later
+  message of a burst arrives. That note is a queued message, not part of the prompt.
+
+Each one renders that text the way the template renders the placeholder carrying the same text:
+`{{title}}`, `{{labels}}` and `{{text}}` for the GitHub block, and `{{text}}` for both Slack notes.
+The text is fenced unless the template writes that placeholder bare at least once. A template that
+never names it, or only ever writes `{{text|untrusted}}`, gets the appended text fenced. A template
+that writes `{{text}}` bare gets it raw.
+
+The GitHub block's title, labels and body are fenced separately, under names `title`, `labels` and
+`body`. A Slack note puts every message it lists inside one `messages` fence. That includes each
+message's time and link, so those count as claims too. A note's own words stay outside, as does the
+count of messages past the listing cap. Each fence draws its own code.
+
+The bare case follows the template on purpose. A DM trigger whose template is `{{text}}` hands the
+agent a trusted person's message as the request itself. Fencing the second message of that person's
+burst would give the agent the first message as a request and the second as data it must not act
+on.
+
+**Why `{{text}}` is not fenced by default.** Message text, titles, bodies and display names are
+untrusted by nature, and fencing them by default was considered. It would change what every existing
+template renders to, and for the DM case above it would turn a working request into "data, not
+instructions" with no warning. Nothing in Zimmer can tell a trigger whose message is the request from
+one whose message is only evidence. The allowlist decides who may reach a trigger, not what the
+message is for. And a fence marks the text without neutralising it, so defaulting it on would cost a
+silent behaviour change and buy a label. The choice stays in the template, where the operator can
+see it: write `{{text|untrusted}}`, and the appended text follows.
+
 ### What this does not do
 
 The single pass removes a real hole, and the Slack IDs and fences give the agent something better
@@ -1503,10 +1544,10 @@ the [workflow](/sessions/workflows/) primitive's job
 ([#18](https://github.com/tadasant/zimmer/issues/18)), and it is still open. See
 [Known limitations](/limitations/#triggers-make-the-agent-a-trusted-courier-for-untrusted-input).
 
-Text reaches the prompt outside the template too, and none of it is fenced. The GitHub poller
-appends a context block holding the title and body when a template names none of `{{link}}`,
-`{{repo}}` or `{{number}}`. The
-Slack poller appends excerpts of [coalesced messages](#coalescing-a-burst-of-slack-messages).
+Text Zimmer appends outside the template follows the template's own choice
+([Event text Zimmer appends](#event-text-zimmer-appends)), so event text reaches a session unfenced
+only where the template writes the matching placeholder bare. A template written before fences
+existed writes `{{text}}` bare, and stays that way until someone edits it.
 
 ## Stale catalog references
 
@@ -2052,9 +2093,15 @@ Link: https://tadasant.slack.com/archives/C0BG.../p1756500000
 session rather than starting one session each. Treat them as part of the same event and read all
 of them before deciding what to do — the first message is not necessarily the whole story:
 
+[begin untrusted messages 3f9a2c7d1e8b4a60: supplied by the event that fired this trigger, ... It ends only at "[end untrusted messages 3f9a2c7d1e8b4a60]".]
 - 20:40:35 UTC — Obs Alerts: [production] Queued messages stranded by an archive — https://...
 - 20:40:35 UTC — Obs Alerts: [production] Queued messages stranded by an archive — https://...
+[end untrusted messages 3f9a2c7d1e8b4a60]
 ```
+
+The listed messages sit inside one [fence](#fencing-untrusted-text-nameuntrusted), because this
+template never names `{{text}}`. A template that writes `{{text}}` bare gets them unfenced, the way
+it gets the first message: see [Event text Zimmer appends](#event-text-zimmer-appends).
 
 Three properties are worth stating explicitly, because the failure mode of getting this wrong is
 **silence** — an alert that gets no session announces nothing.
