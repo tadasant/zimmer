@@ -40,7 +40,7 @@ async function arm(tab, { pin }) {
     await chrome.tabs.sendMessage(tab.id, { type: START_MESSAGE, pin });
   } catch (error) {
     // chrome:// pages, the Web Store, and PDF viewers refuse injection. There
-    // is no page to pin on, so there is nothing to tell the user in-page.
+    // is no page to draw on, so there is nothing to tell the user in-page.
     console.warn("[zimmer] cannot start on this tab:", error?.message || error);
   }
 }

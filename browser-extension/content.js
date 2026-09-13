@@ -308,9 +308,9 @@
     Object.assign(state, { host: null, root: null, overlay: null, banner: null, pinEl: null, composer: null, pin: null, sending: false });
   }
 
-  // A toast's own timer must only ever remove the toast: re-arming during
-  // those seconds mounts a new overlay that the timer has no business tearing
-  // down.
+  // A toast's own timer must only ever remove the toast: starting again during
+  // those seconds mounts a new overlay or composer that the timer has no
+  // business tearing down.
   function clearToast() {
     if (state.toastTimer) clearTimeout(state.toastTimer);
     state.toastTimer = null;
@@ -399,13 +399,6 @@
       : "What did you notice? An agent session picks this up with the page.";
     textarea.value = state.draft;
     textarea.addEventListener("input", () => { state.draft = textarea.value; });
-    // Keystrokes stay in the composer. Past the shadow root they are retargeted
-    // to the host element, which a page's single-key shortcuts do not take for a
-    // text field: on GitHub, every `s` typed here focused its search instead.
-    // Esc and Enter still reach `onKeydown`, which listens in the capture phase.
-    for (const type of ["keydown", "keypress", "keyup"]) {
-      textarea.addEventListener(type, (event) => event.stopPropagation());
-    }
     textarea.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
         event.preventDefault();
@@ -421,6 +414,15 @@
     actions.append(sendButton);
     composer.append(actions);
 
+    // Keystrokes stay in the composer. Past the shadow root they are retargeted
+    // to the host element, which a page's single-key shortcuts do not take for a
+    // text field: on GitHub, every `s` typed here focused its search instead.
+    // Listeners on the composer's own elements run first, and Esc and Enter
+    // still reach `onKeydown`, which listens in the capture phase.
+    for (const type of ["keydown", "keypress", "keyup"]) {
+      composer.addEventListener(type, (event) => event.stopPropagation());
+    }
+
     state.root.appendChild(composer);
     state.composer = composer;
     textarea.focus();
@@ -429,6 +431,9 @@
   // From the composer back to the crosshair. The draft lives in `state.draft`,
   // so it comes back with the composer the pin opens.
   function repin() {
+    // Mid-send the composer stays: its reply is the only word on whether the
+    // message arrived.
+    if (state.sending) return;
     state.composer?.remove();
     state.composer = null;
     state.pinEl?.remove();
@@ -483,11 +488,15 @@
       return;
     }
 
+    // Esc may have torn everything down while the request was out. It arrived
+    // all the same, so the toast still says so — a silent send reads as a lost
+    // one, and invites a second.
     state.draft = "";
-    state.composer.remove();
+    state.composer?.remove();
     state.composer = null;
     state.pinEl?.remove();
     state.pinEl = null;
+    mount();
     toast(result.sessionUrl);
   }
 
@@ -511,7 +520,7 @@
   }
 
   // The toast was the last thing showing, so its end is the end — unless the
-  // human re-armed in the meantime, in which case only the toast goes.
+  // human started again in the meantime, in which case only the toast goes.
   function finish() {
     if (state.overlay || state.composer) {
       clearToast();
@@ -521,8 +530,8 @@
   }
 
   // Esc. The draft survives: Esc is also how the page's own dialogs close, and
-  // a paragraph of feedback is not something to lose to a reflex. Re-arming
-  // brings it back; sending clears it.
+  // a paragraph of feedback is not something to lose to a reflex. Starting
+  // again brings it back; sending clears it.
   function cancel() {
     unmount();
   }

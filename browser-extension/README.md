@@ -48,5 +48,5 @@ sessions and read nothing back. Revoke it on the same settings page.
 | --- | --- |
 | `manifest.json` | MV3. `activeTab` + `scripting` for the current tab on click; `storage` for the two settings; host permission for the Zimmer origin only, requested at save time. |
 | `background.js` | The service worker. The only part that talks to Zimmer — an extension's own fetch to a host it has permission for is exempt from CORS, so Zimmer needs none. |
-| `content.js` | The pin overlay and the composer, in a shadow root. Injected on click, once per page. |
+| `content.js` | The pin overlay and the composer, in a shadow root. Injected on the icon or a shortcut, once per page. |
 | `options.html`, `options.js`, `settings.js` | The options page and the settings shape it shares with the worker. |

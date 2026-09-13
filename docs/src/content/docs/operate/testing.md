@@ -92,8 +92,9 @@ Tracked in [#162](https://github.com/tadasant/zimmer/issues/162).
 
 `browser_extension_test.js` is the one proof of the
 [browser extension](/extend/browser-extension/) as a whole: it loads the real unpacked extension
-into a full Chromium (`channel: 'chromium'` — the headless shell cannot load extensions), arms it
-on a real page, drops a pin, sends, and reads the session back. It needs a running server and a
+into a full Chromium (`channel: 'chromium'` — the headless shell cannot load extensions), starts it
+on a real page both ways (straight to the composer, and through the crosshair to a pin), sends, and
+reads the session back. It needs a running server and a
 Quick Router key: `BASE_URL=http://localhost:3000 QUICK_ROUTER_KEY=zmr_… node test/e2e/browser_extension_test.js`.
 
 ## The migrations are replayed, in their own job
