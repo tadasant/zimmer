@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 # Phase 3, the last, of moving `sessions`' five queryable `json` columns to
-# `jsonb` (#847). `20260905193000_add_jsonb_shadow_columns_to_sessions` added the
+# `jsonb` (#847) — and phase 2 of the two-phase drop #1179 started, which is
+# what the annotation below counts. `20260905193000_add_jsonb_shadow_columns_to_sessions` added the
 # shadows and `20260912140000_swap_sessions_jsonb_shadows_into_place` renamed
 # them over the originals, leaving two dead names per conversion:
 #
@@ -15,7 +16,7 @@
 # catalog-only: `DROP COLUMN` marks the attribute dropped and rewrites nothing.
 #
 # `transcript` stays `json` — that is the intended end state, not unfinished
-# work. The reasoning is in the phase-1 migration's comment.
+# work. The reasoning is in `20260905193000_add_jsonb_shadow_columns_to_sessions`.
 #
 # `down` restores the column shapes, not the values: the legacy columns come back
 # empty. The values they held were the pre-swap copy of what `config`,

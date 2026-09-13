@@ -268,15 +268,15 @@ Both the dashboard and `quick_search_sessions` match the same way, on the title 
 as well as on the transcript.
 
 **The JSON columns are matched in Postgres's canonical spelling, and both spellings of a query
-work.** `metadata` is a `json` column, which stores whatever bytes the writer produced. Zimmer has
-two writers for it — an ordinary attribute write, which serialises `{"agent_root_key":"zimmer"}`,
-and the atomic `merge_metadata!` UPDATE, which serialises `{"agent_root_key": "zimmer"}` — so until
-[#930](https://github.com/tadasant/zimmer/issues/930) a query spanning a key's colon found a session
-or did not depending on which writer had touched the row last. The same query, seconds apart,
-returned different sets. Both columns are now read through `::jsonb::text`, which renders one
-canonical form whoever wrote the row, and the query is tried in both spellings: `"key":"value"` and
-`"key": "value"` find the same sessions. A zero result is no longer a coin flip on which writer touched
-the row last.
+work.** `metadata` is a `jsonb` column, so Postgres stores one normalised form of the document and
+renders it back the same way, however the writer spelled it. It was `json` until
+[#847](https://github.com/tadasant/zimmer/issues/847), which kept whatever bytes the writer produced:
+an ordinary attribute write serialised `{"agent_root_key":"zimmer"}` and the atomic
+`merge_metadata!` UPDATE serialised `{"agent_root_key": "zimmer"}`, so a query spanning a key's
+colon found a session or did not depending on which writer had touched the row last
+([#930](https://github.com/tadasant/zimmer/issues/930)). Both columns are read through
+`::jsonb::text`, which renders that canonical form, and the query is tried in both spellings:
+`"key":"value"` and `"key": "value"` find the same sessions.
 
 One thing canonical form costs you: `jsonb` orders an object's keys by length then bytewise, not in the
 order they were written, so a fragment spanning the comma **between** two keys only matches if you spelled
