@@ -205,10 +205,12 @@ class ApplicationHelperTest < ActionView::TestCase
   test "inline_markdown lets no raw HTML or script URL through" do
     result = inline_markdown('[bad](javascript:alert(1)) <script>alert(2)</script> <a href="javascript:alert(3)">x</a> <img src=x onerror=alert(4)>')
 
-    assert_not_includes result, "<script"
-    assert_not_includes result, "<img"
-    assert_no_match(/href="javascript:/i, result)
-    assert_no_match(/<a /, result)
+    # Parsed rather than string-matched: the escaped input still spells
+    # `href="javascript:` as TEXT, which is harmless — what must not exist is an
+    # element carrying it.
+    fragment = Nokogiri::HTML5.fragment(result)
+    assert_empty fragment.css("a, script, img")
+    assert_includes fragment.text, "<script>alert(2)</script>"
   end
 
   test "inline_markdown keeps quotation marks the quote extension wraps" do
