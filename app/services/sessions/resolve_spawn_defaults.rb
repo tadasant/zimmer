@@ -22,9 +22,8 @@ module Sessions
   # Session.create_from_agent_root! (the quick prompt, the chat bubble, every
   # trigger fire). Each of those keeps only its own concerns: permitting params,
   # coercing arguments, and deciding what "the caller named this" means on its
-  # surface. The four used to carry their own copies, and three closed bugs
-  # (zimmer#310, #331, #81) were each one copy disagreeing with the others
-  # (zimmer#454). `test/integration/spawn_defaults_conformance_test.rb` pins
+  # surface. Separate copies are how three closed bugs happened (zimmer#310,
+  # #331, #81): each was one copy disagreeing with the others (zimmer#454). `test/integration/spawn_defaults_conformance_test.rb` pins
   # that the four agree.
   class ResolveSpawnDefaults
     # @param session [Session] an unsaved session already carrying whatever the

@@ -3150,7 +3150,8 @@ class SessionsController < ApplicationController
   # Sessions::ResolveSpawnDefaults, the resolution every spawn surface shares.
   #
   # The root is the one the form names. A post that names none falls back to the
-  # root whose url is the posted git_root, and that fallback is a root like any
+  # root whose url is the posted git_root (and whose subdirectory is the posted
+  # one, when a subdirectory was posted), and that fallback is a root like any
   # other — its defaults apply and its key is stamped.
   #
   # What counts as "named" here, and why it differs from REST and MCP:
@@ -3168,7 +3169,14 @@ class SessionsController < ApplicationController
     agent_root = if params[:agent_root_name].present?
       AgentRootsConfig.find(params[:agent_root_name])
     elsif @session.git_root.present?
-      AgentRootsConfig.all.find { |ar| ar.url == @session.git_root }
+      # The key this stamps outranks every later URL lookup, so where roots share
+      # a repo the posted subdirectory has to pick among them.
+      same_repo = AgentRootsConfig.all.select { |ar| ar.url == @session.git_root }
+      if @session.subdirectory.present?
+        same_repo.find { |ar| ar.subdirectory.to_s == @session.subdirectory }
+      else
+        same_repo.first
+      end
     end
 
     requested_runtime = params[:agent_runtime].presence
@@ -3179,7 +3187,9 @@ class SessionsController < ApplicationController
       @session,
       agent_root_name: agent_root&.name,
       explicit_runtime: requested_runtime.present?,
-      explicit_branch: @session.branch.present?,
+      # The param, not the attribute: `sessions.branch` carries a column default,
+      # so the attribute is present even on a post that named no branch.
+      explicit_branch: session_params[:branch].present?,
       explicit_lists: { mcp_servers: session_params.key?(:mcp_servers), skills: true, hooks: true, plugins: true }
     )
 

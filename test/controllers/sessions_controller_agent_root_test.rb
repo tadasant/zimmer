@@ -100,8 +100,7 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
   end
 
   # The URL fallback resolves a root like any other, so it records which one
-  # (zimmer#454) — before, it filled in the branch and subdirectory and never
-  # stamped the key.
+  # (zimmer#454).
   test "the URL fallback stamps the root it resolved as agent_root_key" do
     stub_catalog_with(scoped_root("scoped-app", "apps/scoped-app"))
 
@@ -110,6 +109,32 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
     }
 
     assert_equal "scoped-app", Session.last.metadata["agent_root_key"]
+  end
+
+  # The stamped key outranks every later URL lookup, so two roots sharing a repo
+  # have to be told apart by the subdirectory posted with it.
+  test "the URL fallback picks the root whose subdirectory was posted" do
+    stub_catalog_with(scoped_root("app-a", "apps/a"), scoped_root("app-b", "apps/b"))
+
+    post sessions_url, params: {
+      session: { prompt: "Test prompt", git_root: MONOREPO_URL, subdirectory: "apps/b", branch: "", mcp_servers: [] }
+    }
+
+    assert_equal "app-b", Session.last.metadata["agent_root_key"]
+    assert_equal "apps/b", Session.last.subdirectory
+  end
+
+  # "Named a branch" is read off the param, not the attribute, which the column
+  # default makes present on every post.
+  test "a post with no branch key takes the root's default_branch" do
+    stub_catalog_with(scoped_root("scoped-app", "apps/scoped-app", default_branch: "develop"))
+
+    post sessions_url, params: {
+      session: { prompt: "Test prompt", git_root: MONOREPO_URL, mcp_servers: [] },
+      agent_root_name: "scoped-app"
+    }
+
+    assert_equal "develop", Session.last.branch
   end
 
   test "should handle custom URL without agent_root_name" do
@@ -242,7 +267,7 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
     assert_equal "claude_code", Session.last.agent_runtime
   end
 
-  test "create treats an unregistered agent_runtime param as unnamed and takes the root's runtime" do
+  test "create falls back to default runtime for an unregistered agent_runtime param" do
     post sessions_url, params: {
       session: {
         prompt: "Test prompt",
@@ -254,6 +279,51 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
     }
 
     assert_equal "claude_code", Session.last.agent_runtime
+  end
+
+  # An unregistered runtime is treated as unnamed, so it falls through to the
+  # root's runtime — codex here, which the hardcoded default would never give.
+  test "create treats an unregistered agent_runtime param as unnamed and takes the root's runtime" do
+    codex_root = AgentRootsConfig::AgentRoot.new(
+      "codex-root", { "url" => MONOREPO_URL, "default_branch" => "main", "default_runtime" => "codex" }
+    )
+    stub_catalog_with(codex_root)
+
+    post sessions_url, params: {
+      session: { prompt: "Test prompt", git_root: MONOREPO_URL, mcp_servers: [] },
+      agent_root_name: "codex-root",
+      agent_runtime: "aider"
+    }
+
+    assert_equal "codex", Session.last.agent_runtime
+    assert ModelCatalog.valid_model?("codex", Session.last.config["model"])
+  end
+
+  # The form pre-fills the skills picker with the root's defaults, and a picker
+  # cleared to nothing submits no key. That is a human removing them, so the
+  # session gets none rather than the defaults back.
+  test "a cleared skills picker gives the session no skills, not the root's defaults" do
+    root = AgentRootsConfig.find!("zimmer")
+    assert_predicate root.default_skills, :present?, "the root needs defaults for this to prove anything"
+
+    post sessions_url, params: {
+      session: { prompt: "Test prompt", git_root: root.url, branch: "", mcp_servers: [] },
+      agent_root_name: "zimmer"
+    }
+
+    assert_equal [], Session.last.catalog_skills
+  end
+
+  test "a known root with a blank git_root takes the root's url" do
+    root = AgentRootsConfig.find!("zimmer")
+
+    post sessions_url, params: {
+      session: { prompt: "Test prompt", git_root: "", branch: "", mcp_servers: [] },
+      agent_root_name: "zimmer"
+    }
+
+    assert_redirected_to session_path(Session.last)
+    assert_equal root.url, Session.last.git_root
   end
 
   test "create persists a registered agent_runtime param" do
