@@ -11650,6 +11650,42 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "handle_exit must receive the session's recorded working directory, not nil"
   end
 
+  # A quota-wall park (ProviderQuotaWallPark — a runtime with no pool) is not a
+  # completed turn: the job must pause it into its re-check sleep, not log a
+  # successful turn and hand the session a queued message that would re-spawn it
+  # straight into the same wall.
+  test "a provider quota-wall park pauses into its sleep instead of handing off to a queued message" do
+    clone_path = "/tmp/test-clone-quota-wall"
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      metadata: { "process_pid" => 12345, "clone_path" => clone_path }
+    )
+
+    job = build_resume_monitoring_job(clone_path: clone_path, pid: 12345, exit_status: MockProcessManager::MockStatus.new(0))
+    job.define_singleton_method(:create_lifecycle_manager) do |session, log_buffer|
+      manager = ProcessLifecycleManager.new(
+        session: session, cli_adapter: cli_adapter_for(session), process_manager: @process_manager,
+        log_buffer: log_buffer, file_system: @file_system
+      )
+      manager.define_singleton_method(:handle_exit) do |_status, working_dir:|
+        outcome = ProviderQuotaWallPark.new(session, log_buffer: log_buffer).park!(message: "402: Insufficient credits.")
+        ProcessLifecycleManager::ExitDecision.new(action: :needs_input, error_message: outcome.error_message)
+      end
+      manager
+    end
+    job.expects(:handed_off_to_enqueued_message?).never
+
+    perform_with_stubs(job: job) { job.perform(@session.id, nil, resume_monitoring: true) }
+
+    @session.reload
+    assert_equal "waiting", @session.status, "the park must sleep until its re-check"
+    assert_match(/Provider quota wall — session parked/, @session.metadata["exit_status"])
+    logs = @session.logs.map(&:content)
+    assert logs.any? { |l| l.start_with?("Session paused: Provider quota wall") }
+    assert logs.none? { |l| l.include?("CLI completed turn successfully") }
+  end
+
   test "resume_monitoring falls back to clone_path when metadata has no working_directory" do
     session_uuid = SecureRandom.uuid
     clone_path = "/tmp/test-clone-183-fallback"

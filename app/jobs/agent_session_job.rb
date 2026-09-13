@@ -2238,13 +2238,15 @@ class AgentSessionJob < ApplicationJob
               # Continue the loop with the new process
               next
             when :needs_input
-              # A parked exit (AuthOutageParkService) is not a completed turn. It
-              # must reach pause!, because that is where the park's pending_sleep
-              # is consumed and the session actually goes dormant — and handing
-              # off to a queued message instead would re-spawn straight into the
-              # same quota or auth wall. Read the park marker rather than sniffing
-              # the error string, so every park routes the same way.
-              parked = session.reload.metadata&.dig("auth_outage_reason").present?
+              # A parked exit (AuthOutageParkService, or ProviderQuotaWallPark for
+              # a runtime with no pool) is not a completed turn. It must reach
+              # pause!, because that is where the park's pending_sleep is consumed
+              # and the session actually goes dormant — and handing off to a
+              # queued message instead would re-spawn straight into the same quota
+              # or auth wall. Read the park markers rather than sniffing the error
+              # string, so every park routes the same way.
+              parked = session.reload.metadata&.dig("auth_outage_reason").present? ||
+                ProviderQuotaWallPark.parked?(session)
               if parked
                 log_buffer.add(
                   "Session paused: #{exit_decision.error_message}",

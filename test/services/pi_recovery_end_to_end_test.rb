@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "ostruct"
 
 # A Pi session that hits each provider failure, driven through the same entry
 # point production uses — ProcessLifecycleManager#handle_exit, with Pi's real
@@ -104,15 +105,14 @@ class PiRecoveryEndToEndTest < ActiveJob::TestCase
     assert_match(/Rate limit detected - attempting auto-retry 1\/6/, session_log)
   end
 
-  # There is no Pi account pool to rotate into and no Pi quota snapshot to wake
-  # on, so a credit exhaustion takes the same bounded backoff rather than a park
-  # nothing would ever end.
-  test "an insufficient-quota 429 is retried rather than parked on a quota that nothing tracks" do
-    decision = pi_turn_ends_with(:insufficient_quota_429)
+  # OpenRouter's own rate-limit wording, which Pi itself retried four times.
+  test "an OpenRouter rate-limit 429 still takes the ordinary backoff, not a park" do
+    decision = pi_turn_ends_with(:rate_limit_429_openrouter)
 
     assert_equal :continue, decision.action
-    assert_not @session.reload.metadata["pending_sleep"]
-    assert_nil @session.metadata["last_quota_limit_at"]
+    assert_equal 1, ApiErrorRetryService::BUDGET.count_for(@session.reload)
+    assert_nil ProviderQuotaWallPark.streak(@session)
+    assert_equal 0, wake_triggers.count
   end
 
   test "a timeout, a dropped stream and a refused connection are retried like a 5xx" do
@@ -176,17 +176,133 @@ class PiRecoveryEndToEndTest < ActiveJob::TestCase
     assert_empty @adapter.resumed_sessions
   end
 
-  # An exhausted balance does not refill on a backoff, so six attempts would
-  # spend the budget to reach the same end more slowly.
-  test "a 402 fails rather than burning the retry budget on a balance that will not refill" do
+  # --- quota walls: budget pacing, not failure ---------------------------------
+
+  # Pi has no pool to rotate through and no snapshot to wake on, so the wall is
+  # parked on a timed re-check: the session sleeps, and a one-time wake resumes
+  # it. Nothing fails, no retry budget is spent, and nothing pages.
+  test "a 402 parks the session on a timed re-check instead of failing it" do
     UnclassifiedFailureReporter.expects(:report).never
+
+    freeze_time do
+      decision = pi_turn_ends_with(:insufficient_credits_402)
+
+      assert_equal :needs_input, decision.action
+      assert_match(/Provider quota wall — session parked, re-checking at #{15.minutes.from_now.utc.iso8601}/, decision.error_message)
+      assert_match(/Insufficient credits/, decision.error_message)
+
+      @session.reload
+      assert_equal 0, ApiErrorRetryService::BUDGET.count_for(@session), "a quota wall must not spend the API-error budget"
+      assert_empty @adapter.resumed_sessions, "nothing resumes until the re-check"
+      assert_equal 0, AccountRotationEvent.where(runtime: "pi").count
+      assert_nil @session.metadata["auth_outage_reason"], "an auth-outage park would wait on a pool Pi does not have"
+      assert @session.metadata["pending_sleep"], "the wake's pending sleep carries the session to waiting"
+
+      streak = ProviderQuotaWallPark.streak(@session)
+      assert_equal 1, streak["parks"]
+      assert_equal 15.minutes.from_now.utc.iso8601, streak["next_check_at"]
+
+      trigger = wake_triggers.sole
+      assert_equal 15.minutes.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
+        trigger.trigger_conditions.first.configuration["scheduled_at"]
+      assert AutomatedPrompts.system_recovery?(trigger.prompt_template)
+
+      assert_match(/Provider quota wall: .* No retry budget spent\. Parked — Zimmer re-checks at/, session_log)
+      assert_enqueued_jobs 1, only: SendPushNotificationJob
+    end
+  end
+
+  test "a quota-worded 429, in either dialect, parks the same way" do
+    UnclassifiedFailureReporter.expects(:report).never
+
+    %i[insufficient_quota_429 quota_exceeded_429_gateway].each do |fixture|
+      setup_fresh_session
+      decision = pi_turn_ends_with(fixture)
+
+      assert_equal :needs_input, decision.action, fixture.to_s
+      assert_equal 0, ApiErrorRetryService::BUDGET.count_for(@session.reload), fixture.to_s
+      assert_equal 1, ProviderQuotaWallPark.streak(@session)["parks"], fixture.to_s
+      assert_equal 1, wake_triggers.count, fixture.to_s
+    end
+  end
+
+  # The whole loop, with nothing but the process and the clock stubbed: the park
+  # comes to rest in `waiting`, the scheduler fires the wake on time, and the wake
+  # hands the session a recovery turn on its own session id.
+  test "the parked session sleeps, and the re-check wakes it without a human" do
+    AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-quota-wall"))
+
+    pi_turn_ends_with(:insufficient_credits_402)
+    @session.reload.pause!
+    assert @session.reload.waiting?, "the park must come to rest asleep, not in the human's queue"
+
+    travel_to(5.minutes.from_now) { ScheduleTriggerJob.perform_now }
+    assert_nil @session.reload.metadata["pending_follow_up_prompt"], "not before the re-check is due"
+
+    travel_to(16.minutes.from_now) { ScheduleTriggerJob.perform_now }
+    prompt = @session.reload.metadata["pending_follow_up_prompt"]
+    assert AutomatedPrompts.system_recovery?(prompt), "the re-check should have resumed the session"
+    assert_match(/provider quota-wall re-check \(check 1\)/, prompt)
+  end
+
+  # Each re-check that meets the wall again climbs the ladder. The human hears
+  # about the streak once, not on every rung.
+  test "a wall still standing at the re-check parks one rung higher, and notifies once" do
+    freeze_time do
+      pi_turn_ends_with(:insufficient_credits_402)
+
+      # The re-check's turn: Pi appends to the same file and meets the wall again.
+      @session.update!(status: :running)
+      append_pi_session(@file_system, @transcript, :quota_exceeded_429_gateway, @session)
+      decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: CLONE)
+
+      assert_equal :needs_input, decision.action
+      streak = ProviderQuotaWallPark.streak(@session.reload)
+      assert_equal 2, streak["parks"]
+      assert_equal 30.minutes.from_now.utc.iso8601, streak["next_check_at"]
+      assert_equal 0, ApiErrorRetryService::BUDGET.count_for(@session)
+      assert_enqueued_jobs 1, only: SendPushNotificationJob
+    end
+  end
+
+  # A turn that gets through is the evidence the wall is gone, so the next wall
+  # starts the ladder again rather than inheriting the old streak's rung.
+  test "a turn that gets through after the top-up ends the streak" do
+    pi_turn_ends_with(:insufficient_credits_402)
+    assert ProviderQuotaWallPark.streak(@session.reload)
+
+    # The real binary's run: the same session id, a 402, then — balance restored —
+    # the recovery turn answered.
+    @session.update!(status: :running)
+    plant_pi_session(@file_system, @session, :insufficient_credits_402_then_topped_up, working_directory: CLONE)
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: CLONE)
+
+    assert_equal :needs_input, decision.action
+    assert_nil decision.error_message
+    assert_nil ProviderQuotaWallPark.streak(@session.reload)
+    assert_match(/Process exited successfully/, session_log)
+  end
+
+  # What bounds a balance nobody refills: past the ceiling Zimmer stops arming
+  # re-checks and leaves the session for a human, still without failing or paging.
+  test "a wall that outlasts the ceiling stops re-checking and leaves the session for a human" do
+    UnclassifiedFailureReporter.expects(:report).never
+    @session.merge_metadata!(ProviderQuotaWallPark::METADATA_KEY => {
+      "started_at" => (ProviderQuotaWallPark::CEILING - 1.hour).ago.utc.iso8601,
+      "parks" => 24,
+      "next_check_at" => Time.current.utc.iso8601,
+      "message" => "402: earlier"
+    })
 
     decision = pi_turn_ends_with(:insufficient_credits_402)
 
-    assert_equal :failed, decision.action
-    assert_match(/Insufficient credits/, decision.error_message)
-    assert_empty @adapter.resumed_sessions
-    assert_equal 0, ApiErrorRetryService::BUDGET.count_for(@session.reload)
+    assert_equal :needs_input, decision.action
+    assert_match(/still standing after 7 days — re-checks stopped/, decision.error_message)
+    assert_equal 0, wake_triggers.count, "no further re-check is armed"
+    assert_not @session.reload.metadata["pending_sleep"]
+    assert_nil ProviderQuotaWallPark.streak(@session), "a human's resume earns a fresh ladder"
+    assert_equal 0, ApiErrorRetryService::BUDGET.count_for(@session)
+    assert_match(/Zimmer has stopped re-checking/, session_log)
   end
 
   # Pi has no `/compact` and does not compact on a plain resume either, so there
@@ -294,6 +410,10 @@ class PiRecoveryEndToEndTest < ActiveJob::TestCase
   end
 
   private
+
+  def wake_triggers
+    Trigger.where(last_session_id: @session.id, reuse_session: true)
+  end
 
   # A second session in one test, for the cases that assert the same thing about
   # two fixtures without letting the first one's budget leak into the second.
