@@ -47,6 +47,13 @@ class RuntimeAuthProviderTest < ActiveSupport::TestCase
     assert_raises(NotImplementedError) { provider.inject_for_session!(nil) }
   end
 
+  # The pooled runtimes keep the quota path they always had: rotate, then park
+  # until the pool sweep sees an account come back.
+  test "a quota wall belongs to an account pool unless the provider says otherwise" do
+    assert ClaudeAuthProvider.new.pools_accounts?
+    assert CodexAuthProvider.new.pools_accounts?
+  end
+
   test "recover_needs_reauth defaults to false" do
     refute RuntimeAuthProvider.new.recover_needs_reauth(nil)
   end

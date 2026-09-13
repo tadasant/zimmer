@@ -393,6 +393,9 @@ class ProcessLifecycleManager
 
         add_log("Process exited successfully", level: "info")
 
+        # A turn that completed got past any quota wall this session was parked on.
+        ProviderQuotaWallPark.end_streak!(session)
+
         @mutex.synchronize { @state = :idle }
         return ExitDecision.new(action: :needs_input)
       end
@@ -1947,6 +1950,11 @@ class ProcessLifecycleManager
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :failed, error_message: "API error retry limit exhausted")
     when :quota_exceeded
+      # A runtime with no account pool (Pi) has nothing to rotate through and no
+      # account whose return could wake an auth-outage park, so its quota wall
+      # parks on a timed re-check ladder instead. See ProviderQuotaWallPark.
+      return park_on_provider_quota_wall(working_dir) unless runtime_pools_accounts?
+
       rotation_result = attempt_account_rotation(working_dir)
       return rotation_result if rotation_result
 
@@ -1966,6 +1974,30 @@ class ProcessLifecycleManager
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :failed, error_message: "API server error recovery failed")
     end
+  end
+
+  # Whether the session's runtime answers a quota wall with an account pool.
+  # Unreadable is answered as true — the pooled path this manager always took.
+  def runtime_pools_accounts?
+    RuntimeAuthProvider.for(@session&.agent_runtime).pools_accounts?
+  rescue => e
+    @logger.info("Could not read whether the runtime pools accounts", error: e.message)
+    true
+  end
+
+  # Park a quota wall on a runtime with no pool: schedule the next re-check and
+  # come to rest in needs_input, which the wake's pending sleep carries on to
+  # waiting. At the ladder's ceiling, or when no re-check could be scheduled, the
+  # same needs_input stands on its own and says so.
+  def park_on_provider_quota_wall(working_dir)
+    message = retry_strategy.terminal_api_error(working_dir: working_dir)&.text.presence ||
+      session.reload.metadata&.dig("last_quota_limit_message").presence ||
+      "(no error text)"
+
+    outcome = ProviderQuotaWallPark.new(session, log_buffer: @log_buffer, logger: @logger).park!(message: message)
+
+    @mutex.synchronize { @state = :idle }
+    ExitDecision.new(action: :needs_input, error_message: outcome.error_message)
   end
 
   # Handle a rotation-induced "Not logged in / Please run /login" auth failure by

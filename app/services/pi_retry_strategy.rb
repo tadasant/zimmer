@@ -57,7 +57,8 @@
 # evidence table; the short version is:
 #
 #   5xx, 429, 408, `terminated`, `Connection error.` -> api_error_for_retry?  (backoff retry)
-#   401, 402, 403                                    -> terminal, named, no page
+#   402, and a 429 worded as a quota wall            -> api_error_for_retry?  (quota: timed park)
+#   401, 403                                         -> terminal, named, no page
 #   any other 4xx (context length among them)        -> terminal, named, no page
 #   no status, and no transport wording it knows     -> unclassified: fail and page
 #
@@ -89,6 +90,9 @@
 #
 # None of this reads stderr. Pi writes nothing there for a provider failure.
 class PiRetryStrategy
+  # The PiTurnError kinds ApiErrorRetryService owns.
+  API_ERROR_KINDS = %i[retryable quota].freeze
+
   def initialize(cli_adapter:, session:, file_system:, process_manager:, rate_limit_tracker:, logger: Rails.logger)
     @cli_adapter = cli_adapter
     @session = session
@@ -125,15 +129,19 @@ class PiRetryStrategy
   end
 
   # A transient provider failure Pi's own retries did not outlast — a 5xx, a 429,
-  # or a request that never got a response. ApiErrorRetryService resumes the
-  # session with exponential backoff.
+  # or a request that never got a response — or a quota wall. The same kinds
+  # CodexRetryStrategy routes here, and for the same reason: ApiErrorRetryService
+  # resumes the first with exponential backoff and answers the second with
+  # :quota_exceeded without spending the budget. Pi has no pool to rotate through
+  # on that answer, so ProcessLifecycleManager parks it on ProviderQuotaWallPark's
+  # timed ladder instead.
   def api_error_for_retry?(working_dir:)
-    unhandled_kind(working_dir) == :retryable
+    API_ERROR_KINDS.include?(unhandled_kind(working_dir))
   end
 
   # Always false: Pi has no credential pool to recover into.
   #
-  # A 401, 402 or 403 IS detected — PiTurnError classifies it :auth_terminal — but
+  # A 401 or 403 IS detected — PiTurnError classifies it :auth_terminal — but
   # AuthRecoveryService recovers by rewriting the active account's credentials
   # and rotating to the next account, and PiAuthProvider pools none of either.
   # Answering true would park the session asking a human to re-authenticate a
