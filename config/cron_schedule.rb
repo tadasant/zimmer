@@ -284,6 +284,12 @@ module CronSchedule
       description: "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity",
       environments: %i[production staging development]
     },
+    inbound_event_retention: {
+      cron: "25 4 * * *", # Daily at 04:25
+      class: "InboundEventRetentionJob",
+      description: "Delete webhook deliveries and trigger event claims past their retention windows",
+      environments: %i[production staging development]
+    },
     empty_trash: {
       cron: "0 * * * *", # Every hour
       class: "EmptyTrashJob",

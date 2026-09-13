@@ -1270,6 +1270,11 @@ One endpoint lives outside `/api/v1`: `GET /api/secrets/keys` → `{secrets: [{n
 the secret-name autocomplete. It returns *names and descriptions*, never values, and it sits behind
 the same `X-API-Key` gate as everything else.
 
+`POST /webhooks/slack` is not part of this API and does not take an `X-API-Key`. It is Slack's Events
+API request URL, authenticated by Slack's own signature over the request body, and it answers 404
+unless Slack delivery is switched on — see
+[Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery).
+
 ### Transcript content is redacted
 
 Every endpoint that returns or accepts transcript content serves the **redacted** copy —

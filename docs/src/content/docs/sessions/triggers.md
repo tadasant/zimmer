@@ -397,6 +397,98 @@ know you have picked it up. The reaction is a commitment to reply — never add 
 before you have decided to. Then do the work and reply in the thread.
 ```
 
+#### Slack Events API delivery
+
+Slack triggers can also fire from Slack's Events API, which pushes each message to Zimmer as it is
+posted instead of leaving it for the next once-a-minute poll. It is off by default. Two settings turn
+it on, both read from encrypted credentials first and ENV second:
+
+| Setting | Value |
+| --- | --- |
+| `SLACK_TRIGGER_INGEST_MODE` | `poll` (the default, and what an unset or unrecognised value means) or `webhook_with_poll_fallback` |
+| `SLACK_SIGNING_SECRET` | the Slack app's signing secret, from *Basic Information → App Credentials* |
+
+With both set, `POST /webhooks/slack` is the request URL for the app's Event Subscriptions. With
+either missing it answers every request with a 404 and reads nothing. Production cannot receive
+deliveries yet, because nothing on the public internet can reach it — see
+[the limitation](/limitations/#github-is-polled-and-the-slack-webhook-has-no-public-way-in).
+
+A delivery goes through these checks in order, and nothing further down runs for a request that
+fails one:
+
+1. Refused with a 413 if the body is over a megabyte. A declared length over the cap is refused
+   unread, and no more than a megabyte and one byte of any body is ever read.
+2. `X-Slack-Signature` must be Slack's v0 HMAC-SHA256 of `v0:<timestamp>:<raw body>` under the
+   signing secret, compared in constant time, and `X-Slack-Request-Timestamp` must be within five
+   minutes of now. Anything else is a 401. This runs on the raw bytes, before any JSON parsing —
+   Rails is kept from parsing the body into params at all, so an unsigned body is never parsed or
+   logged.
+3. The body must be a JSON object, or it is a 400.
+4. `url_verification` (Slack's one-time check when the URL is saved) is answered by echoing its
+   `challenge`.
+5. An `event_callback` is recorded in `webhook_deliveries` under its `event_id`. A redelivery with an
+   `event_id` already recorded gets a 200 and nothing else, which is what makes Slack's retries safe.
+   A new one is handed to `SlackEventJob` on the `triggers` queue, and the request returns at once:
+   Slack wants an answer within three seconds, and firing a trigger makes Slack API calls.
+
+`SlackEventJob` fires the same conditions the poller would, with the same filters and through the
+same `Trigger#interpolate_prompt` and `Trigger#create_session!`, so a session a delivery fired looks
+exactly like one the poller fired. That includes the trusted identifiers a Slack fire fills in
+(`{{channel_id}}`, `{{message_ts}}`, `{{thread_ts}}`, `{{author_id}}`) and the `{{name|untrusted}}`
+fencing, so a template written for the poller behaves identically on a delivery. It serves `new_message` (a channel's top-level messages, or one
+thread's replies), `bot_mention` (one channel, every channel the bot is in, one thread, and DMs) and
+`dm_message`. It ignores edits, deletes and hidden events, and group DMs, none of which the poller
+fires on either. It never moves a condition's cursor, and it has no baseline to establish: a
+condition fires on the first message Slack delivers after it exists, where the poller's first poll
+only records where it is.
+
+Passive listening is not served. Those conditions stay on the poller in every mode, because whether
+a reply continues a conversation Zimmer is in depends on state only the poller learns.
+
+**The poller keeps running.** In `webhook_with_poll_fallback` it polls exactly as before, and it is
+what catches a message Slack never delivered. The two paths share `trigger_event_claims`: before
+either fires a condition for a message, it claims `slack:<channel>:<ts>` for that condition in the
+same transaction that creates the session. The first path to claim fires; the other finds the claim
+and fires nothing. A fire that raises rolls its claim back, so the other path can still fire the
+message. On `poll`, the poller claims nothing, takes no lock, and fires exactly as the poll-only
+path does.
+
+**Coalescing still gives one session per burst.** The poller folds a burst it finds in one pass into
+the first prompt. The webhook sees the same burst one message at a time, so the first message spawns
+the session and each later one — same conversation, same author, within the trigger's
+`coalesce_window_seconds` of the first — is queued into that session as a message naming it, and
+recorded as its own human message. Every webhook fire takes its trigger's spawn lock for the length
+of its transaction — the lock the other firing paths take — so the second message of a burst waits
+for the first one's session before looking for it, and `skip_if_pending_session` sees a session
+another delivery has just spawned. If that session has already ended, the message starts a new one.
+
+That is one session per burst when the burst arrives by one path and in order. When Slack drops part
+of a burst and the poller picks it up, or delivers a later message before an earlier one, the burst
+can become two sessions. No message is fired twice and none is lost either way.
+
+`webhook` on its own — the endpoint with no poller behind it — is not a mode, and a value of
+`webhook` is treated as `poll` with a warning. The decision on
+[#141](https://github.com/tadasant/zimmer/issues/141) is that the Events API replaces the poller and
+the poller's code and watermarks are deleted rather than left switched off, so the no-poll state is
+the deletion, not a setting.
+
+Setting it up on the Slack side: set both settings first, because Slack checks the request URL with
+a `url_verification` request when it is saved and a switched-off endpoint answers 404. Then enable
+*Event Subscriptions*, set the request URL to `https://<zimmer host>/webhooks/slack`, and subscribe
+to the bot events `message.channels`, `message.groups` and `message.im`. The `*:history` scopes they
+need are the ones the poller already uses. `app_mention` deliveries are acknowledged and ignored:
+they carry no channel type, so a mention in a group DM would be indistinguishable from one in a
+channel, and every mention also arrives as a `message` event.
+
+`InboundEventRetentionJob` deletes `webhook_deliveries` rows after 7 days and `trigger_event_claims`
+rows after 30 — far past the few minutes it takes the poller to see a message the webhook already
+fired.
+
+Both tables are listed read-only in `/supervisor`. `/supervisor/webhook_deliveries` is every delivery
+that verified, newest last, so it answers "is Slack delivering at all". `/supervisor/trigger_event_claims`
+records which path fired each message: while both paths run, a `poll` claim on a message Slack should
+have delivered is a delivery the webhook missed.
+
 ### `schedule`
 
 Either recurring (`interval` + `unit`, or `time` + `day_of_week` + `timezone`) or one-time
