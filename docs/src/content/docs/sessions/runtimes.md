@@ -33,13 +33,15 @@ Three places set it, most specific first:
 
 Below all three is the database column default, `claude_code`.
 
-Both spawn surfaces honor the chain in full, and they honor it through one implementation:
-`Sessions::ResolveSpawnDefaults` runs on every `POST /api/v1/sessions` and every MCP `start_session`,
-whether or not an `agent_root` was named. With no root there is simply no root tier and the chain
-falls through to Settings → Default runtime. Until
+Every spawn surface honors the chain in full, through one implementation:
+`Sessions::ResolveSpawnDefaults` runs on every `POST /api/v1/sessions`, every MCP `start_session`,
+every new-session form submit, and every `Session.create_from_agent_root!` (the quick prompt, the
+chat bubble, triggers), whether or not an `agent_root` was named. With no root there is simply no
+root tier and the chain falls through to Settings → Default runtime. Until
 [#265](https://github.com/tadasant/zimmer/issues/265) that was true of REST only — the MCP tool could
-not spawn without an `agent_root` at all — which is why the two now share the code rather than each
-carrying a copy.
+not spawn without an `agent_root` at all — and until [#454](https://github.com/tadasant/zimmer/issues/454)
+the form and `create_from_agent_root!` carried their own copies, which is why all four now share the
+code.
 
 ## Models
 

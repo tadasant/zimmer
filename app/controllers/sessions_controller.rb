@@ -366,56 +366,7 @@ class SessionsController < ApplicationController
     # Actually, AASM sets the initial state to :waiting by default, so we need to handle this correctly.
     @session.status = is_clone_only ? :needs_input : :waiting
 
-    # Set branch, subdirectory, and model from agent root's defaults if not provided
-    agent_root = nil
-    if @session.git_root.present? && params[:agent_root_name].present?
-      # Use the agent root name from the form to ensure we get the correct configuration
-      agent_root = AgentRootsConfig.find(params[:agent_root_name])
-      @session.branch = agent_root&.default_branch || "main" if @session.branch.blank?
-      @session.subdirectory = agent_root&.subdirectory if @session.subdirectory.blank? && agent_root&.subdirectory.present?
-      # The resolved root's name where the form named a root the catalog knows,
-      # so what is stored is the canonical token rather than whichever of its
-      # spellings was posted (zimmer#208). Falls back to the posted value when
-      # the catalog cannot resolve it, which is what the existing-row heal and
-      # the "not in catalog" rendering are for.
-      root_key = agent_root&.name || params[:agent_root_name]
-      @session.metadata = (@session.metadata || {}).merge("agent_root_key" => root_key)
-    elsif @session.git_root.present?
-      # Fallback to URL-based lookup if agent_root_name is not provided (backward compatibility)
-      agent_root = AgentRootsConfig.all.find { |ar| ar.url == @session.git_root }
-      @session.branch = agent_root&.default_branch || "main" if @session.branch.blank?
-      @session.subdirectory = agent_root&.subdirectory if @session.subdirectory.blank? && agent_root&.subdirectory.present?
-    end
-
-    # The global base defaults fill in only when neither the form nor the agent
-    # root supplies a value (agent_root&.default_runtime/default_model already
-    # fold the global in; this also covers the agent_root-less fallback path).
-    app_setting = AppSetting.current
-
-    # Resolve runtime: form selection wins, else the agent root's declared runtime,
-    # else the global base default, else the default runtime. resolve_key normalizes
-    # blank → default and raises on unregistered values, which we trap so a bad
-    # param can never 500 the form.
-    @session.agent_runtime = begin
-      RuntimeRegistry.resolve_key(params[:agent_runtime].presence || agent_root&.default_runtime || app_setting.default_runtime)
-    rescue KeyError
-      RuntimeRegistry::DEFAULT_RUNTIME
-    end
-
-    # Set model in config, constrained to the resolved runtime's catalog:
-    # form-selected model (if valid) → agent root default (if valid) → global base
-    # default for the runtime (falling back to the runtime's catalog default).
-    runtime = @session.agent_runtime
-    requested_model = params[:model].to_s.strip.first(100).presence
-    selected_model =
-      if requested_model && ModelCatalog.valid_model?(runtime, requested_model)
-        requested_model
-      elsif ModelCatalog.valid_model?(runtime, agent_root&.default_model)
-        agent_root.default_model
-      else
-        app_setting.resolved_default_model_for(runtime)
-      end
-    @session.config = (@session.config || {}).merge("model" => selected_model)
+    resolve_form_spawn_defaults!
 
     # Parse images and files from temp session if provided
     temp_session_id = params[:temp_session_id]
@@ -3192,6 +3143,68 @@ class SessionsController < ApplicationController
       available_models: ModelCatalog.model_ids_for(session.agent_runtime),
       goals_for_select: GoalsConfig.all.map { |g| { id: g.id, name: g.name, description: g.description } }
     }
+  end
+
+  # The new-session form's half of the spawn-defaults resolution: work out which
+  # root the form means and what it named, then hand the rest to
+  # Sessions::ResolveSpawnDefaults, the resolution every spawn surface shares.
+  #
+  # The root is the one the form names. A post that names none falls back to the
+  # root whose url is the posted git_root (and whose subdirectory is the posted
+  # one, when a subdirectory was posted), and that fallback is a root like any
+  # other — its defaults apply and its key is stamped.
+  #
+  # What counts as "named" here, and why it differs from REST and MCP:
+  #   - agent_runtime and model: named only when the value is one the form could
+  #     have offered. An unregistered runtime or an out-of-catalog model falls
+  #     through to the root's, so a bad param never 500s the form.
+  #   - mcp_servers: named when the key is present. The form always sends it (its
+  #     picker emits a blank input when nothing is selected), so an empty list
+  #     here is a human who picked no servers.
+  #   - skills, hooks, plugins: always named. The form renders the root's
+  #     defaults into those pickers, and a picker cleared to nothing submits no
+  #     key at all, so an absent key is a cleared picker, never an omission —
+  #     reading it as omitted would put back the defaults the human removed.
+  def resolve_form_spawn_defaults!
+    agent_root = if params[:agent_root_name].present?
+      AgentRootsConfig.find(params[:agent_root_name])
+    elsif @session.git_root.present?
+      # The key this stamps outranks every later URL lookup, so where roots share
+      # a repo the posted subdirectory has to pick among them.
+      same_repo = AgentRootsConfig.all.select { |ar| ar.url == @session.git_root }
+      if @session.subdirectory.present?
+        same_repo.find { |ar| ar.subdirectory.to_s == @session.subdirectory }
+      else
+        same_repo.first
+      end
+    end
+
+    requested_runtime = params[:agent_runtime].presence
+    requested_runtime = nil unless RuntimeRegistry.registered_runtimes.include?(requested_runtime)
+    @session.agent_runtime = requested_runtime if requested_runtime
+
+    Sessions::ResolveSpawnDefaults.call(
+      @session,
+      agent_root_name: agent_root&.name,
+      explicit_runtime: requested_runtime.present?,
+      # The param, not the attribute: `sessions.branch` carries a column default,
+      # so the attribute is present even on a post that named no branch.
+      explicit_branch: session_params[:branch].present?,
+      explicit_lists: { mcp_servers: session_params.key?(:mcp_servers), skills: true, hooks: true, plugins: true }
+    )
+
+    # Validated against the runtime just resolved, so it runs after it.
+    requested_model = params[:model].to_s.strip.first(100).presence
+    if requested_model && ModelCatalog.valid_model?(@session.agent_runtime, requested_model)
+      @session.config = @session.config.merge("model" => requested_model)
+    end
+
+    # A root the catalog cannot resolve still records what the form posted,
+    # which is what the existing-row heal and the "not in catalog" rendering
+    # are for.
+    if agent_root.nil? && params[:agent_root_name].present?
+      @session.metadata = (@session.metadata || {}).merge("agent_root_key" => params[:agent_root_name])
+    end
   end
 
   def session_params
