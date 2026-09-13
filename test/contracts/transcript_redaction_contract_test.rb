@@ -5,10 +5,10 @@ require "test_helper"
 # Redaction is only as good as the narrowest path around it.
 #
 # `TranscriptRedactor` runs inside `TranscriptSource#read`. That covers the
-# poller, but Zimmer has three *other* places that re-read a transcript off disk
-# and write it to `sessions.transcript` — the manual refresh in
-# SessionsController, in Api::V1::SessionsController, and in
-# Mcp::Tools::ActionSession. Each of those originally used a bare `File.read`,
+# poller, but Zimmer has another place that re-reads a transcript off disk and
+# writes it to `sessions.transcript` — the manual refresh, Sessions::RefreshTranscript,
+# which SessionsController, Api::V1::SessionsController and
+# Mcp::Tools::ActionSession all call. Each of those originally used a bare `File.read`,
 # which wrote an unredacted transcript straight over the redacted one the poller
 # had stored, and (because the refresh paths compare stored content against file
 # content) left the two writers overwriting each other on every pass.
@@ -41,12 +41,19 @@ class TranscriptRedactionContractTest < ActiveSupport::TestCase
   end
 
   test "every transcript refresh path resolves its reader through TranscriptRuntime" do
-    # The three refresh implementations, named explicitly so deleting one is a
-    # deliberate act rather than a silent loss of coverage.
-    %w[
-      app/controllers/sessions_controller.rb
-      app/controllers/api/v1/sessions_controller.rb
-      app/services/mcp/tools/action_session.rb
+    # The refresh implementation, and the three surfaces that used to carry their
+    # own copies, named explicitly so deleting one is a deliberate act rather than
+    # a silent loss of coverage. The service must persist; a surface that starts
+    # persisting a transcript again must resolve a redacting reader too.
+    service = "app/services/sessions/refresh_transcript.rb"
+    assert_match(/transcript:\s/, File.read(Rails.root.join(service)),
+      "#{service} no longer persists a transcript — move this contract to wherever the refresh went")
+
+    [
+      service,
+      "app/controllers/sessions_controller.rb",
+      "app/controllers/api/v1/sessions_controller.rb",
+      "app/services/mcp/tools/action_session.rb"
     ].each do |relative|
       source = File.read(Rails.root.join(relative))
       next unless source.match?(/transcript:\s/)

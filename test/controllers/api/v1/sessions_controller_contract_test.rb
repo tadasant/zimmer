@@ -201,8 +201,8 @@ class Api::V1::SessionsControllerContractTest < ActionDispatch::IntegrationTest
       transcript_file = File.join(dir, "main.jsonl")
       File.write(transcript_file, fresh_transcript)
 
-      Api::V1::SessionsController.any_instance.stubs(:get_transcript_directory_for_session).returns(dir)
-      Api::V1::SessionsController.any_instance.stubs(:find_main_transcript_file_for_session).returns(transcript_file)
+      Sessions::RefreshTranscript.any_instance.stubs(:transcript_directory).returns(dir)
+      Sessions::RefreshTranscript.any_instance.stubs(:main_transcript_file).returns(transcript_file)
 
       post refresh_all_api_v1_sessions_path, headers: @headers
       assert_response :success
@@ -218,7 +218,7 @@ class Api::V1::SessionsControllerContractTest < ActionDispatch::IntegrationTest
     session = sessions(:running)
     Session.where.not(id: session.id).update_all(status: Session.statuses[:archived])
 
-    Api::V1::SessionsController.any_instance.stubs(:get_transcript_directory_for_session).returns(nil)
+    Sessions::RefreshTranscript.any_instance.stubs(:transcript_directory).returns(nil)
 
     post refresh_all_api_v1_sessions_path, headers: @headers
     assert_response :success
@@ -238,8 +238,8 @@ class Api::V1::SessionsControllerContractTest < ActionDispatch::IntegrationTest
       file = File.join(dir, "main.jsonl")
       File.write(file, stored)
 
-      Api::V1::SessionsController.any_instance.stubs(:get_transcript_directory_for_session).returns(dir)
-      Api::V1::SessionsController.any_instance.stubs(:find_main_transcript_file_for_session).returns(file)
+      Sessions::RefreshTranscript.any_instance.stubs(:transcript_directory).returns(dir)
+      Sessions::RefreshTranscript.any_instance.stubs(:main_transcript_file).returns(file)
 
       assert_no_difference "session.logs.count" do
         post refresh_all_api_v1_sessions_path, headers: @headers
@@ -263,8 +263,8 @@ class Api::V1::SessionsControllerContractTest < ActionDispatch::IntegrationTest
       file = File.join(dir, "main.jsonl")
       File.write(file, JSON.generate({ type: "user", message: { role: "user", content: "from disk" } }))
 
-      Api::V1::SessionsController.any_instance.stubs(:get_transcript_directory_for_session).returns(dir)
-      Api::V1::SessionsController.any_instance.stubs(:find_main_transcript_file_for_session).returns(file)
+      Sessions::RefreshTranscript.any_instance.stubs(:transcript_directory).returns(dir)
+      Sessions::RefreshTranscript.any_instance.stubs(:main_transcript_file).returns(file)
 
       post refresh_all_api_v1_sessions_path, headers: @headers
       assert_response :success

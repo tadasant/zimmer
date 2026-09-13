@@ -224,11 +224,11 @@ so redacting at the read boundary is what keeps a credential out of the database
 of the rendered page.
 
 Reading through that method is a requirement on callers, not a property of the code — Zimmer has
-three *other* places that re-read a transcript and persist it (the manual refresh in
-`SessionsController`, `Api::V1::SessionsController` and `Mcp::Tools::ActionSession`, each in a
-single and a bulk form). They resolve their reader through `TranscriptRuntime.source_for(session).read`
-for exactly this reason; a bare `File.read` at any of them writes an unredacted transcript over the
-redacted one the poller stored. `test/contracts/transcript_redaction_contract_test.rb` pins that
+one *other* place that re-reads a transcript and persists it: the manual refresh,
+`Sessions::RefreshTranscript`, which the web UI, the REST API and the `action_session` MCP tool all
+call, each in a single and a bulk form. It resolves its reader through
+`TranscriptRuntime.source_for(session).read` for exactly this reason; a bare `File.read` there writes
+an unredacted transcript over the redacted one the poller stored. `test/contracts/transcript_redaction_contract_test.rb` pins that
 structurally, so a new refresh path cannot quietly reintroduce the bypass.
 
 It works in two tiers:
@@ -395,8 +395,8 @@ bytes to one fixed name — `<clone>/.pi/sessions/zimmer_session.jsonl` — and 
 up and continues appending to its leaf. That is why `PiTranscriptSource` can support single-file
 restore while `CodexTranscriptSource` cannot.
 
-The same rule holds for *reading*: the manual-refresh paths (both controllers, the `action_session`
-MCP tool) and the four process-recovery services take the directory **and** the file inside it from
+The same rule holds for *reading*: the manual refresh (`Sessions::RefreshTranscript`) and the four
+process-recovery services take the directory **and** the file inside it from
 the source — `transcript_directory` then `find_main_transcript`. Pairing one runtime's directory
 with another's file-picker is how a Codex session ends up searched with Claude's flat
 `<session_id>.jsonl` rule: it finds nothing at best, and at worst adopts an unrelated rollout that
@@ -484,11 +484,13 @@ from the branch, and a poll that could not open the branch at all.
 In the ordinary re-key the branch was seeded with the *whole* recorded file, so it already starts
 with everything stored and the merge is one string comparison.
 
-**Every writer of `sessions.transcript` goes through it**, not just the poller: both controllers'
-`refresh`, `bulk_refresh`, and the `action_session` MCP tool's two paths all start from
-`find_main_transcript` and then guard the write with `Session.transcript_regression?` — which
-compares line *counts*, so a branch longer than the stored transcript but missing its tail passes
-and takes `A` with it. One of them skipping the merge would undo it for all of them.
+**Every writer of `sessions.transcript` goes through it**, not just the poller: the manual refresh,
+`Sessions::RefreshTranscript` — one implementation behind the web UI's, the REST API's and the
+`action_session` MCP tool's single and bulk refreshes — starts from `find_main_transcript` and then
+guards the write with `Session.transcript_regression?`, which compares line *counts*, so a branch
+longer than the stored transcript but missing its tail passes and takes `A` with it. A writer that
+skipped the merge would undo it for all of them — which is what the REST API's bulk refresh did
+while it kept its own copy of the sequence.
 
 `metadata["transcript_branch_session_id"]` records which file a session is being polled on. It is a
 breadcrumb rather than state the merge depends on — #1047's complaint is that the failure was
