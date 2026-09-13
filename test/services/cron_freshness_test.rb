@@ -189,6 +189,62 @@ class CronFreshnessTest < ActiveSupport::TestCase
     assert_match(/Held by a run enqueued outside cron on default that started 1h 40m ago/, held[:reason])
   end
 
+  # tadasant/zimmer#1190: the 11:10 copy waited in a backed-up maintenance lane, every tick
+  # from 11:20 to 11:50 was refused behind it, and a worker replacement freed the lane so
+  # it ran and finished at 11:55. The tick it owes is 12:00, not 11:20.
+  test "a singleton whose copy just finished is owed the tick after its slot came free" do
+    ticking("clock", every: 1.minute, window: (NOW - 2.hours)..(NOW + 40.minutes))
+    cron_row("log_retention", enqueued: NOW - 50.minutes, finished: NOW - 5.minutes,
+             queue: "maintenance", job_class: "LogRetentionJob")
+    GoodJob::Job.where(cron_key: "log_retention").update_all(concurrency_key: "LogRetentionJob")
+    entries = [ entry(:log_retention, "*/10 * * * *", "LogRetentionJob"), entry(:clock, "* * * * *") ]
+
+    drained = reading(report(entries, now: NOW - 2.minutes), :log_retention)
+    assert_equal :fresh, drained[:state]
+    assert_equal NOW, drained[:due_at]
+
+    silent = reading(report(entries, now: NOW + 35.minutes), :log_retention)
+    assert_equal :stale, silent[:state], "a key cron stops enqueuing after its slot came free still pages"
+    assert_equal NOW, silent[:due_at]
+    assert_match(/Nothing enqueued since #{utc(NOW - 50.minutes)}; owed a job since #{utc(NOW)}/, silent[:reason])
+  end
+
+  test "a copy enqueued outside cron that held the slot and finished counts as the slot coming free" do
+    ticking("clock", every: 1.minute, window: (NOW - 3.hours)..NOW)
+    cron_row("post_deploy_tasks", enqueued: NOW - 2.hours, finished: NOW - 2.hours + 5, job_class: "PostDeployTaskJob")
+    GoodJob::Job.where(cron_key: "post_deploy_tasks").update_all(concurrency_key: "PostDeployTaskJob")
+    GoodJob::Job.insert_all([ { queue_name: "default", job_class: "PostDeployTaskJob", concurrency_key: "PostDeployTaskJob",
+                                created_at: NOW - 119.minutes, updated_at: NOW - 3.minutes,
+                                scheduled_at: NOW - 119.minutes, finished_at: NOW - 3.minutes } ])
+    entries = [ entry(:post_deploy_tasks, "*/2 * * * *", "PostDeployTaskJob"), entry(:clock, "* * * * *") ]
+
+    assert_equal :fresh, reading(report(entries), :post_deploy_tasks)[:state]
+  end
+
+  test "a short copy run long after cron stopped enqueuing a singleton does not excuse the ticks before it" do
+    ticking("clock", every: 1.minute, window: (NOW - 3.hours)..NOW)
+    cron_row("post_deploy_tasks", enqueued: NOW - 2.hours, finished: NOW - 2.hours + 5, job_class: "PostDeployTaskJob")
+    GoodJob::Job.where(cron_key: "post_deploy_tasks").update_all(concurrency_key: "PostDeployTaskJob")
+    GoodJob::Job.insert_all([ { queue_name: "default", job_class: "PostDeployTaskJob", concurrency_key: "PostDeployTaskJob",
+                                created_at: NOW - 10.minutes, updated_at: NOW - 10.minutes + 5,
+                                scheduled_at: NOW - 10.minutes, finished_at: NOW - 10.minutes + 5 } ])
+    entries = [ entry(:post_deploy_tasks, "*/2 * * * *", "PostDeployTaskJob"), entry(:clock, "* * * * *") ]
+
+    stopped = reading(report(entries), :post_deploy_tasks)
+    assert_equal :stale, stopped[:state], "the slot was free from 10:00 to 11:50, so those ticks were cron's to produce"
+    assert_equal NOW - 2.hours + 2.minutes, stopped[:due_at]
+  end
+
+  test "a late finish excuses nothing for a class whose ticks are never refused" do
+    ticking("clock", every: 1.minute, window: (NOW - 2.hours)..NOW)
+    cron_row("sweep", enqueued: NOW - 50.minutes, finished: NOW - 2.minutes)
+    GoodJob::Job.where(cron_key: "sweep").update_all(concurrency_key: "anything")
+
+    sweep = reading(report([ entry(:sweep, "*/10 * * * *"), entry(:clock, "* * * * *") ]), :sweep)
+
+    assert_equal :stale, sweep[:state], "without a limit at enqueue, every tick since 11:20 should have produced a row"
+  end
+
   test "a stray copy of a class with no enqueue limit is not what stops its ticks" do
     cron_row("refresh", enqueued: NOW - 2.hours, finished: NOW - 2.hours + 5, job_class: "RefreshMcpOauthTokensJob")
     GoodJob::Job.update_all(concurrency_key: "anything")

@@ -47,12 +47,22 @@
 # every deploy would rarely run long enough to judge an hourly key, let alone a daily
 # one, and a key whose enqueue fails on every tick fails across deploys too.
 #
-# Two lower bounds still apply. A key with no row at all — a fresh database, an entry a
-# deploy just added — is counted from when the newest live cron-running worker
-# registered (plus CRON_STARTUP_SLACK), since only a worker carrying the entry can have
-# enqueued it. And no key is owed a tick from before the last time a cron key was
-# enabled or disabled in the GoodJob dashboard, so re-enabling one does not read the
-# days it was switched off as days it stopped.
+# Three lower bounds still apply. A singleton's ticks are refused for as long as a copy
+# holds its slot, so a key whose newest tick has finished is owed nothing from before
+# that slot last came free. A copy that waits 45 minutes in a backed-up lane and
+# finishes at 03:45 owes the 03:50 tick, not the 03:10 one: while it waited or ran, the
+# rules below judged it, and a lane draining a long-waiting singleton — which a worker
+# replacement does routinely — is not cron failing to enqueue (tadasant/zimmer#1190).
+# Only a copy that was holding the slot at the tick owed moves the bound, and only to
+# when it finished, so a key the cron manager cannot enqueue is still found — late by
+# at most how long its last copy held the slot.
+#
+# A key with no row at all — a fresh database, an entry a deploy just added — is
+# counted from when the newest live cron-running worker registered (plus
+# CRON_STARTUP_SLACK), since only a worker carrying the entry can have enqueued it.
+# And no key is owed a tick from before the last time a cron key was enabled or
+# disabled in the GoodJob dashboard, so re-enabling one does not read the days it was
+# switched off as days it stopped.
 #
 # WHAT IS BEHIND IT, AND WHICH OF THOSE PAGES
 # -------------------------------------------
@@ -320,6 +330,15 @@ class CronFreshness
     interval = next_fire(schedule, due_at) - due_at
     grace = (interval * GRACE_TICKS).clamp(GRACE_FLOOR.to_f, GRACE_CAP.to_f)
 
+    if @now - due_at >= grace && refusable?(job)
+      # Every tick while a copy held the slot was refused, not missed: owed the next one.
+      while (released = slot_held_past(job, due_at)) && released > reference
+        reference = released
+        due_at = next_fire(schedule, reference)
+        break if @now - due_at < grace
+      end
+    end
+
     if @now - due_at >= grace
       owed = owed_ticks(schedule, reference, @now - grace)
       # No cron manager was running at any tick it owes: excused, and owed the next one.
@@ -394,12 +413,41 @@ class CronFreshness
   # finished. Only a class whose concurrency limit applies at enqueue can have its tick
   # refused; any other class's stray copies are not what is stopping the tick.
   def slot_holder(job)
-    return nil if job.nil? || job.concurrency_key.blank?
-
-    config = job.job_class.to_s.safe_constantize.try(:good_job_concurrency_config) || {}
-    return nil unless config[:total_limit] || config[:enqueue_limit]
+    return nil unless singleton?(job)
 
     GoodJob::Job.where(concurrency_key: job.concurrency_key, finished_at: nil).order(:created_at).first
+  end
+
+  # When the copy that held a singleton's slot at `tick` let it go: the latest finish
+  # of any copy sharing its concurrency key, enqueued no earlier than the newest tick
+  # and no later than `tick`, that was still unfinished at `tick`. Nil when nothing held
+  # the slot then, so a short copy run long after cron stopped moves nothing. The caller
+  # asks again from the next tick until nothing was holding. Served by the
+  # `(concurrency_key, created_at)` index, and only asked of a key already past grace.
+  def slot_held_past(job, tick)
+    GoodJob::Job.where(concurrency_key: job.concurrency_key, created_at: job.created_at..tick)
+                .where("finished_at > ?", tick).maximum(:finished_at)
+  end
+
+  # Is the newest tick finished, and does its class refuse ticks while a copy is
+  # unfinished? `total_limit` only: under `enqueue_limit` a running copy stops holding
+  # the slot the moment it starts, so its finish would excuse ticks cron really missed.
+  def refusable?(job)
+    return false if job&.finished_at.nil? || job.concurrency_key.blank?
+
+    concurrency_config(job)[:total_limit].present?
+  end
+
+  # Only a class whose concurrency limit applies at enqueue can have its tick refused.
+  def singleton?(job)
+    return false if job.nil? || job.concurrency_key.blank?
+
+    config = concurrency_config(job)
+    (config[:total_limit] || config[:enqueue_limit]).present?
+  end
+
+  def concurrency_config(job)
+    job.job_class.to_s.safe_constantize.try(:good_job_concurrency_config) || {}
   end
 
   # What the newest row says is holding the key. Mirrors the populations
