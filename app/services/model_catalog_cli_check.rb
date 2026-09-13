@@ -9,8 +9,9 @@ require "json"
 # Two of the three runtimes can answer offline, from the model list bundled with
 # the pinned CLI:
 #
-#   codex  `codex debug models` prints the catalog as JSON; each entry's `slug` is
-#          what `-m` takes.
+#   codex  `codex debug models --bundled` prints the catalog shipped with the
+#          binary as JSON, without refreshing it; each entry's `slug` is what `-m`
+#          takes.
 #   pi     `pi --offline --list-models` prints a table of provider and model. It
 #          only prints providers whose credential resolves, so the check sets a
 #          placeholder key for the provider named in the id. `--offline` means no
@@ -35,18 +36,24 @@ class ModelCatalogCliCheck
 
   class CommandFailed < StandardError; end
 
-  TIMEOUT = 20
+  # Bounds for the two calls, which run inside a web request: together they stay
+  # well under kamal-proxy's 30s response timeout. Both answer in under a second
+  # on the pinned CLIs.
+  VERSION_TIMEOUT = 5
+  TIMEOUT = 10
 
   # Pi's variable per provider, where it is not `<PROVIDER>_API_KEY`. From the
   # provider table in the pinned Pi's docs/providers.md.
+  # Cloudflare's providers also need an account id, so they list nothing and ids
+  # for them are unchecked.
   PI_KEY_VARIABLES = {
     "google" => "GEMINI_API_KEY",
+    "huggingface" => "HF_TOKEN",
+    "amazon-bedrock" => "AWS_BEARER_TOKEN_BEDROCK",
     "vercel-ai-gateway" => "AI_GATEWAY_API_KEY",
     "kimi-coding" => "KIMI_API_KEY",
     "opencode-go" => "OPENCODE_API_KEY",
-    "qwen-token-plan-individual" => "QWEN_TOKEN_PLAN_API_KEY",
-    "cloudflare-ai-gateway" => "CLOUDFLARE_API_KEY",
-    "cloudflare-workers-ai" => "CLOUDFLARE_API_KEY"
+    "qwen-token-plan-individual" => "QWEN_TOKEN_PLAN_API_KEY"
   }.freeze
 
   # Pi's `--model` takes an optional `:<thinking>` suffix, which is not part of
@@ -77,8 +84,11 @@ class ModelCatalogCliCheck
 
     def check_codex(model_id)
       version = version_of("codex")
-      stdout = run!([ "codex", "debug", "models" ])
-      slugs = Array(JSON.parse(stdout)["models"]).filter_map { |model| model["slug"] if model.is_a?(Hash) }
+      stdout = run!([ "codex", "debug", "models", "--bundled" ])
+      catalog = JSON.parse(stdout)
+      return unreadable("codex", version, "its model list was not a JSON object") unless catalog.is_a?(Hash)
+
+      slugs = Array(catalog["models"]).filter_map { |model| model["slug"] if model.is_a?(Hash) }
       return unreadable("codex", version, "its model list was empty") if slugs.empty?
 
       if slugs.include?(model_id)
@@ -91,8 +101,8 @@ class ModelCatalogCliCheck
                 "which accepts or refuses it on the session's first turn."
         )
       end
-    rescue JSON::ParserError, NoMethodError, TypeError => e
-      unreadable("codex", version, "could not parse `codex debug models`: #{e.class}")
+    rescue JSON::ParserError, TypeError => e
+      unreadable("codex", version, "could not parse `codex debug models --bundled`: #{e.class}")
     rescue CommandFailed => e
       unreadable("codex", version, e.message)
     end
@@ -129,7 +139,7 @@ class ModelCatalogCliCheck
     # `provider  model  context  max-out  thinking  images`, one row per model,
     # after a header row.
     def pi_listed_ids(stdout)
-      stdout.lines.filter_map do |line|
+      stdout.scrub.lines.filter_map do |line|
         provider, model = line.split
         next if provider.nil? || model.nil? || provider == "provider"
 
@@ -149,7 +159,7 @@ class ModelCatalogCliCheck
     end
 
     def version_of(cli)
-      stdout = run!([ cli, "--version" ])
+      stdout = run!([ cli, "--version" ], timeout: VERSION_TIMEOUT)
       stdout[/\d+\.\d+\.\d+/]
     rescue CommandFailed
       nil
@@ -163,15 +173,15 @@ class ModelCatalogCliCheck
       Result.new(listed: nil, cli_version: version, note: "Could not check against #{cli}: #{reason}.")
     end
 
-    def run!(argv, env: {})
-      stdout, stderr, status = BoundedSubprocess.run(argv, timeout: TIMEOUT, env: env)
+    def run!(argv, env: {}, timeout: TIMEOUT)
+      stdout, stderr, status = BoundedSubprocess.run(argv, timeout: timeout, env: env)
       unless status&.success?
-        raise CommandFailed, "`#{argv.join(" ")}` exited #{status&.exitstatus.inspect}: #{stderr.to_s.strip.truncate(200)}"
+        raise CommandFailed, "`#{argv.join(" ")}` exited #{status&.exitstatus.inspect}: #{stderr.to_s.scrub.strip.truncate(200)}"
       end
 
-      stdout
+      stdout.to_s
     rescue BoundedSubprocess::TimeoutError
-      raise CommandFailed, "`#{argv.join(" ")}` timed out after #{TIMEOUT}s"
+      raise CommandFailed, "`#{argv.join(" ")}` timed out after #{timeout}s"
     rescue SystemCallError => e
       raise CommandFailed, "`#{argv.first}` could not be run (#{e.class})"
     end

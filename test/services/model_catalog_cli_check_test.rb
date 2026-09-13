@@ -17,9 +17,14 @@ class ModelCatalogCliCheckTest < ActiveSupport::TestCase
       .returns([ stdout, stderr, fake_process_status(exitstatus: exitstatus) ])
   end
 
+  def stub_version(cli, stdout)
+    BoundedSubprocess.stubs(:run).with([ cli, "--version" ], has_entries(timeout: ModelCatalogCliCheck::VERSION_TIMEOUT))
+      .returns([ stdout, "", fake_process_status ])
+  end
+
   test "codex: an id in `codex debug models` is listed" do
-    stub_run([ "codex", "--version" ], stdout: "codex-cli 0.146.0\n")
-    stub_run([ "codex", "debug", "models" ], stdout: CODEX_MODELS)
+    stub_version("codex", "codex-cli 0.146.0\n")
+    stub_run([ "codex", "debug", "models", "--bundled" ], stdout: CODEX_MODELS)
 
     result = ModelCatalogCliCheck.check("codex", "gpt-5.5")
 
@@ -29,8 +34,8 @@ class ModelCatalogCliCheckTest < ActiveSupport::TestCase
   end
 
   test "codex: an id missing from the list is unlisted, and the note says the provider decides" do
-    stub_run([ "codex", "--version" ], stdout: "codex-cli 0.146.0\n")
-    stub_run([ "codex", "debug", "models" ], stdout: CODEX_MODELS)
+    stub_version("codex", "codex-cli 0.146.0\n")
+    stub_run([ "codex", "debug", "models", "--bundled" ], stdout: CODEX_MODELS)
 
     result = ModelCatalogCliCheck.check("codex", "gpt-9")
 
@@ -40,8 +45,8 @@ class ModelCatalogCliCheckTest < ActiveSupport::TestCase
   end
 
   test "codex: unparseable output is unchecked, not unlisted" do
-    stub_run([ "codex", "--version" ], stdout: "codex-cli 0.146.0\n")
-    stub_run([ "codex", "debug", "models" ], stdout: "not json")
+    stub_version("codex", "codex-cli 0.146.0\n")
+    stub_run([ "codex", "debug", "models", "--bundled" ], stdout: "not json")
 
     result = ModelCatalogCliCheck.check("codex", "gpt-5.5")
 
@@ -50,7 +55,7 @@ class ModelCatalogCliCheckTest < ActiveSupport::TestCase
   end
 
   test "pi: lists provider-qualified ids, with a placeholder key for the provider and no network" do
-    stub_run([ "pi", "--version" ], stdout: "0.84.4\n")
+    stub_version("pi", "0.84.4\n")
     BoundedSubprocess.expects(:run).with(
       [ "pi", "--offline", "--list-models" ],
       has_entries(env: has_entries("OPENROUTER_API_KEY" => "zimmer-model-catalog-check", "PI_OFFLINE" => "1"))
@@ -63,14 +68,14 @@ class ModelCatalogCliCheckTest < ActiveSupport::TestCase
   end
 
   test "pi: a thinking suffix is not part of the listed id" do
-    stub_run([ "pi", "--version" ], stdout: "0.84.4\n")
+    stub_version("pi", "0.84.4\n")
     stub_run([ "pi", "--offline", "--list-models" ], stdout: PI_LIST)
 
     assert_equal true, ModelCatalogCliCheck.check("pi", "openrouter/openai/gpt-5.4:high").listed
   end
 
   test "pi: an id missing from its provider's rows is unlisted" do
-    stub_run([ "pi", "--version" ], stdout: "0.84.4\n")
+    stub_version("pi", "0.84.4\n")
     stub_run([ "pi", "--offline", "--list-models" ], stdout: PI_LIST)
 
     result = ModelCatalogCliCheck.check("pi", "openrouter/openai/gpt-9")
@@ -80,7 +85,7 @@ class ModelCatalogCliCheckTest < ActiveSupport::TestCase
   end
 
   test "pi: a provider with no rows is unchecked, since Pi only lists providers whose key resolves" do
-    stub_run([ "pi", "--version" ], stdout: "0.84.4\n")
+    stub_version("pi", "0.84.4\n")
     BoundedSubprocess.expects(:run).with(
       [ "pi", "--offline", "--list-models" ], has_entries(env: has_entries("GEMINI_API_KEY" => "zimmer-model-catalog-check"))
     ).returns([ PI_LIST, "", fake_process_status ])
@@ -89,6 +94,25 @@ class ModelCatalogCliCheckTest < ActiveSupport::TestCase
 
     assert_nil result.listed
     assert_match(/lists no models for the google provider/, result.note)
+  end
+
+  test "pi: providers whose key is not <PROVIDER>_API_KEY get the right placeholder variable" do
+    { "huggingface" => "HF_TOKEN", "amazon-bedrock" => "AWS_BEARER_TOKEN_BEDROCK", "openai" => "OPENAI_API_KEY" }.each do |provider, variable|
+      BoundedSubprocess.unstub(:run)
+      stub_version("pi", "0.84.4\n")
+      BoundedSubprocess.expects(:run).with(
+        [ "pi", "--offline", "--list-models" ], has_entries(env: has_entries(variable => "zimmer-model-catalog-check"))
+      ).returns([ "", "", fake_process_status ])
+
+      assert_nil ModelCatalogCliCheck.check("pi", "#{provider}/some-model").listed
+    end
+  end
+
+  test "pi: output that is not valid UTF-8 is still parsed" do
+    stub_version("pi", "0.84.4\n")
+    stub_run([ "pi", "--offline", "--list-models" ], stdout: "#{PI_LIST}openrouter  bad\xFFmodel  1M\n".b)
+
+    assert_equal true, ModelCatalogCliCheck.check("pi", "openrouter/openai/gpt-5.4").listed
   end
 
   test "a missing or failing CLI is unchecked, never an exception" do

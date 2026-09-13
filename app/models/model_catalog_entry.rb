@@ -21,7 +21,9 @@ class ModelCatalogEntry < ApplicationRecord
   # flag. Covers Pi's `provider/vendor/id:thinking`, Claude Code's `opus[1m]` and
   # the dotted Codex slugs.
   MODEL_ID_FORMAT = %r{\A[A-Za-z0-9][A-Za-z0-9._:~/\[\]@+-]*\z}
-  MAX_MODEL_ID_LENGTH = 200
+  # The session model editors (web, REST, MCP) cut a submitted model to 100
+  # characters, so a longer id could be added but never picked.
+  MAX_MODEL_ID_LENGTH = 100
   MAX_LABEL_LENGTH = 200
 
   # The same shape ModelCatalogTest refuses in the built-in list: a dated snapshot
@@ -56,7 +58,7 @@ class ModelCatalogEntry < ApplicationRecord
     #   name the id. Without it such an id is refused, with the CLI's own note in
     #   the error, so adding one is a decision the caller makes explicitly.
     # @return [ModelCatalogEntry] persisted on success; otherwise unsaved, with
-    #   errors. An `:unlisted` error on :model_id is the one `allow_unlisted` lifts.
+    #   errors. An `:unlisted` error on :base is the one `allow_unlisted` lifts.
     def add(runtime:, model_id:, added_via:, label: nil, requires_oauth: false, allow_unlisted: false)
       entry = new(
         runtime: runtime.to_s.strip,
@@ -73,9 +75,8 @@ class ModelCatalogEntry < ApplicationRecord
       entry.cli_note = check.note
 
       if check.listed == false && !ActiveModel::Type::Boolean.new.cast(allow_unlisted)
-        entry.errors.add(:model_id, :unlisted,
-          message: "is not in the installed CLI's model list. #{check.note} " \
-                   "Add it anyway only if you know the provider serves it.")
+        entry.errors.add(:base, :unlisted,
+          message: "#{check.note} Add it anyway only if you know the provider serves it.")
         return entry
       end
 
@@ -124,8 +125,11 @@ class ModelCatalogEntry < ApplicationRecord
   # ClaudeModelConfigurationAudit's rule, applied where it matters most: a
   # concrete Claude version in the Claude Code catalog is a pin that silently
   # outlives the model it names. The bare aliases already follow new releases.
+  # Each `/`- or `.`-separated segment is checked, as ModelCatalogTest does, so a
+  # provider-qualified or Bedrock-style pin is caught too.
   def claude_code_id_is_floating_alias
-    return unless runtime == "claude_code" && ClaudeModelConfigurationAudit.concrete_model?(model_id)
+    return unless runtime == "claude_code"
+    return unless model_id.to_s.split(%r{[/.]}).any? { |segment| ClaudeModelConfigurationAudit.concrete_model?(segment) }
 
     errors.add(:model_id, "pins a Claude version; Claude Code's aliases (opus, sonnet, haiku) already follow new releases")
   end
@@ -142,8 +146,10 @@ class ModelCatalogEntry < ApplicationRecord
   # AppSetting re-validates its default model and categorization model on every
   # save, so removing a model one of them names would break every later settings
   # write, including ones that have nothing to do with models. Change the setting
-  # first.
+  # first. A row shadowed by a built-in entry is exempt: the id stays valid
+  # without it.
   def refuse_while_a_setting_uses_it
+    return if shadowed_by_built_in?
     setting = AppSetting.current(context: "ModelCatalogEntry#destroy")
     default_runtime = setting.default_runtime.presence || RuntimeRegistry::DEFAULT_RUNTIME
 
