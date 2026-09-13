@@ -178,7 +178,9 @@ the unscoped `zimmer` entry does not carry them. `zimmer-work-backlog` is the sa
 that can append to the queue or pull from it. `zimmer-outcome-analyses` does the same for [outcome
 analysis](/sessions/outcomes/#over-mcp): it is the only entry that can start an analysis or an
 Analyze All batch, because every analysis is a full session. Every `zimmer*` entry that carries
-`sessions` can read analyses.
+`sessions` can read analyses. `zimmer-settings` is the only entry that can change the Settings
+page's global defaults (`settings` is opt-in too, because those are what every later session runs
+under); `zimmer-settings-readonly` reads them and nothing else.
 
 → [Zimmer's MCP server](/extend/mcp-server/) for the tool surface, the scoped variants, and auth.
 

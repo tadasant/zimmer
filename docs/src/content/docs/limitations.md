@@ -2494,6 +2494,28 @@ Two second-order effects worth knowing before you read the alerts:
 
 Nothing throttles or coalesces this today. If it becomes a problem the shape of the fix is a fleet-level circuit breaker — when *every* session is losing the same Zimmer-native server, that is an outage rather than N per-session verdicts — but a breaker that gets its own outage detection wrong would resurrect the silent no-op, so it is deliberately not guessed at here.
 
+### An agent can change what every later session runs under, and nothing announces it
+
+`action_app_settings` (the opt-in `settings` tool group) writes the Settings page's global
+defaults: the base runtime and model, MCP tool search, and experimental extension enablement. A
+session holding it can therefore change the harness its successors are created under, which is the
+point of the tool and also its risk.
+
+- **Opt-in is a scoping boundary, not an authorization one.** The unscoped `zimmer` entry and the
+  injected `zimmer-self-session` do not carry the write, but the fleet's API key is shared and
+  written into every session's config, so any session could compose `?tool_groups=settings` for
+  itself ([API keys have no scope](#api-keys-have-names-but-no-scope-and-the-whole-fleet-shares-one)).
+- **Every write is recorded and none is announced.** Each change leaves an `[AppSettings]` WARN
+  line naming the surface, the calling session and the values that moved (see
+  [Observability](/operate/observability/)). Nothing counts those lines or alerts on them, so
+  a model default quietly switched is reconstructible from one log query and noticed by nobody
+  until then — the same half-closed gap as [fleet-policy
+  changes](#a-fleet-policy-change-is-recorded-but-never-announced).
+- **The MCP Apps pair is deliberately not on this surface.** `mcp_apps_enabled` and its
+  per-server allowlist are on the same page and the same row, and they are not writable here:
+  opting a server in is a statement about who wrote the HTML it will run in an operator's
+  browser, and only a human naming it can make that statement.
+
 ### A restricted connection is locked out of MCP servers at spawn, but not through a trigger
 
 `allowed_agent_roots` locks a connection to its roots' exact default MCP servers, and
