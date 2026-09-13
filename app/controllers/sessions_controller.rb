@@ -5,7 +5,6 @@ class SessionsController < ApplicationController
   include WebUiHumanMessageCapture
   include SessionSearchable
   include PendingMessageDelivery
-  include SessionTranscriptLookup
   include SpeculativeRequest
   include TurboFlash
 
@@ -1212,72 +1211,24 @@ class SessionsController < ApplicationController
       return
     end
 
-    # Read the latest transcript from filesystem
-    # Use the private method to get transcript directory (handles security)
-    transcript_dir = get_transcript_directory_for_session(@session)
-
-    if transcript_dir.nil?
-      redirect_to refresh_redirect_target(@session), alert: "No clone path found for this session"
-      return
-    end
-
+    # Re-read the transcript from disk. The operation is Sessions::RefreshTranscript,
+    # shared with the REST API and MCP; this only renders its outcome.
     begin
-      if Dir.exist?(transcript_dir)
-        # Find main transcript file using session_id to avoid picking nested agent transcripts
-        main_transcript_file = find_main_transcript_file_for_session(@session, transcript_dir)
+      result = Sessions::RefreshTranscript.call(@session, actor: :web)
+      target = refresh_redirect_target(@session)
 
-        if main_transcript_file
-          # Read and update transcript
-          # Through the runtime's TranscriptSource, not File.read: that is where
-          # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
-          # transcript over the redacted one the poller stored. It also decompresses a
-          # Codex .zst rollout, which a raw read would have stored as binary.
-          # RekeyedTranscriptBranch is what makes that read safe now that the
-          # locator can hand back a transcript this conversation was re-keyed
-          # into: such a file is NOT a superset of the stored one, and the
-          # line-count guard below would wave a longer branch through and take the
-          # abandoned file's tail with it (#1047). A no-op on every other file.
-          transcript_content = RekeyedTranscriptBranch.continue(
-            session: @session,
-            transcript_path: main_transcript_file,
-            content: TranscriptRuntime.source_for(@session).read(main_transcript_file)
-          )
-
-          # Parse transcript to count messages
-          message_count = count_transcript_messages(transcript_content)
-
-          # Never let a manual refresh shrink the stored transcript. A shorter
-          # filesystem transcript means the clone was recreated at a new path and
-          # started a fresh file; session.transcript is the only durable record, so
-          # overwriting it would destroy history. Keep the longer stored copy.
-          if @session.transcript_regression?(transcript_content)
-            Rails.logger.warn "[SessionsController#refresh] Refused transcript regression for session #{@session.id} (stored #{@session.transcript_line_count} events, filesystem #{message_count}); preserving stored transcript"
-            redirect_to refresh_redirect_target(@session), alert: "Filesystem transcript is shorter than the stored one (clone likely recreated) — kept the longer stored transcript."
-            return
-          end
-
-          # Update session with transcript AND update broadcast_message_count
-          # This prevents duplicate messages when TranscriptPollerJob runs again
-          result = with_db_retry do
-            @session.merge_metadata!("broadcast_message_count" => message_count)
-            @session.update!(transcript: transcript_content)
-
-            @session.logs.create!(
-              content: "Transcript refreshed manually from filesystem (#{message_count} messages)",
-              level: "info"
-            )
-          end
-
-          # Only continue if the operation succeeded
-          return if result == false
-
-          redirect_to refresh_redirect_target(@session), notice: "Transcript refreshed successfully"
-          return
-        end
+      case result.outcome
+      when :refreshed
+        redirect_to target, notice: "Transcript refreshed successfully"
+      when :no_transcript_directory
+        redirect_to target, alert: "No clone path found for this session"
+      when :no_transcript_file
+        redirect_to target, alert: "No transcript files found on filesystem"
+      when :regression
+        redirect_to target, alert: "Filesystem transcript is shorter than the stored one (clone likely recreated) — kept the longer stored transcript."
+      else
+        redirect_to target, alert: result.error
       end
-
-      # If we get here, transcript files not found
-      redirect_to refresh_redirect_target(@session), alert: "No transcript files found on filesystem"
     rescue => e
       Rails.logger.error "Error refreshing transcript: #{e.message}"
       redirect_to refresh_redirect_target(@session), alert: "Error refreshing transcript: #{e.message}"
@@ -1416,56 +1367,18 @@ class SessionsController < ApplicationController
         restore_agent_session_job(session)
       end
 
-      # Read the latest transcript from filesystem
-      transcript_dir = get_transcript_directory_for_session(session)
-      next if transcript_dir.nil?
-
+      # Re-read the transcript from disk (Sessions::RefreshTranscript). Nothing to
+      # read, or a shorter filesystem copy, is skipped rather than counted.
       begin
-        if Dir.exist?(transcript_dir)
-          # Find main transcript file using session_id to avoid picking nested agent transcripts
-          main_transcript_file = find_main_transcript_file_for_session(session, transcript_dir)
+        result = Sessions::RefreshTranscript.call(session, actor: :web, bulk: true)
 
-          next unless main_transcript_file
-
-          # Read and update transcript.
-          # Through the runtime's TranscriptSource, not File.read: that is where
-          # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
-          # transcript over the redacted one the poller stored. It also decompresses a
-          # Codex .zst rollout, which a raw read would have stored as binary.
-          # See #refresh: a re-keyed branch is not a superset of the stored
-          # transcript, and the line-count guard below cannot tell (#1047).
-          transcript_content = RekeyedTranscriptBranch.continue(
-            session: session,
-            transcript_path: main_transcript_file,
-            content: TranscriptRuntime.source_for(session).read(main_transcript_file)
-          )
-
-          # Parse transcript to count messages
-          message_count = count_transcript_messages(transcript_content)
-
-          # Skip sessions whose filesystem transcript is shorter than the stored
-          # one (clone recreated at a new path) — overwriting would destroy history.
-          if session.transcript_regression?(transcript_content)
-            Rails.logger.warn "[bulk_refresh] Skipped transcript regression for session #{session.id} (stored #{session.transcript_line_count} events, filesystem #{message_count}); preserving stored transcript"
-            next
-          end
-
-          # Update session with transcript AND update broadcast_message_count
-          result = with_db_retry do
-            session.merge_metadata!("broadcast_message_count" => message_count)
-            session.update!(transcript: transcript_content)
-
-            session.logs.create!(
-              content: "Transcript refreshed via bulk refresh (#{message_count} messages)",
-              level: "info"
-            )
-          end
-
-          # If any session fails max retries, abort early (redirect already happened)
-          return if result == false
-
-          refreshed_count += 1
+        if result.database_unavailable?
+          # A database that stays unavailable ends the sweep, as it always has.
+          respond_with_flash(alert: result.error, location: root_path)
+          return
         end
+
+        refreshed_count += 1 if result.refreshed?
       rescue => e
         Rails.logger.error "Error refreshing session #{session.id}: #{e.message}"
         error_count += 1
@@ -3239,16 +3152,6 @@ class SessionsController < ApplicationController
       format.html do
         redirect_to @session, alert: error_message
       end
-    end
-  end
-
-  def count_transcript_messages(transcript_content)
-    return 0 unless transcript_content.present?
-
-    transcript_content.lines.count do |line|
-      line.strip.present? && JSON.parse(line.strip)
-    rescue JSON::ParserError
-      false
     end
   end
 
