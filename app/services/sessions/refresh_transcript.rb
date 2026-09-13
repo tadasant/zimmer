@@ -124,10 +124,21 @@ module Sessions
         return Result.new(outcome: :regression, message_count: message_count)
       end
 
-      # `base_delay` is the controller helper's: every door is request/response, so
-      # somebody is waiting. `DatabaseRetry` rather than `ControllerDatabaseRetry`
-      # because its give-up path re-raises instead of rendering — a service hands the
-      # surface a result to render.
+      write!(content, message_count)
+    end
+
+    private
+
+    # Only the write is retried and turned into `database_unavailable` — the part
+    # the web copies wrapped in `with_db_retry`. A connection error while reading
+    # (the stored transcript, for the splice or the guards) propagates to the
+    # surface's own rescue, exactly as it did from every copy.
+    #
+    # `base_delay` is the controller helper's: every door is request/response, so
+    # somebody is waiting. `DatabaseRetry` rather than `ControllerDatabaseRetry`
+    # because its give-up path re-raises instead of rendering — a service hands the
+    # surface a result to render.
+    def write!(content, message_count)
       with_db_retry(base_delay: 0.3) do
         # broadcast_message_count alongside the transcript, so the next
         # TranscriptPollerJob pass does not re-broadcast messages already shown.
@@ -147,8 +158,6 @@ module Sessions
       )
       Result.new(outcome: :database_unavailable, error: DATABASE_UNAVAILABLE_MESSAGE)
     end
-
-    private
 
     # The directory holding this session's transcript files, from the session's
     # runtime TranscriptSource — the single place that knows where a runtime writes
