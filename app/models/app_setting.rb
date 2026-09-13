@@ -128,10 +128,9 @@ class AppSetting < ApplicationRecord
   # them in would bury the handful of lines that matter under a running
   # commentary. (`updated_at` is no help in telling the two apart: the pollers
   # bump it too, so the audit line below is the only record of when the policy
-  # itself moved.) `default_runtime`,
-  # `default_model`, `extension_states` and `uncategorized_position` are settings
-  # too, but they are not fleet scheduling and they are not what silently halves
-  # throughput.
+  # itself moved.) The Settings page's own fields are recorded separately, under
+  # SESSION_SETTING_ATTRIBUTES; `uncategorized_position` is dashboard layout and
+  # is recorded by neither.
   FLEET_POLICY_ATTRIBUTES = %w[
     spot_gating_enabled
     spot_reserve_five_hour_pct
@@ -143,6 +142,28 @@ class AppSetting < ApplicationRecord
     fleet_idle_threshold_minutes
     fleet_idle_min_fire_interval_minutes
     genesis_class_overrides
+  ].freeze
+
+  # Every field the Settings page writes: the global base runtime + model, the
+  # Settings → Experimental toggles (an experimental extension's toggle lives in
+  # `extension_states`), and the MCP Apps pair. They are recorded the way
+  # FLEET_POLICY_ATTRIBUTES are, by #log_session_settings_change — and for a
+  # sharper reason: most of them are what every later session is created under,
+  # and `action_app_settings` lets an agent session move them, so a session
+  # changing the harness its successors run in is exactly the change an audit
+  # line is for.
+  #
+  # The MCP Apps pair is here for the opposite reason — no MCP tool can write it,
+  # deliberately (McpApps::Policy) — but it is the one Settings change that opts a
+  # third party into running HTML in an operator's browser, so "when did this open,
+  # and from where" has to be answerable. Only `/settings` ever moves it.
+  SESSION_SETTING_ATTRIBUTES = %w[
+    default_runtime
+    default_model
+    mcp_tool_search_enabled
+    extension_states
+    mcp_apps_enabled
+    mcp_apps_allowed_servers
   ].freeze
 
   # What #policy_change_source says when nobody set one. A write with no named
@@ -305,7 +326,8 @@ class AppSetting < ApplicationRecord
   validates :category_guidance, length: { maximum: MAX_CATEGORY_GUIDANCE_CHARS }, allow_blank: true
   validate :category_inference_model_valid
 
-  # Which surface is making this write, for the audit line below. Set by the
+  # Which surface is making this write, for the audit lines below — both of them,
+  # since a surface is a surface whichever half of the row it moves. Set by the
   # controller or the MCP tool doing the writing; never persisted. An
   # `attr_accessor` rather than a thread-local because the writer and the record
   # are always in the same call, and a global would go stale exactly when two
@@ -330,6 +352,11 @@ class AppSetting < ApplicationRecord
   # is no shell on the production box to read stdout with. WARN does not page.
   # See docs/src/content/docs/operate/observability.md.
   after_commit :log_fleet_policy_change, on: [ :create, :update ]
+
+  # The same record for the Settings page's fields, on a line of its own so a
+  # search for either half does not wade through the other. WARN for the same
+  # reason as above.
+  after_commit :log_session_settings_change, on: [ :create, :update ]
 
   class << self
     # The singleton row for reads. Returns a blank, unsaved record when no row
@@ -518,12 +545,20 @@ class AppSetting < ApplicationRecord
   private
 
   def log_fleet_policy_change
-    moved = saved_changes.slice(*FLEET_POLICY_ATTRIBUTES)
+    log_change("[FleetPolicy]", FLEET_POLICY_ATTRIBUTES)
+  end
+
+  def log_session_settings_change
+    log_change("[AppSettings]", SESSION_SETTING_ATTRIBUTES)
+  end
+
+  def log_change(tag, attributes)
+    moved = saved_changes.slice(*attributes)
     return if moved.empty?
 
     summary = moved.map { |attribute, (before, after)| "#{attribute} #{before.inspect} -> #{after.inspect}" }
     Rails.logger.warn(
-      "[FleetPolicy] changed via #{policy_change_source.presence || UNATTRIBUTED_SOURCE}: #{summary.join(', ')}"
+      "#{tag} changed via #{policy_change_source.presence || UNATTRIBUTED_SOURCE}: #{summary.join(', ')}"
     )
   end
 

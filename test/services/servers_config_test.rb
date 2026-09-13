@@ -429,6 +429,17 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert_includes names, "get_outcome_analysis"
     assert_not_includes names, "start_session", "the entry adds the analysis write, not session orchestration"
   end
+
+  test "zimmer-settings is the only catalog entry that reaches the settings write, and the readonly one reaches only the read" do
+    reach = ServersConfig.all.to_h do |server|
+      groups = Rack::Utils.parse_query(URI.parse(server.url.to_s).query.to_s)["tool_groups"].to_s.split(",").map(&:strip)
+      [ server.name, Mcp::Registry.tools_for(groups.presence || Mcp::Registry::BASE_GROUPS).map(&:tool_name) ]
+    end
+
+    assert_equal [ "zimmer-settings" ], reach.select { |_, names| names.include?("action_app_settings") }.keys
+    assert_equal %w[zimmer-settings zimmer-settings-readonly].sort,
+                 reach.select { |_, names| names.include?("get_app_settings") }.keys.sort
+  end
   test "required_variables spans env, headers, url and args" do
     server = ServersConfig::Server.new("composite", {
       "type" => "streamable-http",
