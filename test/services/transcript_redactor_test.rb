@@ -259,12 +259,15 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
 
   # The nouns the cloud CLIs use for the resource, in the framings they actually
   # appear in. Every value here is an identifier a `list` call hands out.
+  # Every entry must be one the rule WOULD match — a credential noun followed
+  # immediately by `:` or `=` and a long enough value. A framing with a space
+  # after the noun (`kubectl create secret generic NAME`) never reached the rule
+  # in the first place and would pass with the whole guard deleted.
   PUBLIC_IDENTIFIERS = [
     %(gcloud secrets versions access latest --secret=strad-prod-mcp-google-sheets-tadas412-ro),
-    %(aws secretsmanager get-secret-value --secret-id prod/api/google-sheets-reader),
     %(--secret=projects/strad-secrets-prod/secrets/google-sheets-ro/versions/latest),
     %(https://console.cloud.google.com/security/secret-manager?secret=strad-prod-mcp-google-sheets),
-    %(kubectl create secret generic zimmer-prod-registry-pull-token --dry-run=client),
+    %(vault kv get -format=json secret=strad-prod-google-sheets-ro),
     %(  secret: zimmer-production-tls-certificate),
     %({"token": "github-actions-deploy-workflow"})
   ].freeze
@@ -281,16 +284,34 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
   # any of these, and the second half of the list is deliberately adversarial:
   # values that are lowercase and hyphenated, like an identifier, but are real
   # credential formats.
+  # Each entry under "isolates" fails exactly ONE condition of
+  # `public_identifier?` and satisfies every other, so deleting that condition
+  # makes the case leak. A fixture that fails two conditions proves nothing
+  # about either.
   STILL_REDACTED = {
     "an opaque value after a bare SECRET=" => "SECRET=aB3xK9mQ2pL7vR4tY8nW",
     "a hex value after a bare secret=" => "secret=0123456789abcdef0123456789abcdef",
     "a value noun is never excused: client_secret" => %({"client_secret": "configured-client-secret"}),
     "a value noun is never excused: password" => "password=correct-horse-battery-staple",
     "a value noun is never excused: api_key" => "api_key: my-team-service-account",
-    "a UUID session token" => "token=550e8400-e29b-41d4-a716-446655440000",
-    "a hyphen-grouped hex key" => "secret=deadbeef-cafe-f00d-babe-0ff1ce5deadbe",
-    "an identifier-looking prefix on an opaque run" => "token=prod-aB3xK9mQ2pL7vR4tY8nWzC",
-    "a lowercase run with one long opaque segment" => "secret=prod-abcdefghijklmnopqrstuvwxyz"
+    # A compound ENDING in a bare noun is a value noun too. `preceded_by` is
+    # unanchored on the left, so its match on `GITHUB_TOKEN` starts at `TOKEN`;
+    # judging that tail alone would excuse every one of these.
+    "a compound ending in token: GITHUB_TOKEN" => "GITHUB_TOKEN=my-github-deploy-token-value",
+    "a compound ending in secret: WEBHOOK_SECRET" => "WEBHOOK_SECRET=tinsel-baffle-unroll-frisky",
+    "a compound ending in secret: JWT_SECRET" => "JWT_SECRET=change-me-in-production-now",
+    "a compound ending in secret: SLACK_SIGNING_SECRET" => "SLACK_SIGNING_SECRET=abc-def-ghi-jkl-mno-pqr",
+    "a compound ending in token: api_token" => "api_token=my-service-account-token",
+    "a camelCase compound: apiToken" => %({"apiToken": "my-service-account-token"}),
+    # Isolates the wordiness condition: lowercase, 5 segments, all short.
+    "isolates wordiness: a UUID session token" => "token=550e8400-e29b-41d4-a716-446655440000",
+    "isolates wordiness: a hyphen-grouped hex key" => "secret=deadbeef-cafe-f00d-babe-0ff1ce5deadbe",
+    # Isolates the lowercase condition: 4 segments, all short, all wordy.
+    "isolates case: an uppercase segment" => "secret=Prod-Api-Key-Store",
+    # Isolates the three-segment floor: lowercase, short, wordy.
+    "isolates the segment floor: two segments" => "secret=alphabet-charlies",
+    # Isolates MAX_SEGMENT: lowercase, 3 segments, wordy, one segment over 12.
+    "isolates max segment: a long opaque tail" => "secret=prod-api-abcdefghijklmnopqrst"
   }.freeze
 
   STILL_REDACTED.each do |description, line|
