@@ -11,7 +11,7 @@
 # Structured after InferenceController: a top-level menu-bar page with its own
 # routes rather than a nested resource.
 class OutcomesController < ApplicationController
-  before_action :load_filters, only: [ :index, :stats, :analyze_all ]
+  before_action :load_filters, only: [ :index, :stats, :goal_checks, :analyze_all ]
 
   # The ledger. Archived sessions only — see OutcomeAnalyses::LedgerQuery for
   # why, and for how the analysis columns ride along without loading a tree.
@@ -56,6 +56,14 @@ class OutcomesController < ApplicationController
   # happening across all of them", and mixing the two makes both worse.
   def stats
     @stats = OutcomeAnalyses::Stats.new(filters: @filters, grouping: params[:group_by])
+    load_filter_options
+  end
+
+  # How the goal check read on the sessions that came to rest — the measurement a
+  # consequence for an unmet goal has to be decided on (tadasant/zimmer#88). A pure
+  # read, like #stats; it analyzes nothing and spawns nothing.
+  def goal_checks
+    @tally = GoalCheckTally.new(filters: @filters)
     load_filter_options
   end
 

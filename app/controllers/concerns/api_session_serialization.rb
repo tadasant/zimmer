@@ -20,7 +20,10 @@ module ApiSessionSerialization
     @genesis_class_overrides ||= AppSetting.current.genesis_class_overrides || {}
   end
 
-  def session_json(session, include_transcript: false)
+  # @param goal_check_delegates [Array<GoalCheck::Delegate>, nil] this session's
+  #   spawned sessions' PR state, when a list caller batch-loaded it
+  #   (GoalCheck.delegated_pull_requests); nil lets GoalCheck read it on demand
+  def session_json(session, include_transcript: false, goal_check_delegates: nil)
     json = {
       id: session.id,
       slug: session.slug,
@@ -47,9 +50,10 @@ module ApiSessionSerialization
       subdirectory: session.subdirectory,
       goal: session.goal,
       # What GoalCheck reads back about that goal, or null for a free-text goal.
-      # Advisory: nothing in Zimmer acts on it. Computed from custom_metadata
-      # alone, so it costs no query on a list.
-      goal_check: GoalCheck.for(session)&.to_h,
+      # Advisory: nothing in Zimmer acts on it. Computed from custom_metadata,
+      # plus the PRs of the sessions it spawned when it recorded none of its own —
+      # which a list batch-loads rather than reading per row.
+      goal_check: GoalCheck.for(session, delegates: goal_check_delegates)&.to_h,
       mcp_servers: session.mcp_servers,
       # `mcp_servers` is only the explicitly-selected list. Consumers asking
       # "which MCP servers does this session actually have wired?" must read

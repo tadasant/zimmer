@@ -307,6 +307,36 @@ class OutcomesControllerTest < ActionDispatch::IntegrationTest
     assert_select "a[href=?]", outcomes_stats_path(agent_runtime: "codex", model: "gpt-5.6-terra")
   end
 
+  test "the goal-checks view tallies sessions at rest and lists the ones unmet on their own PR" do
+    pr = "https://github.com/tadasant/zimmer/pull/9"
+    holder = archived_fixture(title: "Held a PR without the label", status: :needs_input, root: "zimmer",
+                              runtime: "claude_code", model: "opus")
+    holder.update!(goal: "open-reviewed-green-pr", custom_metadata: {
+      "github_pull_request_urls" => [ pr ],
+      "github_pull_request_statuses" => { pr => "open" },
+      "github_pull_request_ci_statuses" => { pr => "pass" },
+      "github_pull_request_goal_facts" => {
+        pr => { "verification_section" => true, "verification_checked_boxes" => 1, "unchecked_boxes" => 0, "labels" => [] }
+      }
+    })
+
+    get outcomes_goal_checks_path, params: { agent_root: "zimmer" }
+
+    assert_response :success
+    assert_select "[data-verdict=unmet] .text-xl", text: "1"
+    assert_select "[data-own-pull-request-session=?]", holder.id.to_s
+    assert_select "a[href=?]", outcomes_stats_path(agent_root: "zimmer")
+    assert_select "select#outcome", count: 0
+    assert_select "select#analyzed", count: 0
+  end
+
+  test "the goal-checks view says so when nothing at rest has a checked goal" do
+    get outcomes_goal_checks_path
+
+    assert_response :success
+    assert_match(/No session at rest in this window has a catalog goal with checks/, response.body)
+  end
+
   test "the menu bar links to Outcomes" do
     get root_path
 

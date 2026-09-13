@@ -42,9 +42,16 @@
           <%= check.verdict.capitalize %>
         </span>
         <span class="text-xs text-gray-500">
-          <%= check.met_count %> of <%= check.criteria.size %> met · <%= check.goal_name %><%= " · session still running" if check.provisional %>
+          <%= check.met_count %> of <%= check.criteria.size %> met · <%= check.goal_name %><%= " · not at rest yet" if check.provisional %>
         </span>
       </div>
+      <% if check.delegated? %>
+        <p class="mt-1 text-xs text-gray-500" data-goal-check-delegated>
+          Judged on PRs recorded by
+          <% check.delegated_session_ids.each_with_index do |id, index| %><%= ", " if index.positive? %><%= link_to "session ##{id}", session_path(id), class: "text-indigo-600 hover:text-indigo-800" %><% end %>,
+          which this session spawned.
+        </p>
+      <% end %>
       <ul class="mt-2 space-y-1">
         <% check.criteria.each do |criterion| %>
           <% mark, mark_class, mark_label = status_marks.fetch(criterion.status) %>

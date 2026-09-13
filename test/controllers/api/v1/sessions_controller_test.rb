@@ -1657,7 +1657,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     check = JSON.parse(response.body)["session"]["goal_check"]
     assert_equal "open-reviewed-green-pr", check["goal_id"]
     assert_equal "unmet", check["verdict"]
-    assert_equal "No pull request is recorded for this session",
+    assert_equal "No pull request is recorded for this session or any session it spawned",
       check["criteria"].find { |c| c["key"] == "pull_request_open" }["detail"]
 
     session.update!(goal: "Just answer the question")

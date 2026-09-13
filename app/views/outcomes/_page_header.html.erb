@@ -1,5 +1,5 @@
-<%# Shared chrome for the two Outcomes surfaces: the back arrow, the title, and
-    the ledger/stats switch. Kept in one partial so the two pages cannot drift. %>
+<%# Shared chrome for the Outcomes surfaces: the back arrow, the title, and the
+    ledger/stats/goal-checks switch. Kept in one partial so the pages cannot drift. %>
 <div class="flex items-center justify-between gap-3 mb-4">
   <div class="flex items-center min-w-0">
     <%= link_to root_path, class: "text-gray-500 hover:text-gray-700 mr-3 shrink-0" do %>
@@ -14,5 +14,7 @@
         class: "px-3 py-1.5 #{current == :ledger ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}" %>
     <%= link_to "Stats", outcomes_stats_path(filters.to_query_params),
         class: "px-3 py-1.5 border-l border-gray-300 #{current == :stats ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}" %>
+    <%= link_to outcomes_goal_checks_path(filters.to_query_params),
+        class: "px-3 py-1.5 border-l border-gray-300 whitespace-nowrap #{current == :goal_checks ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}" do %><span class="sm:hidden">Goals</span><span class="hidden sm:inline">Goal checks</span><% end %>
   </nav>
 </div>

@@ -1504,6 +1504,38 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert unanalyzed.reload.archived?
   end
 
+  # The goal-checks tab: three header tabs, the tiles, the reason lists with their
+  # sample-id links, and the long-titled "unmet on its own PR" rows.
+  test "the outcomes goal-checks view does not overflow horizontally on a phone" do
+    pr = "https://github.com/some-very-long-organization-name/an-equally-long-repository-name/pull/12345"
+    holder = create_session(status: :needs_input, goal: "open-reviewed-green-pr", custom_metadata: {
+      "github_pull_request_urls" => [ pr ],
+      "github_pull_request_statuses" => { pr => "open" },
+      "github_pull_request_ci_statuses" => { pr => "fail" },
+      "github_pull_request_goal_facts" => {
+        pr => { "verification_section" => false, "verification_checked_boxes" => 0, "unchecked_boxes" => 2, "labels" => [] }
+      }
+    })
+    with_agent_root(holder, AgentRootsConfig.all.first.name)
+    router = create_session(title: "Route the work", status: :archived, archived_at: 1.hour.ago, goal: "open-reviewed-green-pr")
+    create_session(title: "Child", status: :archived, archived_at: 1.hour.ago, parent_session_id: router.id,
+                   goal: "open-reviewed-green-pr", custom_metadata: {
+                     "github_pull_request_urls" => [ pr.sub("12345", "12346") ],
+                     "github_pull_request_statuses" => { pr.sub("12345", "12346") => "merged" }
+                   })
+
+    visit outcomes_goal_checks_path
+    assert_selector "[data-own-pull-request-session='#{holder.id}']"
+    assert_selector "[data-verdict='unmet']"
+    assert_no_horizontal_overflow("outcomes goal checks")
+    page.save_screenshot(Rails.root.join("tmp/screenshots/outcomes-goal-checks-375.png").to_s)
+
+    page.driver.browser.manage.window.resize_to(1400, 900)
+    visit outcomes_goal_checks_path
+    assert_selector "[data-goal-check-tally]"
+    page.save_screenshot(Rails.root.join("tmp/screenshots/outcomes-goal-checks-1400.png").to_s)
+  end
+
   # The Gate Decisions detail page is the longest thing Zimmer renders: 8-12 KB of
   # long-form prose per entry, thick with file paths, branch names and bare URLs
   # in backticks — every one an unbreakable token, and `.prose .inline-code` sets
