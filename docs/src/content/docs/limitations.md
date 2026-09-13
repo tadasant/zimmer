@@ -4799,6 +4799,23 @@ it finished the work or deliberately fixed part of it, and both land on `pr_merg
 Separating them means reading the PR's scope and the current code, per issue. The sweep records the
 evidence; a human or an agent decides.
 
+### Stranded reads outside the Issues view lag by up to a sweep pass
+
+`liveness_state` is written only by the hourly sweep. The [Issues view](/operate/issues-view/)
+drops a stranded row whose issue its live GitHub snapshot shows closed. `get_work_backlog status:
+"stranded"`, the REST index, `counts.stranded`, the `stranded` filter on `/supervisor`, and the
+sweep's own alert have no snapshot to check against, so an issue closed since the last pass is still
+counted there until the next one. The alert is computed straight after a pass, so its reading is
+the freshest of these. That is at most an hour while
+fewer than `MAX_EXAMINED_PER_SWEEP` (200) rows are unsettled. Past that the unsettled rows
+round-robin too, and the lag grows with the population. Re-check the issue before acting on a
+row, which the tool's description already asks.
+
+Settled rows (`issue_closed`, `superseded`) are re-checked only with the budget left after every
+unsettled row. So a closed issue that is **reopened** waits for that leftover budget before it can
+read as stranded again, and while 200 or more rows are unsettled there is no leftover budget at all. Until then it still shows under "In GitHub, not on the queue", because
+nothing claims it.
+
 ---
 
 ## Hardcoded values that shouldn't be

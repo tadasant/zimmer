@@ -136,6 +136,14 @@ class WorkBacklogItem < ApplicationRecord
   # nobody was looking.
   RESOLVED_LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_PR_OPEN, LIVENESS_SUPERSEDED ].freeze
 
+  # The resolved verdicts that are not expected to change. `pr_open` is resolved
+  # but not settled: the PR can go quiet or merge with the issue still open, and
+  # either one makes the row stranded again. A closed issue is rarely reopened
+  # and a superseded row stays superseded. WorkBacklog::LivenessSweep re-checks
+  # these rows only after every other candidate, because the candidate population
+  # never shrinks: a candidate whose issue closed stays a candidate for good.
+  SETTLED_LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_SUPERSEDED ].freeze
+
   # The keys in the file's item schema that have a column here. Everything else
   # in an item — ratings, prompt, notes, gate_session, and whatever the gate adds
   # next — rides in `payload`.
