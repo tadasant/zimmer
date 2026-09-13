@@ -22,6 +22,11 @@ class GithubEventJob < ApplicationJob
   # Latency-sensitive trigger firing, the lane SlackEventJob shares.
   queue_as :triggers
 
+  # The arguments carry an issue's title and body. ActiveJob would print them on the INFO lines
+  # it writes when this is enqueued and performed, which is the text Webhooks::BaseController
+  # keeps out of the logs.
+  self.log_arguments = false
+
   EVENT = "issue opened"
 
   # What is kept of a delivery's issue: the fields a search-API item carries that the poller reads,
@@ -29,11 +34,19 @@ class GithubEventJob < ApplicationJob
   ITEM_FIELDS = %w[number title body html_url repository_url created_at].freeze
 
   # The issue in the shape GithubTriggerSearch reads a search-API item in.
+  #
+  # The body is cut one character past MAX_BODY_LENGTH: enough for #body_of and #context_block to
+  # see that it was longer and add their truncation marker, without storing up to a megabyte of it
+  # in the job's arguments.
   def self.item_arguments(issue)
     item = issue.slice(*ITEM_FIELDS)
-    item["user"] = { "login" => issue.dig("user", "login").to_s } if issue.dig("user", "login").present?
+    item["body"] = item["body"][0, MAX_BODY_LENGTH + 1] if item["body"].is_a?(String)
+
+    user = issue["user"]
+    item["user"] = { "login" => user["login"].to_s } if user.is_a?(Hash) && user["login"].present?
     item["labels"] = Array(issue["labels"]).filter_map { |label| { "name" => label["name"].to_s } if label.is_a?(Hash) && label["name"].present? }
-    item["pull_request"] = { "url" => issue.dig("pull_request", "url").to_s } if issue["pull_request"].present?
+    pull_request = issue["pull_request"]
+    item["pull_request"] = { "url" => (pull_request.is_a?(Hash) ? pull_request["url"] : pull_request).to_s } if pull_request.present?
     item
   end
 
@@ -48,9 +61,10 @@ class GithubEventJob < ApplicationJob
 
       fire(condition, item, event: EVENT, via: "webhook")
     rescue => e
-      # WARN, not ERROR: a fire that raised took its claim down with its transaction, so the poller
-      # still owns this issue and fires it on its next tick.
-      Rails.logger.warn "[GithubEventJob] Could not fire condition #{condition.id} for GitHub delivery #{delivery_id} " \
+      # #fire rescues its own spawn failures, so what reaches here failed before any fire began —
+      # reading the condition or matching the issue. No claim was taken, so the poller still owns
+      # the issue and fires it on its next tick: WARN, not ERROR.
+      Rails.logger.warn "[GithubEventJob] Could not match condition #{condition.id} for GitHub delivery #{delivery_id} " \
                         "(#{item_key(item)}): #{e.class}: #{e.message} — leaving it to the poller"
       ErrorReporter.report_exception(
         e,

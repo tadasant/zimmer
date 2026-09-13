@@ -168,4 +168,70 @@ class GithubEventJobTest < ActiveJob::TestCase
     assert_equal({ "login" => "octocat" }, item["user"])
     assert_includes GithubEventJob.item_arguments(github_issue(pull_request: true)).keys, "pull_request"
   end
+
+  # --- review follow-ups ------------------------------------------------------------------
+
+  # The claimed path's difference from #704: a raise after the session row is written takes the
+  # row down with the claim, so there is no created session to account for and the poller fires
+  # the issue exactly once.
+  test "a raise after the session row is written rolls the session back with its claim" do
+    issue = github_issue(number: 11)
+    AgentSessionJob.stubs(:enqueue_new_session).raises(StandardError, "enqueue exploded")
+
+    assert_no_difference [ -> { Session.count }, -> { TriggerEventClaim.count } ] do
+      run_issue(issue)
+    end
+
+    AgentSessionJob.stubs(:enqueue_new_session)
+    assert_difference -> { Session.count }, 1 do
+      poll_issues([ searched_issue(issue) ])
+    end
+    assert_equal "poll", TriggerEventClaim.sole.claimed_via
+  end
+
+  test "skip_if_pending_session on a delivery releases the claim of the issue it held back" do
+    @trigger.update_columns(skip_if_pending_session: true)
+
+    assert_equal 1, fires(github_issue(number: 12))
+    assert_equal 0, fires(github_issue(number: 13))
+
+    assert_equal [ "github:tadasant/zimmer#12:opened" ], TriggerEventClaim.pluck(:event_key)
+  end
+
+  test "a github_label fire from the poller takes no claim while the GitHub webhook is on" do
+    label_trigger = triggers(:github_label_trigger)
+    label_trigger.update_columns(status: "enabled")
+    label_condition = trigger_conditions(:github_label_condition)
+    labelled = searched_issue(github_issue(number: 14, labels: [ "ready to merge" ], pull_request: true))
+
+    GithubSearchService.stubs(:search_issues).returns([ labelled ])
+    assert_difference -> { Session.for_trigger(label_trigger.id).count }, 1 do
+      GithubTriggerPollerJob.new.send(:process_condition, label_condition.reload)
+    end
+
+    assert_equal 0, TriggerEventClaim.count
+    assert_includes label_condition.reload.github_seen_items, "tadasant/zimmer#14:ready to merge"
+  end
+
+  test "a delivered body is cut just past what the prompt uses, so the truncation marker survives" do
+    long = "x" * (GithubTriggerPollerJob::MAX_BODY_LENGTH + 5_000)
+    item = GithubEventJob.item_arguments(github_issue(number: 15, body: long))
+
+    assert_equal GithubTriggerPollerJob::MAX_BODY_LENGTH + 1, item["body"].length
+
+    run_issue(github_issue(number: 15, body: long))
+    assert_includes Session.order(:id).last.prompt, "…(truncated)"
+  end
+
+  test "a malformed user or pull_request field is read defensively rather than raising" do
+    item = GithubEventJob.item_arguments(github_issue(number: 16).merge("user" => "octocat", "pull_request" => "yes"))
+
+    assert_nil item["user"]
+    assert_equal({ "url" => "yes" }, item["pull_request"])
+  end
+
+  test "neither webhook job writes its arguments to the log" do
+    refute GithubEventJob.log_arguments?
+    refute SlackEventJob.log_arguments?
+  end
 end

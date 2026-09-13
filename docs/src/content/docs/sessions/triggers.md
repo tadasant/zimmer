@@ -1084,6 +1084,8 @@ is saved. Then add a webhook to the repository or organization with the payload 
 The webhook's deliveries and claims are summarised with Slack's on `/health` — see the *Webhook Ingest*
 panel described under [Slack Events API delivery](#slack-events-api-delivery). A quiet day does not
 warn for GitHub the way it does for Slack, because GitHub sends an event only when an issue changes.
+One reading there is not a miss: when a delivery spawned nothing because of burst control or a pending
+session, its claim is released, and the poller's later fire of that issue counts as a poll claim.
 
 #### Opting an issue out, with a label
 
@@ -1112,7 +1114,10 @@ gh issue create --label "hold issue work gate" --title "…" --body "…"
 ```
 
 — rather than opening it and adding the label a moment later. A label added after the fact races the
-next tick, and if the tick wins, the trigger has already fired.
+next tick, and if the tick wins, the trigger has already fired. With
+[GitHub webhook delivery](#github-webhook-delivery) switched on it does not even race: the exclusion
+is checked against the `issues.opened` delivery, which carries only the labels the issue was opened
+with, so a label added afterwards — by hand or by a labeling Action — is always too late.
 
 *Removing* the label later is not a reliable way to un-hold an issue either. The poller re-queries a
 30-minute window behind its cursor, and that cursor advances only when an issue **fires** — so the

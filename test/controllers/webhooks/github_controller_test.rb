@@ -314,4 +314,20 @@ class Webhooks::GithubControllerTest < ActionDispatch::IntegrationTest
 
     assert_equal 0, TriggerEventClaim.count
   end
+
+  # A repository hook and an organization hook both installed deliver one issue twice, under two
+  # delivery ids. The delivery record cannot tell them apart; the claim does.
+  test "one issue delivered under two different X-GitHub-Delivery ids creates one session" do
+    payload = opened(4343)
+
+    assert_difference -> { Session.count }, 1 do
+      deliver(payload, delivery: "repo-hook-guid")
+      deliver(payload, delivery: "org-hook-guid")
+    end
+
+    assert_response :ok
+    assert_equal({ "ok" => true, "duplicate" => false }, response.parsed_body)
+    assert_equal 2, WebhookDelivery.count
+    assert_equal 1, TriggerEventClaim.count
+  end
 end
