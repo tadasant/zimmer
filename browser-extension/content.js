@@ -1,13 +1,20 @@
 // The pin and the composer, injected into the current tab when the toolbar
-// icon is clicked. Everything it draws lives in a shadow root on one host
-// element, so the page's CSS cannot restyle it and it cannot restyle the page.
+// icon is clicked or a shortcut pressed. Everything it draws lives in a shadow
+// root on one host element, so the page's CSS cannot restyle it and it cannot
+// restyle the page.
 //
-// The flow: arm → the page gets a crosshair and a banner → one click drops the
-// pin and opens the composer → Send hands the payload to the service worker,
-// which is the only part that talks to Zimmer → a toast with a link to the new
-// session. Esc backs out of any step. Enter while armed skips the pin.
+// Two ways in, chosen by the service worker's start message:
 //
-// Idempotent under re-injection: clicking the icon twice arms once.
+// - No pin (the icon, Alt+Shift+Z): the composer opens at once, with the whole
+//   page as the context. Its "Drop a pin" button switches to the crosshair.
+// - Pin (Alt+Shift+X): arm → the page gets a crosshair and a banner → one click
+//   drops the pin and opens the composer. Enter while armed skips the pin.
+//
+// Either way, Send hands the payload to the service worker, which is the only
+// part that talks to Zimmer → a toast with a link to the new session. Esc backs
+// out of any step.
+//
+// Idempotent under re-injection: starting twice starts once.
 (() => {
   if (window.__zimmerQuickRouter) {
     return;
@@ -301,9 +308,9 @@
     Object.assign(state, { host: null, root: null, overlay: null, banner: null, pinEl: null, composer: null, pin: null, sending: false });
   }
 
-  // A toast's own timer must only ever remove the toast: re-arming during
-  // those seconds mounts a new overlay that the timer has no business tearing
-  // down.
+  // A toast's own timer must only ever remove the toast: starting again during
+  // those seconds mounts a new overlay or composer that the timer has no
+  // business tearing down.
   function clearToast() {
     if (state.toastTimer) clearTimeout(state.toastTimer);
     state.toastTimer = null;
@@ -375,30 +382,21 @@
     if (state.pin) {
       anchor.append(el("span", "tag", `<${state.pin.tag}>`));
       anchor.append(el("span", "text", state.pin.text || "(no text)"));
-      const repin = el("button", null, "Move pin");
-      repin.addEventListener("click", () => {
-        composer.remove();
-        state.composer = null;
-        state.pinEl?.remove();
-        state.pinEl = null;
-        state.pin = null;
-        arm();
-      });
-      anchor.append(repin);
+      const move = el("button", null, "Move pin");
+      move.addEventListener("click", repin);
+      anchor.append(move);
     } else {
       anchor.append(el("span", "text", "No pin — the whole page is the context."));
       const addPin = el("button", null, "Drop a pin");
-      addPin.addEventListener("click", () => {
-        composer.remove();
-        state.composer = null;
-        arm();
-      });
+      addPin.addEventListener("click", repin);
       anchor.append(addPin);
     }
     composer.append(anchor);
 
     const textarea = el("textarea");
-    textarea.placeholder = "What did you notice? An agent session picks this up with the page and the pin.";
+    textarea.placeholder = state.pin
+      ? "What did you notice? An agent session picks this up with the page and the pin."
+      : "What did you notice? An agent session picks this up with the page.";
     textarea.value = state.draft;
     textarea.addEventListener("input", () => { state.draft = textarea.value; });
     textarea.addEventListener("keydown", (event) => {
@@ -416,9 +414,32 @@
     actions.append(sendButton);
     composer.append(actions);
 
+    // Keystrokes stay in the composer. Past the shadow root they are retargeted
+    // to the host element, which a page's single-key shortcuts do not take for a
+    // text field: on GitHub, every `s` typed here focused its search instead.
+    // Listeners on the composer's own elements run first, and Esc and Enter
+    // still reach `onKeydown`, which listens in the capture phase.
+    for (const type of ["keydown", "keypress", "keyup"]) {
+      composer.addEventListener(type, (event) => event.stopPropagation());
+    }
+
     state.root.appendChild(composer);
     state.composer = composer;
     textarea.focus();
+  }
+
+  // From the composer back to the crosshair. The draft lives in `state.draft`,
+  // so it comes back with the composer the pin opens.
+  function repin() {
+    // Mid-send the composer stays: its reply is the only word on whether the
+    // message arrived.
+    if (state.sending) return;
+    state.composer?.remove();
+    state.composer = null;
+    state.pinEl?.remove();
+    state.pinEl = null;
+    state.pin = null;
+    arm();
   }
 
   function showError(message) {
@@ -467,11 +488,15 @@
       return;
     }
 
+    // Esc may have torn everything down while the request was out. It arrived
+    // all the same, so the toast still says so — a silent send reads as a lost
+    // one, and invites a second.
     state.draft = "";
-    state.composer.remove();
+    state.composer?.remove();
     state.composer = null;
     state.pinEl?.remove();
     state.pinEl = null;
+    mount();
     toast(result.sessionUrl);
   }
 
@@ -495,7 +520,7 @@
   }
 
   // The toast was the last thing showing, so its end is the end — unless the
-  // human re-armed in the meantime, in which case only the toast goes.
+  // human started again in the meantime, in which case only the toast goes.
   function finish() {
     if (state.overlay || state.composer) {
       clearToast();
@@ -505,8 +530,8 @@
   }
 
   // Esc. The draft survives: Esc is also how the page's own dialogs close, and
-  // a paragraph of feedback is not something to lose to a reflex. Re-arming
-  // brings it back; sending clears it.
+  // a paragraph of feedback is not something to lose to a reflex. Starting
+  // again brings it back; sending clears it.
   function cancel() {
     unmount();
   }
@@ -527,13 +552,37 @@
     }
   }
 
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message?.type !== START_MESSAGE) return;
+  // Straight to the composer, no pin. An open composer is refocused rather than
+  // rebuilt, so a pin already dropped stays; a crosshair already up is skipped
+  // the way Enter skips it.
+  function startComposer() {
+    mount();
     if (state.composer) {
       state.composer.querySelector("textarea")?.focus();
       return;
     }
+    state.pin = null;
+    disarm();
+    openComposer();
+  }
+
+  // The crosshair. With the composer open, this is the composer's own pin
+  // button.
+  function startPin() {
+    if (state.composer) {
+      repin();
+      return;
+    }
     arm();
+  }
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== START_MESSAGE) return;
+    if (message.pin) {
+      startPin();
+    } else {
+      startComposer();
+    }
   });
 
   window.__zimmerQuickRouter = { version: 1 };

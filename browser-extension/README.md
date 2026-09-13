@@ -1,8 +1,9 @@
 # Zimmer Quick Router — browser extension
 
-The Quick Router bubble, from any page on the web. Click the toolbar icon, click the thing your
-feedback is about, type, send. A Zimmer agent session starts with your words, the page's URL and
-content, and the spot you pinned. You never leave the page.
+The Quick Router bubble, from any page on the web. Press `Alt+Shift+Z`, type, send — or press
+`Alt+Shift+X` and click the thing your feedback is about first. A Zimmer agent session starts with
+your words, the page's URL and content, and the spot you pinned, if you pinned one. You never leave
+the page.
 
 Chrome, Manifest V3, no build step. The docs page is
 [Extend → The browser extension](https://docs.zimmer.tadasant.com/extend/browser-extension/).
@@ -21,9 +22,14 @@ is on the tailnet.
 
 ## Use
 
-- Click the icon, or press `Alt+Shift+Z`.
-- Click where the feedback applies. `Enter` skips the pin; `Esc` cancels.
+- Click the icon, or press `Alt+Shift+Z`: the composer opens, with the whole page as the context.
+- Or press `Alt+Shift+X` (or **Drop a pin** in the composer) and click where the feedback applies.
+  `Enter` skips the pin; `Esc` cancels.
 - Type, then `⌘/Ctrl+Enter`. A toast links to the session Zimmer started.
+
+Chrome applies an extension's suggested shortcuts when it is installed. A copy loaded before
+`Alt+Shift+X` existed may not have it after a reload — bind it on `chrome://extensions/shortcuts`,
+where both shortcuts can also be changed.
 
 ## What it sends, and what the key can do
 
@@ -42,5 +48,5 @@ sessions and read nothing back. Revoke it on the same settings page.
 | --- | --- |
 | `manifest.json` | MV3. `activeTab` + `scripting` for the current tab on click; `storage` for the two settings; host permission for the Zimmer origin only, requested at save time. |
 | `background.js` | The service worker. The only part that talks to Zimmer — an extension's own fetch to a host it has permission for is exempt from CORS, so Zimmer needs none. |
-| `content.js` | The pin overlay and the composer, in a shadow root. Injected on click, once per page. |
+| `content.js` | The pin overlay and the composer, in a shadow root. Injected on the icon or a shortcut, once per page. |
 | `options.html`, `options.js`, `settings.js` | The options page and the settings shape it shares with the worker. |
