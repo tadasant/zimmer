@@ -420,6 +420,83 @@ module AutomatedPrompts
     )
   end
 
+  # ---- Human-authorized merge -------------------------------------------
+  #
+  # THE ONE SANCTIONED PATH FOR AN AGENT TO MERGE ITS OWN PR.
+  #
+  # Zimmer's standing convention is that an agent never merges its own work: the
+  # pull request is the human review gate, and a session that opened one holds it
+  # until a human decides. This message is what a human deciding LOOKS like from
+  # inside the session. It is emitted by exactly one code path —
+  # Sessions::AuthorizeMerge, behind the Merge button on the dashboard's User view
+  # — and that button is only ever rendered next to a PR that is open and CI-green.
+  #
+  # So the authorization has to be unmistakable in the text itself, because the
+  # text is all the merging session sees. Three things carry it: the marker line
+  # below, the named surface ("the Merge button ... in the Zimmer dashboard"), and
+  # the explicit statement that the click IS the sign-off.
+  #
+  # The marker is what the MERGING SESSION reads; it is not what an AUDIT trusts.
+  # Any caller of `action_session` → `follow_up` can type this text. The record an
+  # auditor keys on is the HumanMessage with entry_point `web_ui.authorize_merge`,
+  # which only the browser controllers write — see Sessions::AuthorizeMerge.
+  #
+  # The conditions are NOT advisory. A green PR can still be un-mergeable — a base
+  # branch that moved under it is the common case — so the message spends most of
+  # its length on what to check before merging and what to do instead if the check
+  # fails.
+  MERGE_AUTHORIZATION_MARKER = "[HUMAN-AUTHORIZED MERGE]"
+
+  MERGE_AUTHORIZATION_TEMPLATE = <<~PROMPT.strip
+    #{MERGE_AUTHORIZATION_MARKER}
+
+    The user has hit the Merge button on this PR in the Zimmer dashboard:
+
+    %{pr_url}
+
+    That click is your explicit permission to execute the merge. It is a human
+    sign-off, not an agent deciding on its own — Zimmer's standing rule that you
+    never merge your own work does not apply to THIS PR, and applies to every
+    other one exactly as before.
+
+    Do this, in order:
+
+    1. Confirm the PR is still open and its checks are still green. If it has
+       already merged, say so and skip to step 4.
+    2. Confirm there are no merge conflicts with the base branch. If there are,
+       RESOLVE THEM FIRST — rebase or merge the base in, push, and let CI go green
+       again before you merge. Do not merge through a conflict and do not force
+       anything.
+    3. Merge the PR.
+    4. Self-archive this session once the merge is complete. If the merge fired
+       post-merge automation (a deploy, a release build, CI on the base branch),
+       follow the rules you already have for it: sleep on those runs with a
+       bounded self-wake and archive once they are green, rather than parking in
+       `needs_input`.
+
+    If you cannot merge — the PR is closed, the conflict is not yours to resolve,
+    CI has since gone red — do NOT archive. Say what stopped you and come to rest
+    in `needs_input` so the user sees it.
+  PROMPT
+
+  # The message the Merge button sends to the session holding the PR.
+  #
+  # @param pr_url [String] the full GitHub PR URL the human clicked Merge on
+  # @return [String]
+  def self.merge_authorization_message(pr_url)
+    format(MERGE_AUTHORIZATION_TEMPLATE, pr_url: pr_url)
+  end
+
+  # Whether a prompt is one of these. Written next to the template for the same
+  # reason merge_conflict_pr_url is: a reworded template must not silently stop
+  # being recognizable as a human-authorized merge.
+  #
+  # @param prompt [Object]
+  # @return [Boolean]
+  def self.merge_authorization?(prompt)
+    prompt.is_a?(String) && prompt.include?(MERGE_AUTHORIZATION_MARKER)
+  end
+
   # "owner/repo" out of a GitHub PR URL, or nil if it is not one.
   def self.repo_slug_from_pr_url(pr_url)
     return nil unless pr_url.is_a?(String)

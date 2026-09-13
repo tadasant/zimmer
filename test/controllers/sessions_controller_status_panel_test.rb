@@ -161,8 +161,8 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
     get root_url
 
     assert_response :success
-    assert_select "##{ActionView::RecordIdentifier.dom_id(@session)}"
-    assert_select "##{ActionView::RecordIdentifier.dom_id(fork)}", 0
+    assert_select "#user_view_row_#{@session.id}"
+    assert_select "#user_view_row_#{fork.id}", 0
   end
 
   test "regenerate enqueues a forced generation" do

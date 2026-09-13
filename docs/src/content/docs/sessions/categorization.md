@@ -3,9 +3,16 @@ title: Auto-categorization
 description: How a new session gets sorted into a category, what Zimmer records when you correct it, and how to tune it and check whether the tuning helped.
 ---
 
-Zimmer sorts every new session into one of your dashboard categories. You correct it by
-dragging the card somewhere else. This page covers both halves: how the sort works, and
-what happens to your correction.
+Zimmer sorts every new session into one of your categories. You correct it by moving the session
+somewhere else. This page covers both halves: how the sort works, and what happens to your
+correction.
+
+:::note
+The dashboard's category-grouped card grid was replaced by the [User view](/sessions/user-view/),
+so there is no longer a *drag a card into another section* gesture. Categories themselves are
+unchanged — the sort still runs, corrections are still recorded — and they are moved and edited from
+`/supervisor/categories`, the `manage_categories` and `action_session` MCP tools, and the REST API.
+:::
 
 ## How a session gets its category
 
@@ -53,9 +60,8 @@ copies it forward from the answer it overrules, so each correction stands alone 
 and the category being deleted. The foreign keys are nullified, and the category names are
 stored alongside the ids.
 
-A correction is recorded from every surface that moves a card: the dashboard's drag and
-right-click menu, `set_category`, the REST API's `set_category` and `reorder`, and the
-`manage_categories` and `action_session` MCP tools. That works because the hook sits on the
+A correction is recorded from every surface that moves a session: the REST API's `set_category` and
+`reorder`, the `manage_categories` and `action_session` MCP tools, and `/supervisor/categories`. That works because the hook sits on the
 column (`SessionCategorization`, an `after_update_commit` on `category_id`), not on any one
 controller, so a surface added later records corrections without extra work. `source` says
 which surface it was. A surface that doesn't name itself is recorded as `unattributed`
@@ -88,9 +94,9 @@ Open **Settings → Categorization** (`/settings/categorization`). There are thr
 the order to reach for them:
 
 1. **Category descriptions.** The page lists what the model sees for each category and flags
-   the ones with no description. Edit one from the pencil on its dashboard section. The
-   **+ New category** button opens the same form, so a category can have a description from
-   the start.
+   the ones with no description. Edit one at `/supervisor/categories`, or with the
+   `manage_categories` MCP tool, both of which can also create one with a description from the
+   start.
 2. **Category guidance.** Free text, up to 2,000 characters, placed inside the category
    task between the built-in instruction and the candidate list, wrapped in
    `<operator_guidance>` tags and introduced as being about the category choice only. You

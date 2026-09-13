@@ -2,7 +2,8 @@ require "test_helper"
 
 # Covers the dashboard's Advanced Search behavior:
 #   - filtering sessions by agent root
-#   - rendering a flat results list (and hiding the category grid) when a search is active
+#   - a search narrowing the board in place rather than replacing it with a
+#     separate results presentation
 #   - how the status filter composes with a search
 #
 # The fixtures sit in `needs_input` so they are visible under the dashboard's default
@@ -53,10 +54,10 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
 
     # Both the metadata-keyed and the legacy URL+subdirectory session match; the
     # session explicitly keyed to another root does not.
-    assert_select "#sessions_grid turbo-frame", count: 2
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}"
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_legacy_session)}"
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@other_root_session)}", count: 0
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 2
+    assert_select "#user_view_row_#{@zimmer_session.id}"
+    assert_select "#user_view_row_#{@zimmer_legacy_session.id}"
+    assert_select "#user_view_row_#{@other_root_session.id}", count: 0
   end
 
   test "filtering by a different agent root returns its sessions" do
@@ -65,39 +66,36 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
 
     # Bounded, so an extra row leaking into this filter fails rather than passing
     # the three per-row assertions below.
-    assert_select "#sessions_grid turbo-frame", count: 2
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@other_root_session)}"
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 2
+    assert_select "#user_view_row_#{@other_root_session.id}"
     # The `zimmer`-keyed session is excluded on its key. The key-LESS legacy row is
     # not: since #67 every root shares one (url, subdirectory), so the fallback
     # cannot tell which of them a row with no key belongs to, and it matches both.
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}", count: 0
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_legacy_session)}"
+    assert_select "#user_view_row_#{@zimmer_session.id}", count: 0
+    assert_select "#user_view_row_#{@zimmer_legacy_session.id}"
   end
 
   test "filtering by an unknown agent root returns no sessions" do
     get root_url(agent_root: "does-not-exist")
     assert_response :success
 
-    assert_match(/No sessions found/, response.body)
+    # The board's own placeholder rather than the page-level empty state: the User
+    # view keeps its list in the DOM whether or not it has rows, so that a Trash
+    # the operator undoes has somewhere to put the row back.
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 0
+    assert_select "[data-user-view-target='empty']", text: /No sessions match these filters/
   end
 
-  test "an active search renders the flat results list and hides the category grid" do
+  # A search is a NARROWING of the board, not a different screen. Bouncing the
+  # operator into a separate results presentation is exactly what the User view
+  # exists to stop: they lose the row controls they were working down the page.
+  test "an active search narrows the board in place rather than replacing it" do
     get root_url(agent_root: "zimmer")
     assert_response :success
 
-    # Flat results section present; category sections (Uncategorized + drag-and-drop) absent.
-    assert_select "#search_results"
-    assert_select "#uncategorized_section", count: 0
-    assert_select "[data-controller~='category-dnd']", count: 0
-  end
-
-  test "no search renders the category grid and not the flat results list" do
-    get root_url
-    assert_response :success
-
-    assert_select "#uncategorized_section"
-    assert_select "[data-controller~='category-dnd']"
-    assert_select "#search_results", count: 0
+    assert_select "#user_view_list"
+    assert_select "#user_view_row_#{@zimmer_session.id}"
+    assert_select "#user_view_row_#{@other_root_session.id}", count: 0
   end
 
   test "a search reaches every status when none is ticked, and narrows when one is" do
@@ -106,16 +104,16 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     # Nothing ticked: the search spans every status, trash included.
     get root_url(every_status_params(agent_root: "zimmer"))
     assert_response :success
-    assert_select "#sessions_grid turbo-frame", count: 2
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 2
 
     # Naming one status narrows the same search to it.
     get root_url(every_status_params(agent_root: "zimmer", status: [ @zimmer_session.status ]))
     assert_response :success
-    assert_select "#sessions_grid turbo-frame", count: 1
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}"
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
+    assert_select "#user_view_row_#{@zimmer_session.id}"
   end
 
-  test "a text query activates the flat list, and spans the trash when no status is ticked" do
+  test "a text query spans the trash when no status is ticked" do
     archived = Session.create!(
       git_root: "https://github.com/tadasant/zimmer.git",
       prompt: "trashed match",
@@ -131,8 +129,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
 
     get root_url(every_status_params(q: "Findme"))
     assert_response :success
-    assert_select "#search_results"
-    assert_select "#sessions_grid turbo-frame", count: 2
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 2
   end
 
   test "agent root filter and text query combine" do
@@ -141,8 +138,8 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     get root_url(agent_root: "zimmer", q: "Special")
     assert_response :success
 
-    assert_select "#sessions_grid turbo-frame", count: 1
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}"
+    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
+    assert_select "#user_view_row_#{@zimmer_session.id}"
   end
 
   test "an explicit metadata key wins over a matching git_root + subdirectory" do
@@ -152,10 +149,10 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     # explicit key is present (parity with AgentRootsConfig.find_for_session).
     get root_url(agent_root: "general-agent")
     assert_response :success
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@other_root_session)}"
+    assert_select "#user_view_row_#{@other_root_session.id}"
 
     get root_url(agent_root: "zimmer")
     assert_response :success
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@other_root_session)}", count: 0
+    assert_select "#user_view_row_#{@other_root_session.id}", count: 0
   end
 end

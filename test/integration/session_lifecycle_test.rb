@@ -197,7 +197,7 @@ class SessionLifecycleTest < IntegrationTestCase
     archived = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Archived", status: "archived", agent_runtime: "claude_code")
 
     # Ask for the two live statuses explicitly.
-    get root_path(every_status_params(status: %w[waiting running]))
+    get root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, status: %w[waiting running]))
 
     assert_response :success
 
@@ -207,7 +207,7 @@ class SessionLifecycleTest < IntegrationTestCase
     assert_select "turbo-frame[id^='session_']:not(#session_detail)", 2
 
     # Ticking nothing means every status, archived included.
-    get root_path(every_status_params)
+    get root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
 
     assert_response :success
 

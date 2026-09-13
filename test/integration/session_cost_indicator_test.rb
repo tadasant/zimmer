@@ -18,7 +18,8 @@ class SessionCostIndicatorTest < ActionDispatch::IntegrationTest
   end
 
   test "the dashboard card carries the session's cost" do
-    get root_path
+    # The cost figure is on the session CARD, which the flat sort views render.
+    get root_path(view: SessionsController::VIEW_MODE_CREATED_DESC)
 
     assert_response :success
     assert_select "##{ActionView::RecordIdentifier.dom_id(@session)}", 1,

@@ -1,0 +1,53 @@
+<%# The Merge button — the one place in Zimmer where a human authorizes an agent
+    to merge its own work.
+
+    Rendered on every row and in one of three states, so the button's own face
+    always answers "what happened when I clicked it":
+
+      * offered   — the PR is open and CI is green. Clicking sends the session the
+                    authorization message (Sessions::AuthorizeMerge).
+      * sent      — this PR has already been authorized from this board. The
+                    button says so and is disabled; a double-click cannot send a
+                    second copy, and the server refuses one anyway.
+      * merged    — the poller has seen the PR merge. Nothing left to do.
+
+    When none of those hold the button is not rendered at all, and the row is
+    quieter for it: a board of fifty rows with fifty greyed-out Merge buttons is a
+    board you stop reading.
+
+    Wrapped in its own id so #authorize_merge can replace exactly this element
+    over a turbo stream, leaving the operator's place on the board untouched.
+
+    Locals:
+      agent_session - the session %>
+<% pr = Sessions::PrSummary.for(agent_session) %>
+<span id="user_view_merge_<%= agent_session.id %>" class="shrink-0">
+  <% if pr.merged? %>
+    <span class="inline-flex items-center rounded-md border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-700"
+          title="This PR is merged.">
+      <svg class="-ml-0.5 mr-1.5 h-4 w-4" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="<%= pr_icon_path("merged") %>"/>
+      </svg>
+      Merged
+    </span>
+  <% elsif (authorized_at = Sessions::AuthorizeMerge.authorized_at(agent_session, pr.url)) %>
+    <span class="inline-flex items-center rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700"
+          title="Merge authorized at <%= authorized_at %>. The session has been told to merge, confirm there are no conflicts, and archive itself.">
+      <svg class="-ml-0.5 mr-1.5 h-4 w-4 animate-pulse" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
+      </svg>
+      Merge sent
+    </span>
+  <% elsif pr.mergeable? %>
+    <%= button_to authorize_merge_session_path(agent_session),
+          method: :post,
+          form: { data: { turbo: true }, class: "inline-block" },
+          class: "inline-flex items-center rounded-md border border-transparent bg-green-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-green-500",
+          title: "Authorize session #{agent_session.id} to merge #{pr.url}. Your click is the sign-off — the session checks for conflicts, merges, and archives itself." do %>
+      <svg class="-ml-0.5 mr-1.5 h-4 w-4" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="<%= pr_icon_path("merged") %>"/>
+      </svg>
+      Merge
+    <% end %>
+  <% end %>
+</span>

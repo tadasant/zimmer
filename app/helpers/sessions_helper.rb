@@ -78,6 +78,18 @@ module SessionsHelper
     end
   end
 
+  # The DOM id of a session's row in the dashboard's User view.
+  #
+  # Deliberately NOT `dom_id(session)`. That id belongs to the session CARD, and
+  # Session#broadcast_individual_card_to_sessions_index replaces whatever holds it
+  # with a freshly rendered card on every update — which on a User view page would
+  # swap a row for a card mid-scroll. One spelling, here, because the controller
+  # (which sends the removal stream when a row is trashed) and the partial (which
+  # renders the id) have to agree.
+  def user_view_row_dom_id(session)
+    "user_view_row_#{session.id}"
+  end
+
   # Extract PR number from a GitHub PR URL for display
   def extract_pr_number(url)
     match = url.to_s.match(%r{/pull/(\d+)})

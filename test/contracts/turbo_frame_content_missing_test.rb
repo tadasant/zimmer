@@ -36,11 +36,11 @@ class TurboFrameContentMissingTest < ActionDispatch::IntegrationTest
   DASHBOARD_PAGES = [
     "/",
     "/?view=ranked",
-    "/?view=categories",
+    "/?view=user",
     "/?view=last_touched",
     "/?view=created_desc",
     "/?filters=1&status%5B%5D=waiting&status%5B%5D=running&status%5B%5D=needs_input&view=ranked",
-    "/?filters=1&status%5B%5D=waiting&status%5B%5D=running&status%5B%5D=needs_input&view=categories",
+    "/?filters=1&status%5B%5D=waiting&status%5B%5D=running&status%5B%5D=needs_input&view=user",
     "/?search=a"
   ].freeze
 

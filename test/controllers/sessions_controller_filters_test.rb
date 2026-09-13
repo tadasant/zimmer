@@ -3,8 +3,9 @@ require "test_helper"
 # The dashboard's Filters section: the status multi-select, its default, "none
 # selected means show all", persistence across requests, and the reset control.
 #
-# Statuses are asserted through the rendered cards rather than an assigns() peek,
-# because what the filter is for is which cards a person sees.
+# Statuses are asserted through the rendered rows rather than an assigns() peek,
+# because what the filter is for is which sessions a person sees. The default view
+# is the User view, so a "card" here is one of its rows.
 class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   setup do
     McpOauthPendingFlow.delete_all
@@ -133,18 +134,18 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
     assert_cards [ @archived ]
   end
 
-  test "the scheduling class filter keeps the category grid rather than flattening it" do
-    # It is a filter, not a search: it narrows the view you are in. Persisting it must
-    # not silently replace the category grid with the flat results list forever.
+  test "the scheduling class filter narrows the view you are in rather than replacing it" do
+    # It is a filter, not a search. Persisting it must not silently swap the view the
+    # operator chose for a different presentation on every later visit.
     get root_url(filters: "1", priority_class: SessionGenesis::PRIORITY)
     assert_response :success
-    assert_select "#category_sections", count: 1
-    assert_select "#search_results", count: 0
+    assert_select "#user_view_list", count: 1
+    assert_select "#flat_sessions", count: 0
 
     get root_url
     assert_response :success
-    assert_select "#category_sections", count: 1
-    assert_select "#search_results", count: 0
+    assert_select "#user_view_list", count: 1
+    assert_select "#flat_sessions", count: 0
   end
 
   private
@@ -158,16 +159,16 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
     )
   end
 
-  # Asserts the rendered dashboard holds a card for each expected session and for no
+  # Asserts the rendered dashboard holds a row for each expected session and for no
   # other session in the fixture set.
   def assert_cards(expected)
     all = [ @waiting, @running, @needs_input, @failed, @archived ]
     all.each do |session|
-      frame = "turbo-frame##{ActionView::RecordIdentifier.dom_id(session)}"
+      row = "#user_view_list li#user_view_row_#{session.id}"
       if expected.include?(session)
-        assert_select frame, { count: 1 }, "expected a card for the #{session.status} session"
+        assert_select row, { count: 1 }, "expected a row for the #{session.status} session"
       else
-        assert_select frame, { count: 0 }, "did not expect a card for the #{session.status} session"
+        assert_select row, { count: 0 }, "did not expect a row for the #{session.status} session"
       end
     end
   end
