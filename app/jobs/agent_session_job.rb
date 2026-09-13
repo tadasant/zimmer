@@ -2245,9 +2245,11 @@ class AgentSessionJob < ApplicationJob
               # queued message instead would re-spawn straight into the same quota
               # or auth wall. Read the park markers rather than sniffing the error
               # string, so every park routes the same way.
-              parked = session.reload.metadata&.dig("auth_outage_reason").present? ||
-                ProviderQuotaWallPark.parked?(session)
-              if parked
+              parked = parked_exit?(session.reload)
+              # A decision that carries a reason is a stop, not a finished turn — a
+              # quota wall past its re-check ceiling, or one whose re-check could not
+              # be scheduled — and is recorded as one even though nothing parked it.
+              if parked || exit_decision.error_message.present?
                 log_buffer.add(
                   "Session paused: #{exit_decision.error_message}",
                   level: "warning"
@@ -2375,13 +2377,14 @@ class AgentSessionJob < ApplicationJob
           else
             # :needs_input, or a session already archived: the turn is over.
             #
-            # A parked exit (AuthOutageParkService) is not a completed turn — it must
-            # reach pause!, which consumes the park's pending_sleep, and must not hand
-            # off to a queued message that would re-spawn into the same wall. Read the
-            # marker rather than the error string, matching section 2.
+            # A parked exit (AuthOutageParkService, or ProviderQuotaWallPark) is not a
+            # completed turn — it must reach pause!, which consumes the park's
+            # pending_sleep, and must not hand off to a queued message that would
+            # re-spawn into the same wall. Read the markers rather than the error
+            # string, matching section 2.
             parked_reason = session.reload.metadata&.dig("auth_outage_reason")
-            parked = parked_reason.present?
-            if parked
+            parked = parked_exit?(session)
+            if parked || exit_decision&.error_message.present?
               log_buffer.add(
                 "Session paused: #{exit_decision&.error_message || parked_reason}",
                 level: "warning"
@@ -3987,7 +3990,7 @@ class AgentSessionJob < ApplicationJob
     # include this marker) before enqueueing, but `action_session refresh_all`
     # enqueues the nudge with no metadata cleanup at all, so relying on that
     # coupling would be relying on an accident.
-    return false if session.metadata&.dig("auth_outage_reason").present?
+    return false if parked_exit?(session)
 
     session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
 
@@ -4631,6 +4634,14 @@ class AgentSessionJob < ApplicationJob
   # @param log_buffer [LogBuffer] buffer for logging
   # @param note [String] what to say in the log when the handoff happens
   # @return [Boolean] true if a message was handed off and the caller should return
+  # Is this session parked on a wall a fresh turn would only meet again — an
+  # auth or quota outage (AuthOutageParkService), or a quota wall waiting on its
+  # re-check (ProviderQuotaWallPark)? Every site that would otherwise hand the
+  # session its next turn asks this one question.
+  def parked_exit?(session)
+    session.metadata&.dig("auth_outage_reason").present? || ProviderQuotaWallPark.parked?(session)
+  end
+
   def handed_off_to_enqueued_message?(session, log_buffer, note)
     return false unless process_next_enqueued_message_if_available(session, log_buffer)
 

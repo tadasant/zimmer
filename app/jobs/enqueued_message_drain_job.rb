@@ -175,6 +175,12 @@ class EnqueuedMessageDrainJob < ApplicationJob
       return "parked on an auth or quota outage"
     end
 
+    # Parked by ProviderQuotaWallPark on a provider quota wall, with its re-check
+    # not yet due. The same refusal: the message would meet the same wall.
+    if ProviderQuotaWallPark.parked?(session)
+      return "parked on a provider quota wall until its re-check"
+    end
+
     # AgentSessionJob has already scheduled a retry carrying the original
     # prompt. Delivering the queued message now would race that retry into the
     # same failing MCP server.

@@ -1691,7 +1691,10 @@ fails, and nothing pages; the first park of a streak sends one push notification
   pi-ai's `NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN` copied verbatim — the list Pi itself consults
   before it retries, and the reason a quota 429 reaches Zimmer after one request while a rate limit
   reaches it after four. A quota wall worded in a way neither list knows takes the ordinary backoff
-  and fails, which is what every quota 429 did before. A Pi upgrade can change the list;
+  and fails. The misread in the other direction is bounded: a rate limit whose prose happens to
+  match — most plausibly Gemini's per-minute `RESOURCE_EXHAUSTED`, which says "check your plan and
+  billing details" — parks for 15 minutes and sends a quota-wall push instead of backing off, the
+  same reading Pi gives it. A Pi upgrade can change the list;
   `PiTurnErrorTest` compares the two whenever pi-ai is installed where the test runs, which CI's
   runner is not.
 - **Seven days, then a human.** Re-checks stop once the next one would land more than seven days
@@ -1700,7 +1703,12 @@ fails, and nothing pages; the first park of a streak sends one push notification
   nobody is topping up. Resuming the session starts a fresh ladder.
 - **Re-checks do not know when the balance comes back.** Nothing reports a top-up, so a session
   parked on its 8-hour rung can wait up to 8 hours after the balance is restored. Send it a message
-  to resume it sooner.
+  to resume it sooner; a turn that completes withdraws the pending re-check. A message *queued*
+  while the session is parked is held until the re-check is due, for the same reason an auth-outage
+  park holds one: it would meet the same wall.
+- **A streak is continued only by its own re-check.** A wall that arrives more than 8 hours after
+  the streak's re-check was due starts a fresh streak at 15 minutes, so a session that ran on since
+  never inherits an old streak's rung or ceiling.
 - **A re-check can retire the session's own wakes.** The re-check is a one-time wake, so it follows
   held-wake-group rules: if the agent had armed its own wake before the wall and the re-check fires
   first and meets the wall again, the agent's wake is retired when that turn comes to rest. A
