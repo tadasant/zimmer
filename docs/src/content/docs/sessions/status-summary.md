@@ -534,6 +534,11 @@ summary was produced. "Messages since summary generated" is that number subtract
 count, and a summary whose count matches is never regenerated — no matter how many times the page is
 viewed.
 
+The same subtraction drives the freshness chip under each row on [Your board](/sessions/user-view/)
+(`SessionsHelper#status_summary_freshness`): **Regenerating** while a generation is `pending?`,
+otherwise **Stale** when any message has landed since and **Up to date** when none has. The time
+since `generated_at` sits beside the chip for context. It never decides staleness.
+
 That count only advances on a *successful* generation. A generation that was merely requested, or one
 that failed, leaves it alone, so a failed attempt cannot make a stale summary look current.
 

@@ -19,7 +19,8 @@
   priority_class = agent_session.priority_class(cached_genesis_overrides)
   is_priority = priority_class == SessionGenesis::PRIORITY
   summary = agent_session.status_summary
-  behind = summary&.messages_since(agent_session.transcript_line_count).to_i
+  line_count = agent_session.transcript_line_count
+  behind = summary&.messages_since(line_count).to_i
 %>
 <%# `data-visibility-unit` is what lets the shared visibility controller take this
     row off the board when Snooze or Hide succeeds, with no reload. `data-precedence`
@@ -85,9 +86,38 @@
     <% if summary&.summary.present? %>
       <p class="mt-1 line-clamp-3 break-words text-xs leading-relaxed text-gray-600 [&_a]:text-indigo-600 [&_a]:underline [&_a:hover]:text-indigo-800 [&_code]:rounded [&_code]:bg-gray-100 [&_code]:px-1 [&_code]:font-mono [&_code]:text-[11px] [&_strong]:font-semibold [&_strong]:text-gray-700"
          title="<%= markdown_plain_text(summary.summary) %>"><%= inline_markdown(summary.summary) %></p>
-      <% if behind.positive? %>
-        <p class="mt-0.5 text-[11px] text-gray-400"><%= pluralize(behind, "message") %> since this was written</p>
-      <% end %>
+
+      <%# Freshness, on every row rather than only the stale ones, so a row with no
+          chip never has to be read as "probably fine". Same count the Status panel
+          uses; the chip is the at-a-glance half and the words beside it say by how
+          much. %>
+      <% freshness = status_summary_freshness(summary, line_count) %>
+      <p class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-gray-400"
+         data-summary-freshness="<%= freshness %>">
+        <% case freshness %>
+        <% when :regenerating %>
+          <span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-indigo-50 px-1.5 py-0.5 font-medium text-indigo-700"
+                title="A new summary is being written. This one stays until it lands.">
+            <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500" aria-hidden="true"></span>Regenerating
+          </span>
+        <% when :stale %>
+          <span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700"
+                title="The session has moved since this was written, so it describes an earlier point.">
+            <span class="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true"></span>Stale
+          </span>
+        <% else %>
+          <span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 font-medium text-emerald-700"
+                title="Written after the session's latest message.">
+            <span class="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>Up to date
+          </span>
+        <% end %>
+        <% if behind.positive? %>
+          <span class="min-w-0"><%= pluralize(behind, "message") %> since this was written</span>
+        <% end %>
+        <% if summary.generated_at %>
+          <span class="min-w-0" title="<%= summary.generated_at.utc.strftime("%Y-%m-%d %H:%M UTC") %>">written <%= time_ago_in_words(summary.generated_at) %> ago</span>
+        <% end %>
+      </p>
     <% else %>
       <p class="mt-1 text-xs italic text-gray-400">No status summary yet.</p>
     <% end %>
