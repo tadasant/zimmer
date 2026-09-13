@@ -172,19 +172,30 @@ module TranscriptRedactor
 
   # The two credential nouns that, in the wild, far more often name a *resource*
   # than hold a value. `gcloud secrets versions access --secret=NAME`,
-  # `kubectl get secret NAME`, `vault kv get secret/NAME`,
-  # `aws secretsmanager --secret-id NAME`, `?secret=NAME` in a console URL: in
-  # every one of those the bare noun introduces an identifier that
-  # `gcloud secrets list` prints to anyone with read access, and that confers
-  # nothing on its own.
+  # `vault kv get secret/NAME`, `?secret=NAME` in a console URL, `secret: NAME`
+  # in a manifest: in every one of those the bare noun introduces an identifier
+  # that `gcloud secrets list` prints to anyone with read access, and that
+  # confers nothing on its own.
   #
-  # Every other name the generic rule knows is a compound that names a value and
-  # only a value — `client_secret`, `api_key`, `refresh_token`, `password`,
-  # `passphrase`. Those are NOT listed here, so PUBLIC_IDENTIFIER_SHAPE never
-  # gets to excuse them and `password=correct-horse-battery-staple` still
-  # redacts. Narrowing only the two ambiguous nouns is the safe half of the
-  # precision/safety trade.
-  REFERENCE_NOUN = /\A(?:secret|token)["']?\z/i
+  # A compound that names a value and only a value — `client_secret`, `api_key`,
+  # `refresh_token`, `password`, `passphrase` — must never reach
+  # PUBLIC_IDENTIFIER_SHAPE, so that `password=correct-horse-battery-staple`
+  # still redacts. Confining the narrowing to the bare nouns is the safe half of
+  # the precision/safety trade.
+  #
+  # The left boundary is what confines it, and it is the whole rule. This is
+  # matched against the PRECEDING_WINDOW, not against the tail `preceded_by`
+  # happened to match: that alternation has no left boundary (deliberately — it
+  # is what lets `RAILS_MASTER_KEY=` match), so its match on `GITHUB_TOKEN`
+  # begins at `TOKEN`. Testing the tail alone would read `WEBHOOK_SECRET=`,
+  # `JWT_SECRET=`, `SESSION_SECRET=` and `api_token=` as bare nouns and excuse a
+  # word-shaped value after each of them — the names where a hand-written
+  # secret is most likely to live, and the exact inverse of the intent.
+  #
+  # `[A-Za-z0-9_]` and nothing else: `-`, `.`, `/`, space and quote all have to
+  # stay admissible, because `--secret=`, `?secret=`, `  secret:` and `"token":`
+  # are the framings this exists for.
+  REFERENCE_NOUN = bounded(/(?<![A-Za-z0-9_])(?:secret|token)["']?\z/i)
 
   # What a public resource identifier looks like, and what a credential does not.
   #
@@ -210,21 +221,25 @@ module TranscriptRedactor
   # This is a deny-list of known-public *shapes*, not an entropy heuristic. The
   # residual risk it accepts is a lowercase diceware passphrase sitting after a
   # bare `secret=` or `token=` — documented in limitations.md.
-  PUBLIC_IDENTIFIER_SHAPE = %r{\A[a-z0-9]+(?:[-._/][a-z0-9]+){2,}\z}
-  PUBLIC_IDENTIFIER_SEPARATOR = %r{[-._/]}
+  PUBLIC_IDENTIFIER_SHAPE = bounded(%r{\A[a-z0-9]+(?:[-._/][a-z0-9]+){2,}\z})
+  PUBLIC_IDENTIFIER_SEPARATOR = bounded(%r{[-._/]})
   PUBLIC_IDENTIFIER_MAX_SEGMENT = 12
-  NON_HEX_LETTER = /[g-z]/
+  NON_HEX_LETTER = bounded(/[g-z]/)
 
-  # Checked BEFORE the shape regexp, and load-bearing for more than tidiness.
-  # The value handed to this test is whatever ENV_SECRET captured, and the
-  # pathological transcript this file is otherwise built around — a single line
-  # carrying a multi-megabyte base64 tool result — can put megabytes of it after
-  # a `token=`. PUBLIC_IDENTIFIER_SHAPE nests a repeat inside a repeat, which is
-  # linear on anything short and not worth reasoning about on anything long, so
-  # it is never handed anything long. No real resource name comes close: Secret
-  # Manager caps a secret name at 255 characters and Parameter Store a path at
-  # 1011, and a value over this is opaque by any reading, so the answer above the
-  # cap is "not an identifier" rather than "scan harder".
+  # Checked BEFORE the shape regexp. The value handed to this test is whatever
+  # ENV_SECRET captured, and the pathological transcript this file is otherwise
+  # built around — a single line carrying a multi-megabyte base64 tool result —
+  # can put megabytes of it after a `token=`.
+  #
+  # PUBLIC_IDENTIFIER_SHAPE is linear even so: its two character classes are
+  # disjoint, so no iteration is ambiguous with the next and there is nothing to
+  # backtrack into. The cap is a bound on constant-factor work over a
+  # transcript-scale string, not a ReDoS guard, and it is also the semantically
+  # right answer: no real resource name is this long — Secret Manager caps a
+  # secret name at 255 characters — so a longer value is opaque by any reading.
+  #
+  # Bytes rather than characters: the quantity is "how much text is this", and
+  # #bytesize is O(1) where #length is O(n) on non-ASCII input.
   PUBLIC_IDENTIFIER_MAX_LENGTH = 255
 
   # Order matters: the first pattern to match a span wins, because its
@@ -332,15 +347,15 @@ module TranscriptRedactor
     # the cloud CLIs use for the *resource*, so `--secret=<name>` puts a public
     # identifier exactly where this rule expects a credential — which is how a
     # runnable `gcloud secrets versions access` command reached a human as
-    # `--secret=[REDACTED:ENV_SECRET]` and stopped being runnable (session 6512).
-    # The `reject` hook is what tells those two nouns apart from a real
-    # assignment, by the shape of what follows them. See REFERENCE_NOUN.
+    # `--secret=[REDACTED:…]` and stopped being runnable (session 6512). The
+    # `reject` hook is what tells those two nouns apart from a real assignment,
+    # by the shape of what follows them. See REFERENCE_NOUN.
     pattern(
       "ENV_SECRET",
       /[:=][ \t]*["']?([A-Za-z0-9+\/=_\-]{16,})/,
       :value,
       preceded_by: /(?:api[_-]?key|apikey|secret[_-]?key|secret|password|passwd|passphrase|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|session[_-]?token|bot[_-]?token|access[_-]?key|private[_-]?key|client[_-]?secret|master[_-]?key|token)["']?\z/i,
-      reject: ->(name, value) { REFERENCE_NOUN.match?(name) && public_identifier?(value) }
+      reject: ->(preceding, value) { REFERENCE_NOUN.match?(preceding) && public_identifier?(value) }
     )
   ].freeze
 
@@ -614,7 +629,7 @@ module TranscriptRedactor
       return content if armored.empty?
 
       lines.each_with_index.map do |source, position|
-        armored.include?(position) ? redacted_line("MATCH:PRIVATE_KEY", source) : source
+        armored.include?(position) ? redacted_line(pattern_tier("PRIVATE_KEY"), source) : source
       end.join
     end
 
@@ -652,10 +667,10 @@ module TranscriptRedactor
       nil
     end
 
-    # A marker has to answer two questions for the human reading the transcript:
-    # WHY did this fire, and HOW MUCH did it take out. `[REDACTED:ENV_SECRET]`
-    # answered neither — it named an internal rule, not the thing removed, and a
-    # reader could not tell it from the exact-value tier's marker.
+    # A marker answers two questions for the human reading the transcript: WHY
+    # did this fire, and HOW MUCH did it take out. A marker that names only the
+    # internal rule answers neither, and leaves a reader unable to tell a
+    # confirmed credential from a guess (session 6512).
     #
     # The vocabulary, and what each one tells a reader:
     #
@@ -669,9 +684,9 @@ module TranscriptRedactor
     #   [REDACTED:UNSCANNABLE_LINE:9412ch]   no pattern pass finished on this
     #                                        line, so the line went whole
     #
-    # `MATCH:` is the load-bearing part: everything carrying it is a guess, and a
-    # reader who knows the removed span was a resource name now has a marker that
-    # says so rather than one that asserts a secret was there.
+    # `MATCH:` is the load-bearing part: everything carrying it is a guess, so a
+    # reader who recognizes the removed span as a resource name has a marker
+    # that agrees with them rather than one asserting a secret was there.
     #
     # The character count is disclosed deliberately. Redaction is defense in
     # depth over material already treated as secret, the label usually implies
@@ -681,9 +696,15 @@ module TranscriptRedactor
       "[REDACTED:#{label}:#{removed.to_s.length}ch]"
     end
 
-    # Tier 2. Rendered distinctly from the exact-value tier on purpose.
+    # Tier 2's label, rendered distinctly from the exact-value tier on purpose.
+    # The one place `MATCH:` is spelled, so the line walk and the pattern pass
+    # cannot drift apart.
+    def pattern_tier(label)
+      "MATCH:#{label}"
+    end
+
     def pattern_marker(label, removed)
-      marker("MATCH:#{label}", removed)
+      marker(pattern_tier(label), removed)
     end
 
     # Replace the whole line's content while keeping its terminator, so the
@@ -699,15 +720,15 @@ module TranscriptRedactor
     def apply(pattern, text)
       text.gsub(pattern.regexp) do |match|
         found = Regexp.last_match
-        name = nil
+        preceding = nil
 
         if pattern.preceded_by
-          name = preceding_name(text, found, pattern.preceded_by)
-          next match if name.nil?
+          preceding = preceding_window(text, found, pattern.preceded_by)
+          next match if preceding.nil?
         end
 
         removed = pattern.mode == :value ? found[1] : match
-        next match if pattern.reject&.call(name, removed)
+        next match if pattern.reject&.call(preceding, removed)
 
         if pattern.mode == :value
           replace_capture(found, match, pattern_marker(pattern.label, removed))
@@ -717,8 +738,14 @@ module TranscriptRedactor
       end
     end
 
-    # The credential name immediately before this match, or nil when the text
-    # before it does not end with one.
+    # The text immediately before this match, when it ends with a credential
+    # name — and nil when it does not.
+    #
+    # The WINDOW is returned rather than the name `regexp` matched, because a
+    # `reject` has to see the name's left-hand context to judge it: the
+    # alternation is unanchored on the left, so its match on `GITHUB_TOKEN`
+    # begins at `TOKEN` and the tail alone cannot tell a bare noun from a
+    # compound ending in one. See REFERENCE_NOUN.
     #
     # Byte offsets and #byteslice, not MatchData#pre_match and not `text[a...b]`.
     # `pre_match` copies everything before the match — megabytes, once per
@@ -726,24 +753,20 @@ module TranscriptRedactor
     # megabyte of transcript it costs ~5x what the equivalent byteslice does.
     # The window is forced to binary because a byte window can land mid-codepoint;
     # the name patterns are pure ASCII, so matching against binary is exact.
-    #
-    # `match` rather than `match?`, because `reject` needs to see WHICH name
-    # matched. It runs only on a span that already cleared the pattern's own
-    # regexp, so the MatchData is allocated a few thousand times per megabyte
-    # rather than at every offset.
-    def preceding_name(text, found, regexp)
+    def preceding_window(text, found, regexp)
       start = found.byteoffset(0).first
       window = text.byteslice([ start - PRECEDING_WINDOW, 0 ].max, [ start, PRECEDING_WINDOW ].min)
       return nil if window.nil? || window.empty?
 
-      window.force_encoding(Encoding::BINARY).match(regexp)&.to_s
+      window = window.force_encoding(Encoding::BINARY)
+      window.match?(regexp) ? window : nil
     end
 
     # Is this a public resource identifier rather than a credential? See
     # PUBLIC_IDENTIFIER_SHAPE for why each condition is here.
     def public_identifier?(value)
       return false unless value.is_a?(String)
-      return false if value.length > PUBLIC_IDENTIFIER_MAX_LENGTH
+      return false if value.bytesize > PUBLIC_IDENTIFIER_MAX_LENGTH
       return false unless value.match?(PUBLIC_IDENTIFIER_SHAPE)
 
       segments = value.split(PUBLIC_IDENTIFIER_SEPARATOR)
