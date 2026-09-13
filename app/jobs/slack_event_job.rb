@@ -208,6 +208,7 @@ class SlackEventJob < ApplicationJob
     fold_note = if group_key
       folded_messages_note(
         [ message ],
+        trigger: trigger,
         permalinks: { message => rendered.head_permalink },
         channel_name: dm ? "this DM" : "##{rendered.channel_name}",
         window: window,
