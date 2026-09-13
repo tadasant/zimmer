@@ -1030,6 +1030,61 @@ Fires when a new issue is opened in one of the watched repos.
 }
 ```
 
+#### GitHub webhook delivery
+
+A `github_issue` condition can also fire from a GitHub webhook, a second or two after the issue is
+opened, instead of at the next once-a-minute search. It is off by default. Two settings turn it on,
+read from encrypted credentials first and ENV second:
+
+| Setting | Value |
+| --- | --- |
+| `GITHUB_TRIGGER_INGEST_MODE` | `poll` (the default, and what an unset or unrecognised value means) or `webhook_with_poll_fallback` |
+| `GITHUB_WEBHOOK_SECRET` | the secret set on the GitHub webhook |
+
+With both set, `POST /webhooks/github` is the webhook's payload URL. With either missing it answers
+every request with a 404 and reads nothing. It is the same ingress as
+[Slack Events API delivery](#slack-events-api-delivery), and a delivery goes through the same checks
+in the same order: a body over a megabyte is a 413; `X-Hub-Signature-256` must be `sha256=` and the
+HMAC-SHA256 of the raw body under the secret, compared in constant time, or it is a 401; only then is
+the body parsed, and one that is not a JSON object is a 400. A request with no `X-GitHub-Delivery` or
+`X-GitHub-Event` header is a 400 as well.
+
+Every delivery that verifies is recorded in `webhook_deliveries` under its `X-GitHub-Delivery` id,
+whatever its event, so `/supervisor/webhook_deliveries` answers "is GitHub delivering at all". A
+redelivery carries the same id and gets a 200 and nothing else. Only an `issues` event with action
+`opened` goes further, to `GithubEventJob` on the `triggers` queue. `ping`, label events, pull requests
+and everything else are acknowledged and fire nothing.
+
+`GithubEventJob` fires the `github_issue` conditions the poller would, by the poller's own rules: the
+issue is in a watched repo and is not a pull request; the condition has had its first poll; the issue
+was created inside the window the poller searches and after its repo joined the condition; the poller
+has not already recorded it; and it carries none of the `exclude_labels`. It renders through the same
+`Trigger#interpolate_prompt` and appended context block, fencing included, and spawns through the same
+`Trigger#create_session!`. It never moves the condition's cursor or its seen keys.
+
+**The poller keeps running**, and the two share `trigger_event_claims` the way Slack's paths do: each
+claims `github:<repo>#<number>:opened` for the condition in the transaction that spawns the session,
+and the path that finds the claim taken fires nothing. When the poller loses, it records the issue as
+fired and moves its cursor past it. A fire that spawns nothing — burst control, a pending session —
+releases its claim, so the poller fires the issue once that clears, as it would with no webhook. On
+`poll` the poller claims nothing and fires exactly as before.
+
+`github_label` conditions are not served by the webhook in any mode. Label events are acknowledged
+and ignored, and those conditions stay on the poller.
+
+GitHub signs no timestamp, so a captured delivery stays correctly signed. Replaying it is a
+redelivery while its row is kept (7 days), and after that the issue's claim (30 days) still stops it
+firing again.
+
+Setting it up on the GitHub side: set both settings first, since GitHub sends a `ping` when the hook
+is saved. Then add a webhook to the repository or organization with the payload URL
+`https://<zimmer host>/webhooks/github`, content type `application/json`, the same secret, and the
+**Issues** event. A hook sending `application/x-www-form-urlencoded` gets a 400 on every delivery.
+
+The webhook's deliveries and claims are summarised with Slack's on `/health` — see the *Webhook Ingest*
+panel described under [Slack Events API delivery](#slack-events-api-delivery). A quiet day does not
+warn for GitHub the way it does for Slack, because GitHub sends an event only when an issue changes.
+
 #### Opting an issue out, with a label
 
 `exclude_labels` is optional, and it is an **escape hatch for the issue's author**, not a filter for

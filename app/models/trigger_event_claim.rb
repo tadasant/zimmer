@@ -40,6 +40,13 @@ class TriggerEventClaim < ApplicationRecord
     "slack:#{channel_id}:#{ts}"
   end
 
+  # The identity of a new GitHub issue for a `github_issue` condition: its repository and number,
+  # which never change and never recur. The repository is downcased because GitHub's API and a
+  # condition's configuration can disagree on its case. GithubTriggerFiring#fire_claimed takes it.
+  def self.github_issue_event_key(repo, number)
+    "github:#{repo.to_s.downcase}##{number}:opened"
+  end
+
   # Claim each of +event_keys+ for +condition+ and return the ones this call won.
   #
   # `INSERT ... ON CONFLICT DO NOTHING RETURNING event_key`: a key another transaction has
