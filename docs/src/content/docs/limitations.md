@@ -4586,11 +4586,14 @@ does not cover yet:
 - **The per-PR status and comment polling.** Those pollers do not fire triggers, so this ingress
   does not reach them, and they are most of the API burn.
 - **A mode with no poller behind it.** As for Slack, `webhook` alone is treated as `poll`.
+- **A released claim reads as a miss.** A delivery that spawned nothing because of burst control or a
+  pending session releases its claim so the poller can fire the issue later, and on `/health` that
+  later fire counts as a poll claim — a message the webhook did not deliver first, which it did.
 - **A switch back to `poll` while a delivery is queued.** The job checks the mode when it runs and
   fires nothing on `poll`, but a delivery that fired just before the switch has a claim the poller no
   longer reads, and the poller can fire that issue a second time.
 
-Slack has one. `POST /webhooks/slack` takes Slack Events API deliveries and fires Slack triggers from
+Slack's webhook, `POST /webhooks/slack`, takes Slack Events API deliveries and fires Slack triggers from
 them a second or two after the message is posted, instead of at the next poll — see
 [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery). It is off by default, and
 switching it on in production changes nothing on its own: Slack has to reach the endpoint from the

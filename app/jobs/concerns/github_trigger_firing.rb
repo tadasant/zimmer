@@ -175,15 +175,18 @@ module GithubTriggerFiring
                         "the other delivery path claimed it first; skipping"
       true
     when :not_spawned
-      reason = if trigger.last_fire_burst_suppressed?
-        "is burst-suppressed"
+      # The same levels as the unclaimed path: holding back for a burst or a pending session is
+      # expected, while a dropped follow-up is worth a WARN.
+      if trigger.last_fire_burst_suppressed?
+        Rails.logger.info "#{github_log_tag} Trigger #{trigger.id} is burst-suppressed for #{item_key(item)} (#{event}); " \
+                          "released its claim so the issue fires once the burst ends"
       elsif trigger.last_fire_skipped_for_pending_session?
-        "skipped it — session #{trigger.last_fire_pending_session&.id} is still pending"
+        Rails.logger.info "#{github_log_tag} Trigger #{trigger.id} skipped #{item_key(item)} (#{event}) — session " \
+                          "#{trigger.last_fire_pending_session&.id} is still pending; released its claim"
       else
-        "dropped the follow-up"
+        Rails.logger.warn "#{github_log_tag} Trigger #{trigger.id} dropped the follow-up for #{item_key(item)} (#{event}); " \
+                          "released its claim so the next tick retries"
       end
-      Rails.logger.info "#{github_log_tag} Trigger #{trigger.id} #{reason} for #{item_key(item)} (#{event}); " \
-                        "released its claim so the issue fires once that clears"
       false
     else
       Rails.logger.info "#{github_log_tag} Created session #{outcome.id} for trigger #{trigger.id} from " \
@@ -191,9 +194,36 @@ module GithubTriggerFiring
       true
     end
   rescue => e
+    # A raise inside the block rolls the session and the claim back together. One from an
+    # after_commit callback arrives after both have committed, so ask the database which it was:
+    # a session that exists has fired, and its claim keeps the other path from firing it again.
+    if outcome.is_a?(Session) && Session.exists?(id: outcome.id)
+      Rails.logger.error "#{github_log_tag} Trigger #{trigger.id} created session #{outcome.id} for #{item_key(item)} " \
+                         "(#{event}) via #{via}, but the fire then failed after commit: #{e.message}. Treating the issue as fired"
+      return true
+    end
+
     Rails.logger.error "#{github_log_tag} Failed to create session for #{item_key(item)} (#{event}) via #{via}: " \
                        "#{e.message}. The claim rolled back with it, so the issue is still unfired"
+    report_webhook_fire_failure(condition, item, e) if via == "webhook"
     false
+  end
+
+  # The poller's failures page through its own ERROR line on every tick they recur. A webhook fire is
+  # tried once, so it reports here; WARN level, because the poller is still the backstop.
+  def report_webhook_fire_failure(condition, item, error)
+    ErrorReporter.report_exception(
+      error,
+      level: :warning,
+      context: {
+        title: "GitHub webhook trigger fire failed",
+        source: self.class.name,
+        details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) " \
+                 "failed to fire for #{item_key(item)}. The poller is the backstop for this issue.",
+        condition_id: condition.id,
+        trigger_id: condition.trigger_id
+      }
+    )
   end
 
   # The prompt a fire of +trigger+ for +item+ spawns with: the template, plus the item itself when
