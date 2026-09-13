@@ -5,9 +5,9 @@ require "test_helper"
 # The four ways a new session is built — POST /api/v1/sessions, MCP
 # `start_session`, the web new-session form, and Session.create_from_agent_root!
 # (quick prompt, chat bubble, every trigger fire) — have to resolve the same
-# request to the same session. They used to carry four copies of that
-# resolution, and three closed bugs (#310, #331, #81) were each one copy
-# disagreeing with the rest (#454). Each surface is driven end to end here, the
+# request to the same session. They share one resolution,
+# Sessions::ResolveSpawnDefaults, because separate copies disagreed and produced
+# three closed bugs (#310, #331, #81; see #454). Each surface is driven end to end here, the
 # way its callers drive it, and the resulting rows are compared.
 #
 # Where a surface cannot express a request at all it is left out of that

@@ -2251,9 +2251,10 @@ class TriggerTest < ActiveSupport::TestCase
   end
 
   # The sharp edge of zimmer#454. Every list column on Trigger is `default: [],
-  # null: false`, so [] is what an untouched trigger holds — and it has to keep
-  # spawning with the root's defaults now that create_from_agent_root! resolves
-  # through Sessions::ResolveSpawnDefaults, where an explicit [] means none.
+  # null: false`, so [] is what an untouched trigger holds — and it has to spawn
+  # with the root's defaults even though create_from_agent_root! resolves through
+  # Sessions::ResolveSpawnDefaults, where a list marked named stays as given,
+  # empty included.
   test "a trigger with every list empty spawns with the agent root's defaults for all four" do
     mock_agent_root = OpenStruct.new(
       name: "defaults-root", url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil,

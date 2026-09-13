@@ -422,7 +422,8 @@ On a connection restricted to specific agent roots this parameter is rejected ou
 
       # The runtime, the model, and — when a root was named — the repository fields
       # and catalog defaults, resolved through the chain this tool shares with
-      # POST /api/v1/sessions:
+      # every other spawn surface (POST /api/v1/sessions, the new-session form,
+      # Session.create_from_agent_root!):
       #
       #   tool argument  →  agent root's declared value  →  AppSetting (the global
       #   base default set on the Settings page)  →  the hardcoded default

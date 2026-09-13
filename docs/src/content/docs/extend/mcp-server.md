@@ -693,7 +693,8 @@ because both go through the same resolver. Its runtime and model resolve through
 minus the tier that isn't there: argument → *(no root)* → the global defaults the Settings page
 presents → the hardcoded default. That chain is one implementation
 (`Sessions::ResolveSpawnDefaults`) shared with [the REST
-endpoint](/extend/rest-api/#which-runtime-and-model-you-get), so the two spawn surfaces cannot drift.
+endpoint](/extend/rest-api/#which-runtime-and-model-you-get), the new-session form and
+`Session.create_from_agent_root!`, so the spawn surfaces cannot drift.
 
 Passing both is allowed and means "this root's tooling against that repository": the `git_root` wins
 over the root's URL, and the root's other defaults still apply. Passing **neither** is refused with an

@@ -2405,6 +2405,10 @@ class Session < ApplicationRecord
     # An explicit override is normalized through RuntimeRegistry here, so an
     # unknown runtime fails loudly at the registry (KeyError) rather than tripping
     # the agent_runtime inclusion validation with a vaguer error.
+    # A blank name would otherwise read as a rootless spawn and fail later, on
+    # git_root, with an error no caller rescues.
+    raise AgentRootsConfig::AgentRootNotFoundError, "Agent root name is blank" if agent_root_name.to_s.strip.empty?
+
     requested_runtime = agent_runtime.presence && RuntimeRegistry.resolve_key(agent_runtime)
 
     # An empty list is not "none" on this path, and that is deliberate. Its
@@ -2417,8 +2421,8 @@ class Session < ApplicationRecord
     #
     # The surfaces where a caller can genuinely say "none" — MCP start_session,
     # POST /api/v1/sessions, the new-session form — mark an explicit [] as named
-    # when they call Sessions::ResolveSpawnDefaults, and the resolution records
-    # the choice via #record_explicit_mcp_servers.
+    # when they call Sessions::ResolveSpawnDefaults, and record the choice
+    # themselves via #record_explicit_mcp_servers.
     #
     # Persisting catalog_plugins from default_plugins is what makes a later full
     # AIR prepare! (run with --without-defaults, which builds its server/skill/

@@ -1406,8 +1406,9 @@ class Api::V1::SessionsController < Api::BaseController
   # (git_root, branch, subdirectory, mcp_servers, catalog_skills, catalog_hooks,
   # catalog_plugins) take precedence over the agent root's values.
   #
-  # The chain itself lives in Sessions::ResolveSpawnDefaults, shared with MCP
-  # `start_session` so the two spawn surfaces cannot drift apart again:
+  # The chain itself lives in Sessions::ResolveSpawnDefaults, shared with every
+  # other spawn surface (MCP `start_session`, the new-session form,
+  # Session.create_from_agent_root!) so they cannot drift apart:
   #
   #   request param  →  agent root's declared value  →  AppSetting (the global
   #   base default set on the Settings page)  →  the hardcoded default

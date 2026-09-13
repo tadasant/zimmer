@@ -3226,6 +3226,14 @@ class SessionTest < ActiveSupport::TestCase
     end
   end
 
+  test "create_from_agent_root! raises AgentRootNotFoundError for a blank root name" do
+    assert_no_difference("Session.count") do
+      assert_raises(AgentRootsConfig::AgentRootNotFoundError) do
+        Session.create_from_agent_root!(agent_root_name: " ", prompt: "Test")
+      end
+    end
+  end
+
   test "create_from_agent_root! sets goal when provided" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo.git",
