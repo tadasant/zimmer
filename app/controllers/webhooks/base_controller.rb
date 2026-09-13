@@ -53,6 +53,13 @@ module Webhooks
       request.content_length.to_i > MAX_BODY_BYTES || raw_body.bytesize > MAX_BODY_BYTES
     end
 
+    # Step 4: only ever called after the signature has verified.
+    def parse_payload
+      JSON.parse(raw_body)
+    rescue JSON::ParserError
+      nil
+    end
+
     # 404, as if the route did not exist: a switched-off source has nothing to say to anyone,
     # including whether it exists. INFO, because a disabled endpoint being probed is not news.
     def render_inert(source)
