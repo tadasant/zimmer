@@ -64,6 +64,16 @@ class GoalCheckTallyTest < ActiveSupport::TestCase
     assert_equal 2, tally(from: 30.days.ago.to_date.iso8601).checked_sessions
   end
 
+  test "a `to` with no `from` is bounded to the window before it, not all history" do
+    make_session(custom_metadata: pr_metadata, created_at: 10.days.ago)
+    make_session(custom_metadata: pr_metadata, created_at: 40.days.ago)
+
+    result = tally(to: 5.days.ago.to_date.iso8601)
+
+    assert_equal 1, result.checked_sessions
+    assert_equal (5.days.ago - GoalCheckTally::DEFAULT_WINDOW).beginning_of_day.to_date, result.from_time.to_date
+  end
+
   test "groups unmet and pending sessions by the criteria that kept them from met, with sample ids" do
     no_pr = make_session
     no_label = make_session(custom_metadata: pr_metadata(labels: []))

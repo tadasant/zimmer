@@ -73,19 +73,21 @@ class GoalCheck
   # which spawns the implementer).
   DELEGATION_DEPTH = 3
 
-  # The most spawned sessions read per generation for one batch of parents. A
-  # fleet-maintenance run can spawn dozens; past this the check reads what it has.
+  # The most sessions read under any one parent. Applied per parent, not per call,
+  # so a fleet run with hundreds of children on the same page as a router cannot
+  # crowd the router's one child out of a batch.
   DELEGATION_FAN_OUT = 200
 
-  # The custom_metadata keys a descendant contributes. Only these are read, so a
-  # child's comment cache and transcript bookkeeping never leave the database.
-  DELEGATED_METADATA_KEYS = %w[
-    github_pull_request_urls
-    github_pull_request_statuses
-    github_pull_request_ci_statuses
-    github_pull_request_goal_facts
-    poller_last_polled_at
-  ].freeze
+  # The custom_metadata keys a descendant contributes: the keys a verdict is read
+  # from, plus the poll stamp. Only these are read, so a child's comment cache and
+  # transcript bookkeeping never leave the database.
+  DELEGATED_METADATA_KEYS = (Session::GOAL_CHECK_INPUT_KEYS + %w[poller_last_polled_at]).freeze
+
+  # A jsonb object holding just DELEGATED_METADATA_KEYS. Built from constants only.
+  DELEGATED_METADATA_SQL = begin
+    pairs = DELEGATED_METADATA_KEYS.map { |key| "'#{key}', custom_metadata->'#{key}'" }
+    "jsonb_build_object(#{pairs.join(', ')})"
+  end
 
   # Per-criterion statuses:
   #   met     — the recorded state satisfies it
@@ -176,23 +178,26 @@ class GoalCheck
     # @return [Hash{Integer => Array<Delegate>}] every id given is a key
     def delegated_pull_requests(session_ids)
       result = session_ids.to_h { |id| [ id, [] ] }
-      # descendant id => the id it is being read for
-      frontier = session_ids.to_h { |id| [ id, id ] }
+      # node id => every requested id it is being read for. A list, because one
+      # requested session can itself sit under another requested session.
+      frontier = session_ids.to_h { |id| [ id, [ id ] ] }
 
       DELEGATION_DEPTH.times do
         break if frontier.empty?
 
-        rows = Session.where(parent_session_id: frontier.keys)
-          .order(:id)
-          .limit(DELEGATION_FAN_OUT)
-          .pluck(:id, :parent_session_id, Arel.sql(delegated_metadata_sql))
-
-        frontier = rows.to_h do |id, parent_id, metadata|
-          ancestor = frontier.fetch(parent_id)
+        next_frontier = Hash.new { |hash, key| hash[key] = [] }
+        children_of(frontier.keys).each do |id, parent_id, metadata|
           metadata = JSON.parse(metadata) if metadata.is_a?(String)
-          result[ancestor] << Delegate.new(id: id, custom_metadata: metadata || {})
-          [ id, ancestor ]
+          delegate = Delegate.new(id: id, custom_metadata: metadata || {})
+
+          frontier.fetch(parent_id).each do |ancestor|
+            next if result[ancestor].any? { |seen| seen.id == id }
+
+            result[ancestor] << delegate
+            next_frontier[id] |= [ ancestor ]
+          end
         end
+        frontier = next_frontier
       end
 
       result
@@ -200,9 +205,18 @@ class GoalCheck
 
     private
 
-    def delegated_metadata_sql
-      pairs = DELEGATED_METADATA_KEYS.map { |key| "'#{key}', custom_metadata->'#{key}'" }
-      "jsonb_build_object(#{pairs.join(', ')})"
+    # [id, parent_session_id, pr_state] for up to DELEGATION_FAN_OUT sessions under
+    # each parent, oldest first.
+    def children_of(parent_ids)
+      ranked = Session.where(parent_session_id: parent_ids)
+        .select(:id, :parent_session_id,
+                Arel.sql("#{DELEGATED_METADATA_SQL} AS pr_state"),
+                Arel.sql("ROW_NUMBER() OVER (PARTITION BY parent_session_id ORDER BY id) AS fan_out_rank"))
+
+      Session.unscoped.from(ranked, :children)
+        .where("children.fan_out_rank <= ?", DELEGATION_FAN_OUT)
+        .order("children.id")
+        .pluck(Arel.sql("children.id"), Arel.sql("children.parent_session_id"), Arel.sql("children.pr_state"))
     end
   end
 
@@ -247,7 +261,7 @@ class GoalCheck
     polled = []
     delegates.each do |delegate|
       metadata = delegate.custom_metadata || {}
-      refs = Github::PrRef.for_session(Struct.new(:custom_metadata).new(metadata))
+      refs = Github::PrRef.for_custom_metadata(metadata)
       next if refs.empty?
 
       refs.each do |ref|
@@ -262,7 +276,10 @@ class GoalCheck
       polled << hash_at(metadata, "poller_last_polled_at")[Github::PrPollPass::POLL_BACKOFF_KEY]
     end
 
-    @polled_at = polled.compact.max_by { |value| parse_time(value) || Time.at(0) }
+    # The OLDEST reading among the PRs judged: the verdict is only as fresh as its
+    # stalest input, so that is the honest "PRs last read".
+    stamps = polled.filter_map { |value| parse_time(value) }
+    @polled_at = stamps.min&.iso8601
   end
 
   def verdict_for(criteria)

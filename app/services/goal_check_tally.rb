@@ -23,7 +23,8 @@
 #   before anything is built on the count.
 #
 # Windowed on the session's created_at, the same axis every other Outcomes surface
-# uses. With no dates given it covers the last DEFAULT_WINDOW.
+# uses. A missing `from` is DEFAULT_WINDOW before `to` (or before today), so the
+# window is always bounded: this runs inside a web request and an MCP call.
 class GoalCheckTally
   RESTING_STATUSES = %w[needs_input archived].freeze
   VERDICTS = %w[met unmet pending].freeze
@@ -34,10 +35,7 @@ class GoalCheckTally
 
   # The only custom_metadata the check reads. Selecting these instead of the column
   # keeps a week of comment caches and transcript bookkeeping in the database.
-  METADATA_SQL = begin
-    pairs = GoalCheck::DELEGATED_METADATA_KEYS.map { |key| "'#{key}', custom_metadata->'#{key}'" }
-    "jsonb_build_object(#{pairs.join(', ')}) AS custom_metadata"
-  end
+  METADATA_SQL = "#{GoalCheck::DELEGATED_METADATA_SQL} AS custom_metadata"
 
   Row = Data.define(:key, :sessions, :met, :unmet, :pending)
   Reason = Data.define(:criteria, :sessions, :sample_session_ids)
@@ -55,7 +53,7 @@ class GoalCheckTally
   end
 
   def from_time
-    filters.from_time || (DEFAULT_WINDOW.ago.beginning_of_day unless filters.to_time)
+    filters.from_time || ((filters.to_time || Time.current) - DEFAULT_WINDOW).beginning_of_day
   end
 
   def to_time
