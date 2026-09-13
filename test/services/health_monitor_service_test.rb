@@ -94,7 +94,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     report = @service.full_health_report
 
     inbound = report[:inbound_event_health]
-    assert_equal [ "slack" ], inbound[:sources].map { |s| s[:name] }
+    assert_equal %w[slack github], inbound[:sources].map { |s| s[:name] }
     assert inbound[:status].warning?
     assert_equal baseline[:overall_status].status, report[:overall_status].status,
                  "webhook ingest is informational — it must not move the aggregate the alerting reads"
