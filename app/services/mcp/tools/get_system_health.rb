@@ -194,10 +194,12 @@ module Mcp
       end
 
       def inbound_source_line(source)
-        last = source[:last_delivery_at]&.utc&.strftime("%Y-%m-%d %H:%M UTC") || "none in the last 7 days"
+        retention_days = (WebhookDelivery::RETENTION / 1.day).to_i
+        last = source[:last_delivery_at]&.utc&.strftime("%Y-%m-%d %H:%M UTC") || "none in the last #{retention_days} days"
+        window = "#{(Webhooks::IngestSummary::WINDOW / 1.hour).to_i}h"
 
-        "  - `#{source[:name]}` (#{source[:mode]}): last delivery #{last}; last 24h: " \
-          "#{source[:deliveries_in_window]} deliveries, #{source[:webhook_claims_in_window]} fires via webhook, " \
+        "  - `#{source[:name]}` (#{source[:mode]}): last delivery #{last}; last #{window}: " \
+          "#{source[:deliveries_in_window]} deliveries, #{source[:webhook_claims_in_window]} trigger events claimed via webhook, " \
           "#{source[:poll_claims_in_window]} via poll"
       end
 

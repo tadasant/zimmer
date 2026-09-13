@@ -1,19 +1,25 @@
 # frozen_string_literal: true
 
 module Webhooks
-  # Whether each webhook source is delivering, and which path has been firing its triggers.
+  # Whether each webhook source is delivering, and which path has been claiming its trigger events.
   #
   # Read from the two tables the ingress writes: WebhookDelivery (every delivery that verified) and
-  # TriggerEventClaim (every event a trigger condition fired on, and whether the webhook or the
-  # poller claimed it). Both are listed row by row in /supervisor; this is the summary an operator
-  # or an agent reads at a glance, carried on /health, `GET /api/v1/health` and `get_system_health`
-  # through HealthMonitorService#inbound_event_health.
+  # TriggerEventClaim (every event a trigger condition fired on or folded, and whether the webhook
+  # or the poller claimed it). Both are listed row by row in /supervisor; this is the summary an
+  # operator or an agent reads at a glance, carried on /health, `GET /api/v1/health` and
+  # `get_system_health` through HealthMonitorService#inbound_event_health.
   #
   # The number it exists for is the poll claim count. A poller claims an event only while its
-  # source's webhook is switched on (SlackTriggerFiring#fire_slack_event), so every `poll` claim is
-  # an event the poller reached before the webhook did — a delivery the provider dropped, or one
-  # that arrived after the next poll. While `webhook_with_poll_fallback` is on, that count staying at
-  # zero is the evidence that the poller can go.
+  # source's webhook is switched on (SlackTriggerFiring#fire_slack_event), and the webhook races it
+  # only for the conditions it serves (Source#served_conditions). So a `poll` claim on one of those
+  # is an event the poller reached before the webhook did — a delivery the provider dropped, or one
+  # that arrived after the next poll. Claims on conditions the webhook never serves, such as Slack's
+  # passive listening, are not counted: the poller claims every one of them by design. While
+  # `webhook_with_poll_fallback` is on, the count staying at zero is the evidence that the poller
+  # can go.
+  #
+  # A claim is one event for one condition, not one session: a coalesced burst is a claim per
+  # message, and a message two conditions match is two claims.
   class IngestSummary
     WINDOW = 24.hours
 
@@ -27,8 +33,7 @@ module Webhooks
     end
 
     def report
-      claims = claim_counts
-      sources = Source.all.map { |source| source_reading(source, claims.fetch(source.name, {})) }
+      sources = Source.all.map { |source| source_reading(source) }
 
       {
         window_seconds: WINDOW.to_i,
@@ -39,64 +44,75 @@ module Webhooks
 
     private
 
-    # Both queries ride the `created_at` indexes: the newest delivery is one backward index step,
-    # and the window is a range scan over a day of rows.
-    def source_reading(source, claims)
+    # Every read is bounded by `created_at`, so each rides that index: the newest delivery is a
+    # backward step from the retention horizon, and the window is a range scan over a day of rows.
+    def source_reading(source)
       deliveries = WebhookDelivery.where(source: source.name)
-      webhook = claims.fetch("webhook", 0)
-      poll = claims.fetch("poll", 0)
+      claims = claim_counts(source)
 
       {
         name: source.name,
         mode: source.mode,
         webhook_enabled: source.webhook_enabled?,
         accepting: source.accepting?,
-        last_delivery_at: deliveries.order(created_at: :desc).limit(1).pick(:created_at),
+        last_delivery_at: deliveries.where(created_at: (@now - WebhookDelivery::RETENTION)..)
+                                    .order(created_at: :desc).limit(1).pick(:created_at),
         deliveries_in_window: deliveries.where(created_at: @since..).count,
-        webhook_claims_in_window: webhook,
-        poll_claims_in_window: poll
+        webhook_claims_in_window: claims.fetch("webhook", 0),
+        poll_claims_in_window: claims.fetch("poll", 0)
       }
     end
 
-    # { "slack" => { "webhook" => 3, "poll" => 1 } }. An event key starts with its source's name
-    # (TriggerEventClaim.slack_event_key), which is how a claim is attributed without a join.
-    def claim_counts
+    # { "webhook" => 3, "poll" => 1 } for the claims on +source+'s served conditions. An event key
+    # starts with its source's name (TriggerEventClaim.slack_event_key).
+    def claim_counts(source)
       TriggerEventClaim
         .where(created_at: @since..)
-        .group(Arel.sql("split_part(event_key, ':', 1)"), :claimed_via)
+        .where("trigger_event_claims.event_key LIKE ?", "#{TriggerEventClaim.sanitize_sql_like(source.name)}:%")
+        .where(trigger_condition_id: source.served_conditions.select(:id))
+        .group(:claimed_via)
         .count
-        .each_with_object({}) { |((source, via), count), out| (out[source] ||= {})[via] = count }
     end
 
-    # Warning for a source whose webhook is switched on but cannot verify anything, and for one the
-    # poller has had to back up. Healthy otherwise, including a source that polls: that is the
-    # default and changes nothing.
+    # Warning for a switched-on source that cannot verify anything, one that has received nothing,
+    # and one the poller has had to back up. Healthy otherwise, including a source that polls: that
+    # is the default and changes nothing.
     def status(sources)
-      unverifiable = sources.select { |s| s[:webhook_enabled] && !s[:accepting] }
-      missed = sources.select { |s| s[:webhook_enabled] && s[:poll_claims_in_window].positive? }
-
-      if unverifiable.any? || missed.any?
-        messages = unverifiable.map { |s| "#{s[:name]}: webhook is switched on but has no signing secret, so its endpoint answers 404" }
-        messages += missed.map { |s| missed_message(s) }
-        return HealthMonitorService::HealthStatus.new(status: :warning, message: messages.join("; "))
-      end
-
       enabled = sources.select { |s| s[:webhook_enabled] }
-      return HealthMonitorService::HealthStatus.new(status: :healthy, message: "Every source polls; no webhook is switched on") if enabled.empty?
+      return healthy("Every source polls; no webhook is switched on") if enabled.empty?
 
-      HealthMonitorService::HealthStatus.new(status: :healthy, message: enabled.map { |s| healthy_message(s) }.join("; "))
+      warnings = enabled.filter_map { |s| warning_message(s) }
+      return HealthMonitorService::HealthStatus.new(status: :warning, message: warnings.join("; ")) if warnings.any?
+
+      healthy(enabled.map { |s| healthy_message(s) }.join("; "))
     end
 
-    def missed_message(source)
-      total = source[:webhook_claims_in_window] + source[:poll_claims_in_window]
-      "#{source[:name]}: #{source[:poll_claims_in_window]} of #{total} trigger fire(s) in the last 24h were claimed " \
-        "by the poller — events the webhook did not deliver first"
+    def warning_message(source)
+      name = source[:name]
+
+      if !source[:accepting]
+        "#{name}: webhook is switched on but has no signing secret, so its endpoint answers 404"
+      elsif source[:poll_claims_in_window].positive?
+        total = source[:webhook_claims_in_window] + source[:poll_claims_in_window]
+        "#{name}: the poller claimed #{source[:poll_claims_in_window]} of #{total} trigger event(s) in the last " \
+          "#{window_label} — events the webhook did not deliver first"
+      elsif source[:deliveries_in_window].zero?
+        "#{name}: webhook is accepting but received no delivery in the last #{window_label} — " \
+          "check that the provider can reach its endpoint"
+      end
     end
 
     def healthy_message(source)
-      last = source[:last_delivery_at]
-      delivered = last ? "last delivery #{HealthMonitorService.format_wait(@now - last)} ago" : "no delivery in the last 7 days"
-      "#{source[:name]}: #{delivered}, #{source[:webhook_claims_in_window]} trigger fire(s) in the last 24h, none by the poller"
+      "#{source[:name]}: last delivery #{HealthMonitorService.format_wait(@now - source[:last_delivery_at])} ago; " \
+        "the webhook claimed #{source[:webhook_claims_in_window]} trigger event(s) in the last #{window_label}, the poller none"
+    end
+
+    def healthy(message)
+      HealthMonitorService::HealthStatus.new(status: :healthy, message: message)
+    end
+
+    def window_label
+      "#{(WINDOW / 1.hour).to_i}h"
     end
   end
 end

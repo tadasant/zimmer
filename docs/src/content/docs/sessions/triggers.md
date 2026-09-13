@@ -499,12 +499,18 @@ The summary of both is in the health report, so it can be read without paging th
 | **MCP** | `get_system_health` → the *Webhook ingest* line |
 
 For each source it gives the ingest mode, the time of the last delivery, and, over the last 24 hours,
-the number of deliveries and the number of trigger fires claimed by the webhook and by the poller.
-The poller only claims while the webhook is switched on, so every fire counted under the poller is
-one the webhook did not deliver first. The panel reads *warning* when that count is above zero for a
-source whose webhook is on, and when a source is switched on with no signing secret. Neither moves
-the report's overall status: a message the poller fired is a minute late, not lost, and nothing
-about it should page anyone.
+the number of deliveries and the number of trigger events claimed by the webhook and by the poller. A
+claim is one message for one trigger condition, so a coalesced burst counts once per message.
+
+The poller only claims while the webhook is switched on, so a poll claim on a condition the webhook
+serves is a message the webhook did not deliver first. Passive listening is left out of the counts:
+the webhook never serves it, so the poller claims every one of those messages by design.
+
+The panel reads *warning* in three cases: a switched-on source has poll claims in the window, a
+source is switched on with no signing secret, or an accepting source received no delivery at all in
+the window. Slack delivers every message in every channel the bot is in, matched or not, so a silent
+day means Slack is not reaching the endpoint. None of these moves the report's overall status: a
+message the poller fired is a minute late, not lost, and nothing about it should page anyone.
 
 ### `schedule`
 

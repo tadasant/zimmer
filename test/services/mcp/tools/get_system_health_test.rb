@@ -229,7 +229,7 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_includes result, "- **Webhook ingest:** Every source polls; no webhook is switched on"
     refute_includes result, "  - `slack`"
 
-    missed = HealthMonitorService::HealthStatus.new(status: :warning, message: "slack: 1 of 3 trigger fire(s) in the last 24h were claimed by the poller")
+    missed = HealthMonitorService::HealthStatus.new(status: :warning, message: "slack: the poller claimed 1 of 3 trigger event(s) in the last 24h")
     HealthMonitorService.any_instance.stubs(:full_health_report).returns(
       { overall_status: "healthy", inbound_event_health: { status: missed, sources: [
         { name: "slack", mode: "webhook_with_poll_fallback", webhook_enabled: true, accepting: true,
@@ -239,9 +239,9 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     )
     result = @tool.call({})
 
-    assert_includes result, "- **Webhook ingest:** slack: 1 of 3 trigger fire(s) in the last 24h were claimed by the poller"
+    assert_includes result, "- **Webhook ingest:** slack: the poller claimed 1 of 3 trigger event(s) in the last 24h"
     assert_includes result, "  - `slack` (webhook_with_poll_fallback): last delivery 2026-09-13 08:30 UTC; last 24h: " \
-                            "40 deliveries, 2 fires via webhook, 1 via poll"
+                            "40 deliveries, 2 trigger events claimed via webhook, 1 via poll"
   end
 
   # A key that stopped overnight and recovered reads `fresh`, so the line above would
