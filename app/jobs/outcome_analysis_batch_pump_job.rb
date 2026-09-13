@@ -20,9 +20,9 @@ class OutcomeAnalysisBatchPumpJob < ApplicationJob
     key: -> { "outcome-analysis-batch-pump-#{arguments.first || 'all'}" }
   )
 
-  # @param batch_id [Integer, nil] one batch, or nil for every running batch
+  # @param batch_id [Integer, nil] one batch, or nil for every batch with work left
   def perform(batch_id = nil)
-    batches = batch_id ? OutcomeAnalysisBatch.where(id: batch_id).active : OutcomeAnalysisBatch.active
+    batches = batch_id ? OutcomeAnalysisBatch.where(id: batch_id).active : with_work_left
 
     batches.find_each do |batch|
       OutcomeAnalyses::PumpBatch.call(batch)
@@ -32,5 +32,19 @@ class OutcomeAnalysisBatchPumpJob < ApplicationJob
       Rails.logger.error("[OutcomeAnalysisBatchPumpJob] Batch #{batch.id} failed to pump: #{e.class}: #{e.message}")
       Sentry.capture_exception(e) if defined?(Sentry)
     end
+  end
+
+  private
+
+  # Every running batch, plus every stopped one that still has analyses in
+  # flight. Stop leaves those to finish, and PumpBatch's reconcile is the only
+  # thing that notices when they do; a sweep over running batches alone would
+  # leave them RUNNING on the stopped batch forever. PumpBatch spawns nothing for
+  # a batch that is not running, so reconciling one is all this does.
+  def with_work_left
+    stopped_with_items_in_flight = OutcomeAnalysisBatch
+      .where(status: OutcomeAnalysisBatch::CANCELED)
+      .where(id: OutcomeAnalysisBatchItem.running.select(:outcome_analysis_batch_id))
+    OutcomeAnalysisBatch.active.or(stopped_with_items_in_flight)
   end
 end

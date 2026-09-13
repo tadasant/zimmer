@@ -11,6 +11,7 @@ module Mcp
   #   sessions       → spawn/inspect/act on other sessions
   #   gate_decisions → read and append the agent gates' decision ledger.
   #                    OPT-IN: addressable, but never part of "no groups"
+  #   outcome_analyses → start and stop Outcomes analyses. OPT-IN too
   #   self_session   → the curated set auto-injected into every session, so a
   #                    session can manage itself (notes/title/heartbeat/archive),
   #                    notify its user, and schedule its own wake-ups
@@ -32,7 +33,7 @@ module Mcp
     # included — but deliberately outside the default-everything set, the way
     # COMPOSITE_GROUPS is. A group lands here when the cost of every unscoped
     # connection carrying its write tools outweighs the convenience.
-    OPT_IN_GROUPS = %w[gate_decisions work_backlog].freeze
+    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses].freeze
 
     COMPOSITE_GROUPS = %w[self_session].freeze
 
@@ -56,6 +57,13 @@ module Mcp
       # server would leave those sessions no way to read their own record.
       Definition.new(klass: "Mcp::Tools::GetSessionProvenance", group: "sessions", write: false, composite_groups: %w[self_session]),
       Definition.new(klass: "Mcp::Tools::GetTranscriptArchive", group: "sessions", write: false),
+      # The Outcomes view's read side. Here rather than beside its write in
+      # `outcome_analyses`: a read starts nothing, so it belongs on every surface
+      # that can already read the transcript it describes — the unscoped `zimmer`
+      # server, `zimmer-sessions`, and `sessions_readonly`. Not in self_session:
+      # only an archived session has an analysis, so there is no "my own" one for
+      # a live session to read.
+      Definition.new(klass: "Mcp::Tools::GetOutcomeAnalysis", group: "sessions", write: false),
 
       # Sessions — writes
       Definition.new(klass: "Mcp::Tools::StartSession", group: "sessions", write: true),
@@ -69,10 +77,11 @@ module Mcp
       Definition.new(klass: "Mcp::Tools::ManageEnqueuedMessages", group: "sessions", write: true),
       Definition.new(klass: "Mcp::Tools::ManageCategories", group: "sessions", write: true),
       Definition.new(klass: "Mcp::Tools::RespondToElicitation", group: "sessions", write: true),
-      # The Outcomes view's only write path. In `sessions` rather than a group of
-      # its own so the already-registered `zimmer` and `zimmer-sessions` catalog
-      # servers carry it unchanged — `zimmer-sessions` being the least-privileged
-      # server an analysis session can be spawned with.
+      # How an analysis session hands its result back. In `sessions` rather than
+      # with action_outcome_analysis so the already-registered `zimmer` and
+      # `zimmer-sessions` catalog servers carry it unchanged — `zimmer-sessions`
+      # being the least-privileged server an analysis session can be spawned with.
+      # Saving is not starting: it spends nothing the analysis did not already.
       Definition.new(klass: "Mcp::Tools::SaveOutcomeAnalysis", group: "sessions", write: true),
 
       # Notifications
@@ -164,7 +173,28 @@ module Mcp
       # priority class is the human's lever over the spot queue, so it is REST only.
       Definition.new(klass: "Mcp::Tools::GetWorkBacklog", group: "work_backlog", write: false),
       Definition.new(klass: "Mcp::Tools::AppendWorkBacklogItem", group: "work_backlog", write: true),
-      Definition.new(klass: "Mcp::Tools::PullWorkBacklogItems", group: "work_backlog", write: true)
+      Definition.new(klass: "Mcp::Tools::PullWorkBacklogItems", group: "work_backlog", write: true),
+
+      # Outcomes — starting and stopping analyses (Analyze, Analyze All, Stop).
+      #
+      # OPT-IN, AND THE REASON IS THE FEATURE'S OWN PREMISE: Zimmer analyzes nothing
+      # implicitly, and every analysis is a full spot session. `analyze_all` turns
+      # one call into a batch of them. Folded into `sessions`, every session
+      # carrying `zimmer-sessions` could start one — including the analysis
+      # sessions themselves, which are spawned with exactly that server, so an
+      # analysis would hold the tool. In BASE_GROUPS the unscoped `zimmer` server
+      # would carry it into every root that lists it. So a connection names
+      # `outcome_analyses` to get it, and `zimmer-outcome-analyses` (mcp.json) is
+      # the catalog entry that does; no root attaches it by default. As with
+      # gate_decisions, this decides what a session is OFFERED, not what it can
+      # reach: anything holding start_session or action_trigger can spawn a child
+      # with that server. What bounds an agent that does are the limits below.
+      #
+      # The group holds only the write, so `outcome_analyses_readonly` is empty by
+      # construction: the read, get_outcome_analysis, lives in `sessions` above.
+      # The limits a caller meets once it is here — the concurrency cap, one
+      # running batch, expected_count — are in ActionOutcomeAnalysis.
+      Definition.new(klass: "Mcp::Tools::ActionOutcomeAnalysis", group: "outcome_analyses", write: true)
     ].freeze
 
     module_function

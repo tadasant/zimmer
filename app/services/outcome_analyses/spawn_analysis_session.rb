@@ -5,9 +5,10 @@ module OutcomeAnalyses
   # result back through `save_outcome_analysis`.
   #
   # This is the only thing in Zimmer that starts an analysis, and it runs only
-  # from an explicit human click (Analyze / Analyze All) — never from a callback,
-  # a poller, or a state transition. The analysis is expensive; nothing gets to
-  # trigger it implicitly.
+  # from an explicit request — a human's Analyze / Analyze All click, or an
+  # `action_outcome_analysis` MCP call on a connection that opted into the
+  # `outcome_analyses` tool group — never from a callback, a poller, or a state
+  # transition. The analysis is expensive; nothing gets to trigger it implicitly.
   #
   # The spawned session is `spot`-classed. It is batch work nobody is waiting on,
   # so it yields to anything a human is watching when the Claude Code quota gets
@@ -15,18 +16,70 @@ module OutcomeAnalyses
   # being a background sweep and being an outage.
   class SpawnAnalysisSession
     class Error < StandardError; end
+    class AgentCapExceeded < Error; end
 
-    def self.call(session:, batch: nil)
-      new(session: session, batch: batch).call
+    # Metadata an analysis session carries when it was asked for over MCP rather
+    # than from the web UI: that it was, and which session's connection asked.
+    # The first is what the single-analysis agent cap counts.
+    REQUESTED_VIA_KEY = "outcome_analysis_requested_via"
+    REQUESTED_BY_KEY = "outcome_analysis_requested_by_session_id"
+
+    def self.call(session:, batch: nil, requested_via: nil, requested_by: nil)
+      new(session: session, batch: batch, requested_via: requested_via, requested_by: requested_by).call
     end
 
-    def initialize(session:, batch: nil)
+    # The live analysis session working on `target`, if there is one — the newest,
+    # should a web-UI click and an MCP call ever have both started one. With
+    # `fresh_only`, one that has sat past PumpBatch::STALE_AFTER does not count.
+    def self.in_flight_for(target, fresh_only: false)
+      scope = fresh_only ? fresh(live_analysis_sessions) : live_analysis_sessions
+      scope.where("metadata->>? = ?", Session::OUTCOME_ANALYSIS_MARKER, target.id.to_s).order(id: :desc).first
+    end
+
+    # How many analyses requested one at a time over MCP hold one of the agent's
+    # slots. Batch items do not count: a batch has its own ceiling and its own Stop.
+    def self.live_mcp_single_count
+      agent_slot_holders.where("metadata->>'outcome_analysis_batch_id' IS NULL").count
+    end
+
+    # How many analyses spawned by an MCP-started batch — running or stopped —
+    # still hold a slot. A stopped batch's in-flight analyses are left to finish,
+    # so until they do they count against the next MCP batch.
+    def self.live_mcp_batch_item_count
+      agent_slot_holders.where("metadata->>'outcome_analysis_batch_id' IS NOT NULL").count
+    end
+
+    # Waiting, running, or parked in needs_input: anything that may yet save.
+    def self.live_analysis_sessions
+      Session.outcome_analysis_sessions.where(status: Session::NON_REAPABLE_STATUSES)
+    end
+
+    # MCP-requested analyses still holding one of the agent's slots. An analysis
+    # that has produced nothing for PumpBatch::STALE_AFTER gives its slot back —
+    # the clock a batch item's slot is released on — so one parked in needs_input
+    # cannot hold a slot, or its transcript, forever.
+    def self.agent_slot_holders
+      fresh(live_analysis_sessions)
+        .where("metadata->>? = ?", REQUESTED_VIA_KEY, OutcomeAnalysisBatch::STARTED_VIA_MCP)
+    end
+
+    def self.fresh(scope) = scope.where(created_at: PumpBatch::STALE_AFTER.ago..)
+
+    # @param batch [OutcomeAnalysisBatch, nil] the batch this item belongs to. A
+    #   batch item takes its provenance from the batch, not from the arguments.
+    # @param requested_via [String, nil] OutcomeAnalysisBatch::STARTED_VIA_*, for
+    #   a single analysis. Nil means the web UI.
+    # @param requested_by [Session, nil] the session whose MCP connection asked.
+    def initialize(session:, batch: nil, requested_via: nil, requested_by: nil)
       @session = session
       @batch = batch
+      @requested_via = batch ? batch.started_via : (requested_via || OutcomeAnalysisBatch::STARTED_VIA_WEB_UI)
+      @requested_by = batch ? batch.started_by_session : requested_by
     end
 
     def call
       raise Error, "Session #{@session.id} is not archived" unless @session.archived?
+      enforce_agent_limits! if via_mcp? && @batch.nil?
 
       # Created with the job held back so the title is on the row before the
       # agent starts: an Analyze All of 400 transcripts that all appear on the
@@ -39,14 +92,12 @@ module OutcomeAnalyses
         mcp_servers: [ Config.mcp_server_name ],
         goal: goal,
         skip_enqueue: true,
-        # A human clicked a button in the Zimmer web app; the fact that a batch
-        # pump made the actual call is a detail of how, not of where from.
-        genesis: SessionGenesis::WEB_UI,
+        genesis: genesis,
         scheduling_class: SessionGenesis::SPOT,
         metadata: {
           Session::OUTCOME_ANALYSIS_MARKER => @session.id.to_s,
           "outcome_analysis_batch_id" => @batch&.id&.to_s
-        }.compact
+        }.merge(provenance_metadata).compact
       )
 
       session.update!(title: title)
@@ -55,6 +106,47 @@ module OutcomeAnalyses
     end
 
     private
+
+    def via_mcp? = @requested_via == OutcomeAnalysisBatch::STARTED_VIA_MCP
+
+    # Where the line of work came from, per SessionGenesis. A click in the web
+    # app is `web_ui` — a human pressed a button, and the fact that a batch pump
+    # made the actual call is a detail of how, not of where from. An MCP request
+    # belongs to the line of work of the session that made it, the same way a
+    # parented spawn inherits its parent's genesis; with no calling session to
+    # inherit from it is `api`, like any other parentless API spawn.
+    def genesis
+      return SessionGenesis::WEB_UI unless via_mcp?
+
+      @requested_by&.genesis.presence || SessionGenesis::API
+    end
+
+    def provenance_metadata
+      return {} unless via_mcp?
+
+      { REQUESTED_VIA_KEY => @requested_via, REQUESTED_BY_KEY => @requested_by&.id&.to_s }
+    end
+
+    # One analysis at a time is how the MCP tool is meant to be used for a
+    # handful of transcripts; past AGENT_MAX_CONCURRENCY in flight, the caller
+    # is building a batch by hand, and a hand-built batch has no Stop button.
+    # A check rather than a lock: two calls in the same instant can both pass,
+    # which costs one extra spot session, not a runaway. Both checks read only
+    # analyses younger than PumpBatch::STALE_AFTER — see .agent_slot_holders.
+    def enforce_agent_limits!
+      in_flight = self.class.in_flight_for(@session, fresh_only: true)
+      if in_flight
+        raise AgentCapExceeded, "Session ##{@session.id} is already being analyzed by session ##{in_flight.id}. " \
+                                "Its result replaces the current analysis when it saves; starting a second one would only race it."
+      end
+
+      cap = OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY
+      return if self.class.live_mcp_single_count < cap
+
+      raise AgentCapExceeded, "#{cap} analyses requested one at a time over MCP are already in flight, which is the most " \
+                              "an agent may have. Wait for one to finish, or use the analyze_all action, which queues the " \
+                              "rest as a batch that can be watched and stopped."
+    end
 
     def title
       subject = @session.title.presence || "session ##{@session.id}"

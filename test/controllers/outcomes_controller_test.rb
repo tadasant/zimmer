@@ -259,6 +259,28 @@ class OutcomesControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action=?]", cancel_outcome_batch_path(batch)
   end
 
+  test "a batch an agent started over MCP says so, and links the session that started it" do
+    starter = archived_fixture(title: "Weekly sweep", status: :running, root: "general-agent", runtime: "claude_code", model: "opus")
+    web = OutcomeAnalysisBatch.create!(filters: {}, concurrency: 1, total_count: 0, status: OutcomeAnalysisBatch::COMPLETED)
+    mcp = OutcomeAnalysisBatch.create!(filters: {}, concurrency: 1, total_count: 0,
+                                       started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP, started_by_session: starter)
+
+    get outcomes_path
+
+    assert_select "span", text: "via MCP", count: 1
+    assert_select "a[href=?]", session_path(starter.id), text: "by session ##{starter.id}"
+    assert_match "Batch ##{web.id}", response.body
+    assert_match "Batch ##{mcp.id}", response.body
+  end
+
+  test "the web UI's Analyze All is a web_ui batch with no agent cap" do
+    post analyze_all_outcomes_path, params: { concurrency: "40" }
+
+    batch = OutcomeAnalysisBatch.last
+    assert_equal OutcomeAnalysisBatch::STARTED_VIA_WEB_UI, batch.started_via
+    assert_equal 40, batch.concurrency
+  end
+
   test "Stop cancels the queue and leaves in-flight analyses to finish" do
     post analyze_all_outcomes_path, params: { concurrency: "1" }
     batch = OutcomeAnalysisBatch.last
@@ -268,6 +290,15 @@ class OutcomesControllerTest < ActionDispatch::IntegrationTest
     assert_equal OutcomeAnalysisBatch::CANCELED, batch.reload.status
     assert_equal 0, batch.items.queued.count
     assert_match(/Stopped batch ##{batch.id}/, flash[:notice])
+  end
+
+  test "Stop on a batch that already completed says so and leaves it completed" do
+    batch = OutcomeAnalysisBatch.create!(filters: {}, concurrency: 1, total_count: 0, status: OutcomeAnalysisBatch::COMPLETED)
+
+    post cancel_outcome_batch_path(batch)
+
+    assert_equal OutcomeAnalysisBatch::COMPLETED, batch.reload.status
+    assert_match(/already completed; there is nothing to stop/, flash[:alert])
   end
 
   test "the ledger reaches the stats view and back, carrying the filters" do

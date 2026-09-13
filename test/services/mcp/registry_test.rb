@@ -83,7 +83,29 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     names = Mcp::Registry::ALL_TOOLS.map { |d| d.klass.constantize.tool_name }
 
     assert_equal names.uniq.size, names.size, "duplicate tool names: #{names.tally.select { |_, c| c > 1 }.keys}"
-    assert_equal 29, names.size
+    assert_equal 31, names.size
+  end
+
+  # Every analysis is a full spot session and analyze_all fans one call out into
+  # a batch of them, so the write is opt-in. The analysis sessions themselves are
+  # spawned with `zimmer-sessions`: were the write in `sessions`, an analysis
+  # could start analyses. The read starts nothing, so it rides on `sessions`.
+  test "action_outcome_analysis is reachable only by naming outcome_analyses; get_outcome_analysis rides on sessions" do
+    assert_equal [ "action_outcome_analysis" ], Mcp::Registry.tools_for([ "outcome_analyses" ]).map(&:tool_name)
+    assert_empty Mcp::Registry.tools_for([ "outcome_analyses_readonly" ]),
+                 "the group holds only the write; its read lives in sessions"
+
+    [ [ "sessions" ], [ "sessions_readonly" ], [ "self_session" ], [ "sessions", "self_session" ], [ "health" ],
+      [ "triggers" ], [ "notifications" ], [ "gate_decisions" ], [ "work_backlog" ],
+      Mcp::Registry.parse_groups(nil) ].each do |groups|
+      assert_not_includes Mcp::Registry.tools_for(groups).map(&:tool_name), "action_outcome_analysis",
+                          "#{groups.join(',')} must not be able to start an analysis"
+    end
+
+    [ [ "sessions" ], [ "sessions_readonly" ], Mcp::Registry.parse_groups(nil) ].each do |groups|
+      assert_includes Mcp::Registry.tools_for(groups).map(&:tool_name), "get_outcome_analysis"
+    end
+    assert_not_includes Mcp::Registry.tools_for([ "self_session" ]).map(&:tool_name), "get_outcome_analysis"
   end
 
   # The work backlog is read by a job that spawns sessions from it with no

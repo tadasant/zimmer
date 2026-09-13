@@ -15,6 +15,15 @@
     <% if batch.advisory_concurrency? %>
       <span class="text-[11px] text-amber-700" title="Far more than the spot gate will admit at once — the extra sessions wait rather than run.">⚠ high</span>
     <% end %>
+    <%# Nothing is analyzed implicitly, so a batch nobody clicked says who started it. %>
+    <% if batch.started_via_mcp? %>
+      <span class="text-[11px] px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-800"
+            title="Started through the action_outcome_analysis MCP tool, not from this page.">via MCP</span>
+      <% if batch.started_by_session_id %>
+        <%= link_to "by session ##{batch.started_by_session_id}", session_path(batch.started_by_session_id),
+            class: "text-[11px] text-purple-700 hover:text-purple-900" %>
+      <% end %>
+    <% end %>
     <span class="text-[11px] text-gray-400 truncate hidden sm:inline">· <%= batch.filter_summary %></span>
     <% if batch.running? %>
       <%= button_to "Stop", cancel_outcome_batch_path(batch, return_params), method: :post,

@@ -175,7 +175,10 @@ session orchestration does not carry the ability to write gate ratings). `gate_d
 opt-in tool group, so `zimmer-gate-decisions` is the *only* entry that reaches the ledger tools:
 the unscoped `zimmer` entry does not carry them. `zimmer-work-backlog` is the same shape for the
 [work backlog](/operate/work-backlog/): `work_backlog` is opt-in, and that entry is the only one
-that can append to the queue or pull from it.
+that can append to the queue or pull from it. `zimmer-outcome-analyses` does the same for [outcome
+analysis](/sessions/outcomes/#over-mcp): it is the only entry that can start an analysis or an
+Analyze All batch, because every analysis is a full session. Every `zimmer*` entry that carries
+`sessions` can read analyses.
 
 → [Zimmer's MCP server](/extend/mcp-server/) for the tool surface, the scoped variants, and auth.
 
