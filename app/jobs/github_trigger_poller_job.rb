@@ -96,13 +96,10 @@ class GithubTriggerPollerJob < ApplicationJob
     total_limit: 1
   )
 
-  # The searches and item readers, shared with GithubTriggerHealthCheckJob so the
-  # freshness probe asks GitHub exactly what the poller asks.
-  include GithubTriggerSearch
-
-  # Bodies are pasted into the prompt verbatim. A pathological issue body should not
-  # blow out the session's context before the agent has read its instructions.
-  MAX_BODY_LENGTH = 10_000
+  # The fire itself, shared with GithubEventJob so a webhook delivery renders and spawns exactly
+  # as a poll does. It brings GithubTriggerSearch, the searches and item readers shared with
+  # GithubTriggerHealthCheckJob so the freshness probe asks GitHub exactly what the poller asks.
+  include GithubTriggerFiring
 
   # How far behind its cursor a github_issue condition re-queries, to absorb GitHub's
   # eventually-consistent (and unordered) search index. An issue indexed later than this
@@ -916,117 +913,6 @@ class GithubTriggerPollerJob < ApplicationJob
     condition.github_repos.to_h { |repo| [ repo.to_s.downcase, baseline ] }
   end
 
-  # ── Firing ──────────────────────────────────────────────────────────────────
-
-  # Creates the session for one item. Returns true only if a session was created, since
-  # the caller uses that to decide whether it may advance its state past this item.
-  def fire(condition, item, event:)
-    trigger = condition.trigger
-
-    prompt = trigger.interpolate_prompt(
-      link: item["html_url"],
-      text: body_of(item),
-      author: item.dig("user", "login"),
-      event: event,
-      repo: repo_of(item),
-      number: item["number"],
-      title: item["title"],
-      labels: labels_for(item)
-    )
-
-    # A template that names no GitHub variable would otherwise hand the session a prompt
-    # with no idea which PR it is about. Append the item rather than firing blind.
-    prompt = "#{prompt}\n\n#{context_block(trigger, item, event: event)}" unless trigger.references_github_context?
-
-    # Set immediately before the call, and read only in the rescue below.
-    # #create_session! clears the trigger's created-session marker on entry, so the
-    # marker is a true report of THIS fire — but only once we are inside it. A raise
-    # before that (interpolation, the context block) would otherwise read the marker
-    # left by the PREVIOUS item in this same tick, and record an item as fired that
-    # has no session at all. That is #647's direction, and it is the worse one.
-    #
-    # Neither caller happens to expose the stale read today: both #record_fired_key and
-    # #record_fired_issue reload the condition after every successful fire, and #reload
-    # drops the association cache the marker lives on. That is an accident of an
-    # unrelated call rather than a property to rely on — the durability floors could
-    # move, and a floor whose own reload raised leaves the cache in place — so the guard
-    # here is what actually decides it.
-    spawn_attempted = true
-    session = trigger.create_session!(prompt: prompt)
-
-    # Burst control suppressed the spawn: the trigger has exceeded its cap and is
-    # spawning nothing until the burst subsides. Leave the item unseen so it fires
-    # for real once the trigger is back under its cap (its label is still there —
-    # the seen-set is state, so nothing is lost). This is expected behavior, not a
-    # dropped wake, so log it at info rather than storming WARN per item per tick
-    # for the whole burst.
-    if session.nil? && trigger.last_fire_burst_suppressed?
-      Rails.logger.info "[GithubTriggerPollerJob] Trigger #{trigger.id} is burst-suppressed for " \
-                        "#{item_key(item)} (#{event}); leaving it unseen so it fires once the burst ends"
-      return false
-    end
-
-    # Dedup suppressed the spawn: a session this trigger already spawned is still
-    # pending and carries the same intent. Leave the item unseen — unlike a
-    # broadcast event, a label or an open issue is durable state, so the item
-    # fires for real on a later tick once that session is done. Info, not warn:
-    # nothing was dropped and nothing is wrong.
-    if session.nil? && trigger.last_fire_skipped_for_pending_session?
-      Rails.logger.info "[GithubTriggerPollerJob] Trigger #{trigger.id} skipped #{item_key(item)} (#{event}) — " \
-                        "session #{trigger.last_fire_pending_session.id} is still pending; leaving it unseen"
-      return false
-    end
-
-    # create_session! returns the session truthily even when a reuse_session trigger DROPPED
-    # the follow-up prompt (target session busy, enqueue_messages off). Treating that as a
-    # fire would record the item as seen and consume the event without any work ever having
-    # been done. AoEventTriggerJob and ScheduleTriggerJob guard the same way.
-    if session.nil? || trigger.last_follow_up_dropped?
-      Rails.logger.warn "[GithubTriggerPollerJob] Trigger #{trigger.id} dropped the follow-up for " \
-                        "#{item_key(item)} (#{event}); leaving it unseen so the next tick retries"
-      return false
-    end
-
-    Rails.logger.info "[GithubTriggerPollerJob] Created session #{session.id} for trigger " \
-                      "#{trigger.id} from #{item_key(item)} (#{event})"
-    true
-  rescue => e
-    # A raise is NOT proof that nothing was created. Session.create_from_agent_root!
-    # commits the session row and then enqueues its one AgentSessionJob, and
-    # Trigger#create_session! keeps going afterwards — the reuse pointer, the
-    # sessions_created counter, the missed-fire clear. Anything from the enqueue
-    # onward can raise over a live session row, and returning false here would
-    # leave the item unseen and hand the next tick, sixty seconds later, an event
-    # that already has a session.
-    #
-    # That is defect 1 of #704: trigger 352 spawned TWO merge-gate sessions for one
-    # `ready to merge` label, 55s and 43s apart, on the one mechanism authorized to
-    # merge without human sign-off — a double-merge race whenever both dispatch.
-    #
-    # So the question is not "did this method return cleanly" but "does a session
-    # exist for this item", and Trigger#last_fire_created_session answers it. When
-    # one does, the event is consumed: report the failure loudly, and treat the item
-    # as fired so it is never spawned for twice.
-    #
-    # A session that was created but whose start job did not survive the failure is
-    # defect 2 of the same issue, and it has its own owner: StalledStartSweepJob
-    # restarts a `waiting` session with no job (#737). Re-firing here would not have
-    # rescued it either — it would have spawned a sibling and left the original
-    # stranded regardless, which is precisely what happened to session 10426.
-    created = spawn_attempted ? trigger.last_fire_created_session : nil
-    if created
-      Rails.logger.error "[GithubTriggerPollerJob] Trigger #{trigger.id} created session " \
-                         "#{created.id} for #{item_key(item)} (#{event}) but the fire then failed: " \
-                         "#{e.message}. Treating the event as fired — the session exists, so " \
-                         "re-firing would spawn a duplicate. If it never starts, StalledStartSweepJob owns it."
-      return true
-    end
-
-    Rails.logger.error "[GithubTriggerPollerJob] Failed to create session for " \
-                       "#{item_key(item)} (#{event}): #{e.message}"
-    false
-  end
-
   # Persist poller state, unless the user changed what the condition watches while this tick
   # was in flight.
   #
@@ -1046,48 +932,5 @@ class GithubTriggerPollerJob < ApplicationJob
     end
 
     condition.write_github_state!(state, fired: fired)
-  end
-
-  # The item for a template that does not identify it. Repository, number, URL and author
-  # login are fields of the API result. The title, labels and body are text people chose,
-  # so each renders the way the template renders {{title}}, {{labels}} and {{text}}: fenced,
-  # unless the template writes that placeholder bare (Trigger#render_appended_untrusted).
-  # The URL line stays above all three — OrphanedTriggerFire reads the first one. A cut body's
-  # truncation marker is Zimmer's, so it goes after the fence.
-  def context_block(trigger, item, event:)
-    labels = labels_for(item).presence&.join(", ")
-    body = item["body"].to_s
-    body_text = if body.blank?
-      "(no description)"
-    else
-      fenced = trigger.render_appended_untrusted(body[0, MAX_BODY_LENGTH], variable: "text", name: "body")
-      body.length > MAX_BODY_LENGTH ? "#{fenced}\n\n…(truncated)" : fenced
-    end
-
-    <<~TEXT.strip
-      ## GitHub #{pull_request?(item) ? 'pull request' : 'issue'} (#{event})
-
-      - **Repository:** #{repo_of(item)}
-      - **Number:** ##{item['number']}
-      - **URL:** #{item['html_url']}
-      - **Author:** #{item.dig('user', 'login') || 'unknown'}
-
-      ### Title
-
-      #{trigger.render_appended_untrusted(item['title'], variable: 'title')}
-
-      ### Labels
-
-      #{labels ? trigger.render_appended_untrusted(labels, variable: 'labels') : '(none)'}
-
-      ### Body
-
-      #{body_text}
-    TEXT
-  end
-
-  def body_of(item)
-    body = item["body"].to_s
-    body.length > MAX_BODY_LENGTH ? "#{body[0, MAX_BODY_LENGTH]}\n\n…(truncated)" : body
   end
 end

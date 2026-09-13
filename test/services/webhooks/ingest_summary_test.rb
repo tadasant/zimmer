@@ -3,7 +3,7 @@
 require "test_helper"
 
 class Webhooks::IngestSummaryTest < ActiveSupport::TestCase
-  KEYS = %w[SLACK_TRIGGER_INGEST_MODE SLACK_SIGNING_SECRET].freeze
+  KEYS = %w[SLACK_TRIGGER_INGEST_MODE SLACK_SIGNING_SECRET GITHUB_TRIGGER_INGEST_MODE GITHUB_WEBHOOK_SECRET].freeze
 
   setup do
     @saved = KEYS.to_h { |key| [ key, ENV[key] ] }
@@ -37,6 +37,8 @@ class Webhooks::IngestSummaryTest < ActiveSupport::TestCase
 
   test "with nothing configured every source polls and the reading is healthy" do
     report = Webhooks::IngestSummary.report(now: @now)
+
+    assert_equal %w[slack github], report[:sources].map { |s| s[:name] }
 
     assert_equal 24.hours.to_i, report[:window_seconds]
     assert_equal({ name: "slack", mode: "poll", webhook_enabled: false, accepting: false, last_delivery_at: nil,
@@ -166,5 +168,33 @@ class Webhooks::IngestSummaryTest < ActiveSupport::TestCase
 
     assert_equal 0, slack(report)[:poll_claims_in_window]
     assert_predicate report[:status], :healthy?
+  end
+
+  # GitHub sends an event only when an issue changes, so a quiet day says nothing is wrong.
+  test "an accepting GitHub webhook with no delivery in the window is healthy, unlike Slack" do
+    ENV["GITHUB_TRIGGER_INGEST_MODE"] = "webhook_with_poll_fallback"
+    ENV["GITHUB_WEBHOOK_SECRET"] = "s3cret"
+
+    report = Webhooks::IngestSummary.report(now: @now)
+
+    assert_predicate report[:status], :healthy?
+    assert_equal "github: no delivery in the last 7 days; the webhook claimed 0 trigger event(s) in the last 24h, the poller none",
+                 report[:status].message
+  end
+
+  test "a GitHub poll claim on a github_issue condition while its webhook is on warns" do
+    ENV["GITHUB_TRIGGER_INGEST_MODE"] = "webhook_with_poll_fallback"
+    ENV["GITHUB_WEBHOOK_SECRET"] = "s3cret"
+    issue_condition = trigger_conditions(:github_issue_condition)
+    TriggerEventClaim.claim!(issue_condition, [ TriggerEventClaim.github_issue_event_key("tadasant/zimmer", 1) ], via: "webhook", now: @now)
+    TriggerEventClaim.claim!(issue_condition, [ TriggerEventClaim.github_issue_event_key("tadasant/zimmer", 2) ], via: "poll", now: @now)
+
+    report = Webhooks::IngestSummary.report(now: @now)
+    github = report[:sources].find { |s| s[:name] == "github" }
+
+    assert_equal [ 1, 1 ], [ github[:webhook_claims_in_window], github[:poll_claims_in_window] ]
+    assert_equal 0, slack(report)[:poll_claims_in_window]
+    assert_predicate report[:status], :warning?
+    assert_match "github: the poller claimed 1 of 2 trigger event(s)", report[:status].message
   end
 end

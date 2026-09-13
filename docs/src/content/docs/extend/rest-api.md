@@ -1281,10 +1281,12 @@ One endpoint lives outside `/api/v1`: `GET /api/secrets/keys` → `{secrets: [{n
 the secret-name autocomplete. It returns *names and descriptions*, never values, and it sits behind
 the same `X-API-Key` gate as everything else.
 
-`POST /webhooks/slack` is not part of this API and does not take an `X-API-Key`. It is Slack's Events
-API request URL, authenticated by Slack's own signature over the request body, and it answers 404
-unless Slack delivery is switched on — see
-[Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery).
+`POST /webhooks/slack` and `POST /webhooks/github` are not part of this API and do not take an
+`X-API-Key`. They are Slack's Events API request URL and a GitHub webhook's payload URL, each
+authenticated by the provider's own signature over the request body, and each answers 404 unless that
+provider's delivery is switched on — see
+[Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery) and
+[GitHub webhook delivery](/sessions/triggers/#github-webhook-delivery).
 
 ### Transcript content is redacted
 

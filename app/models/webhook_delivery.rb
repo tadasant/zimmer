@@ -10,11 +10,12 @@
 # table also answers "is Slack delivering at all" without a shell: the newest row is the last
 # delivery that verified.
 class WebhookDelivery < ApplicationRecord
-  SOURCES = %w[slack].freeze
+  SOURCES = %w[slack github].freeze
 
   # Slack retries a delivery three times, the last about five minutes after the first, so a
-  # day would cover redelivery on its own. The rest of the week is for reading back what
-  # arrived when a trigger did or did not fire.
+  # day would cover redelivery on its own; GitHub does not retry, and a redelivery is someone
+  # pressing "Redeliver". The rest of the week is for reading back what arrived when a trigger
+  # did or did not fire.
   RETENTION = 7.days
 
   validates :source, inclusion: { in: SOURCES }

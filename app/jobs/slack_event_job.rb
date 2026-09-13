@@ -30,6 +30,11 @@ class SlackEventJob < ApplicationJob
   # singleton poller on `pollers`.
   queue_as :triggers
 
+  # The arguments carry the message text. ActiveJob would print them on the INFO lines it writes
+  # when this is enqueued and performed, which is the text Webhooks::BaseController keeps out of
+  # the logs.
+  self.log_arguments = false
+
   # `message` only. Slack also sends `app_mention` for an @mention, but it carries no
   # channel_type, so a mention in a group DM — which the poller never reads — would look like one
   # in a channel. Every mention also arrives as a `message` event, which does carry it, so an
