@@ -1504,16 +1504,18 @@ every half hour on a busy day, so a clock restarted by each one would seldom run
 judge an hourly key, let alone a daily one. And a key whose enqueue fails on every tick keeps
 failing across deploys. Three lower bounds still apply:
 
-- **A singleton whose newest tick has finished** is owed nothing from before its slot last came
-  free: the latest `finished_at` of any copy with its concurrency key since that tick was
-  enqueued. GoodJob refuses every tick while a copy holds the slot, so those ticks were never cron's
-  to produce. Without this, a `log_retention` copy that waited 45 minutes in a backed-up
-  `maintenance` lane and finished at 03:45 read as "nothing enqueued since 03:00" until the 03:50
-  tick landed, and paged. A worker replacement frees a lane like that routinely
-  ([#1190](https://github.com/tadasant/zimmer/issues/1190)). While the copy waited or ran, the
-  table below judged it. A key the cron manager cannot enqueue at all finishes its last job seconds
-  after its tick, so this bound moves nothing for that failure. A class with no limit at enqueue
-  gets no such allowance, because its ticks are never refused.
+- **A `total_limit` singleton whose newest tick has finished** is owed nothing from before its slot
+  came free. GoodJob refuses every tick while a copy holds the slot, so those ticks were never
+  cron's to produce. The bound is the `finished_at` of the copy with the same concurrency key that
+  was still unfinished at the tick owed, asked again from the next tick until nothing was holding.
+  A `log_retention` copy that waits 45 minutes in a backed-up `maintenance` lane and finishes at
+  03:45 owes the 03:50 tick, not the 03:10 one. A worker replacement drains a lane like that
+  routinely, and without this bound it pages ([#1190](https://github.com/tadasant/zimmer/issues/1190)).
+  While the copy waited or ran, the table below judged it. A copy that held nothing at the owed tick,
+  such as a five-second `perform_later` run long after cron stopped, moves nothing, so a key the cron
+  manager cannot enqueue is still found, late by at most how long its last copy held the slot. A
+  class with no limit, or only an `enqueue_limit`, gets no allowance. Its ticks are never refused,
+  or stop being refused the moment its copy starts.
 - **A key with no row at all** is counted from the start of the newest live worker that runs cron
   (`good_job_processes`, plus a one-minute `CRON_STARTUP_SLACK`). That covers a fresh database, or
   an entry the deploy just added. It is the newest worker rather than the oldest because, during a
