@@ -4887,22 +4887,35 @@ nothing claims it.
 
 ## Hardcoded values that shouldn't be
 
-### Adding a model is a code change and a deploy
+### An added model is only checked against the CLI's bundled list
 
-`ModelCatalog::MODELS` is a Ruby literal, so a new model is a PR and a deploy. Most additions need a
-CLI bump in the image anyway: Pi's list has to match the Pi
-version pinned in `Dockerfile.base`, and Codex's has to match the pinned Codex CLI. A list you could
-edit at runtime could name a model the installed CLI cannot resolve, and that would only show up
-as a failed spawn. Claude Code's ids are floating aliases, so a new Opus or Sonnet release reaches
-sessions without touching the catalog.
+A model can be added to a runtime's catalog from Settings → Models, the REST API or the
+`manage_models` MCP tool, with no deploy (see
+[Adding a model without a deploy](/sessions/runtimes/#adding-a-model-without-a-deploy)). What Zimmer
+cannot do is prove the installed CLI will run it:
+
+- **Claude Code ids are not checked at all.** The CLI has no model list, so a mistyped alias is
+  saved and fails on the session's first turn.
+- **An unlisted Codex or Pi id is a warning, not an answer.** The check reads the model list bundled
+  with the pinned CLI, offline. A model released after that CLI is missing from the list and may
+  still work, because both CLIs pass an unknown id to the provider. So the check can only refuse it
+  until the caller says to add it anyway, and then the first turn decides.
+- **The stored answer ages.** `cli_listed` and `cli_version` record the check when the model was
+  added. A deploy that bumps the CLI does not re-run it, so the badge keeps naming the old version
+  until the model is removed and added again.
+- **A Pi id for a provider Zimmer has no key variable for is unchecked.** Pi only lists a provider
+  whose key resolves, and the placeholder key is named from Pi's provider table
+  (`ModelCatalogCliCheck::PI_KEY_VARIABLES`, else `<PROVIDER>_API_KEY`).
+
+Adding a runtime, changing a built-in model, a runtime's fallback default, or the quota probe's
+`messages_api_id` is still a change to `ModelCatalog::MODELS` and a deploy.
 
 The quota-probe half of the issue is fixed. `QuotaCheckService::PROBE_MODEL` is looked up from the
 catalog's `haiku` entry (its `messages_api_id`, `claude-haiku-4-5`), and `ModelCatalogTest` fails
 on a dated snapshot in the catalog and on a Claude model version in any Ruby literal elsewhere under
 `app/`, `config/` or `lib/`. See [Models](/sessions/runtimes/#models).
 
-Tracked in [#85](https://github.com/tadasant/zimmer/issues/85), which stays open for the
-runtime-configurable half.
+Tracked in [#85](https://github.com/tadasant/zimmer/issues/85).
 
 ### The X consent finishes by paste until its callback is registered with X by hand
 

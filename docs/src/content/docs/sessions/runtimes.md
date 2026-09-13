@@ -43,8 +43,10 @@ carrying a copy.
 
 ## Models
 
-`ModelCatalog::MODELS` is the authoritative per-runtime list, and it is what the new-session form,
-the detail-page model editor and the REST API all validate against.
+`ModelCatalog` is the authoritative per-runtime list, and it is what the new-session form,
+the detail-page model editor, the Settings defaults, the REST API and `start_session` all validate
+against. It has two parts: the built-in models in `ModelCatalog::MODELS`, which ship with Zimmer,
+and the models an operator added while it runs, which follow them. The built-in models are:
 
 | Runtime | Model ids |
 | --- | --- |
@@ -85,6 +87,43 @@ string, symbol or backtick literal under `app/`, `config/` or `lib/` outside `mo
 including one embedded in a tool description or a command line. So a model id added somewhere else
 fails CI until it moves here or is looked up from here. Comments, ERB, YAML and JavaScript are not
 scanned.
+
+### Adding a model without a deploy
+
+**Settings → Models** (`/settings/models`) adds a model to a runtime's catalog, and so do
+`POST /api/v1/model_catalog_entries` ([REST](/extend/rest-api/#models)) and the `manage_models` MCP
+tool. All three write through `ModelCatalogEntry.add`, and the model is offered everywhere the
+built-in ones are from the next request on. Adding a runtime is still a `MODELS` entry and a deploy.
+
+Adding a model installs nothing. The CLI already in the image has to run it, and Pi's and Codex's
+pinned CLIs only know the models their release bundled. So `add` checks what it can before it saves:
+
+- **The id's shape.** No whitespace and nothing that starts like a flag. No dated snapshot on any
+  runtime. No Claude version pin in the `claude_code` catalog, which is the same rule
+  `ClaudeModelConfigurationAudit` applies, since the bare aliases already follow new releases.
+  Pi ids must be `provider/…`. An id that is already built in is refused.
+- **Whether the installed CLI lists the id** (`ModelCatalogCliCheck`). Codex answers from
+  `codex debug models` and Pi from `pi --offline --list-models`, both offline. Pi only lists a
+  provider whose key resolves, so the check sets a placeholder key for the provider in the id. The
+  network is never called, so the placeholder never leaves the box. Claude Code has no list, so its
+  ids are saved unchecked.
+
+**An id the CLI does not list is refused unless the caller says to add it anyway**
+(`allow_unlisted`). That is a warning, not proof the model is broken. Codex sends an unlisted slug to
+OpenAI and Pi uses it as a custom model id, so the provider accepts or refuses it on the session's
+first turn. Adding a model released after the CLI in the image is exactly that case. The check's
+answer is stored on the row (`cli_listed`, `cli_version`, `cli_note`) and shown beside the model on
+Settings → Models, in `manage_models list`, in `get_configs` and in `GET /api/v1/configs`. A CLI
+that is missing or prints something unreadable leaves the model unchecked rather than blocking it.
+
+An added model never becomes a runtime's fallback default and never supplies `messages_api_id`.
+Both are read into constants at boot and stay in `MODELS`. To make an added model the default for
+new sessions, pick it under Session Defaults on the Settings page.
+
+Removing an added model stops new sessions picking it. A session already on it keeps it. Removal is
+refused while the Settings page's session default or the categorization model names the model,
+because `AppSetting` re-validates both on every save. If a later deploy makes an added id built-in,
+the built-in entry wins and Settings → Models lists the redundant row for removal.
 
 ## Credentials
 

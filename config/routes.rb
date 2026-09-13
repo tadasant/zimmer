@@ -173,6 +173,9 @@ Rails.application.routes.draw do
       post "quick_router", to: "quick_router#create"
 
       resources :configs, only: [ :index ]
+      # Models added to a runtime's catalog at runtime (#85). The built-in ones
+      # are read-only and listed under `runtime_models` in GET /configs.
+      resources :model_catalog_entries, only: [ :index, :create, :destroy ]
       resources :mcp_servers, only: [ :index ]
       resources :skills, only: [ :index ]
 
@@ -397,6 +400,11 @@ Rails.application.routes.draw do
   patch "settings/categorization", to: "categorization#update"
   post "settings/categorization/replay", to: "categorization#replay", as: :categorization_replay
   patch "settings/catalog_pins", to: "catalog_pins#update", as: :catalog_pins
+  # Models added to a runtime's catalog without a deploy (#85). The REST sibling
+  # is /api/v1/model_catalog_entries and the MCP one is `manage_models`.
+  get "settings/models", to: "model_catalog_entries#index", as: :model_catalog_entries
+  post "settings/models", to: "model_catalog_entries#create"
+  delete "settings/models/:id", to: "model_catalog_entries#destroy", as: :model_catalog_entry
   # Named API keys (#46): list, mint, revoke, restore. Browser-only and behind the
   # operator credential by design — no API key and no MCP tool reaches these, so the
   # credential the fleet shares can neither issue keys nor revoke them. See

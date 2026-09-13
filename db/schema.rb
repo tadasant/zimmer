@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_13_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_13_150000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -483,6 +483,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_13_120000) do
     t.datetime "updated_at", null: false
     t.index ["credential_key"], name: "index_mcp_server_oauth_requirements_on_credential_key", unique: true
     t.index ["server_name"], name: "index_mcp_server_oauth_requirements_on_server_name"
+  end
+
+  create_table "model_catalog_entries", force: :cascade do |t|
+    t.string "added_via", null: false
+    t.boolean "cli_listed"
+    t.text "cli_note"
+    t.string "cli_version"
+    t.datetime "created_at", null: false
+    t.string "label"
+    t.string "model_id", null: false
+    t.boolean "requires_oauth", default: false, null: false
+    t.string "runtime", null: false
+    t.datetime "updated_at", null: false
+    t.index ["runtime", "model_id"], name: "index_model_catalog_entries_on_runtime_and_model_id", unique: true
   end
 
   create_table "notifications", force: :cascade do |t|

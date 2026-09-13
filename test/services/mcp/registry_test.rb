@@ -83,7 +83,7 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     names = Mcp::Registry::ALL_TOOLS.map { |d| d.klass.constantize.tool_name }
 
     assert_equal names.uniq.size, names.size, "duplicate tool names: #{names.tally.select { |_, c| c > 1 }.keys}"
-    assert_equal 33, names.size
+    assert_equal 34, names.size
   end
 
   # Every analysis is a full spot session and analyze_all fans one call out into
