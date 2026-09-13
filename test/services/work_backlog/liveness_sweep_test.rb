@@ -189,6 +189,24 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
                  WorkBacklog::LivenessSweep.candidates(Time.current).map(&:id)
   end
 
+  # The candidate population only grows, because a row whose issue closed stays a
+  # candidate. If closed rows shared the round-robin, they would push stranded rows
+  # back several passes, which is how zimmer#173 was still listed as stranded
+  # more than an hour after it closed.
+  test "examines every unsettled row before any settled one, however recently it was checked" do
+    closed = started_row(key: "zimmer#1", number: 1, liveness_checked_at: 10.days.ago,
+                         liveness_state: WorkBacklogItem::LIVENESS_ISSUE_CLOSED)
+    superseded = started_row(key: "zimmer#2", number: 2, liveness_checked_at: 9.days.ago,
+                             liveness_state: WorkBacklogItem::LIVENESS_SUPERSEDED)
+    merged = started_row(key: "zimmer#3", number: 3, liveness_checked_at: 1.hour.ago,
+                         liveness_state: WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    moving = started_row(key: "zimmer#4", number: 4, liveness_checked_at: 2.hours.ago,
+                         liveness_state: WorkBacklogItem::LIVENESS_PR_OPEN)
+
+    assert_equal [ moving.id, merged.id, closed.id, superseded.id ],
+                 WorkBacklog::LivenessSweep.candidates(Time.current).map(&:id)
+  end
+
   test "examines at most MAX_EXAMINED_PER_SWEEP rows in one pass" do
     (WorkBacklog::LivenessSweep::MAX_EXAMINED_PER_SWEEP + 2).times do |n|
       started_row(key: "zimmer##{n}", number: n)

@@ -330,7 +330,41 @@ class Issues::BoardTest < ActiveSupport::TestCase
     assert_equal result.counts[:in_flight], result.advancing_count
   end
 
+  # zimmer#173: the stored verdict came from a check made before the issue
+  # closed. The snapshot is the fresher reading, and a closed reading wins.
+  test "a stranded row whose issue is closed on GitHub is out of the rows and the count" do
+    closed = stranded_item(173, WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    open = stranded_item(847, WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    snapshot = github_snapshot(issues: [ github_issue(number: 173, state: "closed", closed_at: 1.hour.ago),
+                                         github_issue(number: 847) ])
+
+    result = board(snapshot: snapshot)
+
+    assert_equal [ open.key ], result.stranded_rows.map(&:key)
+    assert_equal 1, result.counts[:stranded]
+    assert_includes WorkBacklogItem.stranded, closed, "the page writes nothing back; the sweep does"
+  end
+
+  # Missing from the snapshot is not closed: the repo may have failed to load, or
+  # the issue closed before the trend window. The stored verdict stands.
+  test "a stranded row the snapshot does not hold keeps its stored verdict" do
+    stranded_item(900, WorkBacklogItem::LIVENESS_NO_PR)
+
+    result = board(snapshot: github_snapshot(issues: [], errors: { "tadasant/zimmer" => "boom" }))
+
+    assert_equal [ "zimmer#900" ], result.stranded_rows.map(&:key)
+    assert_equal 1, result.counts[:stranded]
+  end
+
   private
+
+  def stranded_item(number, state)
+    sessions(:archived).update!(archived_at: 3.days.ago)
+    item = backlog_item(key: "zimmer##{number}", issue_url: url(number))
+    item.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    item.record_liveness!(state)
+    item
+  end
 
   def url(number) = "https://github.com/tadasant/zimmer/issues/#{number}"
 

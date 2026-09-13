@@ -151,12 +151,25 @@ module WorkBacklog
         report(result, logger)
       end
 
-      # The rows worth a look, least-recently-checked first so a large population
-      # round-robins rather than the sweep re-reading the head of it every pass.
-      # Rows nothing has ever said anything about sort first.
+      # The rows worth a look: every unsettled row before any settled one, then
+      # least-recently-checked first so a large population round-robins rather
+      # than the sweep re-reading the head of it every pass. Rows nothing has ever
+      # said anything about sort first within their tier.
+      #
+      # The tier comes first because the candidate population only grows. A
+      # candidate whose issue closed stays a candidate, so a plain round-robin
+      # spends most of MAX_EXAMINED_PER_SWEEP re-confirming closed issues, and a
+      # stranded row waits several passes for its turn. On 2026-09-12 zimmer#173
+      # was still listed as stranded more than an hour after it closed, while
+      # rows beside it had been checked in a later pass. With settled rows last,
+      # every stranded row is re-checked on every pass as long as there are fewer
+      # than MAX_EXAMINED_PER_SWEEP of them, and the settled rows share what is
+      # left. Past that there is nothing left, and a reopened issue is not
+      # re-checked until the unsettled population drops back under the cap.
       def candidates(now)
         WorkBacklogItem.liveness_candidates(grace: GRACE, now: now)
-                       .order(Arel.sql("liveness_checked_at ASC NULLS FIRST"), id: :asc)
+                       .order(Arel.sql(settled_last_sql),
+                              Arel.sql("liveness_checked_at ASC NULLS FIRST"), id: :asc)
                        .limit(MAX_EXAMINED_PER_SWEEP)
                        .to_a
       end
@@ -186,6 +199,12 @@ module WorkBacklog
       end
 
       private
+
+      def settled_last_sql
+        WorkBacklogItem.sanitize_sql_array(
+          [ "CASE WHEN liveness_state IN (?) THEN 1 ELSE 0 END ASC", WorkBacklogItem::SETTLED_LIVENESS_STATES ]
+        )
+      end
 
       # One pass over the rows worth a look: probe each repo once, classify every
       # row it came back with, and write each verdict down.
