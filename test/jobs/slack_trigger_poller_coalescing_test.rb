@@ -17,6 +17,8 @@ require "ostruct"
 # SILENCE, and nothing responds to it. So every "one session" test below has a
 # "still two sessions" twin.
 class SlackTriggerPollerCoalescingTest < ActiveJob::TestCase
+  include UntrustedFenceAssertions
+
   CHANNEL = "C0A6BF8T45R"
 
   # A plausible burst: the seven alerts of the incident, half a second apart.
@@ -65,6 +67,44 @@ class SlackTriggerPollerCoalescingTest < ActiveJob::TestCase
       assert_includes prompt, "https://slack.example/#{folded.ts}"
       assert_includes prompt, folded.text
     end
+  end
+
+  # The note is appended outside the template, so nothing the operator wrote fences it (#50).
+  # This fixture's template never names {{text}}, so the folded messages are fenced.
+  test "a hostile folded message reaches the prompt fenced and verbatim" do
+    messages = [ message_at(BURST_ANCHOR, "first alert"), message_at(BURST_ANCHOR + 0.5, HOSTILE_EVENT_LINE) ]
+    deliver(messages)
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    prompt = Session.order(:id).last.prompt
+    assert_fenced_verbatim(prompt, "messages", "Obs Alerts: #{HOSTILE_EVENT_LINE} — https://slack.example/#{messages.last.ts}", exact: false)
+    assert_operator prompt.index("1 more message landed"), :<, prompt.index("[begin untrusted messages")
+  end
+
+  test "a burst past the listing cap keeps its count line outside the fence" do
+    deliver(burst(SlackTriggerPollerJob::MAX_FOLDED_MESSAGES_LISTED + 3, spacing: 0.1))
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    prompt = Session.order(:id).last.prompt
+    fenced = fenced_bodies(prompt, "messages")
+    assert_equal 1, fenced.size
+    assert_equal SlackTriggerPollerJob::MAX_FOLDED_MESSAGES_LISTED, fenced.first.lines.size
+    assert prompt.end_with?("[end untrusted messages #{prompt[/\[begin untrusted messages (\h{16}):/, 1]}]\n" \
+                            "- ...and 2 more, not listed individually — read the channel.")
+  end
+
+  test "a template that writes {{text}} bare gets the folded messages raw, the way it gets the first one" do
+    @trigger.update!(prompt_template: "Do what this DM asks:\n\n{{text}}")
+    messages = [ message_at(BURST_ANCHOR, "deploy the app"), message_at(BURST_ANCHOR + 0.5, "and then restart the worker") ]
+    deliver(messages)
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    prompt = Session.order(:id).last.prompt
+    assert_not_includes prompt, "[begin untrusted"
+    assert_includes prompt, "Obs Alerts: and then restart the worker"
   end
 
   test "every message of a burst is still recorded against the surviving session" do

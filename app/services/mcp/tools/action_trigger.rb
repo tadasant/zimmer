@@ -224,7 +224,8 @@ module Mcp
 
         Triggered sessions receive the repo, number, URL, title, author, body and labels — via the
         `{{repo}}`, `{{number}}`, `{{link}}`, `{{title}}`, `{{author}}`, `{{text}}`, `{{labels}}` and
-        `{{event}}` template variables, or appended as a context block if the template names none.
+        `{{event}}` template variables, or appended as a context block if the template names none of
+        `{{link}}`, `{{repo}}` or `{{number}}`.
 
         Use search_triggers first to see available triggers and Slack channels.
       DESC
@@ -249,7 +250,9 @@ module Mcp
                          "(the thread to reply into) and {{author_id}}. When a Slack condition fires, those four come " \
                          "from Slack's own fields, never from message text; an invoke takes them from its caller. " \
                          "Either way they render empty unless they are in Slack's ID format. Write any " \
-                         "placeholder as {{name|untrusted}} to render it fenced off as outside input. See " \
+                         "placeholder as {{name|untrusted}} to render it fenced off as outside input. Event text " \
+                         "Zimmer appends outside the template (the GitHub context block, a Slack burst's folded " \
+                         "messages) is fenced the same way unless the template writes the matching variable bare. See " \
                          "https://docs.zimmer.tadasant.com/sessions/triggers/#prompt-template-variables"
           },
           status: { type: "string", enum: STATUSES, description: "Trigger status." },

@@ -166,7 +166,12 @@ module SlackTriggerFiring
   #
   # `permalinks` is passed in rather than resolved here: the caller needs the same
   # links for the human-message records, and each one costs a Slack API call.
-  def folded_messages_note(folded, permalinks:, channel_name:, window:, follow_up: false)
+  #
+  # The listed messages are what people typed, under names they chose, so they render
+  # the way the trigger's template renders {{text}}: fenced as one block, unless the
+  # template writes {{text}} bare (Trigger#render_appended_untrusted). The count of
+  # unlisted messages is Zimmer's own line and stays outside.
+  def folded_messages_note(folded, trigger:, permalinks:, channel_name:, window:, follow_up: false)
     listed = folded.first(MAX_FOLDED_MESSAGES_LISTED)
 
     lines = listed.map do |message|
@@ -177,6 +182,8 @@ module SlackTriggerFiring
 
       "- #{at} — #{author}: #{excerpt.presence || '(no text)'}#{link.present? ? " — #{link}" : ''}"
     end
+
+    lines = [ trigger.render_appended_untrusted(lines.join("\n"), variable: "text", name: "messages") ]
 
     # A burst bigger than the cap is itself the news, so say the number rather
     # than quietly listing the first few. The unlisted ones are still recorded
@@ -381,6 +388,7 @@ module SlackTriggerFiring
         prompt,
         folded_messages_note(
           folded,
+          trigger: trigger,
           permalinks: folded_permalinks,
           channel_name: dm ? "this DM" : "##{channel_name}",
           window: trigger.effective_coalesce_window_seconds

@@ -1251,7 +1251,7 @@ goes into the prompt, and the agent then acts with every tool its session carrie
 concludes from that text. There is no input validation, and nothing binds the agent to the
 conversation it was fired for.
 
-On the template path, three things are mitigated
+On a trigger's firing path, four things are mitigated
 ([Prompt template variables](/sessions/triggers/#prompt-template-variables)):
 
 - **A value cannot rewrite the template.** Interpolation is a single pass, so a message that quotes
@@ -1265,6 +1265,12 @@ On the template path, three things are mitigated
 - **A template can fence untrusted text off.** `{{text|untrusted}}` renders the value between
   markers that carry a code drawn at random on every fire, with a note that it is data, not
   instructions. The text cannot close the fence early.
+- **Event text Zimmer appends outside the template is fenced too.** That covers the GitHub poller's
+  context block (title, labels, body), the Slack poller's coalescing note, and the note the webhook
+  queues into a running session. Each is fenced unless the template writes the matching placeholder
+  bare. So the text of the event a trigger fired on reaches that trigger's prompt or fold note
+  unfenced only where the template chose raw text, apart from the channel name in the Slack note's
+  first sentence.
 
 What remains open:
 
@@ -1275,9 +1281,12 @@ What remains open:
   [workflow](/sessions/workflows/) contract's job — a validated input, and trusted identifiers
   recorded where the model cannot rewrite them — and nothing fires a workflow in production yet.
 - **Both hardening features are opt-in.** An existing template gets the single pass, but its
-  `{{text}}` stays unfenced and it names no Slack ID until someone edits it.
-- **Some untrusted text never passes through a placeholder.** The GitHub poller's appended context
-  block (title and body) and the Slack poller's note of coalesced messages are unfenced.
+  `{{text}}` stays unfenced and it names no Slack ID until someone edits it. The fencing of text
+  Zimmer appends is not opt-in: it follows the template, so a template that never names `{{text}}`
+  gets the Slack coalescing notes fenced, and one that writes `{{text}}` bare gets them raw. Fencing by default was considered and not done: a DM trigger whose
+  message is the request would silently start calling that request data, and nothing can tell that
+  trigger apart from one whose message is only evidence
+  ([Event text Zimmer appends](/sessions/triggers/#event-text-zimmer-appends)).
 - **Who can reach the agent is decided before any of this.** The only gate on who may fire a
   `bot_mention`, `dm_message` or passive-listening trigger is the
   [Slack allowlist](/sessions/triggers/#who-may-trigger-a-bot_mention-a-dm_message-or-a-passive-listener),

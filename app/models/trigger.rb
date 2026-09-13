@@ -688,6 +688,20 @@ class Trigger < ApplicationRecord
     end
   end
 
+  # Event text a firing job adds to the prompt outside the template: the GitHub
+  # poller's context block (#50) and the Slack note naming coalesced messages. It
+  # renders the way the template renders `variable`, the placeholder that carries
+  # the same text: fenced as `name` (#fence_untrusted), unless the template writes
+  # `{{variable}}` bare. A template that hands the agent a message as raw text —
+  # a DM trigger whose message IS the request — gets the rest of the burst raw
+  # too, rather than the first message as a request and the others as data.
+  def render_appended_untrusted(value, variable:, name: variable)
+    value = value.to_s
+    return value if bare_placeholder_names.include?(variable)
+
+    fence_untrusted(name, value, untrusted_boundary([ value ]))
+  end
+
   # Create a new session from this trigger's template, or reuse an existing one.
   #
   # Returns the session that was created or reused, or nil when nothing was
@@ -2551,7 +2565,12 @@ class Trigger < ApplicationRecord
     prompt_template.to_s.scan(PLACEHOLDER_PATTERN).map(&:first).uniq
   end
 
-  # The code shared by every fence in one render. Random, so text written before
+  # The names of the placeholders this trigger's template writes at least once without `|untrusted`.
+  def bare_placeholder_names
+    prompt_template.to_s.scan(PLACEHOLDER_PATTERN).reject(&:last).map(&:first).uniq
+  end
+
+  # The code shared by every fence one render of the template writes. Random, so text written before
   # the fire cannot carry a line that closes its fence early; re-drawn in the
   # vanishingly unlikely case a value already contains it.
   def untrusted_boundary(values)
@@ -2585,9 +2604,13 @@ class Trigger < ApplicationRecord
   # first. Truncating a rendered prompt can cut a fence off before its end, and by
   # the fence's own rule everything after an unclosed begin marker is untrusted —
   # including whatever Zimmer writes after the excerpt. A closed fence carries its
-  # end marker twice: quoted in the begin line's note, and on its own.
+  # end marker twice: quoted in the begin line's note, and on its own. One render
+  # can fence the same variable more than once under one code, so the markers are
+  # counted against the begin lines that opened them.
   def close_open_fences(text)
-    open = text.scan(FENCE_BEGIN_PATTERN).uniq.select { |name, code| text.scan(fence_end(name, code)).length < 2 }
+    open = text.scan(FENCE_BEGIN_PATTERN).tally.filter_map do |(name, code), begins|
+      [ name, code ] if text.scan(fence_end(name, code)).length < 2 * begins
+    end
     return text if open.empty?
 
     [ text, *open.reverse.map { |name, code| fence_end(name, code) } ].join("\n")
