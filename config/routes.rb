@@ -32,6 +32,8 @@ Rails.application.routes.draw do
     # authenticated human at the web-UI boundary rather than typed into a form.
     resources :gate_decisions, only: [ :index, :show ]
     resources :gate_decision_feedbacks, only: [ :index, :show ]
+    # Read-only: models are added and removed on /settings/models.
+    resources :model_catalog_entries, only: [ :index, :show ]
     # Read-only: every write to the queue goes through WorkBacklog::Ranking's
     # lock and re-rank (the API and MCP tools), and a row edited here would
     # skip both.
