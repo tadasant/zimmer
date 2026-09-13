@@ -49,6 +49,7 @@ module Mcp
           *ready_backlog_lines(report),
           *in_flight_lines(report),
           *cron_freshness_lines(report),
+          *inbound_event_lines(report),
           "",
           "### Health Details",
           "```json",
@@ -174,6 +175,32 @@ module Mcp
           *behind.map { |r| "  - `#{r[:key]}` (#{r[:state]}): #{r[:reason]}" },
           *recovered.map { |r| recovered_key_line(r) }
         ]
+      end
+
+      # Whether each webhook source is delivering, and whether the poller has had to fire for it —
+      # the reading that says if `webhook_with_poll_fallback` is proving itself. One line per source
+      # whose webhook is switched on; one line in all when none is, which is the default.
+      def inbound_event_lines(report)
+        inbound = report[:inbound_event_health] || {}
+        status = inbound[:status]
+        return [] if status.nil?
+
+        enabled = (inbound[:sources] || []).select { |s| s[:webhook_enabled] }
+
+        [
+          "- **Webhook ingest:** #{status.message}",
+          *enabled.map { |s| inbound_source_line(s) }
+        ]
+      end
+
+      def inbound_source_line(source)
+        retention_days = (WebhookDelivery::RETENTION / 1.day).to_i
+        last = source[:last_delivery_at]&.utc&.strftime("%Y-%m-%d %H:%M UTC") || "none in the last #{retention_days} days"
+        window = "#{(Webhooks::IngestSummary::WINDOW / 1.hour).to_i}h"
+
+        "  - `#{source[:name]}` (#{source[:mode]}): last delivery #{last}; last #{window}: " \
+          "#{source[:deliveries_in_window]} deliveries, #{source[:webhook_claims_in_window]} trigger events claimed via webhook, " \
+          "#{source[:poll_claims_in_window]} via poll"
       end
 
       def recovered_key_line(reading)
