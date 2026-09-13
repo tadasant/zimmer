@@ -90,6 +90,17 @@ module SessionsHelper
     "user_view_row_#{session.id}"
   end
 
+  # Where a status summary stands against its session, for the freshness chip on
+  # a User view row: :regenerating while a generation is in flight, :stale once
+  # the session has written anything since the summary was, :current otherwise.
+  # Regenerating outranks the other two because it is the one that says the
+  # answer is already on its way.
+  def status_summary_freshness(summary, line_count)
+    return :regenerating if summary.pending?
+
+    summary.stale?(line_count) ? :stale : :current
+  end
+
   # Extract PR number from a GitHub PR URL for display
   def extract_pr_number(url)
     match = url.to_s.match(%r{/pull/(\d+)})
