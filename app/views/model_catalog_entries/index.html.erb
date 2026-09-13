@@ -1,0 +1,170 @@
+<%# Settings → Models (#85). See ModelCatalogEntriesController. %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div class="mb-8">
+      <div class="flex items-center mb-4">
+        <%= link_to settings_path, class: "text-gray-500 hover:text-gray-700 mr-4" do %>
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Models</h1>
+      </div>
+      <p class="text-sm text-gray-600">
+        The models each runtime offers on the new-session form, the session model editor, the API and
+        <code class="bg-gray-100 px-1 rounded">start_session</code>. Built-in models ship with Zimmer.
+        Models you add here are offered alongside them right away, with no deploy.
+      </p>
+      <p class="mt-2 text-sm text-gray-600">
+        Adding a model does not install anything. The CLI already in the image has to be able to run it,
+        so Zimmer asks that CLI whether it knows the id before saving, and shows the answer next to the model.
+      </p>
+    </div>
+
+    <div class="space-y-6">
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Add a model</h2>
+          <p class="mt-1 text-sm text-gray-500">
+            Use the id exactly as the CLI takes it. Pi ids name their provider, like
+            <code class="bg-gray-100 px-1 rounded">openrouter/google/gemini-3.5-pro</code>.
+          </p>
+        </div>
+        <div class="px-4 py-5 sm:px-6">
+          <% unlisted = @entry.errors.of_kind?(:model_id, :unlisted) %>
+          <% if @entry.errors.any? %>
+            <div id="model-catalog-entry-errors" class="mb-4 rounded-md px-3 py-2 text-sm <%= unlisted ? "bg-amber-50 text-amber-900" : "bg-red-50 text-red-800" %>">
+              <% @entry.errors.full_messages.each do |message| %>
+                <p class="break-words"><%= message %></p>
+              <% end %>
+            </div>
+          <% end %>
+
+          <%= form_with url: model_catalog_entries_path, method: :post, data: { turbo: false } do %>
+            <div class="space-y-4">
+              <div>
+                <label for="model_catalog_entry_runtime" class="block text-sm font-medium text-gray-700 mb-1">Runtime</label>
+                <select name="model_catalog_entry[runtime]" id="model_catalog_entry_runtime"
+                        class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+                  <% @runtimes.each do |runtime| %>
+                    <option value="<%= runtime %>" <%= "selected" if runtime == @entry.runtime %>><%= RuntimeRegistry.label_for(runtime) %></option>
+                  <% end %>
+                </select>
+              </div>
+
+              <div>
+                <label for="model_catalog_entry_model_id" class="block text-sm font-medium text-gray-700 mb-1">Model id</label>
+                <input type="text" name="model_catalog_entry[model_id]" id="model_catalog_entry_model_id" required
+                       maxlength="<%= ModelCatalogEntry::MAX_MODEL_ID_LENGTH %>" value="<%= @entry.model_id %>"
+                       autocomplete="off" autocapitalize="off" spellcheck="false"
+                       class="font-mono shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+              </div>
+
+              <div>
+                <label for="model_catalog_entry_label" class="block text-sm font-medium text-gray-700 mb-1">Label <span class="font-normal text-gray-500">(optional)</span></label>
+                <input type="text" name="model_catalog_entry[label]" id="model_catalog_entry_label"
+                       maxlength="<%= ModelCatalogEntry::MAX_LABEL_LENGTH %>" value="<%= @entry.label %>"
+                       class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+              </div>
+
+              <label class="flex items-start gap-2 text-sm text-gray-700">
+                <input type="hidden" name="model_catalog_entry[requires_oauth]" value="0">
+                <input type="checkbox" name="model_catalog_entry[requires_oauth]" value="1" <%= "checked" if @entry.requires_oauth %>
+                       class="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                <span><span class="font-medium">Needs an interactive login</span> — the model only runs with a ChatGPT or Claude sign-in, not an API key. Shown with the model here, in the API and in <code class="bg-gray-100 px-1 rounded">get_configs</code>.</span>
+              </label>
+
+              <label class="flex items-start gap-2 text-sm <%= unlisted ? "text-amber-900 bg-amber-50 rounded-md px-2 py-2" : "text-gray-700" %>">
+                <input type="hidden" name="model_catalog_entry[allow_unlisted]" value="0">
+                <input type="checkbox" name="model_catalog_entry[allow_unlisted]" value="1" id="model_catalog_entry_allow_unlisted"
+                       class="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                <span><span class="font-medium">Add it even if the CLI does not list it</span> — for a model released after the CLI in the image. The provider decides on the session's first turn, and a wrong id fails that turn.</span>
+              </label>
+            </div>
+
+            <div class="mt-5">
+              <%= submit_tag "Add model",
+                    class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 cursor-pointer" %>
+            </div>
+          <% end %>
+        </div>
+      </div>
+
+      <% if @shadowed_entries.any? %>
+        <div class="rounded-lg border border-gray-300 bg-white px-4 py-4 sm:px-6 text-sm text-gray-700">
+          <p class="font-medium text-gray-900">Added models that are now built in</p>
+          <p class="mt-1">A deploy made these ids built-in, so the rows below do nothing. Remove them when convenient.</p>
+          <ul class="mt-2 space-y-2">
+            <% @shadowed_entries.each do |entry| %>
+              <li class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <span class="font-mono text-xs break-all"><%= RuntimeRegistry.label_for(entry.runtime) %> · <%= entry.model_id %></span>
+                <%= button_to "Remove", model_catalog_entry_path(entry), method: :delete,
+                      class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
+              </li>
+            <% end %>
+          </ul>
+        </div>
+      <% end %>
+
+      <% @runtimes.each do |runtime| %>
+        <div id="models-<%= runtime %>" class="bg-white shadow-sm rounded-lg border border-gray-200">
+          <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+            <h2 class="text-lg font-medium text-gray-900"><%= RuntimeRegistry.label_for(runtime) %></h2>
+            <p class="mt-1 text-sm text-gray-500">
+              Runtime <code class="bg-gray-100 px-1 rounded"><%= runtime %></code>.
+              <%= pluralize(@models_by_runtime[runtime].count { |m| m[:source] == "added" }, "added model") %>.
+            </p>
+          </div>
+          <ul class="divide-y divide-gray-200">
+            <% @models_by_runtime[runtime].each do |model| %>
+              <% entry = model[:source] == "added" ? @entries_by_key[[ runtime, model[:id] ]] : nil %>
+              <li class="px-4 py-3 sm:px-6">
+                <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
+                  <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="font-mono text-sm text-gray-900 break-all"><%= model[:id] %></span>
+                      <% if model[:id] == @defaults_by_runtime[runtime] %>
+                        <span class="inline-flex rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800">Default</span>
+                      <% end %>
+                      <% if entry %>
+                        <span class="inline-flex rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800">Added</span>
+                        <% if entry.cli_listed == true %>
+                          <span class="inline-flex rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">CLI lists it</span>
+                        <% elsif entry.cli_listed == false %>
+                          <span class="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">Not in the CLI's list</span>
+                        <% else %>
+                          <span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">Not checked</span>
+                        <% end %>
+                      <% else %>
+                        <span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">Built in</span>
+                      <% end %>
+                      <% if model[:requires_oauth] %>
+                        <span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">Login only</span>
+                      <% end %>
+                    </div>
+                    <% if model[:label].present? && model[:label] != model[:id] %>
+                      <p class="mt-0.5 text-xs text-gray-500 break-words"><%= model[:label] %></p>
+                    <% end %>
+                    <% if entry %>
+                      <p class="mt-1 text-xs text-gray-600 break-words"><%= entry.cli_note %></p>
+                      <p class="mt-0.5 text-xs text-gray-400">
+                        Added <%= entry.created_at.utc.strftime("%Y-%m-%d %H:%M UTC") %> via <%= entry.added_via.tr("_", " ") %>
+                      </p>
+                    <% end %>
+                  </div>
+                  <% if entry %>
+                    <div class="shrink-0">
+                      <%= button_to "Remove", model_catalog_entry_path(entry), method: :delete,
+                            form: { data: { turbo_confirm: "Remove #{entry.model_id}? New sessions can no longer pick it. Sessions already on it keep it." } },
+                            class: "inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50" %>
+                    </div>
+                  <% end %>
+                </div>
+              </li>
+            <% end %>
+          </ul>
+        </div>
+      <% end %>
+    </div>
+  </div>
+</div>
