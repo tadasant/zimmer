@@ -43,7 +43,16 @@ module Github
     # @param session [Session]
     # @return [Array<PrRef>]
     def self.for_session(session)
-      urls = session.custom_metadata&.dig("github_pull_request_urls")
+      for_custom_metadata(session.custom_metadata)
+    end
+
+    # The same list read straight off a custom_metadata hash, for a caller holding a
+    # session's PR state without the session (GoalCheck's delegated reading).
+    #
+    # @param metadata [Hash, nil]
+    # @return [Array<PrRef>]
+    def self.for_custom_metadata(metadata)
+      urls = metadata&.dig("github_pull_request_urls")
       return [] unless urls.is_a?(Array)
 
       urls.filter_map { |url| parse(url) }.uniq(&:url)

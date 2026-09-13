@@ -2282,6 +2282,25 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "the session page names the spawned session whose PR a router's goal check was judged on" do
+    pr = "https://github.com/owner/repo/pull/8"
+    router = sessions(:needs_input)
+    router.update!(goal: "open-reviewed-green-pr", custom_metadata: {})
+    child = sessions(:archived)
+    child.update!(goal: "open-reviewed-green-pr", parent_session_id: router.id, custom_metadata: {
+      "github_pull_request_urls" => [ pr ],
+      "github_pull_request_statuses" => { pr => "merged" }
+    })
+
+    get session_url(router)
+
+    assert_response :success
+    assert_select "#session_#{router.id}_goal_check:not(.hidden)" do
+      assert_select "[data-goal-check-delegated] a[href=?]", session_path(child)
+      assert_select "[data-goal-check-criterion=pull_request_open][data-status=met]", text: /via session ##{child.id}/
+    end
+  end
+
   test "the session page keeps an empty, hidden goal check target for a free-text goal" do
     session = sessions(:needs_input)
     session.update!(goal: "Answer the question inline")

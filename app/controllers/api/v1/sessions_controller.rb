@@ -92,8 +92,12 @@ class Api::V1::SessionsController < Api::BaseController
 
     result = paginate(scope)
 
+    # A PR-goal session that recorded no PR is judged on the PRs its spawned sessions
+    # recorded. Read for the whole page at once rather than per row.
+    delegates = goal_check_delegates_for(result[:records])
+
     render json: {
-      sessions: result[:records].map { |s| session_json(s) },
+      sessions: result[:records].map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
       pagination: result[:pagination]
     }
   end
@@ -1196,11 +1200,12 @@ class Api::V1::SessionsController < Api::BaseController
 
     unless include_contents
       result = paginate(filter_sessions_by_search(scope, query))
+      delegates = goal_check_delegates_for(result[:records])
 
       render json: {
         query: query,
         search_contents: false,
-        sessions: result[:records].map { |s| session_json(s) },
+        sessions: result[:records].map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
         pagination: result[:pagination]
       }
       return
@@ -1209,11 +1214,12 @@ class Api::V1::SessionsController < Api::BaseController
     per_page = pagination_params[:per_page]
     matches, scan = search_sessions_by_content(scope, query, limit: per_page, cursor: params[:scan_cursor])
     sessions = matches.reorder(created_at: :desc, id: :desc).to_a
+    delegates = goal_check_delegates_for(sessions)
 
     render json: {
       query: query,
       search_contents: true,
-      sessions: sessions.map { |s| session_json(s) },
+      sessions: sessions.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
       pagination: {
         page: 1,
         per_page: per_page,

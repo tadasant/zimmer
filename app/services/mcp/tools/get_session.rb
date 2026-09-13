@@ -644,8 +644,12 @@ module Mcp
 
         lines = [ "", "### Goal Check (advisory)" ]
         verdict = "- **Verdict:** #{check.verdict} (#{check.met_count} of #{check.criteria.size} criteria met, goal `#{check.goal_id}`)"
-        verdict += " — provisional, the session is still running" if check.provisional
+        verdict += " — provisional, the session has not come to rest" if check.provisional
         lines << verdict
+        if check.delegated?
+          ids = check.delegated_session_ids.map { |id| "##{id}" }.join(", ")
+          lines << "- **Judged on PRs recorded by spawned sessions:** #{ids} (this session recorded none of its own)"
+        end
         lines << "- **PRs last read:** #{check.observed_at.iso8601}" if check.observed_at
         check.criteria.each do |criterion|
           line = "- [#{criterion.status}] #{criterion.label}"

@@ -107,7 +107,7 @@ class GoalCheckTest < ActiveSupport::TestCase
     assert_equal "unmet", check.verdict
     pr = check.criteria.find { |c| c.key == "pull_request_open" }
     assert_equal "unmet", pr.status
-    assert_equal "No pull request is recorded for this session", pr.detail
+    assert_equal "No pull request is recorded for this session or any session it spawned", pr.detail
     # Nothing else can be judged without a PR, and is not claimed either way.
     assert_equal %w[unknown], (check.criteria - [ pr ]).map(&:status).uniq
   end
@@ -200,6 +200,126 @@ class GoalCheckTest < ActiveSupport::TestCase
     assert check.provisional
   end
 
+  test "a waiting session's check is provisional too: it has not come to rest" do
+    check = GoalCheck.for(make_session(goal: "open-reviewed-green-pr", status: :waiting))
+
+    assert check.provisional
+  end
+
+  # ---- PRs a spawned session recorded ----
+
+  test "a session with no PR of its own is judged on the PR its child recorded" do
+    router = make_session(goal: "open-reviewed-green-pr", status: :archived)
+    child = make_session(goal: "open-reviewed-green-pr", status: :archived,
+                         custom_metadata: finished_pr_metadata("github_pull_request_statuses" => { PR => "merged" }))
+    child.update!(parent_session_id: router.id)
+
+    check = GoalCheck.for(router)
+
+    assert_equal "met", check.verdict
+    assert_equal [ child.id ], check.delegated_session_ids
+    assert_equal "owner/repo#7 merged (via session ##{child.id})", check.criteria.first.detail
+    assert_equal "2026-09-11T12:00:00Z", check.to_h[:observed_at]
+  end
+
+  test "a grandchild's PR counts, and an unmet one is reported as unmet" do
+    router = make_session(goal: "open-reviewed-green-pr")
+    middle = make_session(goal: "open-reviewed-green-pr")
+    middle.update!(parent_session_id: router.id)
+    leaf = make_session(goal: "open-reviewed-green-pr",
+                        custom_metadata: finished_pr_metadata("github_pull_request_ci_statuses" => { PR => "fail" }))
+    leaf.update!(parent_session_id: middle.id)
+
+    check = GoalCheck.for(router)
+
+    assert_equal [ leaf.id ], check.delegated_session_ids
+    assert_equal "unmet", statuses(check)["ci_green"]
+  end
+
+  test "a session's own PR wins over its children's" do
+    parent = make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata)
+    make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata(OTHER_PR))
+      .update!(parent_session_id: parent.id)
+
+    check = GoalCheck.for(parent)
+
+    assert_not check.delegated?
+    assert_equal "owner/repo#7 open", check.criteria.first.detail
+  end
+
+  test "with no PR anywhere below it, the detail says so" do
+    router = make_session(goal: "open-reviewed-green-pr")
+    make_session(goal: "open-reviewed-green-pr").update!(parent_session_id: router.id)
+
+    check = GoalCheck.for(router)
+
+    assert_equal "unmet", statuses(check)["pull_request_open"]
+    assert_match(/any session it spawned/, check.criteria.first.detail)
+    assert_empty check.delegated_session_ids
+  end
+
+  test "the fan-out cap applies per parent, so a big fleet parent cannot crowd out another parent's child" do
+    fleet = make_session(goal: "open-reviewed-green-pr")
+    3.times { make_session(goal: "open-reviewed-green-pr").update!(parent_session_id: fleet.id) }
+    router = make_session(goal: "open-reviewed-green-pr")
+    child = make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata)
+    child.update!(parent_session_id: router.id)
+
+    original = GoalCheck::DELEGATION_FAN_OUT
+    silence_warnings { GoalCheck.const_set(:DELEGATION_FAN_OUT, 2) }
+    delegates = GoalCheck.delegated_pull_requests([ fleet.id, router.id ])
+
+    assert_equal 2, delegates.fetch(fleet.id).size
+    assert_equal [ child.id ], delegates.fetch(router.id).map(&:id)
+  ensure
+    silence_warnings { GoalCheck.const_set(:DELEGATION_FAN_OUT, original) } if original
+  end
+
+  test "a requested session under another requested session is read for both, once each" do
+    top = make_session(goal: "open-reviewed-green-pr")
+    middle = make_session(goal: "open-reviewed-green-pr")
+    middle.update!(parent_session_id: top.id)
+    leaf = make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata)
+    leaf.update!(parent_session_id: middle.id)
+
+    delegates = GoalCheck.delegated_pull_requests([ top.id, middle.id ])
+
+    assert_equal [ middle.id, leaf.id ], delegates.fetch(top.id).map(&:id)
+    assert_equal [ leaf.id ], delegates.fetch(middle.id).map(&:id)
+  end
+
+  test "a fourth generation is past the depth bound" do
+    parent = make_session(goal: "open-reviewed-green-pr")
+    chain = 3.times.inject(parent) do |above, _|
+      make_session(goal: "open-reviewed-green-pr").tap { |s| s.update!(parent_session_id: above.id) }
+    end
+    make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata).update!(parent_session_id: chain.id)
+
+    assert_equal "unmet", statuses(GoalCheck.for(parent))["pull_request_open"]
+  end
+
+  test "observed_at is the stalest reading among the delegated PRs" do
+    router = make_session(goal: "open-reviewed-green-pr")
+    make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata)
+      .update!(parent_session_id: router.id)
+    make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata(OTHER_PR,
+      "poller_last_polled_at" => { "github_pr_poller" => "2026-09-10T08:00:00Z" })).update!(parent_session_id: router.id)
+
+    assert_equal "2026-09-10T08:00:00Z", GoalCheck.for(router).to_h[:observed_at]
+  end
+
+  test "a batch-loaded delegate list gives the same answer without querying" do
+    router = make_session(goal: "open-reviewed-green-pr")
+    child = make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata)
+    child.update!(parent_session_id: router.id)
+
+    delegates = GoalCheck.delegated_pull_requests([ router.id ])
+    assert_equal [ child.id ], delegates.fetch(router.id).map(&:id)
+
+    Session.expects(:where).never
+    assert_equal "met", GoalCheck.for(router, delegates: delegates.fetch(router.id)).verdict
+  end
+
   # ---- codebase-question ----
 
   test "codebase-question is met when the session opened no PR" do
@@ -215,6 +335,13 @@ class GoalCheckTest < ActiveSupport::TestCase
     assert_equal "Opened owner/repo#7", check.criteria.first.detail
   end
 
+  test "codebase-question is not charged with a PR a child opened" do
+    parent = make_session(goal: "codebase-question")
+    make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata).update!(parent_session_id: parent.id)
+
+    assert_equal "met", GoalCheck.for(parent).verdict
+  end
+
   # ---- the hash every surface serializes ----
 
   test "to_h carries the verdict, each criterion and the advisory note" do
@@ -223,6 +350,7 @@ class GoalCheckTest < ActiveSupport::TestCase
     assert_equal "open-reviewed-green-pr", hash[:goal_id]
     assert_equal "met", hash[:verdict]
     assert_equal "2026-09-11T12:00:00Z", hash[:observed_at]
+    assert_equal [], hash[:delegated_session_ids]
     assert_equal 5, hash[:criteria].size
     assert_equal %i[key label status detail], hash[:criteria].first.keys
     assert_equal GoalCheck::NOT_CHECKED_NOTE, hash[:note]

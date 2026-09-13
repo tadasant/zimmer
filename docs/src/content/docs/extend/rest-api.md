@@ -663,11 +663,14 @@ semantics.
 
 `goal_check` is `null` for a free-text goal or no goal. For a catalog goal with checks it is the
 [goal check](/sessions/goals/#how-a-goal-is-checked):
-`{goal_id, goal_name, verdict, provisional, observed_at, criteria: [{key, label, status, detail}], note}`.
+`{goal_id, goal_name, verdict, provisional, observed_at, delegated_session_ids, criteria: [{key, label, status, detail}], note}`.
 `verdict` is `met`, `unmet` or `pending`, and each criterion's `status` is `met`, `unmet`,
-`pending` or `unknown`. `provisional` is true while the session is running. `observed_at` is when the
-poll pass last read the session's PRs. It is advisory: nothing in Zimmer acts on it. It is computed
-from `custom_metadata` alone, so it costs no query on a list.
+`pending` or `unknown`. `provisional` is true while the session is `running` or `waiting`, which is
+before it has come to rest. `observed_at` is when the poll pass last read the PRs judged.
+`delegated_session_ids` lists the spawned sessions whose PRs were judged because this session recorded
+none of its own, and is empty otherwise. It is advisory: nothing in Zimmer acts on it. It is computed
+from `custom_metadata`, plus the spawned sessions' PR state for a PR goal with no PR of its own.
+`GET /sessions` and `GET /sessions/search` read that for the whole page in at most three queries.
 
 Every response with a `session` key renders it through the same serializer
 (`ApiSessionSerialization`), including `POST /enqueued_messages/:id/interrupt` — `session` means one
@@ -1192,6 +1195,14 @@ both go through the same validator, so they cannot disagree about what a well-fo
 | `POST /outcome_analyses` | Save one. Body: `session_id` (id or slug), `analyzer_session_id`, `schema_version`, `root`, `notes` |
 | `GET /outcome_analyses` | Current analyses, newest first, **without** their trees. Filters: `from`, `to`, `agent_root`, `agent_runtime`, `model`, `outcome` |
 | `GET /outcome_analyses/:id` | One analysis **with** its tree. `:id` is the analyzed session's id or slug, not the analysis row's |
+| `GET /goal_checks` | How the [goal check](/sessions/goals/#measuring-the-check) read on sessions at rest, the same `GoalCheckTally` `/outcomes/goal_checks` renders. Filters: `from`, `to` (on created-at; a missing `from` is 7 days before `to`, or before today), `agent_root`, `agent_runtime`, `model` |
+
+`GET /goal_checks` returns `{filters, window, resting_sessions, checked_sessions, verdicts,
+delegated_sessions, criteria, unmet_reasons, pending_reasons, by_goal, by_agent_root,
+unmet_on_own_pull_request: {sessions, listed}}`. `unmet_reasons` and `pending_reasons` are
+`[{criteria, sessions, sample_session_ids}]`, one entry per set of criteria that kept sessions from
+`met`. `listed` holds at most 50 `{session_id, title, status, unmet_criteria}`. Unlike MCP, the REST
+filters drop an unparseable value rather than refusing it, the same as `GET /outcome_analyses`.
 
 The whole tree is validated before anything is stored — id scheme, enum values, explanation presence
 and its 140-character cap, nesting. A malformed tree is a `422` naming every problem, and nothing is

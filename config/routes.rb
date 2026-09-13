@@ -280,6 +280,10 @@ Rails.application.routes.draw do
       # row's, because a caller has a handle on the session.
       resources :outcome_analyses, only: [ :index, :show, :create ]
 
+      # How the goal check read on sessions that came to rest (GoalCheckTally), the
+      # REST half of get_outcome_analysis's goal_checks view and /outcomes/goal_checks.
+      resources :goal_checks, only: [ :index ]
+
       # MCP server fallback elicitations. An MCP server speaks the protocol on the
       # token routes: the path carries its session's token (ElicitationEndpoint),
       # because the client sends no auth header and appends /<request-id> to the
@@ -453,10 +457,11 @@ Rails.application.routes.draw do
   # page load.
   get "outcomes", to: "outcomes#index", as: :outcomes
   get "outcomes/stats", to: "outcomes#stats", as: :outcomes_stats
+  get "outcomes/goal_checks", to: "outcomes#goal_checks", as: :outcomes_goal_checks
   post "outcomes/analyze_all", to: "outcomes#analyze_all", as: :analyze_all_outcomes
   post "outcomes/batches/:id/cancel", to: "outcomes#cancel_batch", as: :cancel_outcome_batch
   post "outcomes/:id/analyze", to: "outcomes#analyze", as: :analyze_outcome
-  # Last in the group so it cannot shadow "stats" as a session identifier.
+  # Last in the group so it cannot shadow "stats" or "goal_checks" as a session identifier.
   get "outcomes/:id", to: "outcomes#show", as: :outcome
 
   # Gate Decisions: the browsable ledger of every rating the PR-merge and
