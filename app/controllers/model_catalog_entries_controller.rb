@@ -6,7 +6,7 @@
 # A thin caller of ModelCatalogEntry.add, the write path this page shares with
 # Api::V1::ModelCatalogEntriesController and the `manage_models` MCP tool. The
 # built-in models are listed read-only beside the added ones, because changing
-# those is still a deploy.
+# those is a deploy.
 class ModelCatalogEntriesController < ApplicationController
   def index
     @entry = ModelCatalogEntry.new(runtime: RuntimeRegistry::DEFAULT_RUNTIME)

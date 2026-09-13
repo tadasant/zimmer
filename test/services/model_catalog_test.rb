@@ -112,7 +112,7 @@ class ModelCatalogTest < ActiveSupport::TestCase
     assert_equal "gpt-5.7 (new)", added[:label]
     assert_equal false, added[:cli_listed]
     assert_equal "0.146.0", added[:cli_version]
-    assert models.first(8).all? { |m| m[:source] == "built_in" }
+    assert models.first(ModelCatalog::MODELS["codex"].size).all? { |m| m[:source] == "built_in" }
     assert ModelCatalog.valid_model?("codex", "gpt-5.7")
     assert ModelCatalog.requires_oauth?("codex", "gpt-5.7")
     refute ModelCatalog.valid_model?("claude_code", "gpt-5.7")

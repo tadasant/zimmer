@@ -41,7 +41,7 @@ class Api::V1::ModelCatalogEntriesController < Api::BaseController
     if entry.persisted?
       render json: { model_catalog_entry: entry_json(entry) }, status: :created
     else
-      error = entry.errors.of_kind?(:model_id, :unlisted) ? "Model not listed by CLI" : "Validation failed"
+      error = entry.errors.of_kind?(:base, :unlisted) ? "Model not listed by CLI" : "Validation failed"
       render_api_error(error, entry.errors.full_messages, status: :unprocessable_entity,
         cli_listed: entry.cli_listed, cli_version: entry.cli_version, cli_note: entry.cli_note)
     end

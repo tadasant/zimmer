@@ -94,7 +94,7 @@ module Mcp
 
         unless entry.persisted?
           message = "Validation failed: #{entry.errors.full_messages.join(', ')}"
-          message += " Pass allow_unlisted: true to add it anyway." if entry.errors.of_kind?(:model_id, :unlisted)
+          message += " Pass allow_unlisted: true to add it anyway." if entry.errors.of_kind?(:base, :unlisted)
           raise ToolError, message
         end
 

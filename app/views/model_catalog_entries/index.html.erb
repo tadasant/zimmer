@@ -31,7 +31,7 @@
           </p>
         </div>
         <div class="px-4 py-5 sm:px-6">
-          <% unlisted = @entry.errors.of_kind?(:model_id, :unlisted) %>
+          <% unlisted = @entry.errors.of_kind?(:base, :unlisted) %>
           <% if @entry.errors.any? %>
             <div id="model-catalog-entry-errors" class="mb-4 rounded-md px-3 py-2 text-sm <%= unlisted ? "bg-amber-50 text-amber-900" : "bg-red-50 text-red-800" %>">
               <% @entry.errors.full_messages.each do |message| %>
