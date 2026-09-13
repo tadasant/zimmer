@@ -22,8 +22,7 @@ in the repo — Chrome, Manifest V3, no build step — and is loaded unpacked. (
 1. In Chrome, open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and
    pick the `browser-extension/` directory of a checkout.
 2. In Zimmer, open **Settings → API keys** and create a key with **Quick Router only** chosen.
-   Copy it; it is shown once. This page sits behind the
-   [operator credential](/auth/overview/#the-exception-the-operator-realm-in-front-of-three-surfaces).
+   Copy it; it is shown once.
 3. Open the extension's options (right-click its icon → **Options**), paste the Zimmer URL and the
    key, and **Save**. Saving asks Chrome for permission to talk to that one origin — grant it.
 

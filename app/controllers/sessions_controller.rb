@@ -161,8 +161,7 @@ class SessionsController < ApplicationController
   # This is the product's shape, not an unfinished task. Adding Pundit or
   # CanCanCan here would invent a distinction Zimmer does not make, and would
   # read as protection that isn't there. If you want a second wall, put it at
-  # the perimeter — that is where the one exception lives, the /supervisor admin
-  # panel's HTTP Basic realm (Supervisor::ApplicationController).
+  # the perimeter.
   #
   # See docs/src/content/docs/intro/philosophy.md and
   # docs/src/content/docs/auth/overview.md — published at

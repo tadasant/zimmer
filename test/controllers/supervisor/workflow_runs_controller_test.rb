@@ -2,9 +2,6 @@ require "test_helper"
 
 module Supervisor
   class WorkflowRunsControllerTest < ActionDispatch::IntegrationTest
-    include SupervisorAuthTestHelper
-    include SupervisorAuthTestHelper::AutoBasicAuth
-
     setup do
       session = Session.create_from_agent_root!(agent_root_name: "zimmer", prompt: "Restate: hi", skip_enqueue: true)
       @run = WorkflowRun.create!(

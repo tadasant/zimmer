@@ -6,21 +6,7 @@ require "mocha/minitest"
 # The operator-facing half of QueuedJobMaintenance: the `/health` panel that keeps
 # a human inside Zimmer during a queue incident instead of sending them to
 # GoodJob's own dashboard (#335).
-#
-# The authentication assertions here are deliberate duplication of
-# HealthControllerOperatorAuthTest. That file proves the gate is applied to every
-# mutating route; this one proves the specific thing #312 was about — a
-# destructive bulk action that an anonymous request can reach — is not
-# reintroduced by the panel, with the rows to show nothing happened.
-#
-# OperatorBasicAuthHelpers is deliberately NOT included: it wraps every POST the
-# test issues in a valid credential, which would make the unauthenticated
-# assertions below silently pass while testing nothing.
 class HealthControllerQueuedJobsTest < ActionDispatch::IntegrationTest
-  PASSWORD_ENV = OperatorHttpBasicAuth::PASSWORD_ENV
-  USERNAME_ENV = OperatorHttpBasicAuth::USERNAME_ENV
-  PASSWORD = "queued-jobs-test-password"
-
   setup do
     Log.any_instance.stubs(:broadcast_append_to_timeline)
     Session.any_instance.stubs(:broadcast_status_change)
@@ -28,11 +14,6 @@ class HealthControllerQueuedJobsTest < ActionDispatch::IntegrationTest
     GoodJob::Job.delete_all
     AppSetting.delete_all
     GoodJob::Setting.delete_all
-
-    @original_password = ENV[PASSWORD_ENV]
-    @original_username = ENV[USERNAME_ENV]
-    ENV[PASSWORD_ENV] = PASSWORD
-    ENV.delete(USERNAME_ENV)
 
     @original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
@@ -45,8 +26,6 @@ class HealthControllerQueuedJobsTest < ActionDispatch::IntegrationTest
     Rails.cache.clear
     Rails.cache = @original_cache
     ApplicationController.recovery_mode_reconciled_at = nil
-    restore_env(PASSWORD_ENV, @original_password)
-    restore_env(USERNAME_ENV, @original_username)
   end
 
   def enqueue_good_job(job_class: "CanaryJob", queue_name: "pollers", **attrs)
@@ -61,49 +40,6 @@ class HealthControllerQueuedJobsTest < ActionDispatch::IntegrationTest
       },
       **attrs
     )
-  end
-
-  def auth = basic_auth_headers(OperatorHttpBasicAuth::DEFAULT_USERNAME, PASSWORD)
-
-  def basic_auth_headers(username, password)
-    { "HTTP_AUTHORIZATION" => ActionController::HttpAuthentication::Basic.encode_credentials(username, password) }
-  end
-
-  def restore_env(key, value)
-    value.nil? ? ENV.delete(key) : ENV[key] = value
-  end
-
-  # === #312 must not come back ===
-
-  test "an unauthenticated discard is refused and nothing is discarded" do
-    2.times { enqueue_good_job }
-
-    post discard_queued_jobs_health_path, params: { queue_name: "pollers", expected_count: 2 }
-
-    assert_response :unauthorized
-    assert_equal 0, GoodJob::Job.where.not(finished_at: nil).count
-  end
-
-  test "an unauthenticated reschedule is refused and nothing moves" do
-    job = enqueue_good_job(scheduled_at: 1.hour.ago)
-    before = job.scheduled_at
-
-    post reschedule_queued_jobs_health_path,
-      params: { queue_name: "pollers", expected_count: 1, delay_minutes: 60 }
-
-    assert_response :unauthorized
-    assert_in_delta before.to_i, job.reload.scheduled_at.to_i, 1
-  end
-
-  test "a wrong password is refused and nothing is discarded" do
-    enqueue_good_job
-
-    post discard_queued_jobs_health_path,
-      params: { queue_name: "pollers", expected_count: 1 },
-      headers: basic_auth_headers(OperatorHttpBasicAuth::DEFAULT_USERNAME, "wrong")
-
-    assert_response :unauthorized
-    assert_equal 0, GoodJob::Job.where.not(finished_at: nil).count
   end
 
   # === The panel ===
@@ -152,7 +88,7 @@ class HealthControllerQueuedJobsTest < ActionDispatch::IntegrationTest
     2.times { enqueue_good_job }
 
     post discard_queued_jobs_health_path,
-      params: { queue_name: "pollers", expected_count: 2 }, headers: auth
+      params: { queue_name: "pollers", expected_count: 2 }
 
     assert_redirected_to health_dashboard_path
     assert_match(/Discarded 2 queued jobs \(CanaryJob 2\)/, flash[:notice])
@@ -164,7 +100,7 @@ class HealthControllerQueuedJobsTest < ActionDispatch::IntegrationTest
     3.times { enqueue_good_job }
 
     post discard_queued_jobs_health_path,
-      params: { queue_name: "pollers", expected_count: 2 }, headers: auth
+      params: { queue_name: "pollers", expected_count: 2 }
 
     assert_redirected_to health_dashboard_path
     assert_match(/Count confirmation failed/, flash[:alert])
@@ -174,7 +110,7 @@ class HealthControllerQueuedJobsTest < ActionDispatch::IntegrationTest
 
   test "the agents queue is refused from the UI as well" do
     post discard_queued_jobs_health_path,
-      params: { queue_name: "agents", expected_count: 0 }, headers: auth
+      params: { queue_name: "agents", expected_count: 0 }
 
     assert_redirected_to health_dashboard_path
     assert_match(/protected/, flash[:alert])
@@ -184,7 +120,7 @@ class HealthControllerQueuedJobsTest < ActionDispatch::IntegrationTest
     job = enqueue_good_job(scheduled_at: 1.hour.ago)
 
     post reschedule_queued_jobs_health_path,
-      params: { queue_name: "pollers", expected_count: 1, delay_minutes: 15 }, headers: auth
+      params: { queue_name: "pollers", expected_count: 1, delay_minutes: 15 }
 
     assert_redirected_to health_dashboard_path
     assert_match(/Rescheduled 1 queued job \(CanaryJob 1\)/, flash[:notice])

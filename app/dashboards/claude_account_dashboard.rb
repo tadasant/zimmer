@@ -27,9 +27,9 @@ class ClaudeAccountDashboard < Administrate::BaseDashboard
   # is a reviewed decision rather than a gap nobody noticed.
   DELIBERATELY_OMITTED = [
     # The account's OAuth material — access token, refresh token, expiry. This is
-    # the credential the whole fleet runs on, and /supervisor is a shared-password
-    # panel, so it is not rendered and not editable here. Re-auth goes through the
-    # runtime login flow, which never shows the token either.
+    # the credential the whole fleet runs on, and /supervisor asks for no
+    # credential at all, so it is not rendered and not editable here. Re-auth goes
+    # through the runtime login flow, which never shows the token either.
     :oauth_config
   ].freeze
 

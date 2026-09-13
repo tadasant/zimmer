@@ -7,9 +7,6 @@ module Supervisor
   # linking a Slack user ID to a human. These assertions are that path
   # end-to-end, since it is the reason the roster is a table.
   class UsersControllerTest < ActionDispatch::IntegrationTest
-    include SupervisorAuthTestHelper
-    include SupervisorAuthTestHelper::AutoBasicAuth
-
     setup do
       @tadas = users(:tadasant)
     end
@@ -110,12 +107,6 @@ module Supervisor
       end
 
       assert_equal "newhuman", User.for_slack_user_id("U02NEW").key
-    end
-
-    test "the panel is closed without the supervisor credential" do
-      get supervisor_users_url, headers: { "HTTP_AUTHORIZATION" => "" }
-
-      assert_response :unauthorized
     end
   end
 end

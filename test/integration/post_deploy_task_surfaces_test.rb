@@ -8,12 +8,9 @@ require "mocha/minitest"
 # disagree; this holds the same line for post-deploy tasks across the /health
 # page, GET /api/v1/health, the `get_system_health` MCP tool and the Supervisor
 # dashboard (the last of which is covered in
-# test/controllers/supervisor/post_deploy_task_runs_controller_test.rb, which has
-# the basic-auth helper).
+# test/controllers/supervisor/post_deploy_task_runs_controller_test.rb).
 class PostDeployTaskSurfacesTest < ActionDispatch::IntegrationTest
   include ActiveJob::TestHelper
-  # `run_post_deploy_tasks` is one of the gated /health actions (#312, #371).
-  include OperatorBasicAuthHelpers
 
   setup do
     @api_key = "test_api_key_post_deploy"
