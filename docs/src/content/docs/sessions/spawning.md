@@ -978,6 +978,7 @@ flowchart TD
     Q -->|quota| RO{"rotate_for_quota!<br/>next Claude account"}
     RO -->|rotated| P
     RO -->|no_available_accounts| PARK
+    Q -->|"quota, runtime pools<br/>no accounts (Pi)"| QW["ProviderQuotaWallPark<br/>log + notify once + wake at<br/>15m…8h ladder (≤ 7 days)<br/>→ waiting"]
     Q -->|transient| RT["retry with backoff<br/>(MAX_RETRIES = 6)"]
     RT -->|exhausted| RTF["fail → failed<br/>(pages if it was a<br/>malformed tool call)"]
     Q -->|no| F{"failed_resume_recovery_needed?"}
@@ -1030,6 +1031,18 @@ of the two park reasons it gets follows the pool's shape rather than the code pa
 there — `QUOTA_EXHAUSTED` ("wait for reset") when something is merely throttled,
 `AUTH_UNRECOVERABLE` ("re-authenticate") when nothing is. Full detail in
 [Agent harness auth](/auth/harness/#when-the-pool-runs-dry).
+
+A runtime with no login pool has nothing to rotate through and no account whose return could wake
+an auth-outage park, so its quota wall takes a different park. When `ApiErrorRetryService` answers
+`:quota_exceeded` and `RuntimeAuthProvider#pools_accounts?` is `false` (Pi),
+`ProviderQuotaWallPark` records the streak in `metadata["provider_quota_wall"]` and arms a one-time
+wake — 15 minutes, doubling to every 8 hours — whose pending sleep carries the session to `waiting`.
+Each wake resumes the session with a recovery nudge; a wall still standing parks it one rung higher,
+and a turn that completes ends the streak. Once the next re-check would land more than seven days
+after the streak began, it stops arming wakes and leaves the session in `needs_input` saying so.
+`AgentSessionJob` reads `ProviderQuotaWallPark.parked?` beside `auth_outage_reason`, so a parked exit
+pauses into its sleep instead of being logged as a completed turn and handed a queued message that
+would re-spawn it into the same wall. See [Known limitations](/limitations/#pi-retries-a-transient-provider-failure-and-parks-a-quota-wall-auth-and-context-length-are-terminal).
 
 A non-SIGTERM signaled exit — most commonly a cgroup **OOM kill** (SIGKILL) of a
 long-running, large-transcript session — is treated as recoverable rather than

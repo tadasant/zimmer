@@ -326,7 +326,10 @@ backwards and a session's real history is thrown away; leave it unimplemented an
   `rotate_for_quota!(triggered_by:, reason:)`. The last one is the pool's only move-off-this-account
   seam: both the quota path and `AuthRecoveryCoordinator` go through it, and `reason` is what
   distinguishes their `AccountRotationEvent` rows. A runtime that doesn't pool accounts inherits the
-  base class's no-op, which parks its sessions instead of rotating them.
+  base class's no-op, which parks its sessions instead of rotating them. `pools_accounts?` (default
+  `true`) says which park: a runtime answering `false` has its quota walls parked on
+  `ProviderQuotaWallPark`'s timed re-check ladder rather than an auth-outage park that waits on the
+  pool.
 - **`RuntimeLoginDriver`** — `command`, `env(config_dir)`, `parse_verification(buffer)`,
   `completion_mode` (`:poll` | `:paste`), `capture!(config_dir, account)`, `credentials_ready?`.
 
@@ -588,8 +591,8 @@ recovery ladder is walked on the door marked "the turn completed"
 
 `PiTurnError` parses that record and classifies it; `PiTranscriptSource` answers
 `records_turn_errors? => true`, so `ApiErrorRetryService` asks for it instead of
-scanning for Claude's `isApiErrorMessage` envelope. A 5xx, a 429 (rate limit or
-`insufficient_quota`), a 408, a `terminated` stream and a `Connection error.` are
+scanning for Claude's `isApiErrorMessage` envelope. A 5xx, a 429 (OpenAI's rate limit or
+a gateway's own rate-limit wording), a 408, a `terminated` stream and a `Connection error.` are
 `:retryable` and get the six-attempt backoff, bounded by the same `RetryBudget`
 the Claude path uses. The handled-turn marker means a respawn that dies before
 writing anything cannot spend a second retry on the same dead turn.
@@ -612,9 +615,7 @@ be reached however the ladder is rearranged later:
 
 - `PiAuthProvider` pools no accounts, so `AuthRecoveryService` has no credential
   to rewrite and nothing to rotate to. Answering `auth_recovery_needed?` would
-  park a human in front of a pool that does not exist. A 402 (balance exhausted)
-  joins the 401 and 403 here rather than in the retryable set, because a balance
-  does not refill on a backoff.
+  park a human in front of a pool that does not exist.
 - Pi has no `/compact`, and unlike Codex it does not compact on a plain resume:
   `PiRuntimeAdapter.compacts_on_resume?` is `false` because resuming a session
   that died on a context-length 400 wrote no compaction record and re-sent the
@@ -626,7 +627,20 @@ wording and **no page** — they are known failures with a deliberate dispositio
 not unknown ones. Only a wording nothing recognizes reaches
 `UnclassifiedFailureReporter`, and `classifies_exits?` is now `true` so it gets
 there. What is still open is in [Known
-limitations](/limitations/#pi-retries-a-transient-provider-failure-auth-and-context-length-are-terminal).
+limitations](/limitations/#pi-retries-a-transient-provider-failure-and-parks-a-quota-wall-auth-and-context-length-are-terminal).
+
+**A quota wall parks on a timer.** A 402, and a 429 whose wording matches
+`PiTurnError::PROVIDER_LIMIT_WORDING` — pi-ai's own list of limits it will not
+retry, copied verbatim — is `:quota`. `PiRetryStrategy#api_error_for_retry?`
+takes it, so `ApiErrorRetryService` answers `:quota_exceeded` without spending
+the budget, exactly as it does for Codex's `usage_limit_exceeded`. What differs is
+the step after: `ProcessLifecycleManager` asks
+`RuntimeAuthProvider#pools_accounts?`, and for a runtime that answers `false` it
+skips rotation and `AuthOutageParkService` — whose wake waits on an account in a
+pool — and parks on `ProviderQuotaWallPark` instead, a one-time wake on a ladder
+of 15 minutes doubling to 8 hours, ended by the next completed turn and bounded at
+seven days. A new runtime that authenticates from an unpooled key gets this by
+answering `pools_accounts? => false`.
 
 There is also no failed-resume pattern to match, and unlike the above that one is
 correct rather than deferred: Pi's `--session-id` *creates* a missing session

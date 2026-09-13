@@ -43,15 +43,70 @@ class PiTurnErrorTest < ActiveSupport::TestCase
     assert_equal 429, error.http_status
   end
 
-  # Pi's provider has no Zimmer-side account pool to rotate into, so a credit
-  # exhaustion takes the same bounded backoff as a rate limit rather than a quota
-  # park that nothing would ever wake. See PiAuthProvider.
-  test "an insufficient-quota 429 is retryable too, since Pi has no pool to rotate into" do
-    error = PiTurnError.terminal(pi_session(:insufficient_quota_429))
+  # OpenRouter words its rate limit differently from OpenAI, and Pi retried it
+  # four times against the real binary: it is a rate limit in Pi's reading too.
+  test "an OpenRouter-worded rate-limit 429 is retryable" do
+    error = PiTurnError.terminal(pi_session(:rate_limit_429_openrouter))
 
     assert_equal :retryable, error.kind
     assert error.rate_limited?
+    assert_match(/Rate limit exceeded: limit_rpm/, error.message)
+  end
+
+  # Pi sent this exactly once against the real binary: its own
+  # NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN matched, so it declined to retry.
+  test "an insufficient-quota 429 is a quota wall, not a rate limit" do
+    error = PiTurnError.terminal(pi_session(:insufficient_quota_429))
+
+    assert_equal :quota, error.kind
+    assert error.recognized?
     assert_match(/exceeded your current quota/, error.message)
+  end
+
+  test "a gateway's quota-exceeded 429, with no OpenAI error code, is a quota wall too" do
+    error = PiTurnError.terminal(pi_session(:quota_exceeded_429_gateway))
+
+    assert_equal :quota, error.kind
+    assert_equal 429, error.http_status
+  end
+
+  # The discriminator is wording only under a 429. A rate limit is the default
+  # for every 429 whose wording Pi's list does not know — so a misread costs the
+  # ordinary backoff, never a park — and the same words under any other status
+  # decide nothing.
+  test "a 429 is a quota wall only when its wording is one Pi declines to retry" do
+    {
+      "429: {\"message\":\"Too many requests\"}" => :retryable,
+      "429 slow down" => :retryable,
+      "429: {\"message\":\"Monthly usage limit reached\"}" => :quota,
+      "429: {\"error\":{\"type\":\"FreeUsageLimitError\"}}" => :quota,
+      "429: {\"message\":\"Your available balance is too low\"}" => :quota,
+      "429: {\"message\":\"QUOTA EXCEEDED\"}" => :quota,
+      "429: {\"message\":\"out of budget\"}" => :quota,
+      "429: {\"message\":\"see billing\"}" => :quota,
+      "500: {\"message\":\"insufficient_quota upstream\"}" => :retryable,
+      "403: {\"message\":\"quota exceeded\"}" => :auth_terminal,
+      "400: {\"message\":\"billing address invalid\"}" => :request_rejected
+    }.each do |text, expected|
+      serialized = replace_terminal_message(:unauthorized_401) { |m| m["errorMessage"] = text }
+
+      assert_equal expected, PiTurnError.terminal(serialized).kind, text
+    end
+  end
+
+  # The wording list is Pi's own, verbatim — the whole argument for trusting it
+  # is that Zimmer and Pi read a 429 the same way. When the pinned binary is on
+  # this machine, hold the two lists together.
+  test "the quota wording is the list the installed Pi consults before it retries" do
+    retry_js = Dir.glob("/usr/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/retry.js").first
+    skip "pi-ai is not installed here" unless retry_js
+
+    block = File.read(retry_js)[/NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern\(\[(.*?)\]\)/m, 1]
+    assert block, "pi-ai no longer declares NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN where PiTurnError says it does"
+
+    pi_words = block.scan(/^\s*"([^"]+)",?\s*$/).flatten
+    zimmer_words = PiTurnError::PROVIDER_LIMIT_WORDING.source.split("|").map { |w| w.gsub("\\ ", " ") }
+    assert_equal pi_words, zimmer_words
   end
 
   test "a stream that closed mid-response is retryable" do
@@ -131,10 +186,13 @@ class PiTurnErrorTest < ActiveSupport::TestCase
     assert_equal 400, error.http_status
   end
 
-  test "a 402 is terminal: an exhausted balance does not refill on a backoff" do
+  # Payment Required means an exhausted balance in every dialect; OpenRouter uses it
+  # for exactly that. A balance can be topped up without touching the session, so
+  # it is a quota wall rather than an auth failure.
+  test "a 402 is a quota wall by its status alone" do
     error = PiTurnError.terminal(pi_session(:insufficient_credits_402))
 
-    assert_equal :auth_terminal, error.kind
+    assert_equal :quota, error.kind
     assert error.recognized?
     assert_match(/Insufficient credits/, error.message)
   end
@@ -166,7 +224,7 @@ class PiTurnErrorTest < ActiveSupport::TestCase
       "429 {}" => :retryable,
       "408: {}" => :retryable,
       "401 {}" => :auth_terminal,
-      "402 {}" => :auth_terminal,
+      "402 {}" => :quota,
       "403 {}" => :auth_terminal,
       "404: not found" => :request_rejected,
       "413: payload too large" => :request_rejected,

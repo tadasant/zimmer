@@ -1621,11 +1621,11 @@ provider key the (nonexistent) pool cannot vouch for, so the cheap path is the c
 here. But it is reached by a predicate that means "the pool is empty" being asked of a
 runtime that has no pool, rather than by anything that knows Pi does not pool credentials.
 
-### Pi retries a transient provider failure; auth and context length are terminal
+### Pi retries a transient provider failure and parks a quota wall; auth and context length are terminal
 
-🟡 A Pi session now gets the API-error backoff a Claude session gets, and does not get
-compaction recovery or auth recovery — because for Pi those two have nothing to recover
-*into*, not because nothing detects them.
+🟡 A Pi session now gets the API-error backoff a Claude session gets, and a quota wall parks
+rather than fails, and it does not get compaction recovery or auth recovery — because for Pi
+those two have nothing to recover *into*, not because nothing detects them.
 
 Pi records a failed model call as an assistant message with `stopReason: "error"` and an
 `errorMessage` carrying the provider's own words, and **the process exits 0 either way**.
@@ -1636,11 +1636,12 @@ failure gets, characterized against the real `pi 0.84.4` binary driven by a loca
 | Backend said | Pi recorded | Zimmer does |
 | --- | --- | --- |
 | 500 / 502 / 503 | `500: {…}`, `502 <html>…`, `503: {…}` | backoff retry, up to 6 |
-| 429 rate limit or `insufficient_quota` | `429: {…}` | backoff retry, up to 6 |
+| 429 rate limit | `429: {…}` | backoff retry, up to 6 |
+| 402 insufficient credits, or a 429 worded as a quota wall (`insufficient_quota`, "quota exceeded", …) | `402: {…}` / `429: {…}` | park on a timed re-check — no budget spent, no page |
 | 408 timeout | `408: {…}` | backoff retry, up to 6 |
 | stream closed mid-response | `terminated` | backoff retry, up to 6 |
 | connection refused, non-HTTP reply, early socket close | `Connection error.` | backoff retry, up to 6 |
-| 401 / 402 / 403 | `401: {…}` / `402: {…}` / `403: {…}` | fail, naming the provider — no page |
+| 401 / 403 | `401: {…}` / `403: {…}` | fail, naming the provider — no page |
 | any other 4xx, context-window refusals among them | `400: {…}` | fail, naming the provider — no page |
 | no HTTP status, and no transport wording Zimmer knows | whatever Pi wrote | fail, **and page** |
 
@@ -1677,14 +1678,44 @@ handed, so it fails naming the provider's own wording rather than parking a huma
 pool that does not exist. That cell of [#856](https://github.com/tadasant/zimmer/issues/856) is
 closed as "terminal by design", not implemented.
 
-**Quota is a gap rather than a decision.** A Pi `insufficient_quota` 429 takes the same bounded
-backoff as a rate limit and then fails, and an OpenRouter 402 (balance exhausted) fails
-immediately, because an exhausted balance does not refill on a backoff. A Claude or Codex quota
-wall instead rotates, or parks and is woken by `QuotaResetCheckerJob`. There is no Pi account pool
-to rotate through and no Pi quota snapshot to wake on, so a bounded failure is the best available
-answer — but it is worse than the budget pacing the other two runtimes get, and it is the one cell
-of [#856](https://github.com/tadasant/zimmer/issues/856) that is genuinely unfinished rather than
-decided.
+**A quota wall parks on a timer, because there is no pool to wake on.** A Claude or Codex quota
+wall rotates, or parks until `QuotaResetCheckerJob` sees an account in the pool come back. Pi has
+no pool and no quota snapshot, so `ProviderQuotaWallPark` parks the session on a timed re-check
+instead: it arms a one-time wake (the same trigger `wake_me_up_later` creates) at 15 minutes, then
+30, 1 h, 2 h, 4 h, and every 8 h after that, and each wake resumes the session so the provider can
+answer again. A turn that completes ends the streak. No API-error retry budget is spent, nothing
+fails, and nothing pages; the first park of a streak sends one push notification. What this costs:
+
+- **A 429 is a quota wall only by Pi's own wording list.** Status cannot tell
+  `insufficient_quota` from `rate_limit_exceeded`, so `PiTurnError::PROVIDER_LIMIT_WORDING` is
+  pi-ai's `NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN` copied verbatim — the list Pi itself consults
+  before it retries, and the reason a quota 429 reaches Zimmer after one request while a rate limit
+  reaches it after four. A quota wall worded in a way neither list knows takes the ordinary backoff
+  and fails. The misread in the other direction is bounded: a rate limit whose prose happens to
+  match — most plausibly Gemini's per-minute `RESOURCE_EXHAUSTED`, which says "check your plan and
+  billing details" — parks for 15 minutes and sends a quota-wall push instead of backing off, the
+  same reading Pi gives it. A Pi upgrade can change the list;
+  `PiTurnErrorTest` compares the two whenever pi-ai is installed where the test runs, which CI's
+  runner is not.
+- **Seven days, then a human.** Re-checks stop once the next one would land more than seven days
+  after the streak's first park. The session is left in `needs_input` saying so, with a second
+  push. A prepaid balance does not refill on a clock, and a wall that has stood for a week is one
+  nobody is topping up. Resuming the session starts a fresh ladder.
+- **Re-checks do not know when the balance comes back.** Nothing reports a top-up, so a session
+  parked on its 8-hour rung can wait up to 8 hours after the balance is restored. Send it a message
+  to resume it sooner; a turn that completes withdraws the pending re-check. A message *queued*
+  while the session is parked is held until the re-check is due, for the same reason an auth-outage
+  park holds one: it would meet the same wall.
+- **A streak is continued only by its own re-check.** A wall that arrives more than 8 hours after
+  the streak's re-check was due starts a fresh streak at 15 minutes, so a session that ran on since
+  never inherits an old streak's rung or ceiling.
+- **A re-check can retire the session's own wakes.** The re-check is a one-time wake, so it follows
+  held-wake-group rules: if the agent had armed its own wake before the wall and the re-check fires
+  first and meets the wall again, the agent's wake is retired when that turn comes to rest. A
+  session that failed on the wall lost that wake too, so this is not a new loss, but the agent is
+  not told.
+- **One trigger per parked session.** Each park adds a wake trigger row, so a balance that runs out
+  under many Pi sessions shows that many rows on `/triggers` until the wall clears.
 
 `classifies_exits?` is now `true` for Pi, so an exit no classifier claims pages instead of only
 logging. That is the point of the classification: the ordinary Pi failures are accounted for, so
