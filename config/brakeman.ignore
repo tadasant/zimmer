@@ -119,7 +119,7 @@
       "cwe_id": [
         601
       ],
-      "note": "False positive: the redirect target is always XOauthCredential::AUTHORIZE_ENDPOINT (https://x.com/i/oauth2/authorize), built by XOauthBootstrap.authorize_url. The request params only become the account_key / access_token_env_var stored on the pending flow; they never reach the URL's scheme, host or path, and the action is behind the operator HTTP Basic realm."
+      "note": "False positive: the redirect target is always XOauthCredential::AUTHORIZE_ENDPOINT (https://x.com/i/oauth2/authorize), built by XOauthBootstrap.authorize_url. The request params only become the account_key / access_token_env_var stored on the pending flow; they never reach the URL's scheme, host or path."
     }
   ],
   "updated": "2026-06-12 00:00:00 +0000"

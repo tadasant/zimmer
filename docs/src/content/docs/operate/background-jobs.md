@@ -1709,11 +1709,10 @@ never pages.
 fails closed when the cache is unavailable, and an overloaded instance is exactly when the cache is
 least trustworthy — a lock on the escape hatch is worse than an unthrottled two-row write.
 
-On `/health`, **entering and extending are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-three-surfaces) and resuming deliberately is not.** That asymmetry is the load-bearing part: halting the
-demand-side queues is the destructive direction and the one an agent session must not be able to
-take on its own, while the way *out* of a halt has to work on the first try — including on a
-deployment that never set `SUPERVISOR_PASSWORD`, where the realm refuses everything else. Same
-reasoning as the cooldown exemption above, one layer up.
+On `/health`, entering, extending and resuming all answer without a credential, like every other
+action on the web dashboard, so an agent session's shell on the production host can reach them. See
+[the web UI does not keep agent sessions out](/limitations/#the-web-ui-does-not-keep-agent-sessions-out).
+The REST and MCP surfaces take an API key, and MCP also needs the `health` tool group.
 
 ## Queued job maintenance
 
@@ -1796,11 +1795,9 @@ who was not reading the transcript it happened in.
 | REST | `GET /api/v1/health/queued_jobs` | `POST /api/v1/health/discard_queued_jobs` | `POST /api/v1/health/reschedule_queued_jobs` |
 | `/health` | the Queued Job Maintenance panel | its Discard button | its Reschedule control |
 
-On `/health` **both actions are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-three-surfaces)**, via
-`HealthController::OPERATOR_GATED_ACTIONS`. That is load-bearing and not decoration: a bulk discard
-is exactly the destructive-action-reachable-anonymously shape of
-[#312](https://github.com/tadasant/zimmer/issues/312), and an agent session's shell can reach this
-app from the production host.
+On `/health` both actions take no credential, like every other action on the web dashboard. A bulk
+discard is reachable from an agent session's shell on the production host. See
+[the web UI does not keep agent sessions out](/limitations/#the-web-ui-does-not-keep-agent-sessions-out).
 
 None of the three is behind the shared `HealthActionCooldown`, for the reason the recovery-mode pair
 is exempt plus one of their own: the cooldown fails closed when the cache is unavailable, and an

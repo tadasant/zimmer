@@ -108,18 +108,17 @@
         </div>
       </div>
 
-      <%# API keys live on their own page, behind the operator credential — see
-          ApiKeysController. Not prefetched: a hover would otherwise ask for it. %>
+      <%# API keys live on their own page — see ApiKeysController. %>
       <div class="bg-white shadow-sm rounded-lg border border-gray-200">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
           <h2 class="text-lg font-medium text-gray-900">API keys</h2>
           <p class="mt-1 text-sm text-gray-500">
             The keys for the REST API and the MCP endpoint — who holds which, when each was last used,
-            and revoking one without a restart. Needs the operator credential.
+            and revoking one without a restart.
           </p>
         </div>
         <div class="px-4 py-5 sm:px-6">
-          <%= link_to api_keys_path, data: { turbo_prefetch: false },
+          <%= link_to api_keys_path,
                 class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
             Manage API keys
           <% end %>

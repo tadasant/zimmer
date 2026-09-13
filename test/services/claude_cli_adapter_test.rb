@@ -1827,25 +1827,6 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_nil env_vars["SENTRY_DSN_BACKEND"]
   end
 
-  test "spawn_process unsets SUPERVISOR_PASSWORD so a session cannot defeat the /health gate" do
-    # This one is load-bearing rather than merely tidy. The operator HTTP Basic realm
-    # (OperatorHttpBasicAuth) gates the mutating POST /health/* actions specifically against
-    # an agent session halting the fleet's demand-side queues -- and sessions run INSIDE the
-    # web tier's container, so SUPERVISOR_PASSWORD reaches them from env.secret unless it is
-    # cleared here. They already hold an API_KEYS entry, which is exactly why the realm is
-    # keyed on a different variable; inheriting this one would make the gate exclude nobody
-    # (#312, #371).
-    command = [ "claude", "test" ]
-    @adapter.send(:spawn_process, command, working_dir: @test_dir)
-
-    env_vars = @mock_process_manager.spawned_processes.first[:env]
-
-    %w[SUPERVISOR_PASSWORD SUPERVISOR_USERNAME].each do |var|
-      assert env_vars.key?(var), "#{var} should be present (set to nil to unset)"
-      assert_nil env_vars[var], "#{var} must not reach an agent session"
-    end
-  end
-
   test "spawn_process lets a clone's .env set its own SENTRY_DSN_BACKEND" do
     File.write(File.join(@test_dir, ".env"), "SENTRY_DSN_BACKEND=https://public@glitchtip.example.test/9")
 

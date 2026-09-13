@@ -911,122 +911,73 @@ perimeter is the authentication boundary (see [Auth overview](/auth/overview/)),
 has no `before_action` for auth and there are no login routes or `User` model. Zimmer's own Terraform
 puts the app on a Tailscale tailnet with port 80 closed at the DigitalOcean firewall.
 
-The sharp edge is real and load-bearing. Expose port 80 and, for most of the app, there is no second
-wall: an anonymous visitor gets every session transcript, `/settings`, `/inference` (including the OAuth
-login flow), and the GoodJob dashboard.
+The sharp edge is real and load-bearing. Expose port 80 and there is no second wall anywhere: an
+anonymous visitor gets every session transcript, `/settings`, `/inference` (including the OAuth login
+flow), the GoodJob dashboard, the `/supervisor` admin panel, the API keys page, and the destructive
+`POST /health/*` actions.
 
-Two surfaces are the exception, and in both cases the reason is blast radius rather than a change of
-mind about logins. They share one HTTP Basic realm — `OperatorHttpBasicAuth`, keyed on
-`SUPERVISOR_PASSWORD` (with an optional `SUPERVISOR_USERNAME`, default `supervisor`), compared in
-constant time — and it **fails closed**: with the variable unset or blank every gated request returns
-401 and the refusal is logged. An unconfigured deployment gets no operator surface rather than an
-open one.
+Three of those carry the most blast radius:
 
-The **`/supervisor` Administrate panel** renders `claude_accounts`, `mcp_oauth_credentials`,
-`x_oauth_credentials`, and `runtime_login_attempts` as *editable* resources, and
-`mcp_oauth_credentials.access_token` / `.refresh_token` / `.client_secret` are among the fields it
-puts in an edit form.
+- The **`/supervisor` Administrate panel** renders `mcp_oauth_credentials`,
+  `mcp_oauth_pending_flows` and `x_oauth_credentials` as *editable* resources, and
+  `mcp_oauth_credentials.access_token` / `.refresh_token` / `.client_secret` are among the fields it
+  puts in an edit form. Some credential columns are held back from the panel entirely, each listed
+  in its dashboard's `DELIBERATELY_OMITTED` with the reason written next to it, among them
+  `claude_accounts.oauth_config` (the plaintext Anthropic and OpenAI tokens the whole fleet runs on),
+  `runtime_login_attempts.pasted_code` and `api_keys.token_digest`.
+- **`/settings/api_keys`** mints full-API keys and revokes any key, including the one the fleet's
+  sessions share.
+- The **mutating `POST /health/*` actions** (`cleanup_processes`, `retry_sessions`, `archive_old`,
+  `enter_queue_recovery_mode`, `run_post_deploy_tasks`, `discard_queued_jobs`,
+  `reschedule_queued_jobs`) terminate processes, rewrite session rows in bulk, discard queued jobs,
+  and halt the fleet's demand-side job queues. `Api::V1::HealthController` requires an API key for
+  the same actions and the MCP `action_health` tool requires the `health` tool group. The web buttons
+  require nothing.
 
-The **mutating `POST /health/*` actions** — `cleanup_processes`, `retry_sessions`, `archive_old`,
-`enter_queue_recovery_mode`, `run_post_deploy_tasks` — terminate processes, rewrite session rows in
-bulk, and halt the fleet's demand-side job queues. Until
-[#312](https://github.com/tadasant/zimmer/issues/312) and
-[#371](https://github.com/tadasant/zimmer/issues/371) they were the one surface reaching
-`HealthMonitorService` that asked for nothing at all, while `Api::V1::HealthController` required an
-API key and the MCP `action_health` tool required the `health` tool group.
-
-Three things on `/health` stay open on purpose. **Every `GET`** — the dashboard, `refresh`,
-`export_diagnostics` — because a read-only dashboard behind the perimeter is the design above, and
-because `/up` and `/up/deep` are what kamal-proxy gates the deploy cutover on; a 401 there fails
-every deploy. **`POST /health/exit_queue_recovery_mode`**, because the way out of a halt must always
-be available and the realm fails closed — gating it would mean a deployment that never set
-`SUPERVISOR_PASSWORD` could enter recovery mode from the API and not leave it from the UI. And
-**`SystemHealthMonitorJob`**, which reaches the service in-process and traverses no route at all.
-
-Two credential columns are held back from the panel entirely, each listed in its dashboard's
-`DELIBERATELY_OMITTED` with the reason written next to it: `claude_accounts.oauth_config`, the
-plaintext Anthropic and OpenAI tokens the whole fleet runs on, and
-`runtime_login_attempts.pasted_code`.
-
-Two things that follow, in both directions:
-
-- **You have to set the variable to use the panel at all**, including on a fresh deploy and on any
-  existing deployment that has not seeded it. Until then `/supervisor` is 401 for you too.
-- **One shared credential in front of one panel is not a login system.** It does not protect the rest
-  of the app, it has no identity or audit trail, and rotating it requires a restart — the same
-  shape as `API_KEYS`. The perimeter is still the security model.
+Until 2026-09-13 those three sat behind one shared HTTP Basic password
+([#42](https://github.com/tadasant/zimmer/issues/42),
+[#312](https://github.com/tadasant/zimmer/issues/312),
+[#371](https://github.com/tadasant/zimmer/issues/371)). It was removed so that the whole web UI has
+one auth posture, and [the next section](#the-web-ui-does-not-keep-agent-sessions-out) is the cost.
 
 There is no per-user authorization in `sessions_controller.rb`, and that is the design rather than a
 gap: no `User` model, no owner column, nothing for a policy object to compare. The six
 `# TODO: Add proper authorization checks` comments that used to imply otherwise are now a single
-explicit note at the top of the class explaining why there is nothing to check.
+explicit note at the top of the class explaining why there is nothing to check
+([#44](https://github.com/tadasant/zimmer/issues/44)). What is above is the perimeter model itself.
 
-Fixed in [#42](https://github.com/tadasant/zimmer/issues/42) — the panel is behind the Basic realm —
-[#44](https://github.com/tadasant/zimmer/issues/44), which replaced the authorization TODOs with
-the note, and [#312](https://github.com/tadasant/zimmer/issues/312) /
-[#371](https://github.com/tadasant/zimmer/issues/371) for the `/health` half. What is above is the
-perimeter model itself, which no issue is open against.
+### The web UI does not keep agent sessions out
 
-### The operator realm closes the web door, and not the other two
-
-🔴 The perimeter argument that covers the rest of the web UI answers an *external* caller. It does
-not answer one that is already inside — and **agent sessions run on the production host**, inside the
-tailnet, on the same box that serves these routes.
+🔴 The perimeter argument answers an *external* caller. It does not answer one that is already
+inside, and **agent sessions run on the production host**, inside the tailnet, on the same box that
+serves these routes.
 
 That is measured, not assumed. From inside an ordinary agent session on `zimmer-production`, a
 read-only `GET https://zimmer.tadasant.com/health` answers `200` and renders the dashboard, as does
-`GET http://100.120.55.4/up` against the tailnet address. So before
-[#312](https://github.com/tadasant/zimmer/issues/312) and
-[#371](https://github.com/tadasant/zimmer/issues/371) any session could `curl` its way to
-`enter_queue_recovery_mode` — halting `pollers`, `triggers`, `inference`, `maintenance` and
-`default` for the whole fleet — with no `health` tool group and no API key, which is exactly what
-the tool-group gating on the MCP `action_health` tool exists to prevent. (CSRF was never the thing
-standing in front of it: `verify_authenticity_token` does run on these routes, but the token and the
-session cookie are both in the response to an anonymous `GET /health`, so defeating it is two
-requests rather than one.)
+`GET http://100.120.55.4/up` against the tailnet address. So any session can, with a `curl` and no
+credential:
 
-**The operator realm closes that door and leaves two others open, and it is worth being exact about
-what is and is not fixed.** The same capability is on `POST /api/v1/health/*` behind `API_KEYS`, and
-on `POST /mcp` behind `API_KEYS` plus a `tool_groups` value the *caller* supplies in the query
+- post `enter_queue_recovery_mode`, halting `pollers`, `triggers`, `inference`, `maintenance` and
+  `default` for the whole fleet, with no `health` tool group and no API key;
+- open the MCP and X token columns in `/supervisor`'s edit forms, and change them;
+- mint a full-API key on `/settings/api_keys`, or revoke the key every other session shares.
+
+CSRF is not a fence against it. `verify_authenticity_token` does run on these routes, but the token
+and the session cookie are both in the response to an anonymous `GET`, so getting past it takes two
+requests rather than one. The same exposure applies to every member of the tailnet.
+
+The HTTP Basic password that used to guard these three surfaces closed this door, because it was the
+one credential sessions did not hold: `CliSpawnEnv` cleared it from every process it spawned. It never
+closed the other two. The same `/health` capability is on `POST /api/v1/health/*` behind `API_KEYS`,
+and on `POST /mcp` behind `API_KEYS` plus a `tool_groups` value the *caller* supplies in the query
 string. An agent session holds a valid `API_KEYS` entry two ways: `API_KEYS` and
 `ZIMMER_PROD_API_KEY` are in its process environment, and its own `.mcp.json` carries one in an
-`X-API-Key` header for the self-session server. So a session that goes looking can still reach both
-of those surfaces, and `?tool_groups=health` is not a fence against a caller who writes the query
-string.
+`X-API-Key` header for the self-session server. So tool-group gating keeps these actions out of the
+tools a session is handed, not out of its reach.
 
-What the gate does buy is real, and it is the part `/supervisor` got in
-[#42](https://github.com/tadasant/zimmer/issues/42): there is no longer a door that needs *nothing*.
-Every surface that mutates now demands a credential, so the remaining exposure is a question about
-which credentials a session should hold — tracked separately — rather than an unauthenticated
-endpoint. Halting the demand-side queues also stays loud and self-healing whoever fires it: entry,
-extension and exit each emit their own page, and the TTL auto-exits. The one thing to
-know is that halting `pollers` also stops `SystemHealthMonitorJob`, so *backlog* alerting is quiet
-for the duration.
-
-### A missing operator password is silent all the way down the deploy chain
-
-🟡 The realm fails closed loudly enough at the HTTP layer — a 401 whose body names
-`SUPERVISOR_PASSWORD`, and a log line. The *delivery* of that variable is where the quiet is.
-
-`config/deploy.production.yml` names `SUPERVISOR_PASSWORD` in `env.secret` and
-`.kamal/secrets.production` maps it to `$PROD_SUPERVISOR_PASSWORD`, but Kamal only raises when the
-mapping **line** is missing: `Kamal::Secrets#[]` fetches from a `Dotenv.parse` of the file, and an
-unset deploy-side variable resolves to `""` rather than to an error. No validator checks for blank
-afterwards. So a deploy whose environment never supplied `PROD_SUPERVISOR_PASSWORD` writes
-`SUPERVISOR_PASSWORD=` into the container's env-file, reports success, and leaves `/supervisor`,
-`/settings/api_keys` and the mutating `POST /health/*` actions returning 401 — with nothing
-anywhere in the deploy saying so.
-
-That is the same silent shape as [the Parameter Store resolver
-key](/operate/secrets-parameter-store/#set-the-secret), reached the same way, and it is why the
-private deploy workflow has to name the variable in *both* the Kamal step's `env:` block and the
-`-e` passthrough of its `kamal()` wrapper. A `: "${PROD_SUPERVISOR_PASSWORD:?}"` assert in that
-step is the one thing that converts it into a failed deploy.
-
-Two consequences worth holding onto. The mapping is **safe to land before the value exists** —
-it cannot break a deploy, it can only fail to open the realm. And the only way to find out whether
-it worked is to load one of the three surfaces and see whether you get a Basic prompt or a 401;
-there is no panel, health row or deploy line that reports the realm's configured state.
+Halting the demand-side queues stays loud and self-healing whoever fires it: entry, extension and
+exit each emit their own page, and the TTL auto-exits. The one thing to know is that halting
+`pollers` also stops `SystemHealthMonitorJob`, so *backlog* alerting is quiet for the duration.
 
 ### Transcript redaction is defense in depth, not a guarantee
 
@@ -1117,9 +1068,9 @@ the appended bytes rather than the whole file — 8.5 s down to 34 ms on a real 
 🔴 Uniform trust means Zimmer leans on the perimeter rather than field-level encryption. No model declares
 `encrypts`, no `active_record.encryption` config exists, and every OAuth token, client secret, and PKCE
 verifier is a plaintext column. `XOauthCredential`'s own header says the quiet part: *"Security relies on
-database access controls."* The admin panel that renders those columns is now behind a Basic realm, which
-means a broken perimeter no longer exposes them in one click — but the columns are still plaintext, and
-anything with database access reads them.
+database access controls."* The admin panel renders the MCP and X token columns in edit forms and asks
+for no credential, so a broken perimeter exposes them in one click, and so does any agent session. The
+columns are plaintext, and anything with database access reads them too.
 
 Tracked in [#43](https://github.com/tadasant/zimmer/issues/43).
 
@@ -4719,12 +4670,12 @@ messages](/sessions/hierarchy-and-human-messages/)). A caller that passes no key
 the original ambiguity, which is why the tool description tells it to search by title rather than
 retry. Tracked in [#577](https://github.com/tadasant/zimmer/issues/577).
 
-### Queue recovery mode is deliberately outside the health cooldown, and only the way out is anonymous
+### Queue recovery mode is deliberately outside the health cooldown
 
 `QueueRecoveryMode` (see [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode)) is
 Zimmer's escape hatch for a runaway job queue: it halts execution on `pollers`, `triggers`,
-`inference`, `maintenance` and `default` for up to four hours. Two things about it are choices rather than oversights, and both cut
-against the grain of the section below.
+`inference`, `maintenance` and `default` for up to four hours. One thing about it is a choice rather
+than an oversight, and it cuts against the grain of the section below.
 
 None of its three surfaces sit behind `HealthActionCooldown`. That throttle **fails closed** when the
 cache cannot enforce it, and an instance overloaded enough to need recovery mode is exactly the
@@ -4732,21 +4683,10 @@ instance whose Redis is least trustworthy — so the throttle would have locked 
 above all the way back out of it, precisely when it was needed. A halt is two row-writes and is
 reversible; being unable to resume is not.
 
-The two halves of the web control are gated differently, and the asymmetry is the point.
-`enter_queue_recovery_mode` sits behind the operator realm with the destructive maintenance actions
-([#371](https://github.com/tadasant/zimmer/issues/371),
-[#312](https://github.com/tadasant/zimmer/issues/312)), because halting instance-wide job processing
-is a bigger lever than its neighbours on that page even though it is reversible, self-expiring and
-pages `#alerts` on every transition. `exit_queue_recovery_mode` is behind nothing, deliberately:
-the realm fails closed, so gating the exit would put a credential the deployment may never have set
-between an operator and the end of a halt. The REST and MCP equivalents of both require an API key as
-usual, and MCP additionally gates on the `health` tool group, which the `self_session` set injected
-into every agent session does not include.
-
-What the realm buys here is narrower than it looks. The caller it is aimed at is an agent session
-already inside the tailnet, and a session holds an `API_KEYS` entry even though `CliSpawnEnv` strips
-`SUPERVISOR_PASSWORD` from everything it spawns. The web door is shut; the REST and MCP doors still
-answer to a credential the caller already has.
+On the web dashboard, entering and exiting both answer without a credential, like every other
+`/health` action (see [the web UI does not keep agent sessions out](#the-web-ui-does-not-keep-agent-sessions-out)).
+The REST and MCP equivalents of both require an API key as usual, and MCP additionally gates on the
+`health` tool group, which the `self_session` set injected into every agent session does not include.
 
 Two knock-on effects worth knowing while the mode is on. Halting `pollers` also halts
 `SystemHealthMonitorJob`, so the "Queue backlog critical" page stops firing — deliberate, since the
@@ -4765,10 +4705,9 @@ three surfaces that can run these actions share that one object — the `/health
 `Api::V1::HealthController`, and the MCP `action_health` tool — so switching surfaces does not buy a
 second run.
 
-The web dashboard is the exception to "per caller", and unavoidably so. Its mutating actions are
-behind the operator HTTP Basic realm, but that is one shared credential rather than an identity, so
-there is still no key to fingerprint and every visitor lands in one shared anonymous bucket. That is
-the global cooldown it has always had.
+The web dashboard is the exception to "per caller", and unavoidably so. Its mutating actions take
+no credential, so there is no key to fingerprint and every visitor lands in one shared anonymous
+bucket: a global cooldown.
 
 The cooldown is only as real as the store behind it, and it can be unreal in two ways. A null store
 drops every write and misses every read. A **dead Redis** does the same thing without being a null
@@ -4786,9 +4725,8 @@ action that runs unthrottled is worse than one that does not run — but it is a
 degradation, and it arrives during a Redis outage, which is exactly when someone may be reaching for
 those buttons.
 
-**Holding the credential does not exempt a caller from the throttle.** The operator realm and the
-cooldown are independent gates and a caller passes both or nothing runs, so the 503 above lands on an
-authenticated operator exactly as it lands on an API key. No credential buys a way past a dead Redis.
+**Holding a credential does not exempt a caller from the throttle.** The 503 above lands on an API
+key and on the anonymous dashboard alike. No credential buys a way past a dead Redis.
 
 Two things per-caller bucketing does *not* give you. It is not per-identity: API keys have names but
 no owner, so the bucket separates keys, not people. And it raises the **aggregate** ceiling — the

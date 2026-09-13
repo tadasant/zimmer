@@ -2,9 +2,6 @@ require "test_helper"
 
 module Supervisor
   class PostDeployTaskRunsControllerTest < ActionDispatch::IntegrationTest
-    include SupervisorAuthTestHelper
-    include SupervisorAuthTestHelper::AutoBasicAuth
-
     setup do
       @run = PostDeployTaskRun.create!(
         version: "20260501000000", name: "SupervisedExampleTask", status: "succeeded",

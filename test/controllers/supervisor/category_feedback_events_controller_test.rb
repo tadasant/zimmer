@@ -2,9 +2,6 @@ require "test_helper"
 
 module Supervisor
   class CategoryFeedbackEventsControllerTest < ActionDispatch::IntegrationTest
-    include SupervisorAuthTestHelper
-    include SupervisorAuthTestHelper::AutoBasicAuth
-
     setup do
       CategoryFeedbackEvent.delete_all
       Category.delete_all
