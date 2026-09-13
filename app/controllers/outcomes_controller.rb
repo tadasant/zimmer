@@ -93,6 +93,8 @@ class OutcomesController < ApplicationController
       notice: "Stopped batch ##{batch.id}. #{canceled} queued #{'analysis'.pluralize(canceled)} canceled; " \
               "#{batch.reload.running_count} already in flight will finish."
     )
+  rescue OutcomeAnalyses::CancelBatch::NotRunning => e
+    redirect_back_to_ledger(alert: e.message)
   end
 
   private
