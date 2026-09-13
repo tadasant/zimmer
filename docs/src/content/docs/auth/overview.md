@@ -10,9 +10,8 @@ which is most of the battle.
 
 ```mermaid
 flowchart TB
-    subgraph none["1 · Human → Zimmer: NOTHING (except the operator realm)"]
-        W["Web UI · /inference · /settings · /jobs<br/>NO AUTH OF ANY KIND"]
-        SUP["/supervisor admin panel<br/>+ the mutating POST /health/* actions<br/>+ /settings/api_keys<br/>HTTP Basic vs ENV['SUPERVISOR_PASSWORD']<br/>fails closed when unset"]
+    subgraph none["1 · Human → Zimmer: NOTHING"]
+        W["Web UI · /inference · /settings · /jobs<br/>/supervisor · /settings/api_keys · /health<br/>NO AUTH OF ANY KIND"]
     end
     subgraph api["2 · Client → REST API"]
         A["X-API-Key header (or Bearer on /mcp)<br/>vs api_keys rows: API_KEYS entries + minted keys<br/>named, revocable; one grant: api or quick_router"]
@@ -25,17 +24,15 @@ flowchart TB
     end
 
     U["You"] --> W
-    U --> SUP
     C["Script / MCP self-session"] --> A
     X["Browser extension<br/>(quick_router key)"] --> A
     W --> H
-    SUP --> H
-    SUP -. mints and revokes .-> A
+    W -. mints and revokes .-> A
     H --> V["Anthropic · OpenAI"]
     M --> S["Linear · Slack · Google · …"]
 ```
 
-## 1. Human → Zimmer: there is no authentication (except the operator realm)
+## 1. Human → Zimmer: there is no authentication
 
 This is not a simplification. `ApplicationController` has no `before_action` for auth, no session
 auth, no Devise, no OmniAuth. There are no login routes. There is no `User` model in the auth path.
@@ -44,97 +41,53 @@ Everything is open to anyone who can reach the host:
 
 - the session dashboard and every transcript,
 - `/settings`, `/inference` (including the OAuth login flow),
-- the GoodJob dashboard at `/jobs`.
+- the GoodJob dashboard at `/jobs`,
+- `/supervisor`, the Administrate admin panel,
+- the API keys page, `/settings/api_keys`,
+- every action on `/health`, including the destructive `POST /health/*` maintenance buttons.
 
-### The exception: the operator realm, in front of three surfaces
+The last three are the ones where "anyone who can reach the host" costs the most:
 
-Three surfaces are where "anyone who reaches the host" is too generous, and they share one HTTP Basic
-realm — `OperatorHttpBasicAuth` (`app/controllers/concerns/operator_http_basic_auth.rb`):
+- **`/supervisor`** renders `mcp_oauth_credentials`, `mcp_oauth_pending_flows` and
+  `x_oauth_credentials` as *editable* resources, and their edit forms show plaintext access and
+  refresh tokens, client secrets and PKCE verifiers. It is also where the X consent flow starts. A
+  few columns are held back from the panel entirely, each in its dashboard's `DELIBERATELY_OMITTED`
+  list with the reason beside it, among them `claude_accounts.oauth_config` (the tokens the whole
+  fleet runs on), `runtime_login_attempts.pasted_code` and `api_keys.token_digest`.
+- **`/settings/api_keys`** mints and revokes the credential the REST API and the MCP endpoint take.
+  See [managing keys](#managing-keys).
+- **The `POST /health/*` actions** (`cleanup_processes`, `retry_sessions`, `archive_old`,
+  `enter_queue_recovery_mode`, `run_post_deploy_tasks`, `discard_queued_jobs`,
+  `reschedule_queued_jobs`) terminate processes, rewrite session rows in bulk, discard queued jobs,
+  and halt the fleet's demand-side job queues. Their REST twins on `POST /api/v1/health/*` still
+  take an API key. The web buttons take nothing.
 
-```ruby
-before_action :authenticate_operator
+Until 2026-09-13 those three sat behind one shared HTTP Basic password, `SUPERVISOR_PASSWORD`. It
+was removed so that the whole web UI has one auth posture. Nothing reads the variable any more,
+so you can delete it from your deployment's secrets. If your deploy workflow asserts that it is set,
+remove that assert first, or the next deploy fails on the missing secret.
 
-def authenticate_operator
-  expected_password = ENV[PASSWORD_ENV].to_s
-  return refuse_operator_unconfigured if expected_password.blank?
-  # ...constant-time compare of username and password, then `refuse_operator` on failure
-end
-```
-
-**`/supervisor`**, because the Administrate admin panel renders `claude_accounts` (whose
-`oauth_config` JSONB holds plaintext access and refresh tokens), `mcp_oauth_credentials`,
-`x_oauth_credentials`, and `runtime_login_attempts` as *editable* resources. It is also where the X
-consent flow runs, so minting an X credential takes the operator credential on every leg.
-
-**The API keys page, `/settings/api_keys`**, all of it, reads included, because it creates and
-revokes the credential the REST API and MCP endpoint take. See [managing keys](#managing-keys).
-
-**The mutating `POST /health/*` actions** — `cleanup_processes`, `retry_sessions`, `archive_old`,
-`enter_queue_recovery_mode` and `run_post_deploy_tasks` — because they terminate processes, rewrite
-session rows in bulk, and halt the fleet's demand-side job queues. Every `GET` on `/health` stays
-anonymous: a read-only dashboard behind the perimeter is the design, and `/up` and `/up/deep` are
-what kamal-proxy gates the deploy cutover on. So does `POST /health/exit_queue_recovery_mode` — the
-way *out* of a halt must always work, including on a deployment that never set the variable.
-
-:::note[Why not the API key?]
-The `/health` gate exists for a caller that is already inside the perimeter: agent sessions run on
-the production host, and the Rails app answers from inside a session's shell. A session holds a
-valid `API_KEYS` entry in its own environment and in its `.mcp.json`, so a gate keyed on that
-credential would not exclude it. `SUPERVISOR_PASSWORD` is the one credential sessions do not hold,
-because `CliSpawnEnv` clears it from every spawned process. Moving this realm onto a different
-variable means adding that variable to `CliSpawnEnv`'s blocklist, or the gate quietly stops being
-one. See [the note in limitations](/limitations/#the-operator-realm-closes-the-web-door-and-not-the-other-two).
+:::caution[Agent sessions are inside the perimeter]
+"Anyone who can reach the host" includes every agent session. Sessions run on the production host,
+and the Rails app answers from inside a session's shell. Nothing in the app stops a session from
+reading the MCP and X tokens in `/supervisor`, minting or revoking an API key, or halting the job
+queues from `/health`. The same holds for every member of the tailnet. See
+[the limitation](/limitations/#the-web-ui-does-not-keep-agent-sessions-out).
 :::
 
-Sharing one realm string across both is deliberate on the human side too: browsers cache Basic
-credentials per origin *and realm*, so an operator who has opened `/supervisor` is already carrying
-what the `/health` buttons ask for.
-
-One shared credential, no user model — this is not "who are you", it is "are you inside the
-perimeter at all". Set `SUPERVISOR_PASSWORD`; `SUPERVISOR_USERNAME` is optional and defaults to
-`supervisor`. Both halves are compared with `ActiveSupport::SecurityUtils.secure_compare`, the same
-constant-time primitive `Api::BaseController#authenticate_api_key` uses.
-
-#### The refusal and the challenge are separate
-
-A 401 is the gate saying no. The `WWW-Authenticate: Basic` header on it is a *second*, separable
-instruction — "go ask the human" — and browsers obey it for any same-origin credentialed `fetch`,
-not just for a navigation someone started ([WHATWG Fetch, HTTP-network-or-cache
-fetch](https://fetch.spec.whatwg.org/#http-network-or-cache-fetch)).
-
-Turbo Drive prefetches same-origin links 100ms after the cursor enters them, which made that
-distinction load-bearing: hovering the dashboard's **Supervisor** button fired a background GET at
-the realm, and the browser opened its native sign-in dialog on top of a page nobody was leaving. It
-looked random because it tracked the mouse rather than any click.
-
-So `Supervisor::ApplicationController#refuse_operator` withholds the challenge — and only the challenge —
-from a request the browser made speculatively (`SpeculativeRequest#prefetch_request?`, which reads
-`X-Sec-Purpose`, `Sec-Purpose` and `Purpose`). The request is still refused with a 401; a real
-navigation still gets the challenge and still signs in. Belt and braces, every link to the realm
-also carries `data-turbo-prefetch="false"`, so the request is not made at all —
-`test/contracts/basic_auth_prefetch_test.rb` sweeps `app/views/**` and fails if a new one forgets.
-
-**It fails closed.** With `SUPERVISOR_PASSWORD` unset — or blank, which is what a trailing space in
-an env file gets you — every request to every dashboard gets a 401, and the refusal is logged.
-An unconfigured deployment gets no admin panel rather than an anonymous one — so on a fresh deploy
-you must set the variable before `/supervisor` will open for you either.
-
-The same is true of `/health`'s maintenance buttons, and there the closed state has a route around
-it rather than being a dead end: the identical actions are on `POST /api/v1/health/*` behind
-`API_KEYS`, and `exit_queue_recovery_mode` is ungated on purpose, so an instance that never set the
-variable can still be got out of a halt. The 401 body names `SUPERVISOR_PASSWORD`, so the refusal is
-diagnosable from the response and not only from the log.
+CSRF protection applies to every write on these three surfaces, so a page on another origin, open
+in your browser, cannot submit their forms for you.
 
 :::danger[The security model is still "put it on a tailnet"]
-The perimeter remains the authentication boundary for everything else, and Zimmer's own Terraform
+The perimeter is the authentication boundary for the whole web UI, and Zimmer's own Terraform
 enforces it. The DigitalOcean firewall allows only `22/tcp` and Tailscale's `41641/udp`, port 80 is
 closed at the edge, and the app is reachable only over the tailnet, at `http://zimmer`.
 
 The sharp edge is real. Any deployment that exposes port 80 (a reverse proxy, a public load
 balancer, a well-meaning `docker run -p 80:80` on a box with a public IP) hands an anonymous visitor
-every session transcript and the `/inference` OAuth flow. The Basic realm narrows the worst of it — the
-token-bearing dashboards — but it is one credential in front of one panel, not a login system.
-Tracked in [#43](https://github.com/tadasant/zimmer/issues/43).
+every session transcript, the `/inference` OAuth flow, the MCP and X OAuth tokens in `/supervisor`,
+and a page that mints full-API keys. There is no second wall behind the perimeter. Tracked in
+[#43](https://github.com/tadasant/zimmer/issues/43).
 :::
 
 ### There is no per-user authorization in `SessionsController`, and that is the design
@@ -215,11 +168,11 @@ agent's reach. From there you can:
   that a revoked `API_KEYS` entry stays revoked while the key is still in the variable.
 - **Restore** a revoked key, if you revoked the wrong one. It authenticates again at once.
 
-The page sits behind the [operator realm](#the-exception-the-operator-realm-in-front-of-three-surfaces),
-and it has no REST or MCP sibling, on purpose. Agent sessions hold an API key and not the operator
-credential. If an API key could mint keys it would issue itself new credentials, and if it could
-revoke them any session could cut every other session off by revoking the key they share. With
-`SUPERVISOR_PASSWORD` unset the page is closed, and `API_KEYS` entries still work.
+Like the rest of the web UI, the page has no credential in front of it. It has no REST or MCP
+sibling, on purpose. If an API key could mint keys it would issue itself new credentials, and if it
+could revoke them any session could cut every other session off by revoking the key they share.
+Keeping the page browser-only keeps key management out of the tools a session is handed. It is not a
+wall: a session's shell can reach this page like anything else on the host.
 
 The fingerprint is the first eight characters of the key's SHA-256, so you can match a key you hold
 to its row:
@@ -257,7 +210,7 @@ discovery, RFC 7591 dynamic client registration, and PKCE — then writing the r
 the CLI's own credential file so the agent's MCP client picks them up.
 
 X (Twitter) is the exception: its token is an `XOauthCredential` row, vended as an env var, and
-minted by a consent flow that runs from `/supervisor` behind the operator realm.
+minted by a consent flow that runs from `/supervisor`.
 
 → [MCP server OAuth](/auth/mcp-oauth/), and [X (Twitter) is minted from
 `/supervisor`](/auth/mcp-oauth/#x-twitter-is-minted-from-supervisor)
@@ -318,11 +271,10 @@ In `db/schema.rb`:
 `XOauthCredential`'s own header admits it: *"access_token / refresh_token are stored as plain text…
 Security relies on database access controls."*
 
-Combined with an Administrate panel that renders those columns as *editable* resources, database
-access controls are close to the only control — and what stands between the panel and them is one
-shared HTTP Basic password, not a database grant. That realm [fails
-closed](#the-exception-the-operator-realm-in-front-of-three-surfaces), so an unconfigured deployment has no
-panel at all; a configured one has exactly one credential in front of the plaintext.
+Combined with an Administrate panel that renders the MCP and X token columns in edit forms and asks
+for no credential, database access controls do not help much: the panel reads the database for
+whoever asks. The network perimeter is the only thing between the plaintext and a visitor, and agent
+sessions are already inside it.
 :::
 
 ### In transit, at least, one field is guarded
@@ -379,8 +331,6 @@ provider would have rotated the single-use refresh token, and only then would th
 | Var | Used for |
 | --- | --- |
 | `API_KEYS` | REST API and MCP auth (comma-separated). Each entry gets a named row the first time it is used, and can be revoked on `/settings/api_keys`. Minted keys live only in the database. |
-| `SUPERVISOR_PASSWORD` | The operator HTTP Basic realm: `/supervisor`, `/settings/api_keys`, and the mutating `POST /health/*` actions. Unset or blank means **all three are closed**, not open. |
-| `SUPERVISOR_USERNAME` | Optional; defaults to `supervisor`. |
 | `APP_HOST` | The MCP OAuth **redirect URI**. Defaults to `localhost:3000`, and picks `http` iff the host string contains "localhost". |
 | `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_oauth_clients`, `mcp_secrets`) |
 | `X_OAUTH_CLIENT_ID` / `_SECRET` | X/Twitter token vending |

@@ -435,11 +435,9 @@ long-lived one there is worth avoiding.
 :::danger[Nothing is encrypted at rest in the database]
 No model declares `encrypts`; there is no `active_record.encryption` config. Anthropic and OpenAI
 refresh tokens, MCP OAuth access and refresh tokens, client secrets, and PKCE verifiers are all
-plaintext columns — and the [`/supervisor` panel](/auth/overview/) renders them as editable resources
-behind nothing more than one shared HTTP Basic credential. That realm at least
-[fails closed](/auth/overview/#the-exception-the-operator-realm-in-front-of-three-surfaces): with
-`SUPERVISOR_PASSWORD` unset or blank the panel is shut, not open. The columns themselves are still
-plaintext. ([#43](https://github.com/tadasant/zimmer/issues/43))
+plaintext columns — and the [`/supervisor` panel](/auth/overview/) renders the MCP and X tokens in
+its edit forms with no credential in front of it, like the rest of the web UI. The perimeter is the
+only wall. ([#43](https://github.com/tadasant/zimmer/issues/43))
 :::
 
 ## App env vars

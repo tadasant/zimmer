@@ -1,6 +1,6 @@
 <%# Administrate's index page, plus the way in to connecting an X account (#852). %>
 <% content_for(:header_middle) do %>
-  <%= link_to "Connect an X account", supervisor_new_x_oauth_authorization_path, class: "button", data: { turbo_prefetch: false } %>
+  <%= link_to "Connect an X account", supervisor_new_x_oauth_authorization_path, class: "button" %>
 <% end %>
 
 <%= render template: "administrate/application/index",
