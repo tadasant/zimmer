@@ -39,8 +39,11 @@ each artifact's own entry.
 
 ### A list you pass replaces the root's defaults
 
-On the two surfaces that resolve a root's defaults — the MCP `start_session` tool and `POST
-/api/v1/sessions` — `mcp_servers`/`skills`/`plugins`/`hooks` has three distinct states, not two:
+Every way a session is created resolves a root's defaults through one implementation,
+`Sessions::ResolveSpawnDefaults`: the MCP `start_session` tool, `POST /api/v1/sessions`, the
+new-session form, and `Session.create_from_agent_root!` (below). On the two surfaces where a caller
+can name any of the three states — `start_session` and `POST /api/v1/sessions` —
+`mcp_servers`/`skills`/`plugins`/`hooks` has three distinct states, not two:
 
 | What the caller sends | What the session gets |
 | --- | --- |
@@ -51,9 +54,10 @@ On the two surfaces that resolve a root's defaults — the MCP `start_session` t
 Omitted and `[]` are two different requests and Zimmer keeps them apart. A non-empty list is a
 *replacement*, never a union: a caller that names one server on a root declaring two gets one, and
 nothing warns it about the other. (The new-session form is the third surface that distinguishes an
-explicit `[]` from an accident, and its MCP picker never reaches the "omitted" row: that one submits
-a blank entry when nothing is selected, so the key is always present and what a human sees on screen
-is what the session gets.)
+explicit `[]` from an accident, and it never reaches the "omitted" row: it pre-fills every picker with
+the root's defaults and submits what the picker shows, so what a human sees on screen is what the
+session gets. Its MCP picker submits a blank entry when nothing is selected; the skills, hooks and
+plugins pickers submit no key at all, and the form reads that as a cleared picker, not an omission.)
 
 This matters most for MCP servers, and it cuts both ways. A root's defaults can carry real privilege
 (SSH access to a production host, a secrets store), so a caller that narrows to `[]` is asking for
@@ -77,14 +81,16 @@ spawn](/extend/mcp-server/#start_session-names-its-repository-with-agent_root-or
 or `POST /api/v1/sessions` — sets it without the caller naming a list at all: with no agent root there
 are no defaults for an omitted `mcp_servers` to fall back to, so omitted *is* none, and recording that
 keeps the heal from attaching the defaults of a root whose URL happens to equal the `git_root` the
-caller passed. `Sessions::ResolveSpawnDefaults` does it for both surfaces.
+caller passed. `Sessions::ResolveSpawnDefaults` does it for every surface.
 
 Two things are deliberately outside that rule:
 
-- **`Session.create_from_agent_root!`** (the dashboard quick prompt, the chat bubble, and
-  [triggers](/sessions/triggers/)) treats `nil` and `[]` alike as "take the defaults". A `Trigger`'s
-  `mcp_servers` column is `default: [], null: false`, so `[]` there is an untouched trigger rather
-  than a request for none — reading it as "no servers" would strip every existing trigger's servers.
+- **`Session.create_from_agent_root!`** (the dashboard quick prompt, the chat bubble, the work
+  backlog, outcome analyses and [triggers](/sessions/triggers/)) treats `nil` and `[]` alike as "take
+  the defaults" — it resolves through the same service, but tells it that only a non-empty list was
+  named. A `Trigger`'s list columns are `default: [], null: false`, so `[]` there is an untouched
+  trigger rather than a request for none, and reading it as "no servers" would strip every existing
+  trigger's servers at its next fire. There is no way to spell "none" on this path.
 - **Injected servers** (the self-session server, and the subagent-spawning server for roots that
   declare `default_subagent_roots`) are added by `SelfSessionInjector`, not by this resolution. A
   session spawned with `mcp_servers: []` still receives them, by design.
@@ -219,8 +225,7 @@ flowchart LR
 
 ## How a root seeds a session
 
-At session creation (`Session#create_from_agent_root!`), the root supplies defaults that the caller
-can override:
+At session creation, on every surface, the root supplies defaults that the caller can override:
 
 ```mermaid
 flowchart TD
@@ -237,11 +242,15 @@ Once seeded, the session owns its own lists. The UI's PATCH endpoints mutate the
 `air prepare` is called with `--without-defaults` so AIR won't re-add anything the user removed.
 
 The rootless branch above is not a shortcut around that chain — it is the same chain with one fewer
-tier. `Sessions::ResolveSpawnDefaults` runs on every create from `POST /api/v1/sessions` and MCP
-`start_session`, root or no root, so a session created without an `agent_root` still picks up the
-Settings-page runtime and model. It was not always so: REST consulted the global defaults only from
-[#263](https://github.com/tadasant/zimmer/issues/263), and MCP `start_session` could not create a
-rootless session at all until [#265](https://github.com/tadasant/zimmer/issues/265).
+tier. `Sessions::ResolveSpawnDefaults` runs on every create — `POST /api/v1/sessions`, MCP
+`start_session`, the new-session form and `Session.create_from_agent_root!` — root or no root, so a
+session created without an `agent_root` still picks up the Settings-page runtime and model, and a
+blank branch is `main`. It was not always so: REST consulted the global defaults only from
+[#263](https://github.com/tadasant/zimmer/issues/263), MCP `start_session` could not create a
+rootless session at all until [#265](https://github.com/tadasant/zimmer/issues/265), and until
+[#454](https://github.com/tadasant/zimmer/issues/454) the form and `create_from_agent_root!` each
+carried their own copy. `test/integration/spawn_defaults_conformance_test.rb` drives all four with the
+same request and fails if they disagree.
 
 ## Changing roots
 

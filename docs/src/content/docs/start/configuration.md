@@ -117,8 +117,9 @@ Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at 
 - Catalog refresh controls.
 
 Both values here are picked up by every session create that does not override them, with or without
-an `agent_root`: `POST /api/v1/sessions` and MCP `start_session` both resolve through
-`Sessions::ResolveSpawnDefaults`, and with no root the chain falls straight through to this page.
+an `agent_root`: `POST /api/v1/sessions`, MCP `start_session`, the new-session form and
+`Session.create_from_agent_root!` all resolve through `Sessions::ResolveSpawnDefaults`, and with no
+root the chain falls straight through to this page.
 Pinned by `sessions_controller_contract_test.rb` ("create without agent_root honors the global
 default runtime and model") and by `start_session_test.rb` ("a rootless spawn resolves runtime and
 model through the Settings-page defaults").

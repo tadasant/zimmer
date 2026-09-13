@@ -527,8 +527,8 @@ session it spawns, and each id is validated against the catalog exactly as `acti
 the valid ones listed, rather than persisted and left to break the next spawn. A key you do not
 send is left alone.
 
-**An empty list is not "none".** `Session.create_from_agent_root!` resolves each list as
-`catalog_skills.presence || agent_root.default_skills`, and a fire onto a *re-used* session skips
+**An empty list is not "none".** `Session.create_from_agent_root!` counts only a non-empty list as
+named, so an empty one takes the agent root's defaults, and a fire onto a *re-used* session skips
 the sync entirely (`Trigger#sync_session_artifact!` refuses to let an empty trigger list strip a
 live session's artifacts — the session-9563 incident). So a trigger with `catalog_skills: []` spawns
 sessions carrying the agent root's default skills, not sessions carrying none. Sending `[]` resets
