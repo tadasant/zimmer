@@ -1,6 +1,6 @@
 ---
 title: The browser extension
-description: The Quick Router bubble from any page on the web — drop a pin, type, and a router session starts. What it sends, what its key can do, and how to install it.
+description: The Quick Router bubble from any page on the web — press a shortcut, type, and a router session starts, pinned to a spot if you like. What it sends, what its key can do, and how to install it.
 sidebar:
   order: 6
 ---
@@ -12,8 +12,8 @@ into the right place. The thread you were on is gone by the time you are done.
 The browser extension is Zimmer's [Quick Router bubble](/sessions/spot-and-priority/#the-quick-routers-spot-opt-in)
 freed from Zimmer's own origin and given a pin. On any page: press a shortcut, type, send — pointing
 at the thing your feedback is about first, if it is about one thing. A router session starts with
-your words, the page's URL and content, and the spot you pinned. You never leave the page and never
-look for the session.
+your words, the page's URL and content, and the spot you pinned, if you pinned one. You never leave
+the page and never look for the session.
 
 It lives in [`browser-extension/`](https://github.com/tadasant/zimmer/tree/main/browser-extension)
 in the repo — Chrome, Manifest V3, no build step — and is loaded unpacked. ([#175](https://github.com/tadasant/zimmer/issues/175))
@@ -82,8 +82,8 @@ sandbox — see [the limitation](/limitations/#page-content-from-the-browser-ext
 
 All of it lands in the session's prompt, the database, and the agent's transcript. **Mind what page
 you are on** — an authenticated view, a private repo, an inbox — because the extension captures
-whatever is rendered. There is no origin allowlist: the extension is armed only by your click on
-the icon, on that tab, that once (`activeTab`), and holds no standing permission on any site. That
+whatever is rendered. There is no origin allowlist: the extension is started only by your click on
+the icon or your shortcut, on that tab, that once (`activeTab`), and holds no standing permission on any site. That
 is the deliberate call for a single-user, tailnet-scoped instance; a denylist would be the first
 thing to add for anything wider.
 
