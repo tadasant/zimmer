@@ -8,6 +8,8 @@
 # two of the failure classes Pi produces, the honest answer is "no recovery
 # path owns this". Those get their own terminal kinds rather than being routed
 # to a service that cannot act on them. See "What Pi does NOT recover from".
+# A quota wall is not one of them: it parks and is re-checked later — see
+# "Quota walls".
 #
 # == Where it comes from ==
 #
@@ -35,14 +37,16 @@
 #   502 (non-JSON body)           502 <html><body><h1>502 Bad Gateway</h1>…         :retryable
 #   503 overloaded_error          503: {"message":"The engine is currently …"}      :retryable
 #   429 rate_limit_exceeded       429: {"message":"Rate limit reached for …"}       :retryable
-#   429 insufficient_quota        429: {"message":"You exceeded your current …"}    :retryable
+#   429 (OpenRouter rate limit)   429: {"message":"Rate limit exceeded: limit_rpm…"} :retryable
+#   429 insufficient_quota        429: {"message":"You exceeded your current …"}    :quota
+#   429 (gateway quota wording)   429: {"message":"Quota exceeded for this API …"}  :quota
+#   402 insufficient credits      402: {"message":"Insufficient credits. …"}        :quota
 #   408 timeout                   408: {"message":"Request timed out.", …}          :retryable
 #   stream closed mid-response    terminated                                        :retryable
 #   connection refused            Connection error.                                 :retryable
 #   non-HTTP bytes, socket close  Connection error.                                 :retryable
 #   401 invalid_api_key           401: {"message":"Incorrect API key provided…"}    :auth_terminal
 #   403 permission_denied         403: {"message":"You are not allowed to …"}       :auth_terminal
-#   402 insufficient credits      402: {"message":"Insufficient credits. …"}        :auth_terminal
 #   400 context_length_exceeded   400: {"message":"This model's maximum context …"} :context_length_terminal
 #   400 invalid_value             400: {"message":"Invalid value for 'temperature'…"} :request_rejected
 #
@@ -84,6 +88,35 @@
 # in that list arrives with no status and pages — which is the alert doing its
 # job, and the signal to add it here.
 #
+# == Quota walls ==
+#
+# A 402 and a quota-worded 429 are the provider saying the account behind the key
+# has run out — of prepaid credit, or of its plan's quota. That is budget pacing,
+# not failure: the same wall on a Claude or Codex session parks and resumes when
+# the pool recovers. Pi has no pool, so `:quota` parks the session on a timed
+# re-check ladder instead (ProviderQuotaWallPark). It spends no API-error retry
+# budget, fails nothing, and pages nobody.
+#
+# **402 is a quota wall by status alone.** Payment Required means the same thing
+# in every dialect, and it is how OpenRouter — the provider every Pi model
+# ModelCatalog offers goes through — reports an exhausted balance.
+#
+# **A 429 needs its wording, and the wording is Pi's own.** Status alone cannot
+# tell `insufficient_quota` from `rate_limit_exceeded`; both are 429. So a 429 is
+# `:quota` only when its message matches PROVIDER_LIMIT_WORDING, which is the
+# list Pi itself consults before it retries a failed call
+# (`NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN` in pi-ai's `utils/retry.js`).
+# Driven against the real binary, Pi sent a quota-worded 429 exactly once and a
+# rate-limit 429 four times — so a 429 that reaches Zimmer as `:quota` is one Pi
+# already declined to retry on the same test, and Zimmer and Pi cannot disagree
+# about which kind of 429 it was. Every other 429 — any rate-limit wording, and any
+# quota wording neither list knows — stays `:retryable` and takes the ordinary
+# backoff. A misread in that direction costs a bounded backoff and a failure. A
+# misread in the other direction cannot fail a session at all: it parks for
+# fifteen minutes and is re-checked. The likeliest such misread is "billing" in a
+# per-minute limit's prose (Gemini's RESOURCE_EXHAUSTED says "check your plan and
+# billing details"), which Pi reads the same way.
+#
 # == What Pi does NOT recover from ==
 #
 # **Context length.** Pi has no `/compact` command; it compacts on its own
@@ -97,21 +130,14 @@
 # spend the retry budget making the conversation longer. `:context_length_terminal`
 # says that: recognized, named, and terminal.
 #
-# **Auth, and the balance behind it.** PiAuthProvider pools no accounts by design
-# — Pi resolves a provider API key from the session environment per request — so
-# AuthRecoveryService has no credential to rewrite and no account to rotate to.
-# A 401, a 403 or a 402 is a fact about the key the session was handed and the
-# account paying for it, not a transient condition, so `:auth_terminal` fails the
-# session naming the provider's own words instead of rotating into nothing.
-#
-# 402 sits with them rather than with the retryable statuses deliberately: an
-# exhausted balance does not refill on a backoff, so six attempts would spend the
-# budget to reach the same end more slowly. That is also the shape of the gap
-# this leaves — a pooled runtime answers a quota wall by rotating or by parking
-# until QuotaResetCheckerJob wakes it, and Pi has neither a pool to rotate
-# through nor a snapshot to wake on, so it fails. The 429 `insufficient_quota`
-# row is the same gap read from the other side: it IS retried, because 429 does
-# clear on its own, but nothing paces it.
+# **Auth.** PiAuthProvider pools no accounts by design — Pi resolves a provider
+# API key from the session environment per request — so AuthRecoveryService has
+# no credential to rewrite and no account to rotate to. A 401 or a 403 is a fact
+# about the key the session was handed, not a condition that clears with time, so
+# `:auth_terminal` fails the session naming the provider's own words instead of
+# rotating into nothing. (A 402 is about the balance behind the key rather than
+# the key, and a balance can be topped up without touching the session — which is
+# why it is a quota wall above and not here.)
 #
 # All three terminal kinds are `recognized?`, which is what keeps them out of the
 # unclassified-failure alert: they are known failures with a known and
@@ -130,10 +156,32 @@ class PiTurnError
   # out). Both are retryable by what the status itself means, in any dialect.
   RETRYABLE_STATUSES = [ 408, 429 ].freeze
 
-  # Statuses that say the credential or the account behind it cannot serve this
-  # request: unauthenticated, forbidden, and out of credit. Pi pools no accounts,
-  # so none of the three has a recovery — see "What Pi does NOT recover from".
-  AUTH_STATUSES = [ 401, 402, 403 ].freeze
+  # Statuses that say the credential cannot serve this request: unauthenticated
+  # and forbidden. Pi pools no accounts, so neither has a recovery — see "What Pi
+  # does NOT recover from".
+  AUTH_STATUSES = [ 401, 403 ].freeze
+
+  # Payment Required: the balance behind the key is exhausted. A quota wall in any
+  # dialect — see "Quota walls".
+  QUOTA_STATUSES = [ 402 ].freeze
+
+  # The wordings that make a 429 a quota wall rather than a rate limit.
+  #
+  # Pi's own list, verbatim and in its order: pi-ai's
+  # NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN (`dist/utils/retry.js` in the pinned
+  # 0.84.4), which Pi tests before it retries a failed call. Keeping it identical
+  # is the point — see "Quota walls" — so change it only alongside a Pi upgrade,
+  # and re-read that file when you do.
+  PROVIDER_LIMIT_WORDING = Regexp.union(
+    "GoUsageLimitError",
+    "FreeUsageLimitError",
+    "Monthly usage limit reached",
+    "available balance",
+    "insufficient_quota",
+    "out of budget",
+    "quota exceeded",
+    "billing"
+  ).then { |pattern| Regexp.new(pattern.source, Regexp::IGNORECASE) }
 
   # Pi's whole-message wording for a request that never got a response.
   # `terminated` is the stream closing mid-response; `Connection error.` is every
@@ -221,20 +269,22 @@ class PiTurnError
 
   # Which recovery path owns this error, decided by the HTTP status Pi recorded.
   #
-  # Only :retryable names a path that can act. The three terminal kinds are
-  # deliberate dead ends — see "What Pi does NOT recover from" above — and naming
+  # :retryable and :quota name paths that can act — a backoff, and a timed park.
+  # The three terminal kinds are deliberate dead ends — see "What Pi does NOT
+  # recover from" above — and naming
   # them distinctly rather than reusing :context_length / :auth is what makes the
   # seam fail safe: no service looks for these kinds, so a Pi 401 cannot reach
   # AuthRecoveryService (which has nothing to rewrite) and a Pi context-length
   # 400 cannot reach ContextLengthRetryService (which has no compaction to
   # trigger), however the ladder is rearranged later.
   #
-  # @return [Symbol] :retryable, :auth_terminal, :context_length_terminal,
+  # @return [Symbol] :retryable, :quota, :auth_terminal, :context_length_terminal,
   #   :request_rejected, or :unclassified
   def kind
     status = http_status
     return transport_failure? ? :retryable : :unclassified if status.nil?
 
+    return :quota if quota_wall?(status)
     return :retryable if RETRYABLE_STATUSES.include?(status) || status.between?(500, 599)
     return :auth_terminal if AUTH_STATUSES.include?(status)
     return :context_length_terminal if status == 400 && message.match?(CONTEXT_LENGTH_BODY_CODE)
@@ -272,6 +322,13 @@ class PiTurnError
   end
 
   private
+
+  # A 402, or a 429 worded the way Pi itself declines to retry. See "Quota walls".
+  def quota_wall?(status)
+    return true if QUOTA_STATUSES.include?(status)
+
+    status == 429 && message.match?(PROVIDER_LIMIT_WORDING)
+  end
 
   def transport_failure?
     stripped = message.strip

@@ -84,6 +84,14 @@
 #   recorded on the AccountRotationEvent so a quota rotation and an
 #   auth-recovery rotation are distinguishable after the fact. Defaults to a
 #   no-op result for runtimes that don't pool quota-limited accounts.
+#
+# pools_accounts? -> Boolean
+#   Whether a quota wall on this runtime is a fact about a POOL — something to
+#   rotate through and to wake on when AuthOutageParkService's sweep sees an
+#   account come back. True by default. A runtime answering false authenticates
+#   from a key it does not pool (PiAuthProvider), so ProcessLifecycleManager parks
+#   its quota walls on ProviderQuotaWallPark's timed re-check ladder instead: an
+#   auth-outage park would wait on an account that can never appear.
 class RuntimeAuthProvider
   # Outcome of a token refresh attempt.
   #   ok    - true when the refresh succeeded
@@ -227,5 +235,11 @@ class RuntimeAuthProvider
   # @return [Hash] { success:, account: } or { success: false, reason: }
   def rotate_for_quota!(triggered_by: nil, reason: "quota_exceeded", expected_current_email: nil)
     { success: false, reason: "rotation_not_supported" }
+  end
+
+  # Whether this runtime's quota walls belong to an account pool. See the class
+  # docstring's quota-rotation hooks.
+  def pools_accounts?
+    true
   end
 end

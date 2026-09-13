@@ -130,12 +130,24 @@ class PiRetryStrategyTest < ActiveSupport::TestCase
   end
 
   test "an auth failure is declined: PiAuthProvider pools nothing to rotate to" do
-    %i[unauthorized_401 forbidden_403 insufficient_credits_402].each do |fixture|
+    %i[unauthorized_401 forbidden_403].each do |fixture|
       write_transcript(pi_session_for(fixture, @session.session_id))
 
       assert_equal :auth_terminal, PiTurnError.terminal(pi_session_for(fixture, @session.session_id)).kind
       assert_not @strategy.auth_recovery_needed?(working_dir: WORKING_DIR)
       assert_not @strategy.api_error_for_retry?(working_dir: WORKING_DIR)
+    end
+  end
+
+  # A quota wall goes to ApiErrorRetryService, which answers :quota_exceeded
+  # without spending the budget — never to auth recovery, which has no pool.
+  test "a quota wall is routed to the API-error seam, not to auth recovery" do
+    %i[insufficient_credits_402 insufficient_quota_429 quota_exceeded_429_gateway].each do |fixture|
+      write_transcript(pi_session_for(fixture, @session.session_id))
+
+      assert_equal :quota, PiTurnError.terminal(pi_session_for(fixture, @session.session_id)).kind, fixture.to_s
+      assert @strategy.api_error_for_retry?(working_dir: WORKING_DIR), fixture.to_s
+      assert_not @strategy.auth_recovery_needed?(working_dir: WORKING_DIR), fixture.to_s
     end
   end
 

@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"11111111-2222-3333-4444-555555555555","timestamp":"2026-09-13T05:39:00.475Z","cwd":"/workspace/clone"}
+{"type":"model_change","id":"e97e3858","parentId":null,"timestamp":"2026-09-13T05:39:00.649Z","provider":"sim","modelId":"sim-model"}
+{"type":"thinking_level_change","id":"985d65a7","parentId":"e97e3858","timestamp":"2026-09-13T05:39:00.650Z","thinkingLevel":"off"}
+{"type":"message","id":"c87aa3d0","parentId":"985d65a7","timestamp":"2026-09-13T05:39:00.674Z","message":{"role":"user","content":[{"type":"text","text":"say hi"}],"timestamp":1789277940669}}
+{"type":"message","id":"0028f1bc","parentId":"c87aa3d0","timestamp":"2026-09-13T05:39:00.784Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"sim","model":"sim-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1789277940708,"errorMessage":"429: {\"message\":\"Quota exceeded for this API key. Try again after your plan renews.\",\"code\":429}"}}

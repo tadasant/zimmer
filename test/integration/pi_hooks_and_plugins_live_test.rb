@@ -3,6 +3,8 @@
 require "test_helper"
 require "json"
 require "socket"
+require "mocha/minitest"
+require "ostruct"
 require "tmpdir"
 
 # Drives a REAL, pinned `pi` binary through Zimmer's own runtime path, against a
@@ -221,6 +223,59 @@ class PiHooksAndPluginsLiveTest < ActiveSupport::TestCase
     (Process.kill("TERM", -Process.getpgid(pid)) rescue nil) if pid
   end
 
+  # The quota-wall half of #856, end to end through the real binary: an
+  # OpenRouter-shaped 402 parks the session instead of failing it, the scheduler
+  # fires the re-check, and — balance restored — the resumed turn completes on the
+  # same Pi session and ends the streak. Only the provider and the clock are
+  # simulated.
+  test "a 402 parks the session, and the re-check resumes it once the balance is back" do
+    stop_simulated_llm
+    start_simulated_llm(mode: :insufficient_credits)
+
+    log_buffer = LogBuffer.new(@session)
+    manager = ProcessLifecycleManager.new(session: @session, log_buffer: log_buffer)
+    result = manager.spawn(prompt: "say hi", working_dir: @clone, model: "sim/sim-model")
+    assert result.success, "spawn failed: #{result.error}"
+    _pid, status = Process.waitpid2(result.pid)
+    assert_equal 0, status.exitstatus, "Pi is expected to exit 0 on a provider error"
+
+    decision = manager.handle_exit(status, working_dir: @clone)
+    log_buffer.flush
+
+    assert_equal :needs_input, decision.action,
+      "a quota wall must park, not fail. Exit handling logged:\n" \
+      "#{@session.reload.logs.last(10).map(&:content).join("\n")}"
+    assert_match(/Provider quota wall — session parked/, decision.error_message)
+    assert_equal 0, ApiErrorRetryService::BUDGET.count_for(@session.reload)
+    assert_equal 1, ProviderQuotaWallPark.streak(@session)["parks"]
+
+    @session.pause!
+    assert @session.reload.waiting?, "the park must come to rest asleep"
+
+    # The balance is topped up while the session sleeps.
+    stop_simulated_llm
+    start_simulated_llm(mode: :tool_call)
+
+    AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-live-quota-wall"))
+    travel_to(16.minutes.from_now) { ScheduleTriggerJob.perform_now }
+    prompt = @session.reload.metadata["pending_follow_up_prompt"]
+    assert AutomatedPrompts.system_recovery?(prompt), "the re-check did not resume the session"
+
+    # What the enqueued job does with that prompt: re-invoke Pi on the same session id.
+    @session.update!(status: :running)
+    resumed = manager.spawn(prompt: prompt, working_dir: @clone, model: "sim/sim-model")
+    assert resumed.success, "resume failed: #{resumed.error}"
+    _pid, status = Process.waitpid2(resumed.pid)
+
+    decision = manager.handle_exit(status, working_dir: @clone)
+    log_buffer.flush
+
+    assert_equal :needs_input, decision.action
+    assert_nil decision.error_message, "the resumed turn completed, so nothing is wrong"
+    assert_nil ProviderQuotaWallPark.streak(@session.reload), "a completed turn ends the streak"
+    assert_match(/Process exited successfully/, @session.logs.map(&:content).join("\n"))
+  end
+
   private
 
   # Spawn Pi exactly as a session would: PiAirBridge generates the config,
@@ -383,6 +438,12 @@ class PiHooksAndPluginsLiveTest < ActiveSupport::TestCase
             res.writeHead(401, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: { message: "Incorrect API key provided.",
               type: "invalid_request_error", code: "invalid_api_key" } }));
+            return;
+          }
+          if (MODE === "insufficient_credits") {
+            res.writeHead(402, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: { message: "Insufficient credits. Add more using " +
+              "https://openrouter.ai/settings/credits", code: 402 } }));
             return;
           }
           if (MODE === "server_error") {

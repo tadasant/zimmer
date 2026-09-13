@@ -105,4 +105,11 @@ class PiAuthProvider < RuntimeAuthProvider
   def rotation_interval
     nil
   end
+
+  # No pool, so a quota wall has nothing to rotate through and no account whose
+  # return could wake it. ProcessLifecycleManager parks it on
+  # ProviderQuotaWallPark's timed ladder instead.
+  def pools_accounts?
+    false
+  end
 end

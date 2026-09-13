@@ -50,6 +50,12 @@ class PiAuthProviderTest < ActiveSupport::TestCase
     assert_not @provider.rotate_for_quota![:success]
   end
 
+  # What sends a Pi quota wall to ProviderQuotaWallPark's timed ladder rather than
+  # an auth-outage park waiting on an account that can never appear.
+  test "it says it pools no accounts" do
+    assert_not @provider.pools_accounts?
+  end
+
   # Pi has no tokens to refresh and no interactive login, so it must not be swept
   # by the refresh dispatcher or the auth warm-up.
   test "pi is deliberately absent from the runtimes the token dispatcher sweeps" do
