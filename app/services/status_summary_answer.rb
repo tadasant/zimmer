@@ -17,12 +17,12 @@
 # sessions in this deployment were showing "You've hit your session limit" as
 # their status when that was found.
 module StatusSummaryAnswer
-  # Hard cap on stored summary text. The prompt asks for 2-3 sentences; this is
+  # Hard cap on stored summary text. The prompt asks for three sentences; this is
   # the backstop for a model that answered with an essay, so the panel cannot
   # push the rest of the page off screen.
   MAX_SUMMARY_CHARS = 1200
 
-  # A refusal is one short line. A real answer is 2-3 sentences carrying markdown
+  # A refusal is one short line. A real answer is up to three sentences carrying markdown
   # links, and is an order of magnitude longer — so length is what keeps the
   # patterns off a genuine summary that happens to be ABOUT a session which hit a
   # limit. Getting that judgement wrong costs a regeneration, never a wrong blurb.

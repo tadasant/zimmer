@@ -75,10 +75,16 @@
         with the full text on hover, and marked stale by message count rather than
         by age — a summary does not rot because time passed, it rots because the
         session said something new. Read straight off the eager-loaded association,
-        so a hundred rows cost one extra query rather than a hundred. %>
+        so a hundred rows cost one extra query rather than a hundred.
+
+        Rendered as inline markdown, so its links are clickable — and only inline:
+        a paragraph break or a code block would push the row's layout around. The
+        text is the stored one rather than `summary_markdown`, whose `#message-N`
+        fragments only mean something on the session's own page. A link here is
+        never a drag: SortableJS starts one only from the handle. %>
     <% if summary&.summary.present? %>
-      <p class="mt-1 line-clamp-3 break-words text-xs leading-relaxed text-gray-600"
-         title="<%= summary.summary %>"><%= summary.summary %></p>
+      <p class="mt-1 line-clamp-3 break-words text-xs leading-relaxed text-gray-600 [&_a]:text-indigo-600 [&_a]:underline [&_a:hover]:text-indigo-800 [&_code]:rounded [&_code]:bg-gray-100 [&_code]:px-1 [&_code]:font-mono [&_code]:text-[11px] [&_strong]:font-semibold [&_strong]:text-gray-700"
+         title="<%= markdown_plain_text(summary.summary) %>"><%= inline_markdown(summary.summary) %></p>
       <% if behind.positive? %>
         <p class="mt-0.5 text-[11px] text-gray-400"><%= pluralize(behind, "message") %> since this was written</p>
       <% end %>
