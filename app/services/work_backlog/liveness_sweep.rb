@@ -208,11 +208,18 @@ module WorkBacklog
 
       # One pass over the rows worth a look: probe each repo once, classify every
       # row it came back with, and write each verdict down.
+      #
+      # Grouped by the repository the ISSUE lives in, not by `repo`. A row's issue
+      # number is only meaningful in its issue's repository, and the gate points
+      # `repo` elsewhere on purpose when the fix does not live beside the issue.
+      # Asked in `repo`, that number names a PR, a 404, or an unrelated issue
+      # whose state the row would take (#1188). `repo` is the fallback for a row
+      # whose `issue_url` is not a github.com issue URL.
       def examine(rows, now, logger)
         outcomes = Hash.new(0)
         failed = []
 
-        rows.group_by(&:repo).each do |repo, repo_rows|
+        rows.group_by { |item| item.issue_repo || item.repo }.each do |repo, repo_rows|
           probes = probe(repo, repo_rows, logger) { failed << repo }
           repo_rows.each do |item|
             state = classify(item, probes && probes[item.issue_number], now)
