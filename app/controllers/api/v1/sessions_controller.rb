@@ -11,7 +11,6 @@ class Api::V1::SessionsController < Api::BaseController
   require "automated_prompts"
   include SessionSearchable
   include ApiSessionSerialization
-  include SessionTranscriptLookup
 
   # A `place`/`precedence` pair the server cannot act on. Raised rather than
   # rendered-and-returned because the resolver's nil already means "the caller
@@ -716,57 +715,22 @@ class Api::V1::SessionsController < Api::BaseController
   # POST /api/v1/sessions/:id/refresh
   # Re-read transcript from filesystem and recover orphaned jobs.
   def refresh
-    transcript_dir = get_transcript_directory_for_session(@session)
+    result = Sessions::RefreshTranscript.call(@session, actor: :api)
 
-    if transcript_dir.nil?
+    case result.outcome
+    when :refreshed
+      render json: { session: session_json(@session), message: "Transcript refreshed (#{result.message_count} messages)" }
+    when :no_transcript_directory
       render_api_error("No clone path", "No clone path found for this session", status: :unprocessable_entity)
-      return
+    when :no_transcript_file
+      render_api_error("Not found", "No transcript files found on filesystem", status: :not_found)
+    when :regression
+      # A shorter filesystem transcript means the clone was recreated; the stored
+      # history wins, and the response shape is the ordinary one.
+      render json: { session: session_json(@session), message: "Filesystem transcript is shorter than the stored one (clone likely recreated); kept the stored transcript" }
+    else
+      render_api_error("Service unavailable", result.error, status: :service_unavailable)
     end
-
-    if Dir.exist?(transcript_dir)
-      main_transcript_file = find_main_transcript_file_for_session(@session, transcript_dir)
-
-      if main_transcript_file
-        # Through the runtime's TranscriptSource, not File.read: that is where
-        # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
-        # transcript over the redacted one the poller stored. It also decompresses a
-        # Codex .zst rollout, which a raw read would have stored as binary.
-        # RekeyedTranscriptBranch is what makes that read safe now that the
-        # locator can hand back a transcript this conversation was re-keyed into:
-        # such a file is NOT a superset of the stored one, and the line-count guard
-        # below would wave a longer branch through and take the abandoned file's
-        # tail with it (#1047). A no-op on every other file.
-        transcript_content = RekeyedTranscriptBranch.continue(
-          session: @session,
-          transcript_path: main_transcript_file,
-          content: TranscriptRuntime.source_for(@session).read(main_transcript_file)
-        )
-        message_count = count_transcript_messages(transcript_content)
-
-        # Never let a refresh shrink the stored transcript. A shorter filesystem
-        # transcript means the clone was recreated at a new path and started a fresh
-        # file; session.transcript is the only durable record, so we keep the longer
-        # stored copy instead of destroying history. Response shape is unchanged.
-        if @session.transcript_regression?(transcript_content)
-          Rails.logger.warn "[Api::V1::SessionsController#refresh] Refused transcript regression for session #{@session.id} (stored #{@session.transcript_line_count} events, filesystem #{message_count}); preserving stored transcript"
-          render json: { session: session_json(@session), message: "Filesystem transcript is shorter than the stored one (clone likely recreated); kept the stored transcript" }
-          return
-        end
-
-        @session.merge_metadata!("broadcast_message_count" => message_count)
-        @session.update!(transcript: transcript_content)
-
-        @session.logs.create!(
-          content: "Transcript refreshed via API (#{message_count} messages)",
-          level: "info"
-        )
-
-        render json: { session: session_json(@session), message: "Transcript refreshed (#{message_count} messages)" }
-        return
-      end
-    end
-
-    render_api_error("Not found", "No transcript files found on filesystem", status: :not_found)
   rescue => e
     render_api_error("Refresh failed", e.message, status: :internal_server_error)
   end
@@ -849,7 +813,11 @@ class Api::V1::SessionsController < Api::BaseController
       .where.not(id: restarted_ids)
       .limit(bulk_limit)
       .each do |session|
-        refreshed_count += 1 if refresh_transcript_from_disk(session)
+        # A byte-identical transcript is left alone and not counted: calling this
+        # repeatedly must not append a log row to every session on every call.
+        result = Sessions::RefreshTranscript.call(session, actor: :api, bulk: true, skip_unchanged: true)
+        refreshed_count += 1 if result.refreshed?
+        error_count += 1 if result.database_unavailable?
       rescue => e
         error_count += 1
         Rails.logger.error "[API refresh_all] Failed to refresh session #{session.id}: #{e.message}"
@@ -1552,58 +1520,5 @@ class Api::V1::SessionsController < Api::BaseController
       oauth_required: result.oauth_required?,
       oauth_required_servers: result.servers_needing_oauth
     }
-  end
-
-  # Re-read one session's transcript from the filesystem and persist it.
-  #
-  # Returns true only when the stored transcript actually changed — that is what
-  # `refresh_all` counts as "refreshed". Returns false when there is nothing to
-  # read (no clone path, no transcript directory, no main transcript file), when
-  # the filesystem copy is byte-identical to the stored one (nothing was
-  # refreshed, and writing anyway would append a log row to every session on
-  # every call), or when the filesystem copy is shorter than the stored one. That
-  # last case means the clone was recreated at a new path and started a fresh
-  # file; session.transcript is the only durable record, so the longer stored copy
-  # is kept rather than destroyed.
-  def refresh_transcript_from_disk(session)
-    transcript_dir = get_transcript_directory_for_session(session)
-    return false if transcript_dir.nil? || !Dir.exist?(transcript_dir)
-
-    main_transcript_file = find_main_transcript_file_for_session(session, transcript_dir)
-    return false unless main_transcript_file
-
-    # Through the runtime's TranscriptSource, not File.read: that is where
-    # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
-    # transcript over the redacted one the poller stored. It also decompresses a
-    # Codex .zst rollout, which a raw read would have stored as binary.
-    transcript_content = TranscriptRuntime.source_for(session).read(main_transcript_file)
-    return false if session.transcript == transcript_content
-
-    message_count = count_transcript_messages(transcript_content)
-
-    if session.transcript_regression?(transcript_content)
-      Rails.logger.warn "[API refresh_all] Skipped transcript regression for session #{session.id} (stored #{session.transcript_line_count} events, filesystem #{message_count}); preserving stored transcript"
-      return false
-    end
-
-    session.merge_metadata!("broadcast_message_count" => message_count)
-    session.update!(transcript: transcript_content)
-
-    session.logs.create!(
-      content: "Transcript refreshed via API bulk refresh (#{message_count} messages)",
-      level: "info"
-    )
-
-    true
-  end
-
-  def count_transcript_messages(transcript_content)
-    return 0 unless transcript_content.present?
-
-    transcript_content.lines.count do |line|
-      line.strip.present? && JSON.parse(line.strip)
-    rescue JSON::ParserError
-      false
-    end
   end
 end

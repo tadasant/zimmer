@@ -2826,7 +2826,9 @@ What a refresh *does* depends on the session's state:
 - `needs_input` → in bulk, continue it, unless the user paused it by hand (`paused_by: "user"`).
 - `waiting` → send the automated continue nudge (`AutomatedPrompts::SYSTEM_RECOVERY`), the same
   prompt every recovery path uses. See below.
-- `running`, and any `waiting` session excluded below → re-read the transcript from disk.
+- `running`, and any `waiting` session excluded below → re-read the transcript from disk, through
+  `Sessions::RefreshTranscript` — the same operation `POST /api/v1/sessions/:id/refresh` and MCP
+  `action_session`'s `refresh` run, and their bulk forms.
 
 ### Refreshing a `waiting` session nudges it
 

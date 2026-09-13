@@ -116,7 +116,7 @@ module FixtureHelpers
   # Get the transcript directory for a session, from the runtime that writes it.
   #
   # Deliberately the same two steps, on the same input, as
-  # SessionTranscriptLookup#get_transcript_directory_for_session: Session#working_directory,
+  # Sessions::RefreshTranscript#transcript_directory: Session#working_directory,
   # then TranscriptRuntime for the session's TranscriptSource, then that source for
   # the directory. TranscriptPollerService resolves the same path from the narrower
   # metadata["working_directory"] alone, so the two answers differ only for a

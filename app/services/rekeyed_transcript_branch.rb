@@ -12,8 +12,8 @@
 # `session.transcript`.
 #
 # Every writer of `sessions.transcript` that starts from a located file goes
-# through here — the poller and all five manual-refresh paths (both controllers'
-# `refresh`, `bulk_refresh`, and the `action_session` MCP tool's two). They share
+# through here — the poller and the manual refresh (`Sessions::RefreshTranscript`,
+# behind all six refresh doors on the web UI, the REST API and MCP). They share
 # one guard, `Session.transcript_regression?`, and it compares line *counts*: a
 # branch that is longer than the stored transcript but does not contain its tail
 # passes that guard and takes the tail with it. So the merge has to happen before
