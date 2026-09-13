@@ -59,13 +59,14 @@ which requires an explanation only on Failure. The phase-3 analyzers in that spe
 recommendations, MCP recommendations, efficiency analysis, cross-transcript mining — are **not** part
 of this schema. Extra keys in a saved tree are ignored, not stored.
 
-## The three surfaces
+## The surfaces
 
 | Page | What it answers |
 | --- | --- |
 | `/outcomes` | The ledger: every archived session, its analysis or "not analyzed", and the Analyze buttons |
 | `/outcomes/:session_id` | One transcript's flamegraph and its segment table |
 | `/outcomes/stats` | Rates and distributions across everything analyzed, grouped by harness, model, or agent root |
+| `/outcomes/goal_checks` | How the advisory [goal check](/sessions/goals/#measuring-the-check) read on sessions that came to rest. No analysis involved |
 
 The ledger filters on created-at range, agent root, harness, model, analyzed-or-not, and
 transcript-level outcome. The filter set travels with you: it survives the switch to stats, it rides
@@ -179,13 +180,14 @@ Two tools cover what the Outcomes pages do. They are scoped differently on purpo
 
 **`get_outcome_analysis`** reads. It is in the `sessions` tool group and is read-only, so the
 unscoped `zimmer` server, `zimmer-sessions`, and any `sessions_readonly` connection all carry it.
-Its `view` argument picks one of four views:
+Its `view` argument picks one of five views:
 
 | View | Mirrors | Returns |
 | --- | --- | --- |
 | `analysis` (the default when `session_id` is given) | `/outcomes/:session_id` | the current analysis with its Segment tree, a flat list of every Failure Segment, and the superseded readings without their trees |
 | `ledger` (the default otherwise) | `/outcomes` | archived sessions matching the filters, 50 per page, each with its analysis's scalar columns, plus `total` / `analyzed` / `unanalyzed` counts |
 | `stats` | `/outcomes/stats` | totals, one row per `group_by` value, the failed-segment distribution, the ten most failure-heavy transcripts |
+| `goal_checks` | `/outcomes/goal_checks` | `GoalCheckTally` over sessions at rest: verdicts, per-criterion splits, sessions grouped by the criteria that kept them from `met`, rows by agent root and goal, and the sessions unmet only on their own PR. `analyzed` and `outcome` do not apply; a missing `from` is seven days before `to`, or before today |
 | `batches` | the batch cards on `/outcomes` | recent batches with who started them and their live counts, or one batch with its failed items' errors, plus the MCP limits currently in force |
 
 The filters are the ledger's own, built into the same `LedgerFilters` struct. The one difference is

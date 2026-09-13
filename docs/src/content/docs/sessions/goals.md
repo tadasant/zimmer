@@ -138,6 +138,15 @@ evaluates them against state the session already records:
 The three PR goals use the first five checks. `codebase-question` uses `no_pull_request`, because
 it tells the agent not to open a PR at all.
 
+**A PR a spawned session recorded counts.** A router hands its work to a session it spawns, and the
+child's transcript is the one that opens the PR, so the PR is recorded on the child. A session whose
+goal asks for a PR and that recorded none of its own is judged on the PRs recorded by the sessions it
+spawned, up to three generations down (a backlog top-up spawns a router, which spawns the
+implementer). The result names them: `delegated_session_ids` in the JSON, "Judged on PRs recorded by
+session #N" on the page, and `pull_request_open` reads `owner/repo#12 merged (via session #N)`.
+`no_pull_request` still reads only the session's own record, so a read-only session is not charged
+with a PR its child opened.
+
 The PR description and labels come from the poll pass's existing `gh pr view` reading. `body` and
 `labels` were added to that call, so the check costs no extra GitHub calls. `Github::GoalFactsEvaluator`
 cuts the description down to the few facts the checks need and stores those, not the text. It
@@ -155,19 +164,70 @@ its own. It shows up in three places:
 - a `### Goal Check (advisory)` section in the MCP `get_session` output
 - `goal_check` on every session in the REST API (`null` for a free-text goal)
 
+A verdict is `provisional` until the session comes to rest: while it is `running`, or `waiting` for
+its next turn, an unmet criterion is work in progress rather than a claim of completion.
+
 A free-text goal gets no check, because there is nothing to check it against. Neither does a
 session with no goal.
+
+## Measuring the check
+
+Whether the check reads right is a question about real sessions, so it has a page:
+**Outcomes → Goal checks** (`/outcomes/goal_checks`), the `goal_checks` view of MCP
+`get_outcome_analysis`, and `GET /api/v1/goal_checks`. All three render `GoalCheckTally` over
+sessions that came to rest (`needs_input` or `archived`), windowed on created-at, with the Outcomes
+filters for agent root, harness and model. A missing start date means seven days before the end
+date, or before today, so the window is always bounded. It shows:
+
+- verdict counts, and each criterion's met / unmet / pending / unknown split
+- sessions grouped by **which criteria kept them from `met`**, with sample session ids. A misread
+  shows up as one criterion set with a large count
+- rows by agent root and by goal, and how many sessions were judged on a spawned session's PRs
+- **unmet on its own pull request**: sessions at rest, holding a PR they recorded, and unmet only on
+  what that PR shows on GitHub. That is exactly who a re-prompt would reach, listed one by one
+
+The first reading was taken on 2026-09-13 from production, over the 502 sessions with a catalog goal
+that came to rest after being created between 2026-09-07 and 2026-09-13:
+
+| | Sessions | Met | Unmet | Pending |
+| --- | --- | --- | --- | --- |
+| At rest before the check shipped (2026-09-11) | 309 | 0 | 132 | 177 |
+| At rest after it shipped | 193 | 125 | 68 | 0 |
+
+It found two false readings, both fixed:
+
+- **167 `pending` sessions had never had their description read.** Every one came to rest before
+  the `body,labels` fetch deployed, and the poll pass stops visiting a session once it is archived,
+  so none ever would be read. Scored against the PR descriptions as they stand, 166 were `met` and 1
+  was still `pending`. No session that came to rest after the deploy is in this state, so it is a
+  deploy-transition artifact, not a recurring gap.
+- **55 of the 68 `unmet` sessions after the deploy were routers**, each reading "no pull request
+  recorded". 50 of them had spawned a session that recorded the PR. That is what the spawned-session
+  reading above fixes.
+
+Of the remaining 13, 12 recorded no PR at all: alert triage and other work that ended without one,
+plus three whose PR Zimmer never recorded (see
+[Limitations](/limitations/#pr-ownership-is-a-transcript-heuristic-and-both-ways-of-being-wrong-are-silent)).
+One was unmet on its own PR, on the label alone, and its agent had withheld that label on purpose
+while a human decided on the design.
 
 :::caution[A goal is checked, not enforced]
 The goal check is advisory, and nothing acts on it. An `unmet` verdict does not fail the session,
 stop it archiving, or send it another prompt. The `pause` event still fires when the CLI process
 exits, whatever the check says.
 
-That is on purpose. A check that misreads a PR (a repo with no CI, a renamed label, a checklist
-written some other way) would trap a finished session or block its archive, and the person who
-noticed would be the one whose work stalled. A report can be wrong without costing anything. Real
-sessions will show how often the check is wrong, and that has to be known before anything is
-allowed to depend on it.
+Failing the session or blocking its archive was rejected outright: a check that misreads a PR (a
+repo with no CI, a label withheld on purpose, a checklist written some other way) would trap a
+finished session, and the person who noticed would be the one whose work stalled.
+
+**A one-time re-prompt was measured and not built.** The proposal was a single follow-up, opt-in and
+capped, naming the unmet criteria to a session that stayed at rest with its own PR unmet. The
+reading above has exactly one session that rule would have reached in two days, and it was the
+session holding its label back for a human. Re-prompting it would have pushed an agent to apply a
+label over a human hold. The `open-pr` skill sends a session to `needs_input` precisely when its
+label is off, so "at rest with no label" is that skill's deliberate handoff, not a missed step. Zero
+true positives and one harmful one is not a feature. The Goal checks page keeps that population
+counted, so the question can be asked again when it is not empty.
 
 It also covers only what Zimmer can read. Whether a fresh-eyes review happened, whether the
 `open-pr` skill was used, whether the screenshots are real: none of that is visible from GitHub

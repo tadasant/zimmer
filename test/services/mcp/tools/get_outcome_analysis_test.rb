@@ -180,6 +180,30 @@ class Mcp::Tools::GetOutcomeAnalysisTest < ActiveSupport::TestCase
     assert_equal mcp.id, result[:agent_limits][:running_mcp_batch_id]
   end
 
+  test "the goal_checks view is the same tally the web page renders, with the filters it applied" do
+    pr = "https://github.com/tadasant/zimmer/pull/11"
+    router = archived(title: "Router", root: "zimmer-orchestrator")
+    router.update!(goal: "open-reviewed-green-pr")
+    child = archived(title: "Child")
+    child.update!(goal: "open-reviewed-green-pr", parent_session_id: router.id, custom_metadata: {
+      "github_pull_request_urls" => [ pr ], "github_pull_request_statuses" => { pr => "merged" },
+      "github_pull_request_goal_facts" => {
+        pr => { "verification_section" => true, "verification_checked_boxes" => 2, "unchecked_boxes" => 0, "labels" => [] }
+      }
+    })
+
+    result = @tool.call("view" => "goal_checks", "agent_root" => "zimmer-orchestrator")
+
+    assert_equal "zimmer-orchestrator", result[:filters][:applied]["agent_root"]
+    assert_equal 1, result[:checked_sessions]
+    assert_equal({ "met" => 1, "unmet" => 0, "pending" => 0 }, result[:verdicts])
+    assert_equal 1, result[:delegated_sessions]
+    assert_match %r{/outcomes/goal_checks\z}, result[:view_url]
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("view" => "goal_checks", "from" => "last week") }
+    assert_match(/YYYY-MM-DD/, error.message)
+  end
+
   test "one batch by id comes back with the error on each failed item" do
     target = archived(title: "Doomed")
     batch = OutcomeAnalysisBatch.create!(filters: {}, concurrency: 1, total_count: 1)
