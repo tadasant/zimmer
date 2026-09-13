@@ -117,6 +117,27 @@ class SessionStatusSummaryGenerator
       waiting on a person, so say that instead.
   RULE
 
+  # The panel's shape, carried by BOTH prompts for the same reason
+  # STATE_NOT_INTENT_RULE is. The panel is read by someone skimming a board of
+  # sessions to decide which ones need them, so the first thing it says is what
+  # to do — and "nothing" is an answer it must be allowed to give, or a session
+  # that needs no one gets an invented chore.
+  #
+  # The recommendation IS the panel's "does this need you" sentence, moved to the
+  # front, so the budget is three sentences at most with it included.
+  #
+  # The recommendation is addressed to the reader. It is not the session saying
+  # what it will do next, so it never licenses what STATE_NOT_INTENT_RULE forbids.
+  RECOMMENDATION_FIRST_RULE = <<~RULE.strip
+    - Open with ONE sentence recommending what the human reading this should do
+      next. Make it imperative and specific: "Merge [PR #123](URL).", "Answer
+      the question in [this message](URL).", "Resume it to open the PR.". When
+      nothing is needed from them, say that plainly — "Nothing needed from you
+      yet." — rather than inventing an action.
+    - Then 1-2 sentences on where things stand, not how you got here. At most
+      three sentences in all. Not four.
+  RULE
+
   # --- The pool-independent path (see #run_headless) --------------------------
 
   # Wall-clock budget for the one-shot completion. Generous enough for a long
@@ -833,7 +854,7 @@ class SessionStatusSummaryGenerator
       needs them right now.
 
       Rules:
-      - 2-3 sentences. Not four. Say where things stand, not how you got here.
+      #{RECOMMENDATION_FIRST_RULE}
       - Link instead of explaining. If a detail is worth more than a clause, link
         to where it lives rather than spending a sentence on it.
       - Markdown links only, no headings, no bullet lists, no preamble, no
@@ -864,7 +885,7 @@ class SessionStatusSummaryGenerator
       conversation was in the middle of.
 
       Rules:
-      - 2-3 sentences. Not four. Say where things stand, not how you got here.
+      #{RECOMMENDATION_FIRST_RULE}
       - Link instead of explaining. If a detail is worth more than a clause, link
         to where it lives rather than spending a sentence on it.
       - Markdown links only, no headings, no bullet lists, no preamble, no

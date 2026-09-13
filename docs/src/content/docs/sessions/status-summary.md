@@ -1,13 +1,13 @@
 ---
 title: The Status summary
-description: The two-or-three sentence "where things stand" blurb at the top of a session page — written by forking the session, cached until the session moves, and regenerated on exactly one automatic trigger.
+description: The three-sentence "what to do, and where things stand" blurb at the top of a session page — written by forking the session, cached until the session moves, and regenerated on exactly one automatic trigger.
 sidebar:
   order: 8
 ---
 
 A long session is expensive to re-enter. You open it, and the answer to "does this need me?" is
 somewhere in four hundred transcript rows. The **Status** panel is the answer stated once, at the
-top, in two or three sentences — and then linked out from there.
+top, in three sentences at most — and then linked out from there.
 
 ## The panel group
 
@@ -28,6 +28,29 @@ The transcript being collapsed is the point of the arrangement: on a session wit
 the three panels above it are what a returning reader wants first, and the transcript is what they
 open once they know which part they need.
 
+## Lead with what to do
+
+The blurb's first sentence is a recommendation to the person reading it: what to do next, imperative
+and specific. *"Merge PR #2825 or drop the `roles.zimmer` grant."* *"Resume it to open the PR."*
+When nothing is needed from them, it says so plainly — *"Nothing needed from you yet."* — rather than
+inventing a chore. The status description follows in one or two sentences.
+
+The order is for skimming. On [Your board](/sessions/user-view/) the blurb is clamped to three lines,
+so the sentence that decides whether a row needs you is the one that is always visible.
+
+The recommendation is the blurb's "does this need you" sentence, put first, so the budget counts it:
+at most three sentences in all, not four. Both prompts carry it as one shared constant,
+`SessionStatusSummaryGenerator::RECOMMENDATION_FIRST_RULE`, for the reason given
+[below](#a-description-of-state-never-a-plan).
+
+The recommendation is addressed to the reader. It is not the session announcing what it will do, so
+it does not get around the rule against narrating intent.
+
+Recommendation-first is prompt-level only. Nothing parses out or bolds the first sentence, because
+finding a sentence boundary in text full of markdown links and URLs is guesswork. Summaries are
+cached, so a blurb generated without this rule keeps its shape until the session moves or someone
+presses Regenerate.
+
 ## Link, don't explain
 
 The summary is deliberately short and deliberately link-heavy. The rule the generating agent is given
@@ -42,10 +65,21 @@ Three kinds of link do most of the work:
 - **A pull request, issue, or CI run** that came up in the conversation.
 - **Another Zimmer session**, by its `/sessions/:id` URL.
 
+The blurb is markdown, and it is rendered as markdown wherever it is shown. The session page's
+Status panel renders it in full through the shared renderer. A row on
+[Your board](/sessions/user-view/) renders it inline through `ApplicationHelper#inline_markdown`, which is
+the same renderer narrowed to links, code, bold, italics, strikethrough and quotes. A paragraph
+break, heading, list or table is unwrapped to its text, and a code block keeps only its `<code>`, so
+none of them can break the row's layout. Both paths keep the
+renderer's `safe_links_only` filtering and its `target="_blank"`, and the inline one runs a
+second sanitizer pass on top. No raw HTML or `javascript:` link survives either path. The board
+row uses the stored text, not `summary_markdown`, so a transcript-message link stays a full
+`/sessions/:id#message-N` URL. Its `#message-N` shorthand only works on the session's own page.
+
 ## A description of state, never a plan
 
 The blurb says where a session stands. It is not allowed to say what the session is going to do
-next. Both prompts — the fork's and the [one-shot path](#the-pool-independent-path)'s — carry two
+next. (Its opening recommendation says what the *reader* should do, which is a different thing.) Both prompts — the fork's and the [one-shot path](#the-pool-independent-path)'s — carry two
 rules to that effect, because a rule is worthless in whichever prompt it is missing from:
 
 - **No first-person claim about an action the session has not already taken** — a scheduled wake, a
@@ -502,6 +536,12 @@ viewed.
 
 That count only advances on a *successful* generation. A generation that was merely requested, or one
 that failed, leaves it alone, so a failed attempt cannot make a stale summary look current.
+
+The same subtraction drives the freshness chip under each row on [Your board](/sessions/user-view/)
+(`SessionsHelper#status_summary_freshness`): **Regenerating** while a generation is `pending?`,
+otherwise **Stale** when any message has landed since and **Up to date** when none has. The age
+since `generated_at` is shown beside it for context; age never decides staleness. The chip is as
+of page load, because a finished generation re-renders the Status panel but not the board row.
 
 ### `get_session` renders the duration next to the count, not just the count
 

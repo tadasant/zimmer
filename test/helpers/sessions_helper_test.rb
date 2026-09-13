@@ -520,4 +520,18 @@ class SessionsHelperTest < ActionView::TestCase
       refute_match(/yellow|red/, classes, "#{status} badge clashes with running's elapsed-time colors")
     end
   end
+
+  test "status_summary_freshness reads current, stale and regenerating off the summary" do
+    summary = SessionStatusSummary.new(state: "ready", summary: "Holding.", transcript_line_count: 5)
+
+    assert_equal :current, status_summary_freshness(summary, 5)
+    assert_equal :stale, status_summary_freshness(summary, 7)
+
+    summary.assign_attributes(state: "pending", requested_at: 1.minute.ago)
+    assert_equal :regenerating, status_summary_freshness(summary, 7)
+
+    # A generation that outlived PENDING_TIMEOUT is debris, not a regeneration.
+    summary.requested_at = (SessionStatusSummary::PENDING_TIMEOUT + 1.minute).ago
+    assert_equal :stale, status_summary_freshness(summary, 7)
+  end
 end
