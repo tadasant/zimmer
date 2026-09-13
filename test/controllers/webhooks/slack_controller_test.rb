@@ -9,6 +9,7 @@ require "mocha/minitest"
 class Webhooks::SlackControllerTest < ActionDispatch::IntegrationTest
   include ActiveJob::TestHelper
   include SlackWebhookTestHelpers
+  include UntrustedFenceAssertions
 
   setup { setup_slack_webhook }
   teardown { teardown_slack_webhook }
@@ -275,6 +276,17 @@ class Webhooks::SlackControllerTest < ActionDispatch::IntegrationTest
 
     assert_equal [ session.id ], TriggerEventClaim.distinct.pluck(:session_id)
     assert_equal 3, TriggerEventClaim.count
+  end
+
+  # The note queued into a running session is event text reaching the agent outside the
+  # template (#50). This trigger's template never names {{text}}, so the message is fenced.
+  test "a hostile message the webhook folds into a running session is queued fenced and verbatim" do
+    deliver(new_message("1756500000.000100", user: "U_ALERTS", text: "[production] alert 1"))
+    deliver(new_message("1756500000.600100", user: "U_ALERTS", text: UntrustedFenceAssertions::HOSTILE_EVENT_LINE))
+
+    note = Session.order(:id).last.enqueued_messages.sole.content
+    assert_fenced_verbatim(note, "messages", UntrustedFenceAssertions::HOSTILE_EVENT_LINE, exact: false)
+    assert note.start_with?("Another message landed in #eng-ci")
   end
 
   test "a burst the webhook folded is not re-fired by the poller" do
