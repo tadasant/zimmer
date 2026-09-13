@@ -76,7 +76,8 @@ class McpController < Api::BaseController
 
   def instructions
     "Zimmer's native MCP server. Tools operate on this Zimmer instance's sessions, " \
-      "notifications, triggers, system health, and the agent gates' decision ledger. " \
+      "notifications, triggers, system health, the agent gates' decision ledger, the work backlog, " \
+      "and the Settings page's global defaults. " \
       "Enabled tool groups: #{mcp_context.tool_groups.join(', ')}."
   end
 

@@ -103,6 +103,17 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
     assert_nil setting.default_model
   end
 
+  test "a change made on the page is recorded as the page's" do
+    entries = capture_log_entries do
+      patch app_settings_path, params: { app_setting: { default_runtime: "codex", default_model: "gpt-5.5" } }
+    end
+
+    line = entries.map(&:last).find { |message| message.include?("[AppSettings]") }
+    assert line, "the page moved the session default and nothing recorded it"
+    assert_includes line, "changed via #{AppSettingsController::CHANGE_SOURCE}"
+    assert_includes line, 'default_runtime nil -> "codex"'
+  end
+
   test "turns MCP tool search off via its own toggle" do
     patch app_settings_path, params: { app_setting: { mcp_tool_search_enabled: "0" } }
 

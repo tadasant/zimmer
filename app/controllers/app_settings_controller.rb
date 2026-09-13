@@ -10,8 +10,13 @@
 # model pair is validated by the model so an unusable combination (e.g. Claude
 # Code + a GPT model) can never be saved.
 class AppSettingsController < ApplicationController
+  # Named on the `[AppSettings]` audit line so a change made here is
+  # distinguishable from one an agent made through `action_app_settings`.
+  CHANGE_SOURCE = "web:/settings"
+
   def update
     setting = AppSetting.editable
+    setting.policy_change_source = CHANGE_SOURCE
     app_params = params[:app_setting] || {}
 
     # Only touch attributes the submitted form actually carries. The settings

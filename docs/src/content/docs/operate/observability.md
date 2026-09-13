@@ -173,6 +173,16 @@ on the production box to read stdout with. WARN does not page, so the record cos
 notification. See [Every change to these numbers is
 recorded](/sessions/spot-and-priority/#every-change-to-both-ceilings-is-recorded).
 
+`[AppSettings]` lines are the same record for the Settings page's half of the row: the global
+default runtime and model, and the Experimental toggles. They are what every later session is
+created under, and an agent can move them through `action_app_settings`, so each line names the
+surface — `web:/settings`, or `mcp:action_app_settings <action> session #<id>` — alongside every
+value that moved.
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production "[AppSettings]"
+```
+
 ### A failure the code recovered from is logged at WARN, not ERROR
 
 The same convention on the job side. A poller that hits a Slack 429, defers itself, and

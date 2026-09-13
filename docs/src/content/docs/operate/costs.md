@@ -590,6 +590,11 @@ and stops working the moment the setting is toggled back. Storing what was actua
 is what lets cohorts interleave in time — which is the difference between an A/B test and a
 before/after chart.
 
+Interleaving takes someone flipping the switch back and forth, and that someone can be an agent:
+`action_app_settings` (`set_experimental_setting`, in the opt-in `settings` MCP tool group) turns
+any toggle on this list on or off, so a Trigger can run a setting off for a day and back on the
+next.
+
 The date-derived path exists only for history that predates the table.
 `ExperimentalFlagBackfillJob` labels those sessions from `landed_at` in the registry entry:
 `created_at` decides the start value, the session's last recorded API call decides the end
