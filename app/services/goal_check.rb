@@ -109,8 +109,9 @@ class GoalCheck
     end
   end
 
-  # One spawned session's PR state, as .delegated_pull_requests reads it.
-  Delegate = Data.define(:id, :custom_metadata)
+  # One spawned session's PR state, as .delegated_pull_requests reads it:
+  # `pr_state` is the DELEGATED_METADATA_KEYS slice of its custom_metadata.
+  Delegate = Data.define(:id, :pr_state)
 
   # verdict — "met" when every criterion is met, "unmet" when any is, "pending"
   #   otherwise (nothing contradicts the goal, but not everything is known yet)
@@ -188,7 +189,7 @@ class GoalCheck
         next_frontier = Hash.new { |hash, key| hash[key] = [] }
         children_of(frontier.keys).each do |id, parent_id, metadata|
           metadata = JSON.parse(metadata) if metadata.is_a?(String)
-          delegate = Delegate.new(id: id, custom_metadata: metadata || {})
+          delegate = Delegate.new(id: id, pr_state: metadata || {})
 
           frontier.fetch(parent_id).each do |ancestor|
             next if result[ancestor].any? { |seen| seen.id == id }
@@ -260,7 +261,7 @@ class GoalCheck
 
     polled = []
     delegates.each do |delegate|
-      metadata = delegate.custom_metadata || {}
+      metadata = delegate.pr_state || {}
       refs = Github::PrRef.for_custom_metadata(metadata)
       next if refs.empty?
 
