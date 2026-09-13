@@ -1376,7 +1376,7 @@ defaults) from an explicit `[]` (take none). `Session.create_from_agent_root!` d
 `[]` both inherit the root's defaults there.
 
 That is deliberate, not an oversight. `create_from_agent_root!` is what the dashboard quick prompt,
-the chat bubble, and every [trigger](/sessions/triggers/) spawn through, and a `Trigger`'s
+the chat bubble, the work backlog, outcome analyses and every [trigger](/sessions/triggers/) spawn through, and a `Trigger`'s
 `mcp_servers` column is `default: [], null: false` — so `[]` is what an untouched trigger stores, not
 a request for none. Reading it as "no servers" would silently strip the servers from every existing
 trigger at once.

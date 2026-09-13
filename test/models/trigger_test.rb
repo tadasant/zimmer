@@ -2250,6 +2250,31 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal [ "gone-server" ], @trigger.reload.mcp_servers
   end
 
+  # The sharp edge of zimmer#454. Every list column on Trigger is `default: [],
+  # null: false`, so [] is what an untouched trigger holds — and it has to spawn
+  # with the root's defaults even though create_from_agent_root! resolves through
+  # Sessions::ResolveSpawnDefaults, where a list marked named stays as given,
+  # empty included.
+  test "a trigger with every list empty spawns with the agent root's defaults for all four" do
+    mock_agent_root = OpenStruct.new(
+      name: "defaults-root", url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil,
+      default_mcp_servers: [ "root-server" ], default_skills: [ "root-skill" ],
+      default_hooks: [ "root-hook" ], default_plugins: [ "root-plugin" ]
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    @trigger.update_columns(mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [])
+
+    session = @trigger.create_session!(prompt: "Test prompt")
+
+    assert_equal [ "root-server" ], session.mcp_servers
+    assert_equal [ "root-skill" ], session.catalog_skills
+    assert_equal [ "root-hook" ], session.catalog_hooks
+    assert_equal [ "root-plugin" ], session.catalog_plugins
+    refute session.mcp_servers_explicitly_empty?, "an untouched trigger is not a request for no servers"
+    assert_equal "defaults-root", session.metadata["agent_root_key"]
+  end
+
   test "the unresolvable predicate reads the recorded bookkeeping" do
     @trigger.update_column(:mcp_servers, [ "keeper", "gone-server" ])
     ServersConfig.stubs(:exists?).with("keeper").returns(true)

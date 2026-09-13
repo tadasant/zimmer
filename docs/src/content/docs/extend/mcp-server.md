@@ -527,8 +527,8 @@ session it spawns, and each id is validated against the catalog exactly as `acti
 the valid ones listed, rather than persisted and left to break the next spawn. A key you do not
 send is left alone.
 
-**An empty list is not "none".** `Session.create_from_agent_root!` resolves each list as
-`catalog_skills.presence || agent_root.default_skills`, and a fire onto a *re-used* session skips
+**An empty list is not "none".** `Session.create_from_agent_root!` counts only a non-empty list as
+named, so an empty one takes the agent root's defaults, and a fire onto a *re-used* session skips
 the sync entirely (`Trigger#sync_session_artifact!` refuses to let an empty trigger list strip a
 live session's artifacts — the session-9563 incident). So a trigger with `catalog_skills: []` spawns
 sessions carrying the agent root's default skills, not sessions carrying none. Sending `[]` resets
@@ -693,7 +693,8 @@ because both go through the same resolver. Its runtime and model resolve through
 minus the tier that isn't there: argument → *(no root)* → the global defaults the Settings page
 presents → the hardcoded default. That chain is one implementation
 (`Sessions::ResolveSpawnDefaults`) shared with [the REST
-endpoint](/extend/rest-api/#which-runtime-and-model-you-get), so the two spawn surfaces cannot drift.
+endpoint](/extend/rest-api/#which-runtime-and-model-you-get), the new-session form and
+`Session.create_from_agent_root!`, so the spawn surfaces cannot drift.
 
 Passing both is allowed and means "this root's tooling against that repository": the `git_root` wins
 over the root's URL, and the root's other defaults still apply. Passing **neither** is refused with an
