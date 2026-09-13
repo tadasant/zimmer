@@ -1433,13 +1433,13 @@ class Api::V1::SessionsController < Api::BaseController
     session_params[key].is_a?(Array)
   end
 
-  # Resolve agent_root param to git_root and apply catalog defaults.
-  # Explicit params (git_root, branch, subdirectory, mcp_servers, catalog_skills, catalog_hooks, catalog_plugins)
-  # take precedence over agent root defaults.
-  # Resolve the runtime and model for a new session, and — when an agent_root was
-  # named — the repository fields that come with it.
+  # Resolve the runtime, the model, and — when an agent_root was named — the
+  # repository fields and catalog defaults that come with it. Explicit params
+  # (git_root, branch, subdirectory, mcp_servers, catalog_skills, catalog_hooks,
+  # catalog_plugins) take precedence over the agent root's values.
   #
-  # The precedence is the one the whole app shares:
+  # The chain itself lives in Sessions::ResolveSpawnDefaults, shared with MCP
+  # `start_session` so the two spawn surfaces cannot drift apart again:
   #
   #   request param  →  agent root's declared value  →  AppSetting (the global
   #   base default set on the Settings page)  →  the hardcoded default
@@ -1449,49 +1449,18 @@ class Api::V1::SessionsController < Api::BaseController
   # the point: the Settings page presents those values as global defaults, so a
   # rootless API spawn has to honor them too.
   def resolve_agent_root_defaults!
-    agent_root_name = session_params[:agent_root].to_s.strip
-    agent_root = AgentRootsConfig.find!(agent_root_name) if agent_root_name.present?
-    app_setting = AppSetting.current
-
-    # An explicit agent_runtime param (the per-spawn override) wins and is left
-    # exactly as given, so an unregistered value still fails the model's
-    # inclusion validation with a 422 rather than being silently corrected.
-    unless params[:agent_runtime].present?
-      @session.agent_runtime = agent_root&.default_runtime.presence ||
-        app_setting.default_runtime.presence ||
-        RuntimeRegistry::DEFAULT_RUNTIME
-    end
-
-    if agent_root
-      @session.git_root = agent_root.url if @session.git_root.blank?
-      @session.branch = agent_root.default_branch || "main" unless params[:branch].present?
-      @session.subdirectory = agent_root.subdirectory if @session.subdirectory.blank? && agent_root.subdirectory.present?
-      # Only an OMITTED list falls back to the root's defaults. A `.blank?` test
-      # cannot tell omitted from explicitly-empty, so it overwrites an explicit
-      # `[]` with the defaults — handing a caller that asked for no MCP servers
-      # whatever the root declares, SSH access included.
-      @session.mcp_servers = agent_root.default_mcp_servers || [] unless explicit_list_param?(:mcp_servers)
-      @session.catalog_skills = agent_root.default_skills || [] unless explicit_list_param?(:catalog_skills)
-      @session.catalog_hooks = agent_root.default_hooks || [] unless explicit_list_param?(:catalog_hooks)
-      @session.catalog_plugins = agent_root.default_plugins || [] unless explicit_list_param?(:catalog_plugins)
-      # `agent_root.name`, not the caller's spelling — see Session.create_from_agent_root!.
-      @session.metadata = (@session.metadata || {}).merge("agent_root_key" => agent_root.name)
-    end
-
-    # When the caller didn't specify a model, adopt the agent root's default
-    # (which already folds in the global base default). A root's default is
-    # typically a claude_code model (e.g. "opus"); applying it unconditionally to
-    # a codex spawn would persist an invalid model, so self-heal to the global
-    # base default for the resolved runtime (falling back to that runtime's
-    # catalog default) whenever the root's model isn't valid for the runtime.
-    # With no root, that self-heal branch is the whole resolution.
-    return if @session.config&.dig("model").present?
-
-    model = agent_root&.default_model
-    unless ModelCatalog.valid_model?(@session.agent_runtime, model)
-      model = app_setting.resolved_default_model_for(@session.agent_runtime)
-    end
-    @session.config = (@session.config || {}).merge("model" => model)
+    Sessions::ResolveSpawnDefaults.call(
+      @session,
+      agent_root_name: session_params[:agent_root],
+      explicit_runtime: params[:agent_runtime].present?,
+      explicit_branch: params[:branch].present?,
+      explicit_lists: {
+        mcp_servers: explicit_list_param?(:mcp_servers),
+        skills: explicit_list_param?(:catalog_skills),
+        hooks: explicit_list_param?(:catalog_hooks),
+        plugins: explicit_list_param?(:catalog_plugins)
+      }
+    )
   end
 
   # `scheduling_class` is updatable after creation on purpose: a spot session

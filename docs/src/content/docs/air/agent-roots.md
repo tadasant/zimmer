@@ -72,6 +72,13 @@ survives to job start rather than being restored when the runtime config is rege
 that lets someone name the list sets it, including the mid-life ones (`change_mcp_servers`, `PATCH
 /api/v1/sessions/:id/mcp_servers`, and the session page's editor).
 
+A [rootless `git_root`
+spawn](/extend/mcp-server/#start_session-names-its-repository-with-agent_root-or-git_root) — over MCP
+or `POST /api/v1/sessions` — sets it without the caller naming a list at all: with no agent root there
+are no defaults for an omitted `mcp_servers` to fall back to, so omitted *is* none, and recording that
+keeps the heal from attaching the defaults of a root whose URL happens to equal the `git_root` the
+caller passed. `Sessions::ResolveSpawnDefaults` does it for both surfaces.
+
 Two things are deliberately outside that rule:
 
 - **`Session.create_from_agent_root!`** (the dashboard quick prompt, the chat bubble, and
@@ -217,7 +224,7 @@ can override:
 ```mermaid
 flowchart TD
     C["Session create"] --> R{"agent_root given?"}
-    R -->|no| D["git_root from params<br/>runtime = column default 'claude_code'<br/>model = ModelCatalog.default_for(runtime)"]
+    R -->|no| D["git_root from params<br/>runtime ← param → AppSetting.default_runtime → claude_code<br/>model ← param → AppSetting default → ModelCatalog default"]
     R -->|yes| A["git_root, branch, subdirectory ← root"]
     A --> RT["runtime ← param → root.default_runtime<br/>→ AppSetting.default_runtime → claude_code"]
     RT --> M["model ← param → root.default_model<br/>→ AppSetting default → ModelCatalog default"]
@@ -228,18 +235,12 @@ flowchart TD
 Once seeded, the session owns its own lists. The UI's PATCH endpoints mutate them directly, and
 `air prepare` is called with `--without-defaults` so AIR won't re-add anything the user removed.
 
-:::caution[The runtime/model fallback chain only works if you pass an `agent_root`]
-`docs/REST_API.md` claimed the fallback was: agent root's default → the global Settings default →
-`claude_code`. That's only true in the `agent_root` branch.
-
-With no `agent_root` param, `Api::V1::SessionsController#create` returns early from
-`resolve_agent_root_defaults!` and the runtime is the database column default (`claude_code`).
-The Settings-page default is never consulted. Same for the model: it goes straight to
-`ModelCatalog.default_for(runtime)`, skipping `AppSetting.resolved_default_model_for` entirely.
-
-So if you set a global default runtime of `codex` in Settings and then create a session over MCP
-without an `agent_root`, you get Claude Code.
-:::
+The rootless branch above is not a shortcut around that chain — it is the same chain with one fewer
+tier. `Sessions::ResolveSpawnDefaults` runs on every create from `POST /api/v1/sessions` and MCP
+`start_session`, root or no root, so a session created without an `agent_root` still picks up the
+Settings-page runtime and model. It was not always so: REST consulted the global defaults only from
+[#263](https://github.com/tadasant/zimmer/issues/263), and MCP `start_session` could not create a
+rootless session at all until [#265](https://github.com/tadasant/zimmer/issues/265).
 
 ## Changing roots
 

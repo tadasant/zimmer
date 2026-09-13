@@ -263,8 +263,16 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_match(/Invalid agent_root/, error.message)
   end
 
-  test "raises when a required attribute is missing" do
-    assert_raises(ActiveRecord::RecordInvalid) { @tool.call("title" => "No root, no git_root") }
+  # Before #265 this call fell through to Session's unconditional git_root
+  # presence validation and came back as a bare RecordInvalid naming a field the
+  # tool's schema did not even have.
+  test "a call naming neither agent_root nor git_root is a tool error naming both" do
+    error = assert_raises(Mcp::ToolError) { @tool.call("title" => "No root, no git_root") }
+
+    assert_match(/Name a target repository/, error.message)
+    assert_match(/`agent_root`/, error.message)
+    assert_match(/`git_root`/, error.message)
+    assert_equal 0, Session.where(title: "No root, no git_root").count
   end
 
   test "a restricted connection requires an allowed agent root" do
@@ -633,6 +641,202 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     HooksConfig.stubs(:exists?).returns(true)
     PluginsConfig.stubs(:exists?).returns(true)
     @root_with_defaults = root
+  end
+
+  # --- the rootless path: a bare git_root (#265) ------------------------------
+
+  test "spawns from a bare git_root with no agent root in sight" do
+    result = nil
+
+    assert_difference "Session.count", 1 do
+      assert_enqueued_with(job: AgentSessionJob) do
+        result = @tool.call(
+          "git_root" => "https://github.com/someone/scratch.git",
+          "prompt" => "Poke at the fork",
+          "title" => "Rootless spawn"
+        )
+      end
+    end
+
+    session = Session.order(:id).last
+    assert_equal "https://github.com/someone/scratch.git", session.git_root
+    assert_equal "main", session.branch, "the column default stands in for a root's default_branch"
+    assert_nil session.metadata["agent_root_key"], "no root was named, so none is recorded"
+    assert_predicate session.mcp_servers, :blank?, "a rootless spawn inherits no catalog defaults"
+    assert_predicate session.catalog_skills, :blank?
+    assert session.config["model"].present?, "the model is always explicit on the created session"
+    assert_includes result, "## Session Started Successfully"
+    assert_includes result, "- **ID:** #{session.id}"
+  end
+
+  test "branch and subdirectory ride along with a bare git_root" do
+    @tool.call(
+      "git_root" => "https://github.com/someone/mono.git",
+      "branch" => "release-2026",
+      "subdirectory" => "packages/api",
+      "title" => "Rootless with coordinates"
+    )
+
+    session = Session.order(:id).last
+    assert_equal "release-2026", session.branch
+    assert_equal "packages/api", session.subdirectory
+  end
+
+  # The REST endpoint's #81 contract, now reachable from MCP: with no root there
+  # is no root tier, so the chain falls straight through to the Settings page.
+  test "a rootless spawn resolves runtime and model through the Settings-page defaults" do
+    AppSetting.delete_all
+    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.4")
+
+    @tool.call("git_root" => "https://github.com/someone/scratch.git", "title" => "Global defaults")
+
+    session = Session.order(:id).last
+    assert_equal "codex", session.agent_runtime
+    assert_equal "gpt-5.4", session.config["model"]
+  end
+
+  test "an explicit runtime and model still beat the global defaults on a rootless spawn" do
+    AppSetting.delete_all
+    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.4")
+
+    @tool.call(
+      "git_root" => "https://github.com/someone/scratch.git",
+      "title" => "Explicit wins",
+      "agent_runtime" => "claude_code",
+      "config" => { "model" => "sonnet" }
+    )
+
+    session = Session.order(:id).last
+    assert_equal "claude_code", session.agent_runtime
+    assert_equal "sonnet", session.config["model"]
+  end
+
+  test "with no global default a rootless spawn falls back to the hardcoded default" do
+    AppSetting.delete_all
+
+    @tool.call("git_root" => "https://github.com/someone/scratch.git", "title" => "Hardcoded default")
+
+    session = Session.order(:id).last
+    assert_equal RuntimeRegistry::DEFAULT_RUNTIME, session.agent_runtime
+    assert_equal ModelCatalog.default_for(RuntimeRegistry::DEFAULT_RUNTIME), session.config["model"]
+  end
+
+  # A rootless spawn has no defaults for an omitted list to fall back to, so
+  # omitted IS none — and it has to be recorded as deliberate, or McpServerBackfill
+  # reads the empty column as a failed resolve and hands the session the servers of
+  # whichever catalog root happens to share the URL.
+  test "a rootless spawn records its empty mcp_servers as deliberate" do
+    @tool.call("git_root" => @root.url, "title" => "Same URL as a catalog root")
+
+    session = Session.order(:id).last
+    assert_predicate session.mcp_servers, :blank?
+    assert session.mcp_servers_explicitly_empty?,
+      "an omitted list on the rootless path must not be healed back to a URL-matched root's defaults"
+  end
+
+  test "a rootless spawn takes the mcp servers it names" do
+    @tool.call(
+      "git_root" => "https://github.com/someone/scratch.git",
+      "title" => "Named servers",
+      "mcp_servers" => [ "context7" ]
+    )
+
+    session = Session.order(:id).last
+    assert_equal [ "context7" ], session.mcp_servers
+    refute session.mcp_servers_explicitly_empty?, "a named list is not a deliberate empty"
+  end
+
+  test "git_root beside an agent_root retargets the repository and keeps the root's other defaults" do
+    @tool.call(
+      "agent_root" => "zimmer",
+      "git_root" => "https://github.com/someone/zimmer-fork.git",
+      "title" => "Root tooling against a fork"
+    )
+
+    session = Session.order(:id).last
+    assert_equal "https://github.com/someone/zimmer-fork.git", session.git_root
+    assert_equal "zimmer", session.metadata["agent_root_key"]
+    assert_equal @root.default_mcp_servers || [], session.mcp_servers
+  end
+
+  test "an explicit branch beats the agent root's default_branch" do
+    @tool.call("agent_root" => "zimmer", "branch" => "some-feature", "title" => "Branch override")
+
+    assert_equal "some-feature", Session.order(:id).last.branch
+  end
+
+  test "the repository arguments are advertised on the schema" do
+    properties = Mcp::Tools::StartSession.input_schema.to_h[:properties]
+
+    %i[git_root branch subdirectory].each do |param|
+      assert properties.key?(param), "#{param} must be on the schema a caller reads"
+    end
+    assert_includes properties.dig(:git_root, :description), "Either this or `agent_root` is required"
+  end
+
+  # --- the fence: allowed_agent_roots covers the rootless path too (#265) -----
+
+  test "a restricted connection cannot spawn from a raw git_root" do
+    error = assert_raises(Mcp::ToolError) do
+      restricted_tool.call("git_root" => "https://github.com/someone/anything.git", "title" => "x")
+    end
+
+    assert_match(/"git_root" is not allowed/, error.message)
+    assert_match(/restricted to specific agent roots/, error.message)
+    assert_equal 0, Session.where(title: "x").count
+  end
+
+  # The bypass that matters: naming an allowed root does not buy the right to
+  # point it somewhere else.
+  test "a restricted connection cannot retarget an allowed root with git_root" do
+    error = assert_raises(Mcp::ToolError) do
+      restricted_tool.call(
+        "agent_root" => "zimmer",
+        "git_root" => "https://github.com/someone/anything.git",
+        "title" => "x"
+      )
+    end
+
+    assert_match(/"git_root" is not allowed/, error.message)
+    assert_equal 0, Session.where(title: "x").count
+  end
+
+  test "a restricted connection cannot move an allowed root's branch or subdirectory" do
+    branch = assert_raises(Mcp::ToolError) do
+      restricted_tool.call("agent_root" => "zimmer", "branch" => "someone-elses-branch", "title" => "x")
+    end
+    assert_match(/"branch" is not allowed/, branch.message)
+
+    subdirectory = assert_raises(Mcp::ToolError) do
+      restricted_tool.call("agent_root" => "zimmer", "subdirectory" => "other/root", "title" => "x")
+    end
+    assert_match(/"subdirectory" is not allowed/, subdirectory.message)
+
+    both = assert_raises(Mcp::ToolError) do
+      restricted_tool.call("agent_root" => "zimmer", "branch" => "b", "subdirectory" => "s", "title" => "x")
+    end
+    assert_match(/"branch" and "subdirectory" are not allowed/, both.message)
+  end
+
+  # The refusal comes before the idempotency lookup, like every other restriction
+  # on this tool: a key must not be a way around the fence.
+  test "a restricted connection is refused on git_root even when it sends an idempotency key" do
+    error = assert_raises(Mcp::ToolError) do
+      restricted_tool.call(
+        "git_root" => "https://github.com/someone/anything.git",
+        "title" => "x",
+        "idempotency_key" => "restricted-git-root-key"
+      )
+    end
+
+    assert_match(/"git_root" is not allowed/, error.message)
+    assert_nil Session.find_by(idempotency_key: "restricted-git-root-key")
+  end
+
+  test "an unrestricted connection is unaffected by the repository fence" do
+    result = @tool.call("git_root" => "https://github.com/someone/scratch.git", "title" => "Unfenced")
+
+    assert_includes result, "## Session Started Successfully"
   end
 
   def restricted_tool
