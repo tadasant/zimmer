@@ -108,8 +108,8 @@ class TranscriptRedactionCache
   # able to evict every other entry to make room for itself.
   #
   # Gated on the RAW size, while the accounting below is on the redacted size,
-  # and redaction can grow text a little (`[REDACTED:OPENAI_API_KEY]` is longer
-  # than the `sk-…` it replaces). So an entry can sit marginally over this;
+  # and redaction can grow text a little (`[REDACTED:MATCH:OPENAI_API_KEY:51ch]`
+  # is longer than the `sk-…` it replaces). So an entry can sit marginally over this;
   # MAX_TOTAL_BYTES is what actually bounds the table, and it is twice this.
   MAX_ENTRY_BYTES = 64 * 1024 * 1024
 

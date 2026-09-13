@@ -245,6 +245,47 @@ It works in two tiers:
 Redaction preserves line count exactly (the regression and rotation guards below compare line
 counts) and leaves no reversible fragment of the original.
 
+### What a marker tells you
+
+A marker has to answer two questions for whoever is reading the transcript: why did this fire, and
+how much did it take out. It carries the tier, what fired, and the length of the span it replaced.
+
+| Marker | What it means |
+| --- | --- |
+| `[REDACTED:ENV:SLACK_BOT_TOKEN:56ch]` | Tier 1. The text **was** the value Zimmer resolves for that catalog variable. |
+| `[REDACTED:OAUTH_TOKEN:88ch]` | Tier 1. It was an OAuth token Zimmer stores in its own database. |
+| `[REDACTED:MATCH:GITHUB_TOKEN:40ch]` | Tier 2. It **matched a shape**. Nobody confirmed it was a live credential. |
+| `[REDACTED:MATCH:ENV_SECRET:61ch]` | Tier 2, the generic name-then-value rule — the loosest one here. |
+| `[REDACTED:UNSCANNABLE_LINE:9412ch]` | No pattern pass finished on this line, so the whole line went. |
+
+`MATCH:` is the load-bearing part. Everything carrying it is a guess, so a reader who recognises the
+length and the framing can tell "that was my `GITHUB_TOKEN`" from "something here looked like one".
+The character count is disclosed on purpose: redaction is defense in depth over material already
+treated as secret, most labels imply the length anyway, and the count is what lets a reader recognise
+their own value in the gap.
+
+### Resource names are not credentials
+
+The generic name-then-value rule fires on `⟨a name that says credential⟩⟨:|=⟩⟨a long value⟩`. Two of
+the names it knows — the bare nouns `secret` and `token` — are also the nouns every cloud CLI uses for
+the *resource*, so `--secret=NAME`, `?secret=NAME` and `secret: NAME` put a **public identifier**
+exactly where the rule expects a credential.
+
+That cost a human a runnable command: an orchestrator session handed over
+`gcloud secrets versions access latest --secret=…` and the argument came back as
+`[REDACTED:ENV_SECRET]`, so the instruction identified no secret
+([session 6512](https://zimmer.tadasant.com/sessions/6512)). A Secret Manager secret's *name* is what
+`gcloud secrets list` prints to anyone with read access; the credential is the version's payload,
+which was never in the message.
+
+After those two nouns only, the rule now declines a value that is shaped like a public identifier:
+lowercase and digits, in at least three separator-joined segments, no segment longer than 12
+characters, and more than half the segments carrying a letter outside the hex alphabet. That last
+condition is what keeps a UUID (`550e8400-e29b-41d4-a716-446655440000`) and a hyphen-grouped hex key
+redacted — both are real session-token formats and neither has a letter in `[g-z]`. Compound names
+(`client_secret`, `api_key`, `password`, `passphrase`) are untouched by any of this, so
+`password=correct-horse-battery-staple` still redacts.
+
 ### Why the patterns carry their own regexp timeout
 
 `config.load_defaults 8.0` sets `Regexp.timeout = 1` for the whole process. That cap is sized for

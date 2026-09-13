@@ -1001,7 +1001,16 @@ gap is worth naming precisely:
   failing the poll. A credential rotated seconds ago can pass through unredacted.
 - **The generic name-then-value rule over-redacts sometimes.** `api_key: your_api_key_here` in a README
   an agent read gets scrubbed. That is the intended direction of the trade, but it does mean a redacted
-  span is not proof a real credential was there.
+  span is not proof a real credential was there — which is why a shape match now says
+  `[REDACTED:MATCH:…]` rather than naming a credential the redactor never confirmed.
+- **A lowercase passphrase after a bare `secret=` or `token=` is no longer redacted.** Those two nouns
+  name a *resource* far more often than a value (`--secret=NAME`, `?secret=NAME`), so after them the
+  rule declines anything shaped like a public identifier — lowercase, three or more short
+  word-segments. A diceware passphrase has that exact shape. It is the residual cost of
+  [session 6512](https://zimmer.tadasant.com/sessions/6512), where the old behaviour blanked a Secret
+  Manager resource name out of a command and left a human unable to run it. The narrowing is confined
+  to those two nouns: `password=`, `passphrase=`, `client_secret=` and `api_key=` are unchanged, and a
+  UUID, a hex key or anything with an uppercase letter still redacts after `secret=` and `token=` too.
 - **A redaction reaches the agent's own memory, not just the archive.** When a clone is recreated,
   `AgentSessionJob#restore_regressed_transcript_if_needed` writes the stored transcript back to the file
   the runtime reads on `--resume`. That copy is redacted, so the resumed conversation contains
