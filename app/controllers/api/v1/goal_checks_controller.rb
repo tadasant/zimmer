@@ -5,7 +5,7 @@
 # of /outcomes/goal_checks; all three render GoalCheckTally, so they cannot disagree.
 #
 # Query parameters (all optional, the Outcomes filters): from, to (YYYY-MM-DD, on the
-# session's created_at; the last 7 days when both are absent), agent_root,
+# session's created_at; a missing `from` is 7 days before `to`, or before today), agent_root,
 # agent_runtime, model.
 class Api::V1::GoalChecksController < Api::BaseController
   def index

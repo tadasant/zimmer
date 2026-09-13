@@ -175,8 +175,9 @@ session with no goal.
 Whether the check reads right is a question about real sessions, so it has a page:
 **Outcomes → Goal checks** (`/outcomes/goal_checks`), the `goal_checks` view of MCP
 `get_outcome_analysis`, and `GET /api/v1/goal_checks`. All three render `GoalCheckTally` over
-sessions that came to rest (`needs_input` or `archived`), windowed on created-at, the last seven days
-by default, with the Outcomes filters for agent root, harness and model. It shows:
+sessions that came to rest (`needs_input` or `archived`), windowed on created-at, with the Outcomes
+filters for agent root, harness and model. A missing start date means seven days before the end
+date, or before today, so the window is always bounded. It shows:
 
 - verdict counts, and each criterion's met / unmet / pending / unknown split
 - sessions grouped by **which criteria kept them from `met`**, with sample session ids. A misread

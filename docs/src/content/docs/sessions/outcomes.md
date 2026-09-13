@@ -187,7 +187,7 @@ Its `view` argument picks one of five views:
 | `analysis` (the default when `session_id` is given) | `/outcomes/:session_id` | the current analysis with its Segment tree, a flat list of every Failure Segment, and the superseded readings without their trees |
 | `ledger` (the default otherwise) | `/outcomes` | archived sessions matching the filters, 50 per page, each with its analysis's scalar columns, plus `total` / `analyzed` / `unanalyzed` counts |
 | `stats` | `/outcomes/stats` | totals, one row per `group_by` value, the failed-segment distribution, the ten most failure-heavy transcripts |
-| `goal_checks` | `/outcomes/goal_checks` | `GoalCheckTally` over sessions at rest: verdicts, per-criterion splits, sessions grouped by the criteria that kept them from `met`, rows by agent root and goal, and the sessions unmet only on their own PR. `analyzed` and `outcome` do not apply; with no dates it covers seven days |
+| `goal_checks` | `/outcomes/goal_checks` | `GoalCheckTally` over sessions at rest: verdicts, per-criterion splits, sessions grouped by the criteria that kept them from `met`, rows by agent root and goal, and the sessions unmet only on their own PR. `analyzed` and `outcome` do not apply; a missing `from` is seven days before `to`, or before today |
 | `batches` | the batch cards on `/outcomes` | recent batches with who started them and their live counts, or one batch with its failed items' errors, plus the MCP limits currently in force |
 
 The filters are the ledger's own, built into the same `LedgerFilters` struct. The one difference is

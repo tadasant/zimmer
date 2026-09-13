@@ -5249,8 +5249,8 @@ What it does not do:
   judged on the PRs its descendants recorded, and that reading is fresh on every load of the page,
   `get_session` or the REST JSON. The broadcast that repaints the panel fires on the session's own
   changes, so an open parent page shows a child's merge only after a reload.
-- **Descendants are read to a bound.** Three generations, and at most 200 spawned sessions per
-  generation. A fleet run that spawns more than that is judged on the first 200.
+- **Descendants are read to a bound.** Three generations, and at most 200 sessions under any one
+  parent, oldest first. A parent that spawned more than that is judged on its first 200.
 
 ### PR ownership is a transcript heuristic, and both ways of being wrong are silent
 

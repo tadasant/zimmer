@@ -1648,6 +1648,27 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
   # ---- the goal check rides on the session JSON ----
 
+  test "index and search judge a router on its child's PR, batch-loaded for the page" do
+    pr = "https://github.com/owner/repo/pull/21"
+    router = sessions(:needs_input)
+    router.update!(goal: "open-reviewed-green-pr", title: "Router for goal delegation", custom_metadata: {})
+    child = sessions(:archived)
+    child.update!(goal: "open-reviewed-green-pr", parent_session_id: router.id, custom_metadata: {
+      "github_pull_request_urls" => [ pr ], "github_pull_request_statuses" => { pr => "merged" }
+    })
+
+    get api_v1_sessions_path, params: { show_archived: "true", per_page: 100 }, headers: @headers
+
+    listed = JSON.parse(response.body)["sessions"].find { |s| s["id"] == router.id }
+    assert_equal [ child.id ], listed["goal_check"]["delegated_session_ids"]
+    assert_equal "met", listed["goal_check"]["criteria"].find { |c| c["key"] == "pull_request_open" }["status"]
+
+    get search_api_v1_sessions_path, params: { q: "Router for goal delegation" }, headers: @headers
+
+    found = JSON.parse(response.body)["sessions"].find { |s| s["id"] == router.id }
+    assert_equal [ child.id ], found["goal_check"]["delegated_session_ids"]
+  end
+
   test "show includes the goal check for a catalog goal, and null for free text" do
     session = sessions(:needs_input)
     session.update!(goal: "open-reviewed-green-pr")

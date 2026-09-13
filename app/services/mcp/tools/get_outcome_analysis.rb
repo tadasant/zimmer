@@ -70,7 +70,7 @@ module Mcp
           `met` (with sample ids), rows by agent root and by goal, how many were judged on PRs a
           spawned session recorded, and `unmet_on_own_pull_request` — the sessions at rest that
           are unmet only on what their own PR shows on GitHub. Filters apply except `analyzed` and
-          `outcome`; with no dates it covers the last 7 days. No analysis is involved.
+          `outcome`; a missing `from` is 7 days before `to` (or before today). No analysis is involved.
         - **batches** — the most recent Analyze All batches (`limit`, default #{DEFAULT_BATCH_LIMIT}),
           each with its status, who started it (web UI or MCP, and which session), its concurrency,
           the filters it was created from, and live item counts. With `batch_id`, that one batch

@@ -258,6 +258,56 @@ class GoalCheckTest < ActiveSupport::TestCase
     assert_empty check.delegated_session_ids
   end
 
+  test "the fan-out cap applies per parent, so a big fleet parent cannot crowd out another parent's child" do
+    fleet = make_session(goal: "open-reviewed-green-pr")
+    3.times { make_session(goal: "open-reviewed-green-pr").update!(parent_session_id: fleet.id) }
+    router = make_session(goal: "open-reviewed-green-pr")
+    child = make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata)
+    child.update!(parent_session_id: router.id)
+
+    original = GoalCheck::DELEGATION_FAN_OUT
+    silence_warnings { GoalCheck.const_set(:DELEGATION_FAN_OUT, 2) }
+    delegates = GoalCheck.delegated_pull_requests([ fleet.id, router.id ])
+
+    assert_equal 2, delegates.fetch(fleet.id).size
+    assert_equal [ child.id ], delegates.fetch(router.id).map(&:id)
+  ensure
+    silence_warnings { GoalCheck.const_set(:DELEGATION_FAN_OUT, original) } if original
+  end
+
+  test "a requested session under another requested session is read for both, once each" do
+    top = make_session(goal: "open-reviewed-green-pr")
+    middle = make_session(goal: "open-reviewed-green-pr")
+    middle.update!(parent_session_id: top.id)
+    leaf = make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata)
+    leaf.update!(parent_session_id: middle.id)
+
+    delegates = GoalCheck.delegated_pull_requests([ top.id, middle.id ])
+
+    assert_equal [ middle.id, leaf.id ], delegates.fetch(top.id).map(&:id)
+    assert_equal [ leaf.id ], delegates.fetch(middle.id).map(&:id)
+  end
+
+  test "a fourth generation is past the depth bound" do
+    parent = make_session(goal: "open-reviewed-green-pr")
+    chain = 3.times.inject(parent) do |above, _|
+      make_session(goal: "open-reviewed-green-pr").tap { |s| s.update!(parent_session_id: above.id) }
+    end
+    make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata).update!(parent_session_id: chain.id)
+
+    assert_equal "unmet", statuses(GoalCheck.for(parent))["pull_request_open"]
+  end
+
+  test "observed_at is the stalest reading among the delegated PRs" do
+    router = make_session(goal: "open-reviewed-green-pr")
+    make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata)
+      .update!(parent_session_id: router.id)
+    make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata(OTHER_PR,
+      "poller_last_polled_at" => { "github_pr_poller" => "2026-09-10T08:00:00Z" })).update!(parent_session_id: router.id)
+
+    assert_equal "2026-09-10T08:00:00Z", GoalCheck.for(router).to_h[:observed_at]
+  end
+
   test "a batch-loaded delegate list gives the same answer without querying" do
     router = make_session(goal: "open-reviewed-green-pr")
     child = make_session(goal: "open-reviewed-green-pr", custom_metadata: finished_pr_metadata)

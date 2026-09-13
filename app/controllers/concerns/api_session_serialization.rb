@@ -20,6 +20,17 @@ module ApiSessionSerialization
     @genesis_class_overrides ||= AppSetting.current.genesis_class_overrides || {}
   end
 
+  # The spawned sessions' PR state for every session on a list that GoalCheck reads
+  # it for, in one query per generation instead of per row. Pass the result's entry
+  # to #session_json as `goal_check_delegates`.
+  #
+  # @param records [Enumerable<Session>]
+  # @return [Hash{Integer => Array<GoalCheck::Delegate>}]
+  def goal_check_delegates_for(records)
+    ids = records.select { |session| GoalCheck.reads_delegated_pull_requests?(session) }.map(&:id)
+    ids.any? ? GoalCheck.delegated_pull_requests(ids) : {}
+  end
+
   # @param goal_check_delegates [Array<GoalCheck::Delegate>, nil] this session's
   #   spawned sessions' PR state, when a list caller batch-loaded it
   #   (GoalCheck.delegated_pull_requests); nil lets GoalCheck read it on demand
