@@ -93,8 +93,13 @@ class Api::V1::SessionsController < Api::BaseController
 
     result = paginate(scope)
 
+    # A PR-goal session that recorded no PR is judged on the PRs its spawned sessions
+    # recorded. Read for the whole page at once rather than per row.
+    delegating_ids = result[:records].select { |s| GoalCheck.reads_delegated_pull_requests?(s) }.map(&:id)
+    delegates = delegating_ids.any? ? GoalCheck.delegated_pull_requests(delegating_ids) : {}
+
     render json: {
-      sessions: result[:records].map { |s| session_json(s) },
+      sessions: result[:records].map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
       pagination: result[:pagination]
     }
   end

@@ -33,7 +33,8 @@
     <div>
       <%# The ledger can filter on "has an analysis at all"; the stats view is by
           definition only about analyzed transcripts, so it filters on the
-          transcript-level outcome instead. %>
+          transcript-level outcome instead. The goal-checks view is about sessions,
+          not analyses, so it shows neither. %>
       <% if show_analyzed_filter %>
         <label for="analyzed" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Analysis</label>
         <%= select_tag :analyzed, options_for_select([
@@ -41,7 +42,7 @@
               [ "Analyzed", OutcomeAnalyses::LedgerFilters::ANALYZED_YES ],
               [ "Not analyzed", OutcomeAnalyses::LedgerFilters::ANALYZED_NO ]
             ], filters.analyzed), class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
-      <% else %>
+      <% elsif local_assigns.fetch(:show_outcome_filter, true) %>
         <label for="outcome" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Outcome</label>
         <%= select_tag :outcome, options_for_select([
               [ "Any", OutcomeAnalyses::LedgerFilters::OUTCOME_ANY ],
@@ -57,6 +58,11 @@
     <% if filters.any? %>
       <%= link_to "Clear", url, class: "px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900" %>
     <% end %>
-    <span class="text-xs text-gray-500 ml-auto truncate"><%= filters.summary %></span>
+    <%# The summary names archived sessions, which is what the ledger and stats cover.
+        A page counting a different population passes its own, or nil for none. %>
+    <% summary = local_assigns.fetch(:summary, filters.summary) %>
+    <% if summary.present? %>
+      <span class="text-xs text-gray-500 ml-auto truncate"><%= summary %></span>
+    <% end %>
   </div>
 <% end %>

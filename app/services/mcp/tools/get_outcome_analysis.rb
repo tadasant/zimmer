@@ -22,7 +22,7 @@ module Mcp
 
       tool_name "get_outcome_analysis"
 
-      VIEWS = %w[analysis ledger stats batches].freeze
+      VIEWS = %w[analysis ledger stats goal_checks batches].freeze
 
       # The ledger's page size on /outcomes.
       LEDGER_PAGE_SIZE = 50
@@ -64,13 +64,20 @@ module Mcp
           rates, the distribution of failed-segment counts, and the #{WORST_TRANSCRIPTS} most
           failure-heavy transcripts. No tree is loaded. Grouping reads the agent root, harness and
           model recorded on the analysis when it was saved.
+        - **goal_checks** — how the advisory goal check read on sessions that came to rest
+          (`needs_input` or `archived`) in the window, the web UI's /outcomes/goal_checks: verdict
+          counts, per-criterion statuses, sessions grouped by the criteria that kept them from
+          `met` (with sample ids), rows by agent root and by goal, how many were judged on PRs a
+          spawned session recorded, and `unmet_on_own_pull_request` — the sessions at rest that
+          are unmet only on what their own PR shows on GitHub. Filters apply except `analyzed` and
+          `outcome`; with no dates it covers the last 7 days. No analysis is involved.
         - **batches** — the most recent Analyze All batches (`limit`, default #{DEFAULT_BATCH_LIMIT}),
           each with its status, who started it (web UI or MCP, and which session), its concurrency,
           the filters it was created from, and live item counts. With `batch_id`, that one batch
           plus the error on each of its failed items. Also reports the MCP limits in force
           (`agent_limits`), so a caller can see before `analyze_all` whether it would be refused.
 
-        **Filters** (ledger and stats): `from`, `to`, `agent_root`, `agent_runtime`, `model`,
+        **Filters** (ledger, stats and goal_checks): `from`, `to`, `agent_root`, `agent_runtime`, `model`,
         `analyzed`, `outcome`. All optional and ANDed. A value that names nothing (an unparseable
         date, an unknown runtime) is refused rather than dropped. Every response echoes the
         filters it applied.
@@ -125,6 +132,7 @@ module Mcp
         when "analysis" then analysis_view(args)
         when "ledger" then ledger_view(args)
         when "stats" then stats_view(args)
+        when "goal_checks" then goal_checks_view(args)
         when "batches" then batches_view(args)
         else
           raise ToolError, "Unknown view \"#{view}\". Valid views: #{VIEWS.join(', ')}"
@@ -250,6 +258,15 @@ module Mcp
             analysis_json(analysis).merge(title: analysis.session&.title)
           end
         }
+      end
+
+      # --- goal checks --------------------------------------------------------------
+
+      def goal_checks_view(args)
+        filters = ledger_filters_from(args)
+        tally = GoalCheckTally.new(filters: filters)
+
+        { filters: filters_json(filters), view_url: "#{base_url}/outcomes/goal_checks" }.merge(tally.to_h)
       end
 
       def stats_row_json(row)

@@ -5218,15 +5218,18 @@ note are all discarded. The next identical session is mis-sorted identically, fo
 decides when it is done. `GoalCheck` reads back what GitHub can show: the PR is open or merged, CI is
 green, the description has a checked `## Verification` section with no unchecked boxes, and the
 `ready to merge` label is on. It reports an advisory verdict on the session page, in `get_session` and
-in the REST session JSON. See [How a goal is checked](/sessions/goals/#how-a-goal-is-checked).
+in the REST session JSON, and **Outcomes → Goal checks** tallies it over sessions at rest. See
+[How a goal is checked](/sessions/goals/#how-a-goal-is-checked).
 
-Three things it does not do:
+What it does not do:
 
 - **It does not act.** An `unmet` session is not failed, blocked from archiving, or re-prompted. The
   stop condition is still enforced only by the LLM obeying English, and a session that declares
-  victory early is still believed. Reporting comes first, and deliberately: a wrong enforcement traps
-  finished work. Whether to attach a consequence, and which one, is still open in
-  [#88](https://github.com/tadasant/zimmer/issues/88).
+  victory early is still believed. Failing or blocking was rejected because a wrong enforcement traps
+  finished work. A one-time re-prompt was measured against production on 2026-09-13 and not built: in
+  two days it would have reached one session, and that session was holding its label back for a
+  human. See [Measuring the check](/sessions/goals/#measuring-the-check), which keeps that
+  population counted.
 - **It cannot see a review, a skill, or proof.** Whether a fresh-eyes review ran, whether `open-pr`
   was used, and whether the screenshots show what they claim are not in GitHub's state. `met` means
   nothing visible contradicts the goal.
@@ -5240,7 +5243,14 @@ Three things it does not do:
   text shows no goal check from then on, with nothing to say why.
 - **It only reads PRs the poll pass still visits.** A session archived before its PR's description
   and labels were first read has none recorded, so its Verification and label checks read `unknown`
-  for good.
+  for good. Every such session on production came to rest before those fields were fetched at all:
+  167 of them, which read `pending` instead of `met`. None has appeared since.
+- **A spawned session's PR does not repaint its parent's panel.** A session with no PR of its own is
+  judged on the PRs its descendants recorded, and that reading is fresh on every load of the page,
+  `get_session` or the REST JSON. The broadcast that repaints the panel fires on the session's own
+  changes, so an open parent page shows a child's merge only after a reload.
+- **Descendants are read to a bound.** Three generations, and at most 200 spawned sessions per
+  generation. A fleet run that spawns more than that is judged on the first 200.
 
 ### PR ownership is a transcript heuristic, and both ways of being wrong are silent
 
