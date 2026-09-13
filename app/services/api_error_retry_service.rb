@@ -220,7 +220,7 @@ class ApiErrorRetryService
     if @detected_quota_limit
       add_log(
         "Account quota limit detected (not a transient rate limit) — retrying would be futile. " \
-          "The quota resets at the time indicated in the error message. Skipping retry.",
+          "Skipping retry.",
         level: "warning"
       )
       log_buffer.flush

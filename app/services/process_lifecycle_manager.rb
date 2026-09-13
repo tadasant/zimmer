@@ -571,6 +571,10 @@ class ProcessLifecycleManager
 
       add_log("Process is gone (signal check) and nothing on record explains it as a recoverable failure — treating the turn as complete", level: "info")
 
+      # The same completed turn #handle_exit's success branch sees, reached through
+      # the other door, so it ends a quota-wall streak the same way.
+      ProviderQuotaWallPark.end_streak!(session)
+
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :needs_input)
     rescue

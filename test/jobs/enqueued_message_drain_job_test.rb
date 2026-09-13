@@ -251,6 +251,27 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
     assert_equal "pending", message.reload.status
   end
 
+  # A provider quota wall (ProviderQuotaWallPark) is the same refusal until its
+  # re-check is due — and only until then: once due, the session is owed the turn.
+  test "leaves a session parked on a provider quota wall alone until its re-check is due" do
+    session, message = sleeping_session_with_queued_message
+    session.merge_metadata!(ProviderQuotaWallPark::METADATA_KEY => {
+      "started_at" => Time.current.utc.iso8601, "parks" => 1, "next_check_at" => 15.minutes.from_now.utc.iso8601
+    })
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      EnqueuedMessageDrainJob.perform_now(session.id)
+    end
+    assert_equal "pending", message.reload.status
+
+    travel 16.minutes do
+      assert_enqueued_with(job: AgentSessionJob) do
+        EnqueuedMessageDrainJob.perform_now(session.id)
+      end
+    end
+    assert_not EnqueuedMessage.exists?(message.id), "a due re-check no longer holds the queue"
+  end
+
   test "leaves a session waiting on a scheduled MCP retry alone" do
     session, message = idle_session_with_queued_message
     session.update!(metadata: (session.metadata || {}).merge("paused_by" => "mcp_retry"))

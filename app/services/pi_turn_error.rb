@@ -111,9 +111,11 @@
 # already declined to retry on the same test, and Zimmer and Pi cannot disagree
 # about which kind of 429 it was. Every other 429 — any rate-limit wording, and any
 # quota wording neither list knows — stays `:retryable` and takes the ordinary
-# backoff. A misread in that direction costs what it cost before this existed: a
-# bounded backoff and a failure. A misread in the other direction cannot fail a
-# session at all: it parks for fifteen minutes and is re-checked.
+# backoff. A misread in that direction costs a bounded backoff and a failure. A
+# misread in the other direction cannot fail a session at all: it parks for
+# fifteen minutes and is re-checked. The likeliest such misread is "billing" in a
+# per-minute limit's prose (Gemini's RESOURCE_EXHAUSTED says "check your plan and
+# billing details"), which Pi reads the same way.
 #
 # == What Pi does NOT recover from ==
 #
@@ -268,8 +270,8 @@ class PiTurnError
   # Which recovery path owns this error, decided by the HTTP status Pi recorded.
   #
   # :retryable and :quota name paths that can act — a backoff, and a timed park.
-  # The three terminal kinds are
-  # deliberate dead ends — see "What Pi does NOT recover from" above — and naming
+  # The three terminal kinds are deliberate dead ends — see "What Pi does NOT
+  # recover from" above — and naming
   # them distinctly rather than reusing :context_length / :auth is what makes the
   # seam fail safe: no service looks for these kinds, so a Pi 401 cannot reach
   # AuthRecoveryService (which has nothing to rewrite) and a Pi context-length

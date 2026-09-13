@@ -4330,6 +4330,68 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "the park still has to reach a pause, got #{@session.status}"
   end
 
+  test "signal-check fallback does not hand a provider quota-wall park off to a queued message" do
+    job = AgentSessionJob.new
+
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p("/tmp/test-clone")
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+
+    # ProviderQuotaWallPark records its re-check inside the exit handling, before
+    # the loop reaches its pause — through this door as well as the reaped one. The
+    # park is written up front and the exit handling stands in for the park.
+    ProcessLifecycleManager.any_instance.stubs(:handle_unreaped_exit).returns(
+      ProcessLifecycleManager::ExitDecision.new(
+        action: :needs_input, error_message: "Provider quota wall — session parked, re-checking soon: 402"
+      )
+    )
+    @session.update!(metadata: (@session.metadata || {}).merge(
+      ProviderQuotaWallPark::METADATA_KEY => {
+        "started_at" => Time.current.utc.iso8601, "parks" => 1,
+        "next_check_at" => 15.minutes.from_now.utc.iso8601
+      }
+    ))
+    @session.enqueued_messages.create!(content: "next thing please", position: 1, status: "pending")
+
+    mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+    mock_process_manager.wait_hook = ->(pid, flags) { nil }
+    mock_process_manager.running_hook = ->(pid) { false }
+
+    GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; true; end
+        mock_poller
+      }) do
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.stub(:sleep, ->(_duration) { }) do
+            job.perform(@session.id)
+          end
+        end
+      end
+    end
+
+    @session.reload
+
+    assert_equal 1, @session.enqueued_messages.pending.count,
+      "a parked session must keep its queued message rather than re-spawning into the same wall"
+    assert_not @session.running?,
+      "the park still has to reach a pause, got #{@session.status}"
+  end
+
   test "signal-check fallback fails the session with a classified reason when recovery is exhausted" do
     job = AgentSessionJob.new
 
@@ -11674,15 +11736,52 @@ class AgentSessionJobTest < ActiveJob::TestCase
       end
       manager
     end
-    job.expects(:handed_off_to_enqueued_message?).never
+    @session.enqueued_messages.create!(content: "next thing please", position: 1, status: "pending")
 
     perform_with_stubs(job: job) { job.perform(@session.id, nil, resume_monitoring: true) }
 
     @session.reload
+    assert_equal 1, @session.enqueued_messages.pending.count,
+      "a parked session must keep its queued message rather than re-spawning into the same wall"
     assert_equal "waiting", @session.status, "the park must sleep until its re-check"
     assert_match(/Provider quota wall — session parked/, @session.metadata["exit_status"])
     logs = @session.logs.map(&:content)
     assert logs.any? { |l| l.start_with?("Session paused: Provider quota wall") }
+    assert logs.none? { |l| l.include?("CLI completed turn successfully") }
+  end
+
+  # A quota wall past its re-check ceiling parks nothing, but it is still a stop
+  # with a reason, not a finished turn: the reason reaches the log and exit_status.
+  test "a needs_input decision that carries a reason is recorded as a stop, not a completed turn" do
+    clone_path = "/tmp/test-clone-quota-ceiling"
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      metadata: { "process_pid" => 12345, "clone_path" => clone_path }
+    )
+
+    job = build_resume_monitoring_job(clone_path: clone_path, pid: 12345, exit_status: MockProcessManager::MockStatus.new(0))
+    job.define_singleton_method(:create_lifecycle_manager) do |session, log_buffer|
+      manager = ProcessLifecycleManager.new(
+        session: session, cli_adapter: cli_adapter_for(session), process_manager: @process_manager,
+        log_buffer: log_buffer, file_system: @file_system
+      )
+      manager.define_singleton_method(:handle_exit) do |_status, working_dir:|
+        ProcessLifecycleManager::ExitDecision.new(
+          action: :needs_input,
+          error_message: "Provider quota wall still standing after 7 days — re-checks stopped; resume once the balance is restored: 402"
+        )
+      end
+      manager
+    end
+
+    perform_with_stubs(job: job) { job.perform(@session.id, nil, resume_monitoring: true) }
+
+    @session.reload
+    assert_equal "needs_input", @session.status
+    assert_match(/re-checks stopped/, @session.metadata["exit_status"])
+    logs = @session.logs.map(&:content)
+    assert logs.any? { |l| l.start_with?("Session paused: Provider quota wall still standing") }
     assert logs.none? { |l| l.include?("CLI completed turn successfully") }
   end
 

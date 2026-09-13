@@ -56,7 +56,8 @@
 # routes to cannot disagree about which error is live. PiTurnError holds the
 # evidence table; the short version is:
 #
-#   5xx, 429, 408, `terminated`, `Connection error.` -> api_error_for_retry?  (backoff retry)
+#   5xx, 429 rate limit, 408, `terminated`,          -> api_error_for_retry?  (backoff retry)
+#     `Connection error.`
 #   402, and a 429 worded as a quota wall            -> api_error_for_retry?  (quota: timed park)
 #   401, 403                                         -> terminal, named, no page
 #   any other 4xx (context length among them)        -> terminal, named, no page

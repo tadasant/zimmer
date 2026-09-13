@@ -79,15 +79,77 @@ class ProviderQuotaWallParkTest < ActiveJob::TestCase
     assert_equal 1, park!.park_number
   end
 
-  test "parked? is the streak and the pending sleep together" do
+  test "parked? holds until the re-check is due, and not after" do
     assert_not ProviderQuotaWallPark.parked?(@session)
     assert_not ProviderQuotaWallPark.parked?(nil)
 
     park!
+    @session.reload
+    assert ProviderQuotaWallPark.parked?(@session)
+
+    # `sleep!` consumes pending_sleep; the park is still a park.
+    @session.remove_metadata!("pending_sleep")
     assert ProviderQuotaWallPark.parked?(@session.reload)
 
-    @session.remove_metadata!("pending_sleep")
-    assert_not ProviderQuotaWallPark.parked?(@session.reload), "a streak alone outlives the turn it parked"
+    assert_not ProviderQuotaWallPark.parked?(@session, now: 16.minutes.from_now),
+      "a streak outlives the turn it parked, but a due re-check is owed its turn"
+  end
+
+  # A wall that arrives long after the streak's re-check was due is not that
+  # re-check: whatever ran since was a different turn, and it must not inherit the
+  # old streak's rung — or its ceiling, which would stop re-checks on the first park.
+  test "a streak whose re-check was due long ago is not continued" do
+    @session.merge_metadata!(ProviderQuotaWallPark::METADATA_KEY => {
+      "started_at" => 10.days.ago.utc.iso8601,
+      "parks" => 9,
+      "next_check_at" => (ProviderQuotaWallPark::STALE_AFTER + 1.minute).ago.utc.iso8601
+    })
+
+    outcome = park!
+
+    assert outcome.parked?, "a fresh wall must not open at the ceiling"
+    assert_equal 1, outcome.park_number
+    assert_in_delta Time.current.to_i, Time.iso8601(ProviderQuotaWallPark.streak(@session.reload)["started_at"]).to_i, 5
+    assert_enqueued_jobs 1, only: SendPushNotificationJob
+  end
+
+  test "a streak with no readable due time is not continued" do
+    @session.merge_metadata!(ProviderQuotaWallPark::METADATA_KEY => { "started_at" => 10.days.ago.utc.iso8601, "parks" => 9 })
+
+    assert_equal 1, park!.park_number
+  end
+
+  # A session a human resumed early, whose turn then completed, must not be handed
+  # a quota-wall nudge hours later. A re-check that already fired is held for the
+  # turn it woke and retired by the state machine, so it is left alone.
+  test "ending the streak withdraws a re-check that has not fired, and only that" do
+    park!
+    trigger_id = ProviderQuotaWallPark.streak(@session.reload)["wake_trigger_id"]
+    assert Trigger.exists?(trigger_id)
+
+    assert ProviderQuotaWallPark.end_streak!(@session)
+    assert_not Trigger.exists?(trigger_id)
+
+    @session.update!(status: :running)
+    park!
+    fired_id = ProviderQuotaWallPark.streak(@session.reload)["wake_trigger_id"]
+    Trigger.where(id: fired_id).update_all(wake_held_at: Time.current)
+
+    ProviderQuotaWallPark.end_streak!(@session)
+    assert Trigger.exists?(fired_id), "a fired wake is the state machine's to retire"
+  end
+
+  # Resumed early by a message and refused again: the old re-check is replaced,
+  # not joined by a second one.
+  test "a re-park replaces a re-check that has not fired" do
+    park!
+    first_id = ProviderQuotaWallPark.streak(@session.reload)["wake_trigger_id"]
+
+    @session.update!(status: :running)
+    park!
+
+    assert_not Trigger.exists?(first_id)
+    assert_equal 1, wake_triggers.count
   end
 
   test "ending a streak that does not exist writes nothing" do
@@ -102,7 +164,8 @@ class ProviderQuotaWallParkTest < ActiveJob::TestCase
   test "at the ceiling it stops re-checking, clears the streak, and notifies" do
     @session.merge_metadata!(ProviderQuotaWallPark::METADATA_KEY => {
       "started_at" => (ProviderQuotaWallPark::CEILING - 7.hours).ago.utc.iso8601,
-      "parks" => 23
+      "parks" => 23,
+      "next_check_at" => Time.current.utc.iso8601
     })
 
     outcome = park!
@@ -119,7 +182,8 @@ class ProviderQuotaWallParkTest < ActiveJob::TestCase
   test "a re-check that still fits under the ceiling is armed" do
     @session.merge_metadata!(ProviderQuotaWallPark::METADATA_KEY => {
       "started_at" => (ProviderQuotaWallPark::CEILING - 9.hours).ago.utc.iso8601,
-      "parks" => 23
+      "parks" => 23,
+      "next_check_at" => Time.current.utc.iso8601
     })
 
     assert park!.parked?
@@ -136,6 +200,7 @@ class ProviderQuotaWallParkTest < ActiveJob::TestCase
     assert_not outcome.parked?
     assert_match(/could not schedule a re-check/, outcome.error_message)
     assert_equal 0, wake_triggers.count
+    assert_nil ProviderQuotaWallPark.streak(@session.reload), "no record may claim a re-check that does not exist"
     assert_match(/could not schedule a re-check/, @session.logs.last.content)
   end
 
