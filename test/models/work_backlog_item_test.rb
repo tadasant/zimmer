@@ -198,6 +198,11 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     assert_equal 115, item.issue_number
     assert_equal "Implement strad#115 (Fix it)", item.session_title
 
+    item.issue_url = "https://GitHub.com/tadasant/strad/issues/115"
+    assert_equal "tadasant/strad", item.issue_repo
+    item.issue_url = "https://github.com/tadasant/strad/extra/issues/115"
+    assert_nil item.issue_repo, "a path that is not owner/name/issues/N names no repository"
+
     assert_nil backlog_item(key: "manual-thing", issue_url: nil, added_by: "human",
                             payload: { "prompt" => "x" }).issue_repo
   end
