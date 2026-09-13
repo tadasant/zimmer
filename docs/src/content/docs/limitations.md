@@ -918,12 +918,13 @@ flow), the GoodJob dashboard, the `/supervisor` admin panel, the API keys page, 
 
 Three of those carry the most blast radius:
 
-- The **`/supervisor` Administrate panel** renders `mcp_oauth_credentials` and `x_oauth_credentials`
-  as *editable* resources, and `mcp_oauth_credentials.access_token` / `.refresh_token` /
-  `.client_secret` are among the fields it puts in an edit form. Two credential columns are held back
-  from the panel entirely, each listed in its dashboard's `DELIBERATELY_OMITTED` with the reason
-  written next to it: `claude_accounts.oauth_config`, the plaintext Anthropic and OpenAI tokens the
-  whole fleet runs on, and `runtime_login_attempts.pasted_code`.
+- The **`/supervisor` Administrate panel** renders `mcp_oauth_credentials`,
+  `mcp_oauth_pending_flows` and `x_oauth_credentials` as *editable* resources, and
+  `mcp_oauth_credentials.access_token` / `.refresh_token` / `.client_secret` are among the fields it
+  puts in an edit form. Some credential columns are held back from the panel entirely, each listed
+  in its dashboard's `DELIBERATELY_OMITTED` with the reason written next to it, among them
+  `claude_accounts.oauth_config` (the plaintext Anthropic and OpenAI tokens the whole fleet runs on),
+  `runtime_login_attempts.pasted_code` and `api_keys.token_digest`.
 - **`/settings/api_keys`** mints full-API keys and revokes any key, including the one the fleet's
   sessions share.
 - The **mutating `POST /health/*` actions** (`cleanup_processes`, `retry_sessions`, `archive_old`,
