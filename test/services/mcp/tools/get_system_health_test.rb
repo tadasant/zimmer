@@ -218,6 +218,32 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     refute_includes result, "`zombie_reaper`"
   end
 
+  # Whether `webhook_with_poll_fallback` is proving itself, for an agent with no route to /health:
+  # one line always, and a line of counts for each source whose webhook is on.
+  test "webhook ingest is one line when every source polls, and gives counts for a switched-on source" do
+    polling = HealthMonitorService::HealthStatus.new(status: :healthy, message: "Every source polls; no webhook is switched on")
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "healthy", inbound_event_health: { status: polling, sources: [ { name: "slack", webhook_enabled: false } ] } }
+    )
+    result = @tool.call({})
+    assert_includes result, "- **Webhook ingest:** Every source polls; no webhook is switched on"
+    refute_includes result, "  - `slack`"
+
+    missed = HealthMonitorService::HealthStatus.new(status: :warning, message: "slack: the poller claimed 1 of 3 trigger event(s) in the last 24h")
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "healthy", inbound_event_health: { status: missed, sources: [
+        { name: "slack", mode: "webhook_with_poll_fallback", webhook_enabled: true, accepting: true,
+          last_delivery_at: Time.utc(2026, 9, 13, 8, 30), deliveries_in_window: 40,
+          webhook_claims_in_window: 2, poll_claims_in_window: 1 }
+      ] } }
+    )
+    result = @tool.call({})
+
+    assert_includes result, "- **Webhook ingest:** slack: the poller claimed 1 of 3 trigger event(s) in the last 24h"
+    assert_includes result, "  - `slack` (webhook_with_poll_fallback): last delivery 2026-09-13 08:30 UTC; last 24h: " \
+                            "40 deliveries, 2 trigger events claimed via webhook, 1 via poll"
+  end
+
   # A key that stopped overnight and recovered reads `fresh`, so the line above would
   # not carry it — and its own summary line is INFO, which the OTel appender does not
   # ship. This bullet is the only place an agent can read it (tadasant/zimmer#584).

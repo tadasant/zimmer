@@ -31,6 +31,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert report.key?(:sigterm_retry_health)
     assert report.key?(:api_error_retry_health)
     assert report.key?(:log_retention_health)
+    assert report.key?(:inbound_event_health)
     assert report.key?(:cron_health)
     assert report.key?(:overall_status)
     assert report.key?(:generated_at)
@@ -73,6 +74,42 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert cron[:status].warning?
     assert_match(/Cron freshness could not be read: settings unreadable/, cron[:status].message)
     assert_empty cron[:keys]
+  end
+
+  # === Inbound events ===
+  #
+  # The rule is Webhooks::IngestSummary's and is tested there; these pin that the reading reaches
+  # the report every surface serves, and that it never moves the headline.
+
+  test "inbound_event_health carries each webhook source and stays out of overall_status" do
+    keys = %w[SLACK_TRIGGER_INGEST_MODE SLACK_SIGNING_SECRET]
+    saved = keys.to_h { |key| [ key, ENV[key] ] }
+    keys.each { |key| ENV.delete(key) }
+
+    baseline = @service.full_health_report
+    assert baseline[:inbound_event_health][:status].healthy?
+
+    # Switched on with no secret to verify with: the section warns.
+    ENV["SLACK_TRIGGER_INGEST_MODE"] = "webhook_with_poll_fallback"
+    report = @service.full_health_report
+
+    inbound = report[:inbound_event_health]
+    assert_equal [ "slack" ], inbound[:sources].map { |s| s[:name] }
+    assert inbound[:status].warning?
+    assert_equal baseline[:overall_status].status, report[:overall_status].status,
+                 "webhook ingest is informational — it must not move the aggregate the alerting reads"
+  ensure
+    saved&.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+  end
+
+  test "an inbound event read that fails costs its own card, not the report" do
+    Webhooks::IngestSummary.stubs(:report).raises(StandardError, "relation missing")
+
+    inbound = @service.full_health_report[:inbound_event_health]
+
+    assert inbound[:status].warning?
+    assert_match(/Webhook delivery status could not be read: relation missing/, inbound[:status].message)
+    assert_empty inbound[:sources]
   end
 
   # === Log retention ===

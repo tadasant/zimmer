@@ -27,14 +27,35 @@ module Webhooks
     attr_reader :name, :mode_key, :secret_key
 
     def self.slack
-      @slack ||= new(name: "slack", mode_key: "SLACK_TRIGGER_INGEST_MODE", secret_key: "SLACK_SIGNING_SECRET")
+      @slack ||= new(
+        name: "slack", mode_key: "SLACK_TRIGGER_INGEST_MODE", secret_key: "SLACK_SIGNING_SECRET",
+        served_conditions: -> {
+          # COALESCE because TriggerCondition#event_type reads an absent key as `new_message`.
+          TriggerCondition.slack.where(
+            "COALESCE(trigger_conditions.configuration->>'event_type', 'new_message') IN (?)", SlackEventJob::SERVED_EVENT_TYPES
+          )
+        }
+      )
     end
 
-    def initialize(name:, mode_key:, secret_key:)
+    # Every source with a webhook endpoint, in the order the health report lists them.
+    def self.all
+      [ slack ]
+    end
+
+    def initialize(name:, mode_key:, secret_key:, served_conditions: -> { TriggerCondition.none })
       @name = name
       @mode_key = mode_key
       @secret_key = secret_key
+      @served_conditions = served_conditions
       @warned = Set.new
+    end
+
+    # The trigger conditions this source's webhook can fire. The poller also claims events for
+    # conditions outside it (Slack's passive listening), and nothing can race it for those, so a
+    # poll claim only says the webhook missed something when its condition is in this scope.
+    def served_conditions
+      @served_conditions.call
     end
 
     def mode
