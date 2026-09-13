@@ -394,7 +394,7 @@ class WorkBacklogItem < ApplicationRecord
   # gate sets it apart on purpose when the fix lives elsewhere than the tracking
   # issue, so `issue_number` means nothing paired with it (#1188).
   def issue_repo
-    match = issue_url.to_s.match(%r{github\.com/([^/]+/[^/]+)/issues/\d+\z})
+    match = issue_url.to_s.match(%r{\Ahttps?://github\.com/([^/]+/[^/]+)/issues/\d+\z}i)
     match && match[1]
   end
 
