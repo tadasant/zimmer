@@ -122,8 +122,10 @@ module ApplicationHelper
   end
 
   # The inline elements `inline_markdown` keeps. Everything else — paragraphs,
-  # headings, lists, tables, code blocks — is unwrapped to its text.
-  INLINE_MARKDOWN_TAGS = %w[a code strong em del].freeze
+  # headings, lists, tables, code blocks — is unwrapped to its text. `q` is here
+  # because the renderer's `quote` extension turns "quoted text" into one, and
+  # dropping the tag would drop the quotation marks with it.
+  INLINE_MARKDOWN_TAGS = %w[a code strong em del q].freeze
   INLINE_MARKDOWN_ATTRIBUTES = %w[href target rel].freeze
 
   # Markdown for a one-line slot: a row on a list, where a <p>, a heading or a
@@ -142,7 +144,8 @@ module ApplicationHelper
   def markdown_plain_text(text)
     return "" if text.blank?
 
-    CGI.unescapeHTML(strip_tags(markdown(text))).squish
+    html = markdown(text).gsub(%r{</?q>}, '"')
+    CGI.unescapeHTML(strip_tags(html)).squish
   end
 
   # Persisted network-egress health for the global banner (see EgressHealthCheck).

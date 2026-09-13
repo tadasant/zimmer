@@ -22,8 +22,8 @@ module StatusSummaryAnswer
   # push the rest of the page off screen.
   MAX_SUMMARY_CHARS = 1200
 
-  # A refusal is one short line. A real answer is up to three sentences carrying markdown
-  # links, and is an order of magnitude longer — so length is what keeps the
+  # A refusal is one short line. A real answer is up to three sentences carrying
+  # markdown links, and is an order of magnitude longer — so length is what keeps the
   # patterns off a genuine summary that happens to be ABOUT a session which hit a
   # limit. Getting that judgement wrong costs a regeneration, never a wrong blurb.
   MAX_REFUSAL_CHARS = 200
