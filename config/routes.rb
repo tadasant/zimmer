@@ -58,6 +58,12 @@ Rails.application.routes.draw do
     # what Zimmer wrote to the Parameter Store, and an editable audit log is not
     # an audit log. The dashboard's FORM_ATTRIBUTES is empty for the same reason.
     resources :managed_secret_writes, only: [ :index, :show ]
+    # Read-only, both of them. A delivery row is what Webhooks::SlackController verified and
+    # accepted, and a claim is a Slack firing path's record that a message has fired. Nothing here
+    # is hand-authored, and an edited or deleted claim would re-fire a message the other path
+    # already answered.
+    resources :trigger_event_claims, only: [ :index, :show ]
+    resources :webhook_deliveries, only: [ :index, :show ]
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
     # Read-only plus destroy: every row records what a remote MCP server answered
@@ -150,6 +156,12 @@ Rails.application.routes.draw do
   match "mcp", to: "mcp#handle", via: [ :post, :get, :delete ], as: :mcp
 
   # API routes
+  # Inbound provider webhooks (#217). Outside /api because they authenticate with the
+  # provider's signature over the raw body, not Zimmer's API key — see Webhooks::BaseController.
+  namespace :webhooks do
+    post "slack", to: "slack#create", as: :slack
+  end
+
   namespace :api do
     get "secrets/keys", to: "secrets#keys"
 

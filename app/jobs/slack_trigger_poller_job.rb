@@ -39,6 +39,10 @@
 # - No DM polling: every DM to the bot is already directed at it, and both the
 #   bot_mention and dm_message condition types cover DMs unconditionally.
 class SlackTriggerPollerJob < ApplicationJob
+  # Everything from "this message is a fire" onward — the mention predicate, coalescing, the
+  # prompt, the spawn — is shared with SlackEventJob, the webhook path. See SlackTriggerFiring.
+  include SlackTriggerFiring
+
   # Runs on the dedicated `pollers` queue (like every other *PollerJob), NOT on
   # `default`. A single poll is a long, external-API-bound unit of work: it makes
   # many Slack calls, each of which may absorb a short blip with a blocking
@@ -155,18 +159,6 @@ class SlackTriggerPollerJob < ApplicationJob
   # author, so both are nil — latest_reply being nil forces a direct replies fetch
   # in the checking loop.
   RecheckThreadParent = Struct.new(:ts, :latest_reply, :user)
-
-  # How much of a folded message's text to quote in the surviving session's
-  # prompt. Enough to tell one alert from another; the link beside it is what a
-  # session follows to read the whole thing.
-  FOLDED_MESSAGE_EXCERPT = 200
-
-  # How many folded messages the note lists individually. Past this it gives a
-  # count: a burst of more than 25 messages inside one window is a story about the
-  # burst, not about any one message in it, and 25 links is already more than
-  # anyone reads. (Trigger::MAX_BURST_NOTICE_LINKS caps the burst notice for the
-  # same reason.)
-  MAX_FOLDED_MESSAGES_LISTED = 25
 
   def perform
     return unless SlackService.configured?
@@ -511,44 +503,7 @@ class SlackTriggerPollerJob < ApplicationJob
     condition.update!(last_polled_at: Time.current)
   end
 
-  # Whether a message is an @mention of the bot that this condition may fire on.
-  #
-  # The bot's OWN messages never qualify, whatever the allow-list says. Zimmer posts
-  # to Slack with this same token, and a bot_mention condition with no
-  # channel configured polls EVERY channel the bot is in -- so without this, an alert
-  # quoting "<@bot>" would trigger a session, which would alert, which would trigger.
-  #
-  # Messages from OTHER apps still qualify, as long as Slack attributes them to a user
-  # (apps posting with a bot token carry the bot's user ID). The poller already treats
-  # bots as valid trigger sources for new_message conditions, and "an alerting app
-  # @mentions Zimmer to open a session" is a use case, not an accident -- only the
-  # self-loop is closed. Messages with no `user` at all (legacy webhooks) never fire
-  # anything: there is no identity to check an allow-list against.
-  def mention_for?(condition, message, bot_id)
-    return false unless mentions_bot?(message, bot_id)
-    return false if message.user == bot_id
-
-    condition.user_allowed?(message.user)
-  end
-
-  # The single notion of "this message @mentions Zimmer", shared by the bot_mention
-  # filter and the passive-listening exclusion. They MUST agree: two different
-  # notions would double-fire whatever fell between them, which is the exact bug the
-  # exclusion exists to close.
-  def mentions_bot?(message, bot_id)
-    return false if bot_id.blank?
-
-    message.text.to_s.include?("<@#{bot_id}>")
-  end
-
-  # Poll a single configured channel for @bot mentions from allowed users.
-  #
-  # This method IS the channel's unit of work, so it owns a unit rescue like the
-  # per-channel one in #process_all_channel_mentions. Everything that can fail
-  # against Slack sits above the cursor write or inside a rescue of its own, so a
-  # failure here never leaves a cursor sitting past something unread — and the rest
-  # of the condition (its DMs, its last_polled_at) survives a channel that Slack
-  # will not talk about.
+  # Poll a single configured channel for @bot mentions from allowed users
   def process_channel_mentions(condition, bot_id:)
     channel_id = condition.channel_id
     all_messages = fetch_new_messages(channel_id, condition.last_message_ts)
@@ -1261,113 +1216,7 @@ class SlackTriggerPollerJob < ApplicationJob
     end
   end
 
-  # Partition messages into groups that each count as ONE event.
-  #
-  # Two messages are the same event when they share a conversation (the caller's
-  # doing), an AUTHOR, and a window. All three narrow the key deliberately, since
-  # the failure that does not announce itself is a genuinely distinct alert
-  # swallowed by a group.
-  #
-  # Author, because a burst is one producer repeating itself. Seven alerts from
-  # one app are one event; two people @mentioning Zimmer twenty seconds apart are
-  # two requests, and folding the second into the first would render the prompt
-  # from the first person's words and leave the second as a quoted excerpt in a
-  # note their trigger's template never anticipated.
-  #
-  # A group is anchored on its first message and spans at most the window: each
-  # message joins its author's open group when it landed within `window` seconds
-  # of the message that OPENED that group, and opens a new one otherwise.
-  # Anchoring rather than chaining off the previous message is what bounds a
-  # group — a channel posting steadily just inside the window would otherwise
-  # chain into one unbounded group that swallows an hour of unrelated alerts.
-  #
-  # With a window of 0 (Trigger#coalesce_window_seconds set to 0) every message
-  # is its own group, which is the behaviour before coalescing existed.
-  #
-  # Ordered oldest-first, so the message that opens a group is the FIRST of the
-  # burst — the one the router should treat as the head of the thread, and the
-  # one whose author and link the prompt is built from.
-  def coalesced_groups(trigger, messages)
-    ordered = messages.sort_by { |message| message.ts.to_s.to_f }
-    window = trigger.effective_coalesce_window_seconds
-    return ordered.map { |message| [ message ] } unless window.positive?
-
-    open_groups = {}
-
-    ordered.each_with_object([]) do |message, groups|
-      author = coalescing_author_key(message)
-      open_group = open_groups[author] if author.present?
-
-      if open_group && (message.ts.to_s.to_f - open_group.first.ts.to_s.to_f) <= window
-        open_group << message
-      else
-        group = [ message ]
-        open_groups[author] = group if author.present?
-        groups << group
-      end
-    end
-  end
-
-  # Who Slack says posted a message, for the purpose of deciding whether two
-  # messages are the same producer repeating itself.
-  #
-  # `user` for a human and for an app posting with a bot token; `bot_id` for an
-  # app that posts without one (a webhook integration), which is what makes an
-  # alerting app's own burst coalesce; `username` last, for a message carrying
-  # nothing else.
-  #
-  # A message with none of the three is never coalesced — it opens a group and
-  # nothing joins it. No identity is no evidence that two messages share a
-  # producer, and the safe direction is a session too many rather than an alert
-  # nothing answers.
-  def coalescing_author_key(message)
-    message.user.presence || message.bot_id.presence || message.username.presence
-  end
-
-  # The block appended to a coalesced session's prompt, naming the messages that
-  # were folded into it.
-  #
-  # Folding is not dropping, and this is the whole difference. The session that
-  # survives a burst is told about the messages it stands in for, with their
-  # links, so an operator reading it sees the same set of events N sessions would
-  # have seen between them — no message is silently swallowed by the window.
-  #
-  # `permalinks` is passed in rather than resolved here: the caller needs the same
-  # links for the human-message records, and each one costs a Slack API call.
-  def folded_messages_note(folded, permalinks:, channel_name:, window:)
-    listed = folded.first(MAX_FOLDED_MESSAGES_LISTED)
-
-    lines = listed.map do |message|
-      link = permalinks[message]
-      author = get_author_name(message)
-      excerpt = message.text.to_s.gsub(/\s+/, " ").strip.truncate(FOLDED_MESSAGE_EXCERPT)
-      at = slack_ts_to_time(message.ts).utc.strftime("%H:%M:%S UTC")
-
-      "- #{at} — #{author}: #{excerpt.presence || '(no text)'}#{link.present? ? " — #{link}" : ''}"
-    end
-
-    # A burst bigger than the cap is itself the news, so say the number rather
-    # than quietly listing the first few. The unlisted ones are still recorded
-    # against this session as human messages.
-    if folded.length > listed.length
-      lines << "- ...and #{folded.length - listed.length} more, not listed individually — read the channel."
-    end
-
-    <<~NOTE.strip
-      ---
-
-      #{folded.length} more message#{'s' if folded.length != 1} landed in #{channel_name} within #{window}s of the one above, so
-      Zimmer folded them into this session rather than starting one session each. Treat them as part
-      of the same event and read all of them before deciding what to do — the first message is not
-      necessarily the whole story:
-
-      #{lines.join("\n")}
-    NOTE
-  end
-
   def process_message(condition, message, channel_id:, dm: false, prior_ts: nil, folded: [])
-    trigger = condition.trigger
-
     # For first-poll baseline messages, just record the timestamp.
     # Determine the relevant prior timestamp based on message source:
     # - DMs: per-user dm_timestamps
@@ -1382,123 +1231,7 @@ class SlackTriggerPollerJob < ApplicationJob
     end
     return if relevant_ts.blank?
 
-    # Get message details for the prompt
-    permalink = get_message_permalink(channel_id, message.ts)
-    author_name = get_author_name(message)
-    message_text = message.text || ""
-
-    channel_name = dm ? "DM" : (condition.channel_name.presence || resolve_channel_name(channel_id))
-
-    # {{text}}, {{author}} and {{channel}} are what a person typed or named. The
-    # identifiers after them are what this poll read off Slack's own fields — the
-    # conversation it asked for, and the message's ts, thread and user — so a
-    # template can give the agent the place to act without it trusting the text
-    # (Trigger::TRUSTED_IDENTIFIER_FORMATS). {{thread_ts}} is the thread to reply
-    # into: the parent's ts for a reply, the message's own ts for a top-level one.
-    prompt = trigger.interpolate_prompt(
-      link: permalink,
-      text: message_text,
-      author: author_name,
-      channel: channel_name,
-      channel_id: channel_id,
-      message_ts: message.ts,
-      thread_ts: message.thread_ts.presence || message.ts,
-      author_id: message.user
-    )
-
-    # The messages this one is standing in for. Appended AFTER interpolation, not
-    # through a template variable: a trigger's template is written by whoever
-    # configured it and cannot be expected to mention a burst, and the one thing
-    # that must never happen is a folded message going unmentioned.
-    # Resolved once, here, because the same links are wanted twice: in the note
-    # below and on the human-message records further down. Only the ones the note
-    # will list are resolved — past that cap the note gives a count instead, and a
-    # link per message would be a Slack API call per message for text nobody
-    # reads.
-    folded_permalinks = folded.first(MAX_FOLDED_MESSAGES_LISTED).index_with do |folded_message|
-      get_message_permalink(channel_id, folded_message.ts)
-    end
-
-    if folded.any?
-      prompt = [
-        prompt,
-        folded_messages_note(
-          folded,
-          permalinks: folded_permalinks,
-          channel_name: dm ? "this DM" : "##{channel_name}",
-          window: trigger.effective_coalesce_window_seconds
-        )
-      ].join("\n\n")
-    end
-
-    session = nil
-
-    # The spawn and the record commit together.
-    #
-    # Trigger#create_session! enqueues the agent job itself, and GoodJob's queue
-    # is this same database — so without the transaction a worker could claim
-    # the job and build the session's first prompt before the human's message
-    # existed to be injected into it. That would drop the human's own words from
-    # the one channel where a genuinely named human is the author. Every web-UI
-    # path already records before it enqueues; this makes Slack agree.
-    #
-    # HumanMessageCapture takes its own savepoint and swallows its own errors,
-    # so a capture failure still cannot take the spawn down with it.
-    ActiveRecord::Base.transaction do
-      session = trigger.create_session!(prompt: prompt)
-
-      if session
-        # We record the human's OWN words (message_text), never the rendered
-        # prompt: `prompt` is the trigger's prompt_template with the message
-        # interpolated into it, and the template is written by whoever
-        # configured the trigger, not by the person who just spoke. Recording
-        # the rendered text would attribute machine-written instructions to a
-        # human.
-        #
-        # Resolution goes through the Slack user ID map, so a message from an
-        # allow-listed account that maps to no configured human records nothing
-        # — `user_allowed?` says "may fire this trigger", which is not the same
-        # claim as "is Tadas or Julie".
-        #
-        # A folded message gets its own record against the same session, for the
-        # same reason its link is in the prompt: coalescing decides how many
-        # SESSIONS a burst produces, and it must not decide whose words are on
-        # the record. Without this, the second and later messages of a burst
-        # would lose their human author entirely.
-        ([ message ] + folded).each do |captured|
-          HumanMessageCapture.record_slack_message(
-            session: session,
-            slack_user_id: captured.user,
-            content: captured.text.to_s,
-            entry_point: dm ? "slack.dm" : "slack.channel_message",
-            slack_channel: channel_name,
-            slack_permalink: captured.equal?(message) ? permalink : folded_permalinks[captured],
-            occurred_at: slack_ts_to_time(captured.ts)
-          )
-        end
-      end
-    end
-
-    # Burst control can suppress the spawn (see Trigger::BURST_WINDOW). The
-    # message is then DROPPED, not retried: the caller advances the condition's
-    # cursor to the newest message it fetched regardless of what each message
-    # produced, which is exactly what we want here — replaying a burst once it
-    # subsides would spawn the very sessions the cap exists to prevent.
-    #
-    # `skip_if_pending_session` drops the message the same way and for the same
-    # reason: a session this trigger already spawned is still queued, so the
-    # message it would have spawned a second session for is covered by that one.
-    if session.nil?
-      reason = trigger.last_fire_skipped_for_pending_session? ? "session #{trigger.last_fire_pending_session.id} is still pending" : "burst-suppressed"
-      Rails.logger.info "[SlackTriggerPollerJob] Trigger #{trigger.id} spawned nothing for message #{message.ts}#{" (+#{folded.length} coalesced)" if folded.any?} (#{reason}) — dropping it"
-      return
-    end
-
-    # Update condition's last_triggered_at
-    condition.update!(last_triggered_at: Time.current)
-
-    coalesced = folded.any? ? " (coalescing #{folded.length} further message(s) that landed within #{trigger.effective_coalesce_window_seconds}s)" : ""
-    Rails.logger.info "[SlackTriggerPollerJob] Created session #{session.id} for trigger #{trigger.id} from #{dm ? 'DM' : 'channel'} message #{message.ts}#{coalesced}"
+    fire_slack_event(condition, message, channel_id: channel_id, dm: dm, via: "poll", folded: folded)
   # Deliberately NOT #note_unit_failure: this rescue keeps its ERROR even for a
   # transient Slack failure, because unlike the fetch-side rescues it is past the
   # point of no return. Every caller advances its cursor to the newest message it
@@ -1509,30 +1242,6 @@ class SlackTriggerPollerJob < ApplicationJob
   rescue => e
     note_transient(e)
     Rails.logger.error "[SlackTriggerPollerJob] Failed to create session for message #{message.ts}: #{e.message}"
-  end
-
-  # A Slack `ts` is an epoch-seconds string with a microsecond suffix
-  # ("1717171717.123456"). Falls back to now when it is missing or unparseable —
-  # a slightly-off timestamp on a real human message beats dropping the event.
-  def slack_ts_to_time(ts)
-    seconds = ts.to_s.to_f
-    return Time.current if seconds <= 0
-
-    Time.zone.at(seconds)
-  end
-
-  # The message's Slack link, or nil when Slack won't give us one.
-  #
-  # Degrading rather than raising, for the same reason #get_author_name and
-  # #resolve_channel_name do: every caller of #process_message advances its cursor
-  # past this message whether or not a session came out of it, so an exception
-  # escaping here does not defer the message — it deletes it. A prompt missing its
-  # link is a worse prompt; a trigger that silently never fires is a lost message.
-  def get_message_permalink(channel_id, message_ts)
-    SlackService.get_message_permalink(channel_id, message_ts)
-  rescue SlackService::SlackError => e
-    Rails.logger.warn "[SlackTriggerPollerJob] No permalink for #{message_ts} in #{channel_id}: #{e.message}"
-    nil
   end
 
   # The DM conversation list for one allow-list, memoized for this poll.
@@ -1551,27 +1260,5 @@ class SlackTriggerPollerJob < ApplicationJob
     @dm_channel_cache ||= {}
     key = user_ids.nil? ? :all : user_ids.sort
     @dm_channel_cache[key] ||= SlackService.list_dm_channels(user_ids: user_ids)
-  end
-
-  def resolve_channel_name(channel_id)
-    @channel_name_cache ||= {}
-    @channel_name_cache[channel_id] ||= begin
-      SlackService.get_channel(channel_id)&.name || channel_id
-    rescue SlackService::SlackError
-      channel_id
-    end
-  end
-
-  def get_author_name(message)
-    # For bot messages, use the bot's username or name
-    if message.bot_id.present?
-      return message.username || message.bot_profile&.name || "Bot"
-    end
-
-    return "Unknown" if message.user.blank?
-
-    SlackService.get_user_name(message.user)
-  rescue SlackService::SlackError
-    message.user
   end
 end

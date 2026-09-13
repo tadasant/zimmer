@@ -130,6 +130,8 @@ class TriggerCondition < ApplicationRecord
   ].freeze
 
   belongs_to :trigger
+  # Which external events this condition has already fired on — see TriggerEventClaim.
+  has_many :trigger_event_claims, dependent: :delete_all
 
   validates :condition_type, presence: true, inclusion: { in: CONDITION_TYPES }
   validates :configuration, presence: true

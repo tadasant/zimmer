@@ -875,6 +875,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_12_140000) do
     t.index ["trigger_id"], name: "index_trigger_conditions_on_trigger_id"
   end
 
+  create_table "trigger_event_claims", force: :cascade do |t|
+    t.decimal "anchor_ts", precision: 17, scale: 6
+    t.string "claimed_via", null: false
+    t.datetime "created_at", null: false
+    t.string "event_key", null: false
+    t.string "group_key"
+    t.bigint "session_id"
+    t.bigint "trigger_condition_id", null: false
+    t.index ["created_at"], name: "index_trigger_event_claims_on_created_at"
+    t.index ["session_id"], name: "index_trigger_event_claims_on_session_id"
+    t.index ["trigger_condition_id", "event_key"], name: "idx_on_trigger_condition_id_event_key_d755f81efd", unique: true
+    t.index ["trigger_condition_id", "group_key", "anchor_ts"], name: "idx_on_trigger_condition_id_group_key_anchor_ts_6f0c3fb4e9"
+  end
+
   create_table "triggers", force: :cascade do |t|
     t.string "agent_root_name", null: false
     t.datetime "burst_active_until"
@@ -926,6 +940,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_12_140000) do
     t.index "lower((email)::text)", name: "index_users_on_lower_email", unique: true, where: "(email IS NOT NULL)"
     t.index ["key"], name: "index_users_on_key", unique: true
     t.index ["slack_user_ids"], name: "index_users_on_slack_user_ids", using: :gin
+  end
+
+  create_table "webhook_deliveries", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "delivery_id", null: false
+    t.string "event_type"
+    t.integer "retry_num"
+    t.string "source", null: false
+    t.index ["created_at"], name: "index_webhook_deliveries_on_created_at"
+    t.index ["source", "delivery_id"], name: "index_webhook_deliveries_on_source_and_delivery_id", unique: true
   end
 
   create_table "work_backlog_items", force: :cascade do |t|
@@ -1059,6 +1083,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_12_140000) do
   add_foreign_key "token_usage_features", "session_token_usages", column: "request_id", primary_key: "request_id", on_delete: :cascade
   add_foreign_key "token_usage_features", "sessions", on_delete: :nullify
   add_foreign_key "trigger_conditions", "triggers"
+  add_foreign_key "trigger_event_claims", "sessions", on_delete: :nullify
+  add_foreign_key "trigger_event_claims", "trigger_conditions", on_delete: :cascade
   add_foreign_key "work_backlog_items", "sessions", column: "started_by_session_id", on_delete: :nullify
   add_foreign_key "work_backlog_items", "sessions", column: "started_session_id", on_delete: :nullify
   add_foreign_key "work_backlog_items", "sessions", column: "writing_session_id", on_delete: :nullify
