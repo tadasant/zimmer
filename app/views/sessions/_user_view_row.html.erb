@@ -90,15 +90,16 @@
       <%# Freshness, on every row rather than only the stale ones, so a row with no
           chip never has to be read as "probably fine". Same count the Status panel
           uses; the chip is the at-a-glance half and the words beside it say by how
-          much. %>
+          much. As of page load: nothing re-renders a row when its summary lands —
+          SessionStatusSummary broadcasts only the Status panel. %>
       <% freshness = status_summary_freshness(summary, line_count) %>
       <p class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-gray-400"
          data-summary-freshness="<%= freshness %>">
         <% case freshness %>
         <% when :regenerating %>
           <span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-indigo-50 px-1.5 py-0.5 font-medium text-indigo-700"
-                title="A new summary is being written. This one stays until it lands.">
-            <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500" aria-hidden="true"></span>Regenerating
+                title="A new summary was being written when this page loaded. Reload to see it once it lands.">
+            <span class="h-1.5 w-1.5 animate-pulse motion-reduce:animate-none rounded-full bg-indigo-500" aria-hidden="true"></span>Regenerating
           </span>
         <% when :stale %>
           <span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700"
@@ -107,7 +108,7 @@
           </span>
         <% else %>
           <span class="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 font-medium text-emerald-700"
-                title="Written after the session's latest message.">
+                title="No messages have landed in the session since this was written.">
             <span class="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>Up to date
           </span>
         <% end %>
