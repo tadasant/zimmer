@@ -10,9 +10,10 @@ opening Zimmer, working out which session produced the thing — you may have no
 into the right place. The thread you were on is gone by the time you are done.
 
 The browser extension is Zimmer's [Quick Router bubble](/sessions/spot-and-priority/#the-quick-routers-spot-opt-in)
-freed from Zimmer's own origin and given a pin. On any page: click the toolbar icon, click the thing
-your feedback is about, type, send. A router session starts with your words, the page's URL and
-content, and the spot you pinned. You never leave the page and never look for the session.
+freed from Zimmer's own origin and given a pin. On any page: press a shortcut, type, send — pointing
+at the thing your feedback is about first, if it is about one thing. A router session starts with
+your words, the page's URL and content, and the spot you pinned. You never leave the page and never
+look for the session.
 
 It lives in [`browser-extension/`](https://github.com/tadasant/zimmer/tree/main/browser-extension)
 in the repo — Chrome, Manifest V3, no build step — and is loaded unpacked. ([#175](https://github.com/tadasant/zimmer/issues/175))
@@ -36,13 +37,20 @@ the endpoint ships with the deploy, and there is no environment variable to set.
 
 ## Use
 
-- Click the icon, or press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>. The page gets a crosshair
-  and a banner.
-- Click where the feedback applies. A pin drops and a composer opens showing what it landed on
-  (`<p> Closes #98.`) — **Move pin** re-arms. <kbd>Enter</kbd> instead of a click skips the pin and
-  sends the whole page as context; <kbd>Esc</kbd> cancels at any step and keeps what you typed for the next time you arm it.
+- Click the icon, or press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>. The composer opens at once,
+  with no pin: the whole page is the context.
+- To point at one thing, press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd> instead — or **Drop a pin**
+  in the composer, which keeps what you typed. The page gets a crosshair and a banner. Click where
+  the feedback applies: a pin drops and the composer opens showing what it landed on
+  (`<p> Closes #98.`) — **Move pin** re-arms. <kbd>Enter</kbd> instead of a click skips the pin;
+  <kbd>Esc</kbd> cancels at any step and keeps what you typed for the next time you open it.
 - Type, then <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> or **Send to Zimmer**. A toast says it
   was sent and links to the session on the URL you configured; it goes away on its own.
+
+Both shortcuts can be changed on `chrome://extensions/shortcuts`. Chrome applies an extension's
+suggested shortcuts when it is installed, so a copy loaded before <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd>
+existed may not pick it up on reload; bind it there. Chrome shortcuts are one key plus modifiers — there
+are no chords, which is why pinning is a second shortcut and not <kbd>Z</kbd> then <kbd>X</kbd>.
 
 If Zimmer refuses the message or cannot be reached, the composer stays open with the reason and your
 text intact. Silently losing feedback would be worse than a second's toast, so nothing here is

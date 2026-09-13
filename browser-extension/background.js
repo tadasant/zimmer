@@ -13,13 +13,20 @@ const Settings = globalThis.ZimmerSettings;
 
 const START_MESSAGE = "zimmer-quick-router:start";
 const SUBMIT_MESSAGE = "zimmer-quick-router:submit";
+const DROP_PIN_COMMAND = "drop-pin";
 
-// A click on the toolbar icon (or the keyboard command bound to it) arms the
-// pin on the current tab. `activeTab` grants this tab, this once — the
-// extension holds no standing permission on any site.
-chrome.action.onClicked.addListener((tab) => arm(tab));
+// Two ways to start on the current tab. The toolbar icon, and Alt+Shift+Z bound
+// to it, open the composer at once with the whole page as the context; the
+// `drop-pin` command, Alt+Shift+X, starts with the crosshair. Either gesture
+// grants `activeTab` for this tab, this once — the extension holds no standing
+// permission on any site.
+chrome.action.onClicked.addListener((tab) => arm(tab, { pin: false }));
 
-async function arm(tab) {
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command === DROP_PIN_COMMAND) arm(tab, { pin: true });
+});
+
+async function arm(tab, { pin }) {
   if (!tab?.id) return;
 
   const settings = await Settings.loadSettings();
@@ -30,11 +37,11 @@ async function arm(tab) {
 
   try {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
-    await chrome.tabs.sendMessage(tab.id, { type: START_MESSAGE });
+    await chrome.tabs.sendMessage(tab.id, { type: START_MESSAGE, pin });
   } catch (error) {
     // chrome:// pages, the Web Store, and PDF viewers refuse injection. There
     // is no page to pin on, so there is nothing to tell the user in-page.
-    console.warn("[zimmer] cannot arm the pin on this tab:", error?.message || error);
+    console.warn("[zimmer] cannot start on this tab:", error?.message || error);
   }
 }
 
