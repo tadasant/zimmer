@@ -40,8 +40,10 @@ class NoWholeColumnMetadataWritersTest < ActiveSupport::TestCase
     # Creation paths: the row does not exist yet, so there is no other writer to
     # race with and no row to merge into.
     "models/session.rb" => [
-      "metadata: metadata.merge(\"agent_root_key\" => agent_root.name)",
-      "custom_metadata: custom_metadata,",
+      # Session.create_from_agent_root!'s Session.new; the agent_root_key stamp
+      # happens in Sessions::ResolveSpawnDefaults, below.
+      "metadata: metadata,",
+      "custom_metadata: custom_metadata",
       # after_create, inside the create transaction — the row is not yet visible
       # to any other connection.
       "metadata: (metadata || {}).merge(\"auto_generated_title\" => true)",
@@ -54,12 +56,14 @@ class NoWholeColumnMetadataWritersTest < ActiveSupport::TestCase
     "controllers/concerns/api_session_serialization.rb" => [
       "metadata: session.metadata,", "custom_metadata: session.custom_metadata,"
     ],
-    # Attribute assembly before Session.new / create — same reason as above.
+    # Attribute assembly on the unsaved form session, before save — same reason
+    # as above. Records the posted root name when the catalog cannot resolve it.
     "controllers/sessions_controller.rb" => [
-      "@session.metadata = (@session.metadata || {}).merge(\"agent_root_key\" => root_key)"
+      "@session.metadata = (@session.metadata || {}).merge(\"agent_root_key\" => params[:agent_root_name])"
     ],
-    # The create-time chain both spawn surfaces share (POST /api/v1/sessions and
-    # MCP start_session), which is where this assignment moved to.
+    # The create-time resolution every spawn surface shares (POST
+    # /api/v1/sessions, MCP start_session, the new-session form,
+    # Session.create_from_agent_root!). It runs on an unsaved session.
     "services/sessions/resolve_spawn_defaults.rb" => [
       "session.metadata = (session.metadata || {}).merge(\"agent_root_key\" => root.name)"
     ],
