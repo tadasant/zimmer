@@ -1715,7 +1715,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       file = File.join(dir, "main.jsonl")
       File.write(file, fresh)
 
-      @tool.stubs(:transcript_directory).returns(dir)
+      Sessions::RefreshTranscript.any_instance.stubs(:transcript_directory).returns(dir)
       TranscriptFileLocator.stubs(:find_main_transcript).returns(file)
 
       result = @tool.call("action" => "refresh_all")
@@ -1745,7 +1745,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       file = File.join(dir, "branch-uuid.jsonl")
       File.write(file, branch)
 
-      @tool.stubs(:transcript_directory).returns(dir)
+      Sessions::RefreshTranscript.any_instance.stubs(:transcript_directory).returns(dir)
       TranscriptFileLocator.stubs(:find_main_transcript).returns(file)
 
       @tool.call("action" => "refresh", "session_id" => session.id)
@@ -1763,7 +1763,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     session = sessions(:running)
     Session.where.not(id: session.id).update_all(status: Session.statuses[:archived])
 
-    @tool.stubs(:transcript_directory).returns(nil)
+    Sessions::RefreshTranscript.any_instance.stubs(:transcript_directory).returns(nil)
 
     assert_includes @tool.call("action" => "refresh_all"), "- **Refreshed:** 0"
     assert_nil session.reload.transcript
@@ -1780,7 +1780,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       file = File.join(dir, "main.jsonl")
       File.write(file, stored)
 
-      @tool.stubs(:transcript_directory).returns(dir)
+      Sessions::RefreshTranscript.any_instance.stubs(:transcript_directory).returns(dir)
       TranscriptFileLocator.stubs(:find_main_transcript).returns(file)
 
       assert_no_difference "session.logs.count" do
@@ -1799,7 +1799,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       file = File.join(dir, "main.jsonl")
       File.write(file, JSON.generate({ type: "user", message: { role: "user", content: "from disk" } }))
 
-      @tool.stubs(:transcript_directory).returns(dir)
+      Sessions::RefreshTranscript.any_instance.stubs(:transcript_directory).returns(dir)
       TranscriptFileLocator.stubs(:find_main_transcript).returns(file)
 
       result = @tool.call("action" => "refresh_all")

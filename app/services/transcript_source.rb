@@ -147,12 +147,12 @@ class TranscriptSource
   #
   # Redaction sits here because this is where transcript bytes are pulled off
   # disk. **Anything that persists transcript content must come through here**,
-  # not through a bare `File.read` — the manual-refresh paths in
-  # SessionsController, Api::V1::SessionsController and Mcp::Tools::ActionSession
-  # all route through it for exactly that reason. A raw read at any of them
-  # writes an unredacted transcript over the redacted one the poller stored, and
-  # (because the refresh paths compare stored content to file content) leaves the
-  # two writers overwriting each other on every pass.
+  # not through a bare `File.read` — the manual refresh (Sessions::RefreshTranscript,
+  # behind the web UI's, the REST API's and MCP's refreshes) routes through it for
+  # exactly that reason. A raw read there writes an unredacted transcript over the
+  # redacted one the poller stored, and (because a bulk refresh compares stored
+  # content to file content) leaves the two writers overwriting each other on
+  # every pass.
   #
   # See TranscriptRedactor for what is and is not covered.
   #

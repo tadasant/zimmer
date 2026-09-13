@@ -1146,47 +1146,27 @@ module Mcp
       end
 
       # Re-read the transcript the runtime writes to disk into the session record.
+      # The operation is Sessions::RefreshTranscript, shared with the web UI and
+      # the REST API; this only renders its outcome.
       def refresh(session)
-        transcript_dir = transcript_directory(session)
-        raise ToolError, "No clone path found for this session" if transcript_dir.nil?
+        result = Sessions::RefreshTranscript.call(session, actor: :mcp)
 
-        transcript_file = Dir.exist?(transcript_dir) ? find_main_transcript(session, transcript_dir) : nil
-        raise ToolError, "No transcript files found on filesystem" unless transcript_file
-
-        # Through the runtime's TranscriptSource, not File.read: that is where
-        # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
-        # transcript over the redacted one the poller stored. It also decompresses a
-        # Codex .zst rollout, which a raw read would have stored as binary.
-        # RekeyedTranscriptBranch is what makes that read safe now that the
-        # locator can hand back a transcript this conversation was re-keyed into:
-        # such a file is NOT a superset of the stored one, and the line-count guard
-        # below would wave a longer branch through and take the abandoned file's
-        # tail with it (#1047). A no-op on every other file.
-        content = RekeyedTranscriptBranch.continue(
-          session: session,
-          transcript_path: transcript_file,
-          content: TranscriptRuntime.source_for(session).read(transcript_file)
-        )
-        message_count = count_transcript_messages(content)
-
-        # Never let a refresh shrink the stored transcript: a shorter filesystem
-        # transcript means the clone was recreated at a new path and started a
-        # fresh file, and session.transcript is the only durable record.
-        if session.transcript_regression?(content)
-          Rails.logger.warn "[Mcp::Tools::ActionSession] Refused transcript regression for session #{session.id} " \
-                            "(stored #{session.transcript_line_count} events, filesystem #{message_count}); preserving stored transcript"
-          return summary(
+        case result.outcome
+        when :refreshed
+          summary("Session Refreshed", session, message: "Transcript refreshed (#{result.message_count} messages)")
+        when :regression
+          summary(
             "Session Refreshed",
             session,
             message: "Filesystem transcript is shorter than the stored one (clone likely recreated); kept the stored transcript"
           )
+        when :no_transcript_directory
+          raise ToolError, "No clone path found for this session"
+        when :no_transcript_file
+          raise ToolError, "No transcript files found on filesystem"
+        else
+          raise ToolError, result.error
         end
-
-        session.merge_metadata!("broadcast_message_count" => message_count)
-        session.update!(transcript: content)
-        session.logs.create!(content: "Transcript refreshed via MCP (#{message_count} messages)", level: "info")
-
-        summary("Session Refreshed", session, message: "Transcript refreshed (#{message_count} messages)")
       end
 
       # Bulk sweep: restart failed sessions, continue auto-continuable paused ones.
@@ -1252,52 +1232,16 @@ module Mcp
           .where.not(id: restarted_ids)
           .limit(REFRESH_ALL_LIMIT)
           .each do |session|
-            refreshed += 1 if refresh_transcript_from_disk(session)
+            # A byte-identical transcript is not a refresh, and is left alone.
+            result = Sessions::RefreshTranscript.call(session, actor: :mcp, bulk: true, skip_unchanged: true)
+            refreshed += 1 if result.refreshed?
+            errors += 1 if result.database_unavailable?
           rescue StandardError => e
             errors += 1
             Rails.logger.error "[Mcp::Tools::ActionSession] Failed to refresh session #{session.id}: #{e.message}"
           end
 
         refresh_all_result("Refresh complete", refreshed, restarted, continued, errors)
-      end
-
-      # Re-read one session's transcript from disk. Returns true only when the
-      # stored transcript actually changed — nothing to read, a byte-identical
-      # copy, or a shorter filesystem copy (clone recreated at a new path) is not
-      # a refresh.
-      def refresh_transcript_from_disk(session)
-        transcript_dir = transcript_directory(session)
-        return false if transcript_dir.nil? || !Dir.exist?(transcript_dir)
-
-        transcript_file = find_main_transcript(session, transcript_dir)
-        return false unless transcript_file
-
-        # Through the runtime's TranscriptSource, not File.read — see #refresh.
-        # The equality short-circuit below is why this matters twice over: it
-        # compares against the poller's redacted copy, so a raw read here would
-        # never compare equal once a redaction has fired, and the two writers
-        # would overwrite each other on every pass.
-        # See #refresh for why the read goes through RekeyedTranscriptBranch.
-        content = RekeyedTranscriptBranch.continue(
-          session: session,
-          transcript_path: transcript_file,
-          content: TranscriptRuntime.source_for(session).read(transcript_file)
-        )
-        return false if session.transcript == content
-
-        message_count = count_transcript_messages(content)
-
-        if session.transcript_regression?(content)
-          Rails.logger.warn "[Mcp::Tools::ActionSession] Skipped transcript regression for session #{session.id} " \
-                            "(stored #{session.transcript_line_count} events, filesystem #{message_count}); preserving stored transcript"
-          return false
-        end
-
-        session.merge_metadata!("broadcast_message_count" => message_count)
-        session.update!(transcript: content)
-        session.logs.create!(content: "Transcript refreshed via MCP bulk refresh (#{message_count} messages)", level: "info")
-
-        true
       end
 
       def update_notes(session, args)
@@ -1585,36 +1529,6 @@ module Mcp
 
       def boolean(value)
         ActiveModel::Type::Boolean.new.cast(value) || false
-      end
-
-      # The directory holding this session's transcript files, from the
-      # session's runtime TranscriptSource — the single place that knows a
-      # runtime's on-disk layout.
-      def transcript_directory(session)
-        working_directory = session.working_directory
-        return nil unless working_directory.is_a?(String) && working_directory.present?
-
-        TranscriptRuntime.source_for(session).transcript_directory(working_directory: working_directory)
-      rescue StandardError => e
-        Rails.logger.error "[Mcp::Tools::ActionSession] Failed to get transcript directory: #{e.message}"
-        nil
-      end
-
-      # The main transcript file inside that directory — the runtime's own
-      # answer, so a Codex directory is never searched with Claude's file-picker.
-      def find_main_transcript(session, transcript_dir)
-        TranscriptRuntime.source_for(session)
-          .find_main_transcript(transcript_directory: transcript_dir, session: session)
-      end
-
-      def count_transcript_messages(content)
-        return 0 if content.blank?
-
-        content.lines.count do |line|
-          line.strip.present? && JSON.parse(line.strip)
-        rescue JSON::ParserError
-          false
-        end
       end
     end
   end

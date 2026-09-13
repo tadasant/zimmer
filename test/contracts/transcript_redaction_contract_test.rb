@@ -5,10 +5,10 @@ require "test_helper"
 # Redaction is only as good as the narrowest path around it.
 #
 # `TranscriptRedactor` runs inside `TranscriptSource#read`. That covers the
-# poller, but Zimmer has three *other* places that re-read a transcript off disk
-# and write it to `sessions.transcript` — the manual refresh in
-# SessionsController, in Api::V1::SessionsController, and in
-# Mcp::Tools::ActionSession. Each of those originally used a bare `File.read`,
+# poller, but Zimmer has another place that re-reads a transcript off disk and
+# writes it to `sessions.transcript` — the manual refresh, Sessions::RefreshTranscript,
+# which SessionsController, Api::V1::SessionsController and
+# Mcp::Tools::ActionSession all call. Each of those originally used a bare `File.read`,
 # which wrote an unredacted transcript straight over the redacted one the poller
 # had stored, and (because the refresh paths compare stored content against file
 # content) left the two writers overwriting each other on every pass.
@@ -20,6 +20,13 @@ class TranscriptRedactionContractTest < ActiveSupport::TestCase
   # `File.read(main_transcript_file)`, `File.read(transcript_file)`, and any
   # other raw read of a path whose name says "transcript".
   RAW_TRANSCRIPT_READ = /File\.(?:read|binread)\([^)]*transcript[^)]*\)/i
+
+  # A write of the transcript attribute — `update!(transcript: …)` and its
+  # siblings — rather than any `transcript:` in the file. The loose form also
+  # matched a flash string ("Error refreshing transcript: …") and an
+  # `include_transcript:` param, which made a file that only *renders* a refresh
+  # look like one that persists it.
+  PERSISTS_TRANSCRIPT = /\b(?:update|update_columns|assign_attributes|create)!?\([^\n]*\btranscript:\s/
 
   test "nothing in app/ reads transcript bytes off disk with a bare File.read" do
     offenders = Dir[Rails.root.join("app/**/*.rb")].filter_map do |path|
@@ -41,15 +48,22 @@ class TranscriptRedactionContractTest < ActiveSupport::TestCase
   end
 
   test "every transcript refresh path resolves its reader through TranscriptRuntime" do
-    # The three refresh implementations, named explicitly so deleting one is a
-    # deliberate act rather than a silent loss of coverage.
-    %w[
-      app/controllers/sessions_controller.rb
-      app/controllers/api/v1/sessions_controller.rb
-      app/services/mcp/tools/action_session.rb
+    # The refresh implementation, and the three surfaces that used to carry their
+    # own copies, named explicitly so deleting one is a deliberate act rather than
+    # a silent loss of coverage. The service must persist; a surface that starts
+    # persisting a transcript again must resolve a redacting reader too.
+    service = "app/services/sessions/refresh_transcript.rb"
+    assert_match(PERSISTS_TRANSCRIPT, File.read(Rails.root.join(service)),
+      "#{service} no longer persists a transcript — move this contract to wherever the refresh went")
+
+    [
+      service,
+      "app/controllers/sessions_controller.rb",
+      "app/controllers/api/v1/sessions_controller.rb",
+      "app/services/mcp/tools/action_session.rb"
     ].each do |relative|
       source = File.read(Rails.root.join(relative))
-      next unless source.match?(/transcript:\s/)
+      next unless source.match?(PERSISTS_TRANSCRIPT)
 
       assert_match(/TranscriptRuntime\.source_for\([^)]*\)\.read\(/, source,
         "#{relative} persists transcript content but never resolves a redacting reader")
