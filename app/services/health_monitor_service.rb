@@ -363,6 +363,8 @@ class HealthMonitorService
       # Absent from the status list below on purpose — see #log_retention_health
       # for why a draining backlog must not turn the whole report yellow.
       log_retention_health: log_retention_health,
+      # Also absent from the status list — see #inbound_event_health.
+      inbound_event_health: inbound_event_health,
       overall_status: calculate_overall_status(
         [ process, session, system, egress, auth, post_deploy, cron ].map { |section| section[:status] }
       ),
@@ -523,6 +525,23 @@ class HealthMonitorService
       cron_running_since: nil, checked_at: Time.current,
       history_window_seconds: CronFreshness::HISTORY_WINDOW.to_i, stopped_in_window: 0,
       counts: CronFreshness::STATE_ORDER.index_with(0), keys: []
+    }
+  end
+
+  # Whether each webhook source is delivering, and how many trigger fires the poller had to make
+  # for it — see Webhooks::IngestSummary.
+  #
+  # Deliberately NOT folded into `overall_status`. A poll claim while the webhook is on is a
+  # message the poller fired a minute late, not one that was lost, and this reading is the
+  # evidence for a rollout decision rather than something to page on.
+  def inbound_event_health
+    Webhooks::IngestSummary.report
+  rescue StandardError => e
+    @logger.warn("Inbound event health could not be read", error: e.message)
+    {
+      window_seconds: Webhooks::IngestSummary::WINDOW.to_i,
+      sources: [],
+      status: HealthStatus.new(status: :warning, message: "Webhook delivery status could not be read: #{e.message}")
     }
   end
 

@@ -110,6 +110,25 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_select "h3", text: "Maintenance Actions"
   end
 
+  # UI/MCP parity for webhook ingest: `get_system_health` carries the same counts.
+  test "dashboard shows webhook ingest per source" do
+    WebhookDelivery.delete_all
+    TriggerEventClaim.delete_all
+    WebhookDelivery.record_first!(source: "slack", delivery_id: "Ev_dash", event_type: "message", now: 3.minutes.ago)
+    TriggerEventClaim.claim!(trigger_conditions(:enabled_slack_condition), [ "slack:C1:1.0" ], via: "webhook")
+
+    get health_dashboard_url
+    assert_response :success
+
+    assert_select "h3", text: "Webhook Ingest"
+    assert_select "h4", text: /Slack/
+    assert_select "dt", text: "Fired via webhook"
+    assert_select "dt", text: "Fired via poll"
+    assert_select "a[href='#{supervisor_webhook_deliveries_path}']"
+    assert_select "a[href='#{supervisor_trigger_event_claims_path}']"
+    assert_match "Every source polls; no webhook is switched on", response.body
+  end
+
   # UI/MCP parity for cron freshness: `get_system_health` names the keys that stopped
   # producing jobs and why, and this card is where /health says the same.
   test "dashboard lists a stale cron key with its reason" do
