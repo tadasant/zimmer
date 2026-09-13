@@ -112,7 +112,8 @@ class SessionsRestartTest < ApplicationSystemTestCase
   test "a paused card's Restart is reachable from the overflow menu on a 375px phone" do
     session = session_in(:needs_input)
     page.driver.browser.manage.window.resize_to(375, 812)
-    visit root_path
+    # The card's overflow menu is rendered by the flat sort views.
+    visit root_path(view: SessionsController::VIEW_MODE_CREATED_DESC)
 
     card = find("#session_#{session.id}")
     card.find("button[data-overflow-menu-target='button']").click

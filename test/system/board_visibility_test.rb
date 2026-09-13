@@ -54,7 +54,8 @@ class BoardVisibilityTest < ApplicationSystemTestCase
     session = create_session
     page.driver.browser.manage.window.resize_to(*MOBILE)
 
-    visit root_path
+    # The ⋮ menu is on the session card, which the flat sort views render.
+    visit root_path(view: SessionsController::VIEW_MODE_CREATED_DESC)
     assert_text "Waiting on the deploy"
 
     find("##{ActionView::RecordIdentifier.dom_id(session)} button[aria-label='More actions for session #{session.id}']").click

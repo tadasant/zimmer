@@ -1712,7 +1712,8 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       "github_pull_request_ci_statuses" => { url => "pass" }
     })
 
-    visit root_path
+    # The card footer lives in the flat sort views; the default User view renders rows.
+    visit root_path(view: SessionsController::VIEW_MODE_CREATED_DESC)
     assert_selector "a[href='#{url}']"
 
     assert_no_horizontal_overflow("sessions index with a PR button")
@@ -1770,7 +1771,8 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       "github_pull_request_ci_statuses" => { urls[1] => "pass" }
     })
 
-    visit root_path
+    # The card footer lives in the flat sort views; the default User view renders rows.
+    visit root_path(view: SessionsController::VIEW_MODE_CREATED_DESC)
     assert_selector "[data-controller='dropdown'] button[title^='View all PRs']"
 
     assert_no_horizontal_overflow("sessions index with a multi-PR button")
