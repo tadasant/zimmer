@@ -25,8 +25,8 @@ class RuntimeLoginAttemptDashboard < Administrate::BaseDashboard
   # is a reviewed decision rather than a gap nobody noticed.
   DELIBERATELY_OMITTED = [
     # The authorization code a human pastes back from the runtime's login page —
-    # a credential that exchanges for an account token. /supervisor is behind a
-    # single shared password, so this is not something to render there.
+    # a credential that exchanges for an account token. /supervisor asks for no
+    # credential at all, so this is not something to render there.
     :pasted_code
   ].freeze
 

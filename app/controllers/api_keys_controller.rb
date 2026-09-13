@@ -4,23 +4,18 @@
 # when it was last used, mint a named key, revoke one, restore one revoked by
 # mistake.
 #
-# **The whole page sits behind the operator credential** (OperatorHttpBasicAuth,
-# `SUPERVISOR_PASSWORD`), not just its writes. That is the one credential the
-# fleet's own agent sessions do not hold — they hold an API key. So this is
-# deliberately browser-only, with no REST or MCP sibling: a surface where an API
-# key could mint API keys would make the credential self-issuing, and one where
-# it could revoke them would let any session disconnect every other session from
-# Zimmer by revoking the key they share. Deciding who holds a credential stays
-# with the human.
+# **No credential guards this page**, the same as the rest of the web UI: the
+# network perimeter is the authentication boundary. Anything that can reach the
+# host can mint and revoke keys here, and that includes the fleet's own agent
+# sessions, which run on the host.
 #
-# It fails closed like every other operator surface: with `SUPERVISOR_PASSWORD`
-# unset the page is closed, and the `API_KEYS` entries keep authenticating as
-# they always did.
+# It is deliberately browser-only, with no REST or MCP sibling. An API
+# key that could mint API keys would make the credential self-issuing, and one
+# that could revoke them would let any session holding a key disconnect every
+# other session from Zimmer by revoking the key they share. That keeps key
+# management out of the tools a session is handed. It is not a wall: a
+# session's shell can drive this page with `curl`.
 class ApiKeysController < ApplicationController
-  include SpeculativeRequest
-  include OperatorHttpBasicAuth
-
-  before_action :authenticate_operator
   before_action :set_api_key, only: [ :revoke, :restore ]
 
   def index
@@ -120,25 +115,5 @@ class ApiKeysController < ApplicationController
       "[api_key] #{verb} #{api_key.name.inspect} (api_key_id=#{api_key.id}, source=#{api_key.source}, grant=#{api_key.effective_grant}) " \
       "from the settings page, #{request.remote_ip}"
     )
-  end
-
-  # Mirrors HealthController: a real navigation gets the Basic challenge; a
-  # hover-prefetch gets the refusal without it, so the cursor crossing the
-  # Settings link does not open a sign-in dialog; an unconfigured realm says so
-  # instead of prompting for a credential nothing can satisfy.
-  def refuse_operator(realm_configured: true)
-    message = if realm_configured
-      "The API keys page needs the operator credential (HTTP Basic, the same one " \
-        "#{OperatorHttpBasicAuth::PASSWORD_ENV} sets for /supervisor)."
-    else
-      "#{OperatorHttpBasicAuth::PASSWORD_ENV} is unset or blank, so the API keys page is closed. " \
-        "Set it in the deployment's secrets to use it. Keys in #{ApiKey::ENV_VAR} keep working either way."
-    end
-
-    if realm_configured && !prefetch_request?
-      request_http_basic_authentication(OperatorHttpBasicAuth::REALM, message)
-    else
-      render plain: message, status: :unauthorized
-    end
   end
 end

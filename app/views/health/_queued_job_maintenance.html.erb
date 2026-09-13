@@ -1,10 +1,6 @@
 <%# The third cleanup lever for a runaway queue, beside the one that halts it:
     discard or reschedule the jobs that are already enqueued, without leaving
-    Zimmer for GoodJob's own dashboard mid-incident (#335).
-
-    Both controls POST to routes in HealthController::OPERATOR_GATED_ACTIONS, so
-    they need the operator credential — the fix for #312 covers this panel by
-    construction rather than by remembering to. %>
+    Zimmer for GoodJob's own dashboard mid-incident (#335). %>
 <% rows = queued_job_maintenance_rows %>
 <div class="mb-6 bg-white rounded-lg shadow border-l-4 border-gray-200">
   <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
