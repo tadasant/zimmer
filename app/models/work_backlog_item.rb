@@ -389,6 +389,15 @@ class WorkBacklogItem < ApplicationRecord
     match && match[1].to_i
   end
 
+  # The repository the issue lives in, as `owner/name`, when `issue_url` names
+  # one. Not always `repo`: that is what a session is checked out for, and the
+  # gate sets it apart on purpose when the fix lives elsewhere than the tracking
+  # issue, so `issue_number` means nothing paired with it (#1188).
+  def issue_repo
+    match = issue_url.to_s.match(%r{\Ahttps?://github\.com/([^/]+/[^/]+)/issues/\d+\z}i)
+    match && match[1]
+  end
+
   # What a session spawned for this item is told. The issue is the durable
   # record wherever there is one, so the prompt is the URL plus the ask; an
   # issueless item carries its ask verbatim in `prompt` and that is the whole
@@ -405,7 +414,7 @@ class WorkBacklogItem < ApplicationRecord
   # what a human scanning the Ranked view expects to see. Budgeted so the
   # prefix always survives and the whole thing fits Session's title limit.
   def session_title
-    short = repo.to_s.split("/").last
+    short = (issue_repo || repo).to_s.split("/").last
     label = issue_number ? "#{short}##{issue_number}" : key
     prefix = "Implement #{label} ("
     room = SESSION_TITLE_MAX - prefix.length - 1

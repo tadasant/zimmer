@@ -188,6 +188,25 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     assert_equal "Implement manual-refresh (Refresh)", manual.session_title
   end
 
+  # The gate points `repo` at where the fix lives, which is not always where the
+  # issue lives, so the issue's number only means something beside `issue_repo`.
+  test "issue_repo is the repository issue_url names, whatever repo says" do
+    item = backlog_item(key: "strad#115", repo: "tadasant/tadasant-internal",
+                        issue_url: "https://github.com/tadasant/strad/issues/115", title: "Fix it")
+
+    assert_equal "tadasant/strad", item.issue_repo
+    assert_equal 115, item.issue_number
+    assert_equal "Implement strad#115 (Fix it)", item.session_title
+
+    item.issue_url = "https://GitHub.com/tadasant/strad/issues/115"
+    assert_equal "tadasant/strad", item.issue_repo
+    item.issue_url = "https://github.com/tadasant/strad/extra/issues/115"
+    assert_nil item.issue_repo, "a path that is not owner/name/issues/N names no repository"
+
+    assert_nil backlog_item(key: "manual-thing", issue_url: nil, added_by: "human",
+                            payload: { "prompt" => "x" }).issue_repo
+  end
+
   # THE THROTTLE, PINNED. `in_flight` is what the groomer subtracts from the WIP
   # ceiling, so every status that is counted here is one that can hold the ceiling
   # shut. A session parked in `needs_input` holding an open PR can sit there for
