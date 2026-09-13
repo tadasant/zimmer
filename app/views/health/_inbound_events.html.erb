@@ -33,7 +33,7 @@
     <% inbound[:sources].each do |source| %>
       <div>
         <h4 class="text-sm font-semibold text-gray-900">
-          <%= source[:name].capitalize %>
+          <%= { "github" => "GitHub" }.fetch(source[:name], source[:name].capitalize) %>
           <span class="ml-2 font-mono text-xs font-normal text-gray-500 break-all"><%= source[:mode] %></span>
         </h4>
         <dl class="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4">

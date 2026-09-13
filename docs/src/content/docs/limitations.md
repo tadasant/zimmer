@@ -4568,13 +4568,32 @@ is a `bot_mention` condition at least as wide as the passive ones; nothing enfor
 logs one `info` line naming the message and the condition that declined it, which is the only signal
 you get.
 
-### GitHub is polled, and the Slack webhook has no public way in
+### GitHub is polled, and the webhooks have no public way in
 
 GitHub PR status and comments are polled every 30 seconds per open PR. A 30-second latency floor and
 a steady API burn. The `github_label` and `github_issue` trigger conditions are polled too, once a
-minute, against GitHub's search API. There is no GitHub webhook ingress.
+minute, against GitHub's search API.
 
-Slack has one. `POST /webhooks/slack` takes Slack Events API deliveries and fires Slack triggers from
+`github_issue` conditions can also fire from a GitHub webhook, `POST /webhooks/github` — see
+[GitHub webhook delivery](/sessions/triggers/#github-webhook-delivery). Like Slack's, it is off by
+default, needs the same public ingress, and runs beside the poller rather than replacing it. What it
+does not cover yet:
+
+- **`github_label` conditions.** They stay on the poller in every mode, and label events are ignored.
+  A label can legitimately come off and go back on, so a label claim needs a lifetime tied to the
+  poller's seen-set rather than a fixed retention, and these are the conditions the merge gate fires
+  from.
+- **The per-PR status and comment polling.** Those pollers do not fire triggers, so this ingress
+  does not reach them, and they are most of the API burn.
+- **A mode with no poller behind it.** As for Slack, `webhook` alone is treated as `poll`.
+- **A released claim reads as a miss.** A delivery that spawned nothing because of burst control or a
+  pending session releases its claim so the poller can fire the issue later, and on `/health` that
+  later fire counts as a poll claim — a message the webhook did not deliver first, which it did.
+- **A switch back to `poll` while a delivery is queued.** The job checks the mode when it runs and
+  fires nothing on `poll`, but a delivery that fired just before the switch has a claim the poller no
+  longer reads, and the poller can fire that issue a second time.
+
+Slack's webhook, `POST /webhooks/slack`, takes Slack Events API deliveries and fires Slack triggers from
 them a second or two after the message is posted, instead of at the next poll — see
 [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery). It is off by default, and
 switching it on in production changes nothing on its own: Slack has to reach the endpoint from the
