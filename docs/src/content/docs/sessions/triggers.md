@@ -490,6 +490,22 @@ that verified, newest last, so it answers "is Slack delivering at all". `/superv
 records which path fired each message: while both paths run, a `poll` claim on a message Slack should
 have delivered is a delivery the webhook missed.
 
+The summary of both is in the health report, so it can be read without paging through rows:
+
+| Surface | Where |
+| --- | --- |
+| **Web** | `/health` → the *Webhook Ingest* panel |
+| **REST** | `GET /api/v1/health` → `health_report.inbound_event_health` |
+| **MCP** | `get_system_health` → the *Webhook ingest* line |
+
+For each source it gives the ingest mode, the time of the last delivery, and, over the last 24 hours,
+the number of deliveries and the number of trigger fires claimed by the webhook and by the poller.
+The poller only claims while the webhook is switched on, so every fire counted under the poller is
+one the webhook did not deliver first. The panel reads *warning* when that count is above zero for a
+source whose webhook is on, and when a source is switched on with no signing secret. Neither moves
+the report's overall status: a message the poller fired is a minute late, not lost, and nothing
+about it should page anyone.
+
 ### `schedule`
 
 Either recurring (`interval` + `unit`, or `time` + `day_of_week` + `timezone`) or one-time

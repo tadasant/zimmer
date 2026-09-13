@@ -30,6 +30,11 @@ module Webhooks
       @slack ||= new(name: "slack", mode_key: "SLACK_TRIGGER_INGEST_MODE", secret_key: "SLACK_SIGNING_SECRET")
     end
 
+    # Every source with a webhook endpoint, in the order the health report lists them.
+    def self.all
+      [ slack ]
+    end
+
     def initialize(name:, mode_key:, secret_key:)
       @name = name
       @mode_key = mode_key
