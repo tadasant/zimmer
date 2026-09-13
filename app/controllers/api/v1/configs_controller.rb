@@ -45,18 +45,24 @@ class Api::V1::ConfigsController < Api::BaseController
     AgentRootsConfig.all.map(&:to_h)
   end
 
-  # Returns selectable model metadata grouped by runtime.
+  # Returns selectable model metadata grouped by runtime. `source` is
+  # "built_in" or "added" (see /api/v1/model_catalog_entries); an added model
+  # also carries the CLI check stored when it was added.
   def runtime_models_data
-    ModelCatalog::MODELS.keys.index_with do |runtime|
+    ModelCatalog.runtimes.index_with do |runtime|
       {
         default: ModelCatalog.default_for(runtime),
         models: ModelCatalog.models_for(runtime).map do |model|
-          {
+          data = {
             id: model[:id],
             label: model[:label],
             default: !!model[:default],
-            requires_oauth: !!model[:requires_oauth]
+            requires_oauth: !!model[:requires_oauth],
+            source: model[:source]
           }
+          next data unless model[:source] == "added"
+
+          data.merge(cli_listed: model[:cli_listed], cli_version: model[:cli_version], cli_note: model[:cli_note])
         end
       }
     end

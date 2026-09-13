@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "prism"
+require "mocha/minitest"
 
 class ModelCatalogTest < ActiveSupport::TestCase
   test "models_for returns the claude_code catalog" do
@@ -92,6 +93,51 @@ class ModelCatalogTest < ActiveSupport::TestCase
     assert_raises(KeyError) { ModelCatalog.messages_api_id_for("opus") }
     assert_raises(KeyError) { ModelCatalog.messages_api_id_for("claude-haiku-4-5") }
     assert_raises(KeyError) { ModelCatalog.messages_api_id_for(nil) }
+  end
+
+  # --- Models added at runtime (ModelCatalogEntry, #85) -----------------------
+
+  def insert_entry(runtime, model_id, **attrs)
+    ModelCatalogEntry.new(runtime: runtime, model_id: model_id, added_via: "api", **attrs).tap { |e| e.save!(validate: false) }
+  end
+
+  test "added models follow the built-in ones and validate like them" do
+    insert_entry("codex", "gpt-5.7", label: "gpt-5.7 (new)", requires_oauth: true, cli_listed: false, cli_version: "0.146.0", cli_note: "Not listed.")
+
+    models = ModelCatalog.models_for("codex")
+    added = models.last
+
+    assert_equal "gpt-5.7", added[:id]
+    assert_equal "added", added[:source]
+    assert_equal "gpt-5.7 (new)", added[:label]
+    assert_equal false, added[:cli_listed]
+    assert_equal "0.146.0", added[:cli_version]
+    assert models.first(ModelCatalog::MODELS["codex"].size).all? { |m| m[:source] == "built_in" }
+    assert ModelCatalog.valid_model?("codex", "gpt-5.7")
+    assert ModelCatalog.requires_oauth?("codex", "gpt-5.7")
+    refute ModelCatalog.valid_model?("claude_code", "gpt-5.7")
+  end
+
+  test "an added model never becomes the fallback default or the probe id" do
+    insert_entry("claude_code", "opus[1m]")
+
+    assert_equal "opus", ModelCatalog.default_for("claude_code")
+    assert_equal "claude-haiku-4-5", ModelCatalog.messages_api_id_for("haiku")
+    assert_raises(KeyError) { ModelCatalog.messages_api_id_for("opus[1m]") }
+  end
+
+  test "an added row a deploy made built in is skipped, so the built-in entry wins" do
+    insert_entry("codex", "gpt-5.5", label: "shadow")
+
+    ids = ModelCatalog.model_ids_for("codex")
+    assert_equal 1, ids.count("gpt-5.5")
+    assert_equal "built_in", ModelCatalog.models_for("codex").find { |m| m[:id] == "gpt-5.5" }[:source]
+  end
+
+  test "an unreadable added-models table degrades to the built-in list" do
+    ModelCatalogEntry.stubs(:where).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+
+    assert_equal %w[opus sonnet haiku fable], ModelCatalog.model_ids_for("claude_code")
   end
 
   # A dated snapshot silently outlives the model it names (#85). Nothing in the
