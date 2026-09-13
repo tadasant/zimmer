@@ -7325,6 +7325,43 @@ Two related edges:
   `replay_model` on each row say which config produced it, and `/supervisor/category_feedback_events`
   shows both.
 
+## The User view's board does not update itself
+
+The [User view](/sessions/user-view/) is server-rendered on load and stays that way. A row's status
+pill does not follow the session live, and a session that becomes eligible for the board while you
+are looking at it does not appear until you reload. The [Ranked view](/sessions/spot-and-priority/#the-ranked-view)
+does both, over `Session::RANKED_STREAM`, and the User view deliberately did not take that on in its
+first pass — live membership on a filtered board is a whole mechanism (the envelope, the held
+deliveries, the reconnect backfill), and the actions this view exists for do not need it.
+
+What *is* immediate is everything the operator does themselves: Trash removes the row over the
+turbo stream `#archive` already answers with, Snooze removes it through the shared visibility
+controller, Merge re-renders its own button, and a drag re-sorts and persists without a reload. So
+the board thins out as you work it, and goes stale only about things you did not do.
+
+The one place that shows is the **Reprioritize** button: the reordering session writes the new order
+and you have to reload to see it. The button says so.
+
+## Card order is written by agents and rendered by nobody
+
+`sessions.sort_order` — the per-category card rank `SessionCardOrder` maintains — was the ordering
+of the dashboard's category-grouped grid. That grid was replaced by the User view, which orders by
+scheduling class and precedence instead, and no human-facing screen reads `sort_order` any more.
+
+Its two remaining writers are both agent surfaces: `manage_categories`' `reorder_sessions` action
+over MCP, and `POST /api/v1/sessions/reorder` over REST. Both still work and still record a
+`category_feedback_events` correction; the order they set is simply not drawn anywhere. They were
+left in place rather than removed because the correction they record is the categorizer's training
+signal, which is worth more than the ordering was.
+
+## Editing a category is a /supervisor task now
+
+The category grid carried the only browser-facing category editor — a pencil per section header and
+a **+ New category** button. Both went with it. `/settings/categorization` still lists every
+category and flags the ones with no description (which is the classification signal), but to change
+one you go to `/supervisor/categories`, the `manage_categories` MCP tool, or the REST API under
+`/api/v1/categories`. The page points at the first of those.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

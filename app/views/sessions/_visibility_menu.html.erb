@@ -9,8 +9,13 @@
 
     Locals:
       agent_session — the session
-      variant       — :button     (session detail header: a pill with a popover
-                                   holding every choice, Hide included)
+      variant       — :button     (session detail header, and the User view's
+                                   row: a pill with a popover holding every
+                                   choice, Hide included)
+      compact       — only meaningful with variant: :button. Renders the pill at
+                      row scale rather than header scale. The popover is
+                      unchanged: it is the same panel with the same choices, so
+                      a compact row never gets a cut-down snooze.
                       :menu_item  (card / ranked-row overflow menu: flat rows,
                                    with the snooze panel expanding inline so the
                                    menu never nests a popover inside a popover)
@@ -19,6 +24,7 @@
     Offered for EVERY session in every state: there is no session whose card an
     operator may not tidy off their board, archived and failed ones included. %>
 <% variant ||= :button %>
+<% compact = local_assigns.fetch(:compact, false) %>
 <% inline_variant = variant != :button %>
 <% tucked_away = !agent_session.board_visible? %>
 <div class="<%= inline_variant ? "block" : "inline-flex" %>"
@@ -54,9 +60,9 @@
             data-visibility-target="button"
             aria-expanded="false"
             title="Snooze or hide this card. Visual only — it does not pause, start or stop the session."
-            class="inline-flex items-center px-4 py-2 border border-slate-300 text-sm font-medium rounded-md shadow-sm text-slate-700 bg-slate-50 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500">
+            class="inline-flex items-center border border-slate-300 font-medium rounded-md text-slate-700 bg-slate-50 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 <%= compact ? "px-3 py-1.5 text-xs" : "px-4 py-2 text-sm shadow-sm" %>">
       <%= render "sessions/visibility_icon", classes: "h-4 w-4" %>
-      <span class="ml-2"><%= tucked_away ? "Snoozed / hidden" : "Snooze" %></span>
+      <span class="<%= compact ? "ml-1.5" : "ml-2" %>"><%= tucked_away ? "Snoozed / hidden" : "Snooze" %></span>
     </button>
   <% end %>
 

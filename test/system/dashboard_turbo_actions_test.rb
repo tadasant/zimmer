@@ -16,7 +16,7 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
   test "trashing a session streams the card away and offers Undo in the flash" do
     session = sessions(:failed)
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_selector "turbo-frame#session_#{session.id}"
     stamp_window
 
@@ -56,7 +56,7 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
     # SessionsController::DEFAULT_STATUS_FILTER, which is `needs_input` alone,
     # and a failed card is filtered out before it is ever rendered. Ask for
     # every status the way its siblings in this file do.
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_selector "turbo-frame#session_#{session.id}"
     stamp_window
 
@@ -116,7 +116,7 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
   test "Undo puts the trashed card back without leaving the dashboard" do
     session = sessions(:failed)
 
-    visit root_path(every_status_params)
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_selector "turbo-frame#session_#{session.id}"
 
     within "turbo-frame#session_#{session.id}" do

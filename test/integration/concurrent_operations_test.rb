@@ -192,11 +192,12 @@ class ConcurrentOperationsTest < IntegrationTestCase
       )
     end
 
-    # Get index. The dashboard defaults to needs_input alone, and needs_input is
+    # Get index, in a flat sort view: the default User view renders rows, not
+    # the per-session turbo-frame cards this asserts on. It defaults to needs_input alone, and needs_input is
     # deliberately not among the statuses seeded above — so a bare "/" renders
     # none of these ten. Ask for every status, the way the UI does: an explicit
     # Filters submit with nothing ticked.
-    get root_path(every_status_params)
+    get root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_response :success
 
     # Every seeded session renders its own card, asserted by id. A bare

@@ -64,6 +64,21 @@ module Mcp
       # only an archived session has an analysis, so there is no "my own" one for
       # a live session to read.
       Definition.new(klass: "Mcp::Tools::GetOutcomeAnalysis", group: "sessions", write: false),
+      # The dashboard's User view, as an agent reads it. In `sessions` rather than
+      # a group of its own because it is a session listing — it just carries the
+      # three facts a decision on that board turns on (the root, the generated
+      # blurb, the PR and its CI) that `quick_search_sessions` rows do not.
+      #
+      # Note what is NOT here, and deliberately: there is no tool for the User
+      # view's **Merge** button. That button is the one sanctioned route to an
+      # agent merging its own work, and what sanctions it is that a human clicked
+      # it. Be precise about what that buys: it is not a wall. The web UI has no
+      # login (the network perimeter is the boundary) and `action_session`'s
+      # `follow_up` delivers any text, the `[HUMAN-AUTHORIZED MERGE]` marker
+      # included. What an agent cannot produce from this endpoint is the
+      # HumanMessage the browser writes for the click, and that record — not the
+      # marker — is the provenance an audit keys on. See Sessions::AuthorizeMerge.
+      Definition.new(klass: "Mcp::Tools::GetUserView", group: "sessions", write: false),
 
       # Sessions — writes
       Definition.new(klass: "Mcp::Tools::StartSession", group: "sessions", write: true),
@@ -75,6 +90,11 @@ module Mcp
         composite_overrides: { "self_session" => "Mcp::Tools::SelfSessionActionSession" }
       ),
       Definition.new(klass: "Mcp::Tools::ManageEnqueuedMessages", group: "sessions", write: true),
+      # The write half of the User view. Beside `change_precedence` rather than
+      # replacing it: that one moves ONE session and is what a session uses on
+      # itself, this one takes a whole ordering and is what the Reprioritize
+      # button's session uses on the human's board.
+      Definition.new(klass: "Mcp::Tools::ReorderUserView", group: "sessions", write: true),
       Definition.new(klass: "Mcp::Tools::ManageCategories", group: "sessions", write: true),
       Definition.new(klass: "Mcp::Tools::RespondToElicitation", group: "sessions", write: true),
       # How an analysis session hands its result back. In `sessions` rather than

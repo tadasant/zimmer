@@ -1,0 +1,67 @@
+<%# The User view — the dashboard's decision board.
+
+    ONE list, not two. The Ranked view splits priority above spot because the two
+    halves answer different questions there; this view deliberately does not,
+    because it is the screen you scroll top to bottom clicking Trash, Trash,
+    Trash. The split survives only as the ordering (every priority row sorts above
+    every spot row) and as a badge on each row.
+
+    What "reorder" means here is the session's `precedence`, the same integer the
+    spot queue is actually started in — so dragging a row is a real scheduling
+    decision, not a display preference. That is stated in the hint below rather
+    than left to be discovered.
+
+    NO PAGINATOR, on purpose, for the same reason the Ranked view has none: a drag
+    between two rows means nothing if one of them is on another page. The list is
+    capped instead, and says so when it has truncated.
+
+    Locals:
+      sessions          - the ordered rows (priority above spot, precedence within)
+      limit             - the cap the list was rendered under
+      truncated         - whether the cap was reached
+      visibility_filter - which board this is; the shared visibility controller
+                          reads it to decide whether a snoozed row leaves the DOM %>
+<section class="mb-8"
+         id="user_view"
+         data-controller="user-view"
+         data-user-view-reorder-url-template-value="<%= reorder_precedence_session_path("__ID__") %>">
+  <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+    <div class="min-w-0">
+      <h2 class="text-lg font-semibold text-gray-800">Your board</h2>
+      <p class="mt-0.5 text-sm text-gray-500">
+        Every session these filters match, in the order it will be worked. Decide on the row:
+        merge a green PR, snooze it, or trash it. Drag a row to move it — that writes its
+        <span class="font-medium text-gray-600">precedence</span>, which is the order Zimmer
+        actually starts spot sessions in. Priority rows always sort above spot ones.
+      </p>
+    </div>
+    <%= render "sessions/user_view_reprioritize", reprioritizer_session: nil %>
+  </div>
+
+  <div class="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+    <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600"
+          data-user-view-target="count"><%= sessions.size %></span>
+    <span class="min-w-0 text-xs text-gray-400">rows on this board</span>
+  </div>
+
+  <%# The list is always in the DOM, hidden when empty: it is the Sortable root and
+      a target that disappears when the board empties would take drag-and-drop down
+      with it — and it is where a restored row is prepended. %>
+  <ul id="user_view_list"
+      class="divide-y divide-gray-100 rounded-md border border-gray-200 bg-white <%= "hidden" if sessions.empty? %>"
+      data-user-view-target="list">
+    <% sessions.each do |session| %>
+      <%= render "sessions/user_view_row", agent_session: session %>
+    <% end %>
+  </ul>
+  <p class="rounded-md border border-dashed border-gray-200 px-3 py-4 text-sm text-gray-400 <%= "hidden" if sessions.any? %>"
+     data-user-view-target="empty">No sessions match these filters.</p>
+
+  <% if truncated %>
+    <p class="mt-1.5 text-xs text-gray-400">Showing the first <%= limit %>. Narrow the filters to see the rest.</p>
+  <% end %>
+
+  <%# One live region for the whole board, so a failed reorder says so rather than
+      a page reload silently swallowing the drag that just happened. %>
+  <p class="mt-3 hidden text-sm text-red-600" role="alert" data-user-view-target="error"></p>
+</section>

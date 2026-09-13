@@ -115,13 +115,16 @@ class DashboardFiltersTest < ApplicationSystemTestCase
     )
   end
 
+  # The filters are view-independent, and these tests visit the bare dashboard on
+  # purpose — "a bare visit to / keeps the choice" is one of the things under test —
+  # so they assert against the default view's rows rather than asking for a view
+  # whose cookie would change what every later bare visit renders.
   def assert_card(session)
-    assert_selector "turbo-frame##{ActionView::RecordIdentifier.dom_id(session)}",
-      count: 1, wait: 5
+    assert_selector "#user_view_list li#user_view_row_#{session.id}", count: 1, wait: 5
   end
 
   def refute_card(session)
-    assert_no_selector "turbo-frame##{ActionView::RecordIdentifier.dom_id(session)}"
+    assert_no_selector "#user_view_list li#user_view_row_#{session.id}"
   end
 
   # The status pills hide nothing — each is a real checkbox — but they sit inside a
