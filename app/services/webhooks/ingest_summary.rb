@@ -33,12 +33,12 @@ module Webhooks
     end
 
     def report
-      sources = Source.all.map { |source| source_reading(source) }
+      readings = Source.all.to_h { |source| [ source, source_reading(source) ] }
 
       {
         window_seconds: WINDOW.to_i,
-        sources: sources,
-        status: status(sources)
+        sources: readings.values,
+        status: status(readings)
       }
     end
 
@@ -77,34 +77,42 @@ module Webhooks
     # Warning for a switched-on source that cannot verify anything, one that has received nothing,
     # and one the poller has had to back up. Healthy otherwise, including a source that polls: that
     # is the default and changes nothing.
-    def status(sources)
-      enabled = sources.select { |s| s[:webhook_enabled] }
+    def status(readings)
+      enabled = readings.select { |_source, reading| reading[:webhook_enabled] }
       return healthy("Every source polls; no webhook is switched on") if enabled.empty?
 
-      warnings = enabled.filter_map { |s| warning_message(s) }
+      warnings = enabled.filter_map { |source, reading| warning_message(source, reading) }
       return HealthMonitorService::HealthStatus.new(status: :warning, message: warnings.join("; ")) if warnings.any?
 
-      healthy(enabled.map { |s| healthy_message(s) }.join("; "))
+      healthy(enabled.values.map { |reading| healthy_message(reading) }.join("; "))
     end
 
-    def warning_message(source)
-      name = source[:name]
+    # A silent window warns only for a source that delivers every day in normal operation (Slack,
+    # which sends every message the bot can see). GitHub sends an event only when an issue changes.
+    def warning_message(source, reading)
+      name = reading[:name]
 
-      if !source[:accepting]
+      if !reading[:accepting]
         "#{name}: webhook is switched on but has no signing secret, so its endpoint answers 404"
-      elsif source[:poll_claims_in_window].positive?
-        total = source[:webhook_claims_in_window] + source[:poll_claims_in_window]
-        "#{name}: the poller claimed #{source[:poll_claims_in_window]} of #{total} trigger event(s) in the last " \
+      elsif reading[:poll_claims_in_window].positive?
+        total = reading[:webhook_claims_in_window] + reading[:poll_claims_in_window]
+        "#{name}: the poller claimed #{reading[:poll_claims_in_window]} of #{total} trigger event(s) in the last " \
           "#{window_label} — events the webhook did not deliver first"
-      elsif source[:deliveries_in_window].zero?
+      elsif reading[:deliveries_in_window].zero? && source.expects_daily_deliveries
         "#{name}: webhook is accepting but received no delivery in the last #{window_label} — " \
           "check that the provider can reach its endpoint"
       end
     end
 
-    def healthy_message(source)
-      "#{source[:name]}: last delivery #{HealthMonitorService.format_wait(@now - source[:last_delivery_at])} ago; " \
-        "the webhook claimed #{source[:webhook_claims_in_window]} trigger event(s) in the last #{window_label}, the poller none"
+    def healthy_message(reading)
+      last = reading[:last_delivery_at]
+      delivered = last ? "last delivery #{HealthMonitorService.format_wait(@now - last)} ago" : "no delivery in the last #{retention_label}"
+      "#{reading[:name]}: #{delivered}; the webhook claimed #{reading[:webhook_claims_in_window]} trigger event(s) in the last " \
+        "#{window_label}, the poller none"
+    end
+
+    def retention_label
+      "#{(WebhookDelivery::RETENTION / 1.day).to_i} days"
     end
 
     def healthy(message)

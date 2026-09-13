@@ -160,6 +160,7 @@ Rails.application.routes.draw do
   # provider's signature over the raw body, not Zimmer's API key — see Webhooks::BaseController.
   namespace :webhooks do
     post "slack", to: "slack#create", as: :slack
+    post "github", to: "github#create", as: :github
   end
 
   namespace :api do

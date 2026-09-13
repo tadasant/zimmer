@@ -62,4 +62,19 @@ class Webhooks::SourceTest < ActiveSupport::TestCase
     3.times { assert_equal "poll", @source.mode }
     assert_equal 1, logged.size
   end
+
+  test "github reads its own settings, polls by default, and serves only github_issue conditions" do
+    github = Webhooks::Source.github
+    saved = %w[GITHUB_TRIGGER_INGEST_MODE GITHUB_WEBHOOK_SECRET].to_h { |key| [ key, ENV[key] ] }
+    saved.each_key { |key| ENV.delete(key) }
+
+    assert_equal [ "github", "GITHUB_TRIGGER_INGEST_MODE", "GITHUB_WEBHOOK_SECRET" ], [ github.name, github.mode_key, github.secret_key ]
+    assert_equal "poll", github.mode
+    refute_predicate github, :accepting?
+    refute github.expects_daily_deliveries
+    assert_equal [ "github_issue" ], github.served_conditions.distinct.pluck(:condition_type)
+    assert_equal %w[slack github], Webhooks::Source.all.map(&:name)
+  ensure
+    saved&.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+  end
 end

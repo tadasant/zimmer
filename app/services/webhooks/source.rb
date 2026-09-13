@@ -38,16 +38,30 @@ module Webhooks
       )
     end
 
-    # Every source with a webhook endpoint, in the order the health report lists them.
-    def self.all
-      [ slack ]
+    # GitHub's repository or organization webhook. Serves `github_issue` conditions only; see
+    # GithubEventJob. A day with no delivery is ordinary for it, since GitHub sends an event only
+    # when something happens to an issue.
+    def self.github
+      @github ||= new(
+        name: "github", mode_key: "GITHUB_TRIGGER_INGEST_MODE", secret_key: "GITHUB_WEBHOOK_SECRET",
+        served_conditions: -> { TriggerCondition.where(condition_type: "github_issue") },
+        expects_daily_deliveries: false
+      )
     end
 
-    def initialize(name:, mode_key:, secret_key:, served_conditions: -> { TriggerCondition.none })
+    # Every source with a webhook endpoint, in the order the health report lists them.
+    def self.all
+      [ slack, github ]
+    end
+
+    attr_reader :expects_daily_deliveries
+
+    def initialize(name:, mode_key:, secret_key:, served_conditions: -> { TriggerCondition.none }, expects_daily_deliveries: true)
       @name = name
       @mode_key = mode_key
       @secret_key = secret_key
       @served_conditions = served_conditions
+      @expects_daily_deliveries = expects_daily_deliveries
       @warned = Set.new
     end
 
@@ -98,7 +112,7 @@ module Webhooks
 
       @warned << raw
       why = if raw == "webhook"
-        "`webhook` without a poller is not a mode: the poller is replaced by deleting it " \
+        "`webhook` without a poller is not a mode: a poller is replaced by deleting it " \
         "(tadasant/zimmer#141), not by switching it off. Use `#{WEBHOOK_WITH_POLL_FALLBACK}`."
       else
         "Expected one of #{MODES.join(', ')}."

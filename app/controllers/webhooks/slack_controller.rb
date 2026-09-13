@@ -40,12 +40,6 @@ module Webhooks
 
     private
 
-    def parse_payload
-      JSON.parse(raw_body)
-    rescue JSON::ParserError
-      nil
-    end
-
     # Record the delivery and enqueue its processing in one transaction. GoodJob's queue is this
     # database, so either both commit or neither does: a crash in between leaves no row, Slack's
     # retry finds none, and the event is processed then.
