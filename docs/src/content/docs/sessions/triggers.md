@@ -2176,7 +2176,8 @@ of quota and wall-clock, one conclusion.
 **Coalescing window** (`Trigger#coalesce_window_seconds`, on the triggers form, the REST API, and
 both trigger MCP tools) is the answer to that. Slack messages that land in the same channel, thread
 or DM within the window of each other are **one event**: they spawn **one** session, and every
-message in the group is named — with its link and its author — in that session's prompt.
+message in the group is named — with its link — in that session's prompt, under the one name they
+all share.
 
 ```
 There is a new message in Slack, channel alerts.

@@ -1235,8 +1235,9 @@ What remains open:
   recorded where the model cannot rewrite them — and nothing fires a workflow in production yet.
 - **Both hardening features are opt-in.** An existing template gets the single pass, but its
   `{{text}}` stays unfenced and it names no Slack ID until someone edits it. The fencing of text
-  Zimmer appends is not opt-in: it follows the template, so a template that never names `{{text}}`
-  gets the Slack coalescing notes fenced, and one that writes `{{text}}` bare gets them raw. Fencing by default was considered and not done: a DM trigger whose
+  Zimmer appends is not opt-in: it follows the template, field by field, so a template that never
+  names a placeholder gets the appended field following it fenced, and one that writes that
+  placeholder bare gets that field raw. Fencing by default was considered and not done: a DM trigger whose
   message is the request would silently start calling that request data, and nothing can tell that
   trigger apart from one whose message is only evidence
   ([Event text Zimmer appends](/sessions/triggers/#event-text-zimmer-appends)).

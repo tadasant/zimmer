@@ -181,8 +181,12 @@ module SlackTriggerFiring
   #
   # The name is written once for the whole note, not once per line: coalescing groups by
   # producer (#coalescing_author_key), so every message in a note comes from the same one.
-  # `uniq` covers the case that survives that — a webhook integration posting under one
-  # `bot_id` with a different `username` each time.
+  # `uniq` covers the case that survives that — a bot whose `username` varies from message to
+  # message, which Slack allows both for a webhook integration (grouped on `bot_id`) and for an
+  # app posting with a token (grouped on `user`, named from `username`). It reads every folded
+  # message, not just the ones the list names: #get_author_name is memoized and a bot's name is a
+  # field of the message, so the listing cap — which is there to bound permalink calls — must not
+  # silently drop the name of whoever wrote message 26.
   #
   # Zimmer's own words stay outside both fences: the times, the permalinks, the
   # count of unlisted messages, and the channel name in the first sentence.
@@ -206,9 +210,13 @@ module SlackTriggerFiring
       lines << "- ...and #{folded.length - listed.length} more, not listed individually — read the channel."
     end
 
-    authors = trigger.render_appended_untrusted(
-      listed.map { |message| get_author_name(message) }.uniq.join(", "), variable: "author"
-    )
+    names = folded.filter_map { |message| get_author_name(message).presence }.uniq
+    authors = if names.any?
+      trigger.render_appended_untrusted(names.join(", "), variable: "author")
+    else
+      # Slack named nobody, so there is nothing anyone chose to fence. Zimmer's own word.
+      "(unknown)"
+    end
 
     body = <<~BODY.strip
       Written by:
