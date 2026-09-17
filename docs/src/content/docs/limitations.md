@@ -4547,24 +4547,41 @@ GitHub PR status and comments are polled every 30 seconds per open PR. A 30-seco
 a steady API burn. The `github_label` and `github_issue` trigger conditions are polled too, once a
 minute, against GitHub's search API.
 
-`github_issue` conditions can also fire from a GitHub webhook, `POST /webhooks/github` — see
-[GitHub webhook delivery](/sessions/triggers/#github-webhook-delivery). Like Slack's, it is off by
-default, needs the same public ingress, and runs beside the poller rather than replacing it. What it
-does not cover yet:
+Both GitHub trigger condition types can also fire from a GitHub webhook, `POST /webhooks/github` —
+see [GitHub webhook delivery](/sessions/triggers/#github-webhook-delivery). Like Slack's, it is off
+by default, needs the same public ingress, and runs beside the poller rather than replacing it. What
+it does not cover yet:
 
-- **`github_label` conditions.** They stay on the poller in every mode, and label events are ignored.
-  A label can legitimately come off and go back on, so a label claim needs a lifetime tied to the
-  poller's seen-set rather than a fixed retention, and these are the conditions the merge gate fires
-  from.
 - **The per-PR status and comment polling.** Those pollers do not fire triggers, so this ingress
   does not reach them, and they are most of the API burn.
 - **A mode with no poller behind it.** As for Slack, `webhook` alone is treated as `poll`.
 - **A released claim reads as a miss.** A delivery that spawned nothing because of burst control or a
-  pending session releases its claim so the poller can fire the issue later, and on `/health` that
+  pending session releases its claim so the poller can fire the event later, and on `/health` that
   later fire counts as a poll claim — a message the webhook did not deliver first, which it did.
 - **A switch back to `poll` while a delivery is queued.** The job checks the mode when it runs and
   fires nothing on `poll`, but a delivery that fired just before the switch has a claim the poller no
-  longer reads, and the poller can fire that issue a second time.
+  longer reads, and the poller can fire that event a second time.
+- **A re-added label inside the grace window is one event, not two.** A `github_label` claim is
+  released when the poller drops its seen-set key, which takes `REMOVAL_GRACE_TICKS` consecutive
+  misses — about three minutes. The webhook knows the label came off the instant it did, because
+  GitHub sends an `unlabeled` delivery, but it does not act on one: the seen-set belongs to the
+  poller, and a webhook that edited it would be two writers on one piece of state. So a label taken
+  off and put back inside that window fires once, from either path. This is the poller's behaviour
+  exactly, which is the point — the webhook is latency, not different semantics.
+- **The webhook cannot see a label that arrives some other way.** `issues.transferred`, a label
+  applied while the item was closed and still there when it reopens outside the delivered events, and
+  anything GitHub does not send a webhook for at all, reach a condition only at the next poll.
+- **A label claim for a key the poller never recorded outlives its event.** The release is the
+  poller's, and the poller can only drop a key it holds. If an item leaves `is:open` — merged,
+  closed — inside the up-to-60-second gap between the webhook's fire and the poller's next tick, the
+  key never enters the seen-set, so nothing releases the claim and it sits until
+  `InboundEventRetentionJob` prunes it at 30 days. Reopen that item still carrying the same label
+  inside those 30 days and the reopen is swallowed: the stale claim is taken, so neither path
+  spawns, and the poller records the key without a session behind it. It self-heals — the key is now
+  in the seen-set, so the next removal drops it and releases the claim — and it errs toward one
+  missing gate session rather than two concurrent ones, which on the merge gate is the safer
+  direction. Closing it properly needs the claim's release to be driven by something the poller sees
+  even when its search does not return the item.
 
 Slack's webhook, `POST /webhooks/slack`, takes Slack Events API deliveries and fires Slack triggers from
 them a second or two after the message is posted, instead of at the next poll — see
