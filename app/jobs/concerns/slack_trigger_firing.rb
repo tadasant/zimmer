@@ -167,20 +167,34 @@ module SlackTriggerFiring
   # `permalinks` is passed in rather than resolved here: the caller needs the same
   # links for the human-message records, and each one costs a Slack API call.
   #
-  # The listed messages are what people typed, under names they chose, so they render
-  # the way the trigger's template renders {{text}}: fenced as one block, unless the
-  # template writes {{text}} bare (Trigger#render_appended_untrusted). The count of
-  # unlisted messages is Zimmer's own line and stays outside.
+  # Two fields here are what people typed or chose, and each follows ITS OWN
+  # placeholder (Trigger#render_appended_untrusted), the way the GitHub context block
+  # follows {{title}}, {{labels}} and {{text}} separately (#50):
+  #
+  # - the message excerpts follow {{text}}, in one `messages` fence;
+  # - the name Slack shows for whoever wrote them follows {{author}}, in one `author` fence.
+  #
+  # Keyed on {{text}} alone, as it was, a template writing {{text}} bare and
+  # {{author|untrusted}} got the display names raw. One fence per field rather than
+  # one per message, because a 25-message burst must not repeat the provenance note
+  # 25 times.
+  #
+  # The name is written once for the whole note, not once per line: coalescing groups by
+  # producer (#coalescing_author_key), so every message in a note comes from the same one.
+  # `uniq` covers the case that survives that — a webhook integration posting under one
+  # `bot_id` with a different `username` each time.
+  #
+  # Zimmer's own words stay outside both fences: the times, the permalinks, the
+  # count of unlisted messages, and the channel name in the first sentence.
   def folded_messages_note(folded, trigger:, permalinks:, channel_name:, window:, follow_up: false)
     listed = folded.first(MAX_FOLDED_MESSAGES_LISTED)
 
     lines = listed.map do |message|
       link = permalinks[message]
-      author = get_author_name(message)
       excerpt = message.text.to_s.gsub(/\s+/, " ").strip.truncate(FOLDED_MESSAGE_EXCERPT)
       at = slack_ts_to_time(message.ts).utc.strftime("%H:%M:%S UTC")
 
-      "- #{at} — #{author}: #{excerpt.presence || '(no text)'}#{link.present? ? " — #{link}" : ''}"
+      "- #{at}: #{excerpt.presence || '(no text)'}#{link.present? ? " — #{link}" : ''}"
     end
 
     lines = [ trigger.render_appended_untrusted(lines.join("\n"), variable: "text", name: "messages") ]
@@ -192,13 +206,25 @@ module SlackTriggerFiring
       lines << "- ...and #{folded.length - listed.length} more, not listed individually — read the channel."
     end
 
+    authors = trigger.render_appended_untrusted(
+      listed.map { |message| get_author_name(message) }.uniq.join(", "), variable: "author"
+    )
+
+    body = <<~BODY.strip
+      Written by:
+      #{authors}
+
+      What they wrote:
+      #{lines.join("\n")}
+    BODY
+
     if follow_up
       return <<~NOTE.strip
         Another message landed in #{channel_name} within #{window}s of the one this session was started for, from the
         same author, so Zimmer folded it into this session rather than starting another. Treat it as part of the same
-        event — the first message is not necessarily the whole story:
+        event — the first message is not necessarily the whole story.
 
-        #{lines.join("\n")}
+        #{body}
       NOTE
     end
 
@@ -208,9 +234,9 @@ module SlackTriggerFiring
       #{folded.length} more message#{'s' if folded.length != 1} landed in #{channel_name} within #{window}s of the one above, so
       Zimmer folded them into this session rather than starting one session each. Treat them as part
       of the same event and read all of them before deciding what to do — the first message is not
-      necessarily the whole story:
+      necessarily the whole story.
 
-      #{lines.join("\n")}
+      #{body}
     NOTE
   end
 
