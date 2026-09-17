@@ -1974,50 +1974,43 @@ class SessionsController < ApplicationController
   # `enabled` boolean (used by the popout's on/off controls); with no param it
   # flips the current state. Responds JSON — the heart control updates in place
   # via Stimulus (mirrors the auto-compact-window inline editor pattern).
+  #
+  # Presentation ONLY — the write is Sessions::UpdateHeartbeat, shared with the
+  # REST endpoint and the `set_heartbeat` MCP action. ABSENCE of the param is
+  # what means "flip"; a param the caller sent but the server cannot read is
+  # refused rather than flipped.
   def toggle_heartbeat
     @session = find_session
+    enabled = params.key?(:enabled) ? params[:enabled] : Sessions::UpdateHeartbeat::TOGGLE
 
-    # Prefer an explicit boolean; fall back to flipping the current state when the
-    # param is absent or casts to nil (e.g. ""), so a bad value can never write a
-    # nil into the NOT NULL column.
-    casted = ActiveModel::Type::Boolean.new.cast(params[:enabled]) if params.key?(:enabled)
-    enabled = casted.nil? ? !@session.heartbeat_enabled : casted
+    with_db_retry { Sessions::UpdateHeartbeat.call(session: @session, enabled: enabled) }
+    return if performed? # with_db_retry rendered its own give-up response
 
-    result = with_db_retry do
-      @session.update!(heartbeat_enabled: enabled)
+    respond_to do |format|
+      format.json { render json: heartbeat_json }
+      format.html { redirect_to @session }
     end
-
-    return if performed?
-
-    if result != false
-      respond_to do |format|
-        format.json { render json: heartbeat_json }
-        format.html { redirect_to @session }
-      end
-    else
-      respond_to do |format|
-        format.json { render json: { error: "Failed to update heartbeat" }, status: :unprocessable_entity }
-        format.html { redirect_to @session, alert: "Failed to update heartbeat" }
-      end
+  rescue Sessions::UpdateHeartbeat::Error, ActiveRecord::RecordInvalid => e
+    respond_to do |format|
+      format.json { render json: { error: e.message }, status: :unprocessable_entity }
+      format.html { redirect_to @session, alert: e.message }
     end
   end
 
-  # Set how often the heartbeat beats. Validated against
-  # Session::HEARTBEAT_MIN/MAX_INTERVAL_SECONDS. Responds JSON.
+  # Set how often the heartbeat beats. Presentation ONLY — the range check
+  # against Session::HEARTBEAT_MIN/MAX_INTERVAL_SECONDS lives in
+  # Sessions::UpdateHeartbeat. Responds JSON.
   def update_heartbeat_interval
     @session = find_session
 
-    updated = with_db_retry do
-      @session.update(heartbeat_interval_seconds: params[:heartbeat_interval_seconds])
+    with_db_retry do
+      Sessions::UpdateHeartbeat.call(session: @session, interval_seconds: params[:heartbeat_interval_seconds])
     end
-
     return if performed?
 
-    if updated
-      render json: heartbeat_json
-    else
-      render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
-    end
+    render json: heartbeat_json
+  rescue Sessions::UpdateHeartbeat::Error, ActiveRecord::RecordInvalid => e
+    render json: { error: e.message }, status: :unprocessable_entity
   end
 
   # Board visibility: hide a session, snooze it until a chosen time, or put it

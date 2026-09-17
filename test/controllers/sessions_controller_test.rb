@@ -5953,6 +5953,52 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 60, session.reload.heartbeat_interval_seconds
   end
 
+  # Both web actions dispatch to Sessions::UpdateHeartbeat, so the four tests
+  # below assert behaviour only the shared service has: before it, the toggle
+  # flipped on a blank `enabled` and the interval action let ActiveRecord
+  # truncate "300abc" to 300, while the REST and MCP copies refused both.
+
+  test "toggle_heartbeat refuses a blank enabled instead of flipping" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", heartbeat_enabled: false)
+
+    patch toggle_heartbeat_session_url(session), params: { enabled: "" }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_match(/enabled must be a boolean/, JSON.parse(response.body)["error"])
+    assert_equal false, session.reload.heartbeat_enabled
+  end
+
+  test "update_heartbeat_interval refuses a half-numeric interval instead of truncating it" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+
+    patch update_heartbeat_interval_session_url(session), params: { heartbeat_interval_seconds: "300abc" }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_match(/interval_seconds must be an integer/, JSON.parse(response.body)["error"])
+    assert_equal 60, session.reload.heartbeat_interval_seconds
+  end
+
+  test "update_heartbeat_interval names the permitted range when the interval is out of it" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+
+    patch update_heartbeat_interval_session_url(session), params: { heartbeat_interval_seconds: 1 }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_match(
+      /between #{Session::HEARTBEAT_MIN_INTERVAL_SECONDS} and #{Session::HEARTBEAT_MAX_INTERVAL_SECONDS}/,
+      JSON.parse(response.body)["error"]
+    )
+  end
+
+  test "update_heartbeat_interval refuses a request that names no interval" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+
+    patch update_heartbeat_interval_session_url(session), as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal 60, session.reload.heartbeat_interval_seconds
+  end
+
   test "should return 404 for toggle_heartbeat with invalid session" do
     patch toggle_heartbeat_session_url(id: 99999), as: :json
     assert_response :not_found

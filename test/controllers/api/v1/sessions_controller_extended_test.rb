@@ -534,6 +534,31 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
   end
 
+  # The endpoint dispatches to Sessions::UpdateHeartbeat, shared with the web
+  # heart popout and the `set_heartbeat` MCP action. These two assert the
+  # service is what answers: the out-of-range refusal now names the permitted
+  # range (it used to be phrased by the model's numericality validator), and a
+  # half-numeric interval is refused rather than truncated.
+  test "update_heartbeat names the permitted range when the interval is out of it" do
+    session = sessions(:needs_input)
+    patch heartbeat_api_v1_session_path(session), params: { interval_seconds: 1 }, headers: @headers, as: :json
+
+    assert_response :unprocessable_entity
+    assert_match(
+      /between #{Session::HEARTBEAT_MIN_INTERVAL_SECONDS} and #{Session::HEARTBEAT_MAX_INTERVAL_SECONDS}/,
+      response.body
+    )
+  end
+
+  test "update_heartbeat refuses a half-numeric interval" do
+    session = sessions(:needs_input)
+    patch heartbeat_api_v1_session_path(session), params: { interval_seconds: "300abc" }, headers: @headers, as: :json
+
+    assert_response :unprocessable_entity
+    assert_match(/interval_seconds must be an integer/, response.body)
+    assert_equal 60, session.reload.heartbeat_interval_seconds
+  end
+
   test "session_json includes heartbeat fields" do
     session = sessions(:needs_input)
     get api_v1_session_path(session), headers: @headers
