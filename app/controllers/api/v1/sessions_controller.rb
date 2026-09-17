@@ -997,41 +997,22 @@ class Api::V1::SessionsController < Api::BaseController
   #   - enabled: boolean — turn the heartbeat on/off
   #   - interval_seconds: integer — how often the heart beats
   #     (#{Session::HEARTBEAT_MIN_INTERVAL_SECONDS}–#{Session::HEARTBEAT_MAX_INTERVAL_SECONDS})
+  #
+  # Dispatch ONLY — Sessions::UpdateHeartbeat owns the validation, shared with
+  # the web heart popout and the `set_heartbeat` MCP action.
   def update_heartbeat
-    attrs = {}
+    Sessions::UpdateHeartbeat.call(
+      session: @session,
+      enabled: params[:enabled],
+      interval_seconds: params[:interval_seconds]
+    )
 
-    unless params[:enabled].nil?
-      casted = ActiveModel::Type::Boolean.new.cast(params[:enabled])
-      # cast("") / cast("maybe") => nil; reject rather than let a nil reach the
-      # NOT NULL column (which would surface as a 500, not a 422).
-      if casted.nil?
-        render_api_error("Validation failed", "enabled must be a boolean", status: :unprocessable_entity)
-        return
-      end
-      attrs[:heartbeat_enabled] = casted
-    end
-
-    unless params[:interval_seconds].nil?
-      interval = params[:interval_seconds]
-      unless interval.to_s.match?(/\A\d+\z/)
-        render_api_error("Validation failed", "interval_seconds must be an integer", status: :unprocessable_entity)
-        return
-      end
-      attrs[:heartbeat_interval_seconds] = interval.to_i
-    end
-
-    if attrs.empty?
-      render_api_error("Missing parameter", "Provide enabled and/or interval_seconds", status: :unprocessable_entity)
-      return
-    end
-
-    @session.update!(attrs)
     render json: {
       session: session_json(@session),
       heartbeat_enabled: @session.heartbeat_enabled,
       heartbeat_interval_seconds: @session.heartbeat_interval_seconds
     }
-  rescue ActiveRecord::RecordInvalid => e
+  rescue Sessions::UpdateHeartbeat::Error, ActiveRecord::RecordInvalid => e
     render_api_error("Validation failed", e.message, status: :unprocessable_entity)
   end
 

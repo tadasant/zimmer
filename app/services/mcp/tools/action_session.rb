@@ -1065,31 +1065,14 @@ module Mcp
         ].join("\n")
       end
 
+      # Dispatch ONLY — Sessions::UpdateHeartbeat owns the validation, shared
+      # with the web heart popout and PATCH /api/v1/sessions/:id/heartbeat.
       def set_heartbeat(session, args)
-        attrs = {}
-
-        unless args["enabled"].nil?
-          casted = ActiveModel::Type::Boolean.new.cast(args["enabled"])
-          raise ToolError, "\"enabled\" must be a boolean." if casted.nil?
-          attrs[:heartbeat_enabled] = casted
-        end
-
-        unless args["interval_seconds"].nil?
-          interval = args["interval_seconds"]
-          raise ToolError, "\"interval_seconds\" must be an integer." unless interval.to_s.match?(/\A\d+\z/)
-
-          interval = interval.to_i
-          unless interval.between?(Session::HEARTBEAT_MIN_INTERVAL_SECONDS, Session::HEARTBEAT_MAX_INTERVAL_SECONDS)
-            raise ToolError, "\"interval_seconds\" must be between #{Session::HEARTBEAT_MIN_INTERVAL_SECONDS} and #{Session::HEARTBEAT_MAX_INTERVAL_SECONDS}."
-          end
-          attrs[:heartbeat_interval_seconds] = interval
-        end
-
-        if attrs.empty?
-          raise ToolError, "The \"set_heartbeat\" action requires at least one of \"enabled\" or \"interval_seconds\"."
-        end
-
-        session.update!(attrs)
+        Sessions::UpdateHeartbeat.call(
+          session: session,
+          enabled: args["enabled"],
+          interval_seconds: args["interval_seconds"]
+        )
 
         [
           "## Heartbeat Updated",
@@ -1099,6 +1082,8 @@ module Mcp
           "- **Heartbeat Enabled:** #{session.heartbeat_enabled ? 'Yes' : 'No'}",
           "- **Interval:** #{session.heartbeat_interval_seconds} seconds"
         ].join("\n")
+      rescue Sessions::UpdateHeartbeat::Error, ActiveRecord::RecordInvalid => e
+        raise ToolError, e.message
       end
 
       def fork_session(session, args)
