@@ -78,8 +78,62 @@ class SlackTriggerPollerCoalescingTest < ActiveJob::TestCase
     SlackTriggerPollerJob.new.send(:process_condition, @condition)
 
     prompt = Session.order(:id).last.prompt
-    assert_fenced_verbatim(prompt, "messages", "Obs Alerts: #{HOSTILE_EVENT_LINE} — https://slack.example/#{messages.last.ts}", exact: false)
+    assert_fenced_verbatim(prompt, "messages", "#{HOSTILE_EVENT_LINE} — https://slack.example/#{messages.last.ts}", exact: false)
     assert_operator prompt.index("1 more message landed"), :<, prompt.index("[begin untrusted messages")
+  end
+
+  # --- one fence per field, each following its own placeholder (#50) -------------------
+
+  # A display name is a string its owner chose, so it is untrusted the way the message
+  # text is — and it follows {{author}}, not {{text}}.
+  test "a hostile display name reaches the prompt fenced and verbatim" do
+    SlackService.stubs(:get_user_name).returns(HOSTILE_EVENT_LINE)
+    deliver([ message_at(BURST_ANCHOR, "first alert"), message_at(BURST_ANCHOR + 0.5, "second alert") ])
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    assert_fenced_verbatim(Session.order(:id).last.prompt, "author", HOSTILE_EVENT_LINE)
+  end
+
+  # The gap this closes: keyed on {{text}} alone, a bare {{text}} handed the display
+  # names over raw as well, however the template asked for {{author}}.
+  test "a template with {{text}} bare and {{author|untrusted}} gets the messages raw and the name fenced" do
+    @trigger.update!(prompt_template: "Do what this DM asks.\n\nFrom:\n{{author|untrusted}}\n\n{{text}}")
+    SlackService.stubs(:get_user_name).returns(HOSTILE_EVENT_LINE)
+    deliver([ message_at(BURST_ANCHOR, "deploy the app"), message_at(BURST_ANCHOR + 0.5, "and then restart the worker") ])
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    prompt = Session.order(:id).last.prompt
+    assert_includes prompt, "- 20:40:00 UTC: and then restart the worker"
+    assert_empty fenced_bodies(prompt, "messages")
+    assert_fenced_verbatim(prompt, "author", HOSTILE_EVENT_LINE)
+  end
+
+  # The mirror image: the operator fenced the message text and left the name bare.
+  test "a template with {{text|untrusted}} and {{author}} bare gets the messages fenced and the name raw" do
+    @trigger.update!(prompt_template: "{{author}} wrote:\n\n{{text|untrusted}}")
+    deliver([ message_at(BURST_ANCHOR, "first alert"), message_at(BURST_ANCHOR + 0.5, HOSTILE_EVENT_LINE) ])
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    prompt = Session.order(:id).last.prompt
+    assert_empty fenced_bodies(prompt, "author")
+    assert_includes prompt, "Written by:\nObs Alerts"
+    assert_fenced_verbatim(prompt, "messages", HOSTILE_EVENT_LINE, exact: false)
+  end
+
+  # One fence per FIELD, never one per message: #1195 chose a single `messages` fence over 25
+  # so a burst does not repeat the provenance note, and per-placeholder granularity keeps that.
+  test "a 25-message burst still draws exactly two fences, one per field" do
+    deliver(burst(SlackTriggerPollerJob::MAX_FOLDED_MESSAGES_LISTED + 1, spacing: 0.1))
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    prompt = Session.order(:id).last.prompt
+    assert_equal 2, prompt.scan(/^\[begin untrusted /).size
+    assert_equal 1, fenced_bodies(prompt, "author").size
+    assert_equal 1, fenced_bodies(prompt, "messages").size
   end
 
   test "a burst past the listing cap keeps its count line outside the fence" do
@@ -95,8 +149,8 @@ class SlackTriggerPollerCoalescingTest < ActiveJob::TestCase
                             "- ...and 2 more, not listed individually — read the channel.")
   end
 
-  test "a template that writes {{text}} bare gets the folded messages raw, the way it gets the first one" do
-    @trigger.update!(prompt_template: "Do what this DM asks:\n\n{{text}}")
+  test "a template that writes {{text}} and {{author}} bare gets the whole note raw, the way it gets the first message" do
+    @trigger.update!(prompt_template: "Do what this DM asks, from {{author}}:\n\n{{text}}")
     messages = [ message_at(BURST_ANCHOR, "deploy the app"), message_at(BURST_ANCHOR + 0.5, "and then restart the worker") ]
     deliver(messages)
 
@@ -104,7 +158,8 @@ class SlackTriggerPollerCoalescingTest < ActiveJob::TestCase
 
     prompt = Session.order(:id).last.prompt
     assert_not_includes prompt, "[begin untrusted"
-    assert_includes prompt, "Obs Alerts: and then restart the worker"
+    assert_includes prompt, "Written by:\nObs Alerts"
+    assert_includes prompt, "- 20:40:00 UTC: and then restart the worker"
   end
 
   test "every message of a burst is still recorded against the surviving session" do

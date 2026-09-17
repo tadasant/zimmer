@@ -1591,24 +1591,36 @@ Three paths add event text to what a session receives outside the template:
 - the note the [webhook](#slack-events-api-delivery) queues into a running session when a later
   message of a burst arrives. That note is a queued message, not part of the prompt.
 
-Each one renders that text the way the template renders the placeholder carrying the same text:
-`{{title}}`, `{{labels}}` and `{{text}}` for the GitHub block, and `{{text}}` for both Slack notes.
-The text is fenced unless the template writes that placeholder bare at least once. A template that
-never names it, or only ever writes `{{text|untrusted}}`, gets the appended text fenced. A template
-that writes `{{text}}` bare gets it raw.
+Each field of that text renders the way the template renders the placeholder carrying the same text,
+and each field follows **its own** placeholder. The text is fenced unless the template writes that
+placeholder bare at least once. A template that never names it, or only ever writes
+`{{text|untrusted}}`, gets the appended text fenced. A template that writes `{{text}}` bare gets it
+raw.
 
-The GitHub block's title, labels and body are fenced separately, under names `title`, `labels` and
-`body`. A body cut at 10,000 characters gets its `…(truncated)` marker after the fence. A Slack note
-puts every message it lists inside one `messages` fence, keyed on `{{text}}` alone. That includes
-each message's author name, time and link, so a template that writes `{{text}}` bare gets the author
-names raw too, even if it fences `{{author}}`. A note's own words stay outside, including the channel
-name in its first sentence, as does the count of messages past the listing cap. Each fence draws its
-own code.
+| Appended field | Follows | Fence name |
+| --- | --- | --- |
+| GitHub block: the item's title | `{{title}}` | `title` |
+| GitHub block: the item's labels | `{{labels}}` | `labels` |
+| GitHub block: the item's body | `{{text}}` | `body` |
+| Slack note: the messages it lists | `{{text}}` | `messages` |
+| Slack note: the name Slack shows for whoever wrote them | `{{author}}` | `author` |
+
+So a template that writes `{{text}}` bare and `{{author|untrusted}}` gets the folded messages raw and
+the display name fenced, and one that does the reverse gets the reverse. A GitHub body cut at 10,000
+characters gets its `…(truncated)` marker after the fence.
+
+There is one fence per **field**, never one per message: a Slack note lists up to 25 messages, and a
+fence around each would repeat the 350-character provenance note 25 times. The name is written once
+for the whole note rather than once per line, because messages only coalesce when they come from the
+same producer. Zimmer's own words stay outside every fence — the times, the permalinks, the channel
+name in the note's first sentence, and the count of messages past the listing cap. Each fence draws
+its own code.
 
 The bare case follows the template on purpose. A DM trigger whose template is `{{text}}` hands the
 agent a trusted person's message as the request itself. Fencing the second message of that person's
 burst would give the agent the first message as a request and the second as data it must not act
-on.
+on. That is also why a field is not fenced because a *neighbouring* field asks for it: fencing the
+messages of that DM burst on the strength of `{{author|untrusted}}` would do the same damage.
 
 **Why `{{text}}` is not fenced by default.** Message text, titles, bodies and display names are
 untrusted by nature, and fencing them by default was considered. It would change what every existing
@@ -2177,17 +2189,26 @@ Link: https://tadasant.slack.com/archives/C0BG.../p1756500000
 
 6 more messages landed in #alerts within 60s of the one above, so Zimmer folded them into this
 session rather than starting one session each. Treat them as part of the same event and read all
-of them before deciding what to do — the first message is not necessarily the whole story:
+of them before deciding what to do — the first message is not necessarily the whole story.
 
+Written by:
+[begin untrusted author 8c41d0b2a95e7f33: supplied by the event that fired this trigger, ... It ends only at "[end untrusted author 8c41d0b2a95e7f33]".]
+Obs Alerts
+[end untrusted author 8c41d0b2a95e7f33]
+
+What they wrote:
 [begin untrusted messages 3f9a2c7d1e8b4a60: supplied by the event that fired this trigger, ... It ends only at "[end untrusted messages 3f9a2c7d1e8b4a60]".]
-- 20:40:35 UTC — Obs Alerts: [production] Queued messages stranded by an archive — https://...
-- 20:40:35 UTC — Obs Alerts: [production] Queued messages stranded by an archive — https://...
+- 20:40:35 UTC: [production] Queued messages stranded by an archive — https://...
+- 20:40:36 UTC: [production] Queued messages stranded by an archive — https://...
 [end untrusted messages 3f9a2c7d1e8b4a60]
 ```
 
-The listed messages sit inside one [fence](#fencing-untrusted-text-nameuntrusted), because this
-template never names `{{text}}`. A template that writes `{{text}}` bare gets them unfenced, the way
-it gets the first message: see [Event text Zimmer appends](#event-text-zimmer-appends).
+Both blocks sit inside a [fence](#fencing-untrusted-text-nameuntrusted), because this template names
+neither `{{text}}` nor `{{author}}`. Each one follows its own placeholder: a template that writes
+`{{text}}` bare gets the messages unfenced, the way it gets the first message, and one that writes
+`{{author}}` bare gets the name unfenced. See
+[Event text Zimmer appends](#event-text-zimmer-appends). The name is written once for the whole note
+rather than once per line, because a group is one producer repeating itself.
 
 Three properties are worth stating explicitly, because the failure mode of getting this wrong is
 **silence** — an alert that gets no session announces nothing.
