@@ -8,17 +8,27 @@ module Webhooks
   # "Redeliver" button, or a replay of a captured request — carries the same id and is acknowledged
   # without being processed again.
   #
-  # Only `issues` with action `opened` fires anything: it is handed to GithubEventJob, which fires
-  # the `github_issue` conditions the poller would. Everything else — `ping` when the hook is saved,
-  # label events, pull requests — is acknowledged so GitHub records a success, and fires nothing.
+  # Only the events in FIRING_EVENTS fire anything: they are handed to GithubEventJob, which fires
+  # the conditions the poller would. Everything else — `ping` when the hook is saved, a closed
+  # issue, a review requested — is acknowledged so GitHub records a success, and fires nothing.
   #
   # The body must be `application/json`. A hook configured for `application/x-www-form-urlencoded`
   # sends a body that is not JSON and gets a 400.
   #
   # See Webhooks::BaseController for the order every check runs in.
   class GithubController < BaseController
-    FIRING_EVENT = "issues"
-    FIRING_ACTION = "opened"
+    # "<event>.<action>" => the payload key carrying the item. These are the deliveries that can
+    # put an item into a search GithubTriggerPollerJob runs: a new issue for a `github_issue`
+    # condition's cursor, and for a `github_label` condition's seen-set a label added to an open
+    # item or an item becoming open while carrying one.
+    FIRING_EVENTS = {
+      "issues.opened" => "issue",
+      "issues.reopened" => "issue",
+      "issues.labeled" => "issue",
+      "pull_request.opened" => "pull_request",
+      "pull_request.reopened" => "pull_request",
+      "pull_request.labeled" => "pull_request"
+    }.freeze
 
     def create
       source = Webhooks::Source.github
@@ -48,16 +58,28 @@ module Webhooks
     # GoodJob's queue is this database, so either both commit or neither does.
     def accept_delivery(source, delivery_id, event, payload)
       action = payload["action"].to_s.presence
-      issue = payload["issue"]
-      fires = event == FIRING_EVENT && action == FIRING_ACTION && issue.is_a?(Hash)
+      event_type = [ event, action ].compact.join(".")
+      item_key = FIRING_EVENTS[event_type]
+      object = item_key && payload[item_key]
+      label = payload["label"].is_a?(Hash) ? payload["label"]["name"].to_s.presence : nil
+
+      # A `labeled` delivery whose `label` is missing names nothing that could have been added, so
+      # there is no event in it to match a condition's labels against.
+      fires = object.is_a?(Hash) && (!event_type.end_with?(".labeled") || label.present?)
 
       first = ActiveRecord::Base.transaction do
         recorded = WebhookDelivery.record_first!(
           source: source.name,
           delivery_id: delivery_id,
-          event_type: [ event, action ].compact.join(".")
+          event_type: event_type
         )
-        GithubEventJob.perform_later(delivery_id, GithubEventJob.item_arguments(issue)) if recorded && fires
+        if recorded && fires
+          GithubEventJob.perform_later(
+            delivery_id, event_type,
+            GithubEventJob.item_arguments(object, repository: payload["repository"], pull_request: item_key == "pull_request"),
+            label
+          )
+        end
         recorded
       end
 

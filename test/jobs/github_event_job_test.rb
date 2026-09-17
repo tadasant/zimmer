@@ -14,7 +14,7 @@ class GithubEventJobTest < ActiveJob::TestCase
   teardown { teardown_github_webhook }
 
   def run_issue(issue)
-    GithubEventJob.perform_now("delivery-#{SecureRandom.hex(4)}", GithubEventJob.item_arguments(issue))
+    GithubEventJob.perform_now("delivery-#{SecureRandom.hex(4)}", GithubEventJob::ISSUE_OPENED, GithubEventJob.item_arguments(issue))
   end
 
   def fires(issue)
@@ -91,7 +91,9 @@ class GithubEventJobTest < ActiveJob::TestCase
     assert_equal 0, fires(github_issue)
   end
 
-  test "a github_label condition is never fired from a delivery" do
+  # The `github_label` fixture watches pull requests, so an issues.opened delivery is not its
+  # event whatever it is labelled. GithubLabelEventJobTest covers the conditions that are.
+  test "an issues.opened delivery does not fire a github_label condition that watches pull requests" do
     label_trigger = triggers(:github_label_trigger)
     label_trigger.update_columns(status: "enabled")
     @trigger.update_columns(status: "disabled")
@@ -163,7 +165,7 @@ class GithubEventJobTest < ActiveJob::TestCase
   test "only the fields the poller reads are kept of a delivered issue" do
     item = GithubEventJob.item_arguments(github_issue(number: 8, labels: [ "bug" ]))
 
-    assert_equal %w[body created_at html_url labels number repository_url title user], item.keys.sort
+    assert_equal %w[body created_at html_url labels number repository_url state title user], item.keys.sort
     assert_equal [ { "name" => "bug" } ], item["labels"]
     assert_equal({ "login" => "octocat" }, item["user"])
     assert_includes GithubEventJob.item_arguments(github_issue(pull_request: true)).keys, "pull_request"
@@ -198,7 +200,9 @@ class GithubEventJobTest < ActiveJob::TestCase
     assert_equal [ "github:tadasant/zimmer#12:opened" ], TriggerEventClaim.pluck(:event_key)
   end
 
-  test "a github_label fire from the poller takes no claim while the GitHub webhook is on" do
+  # Both GitHub condition types are served by the webhook now, so both claim while it is on — and
+  # a label claim is keyed on the label, not on "opened".
+  test "a github_label fire from the poller claims the label while the GitHub webhook is on" do
     label_trigger = triggers(:github_label_trigger)
     label_trigger.update_columns(status: "enabled")
     label_condition = trigger_conditions(:github_label_condition)
@@ -209,7 +213,9 @@ class GithubEventJobTest < ActiveJob::TestCase
       GithubTriggerPollerJob.new.send(:process_condition, label_condition.reload)
     end
 
-    assert_equal 0, TriggerEventClaim.count
+    claim = TriggerEventClaim.sole
+    assert_equal [ label_condition.id, "github:tadasant/zimmer#14:label:ready to merge", "poll" ],
+      [ claim.trigger_condition_id, claim.event_key, claim.claimed_via ]
     assert_includes label_condition.reload.github_seen_items, "tadasant/zimmer#14:ready to merge"
   end
 
