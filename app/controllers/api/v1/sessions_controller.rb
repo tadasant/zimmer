@@ -1012,6 +1012,10 @@ class Api::V1::SessionsController < Api::BaseController
       heartbeat_enabled: @session.heartbeat_enabled,
       heartbeat_interval_seconds: @session.heartbeat_interval_seconds
     }
+  rescue Sessions::UpdateHeartbeat::MissingSetting => e
+    # Kept distinct from the refusals below: "Missing parameter" is this API's
+    # classification for a request that named nothing, and clients branch on it.
+    render_api_error("Missing parameter", e.message, status: :unprocessable_entity)
   rescue Sessions::UpdateHeartbeat::Error, ActiveRecord::RecordInvalid => e
     render_api_error("Validation failed", e.message, status: :unprocessable_entity)
   end

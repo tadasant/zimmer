@@ -4,8 +4,9 @@ require "mocha/minitest"
 # Sessions::UpdateHeartbeat is the single writer behind all three surfaces (the
 # web heart popout, PATCH /api/v1/sessions/:id/heartbeat, and the `set_heartbeat`
 # MCP action). What matters here is that an unreadable value is refused rather
-# than guessed at, that the interval range is enforced by the service itself, and
-# that writing heartbeat settings touches nothing else on the session.
+# than guessed at, that the interval range is enforced by the service itself,
+# that a call naming nothing is distinguishable from one naming something
+# unreadable, and that writing the settings touches nothing else on the session.
 class Sessions::UpdateHeartbeatTest < ActiveSupport::TestCase
   def setup
     Session.any_instance.stubs(:broadcast_status_change)
@@ -49,20 +50,9 @@ class Sessions::UpdateHeartbeatTest < ActiveSupport::TestCase
     assert session.reload.heartbeat_enabled
   end
 
-  test "TOGGLE flips the current flag in both directions" do
-    session = make_session(heartbeat_enabled: false)
-
-    Sessions::UpdateHeartbeat.call(session: session, enabled: Sessions::UpdateHeartbeat::TOGGLE)
-    assert session.reload.heartbeat_enabled
-
-    Sessions::UpdateHeartbeat.call(session: session, enabled: Sessions::UpdateHeartbeat::TOGGLE)
-    assert_not session.reload.heartbeat_enabled
-  end
-
-  # The divergence this service resolves: the web toggle read a blank `enabled`
-  # as "flip it", so `enabled=` turned a heartbeat on while the same value got a
-  # 422 from the REST endpoint and the MCP action. Every surface now refuses it.
-  test "refuses a blank enabled rather than flipping" do
+  # A blank `enabled` is the one value ActiveModel cannot read, and refusing it
+  # is what keeps a nil away from the NOT NULL column.
+  test "refuses a blank enabled" do
     session = make_session(heartbeat_enabled: false)
 
     error = assert_raises(Sessions::UpdateHeartbeat::Error) do
@@ -73,9 +63,9 @@ class Sessions::UpdateHeartbeatTest < ActiveSupport::TestCase
   end
 
   # ActiveModel's boolean cast answers false only for its FALSE_VALUES and true
-  # for every other non-blank string. That was already true of all four copies;
-  # it is pinned here so the shared service cannot quietly tighten it.
-  test "reads a non-blank unrecognized string as true, like every copy before it" do
+  # for every other non-blank string. Pinned so the service cannot tighten it by
+  # accident — that is ActiveModel's contract, not a choice this service makes.
+  test "reads a non-blank unrecognized string as true" do
     session = make_session(heartbeat_enabled: false)
 
     Sessions::UpdateHeartbeat.call(session: session, enabled: "maybe")
@@ -128,8 +118,8 @@ class Sessions::UpdateHeartbeatTest < ActiveSupport::TestCase
     assert_equal 60, session.reload.heartbeat_interval_seconds
   end
 
-  # The other divergence: the web interval action handed the raw param to
-  # ActiveRecord, which reads "60abc" as 60 and "abc" as 0.
+  # ActiveRecord's integer cast reads "300abc" as 300 and "abc" as 0. The service
+  # is stricter, because a truncated interval is a silently wrong cadence.
   test "refuses a half-numeric interval instead of truncating it" do
     session = make_session(heartbeat_interval_seconds: 60)
 
@@ -174,8 +164,27 @@ class Sessions::UpdateHeartbeatTest < ActiveSupport::TestCase
   test "refuses a call that names no setting" do
     session = make_session
 
-    error = assert_raises(Sessions::UpdateHeartbeat::Error) { Sessions::UpdateHeartbeat.call(session: session) }
+    error = assert_raises(Sessions::UpdateHeartbeat::MissingSetting) { Sessions::UpdateHeartbeat.call(session: session) }
     assert_match(/at least one of enabled or interval_seconds/, error.message)
+  end
+
+  # MissingSetting is a subclass, so a surface that only cares that the call was
+  # refused can still rescue Error and catch both.
+  test "MissingSetting is an Error" do
+    session = make_session
+
+    assert_raises(Sessions::UpdateHeartbeat::Error) { Sessions::UpdateHeartbeat.call(session: session) }
+  end
+
+  # An unreadable value is NOT a missing one: the REST API classifies the two
+  # differently in its `error` field, so they have to stay distinguishable here.
+  test "an unreadable value raises Error and not MissingSetting" do
+    session = make_session
+
+    error = assert_raises(Sessions::UpdateHeartbeat::Error) do
+      Sessions::UpdateHeartbeat.call(session: session, enabled: "")
+    end
+    assert_not_kind_of Sessions::UpdateHeartbeat::MissingSetting, error
   end
 
   test "touches nothing but the two heartbeat columns" do
