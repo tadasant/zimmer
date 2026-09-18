@@ -2382,6 +2382,23 @@ The state machine is not the only actor:
 - **`HeartbeatSweepJob`** (every 30s) re-nudges `needs_input` sessions with `heartbeat_enabled`
   by injecting a heartbeat prompt and resuming them. It skips sessions blocked on an
   elicitation or with pending enqueued messages — resuming those would spawn a second process.
+
+  The two settings it reads — `heartbeat_enabled` and `heartbeat_interval_seconds` — have one
+  writer: **`Sessions::UpdateHeartbeat`**. The web heart popout (`toggle_heartbeat` and
+  `update_heartbeat_interval`), `PATCH /api/v1/sessions/:id/heartbeat` and the `set_heartbeat` MCP
+  action all dispatch to it, so every door applies the same rules. `enabled` is cast by
+  ActiveModel, which reads blank as unreadable and every other non-blank string as `true` — so
+  `enabled=` is refused and `enabled=maybe` turns the heartbeat on. `interval_seconds` must be a
+  whole number within `Session::HEARTBEAT_MIN_INTERVAL_SECONDS`–`HEARTBEAT_MAX_INTERVAL_SECONDS`
+  (30–86,400), so `"300abc"` is refused rather than truncated to 300, and the refusal names the
+  range. A call must name at least one of the two. The web and REST doors answer a refusal with a
+  422; the MCP action raises a `ToolError`.
+
+  Writing the settings does not beat the heartbeat, stamp `heartbeat_last_beat_at`, or resume
+  anything — turning one on only makes the session eligible for the next sweep. Two other places
+  clear `heartbeat_enabled` as a side effect of something else rather than as a settings write:
+  this sweep's own auto-disable on a terminal session, and the fork `SessionStatusSummaryGenerator`
+  spawns.
 - **`CleanupOrphanedSessionsJob`** (every 5 min) catches sessions marked `running` whose process
   is gone — and, since [#988](https://github.com/tadasant/zimmer/issues/988), stops catching the
   same one forever. See

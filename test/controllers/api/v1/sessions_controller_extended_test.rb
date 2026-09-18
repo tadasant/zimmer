@@ -526,12 +526,42 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
     session = sessions(:needs_input)
     patch heartbeat_api_v1_session_path(session), headers: @headers, as: :json
     assert_response :unprocessable_entity
+    # "Missing parameter" is this API's classification for a request that named
+    # nothing, used by eight other endpoints; a request that named something
+    # unreadable is a "Validation failed" instead. The two stay distinguishable.
+    assert_equal "Missing parameter", JSON.parse(response.body)["error"]
   end
 
   test "update_heartbeat rejects a non-boolean enabled value with 422 (not 500)" do
     session = sessions(:needs_input)
     patch heartbeat_api_v1_session_path(session), params: { enabled: "" }, headers: @headers, as: :json
     assert_response :unprocessable_entity
+    assert_equal "Validation failed", JSON.parse(response.body)["error"]
+  end
+
+  # The endpoint dispatches to Sessions::UpdateHeartbeat, shared with the web
+  # heart popout and the `set_heartbeat` MCP action. These two assert the service
+  # is what answers: the out-of-range refusal names the permitted range rather
+  # than being phrased by the model's numericality validator, and a half-numeric
+  # interval is refused rather than truncated.
+  test "update_heartbeat names the permitted range when the interval is out of it" do
+    session = sessions(:needs_input)
+    patch heartbeat_api_v1_session_path(session), params: { interval_seconds: 1 }, headers: @headers, as: :json
+
+    assert_response :unprocessable_entity
+    assert_match(
+      /between #{Session::HEARTBEAT_MIN_INTERVAL_SECONDS} and #{Session::HEARTBEAT_MAX_INTERVAL_SECONDS}/,
+      response.body
+    )
+  end
+
+  test "update_heartbeat refuses a half-numeric interval" do
+    session = sessions(:needs_input)
+    patch heartbeat_api_v1_session_path(session), params: { interval_seconds: "300abc" }, headers: @headers, as: :json
+
+    assert_response :unprocessable_entity
+    assert_match(/interval_seconds must be an integer/, response.body)
+    assert_equal 60, session.reload.heartbeat_interval_seconds
   end
 
   test "session_json includes heartbeat fields" do

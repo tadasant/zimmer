@@ -101,6 +101,21 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     assert_not session.reload.heartbeat_enabled
   end
 
+  # The self-management surface inherits ActionSession#set_heartbeat, so it
+  # inherits Sessions::UpdateHeartbeat's refusals too.
+  test "set_heartbeat refuses an out-of-range interval here as well" do
+    session = sessions(:needs_input)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "set_heartbeat", "session_id" => session.id, "interval_seconds" => 5)
+    end
+    assert_match(
+      /between #{Session::HEARTBEAT_MIN_INTERVAL_SECONDS} and #{Session::HEARTBEAT_MAX_INTERVAL_SECONDS}/,
+      error.message
+    )
+    assert_equal 60, session.reload.heartbeat_interval_seconds
+  end
+
   test "still requires session_id" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "archive") }
     assert_match(/"session_id" parameter is required/, error.message)
