@@ -1442,6 +1442,38 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/"title" parameter is required/, title_error.message)
   end
 
+  test "update_notes refuses notes past the cap as a ToolError and keeps the old notes" do
+    session = sessions(:needs_input)
+    session.update!(session_notes: "Old notes")
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update_notes", "session_id" => session.id, "session_notes" => "a" * 50_001)
+    end
+
+    assert_equal "Notes are too long (maximum 50,000 characters)", error.message
+    assert_equal "Old notes", session.reload.session_notes
+  end
+
+  test "update_notes with an empty string clears the notes" do
+    session = sessions(:needs_input)
+    session.update!(session_notes: "Old notes", session_notes_updated_at: Time.current)
+
+    @tool.call("action" => "update_notes", "session_id" => session.id, "session_notes" => "")
+
+    assert_nil session.reload.session_notes
+    assert_nil session.session_notes_updated_at
+  end
+
+  test "update_notes refuses a non-string as a ToolError rather than crashing" do
+    session = sessions(:needs_input)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update_notes", "session_id" => session.id, "session_notes" => 42)
+    end
+
+    assert_equal "session_notes must be a string.", error.message
+  end
+
   test "toggle_favorite flips the favorited flag" do
     session = sessions(:needs_input)
 

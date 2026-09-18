@@ -934,22 +934,21 @@ class Api::V1::SessionsController < Api::BaseController
   #
   # Request body:
   #   - session_notes: Notes text (max 50,000 chars, blank to clear)
+  #
+  # Dispatch ONLY — Sessions::UpdateNotes owns the rules, shared with the web
+  # notes panel and the `update_notes` MCP action.
   def update_notes
-    notes = params[:session_notes]
-
-    if notes.present? && notes.length > 50_000
-      render_api_error("Too long", "Notes are too long (maximum 50,000 characters)", status: :unprocessable_entity)
-      return
-    end
-
-    if @session.update(session_notes: notes.presence, session_notes_updated_at: notes.present? ? Time.current : nil)
-      render json: {
-        session: session_json(@session),
-        session_notes_updated_at: @session.session_notes_updated_at&.iso8601
-      }
-    else
-      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
-    end
+    Sessions::UpdateNotes.call(session: @session, notes: params[:session_notes])
+    render json: {
+      session: session_json(@session),
+      session_notes_updated_at: @session.session_notes_updated_at&.iso8601
+    }
+  rescue Sessions::UpdateNotes::TooLong => e
+    render_api_error("Too long", e.message, status: :unprocessable_entity)
+  rescue Sessions::UpdateNotes::Error => e
+    render_api_error("Validation failed", e.message, status: :unprocessable_entity)
+  rescue ActiveRecord::RecordInvalid => e
+    render_api_error("Update failed", e.record.errors.full_messages, status: :unprocessable_entity)
   end
 
   # POST /api/v1/sessions/:id/toggle_favorite

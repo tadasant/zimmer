@@ -702,6 +702,9 @@ class Session < ApplicationRecord
   # of 500k characters leaves ample room for conversation history and system context.
   PROMPT_MAX_LENGTH = 500_000
   GOAL_MAX_LENGTH = 50_000
+  # Cap on `session_notes`. Sessions::UpdateNotes refuses past it on every
+  # surface; the validation below is the backstop.
+  NOTES_MAX_LENGTH = 50_000
 
   # Cap on the client-supplied idempotency key. A key is a token the caller
   # invents to name one create attempt, and it should be a fresh UUID rather than
@@ -823,7 +826,7 @@ class Session < ApplicationRecord
   validates :title, length: { maximum: 100, message: "is too long (maximum 100 characters)" }, allow_nil: true
   validates :goal, length: { maximum: GOAL_MAX_LENGTH, message: "is too long (maximum #{GOAL_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_nil: true
   validates :goal, goal_reference: true, if: -> { will_save_change_to_goal? && !goal_inherited }
-  validates :session_notes, length: { maximum: 50_000, message: "is too long (maximum 50,000 characters)" }, allow_nil: true
+  validates :session_notes, length: { maximum: NOTES_MAX_LENGTH, message: "is too long (maximum #{NOTES_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_nil: true
   # Cap at 1M tokens — well above any realistic Claude Code model context (~200K)
   # while still preventing runaway/typo values from polluting the spawn env.
   # This budget is runtime-scoped: the runtime adapter decides whether to surface

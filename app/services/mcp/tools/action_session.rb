@@ -98,7 +98,6 @@ module Mcp
       # Every action but the two bulk ones operates on a single session.
       SESSIONLESS_ACTIONS = %w[refresh_all bulk_archive].freeze
 
-      MAX_SESSION_NOTES_LENGTH = 50_000
       REFRESH_ALL_LIMIT = 50
 
       # Which session attribute and argument name each of the four
@@ -1235,14 +1234,13 @@ module Mcp
           raise ToolError, "The \"session_notes\" parameter is required for the \"update_notes\" action."
         end
 
-        if notes.length > MAX_SESSION_NOTES_LENGTH
-          raise ToolError, "Notes are too long (maximum #{MAX_SESSION_NOTES_LENGTH} characters)"
+        # Dispatch ONLY — Sessions::UpdateNotes owns the rules, shared with the
+        # web notes panel and PATCH /api/v1/sessions/:id/notes.
+        begin
+          Sessions::UpdateNotes.call(session: session, notes: notes)
+        rescue Sessions::UpdateNotes::Error, ActiveRecord::RecordInvalid => e
+          raise ToolError, e.message
         end
-
-        session.update!(
-          session_notes: notes.presence,
-          session_notes_updated_at: notes.present? ? Time.current : nil
-        )
 
         [
           "## Session Notes Updated",
