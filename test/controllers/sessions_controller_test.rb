@@ -2698,7 +2698,42 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :unprocessable_entity
     json_response = JSON.parse(response.body)
-    assert_includes json_response["error"], "too long"
+    assert_equal "Notes are too long (maximum 50,000 characters)", json_response["error"]
+  end
+
+  test "should clear session notes when the param is absent" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", session_notes: "Old notes", session_notes_updated_at: Time.current)
+
+    patch update_notes_session_url(session), params: {}, as: :json
+
+    assert_response :success
+    assert_nil session.reload.session_notes
+  end
+
+  test "should reject non-string session notes with 422 rather than a 500" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", session_notes: "Old notes")
+
+    patch update_notes_session_url(session), params: { session_notes: 123 }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal "session_notes must be a string.", JSON.parse(response.body)["error"]
+    assert_equal "Old notes", session.reload.session_notes
+  end
+
+  test "should retry a session notes write after a transient database error" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+    attempts = 0
+    Sessions::UpdateNotes.stubs(:call).with do |**|
+      attempts += 1
+      raise ActiveRecord::Deadlocked, "deadlock" if attempts == 1
+      true
+    end.returns(session)
+    SessionsController.any_instance.stubs(:sleep)
+
+    patch update_notes_session_url(session), params: { session_notes: "My notes" }, as: :json
+
+    assert_response :success
+    assert_equal 2, attempts
   end
 
   test "should route to update_notes" do
