@@ -215,21 +215,33 @@ class Webhooks::GithubControllerTest < ActionDispatch::IntegrationTest
     assert_equal "ping", WebhookDelivery.sole.event_type
   end
 
-  test "an issues.labeled delivery is acknowledged and fires nothing" do
+  # A label is not what a `github_issue` condition fires on — its state is a created_at cursor, and
+  # only opening an issue moves one. GithubLabelDeliveryTest covers the conditions labels DO fire.
+  test "an issues.labeled delivery fires no github_issue condition" do
     assert_no_difference -> { Session.count } do
-      deliver(issues_payload(github_issue(labels: [ "bug" ]), action: "labeled"))
+      deliver(issues_payload(github_issue(labels: [ "bug" ]), action: "labeled", label: "bug"))
     end
 
     assert_response :ok
     assert_equal "issues.labeled", WebhookDelivery.sole.event_type
   end
 
-  test "a pull_request delivery is acknowledged and fires nothing" do
+  test "a pull_request delivery fires no github_issue condition, and a payload with no repository is survivable" do
     assert_no_difference -> { Session.count } do
       deliver({ "action" => "opened", "pull_request" => { "number" => 9 } }, event: "pull_request")
     end
 
     assert_response :ok
+    assert_equal "pull_request.opened", WebhookDelivery.sole.event_type
+  end
+
+  test "an issues.closed delivery is acknowledged and fires nothing" do
+    assert_no_difference -> { Session.count } do
+      deliver(issues_payload(github_issue, action: "closed"))
+    end
+
+    assert_response :ok
+    assert_equal "issues.closed", WebhookDelivery.sole.event_type
   end
 
   # --- dedup ------------------------------------------------------------------------
@@ -329,5 +341,170 @@ class Webhooks::GithubControllerTest < ActionDispatch::IntegrationTest
     assert_equal({ "ok" => true, "duplicate" => false }, response.parsed_body)
     assert_equal 2, WebhookDelivery.count
     assert_equal 1, TriggerEventClaim.count
+  end
+end
+
+# The same endpoint for a `github_label` condition: the label and open/reopen deliveries, driven
+# through routing, the signature, the delivery record, GithubEventJob and Trigger#create_session!.
+# The fixture is the merge gate's shape — pull requests in one repo carrying "ready to merge".
+class Webhooks::GithubLabelDeliveryTest < ActionDispatch::IntegrationTest
+  include ActiveJob::TestHelper
+  include GithubWebhookTestHelpers
+
+  setup { setup_github_label_webhook }
+  teardown { teardown_github_webhook }
+
+  def github_signature(body, secret: WEBHOOK_SECRET)
+    "sha256=#{OpenSSL::HMAC.hexdigest('SHA256', secret, body)}"
+  end
+
+  def deliver(payload, event:, delivery: SecureRandom.uuid)
+    body = JSON.generate(payload)
+    headers = {
+      "Content-Type" => "application/json", "X-GitHub-Event" => event,
+      "X-GitHub-Delivery" => delivery, "X-Hub-Signature-256" => github_signature(body)
+    }
+
+    perform_enqueued_jobs(only: GithubEventJob) { post webhooks_github_path, params: body, headers: headers }
+  end
+
+  def deliver_labeled(number, action: "labeled", label: LABEL, labels: [], delivery: SecureRandom.uuid)
+    deliver(pull_request_payload(github_pull_request(number: number, labels: labels), action: action, label: label),
+            event: "pull_request", delivery: delivery)
+  end
+
+  test "a signed pull_request.labeled creates exactly one session through the trigger" do
+    assert_difference -> { Session.for_trigger(@trigger.id).count }, 1 do
+      assert_difference -> { Session.count }, 1 do
+        deliver_labeled(4242, delivery: "b1e0a2c4-cc78-11e3-81ab-4c9367dc0958")
+      end
+    end
+
+    assert_response :ok
+    assert_equal({ "ok" => true, "duplicate" => false }, response.parsed_body)
+
+    session = Session.order(:id).last
+    assert_includes session.prompt, "tadasant/zimmer#4242 was labelled (label added: ready to merge)."
+    assert_includes session.prompt, "Link: https://github.com/tadasant/zimmer/pull/4242"
+
+    claim = TriggerEventClaim.sole
+    assert_equal [ @condition.id, "github:tadasant/zimmer#4242:label:ready to merge", "webhook", session.id ],
+      [ claim.trigger_condition_id, claim.event_key, claim.claimed_via, claim.session_id ]
+
+    assert_equal [ "github", "pull_request.labeled" ], WebhookDelivery.sole.slice(:source, :event_type).values
+    # The poller owns the seen-set.
+    assert_empty @condition.reload.github_seen_items
+  end
+
+  test "a pull request opened carrying the label fires; one opened without it does not" do
+    assert_difference -> { Session.count }, 1 do
+      deliver_labeled(50, action: "opened", label: nil, labels: [ LABEL ])
+    end
+    assert_no_difference -> { Session.count } do
+      deliver_labeled(51, action: "opened", label: nil, labels: [ "bug" ])
+    end
+  end
+
+  test "a reopened pull request still carrying the label fires again, as it does for the poller" do
+    assert_difference -> { Session.count }, 1 do
+      deliver_labeled(52, action: "reopened", label: nil, labels: [ LABEL ])
+    end
+  end
+
+  test "a labeled delivery whose payload carries no label is acknowledged and fires nothing" do
+    assert_no_difference -> { Session.count } do
+      deliver_labeled(53, label: nil)
+    end
+
+    assert_response :ok
+    assert_equal "pull_request.labeled", WebhookDelivery.sole.event_type
+  end
+
+  test "an issues.labeled delivery fires a condition that watches issues" do
+    configure_condition(@condition.configuration.merge("target" => "issue"))
+
+    assert_difference -> { Session.count }, 1 do
+      deliver(issues_payload(github_issue(number: 54), action: "labeled", label: LABEL), event: "issues")
+    end
+
+    assert_equal "github:tadasant/zimmer#54:label:ready to merge", TriggerEventClaim.sole.event_key
+  end
+
+  test "a redelivery of the same label event creates one session, not two" do
+    payload = pull_request_payload(github_pull_request(number: 55), action: "labeled", label: LABEL)
+
+    assert_difference -> { Session.count }, 1 do
+      deliver(payload, event: "pull_request", delivery: "relabel-guid")
+      deliver(payload, event: "pull_request", delivery: "relabel-guid")
+    end
+
+    assert_equal({ "ok" => true, "duplicate" => true }, response.parsed_body)
+  end
+
+  test "one label event delivered under two delivery ids creates one session, because of the claim" do
+    payload = pull_request_payload(github_pull_request(number: 56), action: "labeled", label: LABEL)
+
+    assert_difference -> { Session.count }, 1 do
+      deliver(payload, event: "pull_request", delivery: "repo-hook-guid")
+      deliver(payload, event: "pull_request", delivery: "org-hook-guid")
+    end
+
+    assert_equal 2, WebhookDelivery.count
+    assert_equal 1, TriggerEventClaim.count
+  end
+
+  test "the same label seen by the webhook and then by the poller creates one session" do
+    pull_request = github_pull_request(number: 57, labels: [ LABEL ])
+
+    assert_difference -> { Session.count }, 1 do
+      deliver(pull_request_payload(pull_request, action: "labeled", label: LABEL), event: "pull_request")
+      poll_label_items([ searched_pull_request(pull_request) ])
+    end
+
+    assert_equal "webhook", TriggerEventClaim.sole.claimed_via
+    assert_equal [ "tadasant/zimmer#57:ready to merge" ], @condition.reload.github_seen_items
+  end
+
+  test "a label the webhook never delivered is still fired by the poller" do
+    delivered = github_pull_request(number: 58, labels: [ LABEL ])
+    missed = github_pull_request(number: 59, labels: [ LABEL ])
+
+    assert_difference -> { Session.count }, 2 do
+      deliver(pull_request_payload(delivered, action: "labeled", label: LABEL), event: "pull_request")
+      poll_label_items([ searched_pull_request(delivered), searched_pull_request(missed) ])
+    end
+
+    assert_equal [ [ "github:tadasant/zimmer#58:label:ready to merge", "webhook" ],
+                   [ "github:tadasant/zimmer#59:label:ready to merge", "poll" ] ],
+      TriggerEventClaim.order(:event_key).pluck(:event_key, :claimed_via)
+  end
+
+  # End to end over HTTP, on the behaviour the claim lifetime exists for.
+  test "remove and re-add a label over the full grace window, and the second add gets its own session" do
+    pull_request = github_pull_request(number: 60, labels: [ LABEL ])
+
+    assert_difference -> { Session.count }, 1 do
+      deliver(pull_request_payload(pull_request, action: "labeled", label: LABEL), event: "pull_request")
+    end
+    poll_label_items([ searched_pull_request(pull_request) ])
+
+    GithubTriggerPollerJob::REMOVAL_GRACE_TICKS.times { poll_label_items([]) }
+    assert_equal 0, TriggerEventClaim.count, "the claim must be released with the key"
+
+    assert_difference -> { Session.count }, 1 do
+      deliver(pull_request_payload(pull_request, action: "labeled", label: LABEL), event: "pull_request")
+    end
+    assert_equal 2, Session.for_trigger(@trigger.id).count
+  end
+
+  test "with GitHub on poll, the label poller claims nothing and fires exactly as before" do
+    ENV["GITHUB_TRIGGER_INGEST_MODE"] = "poll"
+
+    assert_difference -> { Session.count }, 1 do
+      poll_label_items([ searched_pull_request(github_pull_request(number: 61, labels: [ LABEL ])) ])
+    end
+
+    assert_equal 0, TriggerEventClaim.count
+    assert_equal [ "tadasant/zimmer#61:ready to merge" ], @condition.reload.github_seen_items
   end
 end

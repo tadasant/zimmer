@@ -14,6 +14,14 @@
 # The claim is per CONDITION, not per message: two triggers watching the same channel each fire
 # on the same message, exactly as they do when only the poller runs.
 #
+# GitHub's two paths — Webhooks::GithubController delivering an issue or a label, and
+# GithubTriggerPollerJob searching for it a minute later — claim the same way, through
+# GithubTriggerFiring#fire_claimed. The difference is the claim's LIFETIME. A `github_issue` claim
+# covers an event that can never recur, so RETENTION expires it. A `github_label` claim covers one
+# that can: removing a label and adding it back is a second event, and the poller's seen-set is what
+# decides when that has happened. So a label claim lives exactly as long as the poller's key for the
+# same item and label, released in the same transaction as the seen-set write that drops it.
+#
 # group_key and anchor_ts carry coalescing across deliveries. The poller sees a burst as one list
 # and folds it in one pass (SlackTriggerFiring#coalesced_groups); the webhook sees it one message
 # per request, so it finds the burst's open group here instead — see .open_group.
@@ -24,6 +32,13 @@ class TriggerEventClaim < ApplicationRecord
   # poller sees a message within a poll or two — a few minutes across Slack deferrals, about
   # seventeen for a tracked thread waiting its turn in the re-check rotation. Thirty days is far
   # past both, and rows are one per FIRED message (roughly one per session), so it costs little.
+  #
+  # A `github_label` claim does not use it as its lifetime, and must not: removing a label and
+  # adding it back is a second, legitimate event, so a claim that outlived the poller's seen-set
+  # would swallow the re-add. Those claims are released by GithubTriggerPollerJob the tick it drops
+  # the key (#release_label_claims), which is always sooner than this — so for them this is only the
+  # backstop for a row whose key the poller never recorded, which is an item that left `is:open`
+  # inside the minute between the webhook's fire and the poller's next tick.
   RETENTION = 30.days
 
   belongs_to :trigger_condition
@@ -45,6 +60,31 @@ class TriggerEventClaim < ApplicationRecord
   # condition's configuration can disagree on its case. GithubTriggerFiring#fire_claimed takes it.
   def self.github_issue_event_key(repo, number)
     "github:#{repo.to_s.downcase}##{number}:opened"
+  end
+
+  # The identity of one "the label was added" event: the item, and the label that was added.
+  # GithubTriggerFiring#fire_claimed takes it, and GithubTriggerPollerJob releases it when it drops
+  # the item's key from its seen-set.
+  #
+  # Repository and label are both downcased, for the same reason the issue key downcases the
+  # repository: GitHub returns its own casing, a condition's configuration carries the user's, and
+  # `repo:`/`label:` search qualifiers ignore both. The two paths must spell one event one way.
+  def self.github_label_event_key(repo, number, label)
+    "github:#{repo.to_s.downcase}##{number}:label:#{label.to_s.downcase}"
+  end
+
+  # The same key, for one of GithubTriggerPollerJob's seen-set keys ("owner/repo#12:ready to
+  # merge"). The seen-set and the claim table are two spellings of one identity, and this is the
+  # only route between them: a key the poller is DROPPING is by definition absent from the search,
+  # so there is no item to rebuild it from.
+  #
+  # Split on the FIRST colon, because a GitHub label may contain one ("area: docs"); a repository
+  # name may not contain "#" or ":".
+  def self.github_label_event_key_from_seen_key(seen_key)
+    item, label = seen_key.to_s.split(":", 2)
+    repo, number = item.to_s.split("#", 2)
+
+    github_label_event_key(repo, number, label)
   end
 
   # Claim each of +event_keys+ for +condition+ and return the ones this call won.
