@@ -5953,10 +5953,10 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 60, session.reload.heartbeat_interval_seconds
   end
 
-  # Both web actions dispatch to Sessions::UpdateHeartbeat, so the four tests
-  # below assert behaviour only the shared service has: before it, the toggle
-  # flipped on a blank `enabled` and the interval action let ActiveRecord
-  # truncate "300abc" to 300, while the REST and MCP copies refused both.
+  # Both web actions dispatch to Sessions::UpdateHeartbeat. The tests below
+  # assert the rules the shared service applies at this door: a blank `enabled`
+  # is refused rather than flipped, an interval ActiveRecord would truncate is
+  # refused, and the refusal names the permitted range.
 
   test "toggle_heartbeat refuses a blank enabled instead of flipping" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", heartbeat_enabled: false)
@@ -5996,7 +5996,42 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     patch update_heartbeat_interval_session_url(session), as: :json
 
     assert_response :unprocessable_entity
+    # The route takes one setting, so it names that one rather than repeating the
+    # service's two-setting phrasing.
+    assert_match(/heartbeat_interval_seconds is required/, JSON.parse(response.body)["error"])
     assert_equal 60, session.reload.heartbeat_interval_seconds
+  end
+
+  test "toggle_heartbeat with an explicit null enabled flips, like an absent one" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", heartbeat_enabled: false)
+
+    patch toggle_heartbeat_session_url(session), params: { enabled: nil }, as: :json
+
+    assert_response :success
+    assert_equal true, session.reload.heartbeat_enabled
+  end
+
+  # `with_db_retry` re-runs its whole block, and `update!` assigns before it
+  # saves — so a flip resolved INSIDE the block would read the already-flipped
+  # in-memory value on the retry and write the opposite of what was asked. The
+  # controller resolves it once, before the retry, and this pins that: one
+  # retryable failure then success still lands on "on".
+  test "toggle_heartbeat survives a retried write without inverting itself" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", heartbeat_enabled: false)
+
+    # `save!` and NOT `update!` is the seam: `update!` assigns and THEN saves, so
+    # stubbing the outer call would suppress the very in-memory mutation that
+    # causes the inversion, and the test would pass against the bug.
+    Session.any_instance.stubs(:save!)
+           .raises(ActiveRecord::Deadlocked.new("simulated"))
+           .then.returns(true)
+
+    patch toggle_heartbeat_session_url(session), as: :json
+
+    assert_response :success
+    # The second attempt must still write "on". A flip resolved inside the block
+    # would read the already-assigned `true` and send `false`.
+    assert_equal true, JSON.parse(response.body)["heartbeat_enabled"]
   end
 
   test "should return 404 for toggle_heartbeat with invalid session" do

@@ -1406,9 +1406,9 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/must be between/, out_of_range.message)
   end
 
-  # Dispatches to Sessions::UpdateHeartbeat, shared with the web heart popout
-  # and PATCH /api/v1/sessions/:id/heartbeat. Its refusals have to arrive as
-  # ToolError, not as a raw service error the MCP layer would report as a crash.
+  # Dispatches to Sessions::UpdateHeartbeat, shared with the web heart popout and
+  # PATCH /api/v1/sessions/:id/heartbeat. Its refusals have to arrive as
+  # ToolError, not as a raw service error the MCP layer reports as a crash.
   test "set_heartbeat reports a service refusal as a ToolError" do
     session = sessions(:needs_input)
 

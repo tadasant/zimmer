@@ -1,47 +1,53 @@
 # frozen_string_literal: true
 
 module Sessions
-  # Writes a session's heartbeat settings — the on/off flag and the beat
+  # Writes a session's heartbeat SETTINGS — the on/off flag and the beat
   # interval — and nothing else.
   #
-  # Every surface that can change them routes through here: the web UI's heart
-  # popout (`PATCH /sessions/:id/toggle_heartbeat` and
+  # Every surface that lets somebody change them routes through here: the web
+  # UI's heart popout (`PATCH /sessions/:id/toggle_heartbeat` and
   # `PATCH /sessions/:id/update_heartbeat_interval`), `PATCH
-  # /api/v1/sessions/:id/heartbeat`, and the `set_heartbeat` MCP action. Before
-  # this service there were four copies of the same two validations, and they
-  # had drifted: the web toggle treated a blank `enabled` as "flip it" rather
-  # than as a mistake, the web interval action let `"60abc"` through because
-  # ActiveRecord casts it to 60, and only the MCP copy checked the interval
-  # against Session::HEARTBEAT_MIN/MAX_INTERVAL_SECONDS itself instead of
-  # letting the model's numericality validator phrase the refusal.
+  # /api/v1/sessions/:id/heartbeat`, and the `set_heartbeat` MCP action. One
+  # writer is what keeps the four doors agreeing on which values are refusable.
   #
-  # The strictest copy is the canonical one. A caller that names a setting has
-  # to name it in a form the service can read; nothing is guessed from an
-  # unreadable value.
+  # The rule is that a caller names a setting in a form the server can read, or
+  # is told it cannot be read. Nothing is inferred from an unreadable value.
+  # That is the strictest of the readings the four doors could take,
+  # deliberately: a guess is indistinguishable from a working request at the
+  # call site, and surfaces later as a heartbeat nobody asked for.
   #
-  # This service does ONE `update!` on two columns. It does not beat the
-  # heartbeat, does not touch `heartbeat_last_beat_at`, and does not resume
-  # anything — HeartbeatSweepJob owns all of that. Turning a heartbeat on here
-  # only makes a session eligible for the next sweep.
+  # `enabled` is cast by ActiveModel, which answers nil for blank and true for
+  # every other non-blank string — so `enabled=maybe` turns a heartbeat on and
+  # only `enabled=` is refused. That is ActiveModel's contract rather than a
+  # choice made here, and `Sessions::UpdateHeartbeatTest` pins it so this
+  # service cannot tighten it by accident.
+  #
+  # Scope: ONE `update!` on two columns. This does not beat the heartbeat, does
+  # not stamp `heartbeat_last_beat_at`, and does not resume anything —
+  # HeartbeatSweepJob owns all of that, and enabling a heartbeat here only makes
+  # the session eligible for the next sweep. Two other writers touch
+  # `heartbeat_enabled` as a side effect of something else, and neither is a
+  # settings write: HeartbeatSweepJob auto-disables the flag on a terminal
+  # session, and SessionStatusSummaryGenerator clears it on the fork it spawns.
   class UpdateHeartbeat
     class Error < StandardError; end
 
-    # Passed as `enabled:` by a surface whose control is a toggle rather than a
-    # value — the web heart button, which knows the session should flip but not
-    # which way. Resolved against the row inside the same call, so a flip can
-    # never write the nil that a bad cast used to risk putting in a NOT NULL
-    # column.
-    TOGGLE = :toggle
+    # A call that named no setting at all. Distinct from Error so a surface can
+    # classify it as a missing parameter rather than an unreadable one — the
+    # REST API separates those two in its `error` field.
+    class MissingSetting < Error; end
 
-    # A whole non-negative number and nothing else. Deliberately stricter than
-    # ActiveRecord's integer cast, which reads "60abc" as 60 and "abc" as 0.
+    # A whole non-negative number and nothing else. Stricter than ActiveRecord's
+    # integer cast, which reads "60abc" as 60 and "abc" as 0, on purpose: a
+    # truncated interval is a silently wrong cadence.
     INTEGER_STRING = /\A\d+\z/
 
     # @param session [Session]
-    # @param enabled [Boolean, String, TOGGLE, nil] nil leaves the flag alone
+    # @param enabled [Boolean, String, nil] nil leaves the flag alone
     # @param interval_seconds [Integer, String, nil] nil leaves the interval alone
     # @return [Session] the updated session
-    # @raise [Error] on an unreadable value, an out-of-range interval, or no settings at all
+    # @raise [MissingSetting] when neither setting is named
+    # @raise [Error] on an unreadable value or an out-of-range interval
     def self.call(session:, enabled: nil, interval_seconds: nil)
       new(session: session, enabled: enabled, interval_seconds: interval_seconds).call
     end
@@ -52,17 +58,17 @@ module Sessions
       @interval_seconds = interval_seconds
     end
 
-    attr_reader :session
+    attr_reader :session, :enabled, :interval_seconds
 
     def call
       attrs = {}
-      attrs[:heartbeat_enabled] = resolved_enabled unless @enabled.nil?
-      attrs[:heartbeat_interval_seconds] = resolved_interval unless @interval_seconds.nil?
+      attrs[:heartbeat_enabled] = resolved_enabled unless enabled.nil?
+      attrs[:heartbeat_interval_seconds] = resolved_interval unless interval_seconds.nil?
 
-      if attrs.empty?
-        raise Error, "Provide at least one of enabled or interval_seconds."
-      end
+      raise MissingSetting, "Provide at least one of enabled or interval_seconds." if attrs.empty?
 
+      # Both values resolve before anything is assigned, so a bad interval leaves
+      # a good `enabled` unwritten rather than half-applying the call.
       session.update!(attrs)
       session
     end
@@ -70,25 +76,21 @@ module Sessions
     private
 
     def resolved_enabled
-      return !session.heartbeat_enabled if @enabled == TOGGLE
-
-      casted = ActiveModel::Type::Boolean.new.cast(@enabled)
-      # ActiveModel's boolean cast answers nil for nothing but blank — every
-      # other string is true — so this catches exactly `enabled=`, the shape an
-      # HTML form submits for a control the user never touched. A value the
-      # caller sent but the server cannot read is a mistake to report, not a
-      # coin to flip, and it must never reach the NOT NULL column.
+      casted = ActiveModel::Type::Boolean.new.cast(enabled)
+      # Blank is the one value ActiveModel cannot read, and it is the shape an
+      # HTML form submits for a control nobody touched. Refusing it is what keeps
+      # a nil away from the NOT NULL column.
       raise Error, "enabled must be a boolean." if casted.nil?
 
       casted
     end
 
     def resolved_interval
-      unless @interval_seconds.to_s.match?(INTEGER_STRING)
+      unless interval_seconds.to_s.match?(INTEGER_STRING)
         raise Error, "interval_seconds must be an integer."
       end
 
-      seconds = @interval_seconds.to_i
+      seconds = interval_seconds.to_i
       min = Session::HEARTBEAT_MIN_INTERVAL_SECONDS
       max = Session::HEARTBEAT_MAX_INTERVAL_SECONDS
       unless seconds.between?(min, max)

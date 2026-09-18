@@ -1976,12 +1976,18 @@ class SessionsController < ApplicationController
   # via Stimulus (mirrors the auto-compact-window inline editor pattern).
   #
   # Presentation ONLY — the write is Sessions::UpdateHeartbeat, shared with the
-  # REST endpoint and the `set_heartbeat` MCP action. ABSENCE of the param is
-  # what means "flip"; a param the caller sent but the server cannot read is
-  # refused rather than flipped.
+  # REST endpoint and the `set_heartbeat` MCP action. An unnamed `enabled` is
+  # what means "flip"; one the caller sent but the server cannot read is refused
+  # rather than flipped.
   def toggle_heartbeat
     @session = find_session
-    enabled = params.key?(:enabled) ? params[:enabled] : Sessions::UpdateHeartbeat::TOGGLE
+
+    # The flip resolves HERE, before the retry, and the resolved boolean is what
+    # the block closes over. `with_db_retry` re-runs its block, and `update!`
+    # assigns before it saves — so a flip computed inside would read the
+    # already-flipped in-memory value on the second attempt and write the
+    # opposite of what was asked. Same hazard as the counters in #bulk_archive.
+    enabled = params[:enabled].nil? ? !@session.heartbeat_enabled : params[:enabled]
 
     with_db_retry { Sessions::UpdateHeartbeat.call(session: @session, enabled: enabled) }
     return if performed? # with_db_retry rendered its own give-up response
@@ -2009,6 +2015,10 @@ class SessionsController < ApplicationController
     return if performed?
 
     render json: heartbeat_json
+  rescue Sessions::UpdateHeartbeat::MissingSetting
+    # This route takes one setting, so the service's two-setting phrasing would
+    # name a parameter the route does not accept.
+    render json: { error: "heartbeat_interval_seconds is required." }, status: :unprocessable_entity
   rescue Sessions::UpdateHeartbeat::Error, ActiveRecord::RecordInvalid => e
     render json: { error: e.message }, status: :unprocessable_entity
   end
