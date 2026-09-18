@@ -89,11 +89,23 @@ class GithubEventJob < ApplicationJob
 
   # +event+ is the delivery's "<event>.<action>"; +label+ the name of the label a `labeled`
   # delivery added, and nil for every other event.
-  def perform(delivery_id, event, item, label = nil)
+  #
+  # The arguments are shape-checked rather than trusted, and +item+ has a default, so a job already
+  # in the queue when a release changes what this takes fails SOFT: it fires nothing and says so,
+  # instead of raising an ArgumentError that pages. The poller is the backstop for whatever such a
+  # job was carrying, so a dropped delivery costs latency and nothing else.
+  def perform(delivery_id, event, item = nil, label = nil)
     # Switched back to `poll` between accepting this and running it: the poller owns every event
     # again and claims none of them, so firing here could double-fire.
     return unless Webhooks::Source.github.webhook_enabled?
-    return unless item.is_a?(Hash) && item["number"].present? && item["repository_url"].present?
+
+    unless event.is_a?(String) && item.is_a?(Hash)
+      Rails.logger.warn "[GithubEventJob] GitHub delivery #{delivery_id} arrived with arguments this release " \
+                        "does not read (#{event.class}, #{item.class}); firing nothing and leaving it to the poller"
+      return
+    end
+
+    return unless item["number"].present? && item["repository_url"].present?
 
     fire_issue_conditions(delivery_id, item) if event == ISSUE_OPENED
     fire_label_conditions(delivery_id, event, item, label) if LABEL_EVENTS.include?(event)
@@ -180,9 +192,10 @@ class GithubEventJob < ApplicationJob
     return false if condition.github_seen_issue_keys.include?(item_key(item))
     return false if predates_repo_baseline?(item, condition.github_issue_repo_baselines)
 
-    # The `-label:` terms in #issue_query, which also ignore case.
-    excluded = condition.github_exclude_labels
-    labels_for(item).none? { |label| excluded.any? { |exclude| exclude.casecmp?(label) } }
+    # The `-label:` terms in #issue_query, asked for exactly as GithubSearchService.exclude_label_terms
+    # asks for them — see #searched_label.
+    excluded = condition.github_exclude_labels.map { |label| searched_label(label) }
+    labels_for(item).none? { |label| excluded.include?(label.to_s.downcase) }
   end
 
   # Which of +names+ GithubTriggerPollerJob#process_label_condition would fire +condition+ for if
@@ -205,10 +218,11 @@ class GithubEventJob < ApplicationJob
     return [] unless condition.github_baselined?
     return [] if condition.github_baseline_retargeted?
 
-    # The `label:` group in #label_query, which ignores case; the poller keys on the configured
-    # spelling rather than GitHub's, so a condition whose casing differs still fires.
-    watched = condition.github_labels.index_by(&:downcase)
-    seen = condition.github_seen_items.to_set
+    # The `label:` group in #label_query, asked for exactly as GithubSearchService.label_group asks
+    # for it — see #searched_label. The value is the CONFIGURED spelling, because that is what the
+    # poller's seen-set and the claim key are written in.
+    watched = condition.github_labels.index_by { |label| searched_label(label) }
+    seen = condition.github_seen_items.map { |key| key.to_s.downcase }.to_set
 
     names.filter_map do |name|
       configured = watched[name.to_s.downcase]
@@ -216,8 +230,10 @@ class GithubEventJob < ApplicationJob
 
       # `current_keys - seen` in #process_label_condition. A key the poller already holds is not a
       # new event — which includes one whose removal is still inside REMOVAL_GRACE_TICKS, where
-      # the poller does not fire a re-add either.
-      next if seen.include?("#{item_key(item)}:#{configured}")
+      # the poller does not fire a re-add either. Compared case-insensitively like every clause
+      # around it: the two paths read the repository's casing from different fields, and the
+      # direction this would fail in is a duplicate session.
+      next if seen.include?("#{item_key(item)}:#{configured}".downcase)
 
       # The `absorbed` branch: a repo or label the baseline does not cover is having its first
       # tick, and what it already carries is state rather than an event.

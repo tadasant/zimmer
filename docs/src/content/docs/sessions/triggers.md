@@ -1103,10 +1103,17 @@ transaction. Re-add the label after that and it fires again, from whichever path
 
 Two consequences worth knowing. **Inside the grace window a re-add fires nothing**, from either
 path: the poller still holds the key, and the webhook mirrors the poller rather than second-guessing
-it, so a label taken off and put back within about three minutes reads as one event. And **the 30-day
-retention is only a backstop for label claims** — it matters solely for a row whose key the poller
-never recorded, which happens when an item leaves `is:open` before the poller's next tick sees it
-(see [limitations](/limitations/#github-is-polled-and-the-webhooks-have-no-public-way-in)).
+it, so a label taken off and put back within about three minutes reads as one event.
+
+A claim whose key the poller **never** recorded is released on a second path, because nothing can
+drop a key the seen-set never held. That happens when a label goes on and comes off again inside the
+up-to-60-second gap before the next tick — the merge gate's own shape, where the gate declines and
+removes the label — or when the item closes in the same gap. Every tick sweeps this condition's
+label claims for events that are over: older than `INDEX_LAG_GRACE` (30 minutes) and not on any item
+the search returned carrying the label. The age bound is what keeps the sweep from releasing a claim
+the webhook took seconds ago whose label GitHub has not indexed yet, which would spawn a second
+session for an event already handled. So the 30-day retention is a backstop for label claims and
+nothing more.
 
 The release is not conditional on the ingest mode. A claim's lifetime is "as long as the poller's
 key", not "as long as the webhook is on", so a mode switched back to `poll` cannot strand claims that
