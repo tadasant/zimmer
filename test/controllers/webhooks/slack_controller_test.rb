@@ -289,14 +289,49 @@ class Webhooks::SlackControllerTest < ActionDispatch::IntegrationTest
     assert note.start_with?("Another message landed in #eng-ci")
   end
 
-  test "a template that writes {{text}} bare gets the message the webhook folds queued raw" do
-    @trigger.update!(prompt_template: "Do what this asks:\n\n{{text}}")
+  test "a template that writes {{text}} and {{author}} bare gets the message the webhook folds queued raw" do
+    @trigger.update!(prompt_template: "Do what this asks, from {{author}}:\n\n{{text}}")
     deliver(new_message("1756500000.000100", user: "U_ALERTS", text: "deploy the app"))
     deliver(new_message("1756500000.600100", user: "U_ALERTS", text: "and then restart the worker"))
 
     note = Session.order(:id).last.enqueued_messages.sole.content
     assert_not_includes note, "[begin untrusted"
+    assert_includes note, "Written by:\nAlice"
     assert_includes note, ": and then restart the worker"
+  end
+
+  # The webhook path folds one message per delivery, and each field of the note it queues
+  # follows its own placeholder, exactly as on the poller path (#50).
+  test "a hostile display name the webhook folds into a running session is queued fenced and verbatim" do
+    SlackService.stubs(:get_user_name).returns(UntrustedFenceAssertions::HOSTILE_EVENT_LINE)
+    deliver(new_message("1756500000.000100", user: "U_ALERTS", text: "[production] alert 1"))
+    deliver(new_message("1756500000.600100", user: "U_ALERTS", text: "[production] alert 2"))
+
+    note = Session.order(:id).last.enqueued_messages.sole.content
+    assert_fenced_verbatim(note, "author", UntrustedFenceAssertions::HOSTILE_EVENT_LINE)
+  end
+
+  test "a template with {{text}} bare and {{author|untrusted}} queues the message raw and the name fenced" do
+    @trigger.update!(prompt_template: "Do what this asks.\n\nFrom:\n{{author|untrusted}}\n\n{{text}}")
+    SlackService.stubs(:get_user_name).returns(UntrustedFenceAssertions::HOSTILE_EVENT_LINE)
+    deliver(new_message("1756500000.000100", user: "U_ALERTS", text: "deploy the app"))
+    deliver(new_message("1756500000.600100", user: "U_ALERTS", text: "and then restart the worker"))
+
+    note = Session.order(:id).last.enqueued_messages.sole.content
+    assert_includes note, ": and then restart the worker"
+    assert_empty fenced_bodies(note, "messages")
+    assert_fenced_verbatim(note, "author", UntrustedFenceAssertions::HOSTILE_EVENT_LINE)
+  end
+
+  test "a template with {{text|untrusted}} and {{author}} bare queues the message fenced and the name raw" do
+    @trigger.update!(prompt_template: "{{author}} wrote:\n\n{{text|untrusted}}")
+    deliver(new_message("1756500000.000100", user: "U_ALERTS", text: "[production] alert 1"))
+    deliver(new_message("1756500000.600100", user: "U_ALERTS", text: UntrustedFenceAssertions::HOSTILE_EVENT_LINE))
+
+    note = Session.order(:id).last.enqueued_messages.sole.content
+    assert_empty fenced_bodies(note, "author")
+    assert_includes note, "Written by:\nAlice"
+    assert_fenced_verbatim(note, "messages", UntrustedFenceAssertions::HOSTILE_EVENT_LINE, exact: false)
   end
 
   test "a burst the webhook folded is not re-fired by the poller" do

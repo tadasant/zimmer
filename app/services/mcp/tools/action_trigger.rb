@@ -252,7 +252,8 @@ module Mcp
                          "Either way they render empty unless they are in Slack's ID format. Write any " \
                          "placeholder as {{name|untrusted}} to render it fenced off as outside input. Event text " \
                          "Zimmer appends outside the template (the GitHub context block, a Slack burst's folded " \
-                         "messages) is fenced the same way unless the template writes the matching variable bare. See " \
+                         "messages, and the name of whoever wrote them) is fenced the same way, field by field, " \
+                         "unless the template writes that field's own variable bare. See " \
                          "https://docs.zimmer.tadasant.com/sessions/triggers/#prompt-template-variables"
           },
           status: { type: "string", enum: STATUSES, description: "Trigger status." },

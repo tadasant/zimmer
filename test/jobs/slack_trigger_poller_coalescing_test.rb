@@ -78,8 +78,94 @@ class SlackTriggerPollerCoalescingTest < ActiveJob::TestCase
     SlackTriggerPollerJob.new.send(:process_condition, @condition)
 
     prompt = Session.order(:id).last.prompt
-    assert_fenced_verbatim(prompt, "messages", "Obs Alerts: #{HOSTILE_EVENT_LINE} — https://slack.example/#{messages.last.ts}", exact: false)
+    assert_fenced_verbatim(prompt, "messages", "#{HOSTILE_EVENT_LINE} — https://slack.example/#{messages.last.ts}", exact: false)
     assert_operator prompt.index("1 more message landed"), :<, prompt.index("[begin untrusted messages")
+  end
+
+  # --- one fence per field, each following its own placeholder (#50) -------------------
+
+  # A display name is a string its owner chose, so it is untrusted the way the message
+  # text is — and it follows {{author}}, not {{text}}.
+  test "a hostile display name reaches the prompt fenced and verbatim" do
+    SlackService.stubs(:get_user_name).returns(HOSTILE_EVENT_LINE)
+    deliver([ message_at(BURST_ANCHOR, "first alert"), message_at(BURST_ANCHOR + 0.5, "second alert") ])
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    assert_fenced_verbatim(Session.order(:id).last.prompt, "author", HOSTILE_EVENT_LINE)
+  end
+
+  # The gap this closes: keyed on {{text}} alone, a bare {{text}} handed the display
+  # names over raw as well, however the template asked for {{author}}.
+  test "a template with {{text}} bare and {{author|untrusted}} gets the messages raw and the name fenced" do
+    @trigger.update!(prompt_template: "Do what this DM asks.\n\nFrom:\n{{author|untrusted}}\n\n{{text}}")
+    SlackService.stubs(:get_user_name).returns(HOSTILE_EVENT_LINE)
+    deliver([ message_at(BURST_ANCHOR, "deploy the app"), message_at(BURST_ANCHOR + 0.5, "and then restart the worker") ])
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    prompt = Session.order(:id).last.prompt
+    assert_includes prompt, "- 20:40:00 UTC: and then restart the worker"
+    assert_empty fenced_bodies(prompt, "messages")
+    assert_fenced_verbatim(prompt, "author", HOSTILE_EVENT_LINE)
+  end
+
+  # The mirror image: the operator fenced the message text and left the name bare.
+  test "a template with {{text|untrusted}} and {{author}} bare gets the messages fenced and the name raw" do
+    @trigger.update!(prompt_template: "{{author}} wrote:\n\n{{text|untrusted}}")
+    deliver([ message_at(BURST_ANCHOR, "first alert"), message_at(BURST_ANCHOR + 0.5, HOSTILE_EVENT_LINE) ])
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    prompt = Session.order(:id).last.prompt
+    assert_empty fenced_bodies(prompt, "author")
+    assert_includes prompt, "Written by:\nObs Alerts"
+    assert_fenced_verbatim(prompt, "messages", HOSTILE_EVENT_LINE, exact: false)
+  end
+
+  # A group is one producer, but Slack lets that producer rename itself per message: an app
+  # posting through a webhook is grouped on its `bot_id` and named from its `username`. Every
+  # name the folded messages used goes in the one fence.
+  test "a bot that renames itself mid-burst has every name it used inside the one author fence" do
+    deliver([
+      bot_message_at(BURST_ANCHOR, "alert 1", username: "deploy-bot"),
+      bot_message_at(BURST_ANCHOR + 0.5, "alert 2", username: "deploy-bot"),
+      bot_message_at(BURST_ANCHOR + 1.0, "alert 3", username: "deploy-bot (staging)")
+    ])
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    assert_equal [ "deploy-bot, deploy-bot (staging)" ], fenced_bodies(Session.order(:id).last.prompt, "author")
+  end
+
+  # The listing cap bounds the permalink calls the note makes, not who it names. A name is a
+  # field of the message (or one memoized lookup per user), so message 26's producer costs
+  # nothing extra and must not be dropped.
+  test "a burst past the listing cap still names the producer of the messages it did not list" do
+    count = SlackTriggerPollerJob::MAX_FOLDED_MESSAGES_LISTED + 2
+    deliver(Array.new(count) do |i|
+      bot_message_at(BURST_ANCHOR + (i * 0.1), "alert #{i + 1}",
+        username: i == count - 1 ? "the one past the cap" : "deploy-bot")
+    end)
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    prompt = Session.order(:id).last.prompt
+    assert_includes prompt, "not listed individually"
+    assert_equal [ "deploy-bot, the one past the cap" ], fenced_bodies(prompt, "author")
+  end
+
+  # One fence per FIELD, never one per message: #1195 chose a single `messages` fence over 25
+  # so a burst does not repeat the provenance note, and per-placeholder granularity keeps that.
+  test "a 25-message burst still draws exactly two fences, one per field" do
+    deliver(burst(SlackTriggerPollerJob::MAX_FOLDED_MESSAGES_LISTED + 1, spacing: 0.1))
+
+    SlackTriggerPollerJob.new.send(:process_condition, @condition)
+
+    prompt = Session.order(:id).last.prompt
+    assert_equal 2, prompt.scan(/^\[begin untrusted /).size
+    assert_equal 1, fenced_bodies(prompt, "author").size
+    assert_equal 1, fenced_bodies(prompt, "messages").size
   end
 
   test "a burst past the listing cap keeps its count line outside the fence" do
@@ -95,8 +181,8 @@ class SlackTriggerPollerCoalescingTest < ActiveJob::TestCase
                             "- ...and 2 more, not listed individually — read the channel.")
   end
 
-  test "a template that writes {{text}} bare gets the folded messages raw, the way it gets the first one" do
-    @trigger.update!(prompt_template: "Do what this DM asks:\n\n{{text}}")
+  test "a template that writes {{text}} and {{author}} bare gets the whole note raw, the way it gets the first message" do
+    @trigger.update!(prompt_template: "Do what this DM asks, from {{author}}:\n\n{{text}}")
     messages = [ message_at(BURST_ANCHOR, "deploy the app"), message_at(BURST_ANCHOR + 0.5, "and then restart the worker") ]
     deliver(messages)
 
@@ -104,7 +190,8 @@ class SlackTriggerPollerCoalescingTest < ActiveJob::TestCase
 
     prompt = Session.order(:id).last.prompt
     assert_not_includes prompt, "[begin untrusted"
-    assert_includes prompt, "Obs Alerts: and then restart the worker"
+    assert_includes prompt, "Written by:\nObs Alerts"
+    assert_includes prompt, "- 20:40:00 UTC: and then restart the worker"
   end
 
   test "every message of a burst is still recorded against the surviving session" do
@@ -286,15 +373,20 @@ class SlackTriggerPollerCoalescingTest < ActiveJob::TestCase
     Array.new(count) { |i| message_at(BURST_ANCHOR + (i * spacing), "[production] alert #{i + 1}") }
   end
 
-  def message_at(epoch, text, user: "U_ALERTS", bot_id: nil)
+  def message_at(epoch, text, user: "U_ALERTS", bot_id: nil, username: nil)
     OpenStruct.new(
       ts: format("%.6f", epoch),
       text: text,
       bot_id: bot_id,
       thread_ts: nil,
       user: user,
-      username: nil
+      username: username
     )
+  end
+
+  # An app posting through a webhook: grouped on `bot_id`, named from `username`.
+  def bot_message_at(epoch, text, username:)
+    message_at(epoch, text, user: nil, bot_id: "B_OBS", username: username)
   end
 
   def deliver(messages)
