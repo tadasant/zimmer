@@ -46,6 +46,13 @@
 #   key is therefore retained through REMOVAL_GRACE_TICKS consecutive misses — tracked in the
 #   companion `seen_missing_counts` — and only then accepted as genuinely unlabelled. A real
 #   removal simply takes that many ticks to register before a re-add counts as a new event.
+#   This is also why a `github_label` claim cannot have a fixed lifetime. The claim exists so
+#   that this poller and Webhooks::GithubController do not both fire one label event, so it has
+#   to stop existing at exactly the moment this seen-set stops calling the label seen: the tick
+#   that drops a key releases its claim, in the same transaction as the write that drops it
+#   (#release_label_claims). Any other lifetime is wrong in one direction or the other — too
+#   long and the re-add is swallowed, too short and the webhook's fire is repeated by the next
+#   poll.
 # - **A skipped tick is harmless.** The seen-set is state, not a cursor: a missed run
 #   changes nothing, because the next run still sees the label and still fires. (A skipped
 #   tick also does not advance the removal grace, since misses are only counted on a real
@@ -540,7 +547,7 @@ class GithubTriggerPollerJob < ApplicationJob
 
     (current_keys - seen - absorbed).sort.each do |key|
       item, label = candidates[key]
-      next unless fire(condition, item, event: "label added: #{label}")
+      next unless fire(condition, item, event: "label added: #{label}", label: label)
 
       fired << key
       # Record the key the instant its session exists, rather than only in the
@@ -560,10 +567,14 @@ class GithubTriggerPollerJob < ApplicationJob
     # consecutive misses, and only once it has been absent that long do we accept the label
     # as genuinely removed and drop it — at which point a real remove-then-re-add fires again.
     grace_retained = Set.new
+    dropped = Set.new
     next_missing = {}
     (seen - current_keys).each do |key|
       misses = missing_counts.fetch(key, 0) + 1
-      next if misses >= REMOVAL_GRACE_TICKS
+      if misses >= REMOVAL_GRACE_TICKS
+        dropped << key
+        next
+      end
 
       grace_retained << key
       next_missing[key] = misses
@@ -571,15 +582,18 @@ class GithubTriggerPollerJob < ApplicationJob
 
     # Keys that failed to produce a session are in neither retained, fired, grace_retained
     # nor absorbed, so the next tick sees them as new again and retries.
+    next_seen = retained + fired + grace_retained + absorbed
     write_state(
       condition, scope,
       {
-        "seen_items" => (retained + fired + grace_retained + absorbed).to_a.sort,
+        "seen_items" => next_seen.to_a.sort,
         "seen_missing_counts" => next_missing,
         "baseline_scope" => condition.github_scope_snapshot
       },
-      fired: fired.any?
+      fired: fired.any?,
+      release_keys: dropped
     )
+    release_orphaned_label_claims(condition, current_keys + next_seen)
   end
 
   # Record the whole current result set as the baseline and fire nothing.
@@ -612,8 +626,14 @@ class GithubTriggerPollerJob < ApplicationJob
         "seen_items" => current_keys.to_a.sort,
         "seen_missing_counts" => {},
         "baseline_scope" => condition.github_scope_snapshot
-      }
+      },
+      # A baseline REPLACES the seen-set, so every key it does not carry forward is a key this
+      # condition has dropped, and its claim goes with it. On a first tick there are none. On a
+      # `target` flip the old keys denote different items entirely, so leaving their claims behind
+      # would block a fire for an item that merely shares a number.
+      release_keys: condition.github_seen_items.to_set - current_keys
     )
+    release_orphaned_label_claims(condition, current_keys)
 
     Rails.logger.info "[GithubTriggerPollerJob] Baselined condition #{condition.id} " \
                       "with #{current_keys.size} already-labelled item(s); firing none"
@@ -922,7 +942,7 @@ class GithubTriggerPollerJob < ApplicationJob
   # revert the user's repo/label edit. Re-reading the row and comparing the watched scope
   # closes it: when the scope moved, we drop this tick's state on the floor and let the next
   # tick baseline against what the user actually asked for.
-  def write_state(condition, scope, state, fired: false)
+  def write_state(condition, scope, state, fired: false, release_keys: [])
     condition.reload
 
     if condition.github_watch_scope != scope
@@ -931,6 +951,83 @@ class GithubTriggerPollerJob < ApplicationJob
       return
     end
 
-    condition.write_github_state!(state, fired: fired)
+    return condition.write_github_state!(state, fired: fired) if release_keys.empty?
+
+    # One transaction, because the two halves are one statement about the same keys and the order
+    # they fail in is not symmetric. Release without the write and the key stays seen while its
+    # claim is gone: the next tick counts the miss again and re-releases, costing a delayed fire at
+    # worst. Write without the release and the key is gone while its claim remains: the re-add's
+    # webhook fire loses a claim whose session is the PREVIOUS event's, reports itself as fired, and
+    # the poller records the key with no session behind it — a label event swallowed, which is
+    # #647's direction and the worse one on the merge gate. So neither lands without the other.
+    ActiveRecord::Base.transaction do
+      release_label_claims(condition, release_keys)
+      condition.write_github_state!(state, fired: fired)
+    end
+  end
+
+  # Release the claims on the seen-set keys this tick is DROPPING, so the claim's lifetime is the
+  # seen-set's rather than TriggerEventClaim::RETENTION's. See the re-labelling bullet at the top of
+  # this file for why a label claim cannot have a fixed lifetime.
+  #
+  # Only keys the seen-set already held are ever passed here, which is what makes this safe against
+  # the webhook. A claim the webhook took seconds ago is for an item this poller has not recorded
+  # yet — it is not in the old seen-set, so it is never in this set, and a tick whose search ran
+  # before the label was added cannot delete it. Deleting it would be the double-spawn of #704:
+  # the next tick would see the item as new and fire a second session for a label already handled.
+  #
+  # Not gated on the ingest mode, unlike the claims themselves. The mode can be switched off and
+  # back on, and a claim left behind by the first period would, on the second, be a stale claim over
+  # a key the seen-set has long since dropped — exactly the swallowed re-add above. Defining the
+  # lifetime as "as long as the poller's key" rather than "as long as the webhook is on" costs one
+  # DELETE on a tick that drops a key, which matches nothing when nothing ever claimed.
+  def release_label_claims(condition, keys)
+    event_keys = keys.map { |key| TriggerEventClaim.github_label_event_key_from_seen_key(key) }
+    released = TriggerEventClaim.where(trigger_condition_id: condition.id, event_key: event_keys).delete_all
+    return if released.zero?
+
+    Rails.logger.info "[GithubTriggerPollerJob] Condition #{condition.id} dropped #{keys.size} seen key(s) " \
+                      "and released #{released} claim(s) with them, so a re-added label fires again"
+  end
+
+  # Release label claims this condition holds for events that are over and that it will never drop a
+  # key for — because it never recorded one. +live_keys+ is everything the condition is holding onto
+  # after this tick: the keys its search returned, and the keys it just wrote.
+  #
+  # #release_label_claims cannot reach these, and the webhook produces them routinely. The merge
+  # gate's own shape is the worked case: a `ready to merge` label fires a delivery, the gate session
+  # declines and takes the label off again, and both happen inside the up-to-60-second gap before
+  # the next tick. The key never enters the seen-set, so nothing ever drops it — and the stale claim
+  # then swallows the NEXT add of that label, with the poller recording the key as fired behind it
+  # and no session anywhere. That is #647's direction on the one mechanism authorized to merge
+  # without human sign-off. An item that closes inside the same gap gets there too.
+  #
+  # The constraint is the mirror of #release_label_claims': never release a claim for an event a
+  # later tick could read as new, or the poller spawns a second session for one the webhook already
+  # handled (#704). Age is what separates the two. A claim the webhook took seconds ago may simply
+  # be waiting on GitHub's index, and INDEX_LAG_GRACE is this file's own statement of how long that
+  # takes; a claim older than that, whose item this tick's search does not return carrying the
+  # label, is an event that has genuinely ended. An item still carrying the label never reaches here
+  # at all — the search returns it, so its key is in `live_keys`.
+  #
+  # It is deliberately NOT in the state write's transaction, unlike #release_label_claims. It
+  # changes no seen-set state, so nothing has to land with it, and a failure here must not abort a
+  # tick that is otherwise working — the next tick sweeps the same rows.
+  def release_orphaned_label_claims(condition, live_keys)
+    live = live_keys.map { |key| TriggerEventClaim.github_label_event_key_from_seen_key(key) }
+    released = TriggerEventClaim
+      .where(trigger_condition_id: condition.id)
+      .where("trigger_event_claims.event_key LIKE ?", "github:%:label:%")
+      .where(created_at: ...(Time.current - INDEX_LAG_GRACE))
+      .where.not(event_key: live)
+      .delete_all
+    return if released.zero?
+
+    Rails.logger.info "[GithubTriggerPollerJob] Condition #{condition.id} released #{released} label claim(s) " \
+                      "for item(s) it has not seen carrying the label for #{INDEX_LAG_GRACE.inspect}, so those " \
+                      "labels fire again if they are re-added"
+  rescue => e
+    Rails.logger.warn "[GithubTriggerPollerJob] Could not sweep orphaned label claims for condition " \
+                      "#{condition.id} (#{e.message}); the next tick sweeps the same rows"
   end
 end

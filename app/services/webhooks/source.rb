@@ -38,13 +38,14 @@ module Webhooks
       )
     end
 
-    # GitHub's repository or organization webhook. Serves `github_issue` conditions only; see
-    # GithubEventJob. A day with no delivery is ordinary for it, since GitHub sends an event only
-    # when something happens to an issue.
+    # GitHub's repository or organization webhook. Serves both GitHub condition types —
+    # `github_issue` from `issues.opened`, `github_label` from the label and open/reopen deliveries;
+    # see GithubEventJob. A day with no delivery is ordinary for it, since GitHub sends an event
+    # only when something happens to an issue or a pull request.
     def self.github
       @github ||= new(
         name: "github", mode_key: "GITHUB_TRIGGER_INGEST_MODE", secret_key: "GITHUB_WEBHOOK_SECRET",
-        served_conditions: -> { TriggerCondition.where(condition_type: "github_issue") },
+        served_conditions: -> { TriggerCondition.github },
         expects_daily_deliveries: false
       )
     end

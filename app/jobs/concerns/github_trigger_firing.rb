@@ -6,12 +6,20 @@
 # Trigger#interpolate_prompt) and spawn through the same Trigger#create_session!, so a session a
 # delivery fired is indistinguishable from one the poller fired, fencing included.
 #
-# Claims. While GitHub's webhook path is switched on, both paths can see the same new issue, so a
-# `github_issue` fire claims it for its condition in TriggerEventClaim, inside the transaction that
-# spawns the session — the arrangement SlackTriggerFiring#fire_slack_event uses. The path that loses
-# the claim fires nothing and reports the issue as fired, so the poller records it and moves its
-# cursor on. With GitHub on `poll`, and for every `github_label` fire, nothing claims and #fire runs
-# exactly as the poller always has.
+# Claims. While GitHub's webhook path is switched on, both paths can see the same event — a new
+# issue, or a label just added — so a fire claims it for its condition in TriggerEventClaim, inside
+# the transaction that spawns the session; the arrangement SlackTriggerFiring#fire_slack_event uses.
+# The path that loses the claim fires nothing and reports the event as fired, so the poller records
+# it and moves its state on. With GitHub on `poll` nothing claims and #fire runs exactly as the
+# poller always has.
+#
+# The two condition types differ only in the key, and therefore in the claim's lifetime.
+# `github_issue` claims `github:<repo>#<n>:opened`, an event that cannot recur, and expires on
+# TriggerEventClaim::RETENTION. `github_label` claims `github:<repo>#<n>:label:<label>`, an event
+# that CAN recur — a label comes off and goes back on — so its claim is released the tick the poller
+# drops the same item from its seen-set (GithubTriggerPollerJob#release_label_claims). A claim that
+# outlived the seen-set would silently swallow the re-add, which is #647's direction and the worse
+# one on the merge gate.
 module GithubTriggerFiring
   extend ActiveSupport::Concern
   include GithubTriggerSearch
@@ -24,8 +32,10 @@ module GithubTriggerFiring
 
   # Creates the session for one item. Returns true only if a session was created, since
   # the caller uses that to decide whether it may advance its state past this item.
-  def fire(condition, item, event:, via: "poll")
-    return fire_claimed(condition, item, event: event, via: via) if claims_github_event?(condition, via)
+  # +label+ is the label that was added, and is required for a `github_label` condition: it is half
+  # of the event's identity, so it is half of the claim key.
+  def fire(condition, item, event:, via: "poll", label: nil)
+    return fire_claimed(condition, item, event: event, via: via, label: label) if claims_github_event?(via)
 
     trigger = condition.trigger
 
@@ -125,28 +135,62 @@ module GithubTriggerFiring
   end
 
   # Whether this fire takes a claim. The webhook always does; the poller does only while the webhook
-  # is switched on, so on `poll` it claims nothing and takes no lock. `github_label` conditions are
-  # not served by the webhook, so nothing can race the poller for them.
-  def claims_github_event?(condition, via)
-    condition.condition_type == "github_issue" &&
-      (via == "webhook" || Webhooks::Source.github.webhook_enabled?)
+  # is switched on, so on `poll` it claims nothing and takes no lock. Both GitHub condition types
+  # are served by the webhook (Webhooks::Source.github#served_conditions), so both claim.
+  def claims_github_event?(via)
+    via == "webhook" || Webhooks::Source.github.webhook_enabled?
   end
 
-  # #fire for a claiming path. Returns true when a session exists for the issue — this path's, or
+  # The event +item+ and +label+ identify, for +condition+'s type. A `github_label` fire without a
+  # label has no event to claim, and claiming the wrong key is how one path swallows the other's
+  # event, so this refuses rather than inventing one.
+  def github_claim_key(condition, item, label)
+    return TriggerEventClaim.github_issue_event_key(repo_of(item), item["number"]) unless condition.condition_type == "github_label"
+    raise ArgumentError, "a github_label fire for #{item_key(item)} names no label" if label.blank?
+
+    TriggerEventClaim.github_label_event_key(repo_of(item), item["number"], label)
+  end
+
+  # #fire for a claiming path. Returns true when a session exists for the event — this path's, or
   # the other path's, which claimed it first — and false when nothing was spawned, so the poller
-  # leaves the issue unfired and retries it, exactly as it does without claims.
+  # leaves the event unfired and retries it, exactly as it does without claims.
   #
   # Inside the transaction the trigger's spawn lock comes first (Trigger.lock_spawn_for_transaction!),
   # so two fires of one trigger see each other's sessions, then the claim, then the spawn. A spawn
   # that produces nothing — burst control, a pending session, a dropped follow-up — releases the claim
-  # rather than keeping it: a new issue is durable state, and the poller fires it once whatever held
-  # it back has cleared, as it would with no webhook at all. A spawn that raises rolls the session and
-  # the claim back together, so unlike the unclaimed path (#704) there is no created session to
-  # account for.
-  def fire_claimed(condition, item, event:, via:)
+  # rather than keeping it: a new issue and a label that is still on the item are both durable state,
+  # and the poller fires them once whatever held it back has cleared, as it would with no webhook at
+  # all. A spawn that raises rolls the session and the claim back together, so unlike the unclaimed
+  # path (#704) there is no created session to account for.
+  #
+  # ## How this composes with #704's rescue, which is what the merge gate fires through
+  #
+  # #704 is the label path's own incident: one `ready to merge` label produced two merge-gate
+  # sessions 55s apart, and #fire's rescue closes it by asking "does a session exist for this item"
+  # (Trigger#last_fire_created_session) rather than "did this method return cleanly". Two things are
+  # worth stating about what happens to that reasoning here, because the merge gate is the one
+  # mechanism authorized to merge without human sign-off.
+  #
+  # **The claim is strictly stronger than the rescue, and it is why this path is safe.** #704's
+  # rescue prevents a duplicate only if its CALLER then records the item — the poller's
+  # #record_fired_key, or its end-of-tick write. Lose that write, which is the exact failure the
+  # durability floor exists for, and the next tick fires again anyway. A committed claim needs
+  # nothing from the caller: the second fire loses it whatever the seen-set says.
+  #
+  # **So the rescue asks the database instead of the trigger.** `last_fire_created_session` is an
+  # in-memory report about a transaction that may have rolled back — it would name a session row
+  # that no longer exists, and consuming the event on it would swallow a label event with nothing to
+  # show for it (#647's direction, and the worse one on the gate). `Session.exists?` is the only
+  # honest question here, and the only case it can answer yes to is a raise from an `after_commit`
+  # callback, which arrives after the session and the claim have both committed.
+  #
+  # The one thing a label event needs that an issue does not is for that decision to EXPIRE: the
+  # label can come off and go back on. It does, because the claim does — GithubTriggerPollerJob
+  # releases it the tick it drops the item from its seen-set.
+  def fire_claimed(condition, item, event:, via:, label: nil)
     trigger = condition.trigger
     prompt = github_fire_prompt(trigger, item, event: event)
-    key = TriggerEventClaim.github_issue_event_key(repo_of(item), item["number"])
+    key = github_claim_key(condition, item, label)
     outcome = nil
 
     ActiveRecord::Base.transaction do
@@ -197,14 +241,16 @@ module GithubTriggerFiring
     # A raise inside the block rolls the session and the claim back together. One from an
     # after_commit callback arrives after both have committed, so ask the database which it was:
     # a session that exists has fired, and its claim keeps the other path from firing it again.
+    # This is #704's question with the evidence taken from the database rather than from the
+    # trigger — see the note above this method for why that difference is load-bearing here.
     if outcome.is_a?(Session) && Session.exists?(id: outcome.id)
       Rails.logger.error "#{github_log_tag} Trigger #{trigger.id} created session #{outcome.id} for #{item_key(item)} " \
-                         "(#{event}) via #{via}, but the fire then failed after commit: #{e.message}. Treating the issue as fired"
+                         "(#{event}) via #{via}, but the fire then failed after commit: #{e.message}. Treating the event as fired"
       return true
     end
 
     Rails.logger.error "#{github_log_tag} Failed to create session for #{item_key(item)} (#{event}) via #{via}: " \
-                       "#{e.message}. The claim rolled back with it, so the issue is still unfired"
+                       "#{e.message}. The claim rolled back with it, so the event is still unfired"
     report_webhook_fire_failure(condition, item, e) if via == "webhook"
     false
   end
@@ -219,7 +265,7 @@ module GithubTriggerFiring
         title: "GitHub webhook trigger fire failed",
         source: self.class.name,
         details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) " \
-                 "failed to fire for #{item_key(item)}. The poller is the backstop for this issue.",
+                 "failed to fire for #{item_key(item)}. The poller is the backstop for this event.",
         condition_id: condition.id,
         trigger_id: condition.trigger_id
       }

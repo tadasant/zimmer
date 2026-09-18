@@ -4550,24 +4550,48 @@ GitHub PR status and comments are polled every 30 seconds per open PR. A 30-seco
 a steady API burn. The `github_label` and `github_issue` trigger conditions are polled too, once a
 minute, against GitHub's search API.
 
-`github_issue` conditions can also fire from a GitHub webhook, `POST /webhooks/github` — see
-[GitHub webhook delivery](/sessions/triggers/#github-webhook-delivery). Like Slack's, it is off by
-default, needs the same public ingress, and runs beside the poller rather than replacing it. What it
-does not cover yet:
+Both GitHub trigger condition types can also fire from a GitHub webhook, `POST /webhooks/github` —
+see [GitHub webhook delivery](/sessions/triggers/#github-webhook-delivery). Like Slack's, it is off
+by default, needs the same public ingress, and runs beside the poller rather than replacing it. What
+it does not cover yet:
 
-- **`github_label` conditions.** They stay on the poller in every mode, and label events are ignored.
-  A label can legitimately come off and go back on, so a label claim needs a lifetime tied to the
-  poller's seen-set rather than a fixed retention, and these are the conditions the merge gate fires
-  from.
 - **The per-PR status and comment polling.** Those pollers do not fire triggers, so this ingress
   does not reach them, and they are most of the API burn.
 - **A mode with no poller behind it.** As for Slack, `webhook` alone is treated as `poll`.
 - **A released claim reads as a miss.** A delivery that spawned nothing because of burst control or a
-  pending session releases its claim so the poller can fire the issue later, and on `/health` that
+  pending session releases its claim so the poller can fire the event later, and on `/health` that
   later fire counts as a poll claim — a message the webhook did not deliver first, which it did.
 - **A switch back to `poll` while a delivery is queued.** The job checks the mode when it runs and
   fires nothing on `poll`, but a delivery that fired just before the switch has a claim the poller no
-  longer reads, and the poller can fire that issue a second time.
+  longer reads, and the poller can fire that event a second time.
+- **A re-added label inside the grace window is one event, not two.** A `github_label` claim is
+  released when the poller drops its seen-set key, which takes `REMOVAL_GRACE_TICKS` consecutive
+  misses — about three minutes. The webhook knows the label came off the instant it did, because
+  GitHub sends an `unlabeled` delivery, but it does not act on one: the seen-set belongs to the
+  poller, and a webhook that edited it would be two writers on one piece of state. So a label taken
+  off and put back inside that window fires once, from either path. This is the poller's behaviour
+  exactly, which is the point — the webhook is latency, not different semantics.
+- **The webhook cannot see a label that arrives some other way.** `issues.transferred`, a label
+  applied while the item was closed and still there when it reopens outside the delivered events, and
+  anything GitHub does not send a webhook for at all, reach a condition only at the next poll.
+- **A label event can take up to 30 minutes to become re-firable when the poller never saw it.** The
+  ordinary release is the poller dropping its seen-set key, but a label added and removed inside the
+  up-to-60-second gap before the next tick — the merge gate's own shape, where the gate declines and
+  takes the label straight back off — never puts a key in the seen-set for the poller to drop, and
+  neither does an item that closes in the same gap. The poller sweeps those claims separately, but
+  only once they are older than `INDEX_LAG_GRACE` (30 minutes), because a younger one may be waiting
+  on GitHub's search index and releasing it early would spawn a second session for an event the
+  webhook already handled. So re-adding such a label inside that half hour fires nothing. It is a
+  delay, not a loss: the sweep runs on every tick, and the next add after it fires normally.
+- **The `/health` claim counts for label conditions are a snapshot, not a day's history.** The
+  *Webhook Ingest* panel counts `trigger_event_claims` rows created in the last 24 hours, and a
+  label claim is deleted when its event ends — for a `ready to merge` PR, minutes later. So a label
+  condition's webhook-vs-poll counts show the events currently in flight rather than everything that
+  happened that day, and the "the poller claimed N of M" warning can read zero for a webhook that is
+  in fact delivering nothing. `/supervisor/webhook_deliveries` is the durable record to check
+  alongside it — a hook configured for **Issues** but not **Pull requests** shows there as no
+  `pull_request.*` delivery at all. Keeping the counts as well as the lifetime would need a released
+  marker on the row rather than a delete.
 
 Slack's webhook, `POST /webhooks/slack`, takes Slack Events API deliveries and fires Slack triggers from
 them a second or two after the message is posted, instead of at the next poll — see

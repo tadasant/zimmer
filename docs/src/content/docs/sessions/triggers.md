@@ -411,7 +411,7 @@ it on, both read from encrypted credentials first and ENV second:
 With both set, `POST /webhooks/slack` is the request URL for the app's Event Subscriptions. With
 either missing it answers every request with a 404 and reads nothing. Production cannot receive
 deliveries yet, because nothing on the public internet can reach it — see
-[the limitation](/limitations/#github-is-polled-and-the-slack-webhook-has-no-public-way-in).
+[the limitation](/limitations/#github-is-polled-and-the-webhooks-have-no-public-way-in).
 
 A delivery goes through these checks in order, and nothing further down runs for a request that
 fails one:
@@ -1032,9 +1032,9 @@ Fires when a new issue is opened in one of the watched repos.
 
 #### GitHub webhook delivery
 
-A `github_issue` condition can also fire from a GitHub webhook, a second or two after the issue is
-opened, instead of at the next once-a-minute search. It is off by default. Two settings turn it on,
-read from encrypted credentials first and ENV second:
+Both GitHub condition types can also fire from a GitHub webhook, a second or two after the issue is
+opened or the label is added, instead of at the next once-a-minute search. It is off by default. Two
+settings turn it on, read from encrypted credentials first and ENV second:
 
 | Setting | Value |
 | --- | --- |
@@ -1051,41 +1051,90 @@ the body parsed, and one that is not a JSON object is a 400. A request with no `
 
 Every delivery that verifies is recorded in `webhook_deliveries` under its `X-GitHub-Delivery` id,
 whatever its event, so `/supervisor/webhook_deliveries` answers "is GitHub delivering at all". A
-redelivery carries the same id and gets a 200 and nothing else. Only an `issues` event with action
-`opened` goes further, to `GithubEventJob` on the `triggers` queue. `ping`, label events, pull requests
-and everything else are acknowledged and fire nothing.
+redelivery carries the same id and gets a 200 and nothing else. Six deliveries go further, to
+`GithubEventJob` on the `triggers` queue — the ones that can put an item into a search the poller
+runs. `ping`, a closed issue, a review requested and everything else are acknowledged and fire
+nothing.
 
-`GithubEventJob` fires the `github_issue` conditions the poller would, by the poller's own rules: the
-issue is in a watched repo and is not a pull request; the condition has had its first poll; the issue
-was created inside the window the poller searches and after its repo joined the condition; the poller
-has not already recorded it; and it carries none of the `exclude_labels`. It renders through the same
-`Trigger#interpolate_prompt` and appended context block, fencing included, and spawns through the same
-`Trigger#create_session!`. It never moves the condition's cursor or its seen keys.
+| Delivery | Fires |
+| --- | --- |
+| `issues.opened` | `github_issue` conditions, and `github_label` ones watching issues if it was opened carrying a watched label |
+| `issues.reopened` | `github_label` conditions watching issues, for the labels it still carries |
+| `issues.labeled` | `github_label` conditions watching issues, for the one label that was added |
+| `pull_request.opened`, `pull_request.reopened` | `github_label` conditions watching pull requests, for the labels it carries |
+| `pull_request.labeled` | `github_label` conditions watching pull requests, for the one label that was added |
+
+`github_issue` conditions fire from `issues.opened` alone: their state is a `created_at` cursor, and
+nothing but opening an issue creates one. `github_label` conditions key an event as *(item, label)*,
+so both halves have to be able to change — a label added to an open item, or an item becoming open
+while carrying one.
+
+`GithubEventJob` fires the conditions the poller would, by the poller's own rules, with no GitHub API
+call of its own. For a `github_issue` condition: the issue is in a watched repo and is not a pull
+request; the condition has had its first poll; the issue was created inside the window the poller
+searches and after its repo joined the condition; the poller has not already recorded it; and it
+carries none of the `exclude_labels`. For a `github_label` condition: the item is **open** (the
+poller's `is:open`) and of the watched kind; it is in a watched repo; the condition has been
+baselined and not re-targeted; the label is one it watches; the poller does not already hold
+`owner/repo#number:label` in its seen-set; and the baseline covers that repo and label. Both render
+through the same `Trigger#interpolate_prompt` and appended context block, fencing included, and spawn
+through the same `Trigger#create_session!`. Neither moves the condition's cursor or its seen keys.
 
 **The poller keeps running**, and the two share `trigger_event_claims` the way Slack's paths do: each
-claims `github:<repo>#<number>:opened` for the condition in the transaction that spawns the session,
-and the path that finds the claim taken fires nothing. When the poller loses, it records the issue as
-fired and moves its cursor past it. A fire that spawns nothing — burst control, a pending session —
-releases its claim, so the poller fires the issue once that clears, as it would with no webhook. On
-`poll` the poller claims nothing and fires exactly as before.
+claims the event for the condition in the transaction that spawns the session, and the path that
+finds the claim taken fires nothing. When the poller loses, it records the item as fired and moves
+its state past it. A fire that spawns nothing — burst control, a pending session — releases its
+claim, so the poller fires the event once that clears, as it would with no webhook. On `poll` the
+poller claims nothing and fires exactly as before.
 
-`github_label` conditions are not served by the webhook in any mode. Label events are acknowledged
-and ignored, and those conditions stay on the poller.
+#### How long a claim lasts, and why the two types differ
+
+| Condition | Claim key | Released |
+| --- | --- | --- |
+| `github_issue` | `github:<repo>#<number>:opened` | after `TriggerEventClaim::RETENTION` (30 days) |
+| `github_label` | `github:<repo>#<number>:label:<label>` | the tick the poller drops that key from its seen-set |
+
+An issue is opened once and can never be opened again, so a fixed retention is the right lifetime
+for its claim. **A label is different: removing it and adding it back is a second, legitimate
+event**, and the seen-set is the only thing that knows when that has happened. So a label claim
+lives exactly as long as the poller's key for the same item and label — the tick that accepts a
+removal (after `REMOVAL_GRACE_TICKS` consecutive misses) deletes the key and the claim in one
+transaction. Re-add the label after that and it fires again, from whichever path sees it first.
+
+Two consequences worth knowing. **Inside the grace window a re-add fires nothing**, from either
+path: the poller still holds the key, and the webhook mirrors the poller rather than second-guessing
+it, so a label taken off and put back within about three minutes reads as one event.
+
+A claim whose key the poller **never** recorded is released on a second path, because nothing can
+drop a key the seen-set never held. That happens when a label goes on and comes off again inside the
+up-to-60-second gap before the next tick — the merge gate's own shape, where the gate declines and
+removes the label — or when the item closes in the same gap. Every tick sweeps this condition's
+label claims for events that are over: older than `INDEX_LAG_GRACE` (30 minutes) and not on any item
+the search returned carrying the label. The age bound is what keeps the sweep from releasing a claim
+the webhook took seconds ago whose label GitHub has not indexed yet, which would spawn a second
+session for an event already handled. So the 30-day retention is a backstop for label claims and
+nothing more.
+
+The release is not conditional on the ingest mode. A claim's lifetime is "as long as the poller's
+key", not "as long as the webhook is on", so a mode switched back to `poll` cannot strand claims that
+would swallow a later fire — on `poll` the release simply matches nothing, because nothing claimed.
 
 GitHub signs no timestamp, so a captured delivery stays correctly signed. Replaying it is a
-redelivery while its row is kept (7 days), and after that the issue's claim (30 days) still stops it
-firing again.
+redelivery while its row is kept (7 days), and after that the event's claim still stops it firing
+again — for as long as that claim lives.
 
 Setting it up on the GitHub side: set both settings first, since GitHub sends a `ping` when the hook
 is saved. Then add a webhook to the repository or organization with the payload URL
 `https://<zimmer host>/webhooks/github`, content type `application/json`, the same secret, and the
-**Issues** event. A hook sending `application/x-www-form-urlencoded` gets a 400 on every delivery.
+**Issues** and **Pull requests** events. A hook sending `application/x-www-form-urlencoded` gets a
+400 on every delivery.
 
 The webhook's deliveries and claims are summarised with Slack's on `/health` — see the *Webhook Ingest*
 panel described under [Slack Events API delivery](#slack-events-api-delivery). A quiet day does not
-warn for GitHub the way it does for Slack, because GitHub sends an event only when an issue changes.
-One reading there is not a miss: when a delivery spawned nothing because of burst control or a pending
-session, its claim is released, and the poller's later fire of that issue counts as a poll claim.
+warn for GitHub the way it does for Slack, because GitHub sends an event only when an issue or a pull
+request changes. One reading there is not a miss: when a delivery spawned nothing because of burst
+control or a pending session, its claim is released, and the poller's later fire of that event counts
+as a poll claim.
 
 #### Opting an issue out, with a label
 
