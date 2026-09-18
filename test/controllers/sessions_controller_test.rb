@@ -2722,18 +2722,25 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "should retry a session notes write after a transient database error" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+    # The first attempt deadlocks; the second runs the real service, so the
+    # assertion below is on what was persisted, not on a stub's return value.
     attempts = 0
-    Sessions::UpdateNotes.stubs(:call).with do |**|
+    real_call = Sessions::UpdateNotes.method(:call)
+    flaky_call = lambda do |**kwargs|
       attempts += 1
-      raise ActiveRecord::Deadlocked, "deadlock" if attempts == 1
-      true
-    end.returns(session)
+      raise ActiveRecord::Deadlocked, "simulated" if attempts == 1
+      real_call.call(**kwargs)
+    end
     SessionsController.any_instance.stubs(:sleep)
 
-    patch update_notes_session_url(session), params: { session_notes: "My notes" }, as: :json
+    Sessions::UpdateNotes.stub(:call, flaky_call) do
+      patch update_notes_session_url(session), params: { session_notes: "My notes" }, as: :json
+    end
 
     assert_response :success
+    assert JSON.parse(response.body)["success"]
     assert_equal 2, attempts
+    assert_equal "My notes", session.reload.session_notes
   end
 
   test "should route to update_notes" do

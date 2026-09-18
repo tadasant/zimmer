@@ -88,7 +88,7 @@ class Sessions::UpdateNotesTest < ActiveSupport::TestCase
     assert_nil session.reload.session_notes
   end
 
-  [ 123, [ "a" ], { "a" => 1 } ].each do |value|
+  [ 123, [ "a" ], { "a" => 1 }, ActionController::Parameters.new("a" => 1) ].each do |value|
     test "refuses a non-String #{value.class} rather than coercing it" do
       session = make_session(session_notes: "Old notes")
 

@@ -35,7 +35,7 @@ module Mcp
       ENABLED_DESC = 'Optional for "set_heartbeat" action. When true, enables the session heartbeat; when false, disables it. Omit to leave the enabled state unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       INTERVAL_SECONDS_DESC = 'Optional for "set_heartbeat" action. Heartbeat cadence in seconds (30–86400). Omit to leave the interval unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       MESSAGE_INDEX_DESC = 'Required for "fork" action. The transcript message index to fork from.'
-      SESSION_NOTES_DESC = 'Required for "update_notes" action. The notes text to set on the session.'
+      SESSION_NOTES_DESC = 'Required for "update_notes" action. The notes text to set on the session (at most 50,000 characters). An empty or whitespace-only string clears the notes.'
       SESSION_IDS_DESC = 'Required for "bulk_archive" action. Array of session IDs to archive.'
       TITLE_DESC = 'Required for "update_title" action. The new title for the session.'
       # The `source` stamped on an uncle edge recorded by follow_up, whichever

@@ -1917,8 +1917,10 @@ class SessionsController < ApplicationController
       success: true,
       session_notes_updated_at: @session.session_notes_updated_at&.iso8601
     }
-  rescue Sessions::UpdateNotes::Error, ActiveRecord::RecordInvalid => e
+  rescue Sessions::UpdateNotes::Error => e
     render json: { error: e.message }, status: :unprocessable_entity
+  rescue ActiveRecord::RecordInvalid => e
+    render json: { error: e.record.errors.full_messages.join(", ") }, status: :unprocessable_entity
   end
 
   def toggle_push_notifications
