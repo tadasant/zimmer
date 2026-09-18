@@ -2698,7 +2698,49 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :unprocessable_entity
     json_response = JSON.parse(response.body)
-    assert_includes json_response["error"], "too long"
+    assert_equal "Notes are too long (maximum 50,000 characters)", json_response["error"]
+  end
+
+  test "should clear session notes when the param is absent" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", session_notes: "Old notes", session_notes_updated_at: Time.current)
+
+    patch update_notes_session_url(session), params: {}, as: :json
+
+    assert_response :success
+    assert_nil session.reload.session_notes
+  end
+
+  test "should reject non-string session notes with 422 rather than a 500" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", session_notes: "Old notes")
+
+    patch update_notes_session_url(session), params: { session_notes: 123 }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal "session_notes must be a string.", JSON.parse(response.body)["error"]
+    assert_equal "Old notes", session.reload.session_notes
+  end
+
+  test "should retry a session notes write after a transient database error" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+    # The first attempt deadlocks; the second runs the real service, so the
+    # assertion below is on what was persisted, not on a stub's return value.
+    attempts = 0
+    real_call = Sessions::UpdateNotes.method(:call)
+    flaky_call = lambda do |**kwargs|
+      attempts += 1
+      raise ActiveRecord::Deadlocked, "simulated" if attempts == 1
+      real_call.call(**kwargs)
+    end
+    SessionsController.any_instance.stubs(:sleep)
+
+    Sessions::UpdateNotes.stub(:call, flaky_call) do
+      patch update_notes_session_url(session), params: { session_notes: "My notes" }, as: :json
+    end
+
+    assert_response :success
+    assert JSON.parse(response.body)["success"]
+    assert_equal 2, attempts
+    assert_equal "My notes", session.reload.session_notes
   end
 
   test "should route to update_notes" do
