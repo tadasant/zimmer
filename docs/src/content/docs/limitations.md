@@ -1216,12 +1216,14 @@ On a trigger's firing path, four things are mitigated
 - **A template can fence untrusted text off.** `{{text|untrusted}}` renders the value between
   markers that carry a code drawn at random on every fire, with a note that it is data, not
   instructions. The text cannot close the fence early.
-- **Event text Zimmer appends outside the template is fenced too.** That covers the GitHub poller's
-  context block (title, labels, body), the Slack poller's coalescing note, and the note the webhook
-  queues into a running session. Each is fenced unless the template writes the matching placeholder
-  bare. So the text of the event a trigger fired on reaches that trigger's prompt or fold note
-  unfenced only where the template chose raw text, apart from the channel name in the Slack note's
-  first sentence.
+- **Event text Zimmer appends outside the template is fenced too, field by field.** That covers the
+  GitHub poller's context block (title, labels, body), the Slack poller's coalescing note, and the
+  note the webhook queues into a running session (the messages it lists, and the display name of
+  whoever wrote them). Each field is fenced unless the template writes *its own* matching
+  placeholder bare — `{{title}}`, `{{labels}}`, `{{text}}`, `{{author}}` — so a template fencing one
+  and not another gets exactly what it asked for. So the text of the event a trigger fired on
+  reaches that trigger's prompt or fold note unfenced only where the template chose raw text, apart
+  from the channel name in the Slack note's first sentence.
 
 What remains open:
 
@@ -1233,8 +1235,9 @@ What remains open:
   recorded where the model cannot rewrite them — and nothing fires a workflow in production yet.
 - **Both hardening features are opt-in.** An existing template gets the single pass, but its
   `{{text}}` stays unfenced and it names no Slack ID until someone edits it. The fencing of text
-  Zimmer appends is not opt-in: it follows the template, so a template that never names `{{text}}`
-  gets the Slack coalescing notes fenced, and one that writes `{{text}}` bare gets them raw. Fencing by default was considered and not done: a DM trigger whose
+  Zimmer appends is not opt-in: it follows the template, field by field, so a template that never
+  names a placeholder gets the appended field following it fenced, and one that writes that
+  placeholder bare gets that field raw. Fencing by default was considered and not done: a DM trigger whose
   message is the request would silently start calling that request data, and nothing can tell that
   trigger apart from one whose message is only evidence
   ([Event text Zimmer appends](/sessions/triggers/#event-text-zimmer-appends)).
