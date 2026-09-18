@@ -63,6 +63,16 @@ class GithubEventJobTest < ActiveJob::TestCase
     assert_equal 1, fires(github_issue(number: 4, labels: [ "bug" ]))
   end
 
+  # GithubSearchService.exclude_label_terms drops an embedded double quote, so the `-label:` term
+  # the poller's query carries is not the string the condition configured. The webhook has to
+  # exclude on the same string, or the two disagree about which issues are opted out.
+  test "an exclude label containing a double quote is matched the way the search asks for it" do
+    configure_condition(@condition.configuration.merge("exclude_labels" => [ 'hold "issue" work gate' ]))
+
+    assert_equal 1, fires(github_issue(number: 20, labels: [ 'hold "issue" work gate' ]))
+    assert_equal 0, fires(github_issue(number: 21, labels: [ "hold issue work gate" ]))
+  end
+
   test "a condition the poller has not baselined yet does not fire; its first tick owns that" do
     configure_condition(@condition.configuration.except("last_issue_at"))
 

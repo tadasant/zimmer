@@ -279,6 +279,126 @@ class GithubLabelEventJobTest < ActiveJob::TestCase
     assert_equal [ @condition.id, second.id ].sort, TriggerEventClaim.pluck(:trigger_condition_id).sort
   end
 
+  # --- claims the poller never recorded a key for ------------------------------------------
+  #
+  # #release_label_claims can only drop a claim whose key the seen-set HELD. The merge gate's own
+  # shape produces claims it never held: label added, gate declines, label removed, all inside the
+  # up-to-60-second gap before the poller's next tick. #release_orphaned_label_claims is what stops
+  # those swallowing the next add of the same label.
+
+  test "the gate's own shape — labelled, fired, unlabelled before the first tick — does not swallow the next add" do
+    pull_request = github_pull_request(number: 70, labels: [ LABEL ])
+
+    assert_equal 1, fires(pull_request)
+    assert_equal 1, TriggerEventClaim.count
+
+    # The label came off before the poller ever saw it, so the key never enters the seen-set and
+    # nothing in the ordinary release path can ever reach the claim.
+    poll_label_items([])
+    assert_empty @condition.reload.github_seen_items
+    assert_equal 1, TriggerEventClaim.count, "a claim younger than the index lag must not be swept"
+
+    # Past the index lag, a tick that still does not see the item carrying the label ends the event.
+    TriggerEventClaim.update_all(created_at: (GithubTriggerPollerJob::INDEX_LAG_GRACE + 1.minute).ago)
+    poll_label_items([])
+    assert_equal 0, TriggerEventClaim.count
+
+    assert_equal 1, fires(pull_request)
+    assert_equal 2, Session.for_trigger(@trigger.id).count
+  end
+
+  test "an orphaned claim is NOT swept while the item is still carrying the label" do
+    pull_request = github_pull_request(number: 71, labels: [ LABEL ])
+    deliver_label(pull_request)
+    TriggerEventClaim.update_all(created_at: (GithubTriggerPollerJob::INDEX_LAG_GRACE + 1.minute).ago)
+
+    # The search returns it, so the poller meets the claim, records the key, and keeps the claim.
+    assert_no_difference -> { Session.count } do
+      poll_label_items([ searched_pull_request(pull_request) ])
+    end
+
+    assert_equal 1, TriggerEventClaim.count
+    assert_equal [ "tadasant/zimmer#71:ready to merge" ], @condition.reload.github_seen_items
+  end
+
+  test "a claim younger than the index lag survives a tick whose search has not indexed the label yet" do
+    pull_request = github_pull_request(number: 72, labels: [ LABEL ])
+    deliver_label(pull_request)
+
+    # GitHub has not indexed the new label; the poller's search comes back empty.
+    poll_label_items([])
+    assert_equal 1, TriggerEventClaim.count
+
+    # It appears on the next tick. Because the claim survived, the poller does not spawn a second
+    # session for the label the webhook already handled — this is the #704 direction.
+    assert_no_difference -> { Session.count } do
+      poll_label_items([ searched_pull_request(pull_request) ])
+    end
+    assert_equal [ "tadasant/zimmer#72:ready to merge" ], @condition.reload.github_seen_items
+  end
+
+  test "the sweep leaves another condition's claims alone" do
+    other = @trigger.trigger_conditions.create!(
+      condition_type: "github_label",
+      configuration: { "repos" => [ REPO ], "target" => "pull_request", "labels" => [ LABEL ], "seen_items" => [] }
+    )
+    TriggerEventClaim.claim!(other, [ TriggerEventClaim.github_label_event_key(REPO, 73, LABEL) ], via: "webhook")
+    TriggerEventClaim.update_all(created_at: (GithubTriggerPollerJob::INDEX_LAG_GRACE + 1.minute).ago)
+
+    poll_label_items([])
+
+    assert_equal [ other.id ], TriggerEventClaim.pluck(:trigger_condition_id)
+  end
+
+  test "the sweep leaves a github_issue claim alone, whatever its age" do
+    issue_condition = trigger_conditions(:github_issue_condition)
+    TriggerEventClaim.claim!(issue_condition, [ TriggerEventClaim.github_issue_event_key(REPO, 74) ], via: "webhook")
+    TriggerEventClaim.update_all(created_at: 60.days.ago)
+
+    poll_label_items([])
+
+    assert_equal [ "github:tadasant/zimmer#74:opened" ], TriggerEventClaim.pluck(:event_key)
+  end
+
+  # --- mirroring the search's own normalisation --------------------------------------------
+
+  # GithubSearchService.label_group drops an embedded double quote, because GitHub has no escape
+  # for one — so the poller's query asks for a name the condition did not configure, and the
+  # webhook has to ask for that same name or it fires for items the poller can never see. A claim
+  # taken on such a fire would be orphaned with no self-heal.
+  test "a watched label containing a double quote is matched the way the search asks for it" do
+    configure_condition(@condition.configuration.merge("labels" => [ 'ready "to" merge' ]))
+
+    assert_equal 0, fires(github_pull_request(number: 75), label: 'ready "to" merge')
+    assert_equal 0, TriggerEventClaim.count
+
+    # `label:"ready to merge"` is what the query actually contains, so that is what fires — and the
+    # key carries the CONFIGURED spelling, which is what the poller's seen-set would hold.
+    assert_equal 1, fires(github_pull_request(number: 76), label: "ready to merge")
+    assert_equal 'github:tadasant/zimmer#76:label:ready "to" merge', TriggerEventClaim.sole.event_key
+  end
+
+  test "a seen key is matched case-insensitively on the repository, like every clause around it" do
+    configure_condition(@condition.configuration.merge("seen_items" => [ "TadasAnt/Zimmer#77:ready to merge" ]))
+
+    assert_equal 0, fires(github_pull_request(number: 77))
+  end
+
+  # --- argument shapes ---------------------------------------------------------------------
+
+  test "a job carrying arguments this release does not read fires nothing rather than raising" do
+    assert_nothing_raised do
+      assert_no_difference [ -> { Session.count }, -> { TriggerEventClaim.count } ] do
+        GithubEventJob.perform_now("stale-delivery", GithubEventJob.item_arguments(github_pull_request(number: 78)))
+      end
+    end
+  end
+
+  test "the controller's firing events and the job's label events do not drift apart" do
+    assert_equal (GithubEventJob::LABEL_EVENTS | [ GithubEventJob::ISSUE_OPENED ]).sort,
+      Webhooks::GithubController::FIRING_EVENTS.keys.sort
+  end
+
   # --- spawning nothing, and failing ------------------------------------------------------
 
   test "a delivery that spawns nothing releases its claim, so the poller fires the label later" do

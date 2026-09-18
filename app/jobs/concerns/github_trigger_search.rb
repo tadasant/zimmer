@@ -63,6 +63,16 @@ module GithubTriggerSearch
     Array(item["labels"]).filter_map { |label| label["name"].presence }
   end
 
+  # A configured label as the SEARCH actually asks for it, for comparing against a name GitHub
+  # returned. GithubSearchService.label_group and #exclude_label_terms both DROP an embedded double
+  # quote before quoting the term, because GitHub has no escape for one — so a condition watching
+  # `ready "to" merge` has its query ask for `ready to merge`, and anything mirroring that query
+  # must ask for the same different name or it matches items the poller can never see. Downcased on
+  # top, because `label:` ignores case.
+  def searched_label(label)
+    label.to_s.delete('"').downcase
+  end
+
   def pull_request?(item)
     item["pull_request"].present?
   end

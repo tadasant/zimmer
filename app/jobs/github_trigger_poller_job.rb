@@ -582,16 +582,18 @@ class GithubTriggerPollerJob < ApplicationJob
 
     # Keys that failed to produce a session are in neither retained, fired, grace_retained
     # nor absorbed, so the next tick sees them as new again and retries.
+    next_seen = retained + fired + grace_retained + absorbed
     write_state(
       condition, scope,
       {
-        "seen_items" => (retained + fired + grace_retained + absorbed).to_a.sort,
+        "seen_items" => next_seen.to_a.sort,
         "seen_missing_counts" => next_missing,
         "baseline_scope" => condition.github_scope_snapshot
       },
       fired: fired.any?,
       release_keys: dropped
     )
+    release_orphaned_label_claims(condition, current_keys + next_seen)
   end
 
   # Record the whole current result set as the baseline and fire nothing.
@@ -631,6 +633,7 @@ class GithubTriggerPollerJob < ApplicationJob
       # would block a fire for an item that merely shares a number.
       release_keys: condition.github_seen_items.to_set - current_keys
     )
+    release_orphaned_label_claims(condition, current_keys)
 
     Rails.logger.info "[GithubTriggerPollerJob] Baselined condition #{condition.id} " \
                       "with #{current_keys.size} already-labelled item(s); firing none"
@@ -985,5 +988,46 @@ class GithubTriggerPollerJob < ApplicationJob
 
     Rails.logger.info "[GithubTriggerPollerJob] Condition #{condition.id} dropped #{keys.size} seen key(s) " \
                       "and released #{released} claim(s) with them, so a re-added label fires again"
+  end
+
+  # Release label claims this condition holds for events that are over and that it will never drop a
+  # key for — because it never recorded one. +live_keys+ is everything the condition is holding onto
+  # after this tick: the keys its search returned, and the keys it just wrote.
+  #
+  # #release_label_claims cannot reach these, and the webhook produces them routinely. The merge
+  # gate's own shape is the worked case: a `ready to merge` label fires a delivery, the gate session
+  # declines and takes the label off again, and both happen inside the up-to-60-second gap before
+  # the next tick. The key never enters the seen-set, so nothing ever drops it — and the stale claim
+  # then swallows the NEXT add of that label, with the poller recording the key as fired behind it
+  # and no session anywhere. That is #647's direction on the one mechanism authorized to merge
+  # without human sign-off. An item that closes inside the same gap gets there too.
+  #
+  # The constraint is the mirror of #release_label_claims': never release a claim for an event a
+  # later tick could read as new, or the poller spawns a second session for one the webhook already
+  # handled (#704). Age is what separates the two. A claim the webhook took seconds ago may simply
+  # be waiting on GitHub's index, and INDEX_LAG_GRACE is this file's own statement of how long that
+  # takes; a claim older than that, whose item this tick's search does not return carrying the
+  # label, is an event that has genuinely ended. An item still carrying the label never reaches here
+  # at all — the search returns it, so its key is in `live_keys`.
+  #
+  # It is deliberately NOT in the state write's transaction, unlike #release_label_claims. It
+  # changes no seen-set state, so nothing has to land with it, and a failure here must not abort a
+  # tick that is otherwise working — the next tick sweeps the same rows.
+  def release_orphaned_label_claims(condition, live_keys)
+    live = live_keys.map { |key| TriggerEventClaim.github_label_event_key_from_seen_key(key) }
+    released = TriggerEventClaim
+      .where(trigger_condition_id: condition.id)
+      .where("trigger_event_claims.event_key LIKE ?", "github:%:label:%")
+      .where(created_at: ...(Time.current - INDEX_LAG_GRACE))
+      .where.not(event_key: live)
+      .delete_all
+    return if released.zero?
+
+    Rails.logger.info "[GithubTriggerPollerJob] Condition #{condition.id} released #{released} label claim(s) " \
+                      "for item(s) it has not seen carrying the label for #{INDEX_LAG_GRACE.inspect}, so those " \
+                      "labels fire again if they are re-added"
+  rescue => e
+    Rails.logger.warn "[GithubTriggerPollerJob] Could not sweep orphaned label claims for condition " \
+                      "#{condition.id} (#{e.message}); the next tick sweeps the same rows"
   end
 end
