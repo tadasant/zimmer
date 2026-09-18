@@ -1904,33 +1904,23 @@ class SessionsController < ApplicationController
     end
   end
 
+  # Presentation ONLY — the write and its rules (blank clears, the cap) are
+  # Sessions::UpdateNotes, shared with PATCH /api/v1/sessions/:id/notes and the
+  # `update_notes` MCP action.
   def update_notes
     @session = find_session
-    notes = params[:session_notes]
 
-    # Allow blank notes (to clear them)
-    if notes.present? && notes.length > 50_000
-      render json: { error: "Notes are too long (maximum 50,000 characters)" }, status: :unprocessable_entity
-      return
-    end
+    with_db_retry { Sessions::UpdateNotes.call(session: @session, notes: params[:session_notes]) }
+    return if performed? # with_db_retry rendered its own give-up response
 
-    result = with_db_retry do
-      @session.update(
-        session_notes: notes.presence,
-        session_notes_updated_at: notes.present? ? Time.current : nil
-      )
-    end
-
-    return if performed?
-
-    if result
-      render json: {
-        success: true,
-        session_notes_updated_at: @session.session_notes_updated_at&.iso8601
-      }
-    else
-      render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
-    end
+    render json: {
+      success: true,
+      session_notes_updated_at: @session.session_notes_updated_at&.iso8601
+    }
+  rescue Sessions::UpdateNotes::Error => e
+    render json: { error: e.message }, status: :unprocessable_entity
+  rescue ActiveRecord::RecordInvalid => e
+    render json: { error: e.record.errors.full_messages.join(", ") }, status: :unprocessable_entity
   end
 
   def toggle_push_notifications

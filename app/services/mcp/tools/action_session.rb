@@ -35,7 +35,7 @@ module Mcp
       ENABLED_DESC = 'Optional for "set_heartbeat" action. When true, enables the session heartbeat; when false, disables it. Omit to leave the enabled state unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       INTERVAL_SECONDS_DESC = 'Optional for "set_heartbeat" action. Heartbeat cadence in seconds (30–86400). Omit to leave the interval unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       MESSAGE_INDEX_DESC = 'Required for "fork" action. The transcript message index to fork from.'
-      SESSION_NOTES_DESC = 'Required for "update_notes" action. The notes text to set on the session.'
+      SESSION_NOTES_DESC = 'Required for "update_notes" action. The notes text to set on the session (at most 50,000 characters). An empty or whitespace-only string clears the notes.'
       SESSION_IDS_DESC = 'Required for "bulk_archive" action. Array of session IDs to archive.'
       TITLE_DESC = 'Required for "update_title" action. The new title for the session.'
       # The `source` stamped on an uncle edge recorded by follow_up, whichever
@@ -98,7 +98,6 @@ module Mcp
       # Every action but the two bulk ones operates on a single session.
       SESSIONLESS_ACTIONS = %w[refresh_all bulk_archive].freeze
 
-      MAX_SESSION_NOTES_LENGTH = 50_000
       REFRESH_ALL_LIMIT = 50
 
       # Which session attribute and argument name each of the four
@@ -1235,14 +1234,13 @@ module Mcp
           raise ToolError, "The \"session_notes\" parameter is required for the \"update_notes\" action."
         end
 
-        if notes.length > MAX_SESSION_NOTES_LENGTH
-          raise ToolError, "Notes are too long (maximum #{MAX_SESSION_NOTES_LENGTH} characters)"
+        # Dispatch ONLY — Sessions::UpdateNotes owns the rules, shared with the
+        # web notes panel and PATCH /api/v1/sessions/:id/notes.
+        begin
+          Sessions::UpdateNotes.call(session: session, notes: notes)
+        rescue Sessions::UpdateNotes::Error, ActiveRecord::RecordInvalid => e
+          raise ToolError, e.message
         end
-
-        session.update!(
-          session_notes: notes.presence,
-          session_notes_updated_at: notes.present? ? Time.current : nil
-        )
 
         [
           "## Session Notes Updated",

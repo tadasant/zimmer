@@ -349,6 +349,20 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
     }, headers: @headers
 
     assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_equal "Too long", json["error"]
+    assert_equal "Notes are too long (maximum 50,000 characters)", json["message"]
+  end
+
+  test "update_notes should refuse non-string notes as a validation failure" do
+    session = sessions(:needs_input)
+    session.update!(session_notes: "Existing notes")
+
+    patch notes_api_v1_session_path(session), params: { session_notes: 123 }, headers: @headers, as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal "Validation failed", JSON.parse(response.body)["error"]
+    assert_equal "Existing notes", session.reload.session_notes
   end
 
   # ============================================================
