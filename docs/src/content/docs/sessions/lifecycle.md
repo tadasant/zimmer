@@ -980,7 +980,8 @@ So the dead-process branch asks for the continuation itself. `RecoveryContinuati
 with a 30-second delay and delegates to the very same `SessionContinuation` the sweeps use, so there
 is one implementation of "continue a recovery-paused session" and one attempt budget. Every guard the
 sweeps apply is re-asked of the row at delivery time — still `paused_by: "recovery"`, still
-`needs_input` or `waiting` — because both can change inside the delay window, and `Session#claim_system_recovery_turn!` re-reads the row `FOR UPDATE` so a cron tick
+`needs_input` or `waiting` — because both can change inside the delay window, and
+`Session#claim_system_recovery_turn!` re-reads the row `FOR UPDATE` so a cron tick
 landing at the same moment cannot produce two turns. The cron stays the backstop rather than the
 mechanism.
 
@@ -2537,7 +2538,7 @@ or an array of them.
 ## Manual refresh
 
 The dashboard's refresh controls are the human counterpart to those background actors. There
-are four of them, and they all end up in `SessionsController`:
+are two of them, and they both end up in `SessionsController`:
 
 | Control | Action | Scope |
 | --- | --- | --- |
@@ -2785,8 +2786,9 @@ Three rules keep the backfill from taking something away from the reader:
   server's tail render, and are left where they are. The one exception is a child marked
   `data-live-transient` (the empty-state placeholder), which a broadcast would have removed too.
 - **A `sync` region showing a different page is skipped.** A grid that pages inside its own
-  `<turbo-frame>` does so without changing `window.location`, so re-fetching that URL returns page 1 — and syncing it would throw away the page the reader had paged to. Each grid
-  records its page in `data-live-page`, and a mismatch means hands off.
+  `<turbo-frame>` does so without changing `window.location`, so re-fetching that URL returns
+  page 1 — and syncing it would throw away the page the reader had paged to. Each grid records its
+  page in `data-live-page`, and a mismatch means hands off.
 
 Appending by id needs rows that *have* ids, and timeline rows are not records — a row is a `Log`,
 an MCP log, or one of the several OpenTranscripts events a transcript line fans out into.

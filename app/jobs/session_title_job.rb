@@ -11,7 +11,9 @@
 # Backend: HeadlessInferenceService (a runtime-neutral one-shot completion). The
 # call runs against a small, cheap model — titling is high-volume and
 # low-stakes, and Haiku matches the larger models here once it has transcript
-# context.
+# context. The model is a constant, not a setting: the operator override that
+# used to move it was the categorization model (`category_inference_model`),
+# because title and category shared one call, and it went with categories.
 #
 # Edge cases that must hold:
 # - A manually-set title is never overwritten (we only title when the title is

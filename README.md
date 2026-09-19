@@ -38,8 +38,8 @@ about why it couldn't. You stay in control of what runs and what merges.
   you re-auth in a browser.
 - **It follows you off the laptop.** Install it as a PWA and it web-pushes your phone when
   a session finishes, fails, or stops to ask you something.
-- **A UI shaped around work that outlives your attention.** Pinned sessions and
-  categories, a filter bar that defaults to the sessions waiting on you, live PR and CI
+- **A UI shaped around work that outlives your attention.** Pinned sessions, a
+  filter bar that defaults to the sessions waiting on you, live PR and CI
   status on each session, search across full transcripts, opt-in heartbeats that nudge an
   idle agent, and goals that spell out what "done" actually requires.
 

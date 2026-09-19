@@ -2812,8 +2812,7 @@ class SessionTest < ActiveSupport::TestCase
     end
   end
 
-  test "enqueue_session_inference still enqueues for title work when there are no categories" do
-    # Auto-generated title is pending even with no category targets.
+  test "enqueue_session_inference enqueues while the title is still auto-generated" do
     assert_enqueued_with(job: SessionTitleJob) do
       Session.create!(
         prompt: "Fix the login bug",
@@ -2825,8 +2824,7 @@ class SessionTest < ActiveSupport::TestCase
     end
   end
 
-  test "enqueue_session_inference does not enqueue when title is explicit and no categories exist" do
-    # No title work (explicit title) and no category targets: nothing to do.
+  test "enqueue_session_inference does not enqueue when title is explicit" do
     assert_no_enqueued_jobs(only: SessionTitleJob) do
       Session.create!(
         prompt: "Fix the login bug",

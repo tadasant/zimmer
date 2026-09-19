@@ -174,8 +174,9 @@ class SessionsController < ApplicationController
 
     # Search inputs. A search is "active" when there is a free-text query, an
     # agent-root filter, or a genesis narrowing — the three inputs that ask "find me
-    # sessions matching this" and so replace the board with a flat result list. The transcript-contents toggle only widens an existing text query, so it
-    # does not by itself count.
+    # sessions matching this" and so replace the board with a flat result list. The
+    # transcript-contents toggle only widens an existing text query, so it does not
+    # by itself count.
     #
     # The scheduling class is deliberately NOT one of them. It is a filter, and a
     # filter narrows whichever view you are already in; treating it as a search would
@@ -1182,9 +1183,10 @@ class SessionsController < ApplicationController
   end
 
   def refresh_all
-    # Only process non-archived sessions. A status-summary fork sitting in needs_input between its pause and the
-    # harvest is not work anyone is waiting on — resuming it would spend a
-    # whole agent turn against a throwaway clone, outside the fork lifecycle.
+    # Only process non-archived sessions. A status-summary fork sitting in
+    # needs_input between its pause and the harvest is not work anyone is waiting on
+    # — resuming it would spend a whole agent turn against a throwaway clone,
+    # outside the fork lifecycle.
     sessions = Session.excluding_status_summary_forks.where.not(status: :archived)
     bulk_refresh_sessions(sessions, empty_notice: "No non-archived sessions to refresh")
   end

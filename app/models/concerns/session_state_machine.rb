@@ -1354,10 +1354,11 @@ module SessionStateMachine
   #
   # A recovery pause qualifies because a sweep will actually reach the session:
   # CleanupOrphanedSessionsJob and DeploymentRecoveryJob select every recovery
-  # pause, and the continuation they run is what makes the deferred announcement
-  # (or its give-up branch does). Were some recovery pause ever to become one no
-  # sweep selects, suppressing it here would not defer the announcement, it would
-  # delete it — so any such carve-out belongs in this predicate too.
+  # pause, and the continuation they run either resumes it or, in its give-up
+  # branch, makes the deferred announcement. Were some recovery pause ever to
+  # become one no sweep selects, suppressing it here would not defer the
+  # announcement, it would delete it — so any such carve-out belongs in this
+  # predicate too.
   def announcement_deferred_to_recovery_sweep?
     recovery_pause?
   end

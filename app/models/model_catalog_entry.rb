@@ -143,10 +143,10 @@ class ModelCatalogEntry < ApplicationRecord
     errors.add(:model_id, "must be provider-qualified, like openrouter/<vendor>/<model>")
   end
 
-  # AppSetting re-validates its default model on every save, so removing the
-  # model it names would break every later settings write, including ones that
-  # have nothing to do with models. Change the setting first. A row shadowed by a built-in entry is exempt: the id stays valid
-  # without it.
+  # AppSetting re-validates its default model on every save, so removing the model
+  # it names would break every later settings write, including ones that have
+  # nothing to do with models. Change the setting first. A row shadowed by a
+  # built-in entry is exempt: the id stays valid without it.
   def refuse_while_a_setting_uses_it
     return if shadowed_by_built_in?
     setting = AppSetting.current(context: "ModelCatalogEntry#destroy")
