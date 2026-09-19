@@ -519,24 +519,6 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
       "the park has its own resume owner and a trigger-wide change must not consume it"
   end
 
-  # `not_in_frozen_category` is the scope every bulk start/recover flow honours,
-  # and releasing a promoted backlog is one.
-  test "a session in a frozen category is not started by a trigger-wide promotion" do
-    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
-    stub_agent_root_for(@schedule)
-    session = @schedule.create_session!(prompt: "Test")
-    job = held_by_the_gate(session)
-    session.update!(category: Category.create!(name: "Parked #{SecureRandom.hex(4)}", is_frozen: true))
-
-    perform_enqueued_jobs(only: TriggerPromotionReleaseJob) do
-      @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
-    end
-
-    assert session.reload.priority?, "the class still moves"
-    assert_operator job.reload.scheduled_at, :>, Time.current,
-      "a frozen category is opted out of bulk starts"
-  end
-
   # Two saves inside one transaction share ONE after_commit. The promoted ids
   # accumulate rather than being overwritten, so the second save cannot drop the
   # first save's release on the floor — unlike `reclassified_session_count`,

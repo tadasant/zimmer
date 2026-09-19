@@ -21,7 +21,7 @@ module Mcp
         - **add**: Add a model (requires "runtime" and "model_id"; optional "label", "requires_oauth", "allow_unlisted"). Use the id exactly as the CLI takes it. Pi ids name their provider, like `openrouter/google/gemini-3.5-pro`. Claude Code ids must be floating aliases, not versions, and no runtime takes a dated snapshot.
 
           Before saving, Zimmer asks the CLI in the image whether it knows the id: Codex and Pi each have a model list, and Claude Code has none, so a Claude Code id is saved unchecked. **An id the CLI does not list is refused** unless "allow_unlisted" is true. Adding a model installs nothing. Codex and Pi still pass an unlisted id to the provider, which accepts or refuses it on the session's first turn, so only set "allow_unlisted" for a model you know the provider serves, such as one released after the CLI in the image.
-        - **remove**: Remove an added model (requires "runtime" and "model_id"). New sessions can no longer pick it, and sessions already on it keep it. Refused while the Settings page's session default or the categorization model names it.
+        - **remove**: Remove an added model (requires "runtime" and "model_id"). New sessions can no longer pick it, and sessions already on it keep it. Refused while the Settings page's session default names it.
       DESC
 
       input_schema({

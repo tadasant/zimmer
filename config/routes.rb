@@ -14,12 +14,6 @@ Rails.application.routes.draw do
     resources :api_keys, only: [ :index, :show ]
     resources :app_settings
     resources :catalog_pins
-    resources :categories
-    # Read-only: the categorization eval corpus is append-only by design — every
-    # row records what a model or a human actually did, and one somebody could
-    # hand-author here would not be evidence of anything. The `replay_*` columns
-    # are written by CategorizationReplayJob, from the categorization page.
-    resources :category_feedback_events, only: [ :index, :show ]
     resources :claude_accounts
     resources :claude_account_quota_snapshots
     resources :elicitations
@@ -188,14 +182,6 @@ Rails.application.routes.draw do
       # Ops action, not a shell: sweep every transcript into the ledger.
       post "costs/backfill", to: "costs#backfill"
 
-      # Organizational categories for the sessions dashboard.
-      resources :categories, only: [ :index, :create, :update, :destroy ] do
-        collection do
-          # Persist a new top-to-bottom ordering of the whole category stack.
-          post :reorder
-        end
-      end
-
       # Push notifications
       post "notifications/push", to: "notifications#push"
 
@@ -204,8 +190,6 @@ Rails.application.routes.draw do
           get :search
           post :refresh_all
           post :bulk_archive
-          # Persist the top-to-bottom order of one dashboard section's cards.
-          post :reorder
         end
 
         member do
@@ -231,7 +215,6 @@ Rails.application.routes.draw do
           post :toggle_favorite
           patch :visibility, action: :update_visibility
           patch :heartbeat, action: :update_heartbeat
-          patch :set_category
             end
 
         resources :logs
@@ -398,12 +381,6 @@ Rails.application.routes.draw do
 
   # Settings page
   get "settings", to: "settings#show", as: :settings
-  # The categorization tuning loop: the guidance preamble, the model override,
-  # the correction corpus and the replay that scores the first two against the
-  # third. See CategorizationController.
-  get "settings/categorization", to: "categorization#show", as: :categorization
-  patch "settings/categorization", to: "categorization#update"
-  post "settings/categorization/replay", to: "categorization#replay", as: :categorization_replay
   patch "settings/catalog_pins", to: "catalog_pins#update", as: :catalog_pins
   # Models added to a runtime's catalog without a deploy (#85). The REST sibling
   # is /api/v1/model_catalog_entries and the MCP one is `manage_models`.
@@ -681,12 +658,6 @@ Rails.application.routes.draw do
       end
     end
   end
-
-  # No browser-facing category routes. Categories are still a live data concept —
-  # CategorizationService writes them, and the MCP `manage_categories` tool, the
-  # REST API under /api/v1/categories and the /supervisor dashboards all manage
-  # them — but the dashboard's category-grouped grid was replaced by the User
-  # view, and it was the only thing that reached these.
 
   # Defines the root path route ("/")
   root "sessions#index"

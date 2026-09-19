@@ -322,23 +322,6 @@ class SessionTest < ActiveSupport::TestCase
     assert session.archived?
   end
 
-  # Scope: not_in_frozen_category
-  test "not_in_frozen_category excludes sessions in a frozen category but keeps others" do
-    frozen = Category.create!(name: "Frozen backlog", is_frozen: true)
-    active = Category.create!(name: "Active work")
-
-    frozen_session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", category: frozen)
-    active_session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", category: active)
-    uncategorized_session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test")
-
-    result = Session.not_in_frozen_category
-
-    assert_not_includes result, frozen_session
-    assert_includes result, active_session
-    # A LEFT JOIN keeps NULL-category (Uncategorized) sessions — they must not be dropped.
-    assert_includes result, uncategorized_session
-  end
-
   # Test status transitions
   test "should allow status transitions" do
     session = sessions(:waiting)
@@ -2786,11 +2769,9 @@ class SessionTest < ActiveSupport::TestCase
   end
 
   # === Tests for enqueue_session_inference callback ===
-  # SessionTitleJob now does BOTH title generation and category inference from a
-  # single inference over the early transcript, so one job covers both pieces of
-  # work. It is enqueued (with a 2-minute delay to let a transcript accumulate)
-  # whenever the title is still the auto-generated placeholder OR the session is
-  # uncategorized and a non-frozen category exists.
+  # SessionTitleJob names a session from a single inference over the early
+  # transcript. It is enqueued (with a 2-minute delay to let a transcript
+  # accumulate) whenever the title is still the auto-generated placeholder.
   include ActiveJob::TestHelper
 
   test "enqueue_session_inference enqueues SessionTitleJob for sessions with prompt" do
@@ -2831,8 +2812,7 @@ class SessionTest < ActiveSupport::TestCase
     end
   end
 
-  test "enqueue_session_inference still enqueues for title work when there are no categories" do
-    # Auto-generated title is pending even with no category targets.
+  test "enqueue_session_inference enqueues while the title is still auto-generated" do
     assert_enqueued_with(job: SessionTitleJob) do
       Session.create!(
         prompt: "Fix the login bug",
@@ -2844,60 +2824,11 @@ class SessionTest < ActiveSupport::TestCase
     end
   end
 
-  test "enqueue_session_inference enqueues for category work even when the title is explicitly set" do
-    # An explicit title means no title work is pending, but an uncategorized
-    # session with a non-frozen category still needs the inference for sorting.
-    Category.create!(name: "Research")
-
-    assert_enqueued_with(job: SessionTitleJob) do
-      Session.create!(
-        prompt: "Fix the login bug",
-        title: "My Custom Title",
-        agent_runtime: "claude_code",
-        git_root: "https://github.com/test/repo.git",
-        branch: "main",
-        status: :waiting
-      )
-    end
-  end
-
-  test "enqueue_session_inference does not enqueue when title is explicit and no categories exist" do
-    # No title work (explicit title) and no category targets: nothing to do.
+  test "enqueue_session_inference does not enqueue when title is explicit" do
     assert_no_enqueued_jobs(only: SessionTitleJob) do
       Session.create!(
         prompt: "Fix the login bug",
         title: "My Custom Title",
-        agent_runtime: "claude_code",
-        git_root: "https://github.com/test/repo.git",
-        branch: "main",
-        status: :waiting
-      )
-    end
-  end
-
-  test "enqueue_session_inference does not enqueue when title is explicit and every category is frozen" do
-    Category.create!(name: "Backlog", is_frozen: true)
-
-    assert_no_enqueued_jobs(only: SessionTitleJob) do
-      Session.create!(
-        prompt: "Fix the login bug",
-        title: "My Custom Title",
-        agent_runtime: "claude_code",
-        git_root: "https://github.com/test/repo.git",
-        branch: "main",
-        status: :waiting
-      )
-    end
-  end
-
-  test "enqueue_session_inference does not enqueue when title is explicit and the session is already categorized" do
-    category = Category.create!(name: "Research")
-
-    assert_no_enqueued_jobs(only: SessionTitleJob) do
-      Session.create!(
-        prompt: "Fix the login bug",
-        title: "My Custom Title",
-        category: category,
         agent_runtime: "claude_code",
         git_root: "https://github.com/test/repo.git",
         branch: "main",

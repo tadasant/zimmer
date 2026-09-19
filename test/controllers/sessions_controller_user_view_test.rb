@@ -22,7 +22,6 @@ class SessionsControllerUserViewTest < ActionDispatch::IntegrationTest
     Log.delete_all
     EnqueuedMessage.delete_all
     Session.delete_all
-    Category.delete_all
     AppSetting.delete_all
     Trigger.where(name: Sessions::DashboardReprioritizer::TRIGGER_NAME).destroy_all
   end

@@ -181,9 +181,6 @@ module RunningTurns
     #
     # @return [RunningTurns::Reading]
     def running_turns
-      # Table-qualified: .not_in_frozen_category left-joins `categories`, which
-      # also has an `id`, and a bare `pluck(:id)` is ambiguous under it.
-      #
       # Both statuses, because the turn a worker is executing and the turn queued
       # behind it now live in different ones (#1040). `waiting` also holds every
       # dormant session in the deployment, which is why only its rows with a READY
@@ -226,9 +223,9 @@ module RunningTurns
     # One query rather than two: this sits on the spot gate's admission path, and
     # the population it reads is now the whole of `waiting` as well.
     #
-    # Table-qualified and compared in Ruby rather than plucking the enum, because
-    # `.not_in_frozen_category` left-joins `categories` — which has its own `id` —
-    # and a raw `pluck("sessions.status")` skips ActiveRecord's enum casting.
+    # Table-qualified, so a caller that composes this with a join cannot make it
+    # ambiguous, and compared in Ruby rather than plucking the enum, because a raw
+    # `pluck("sessions.status")` skips ActiveRecord's enum casting.
     def pluck_ids_by_status
       running = Session.statuses[:running]
       where(status: [ :running, :waiting ])

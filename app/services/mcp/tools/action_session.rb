@@ -18,7 +18,7 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "change_category", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "set_visibility", "remove_uncle", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "set_visibility", "remove_uncle", "bulk_archive"'
 
       SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" or "place" leaves the session wherever its existing rank puts it, which is usually the bottom — pass one of them when you mean it to be worked on soon, and "place": "top_of_spot" when you mean it to be worked on first.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
@@ -31,7 +31,6 @@ module Mcp
       PLUGINS_DESC = 'Required for "change_plugins" action. Array of catalog plugin IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected.'
       GOAL_DESC = 'Required for "change_goal" action. The goal text to set for the session; pass an empty string to clear the goal. Also optional for "follow_up": a non-blank goal is applied to the session along with the prompt, while a blank or omitted one leaves the session\'s current goal alone (use "change_goal" to clear it).'
       AUTO_COMPACT_WINDOW_DESC = 'Required for "change_auto_compact_window" action. The context (auto-compact) window in tokens, a positive integer. Applies on the next turn or restart, not the currently running process.'
-      CATEGORY_ID_DESC = 'Required for "change_category" action (the key must be present). The organizational category ID to assign; pass null to move the session back to Uncategorized.'
       ENABLED_DESC = 'Optional for "set_heartbeat" action. When true, enables the session heartbeat; when false, disables it. Omit to leave the enabled state unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       INTERVAL_SECONDS_DESC = 'Optional for "set_heartbeat" action. Heartbeat cadence in seconds (30–86400). Omit to leave the interval unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       MESSAGE_INDEX_DESC = 'Required for "fork" action. The transcript message index to fork from.'
@@ -80,7 +79,6 @@ module Mcp
         change_auto_compact_window
         change_scheduling_class
         change_precedence
-        change_category
         toggle_push_notifications
         set_heartbeat
         fork
@@ -174,7 +172,6 @@ module Mcp
         - **change_auto_compact_window**: Update the context (auto-compact) window in tokens (requires "auto_compact_window"; applies on the next turn/restart)
         - **change_scheduling_class**: Move this one session between "spot" and "priority" (requires "scheduling_class"; null clears it back to derived). Optionally takes "precedence" (an absolute rank) or "place" (a symbolic one, e.g. "top_of_spot") to place it in the spot queue in the same call — which is what a demotion usually wants, since a demoted session otherwise keeps whatever rank it already had. "place": "top_of_spot" is what the web UI's Demote to spot button does. It applies whichever class you are moving the session to — precedence is carried on a priority session too, and is what a later demotion lands on.
         - **change_precedence**: Set where this session sits in the spot queue (requires "precedence" or "place"). Higher is handled sooner, on an absolute scale — 100000 comes before 50. Pass "place": "top_of_spot" instead of a number to put the session at the head of the queue, worked out server-side against the live queue.
-        - **change_category**: Assign the session's organizational category (requires "category_id"; null moves it to Uncategorized)
         - **toggle_push_notifications**: Toggle push notifications on a session
         - **set_heartbeat**: Toggle a session's heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When enabled and the session sits in needs_input, a recurring nudge prompts it to keep working toward its goal; set "enabled" to false to stop the nudges.
         - **fork**: Fork a session from a specific transcript message (requires "message_index"). A fork carries the source session's repository and MCP servers, so on a connection restricted to specific agent roots only sessions belonging to one of those roots can be forked
@@ -195,7 +192,7 @@ module Mcp
         **Use cases:**
         - Provide additional instructions to an agent
         - Control session lifecycle (pause, restart, fork, refresh)
-        - Organize sessions (archive, unarchive, bulk_archive, toggle_favorite, set_visibility, update_notes, update_title, change_category, toggle_push_notifications)
+        - Organize sessions (archive, unarchive, bulk_archive, toggle_favorite, set_visibility, update_notes, update_title, toggle_push_notifications)
         - Undo a lineage edge written from a wrong acting_session_id (remove_uncle)
         - Tidy a human's dashboard without touching their work (set_visibility)
         - Reconfigure session capabilities (MCP servers, skills, hooks, plugins, model, context window)
@@ -228,7 +225,6 @@ module Mcp
           },
           precedence: { type: "integer", description: PRECEDENCE_DESC },
           place: { type: "string", enum: SessionPrecedence::PLACES, description: PLACE_DESC },
-          category_id: { type: [ "number", "null" ], description: CATEGORY_ID_DESC },
           enabled: { type: "boolean", description: ENABLED_DESC },
           interval_seconds: { type: "number", description: INTERVAL_SECONDS_DESC },
           message_index: { type: "number", description: MESSAGE_INDEX_DESC },
@@ -339,7 +335,6 @@ module Mcp
         when "change_auto_compact_window" then change_auto_compact_window(find_session(args["session_id"]), args)
         when "change_scheduling_class" then change_scheduling_class(find_session(args["session_id"]), args)
         when "change_precedence" then change_precedence(find_session(args["session_id"]), args)
-        when "change_category" then change_category(find_session(args["session_id"]), args)
         when "toggle_push_notifications" then toggle_push_notifications(find_session(args["session_id"]))
         when "set_heartbeat" then set_heartbeat(find_session(args["session_id"]), args)
         when "fork" then fork_session(fenced_session(args["session_id"], action), args)
@@ -1028,30 +1023,6 @@ module Mcp
         ].join("\n")
       end
 
-      def change_category(session, args)
-        unless args.key?("category_id")
-          raise ToolError, "The \"category_id\" parameter is required for the \"change_category\" action (pass null to clear)."
-        end
-
-        category_id = args["category_id"].presence
-        category = nil
-        if category_id
-          category = Category.find_by(id: category_id)
-          raise ToolError, "Category ##{category_id} not found" unless category
-        end
-
-        session.category_change_source = CategoryFeedbackEvent::MCP
-        session.update!(category_id: category&.id)
-
-        [
-          "## Category Updated",
-          "",
-          "- **Session ID:** #{session.id}",
-          "- **Title:** #{session.title}",
-          "- **Category:** #{category&.name || '(uncategorized)'}"
-        ].join("\n")
-      end
-
       def toggle_push_notifications(session)
         session.update!(push_notifications_enabled: !session.push_notifications_enabled)
 
@@ -1154,12 +1125,11 @@ module Mcp
       end
 
       # Bulk sweep: restart failed sessions, continue auto-continuable paused ones.
-      # Sessions in a frozen category are a parked bucket and stay parked.
       def refresh_all
         # A status-summary fork sitting in needs_input between its pause and the
         # harvest is not work anyone is waiting on — resuming it would spend a
         # whole agent turn against a throwaway clone, outside the fork lifecycle.
-        sessions = Session.not_in_frozen_category.excluding_status_summary_forks.where.not(status: :archived)
+        sessions = Session.excluding_status_summary_forks.where.not(status: :archived)
 
         if sessions.empty?
           return refresh_all_result("No non-archived sessions to refresh", 0, 0, 0, 0)

@@ -85,8 +85,6 @@ module ApiSessionSerialization
       heartbeat_enabled: session.heartbeat_enabled,
       heartbeat_interval_seconds: session.heartbeat_interval_seconds,
       auto_compact_window: session.auto_compact_window,
-      category_id: session.category_id,
-      category: category_summary(session.category),
       session_id: session.session_id,
       job_id: session.job_id,
       running_job_id: session.running_job_id,
@@ -221,17 +219,5 @@ module ApiSessionSerialization
         remedy: gap.remedy
       }
     end
-  end
-
-  # Compact representation of the session's category (nil when Uncategorized).
-  def category_summary(category)
-    return nil unless category
-
-    {
-      id: category.id,
-      name: category.name,
-      position: category.position,
-      is_frozen: category.is_frozen
-    }
   end
 end

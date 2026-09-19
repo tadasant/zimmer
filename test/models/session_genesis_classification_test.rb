@@ -235,7 +235,7 @@ class SessionGenesisClassificationTest < ActiveSupport::TestCase
     chosen = build_session(genesis: SessionGenesis::WEB_UI, scheduling_class: SessionGenesis::SPOT)
     derived = build_session(genesis: SessionGenesis::GITHUB_ISSUE)
 
-    ids = Session.includes(:category).where.not(status: :archived).order(created_at: :desc).spot.pluck(:id)
+    ids = Session.excluding_status_summary_forks.where.not(status: :archived).order(created_at: :desc).spot.pluck(:id)
 
     assert_includes ids, chosen.id
     assert_includes ids, derived.id

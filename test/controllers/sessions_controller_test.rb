@@ -4815,24 +4815,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     )
   end
 
-  # Frozen-category sessions are a parked bucket excluded from bulk refresh.
-  test "refresh_all leaves a failed session in a frozen category untouched" do
-    frozen_cat = Category.create!(name: "parked backlog", is_frozen: true)
-    frozen_failed = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "parked",
-      status: :failed,
-      category: frozen_cat
-    )
-
-    post refresh_all_sessions_url
-    assert_redirected_to root_path
-
-    # Excluded from the query entirely, so it is never restarted and stays failed.
-    assert_equal "failed", frozen_failed.reload.status
-    refute frozen_failed.logs.where("content LIKE ?", "Restarting failed session%").exists?
-  end
-
   # Test refresh_all also restarts failed sessions
   test "refresh_all should restart failed sessions" do
     # First archive all existing non-failed sessions so we only test our new ones

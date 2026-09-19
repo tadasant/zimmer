@@ -338,22 +338,6 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
   end
 
-  # Nothing repairs an orphaned `running` row in a frozen category — both
-  # recovery jobs skip them — so counting it would pin this to "busy" forever.
-  test "a running session in a frozen category does not hold the event off" do
-    ceiling(1)
-    frozen = Category.create!(name: "Frozen #{SecureRandom.hex(3)}", is_frozen: true)
-    session(status: :running).update!(category: frozen)
-
-    freeze_time do
-      FleetIdleMonitor.check!
-      travel FleetIdleMonitor.idle_threshold
-      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
-        assert FleetIdleMonitor.check!
-      end
-    end
-  end
-
   # A monitoring gap must not manufacture an idle fleet: the fire spawns a real
   # session.
   test "an unreadable fleet fires nothing and leaves the stored state alone" do
@@ -804,7 +788,7 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
   test "record_session_started! does not read the fleet when no clock is running" do
     AppSetting.editable.update!(fleet_idle_since: nil)
 
-    Session.stub(:not_in_frozen_category, ->(*) { flunk "the fleet must not be read" }) do
+    Session.stub(:running_turns, ->(*) { flunk "the fleet must not be read" }) do
       assert_not FleetIdleMonitor.record_session_started!
     end
   end
@@ -819,7 +803,7 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     crossing = setting.fleet_idle_since
     assert_not_nil crossing
 
-    Session.stub(:not_in_frozen_category, ->(*) { flunk "the fleet must not be read" }) do
+    Session.stub(:running_turns, ->(*) { flunk "the fleet must not be read" }) do
       assert_not FleetIdleMonitor.record_session_started!
     end
     assert_equal crossing.to_i, setting.fleet_idle_since.to_i
@@ -863,7 +847,7 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     FleetIdleMonitor.check!
     crossing = setting.fleet_idle_since
 
-    Session.stub(:not_in_frozen_category, ->(*) { raise ActiveRecord::StatementInvalid, "boom" }) do
+    Session.stub(:running_turns, ->(*) { raise ActiveRecord::StatementInvalid, "boom" }) do
       assert_not FleetIdleMonitor.record_session_started!
     end
 

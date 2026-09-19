@@ -110,7 +110,7 @@ refresh. Zimmer imports nothing before a request, re-reads nothing after a rejec
 rotated pair to nothing but the row.
 
 The same rule reaches every `claude` process Zimmer starts, not only sessions. Print-mode inference
-— session titles, status summaries, push-notification copy, category inference — runs `claude -p`
+— session titles, status summaries, push-notification copy — runs `claude -p`
 without a Zimmer session, so `ClaudeHeadlessCredentials` gives it the same two variables from the
 same row, keyed on one shared `headless` config directory (those invocations are stateless, so
 there is no conversation state to keep apart). Before that seam existed those calls inherited the

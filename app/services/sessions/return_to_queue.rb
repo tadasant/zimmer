@@ -69,15 +69,13 @@ module Sessions
   #      prompt-less session is one waiting for a human to send it something, so
   #      returning it to `waiting` would take it off the action queue and give
   #      nothing back — no sweep would start it either.
-  #   5. **Not in a frozen category.** A parked bucket every bulk flow leaves
-  #      alone.
-  #   6. **No wake of its own armed.** `StalledSessionStart` partitions a session
+  #   5. **No wake of its own armed.** `StalledSessionStart` partitions a session
   #      with a pending one-time wake out of its batch, and that disqualifier is
   #      not a metadata marker, so the return cannot drop it — a session moved
   #      with one armed would be read by neither owner. A session with its own
   #      next event has a way back anyway; there is nothing here to correct.
-  #   7. **Budget left.** See MAX_RETURNS.
-  #   8. **Its work has not moved.** A session another session was created to
+  #   6. **Budget left.** See MAX_RETURNS.
+  #   7. **Its work has not moved.** A session another session was created to
   #      replace, and whose replacement is carrying the work, must not be put
   #      back where a sweep will start it — `StalledSessionStart` reads exactly
   #      the shape this service produces, so returning it would run the
@@ -182,7 +180,6 @@ module Sessions
       return "not resting in needs_input (#{session.status})" unless session.needs_input? && session.may_sleep?
       return "the session has a runtime session id" if session.session_id.present?
       return "no prompt to run" if session.prompt.blank?
-      return "category is frozen" if session.category&.is_frozen?
       return "a wake of its own is armed" if session.awaiting_scheduled_wake?
       return "the runtime wrote a conversation" if conversation_persisted?
       return "its work moved to a replacement session" if session.replacement_carrying_work

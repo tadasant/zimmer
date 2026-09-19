@@ -5,8 +5,6 @@ class Session < ApplicationRecord
   include AtomicJsonMetadata
   include SessionGenesisClassification
   include SessionPrecedence
-  include SessionCardOrder
-  include SessionCategorization
   include SessionVisibility
   include RunningTurns
   include CatalogArtifactReferences
@@ -25,6 +23,18 @@ class Session < ApplicationRecord
   # second execution substrate is ever built, the seam is RuntimeRegistry and
   # ProcessLifecycleManager, not a column with one legal value.
   self.ignored_columns += %w[execution_provider]
+
+  # Phase 1 of the two-phase drop of session categories (tadasant/zimmer#16).
+  #
+  # The dashboard's category-grouped grid was replaced by the User view, which
+  # ranks by precedence, and categories went with it: the Category model, the
+  # auto-categorizer half of SessionTitleJob, the correction corpus, the tuning
+  # page, `manage_categories`, and the REST endpoints. `category_id` named the
+  # section a card sat in and `sort_order` ranked it inside that section, so
+  # nothing reads either any more. Ignoring them is what keeps the old containers
+  # serving through the cutover (#482); a later PR drops both columns — and the
+  # `categories` and `category_feedback_events` tables — and removes this line.
+  self.ignored_columns += %w[category_id sort_order]
 
   has_many :logs, dependent: :destroy
   has_many :subagent_transcripts, dependent: :destroy
@@ -69,10 +79,6 @@ class Session < ApplicationRecord
   has_many :uncle_sessions, through: :session_uncle_links, source: :uncle_session
   has_many :junior_uncle_links, class_name: "SessionUncleLink", foreign_key: :uncle_session_id, dependent: :destroy
   has_many :junior_sessions, through: :junior_uncle_links, source: :session
-
-  # Organizational category for the sessions dashboard. A NULL category means the
-  # session is "Uncategorized". Assigned via drag-and-drop on the index grid.
-  belongs_to :category, optional: true
 
   # Throwaway forks that exist only to write another session's Status blurb (see
   # SessionStatusSummaryGenerator). They are ordinary sessions mechanically —
@@ -145,15 +151,6 @@ class Session < ApplicationRecord
   # sessions" list) and by Trigger#pending_intent_session, which is on the fire
   # path, so `index_sessions_on_trigger_id` covers the expression.
   scope :for_trigger, ->(trigger_id) { where("metadata->>'trigger_id' = ?", trigger_id.to_s) }
-
-  # Excludes sessions that belong to a frozen category. Frozen categories are a
-  # "park it and leave it alone" bucket: their sessions must be skipped by every
-  # bulk "refresh / recover all sessions" flow. A LEFT JOIN is required so that
-  # Uncategorized sessions (NULL category_id) are KEPT — a plain
-  # `where.not(category_id: frozen_ids)` would silently drop NULL rows.
-  scope :not_in_frozen_category, -> {
-    left_joins(:category).where("categories.id IS NULL OR categories.is_frozen = ?", false)
-  }
 
   # Active (non-archived, non-failed) sessions that have at least one associated
   # GitHub PR URL. Used by the GitHub poller jobs, which all scan the same set
@@ -2960,21 +2957,16 @@ class Session < ApplicationRecord
     )
   end
 
-  # SessionTitleJob both names the session and auto-sorts it into a category,
-  # from a single inference over the early transcript. Enqueue it when there is
-  # a prompt (skip clone-only sessions) and either piece of work is pending:
-  # the title is still the auto-generated placeholder, or the session is
-  # uncategorized and there are non-frozen categories to sort into. The
-  # 2-minute delay lets a few minutes of conversation accumulate so the
-  # inference works off what the agent actually did, not just the raw prompt.
-  # (A pause/fail transition also enqueues it promptly once a transcript exists
-  # — see SessionStateMachine#enqueue_session_inference_if_needed.)
+  # SessionTitleJob names the session from a single inference over the early
+  # transcript. Enqueue it when there is a prompt (skip clone-only sessions) and
+  # the title is still the auto-generated placeholder. The 2-minute delay lets a
+  # few minutes of conversation accumulate so the inference works off what the
+  # agent actually did, not just the raw prompt. (A pause/fail transition also
+  # enqueues it promptly once a transcript exists — see
+  # SessionStateMachine#enqueue_session_inference_if_needed.)
   def enqueue_session_inference
     return if prompt.blank?
-
-    title_pending = metadata&.dig("auto_generated_title") == true
-    category_pending = category_id.blank? && Category.where(is_frozen: false).exists?
-    return unless title_pending || category_pending
+    return unless metadata&.dig("auto_generated_title") == true
 
     SessionTitleJob.set(wait: 2.minutes).perform_later(id)
   end
@@ -2988,8 +2980,7 @@ class Session < ApplicationRecord
       return
     end
 
-    # Replace the session's card in place (wherever it currently lives in the grid,
-    # regardless of which category section it has been dragged into).
+    # Replace the session's card in place, wherever it currently lives in the grid.
     delivered = broadcast_individual_card_to_sessions_index(:replace)
 
     # Record broadcast time for throttling (only for last_timeline_entry_at changes)
@@ -3003,8 +2994,7 @@ class Session < ApplicationRecord
   end
 
   def broadcast_create_to_sessions_index
-    # New sessions are uncategorized by default, so they prepend into the
-    # "Uncategorized" grid (target "sessions_grid").
+    # New sessions prepend into the grid (target "sessions_grid").
     broadcast_individual_card_to_sessions_index(:prepend)
   end
 

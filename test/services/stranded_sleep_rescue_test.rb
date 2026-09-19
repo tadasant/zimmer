@@ -546,13 +546,6 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     assert_equal "waiting", session.reload.status
   end
 
-  test "a session in a frozen category is left alone" do
-    frozen = Category.create!(name: "Parked #{SecureRandom.hex(4)}", is_frozen: true)
-    session = sleeping_session(category: frozen)
-
-    assert_equal 0, StrandedSleepRescue.sweep!.rescued
-  end
-
   # --- budget and bounds -------------------------------------------------------
 
   test "a rescue stamps updated_at, so the session is out of the population until the grace elapses again" do
