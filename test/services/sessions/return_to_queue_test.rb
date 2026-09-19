@@ -85,16 +85,6 @@ class Sessions::ReturnToQueueTest < ActiveSupport::TestCase
     assert_equal "needs_input", session.reload.status
   end
 
-  test "a session in a frozen category is left alone" do
-    category = Category.create!(name: "Frozen #{SecureRandom.hex(4)}", is_frozen: true)
-    session = unstarted_session(category: category)
-
-    result = Sessions::ReturnToQueue.call(session, reason: "gave up")
-
-    assert result.declined?
-    assert_equal "needs_input", session.reload.status
-  end
-
   test "a session that is not resting in needs_input is left alone" do
     session = unstarted_session
     session.update!(status: :waiting)

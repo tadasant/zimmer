@@ -14,7 +14,7 @@ class SessionsController < ApplicationController
   # Server-side cap on page context to prevent unbounded prompt inflation
   PAGE_CONTEXT_MAX_LENGTH = QuickRouterPrompt::PAGE_CONTEXT_MAX_LENGTH
 
-  # Dashboard: number of session cards shown per category section page.
+  # Dashboard: number of session rows shown per page of the flat views.
   SESSIONS_PER_PAGE = 50
 
   # How many transcript matches one content search collects before it stops. Two
@@ -31,9 +31,7 @@ class SessionsController < ApplicationController
   # worked top to bottom without opening a session.
   #
   # It REPLACES the old "categories" grid, which asked the operator to open a
-  # card to learn anything about it. The Category model is untouched — it is a
-  # data concept the MCP surface, the REST API and /supervisor still use — but
-  # nothing renders a category-grouped dashboard any more.
+  # card to learn anything about it.
   VIEW_MODE_USER = "user".freeze
   # The two flat modes flatten the presentation into a single list sorted solely
   # by one factor — no grouping, no custom ordering, no pinned float.
@@ -89,8 +87,8 @@ class SessionsController < ApplicationController
   # population it exists for, and that is tens of rows, not hundreds.
   #
   # It is a safety rail rather than a target: each row costs one <li> with no
-  # nested frames and no per-row query (the status summary and the category come
-  # from two eager-loaded joins), so a full 500 renders in well under a second.
+  # nested frames and no per-row query (the status summary comes from an
+  # eager-loaded join), so a full 500 renders in well under a second.
   # Past that the drag-and-drop and the browser's own layout, not the server, are
   # what degrade.
   USER_VIEW_LIMIT = 500
@@ -176,15 +174,15 @@ class SessionsController < ApplicationController
 
     # Search inputs. A search is "active" when there is a free-text query, an
     # agent-root filter, or a genesis narrowing — the three inputs that ask "find me
-    # sessions matching this" and so replace the category grid with a flat result
-    # list. The transcript-contents toggle only widens an existing text query, so it
-    # does not by itself count.
+    # sessions matching this" and so replace the board with a flat result list. The
+    # transcript-contents toggle only widens an existing text query, so it does not
+    # by itself count.
     #
     # The scheduling class is deliberately NOT one of them. It is a filter, and a
     # filter narrows whichever view you are already in; treating it as a search would
     # mean that picking "Spot" once — a choice that now persists — silently replaced
-    # the category grid with a flat list on every later visit, with nothing in the URL
-    # to explain it.
+    # the board with a flat list on every later visit, with nothing in the URL to
+    # explain it.
     @search_query = params[:q].to_s.strip
     # "1" from this page's own checkbox, "true" from anyone who copied the REST
     # API's documented spelling — SessionSearchable.search_contents? accepts both.
@@ -286,8 +284,7 @@ class SessionsController < ApplicationController
 
     # Flat sort views completely flatten the presentation: a single list sorted
     # solely by the chosen factor, honoring the same filters/visibility but
-    # ignoring category grouping, custom/per-category ordering, and the pinned
-    # favorites float. They apply whether or not a search is active (search just
+    # ignoring the pinned favorites float. They apply whether or not a search is active (search just
     # narrows the eligible set first).
     if @view_mode == VIEW_MODE_LAST_TOUCHED || @view_mode == VIEW_MODE_CREATED_DESC
       flat_sorted =
@@ -1186,18 +1183,17 @@ class SessionsController < ApplicationController
   end
 
   def refresh_all
-    # Only process non-archived sessions. Sessions in a frozen category are a parked
-    # bucket and are intentionally left untouched by this bulk refresh.
-    # A status-summary fork sitting in needs_input between its pause and the
-    # harvest is not work anyone is waiting on — resuming it would spend a
-    # whole agent turn against a throwaway clone, outside the fork lifecycle.
-    sessions = Session.not_in_frozen_category.excluding_status_summary_forks.where.not(status: :archived)
+    # Only process non-archived sessions. A status-summary fork sitting in
+    # needs_input between its pause and the harvest is not work anyone is waiting on
+    # — resuming it would spend a whole agent turn against a throwaway clone,
+    # outside the fork lifecycle.
+    sessions = Session.excluding_status_summary_forks.where.not(status: :archived)
     bulk_refresh_sessions(sessions, empty_notice: "No non-archived sessions to refresh")
   end
 
   # Shared implementation behind #refresh_all.
-  # Given a relation of candidate sessions (already scoped to exclude archived sessions
-  # and any frozen bucket), it (1) restarts failed sessions, (2) continues
+  # Given a relation of candidate sessions (already scoped to exclude archived
+  # sessions), it (1) restarts failed sessions, (2) continues
   # auto-continuable needs_input sessions (those NOT paused by the user), (3) continues
   # stalled waiting sessions with the same nudge single-session #refresh sends, and
   # (4) refreshes transcripts for everything left, then redirects to the dashboard with a
@@ -3445,8 +3441,8 @@ class SessionsController < ApplicationController
   #
   # The referer is used verbatim rather than a bare root_path so the dashboard's own
   # state survives the round trip: the flat "Sort By Last Touched" / "Sort By Created
-  # Time" views and every per-category page live in the query string, and dropping it
-  # would bounce the user to an unfiltered categories view on page 1.
+  # Time" views and their page live in the query string, and dropping it would bounce
+  # the user to an unfiltered view on page 1.
   # referrer_is_sessions_index? has already checked that the referer is this host's
   # index path, so it is not an open redirect.
   def refresh_redirect_target(session)

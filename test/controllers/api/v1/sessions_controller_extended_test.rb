@@ -92,22 +92,6 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
     assert total >= 0
   end
 
-  test "refresh_all excludes a failed session in a frozen category" do
-    frozen_cat = Category.create!(name: "api parked backlog", is_frozen: true)
-    frozen_failed = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "parked",
-      status: :failed,
-      category: frozen_cat
-    )
-
-    post refresh_all_api_v1_sessions_path, headers: @headers
-    assert_response :success
-
-    # The frozen-category session is excluded, so it is never restarted and stays failed.
-    assert_equal "failed", frozen_failed.reload.status
-  end
-
   # ============================================================
   # Update MCP servers tests
   # ============================================================

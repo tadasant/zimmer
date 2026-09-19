@@ -1836,22 +1836,6 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       "the budget is still one warning per session — deferring it must not multiply it"
   end
 
-  # Deferral is only safe where a sweep is actually coming. Both recovery sweeps
-  # scope through Session.not_in_frozen_category, so for a session parked in a
-  # frozen category this pause IS the rest state, and skipping the warning would
-  # delete it rather than defer it. Same carve-out the pause's announcement takes.
-  test "a recovery pause in a frozen category warns, because no sweep is coming" do
-    session = pr_goal_session
-    session.update!(category: Category.create!(name: "Parked #{SecureRandom.hex(3)}", is_frozen: true))
-    session.start!
-    session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery"))
-
-    session.pause!
-
-    assert_equal 1, missing_pr_url_warnings(session).size,
-      "no sweep will reach this session, so its recovery pause is where the miss becomes permanent"
-  end
-
   # The promise the deferral rests on expiring, driven through the real sweep
   # rather than by calling the make-good directly: with no session_id every
   # continue attempt fails validation, and the pass that spends
@@ -2083,7 +2067,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     end
   end
 
-  test "pause does not enqueue SessionTitleJob when title was manually set and no categories exist" do
+  test "pause does not enqueue SessionTitleJob when title was manually set" do
     session = sessions(:waiting)
     session.update!(status: :running, metadata: { "some_key" => "value" })
 
@@ -2092,21 +2076,11 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     end
   end
 
-  test "pause does not enqueue SessionTitleJob when auto_generated_title is false and no categories exist" do
+  test "pause does not enqueue SessionTitleJob when auto_generated_title is false" do
     session = sessions(:waiting)
     session.update!(status: :running, metadata: { "auto_generated_title" => false })
 
     assert_no_enqueued_jobs(only: SessionTitleJob) do
-      session.pause!
-    end
-  end
-
-  test "pause enqueues SessionTitleJob for category work even when the title is manual" do
-    Category.create!(name: "Research")
-    session = sessions(:waiting)
-    session.update!(status: :running, category_id: nil, metadata: { "some_key" => "value" })
-
-    assert_enqueued_with(job: SessionTitleJob, args: [ session.id ]) do
       session.pause!
     end
   end
@@ -2889,34 +2863,6 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     assert session.logs.where(content: "[State Machine] Session paused, waiting for input").exists?
     assert_nil session.reload.running_job_id
-  end
-
-  # The suppression is a DEFERRAL to a recovery sweep, and a session in a frozen
-  # category has no sweep coming: both CleanupOrphanedSessionsJob and
-  # DeploymentRecoveryJob scope every query through Session.not_in_frozen_category.
-  # AgentSessionJob's recovery-pause writers do not check the category — they run
-  # inside the session's own job, not a bulk recovery flow — so this pause really can
-  # happen. Suppressing it would delete the announcement rather than defer it: no
-  # sweep continues the session, so SessionContinuation's give-up branch never runs
-  # to make it later either.
-  test "a recovery pause in a frozen category announces itself, because no sweep is coming" do
-    frozen = Category.create!(name: "Parked", is_frozen: true)
-    session = sessions(:waiting)
-    session.update!(
-      status: :running,
-      push_notifications_enabled: true,
-      category: frozen,
-      metadata: { "paused_by" => "recovery" }
-    )
-
-    ActiveRecord.stubs(:after_all_transactions_commit).yields
-
-    marker = session.needs_input_transition_count + 1
-    assert_enqueued_with(job: AoEventTriggerJob, args: [ "session_needs_input", session.id, marker ]) do
-      assert_enqueued_jobs 1, only: SendPushNotificationJob do
-        session.pause!
-      end
-    end
   end
 
   # The carve-out reads `paused_by == "recovery"` exactly, not "anything that is not

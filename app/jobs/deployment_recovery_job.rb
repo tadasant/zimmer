@@ -60,17 +60,13 @@ class DeploymentRecoveryJob < ApplicationJob
   private
 
   # Find sessions that were orphaned by deployment
-  #
-  # Sessions in a frozen category are a parked bucket and are excluded from every
-  # query below, so deployment recovery never touches them (this also covers the
-  # auto-continuation path in recover_session, which bypasses SessionRecoveryService).
   def find_deployment_orphaned_sessions
     sessions = []
 
     # Category 1: Sessions stuck in "running" with no active job
     # These are sessions where deployment killed the worker before it could
     # transition the session to needs_input
-    running_orphans = Session.not_in_frozen_category.where(status: :running).select do |session|
+    running_orphans = Session.where(status: :running).select do |session|
       orphaned_running_session?(session)
     end
     sessions.concat(running_orphans)
@@ -88,7 +84,6 @@ class DeploymentRecoveryJob < ApplicationJob
     # so a legitimately-dormant wake_me_up_later session (which reaches waiting via
     # pending_sleep WITHOUT paused_by) is never matched here.
     recovery_paused = Session
-      .not_in_frozen_category
       .where(status: [ :needs_input, :waiting ])
       .where("metadata->>'paused_by' = 'recovery'")
       .to_a
@@ -99,7 +94,6 @@ class DeploymentRecoveryJob < ApplicationJob
     # failed to transition to needs_input (e.g., DB connection lost during
     # shutdown). These sessions have exception_class set to the InterruptError.
     interrupt_failed = Session
-      .not_in_frozen_category
       .where(status: :failed)
       .where("metadata->>'exception_class' = 'GoodJob::InterruptError'")
       .to_a

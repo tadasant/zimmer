@@ -28,16 +28,12 @@ class AppSetting < ApplicationRecord
   # `# two-phase-drop: phase 2 of #<this PR>`.
   self.ignored_columns += %w[session_scoped_credentials_enabled]
 
-  # Where the dashboard's "Uncategorized" section sits in the category stack when no
-  # explicit ordering has been persisted. 0 keeps it at the top, matching the
-  # historical behavior before the section became reorderable.
-  DEFAULT_UNCATEGORIZED_POSITION = 0
-
-  # The longest category guidance an operator may store. Long enough for a
-  # paragraph of real disambiguation ("anything touching the deploy pipeline is
-  # Infra, even when it is also a bug"), short enough that it cannot crowd the
-  # session context out of an 8 KB prompt.
-  MAX_CATEGORY_GUIDANCE_CHARS = 2000
+  # Phase 1 of the two-phase drop of the three session-category settings
+  # (tadasant/zimmer#16). Categories are gone: `uncategorized_position` placed a
+  # section of the category grid the User view replaced, and the other two tuned
+  # the auto-categorizer. Nothing reads them; a later PR drops them, alongside
+  # Session's `category_id` and `sort_order` and the two category tables.
+  self.ignored_columns += %w[uncategorized_position category_guidance category_inference_model]
 
   # How much of a quota window is held back for priority sessions, as a
   # percentage of the window. The operator sets a percentage; QuotaCapacityModel
@@ -129,8 +125,7 @@ class AppSetting < ApplicationRecord
   # commentary. (`updated_at` is no help in telling the two apart: the pollers
   # bump it too, so the audit line below is the only record of when the policy
   # itself moved.) The Settings page's own fields are recorded separately, under
-  # SESSION_SETTING_ATTRIBUTES; `uncategorized_position` is dashboard layout and
-  # is recorded by neither.
+  # SESSION_SETTING_ATTRIBUTES.
   FLEET_POLICY_ATTRIBUTES = %w[
     spot_gating_enabled
     spot_reserve_five_hour_pct
@@ -178,20 +173,6 @@ class AppSetting < ApplicationRecord
   NULL = Data.define(:default_runtime, :default_model) do
     def resolved_default_model_for(runtime)
       ModelCatalog.default_for(runtime)
-    end
-
-    def uncategorized_position
-      DEFAULT_UNCATEGORIZED_POSITION
-    end
-
-    # No persisted row, so the categorizer runs with no extra guidance and on its
-    # own default model.
-    def category_guidance
-      nil
-    end
-
-    def category_inference_model
-      nil
     end
 
     # No persisted enablement exists, so every Zimmer Extension resolves to its own
@@ -323,8 +304,6 @@ class AppSetting < ApplicationRecord
   validates :fleet_idle_min_fire_interval_minutes,
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 10_080 }
   validate :genesis_class_overrides_well_formed
-  validates :category_guidance, length: { maximum: MAX_CATEGORY_GUIDANCE_CHARS }, allow_blank: true
-  validate :category_inference_model_valid
 
   # Which surface is making this write, for the audit lines below — both of them,
   # since a surface is a surface whichever half of the row it moves. Set by the
@@ -484,24 +463,6 @@ class AppSetting < ApplicationRecord
     hours.positive? ? hours.hours : nil
   end
 
-  # The operator's extra category guidance, or nil. Returns nil when the column
-  # isn't present on the record — the window in which new code boots against a
-  # schema that predates the migration — so the categorizer degrades to its fixed
-  # prompt instead of raising on every session.
-  def category_guidance
-    return nil unless has_attribute?(:category_guidance)
-
-    self[:category_guidance]
-  end
-
-  # The operator's model override for category inference, or nil. Same
-  # missing-column degrade as above: no override, shipped default.
-  def category_inference_model
-    return nil unless has_attribute?(:category_inference_model)
-
-    self[:category_inference_model]
-  end
-
   # The configured model when it is valid for `runtime`, otherwise the runtime's
   # own catalog default. Keeps a global model pinned to one runtime from leaking
   # into an incompatible one (e.g. global gpt-5.5 must not be handed to a root
@@ -575,20 +536,6 @@ class AppSetting < ApplicationRecord
       errors.add(:genesis_class_overrides, "#{key} is not a known genesis") unless SessionGenesis.valid?(key)
       errors.add(:genesis_class_overrides, "#{klass} is not a valid class") unless SessionGenesis::CLASSES.include?(klass.to_s)
     end
-  end
-
-  # The categorizer is fulfilled by HeadlessInferenceService, which drives the
-  # Claude CLI — so the override has to be a model THAT runtime can run, not
-  # merely a model some runtime somewhere offers. A gpt id saved here would fail
-  # only at inference time, silently, once per session.
-  def category_inference_model_valid
-    return if category_inference_model.blank?
-    return if ModelCatalog.valid_model?(RuntimeRegistry::DEFAULT_RUNTIME, category_inference_model)
-
-    errors.add(
-      :category_inference_model,
-      "#{category_inference_model} is not available for #{RuntimeRegistry.label_for(RuntimeRegistry::DEFAULT_RUNTIME)}"
-    )
   end
 
   def default_model_valid_for_runtime

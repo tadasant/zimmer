@@ -51,7 +51,7 @@ class Api::V1::SessionsController < Api::BaseController
     failed: { title: "Cannot restart", status: :internal_server_error }
   }.freeze
 
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat, :set_category ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -71,7 +71,7 @@ class Api::V1::SessionsController < Api::BaseController
     # Status-summary forks are Zimmer's own bookkeeping (see
     # SessionStatusSummaryGenerator) — excluded here so this listing matches the
     # dashboard and the MCP search.
-    scope = Session.includes(:category).excluding_status_summary_forks.order(created_at: :desc)
+    scope = Session.excluding_status_summary_forks.order(created_at: :desc)
 
     # Filter by status
     scope = scope.where(status: params[:status]) if params[:status].present?
@@ -741,12 +741,11 @@ class Api::V1::SessionsController < Api::BaseController
 
   # POST /api/v1/sessions/refresh_all
   # Bulk refresh all non-archived sessions: restart failed, continue paused, refresh running.
-  # Sessions in a frozen category are a parked bucket and are intentionally excluded.
   def refresh_all
     # A status-summary fork sitting in needs_input between its pause and the
     # harvest is not work anyone is waiting on — resuming it would spend a
     # whole agent turn against a throwaway clone, outside the fork lifecycle.
-    sessions = Session.not_in_frozen_category.excluding_status_summary_forks.where.not(status: :archived)
+    sessions = Session.excluding_status_summary_forks.where.not(status: :archived)
 
     if sessions.empty?
       render json: { message: "No non-archived sessions to refresh", refreshed: 0, restarted: 0, continued: 0, errors: 0 }
@@ -1019,75 +1018,6 @@ class Api::V1::SessionsController < Api::BaseController
     render_api_error("Validation failed", e.message, status: :unprocessable_entity)
   end
 
-  # PATCH /api/v1/sessions/:id/set_category
-  # Assign (or clear) a session's organizational category. A blank/absent
-  # category_id moves the session back to "Uncategorized".
-  #
-  # Request body:
-  #   - category_id: Target category id, or blank/null to clear (Uncategorized)
-  def set_category
-    category_id = params[:category_id].presence
-
-    if category_id.present?
-      category = Category.find_by(id: category_id)
-      unless category
-        render_api_error("Not Found", "Category ##{category_id} not found", status: :not_found)
-        return
-      end
-      @session.category_change_source = CategoryFeedbackEvent::API
-      @session.update!(category_id: category.id)
-    else
-      @session.category_change_source = CategoryFeedbackEvent::API
-      @session.update!(category_id: nil)
-    end
-
-    render json: {
-      session: session_json(@session),
-      message: @session.category_id ? "Session assigned to category" : "Session moved to Uncategorized"
-    }
-  end
-
-  # POST /api/v1/sessions/reorder
-  # Persist the top-to-bottom order of one dashboard section's cards.
-  #
-  # Request body:
-  #   - ids: Ordered array of session ids (top to bottom), as the section shows
-  #     them. This is one PAGE of a section, not the whole bucket, and a card that
-  #     is not named never moves — including cards on other pages.
-  #   - category_id: The destination section. Omit, send null, or send
-  #     "uncategorized" for the Uncategorized bucket.
-  #   - session_id: Optional id or slug of the card that moved. When given, only
-  #     that card moves — immediately above the card after it in `ids`, or below
-  #     the card before it when it is last. If it is in another category it is
-  #     moved into this one first, so one request persists both. Unknown → 404.
-  #     Without it, the cards in `ids` are rearranged among the slots they hold.
-  #
-  # Returns the destination bucket's full order.
-  def reorder
-    category_id = params[:category_id].to_s.strip
-
-    if category_id.present? && category_id != Category::UNCATEGORIZED_SENTINEL
-      category = Category.find_by(id: category_id.to_i)
-      unless category
-        render_api_error("Not Found", "Category ##{category_id} not found", status: :not_found)
-        return
-      end
-    end
-
-    # By id or slug, and a miss is a 404 like every other session lookup, rather than
-    # a 200 that quietly skipped the move.
-    moved = Session.locate!(params[:session_id]) if params[:session_id].present?
-
-    order = Session.reorder_cards!(
-      params[:ids],
-      category_id: category&.id,
-      source: CategoryFeedbackEvent::API,
-      moved_session_id: moved&.id
-    )
-
-    render json: { category_id: category&.id, session_ids: order }
-  end
-
   # POST /api/v1/sessions/bulk_archive
   # Archive multiple sessions at once.
   #
@@ -1160,7 +1090,7 @@ class Api::V1::SessionsController < Api::BaseController
 
     # Excludes status-summary forks for the same reason #index does — the two
     # listings must not disagree about which sessions exist.
-    scope = Session.includes(:category).excluding_status_summary_forks.order(created_at: :desc)
+    scope = Session.excluding_status_summary_forks.order(created_at: :desc)
 
     # Filter by status
     scope = scope.where(status: params[:status]) if params[:status].present?

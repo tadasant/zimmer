@@ -128,12 +128,14 @@ It suggests an order; it does not impose one. Every row is still draggable after
 ## What replaced what
 
 The User view replaced the **Categories** view — the category-grouped card grid that was the
-dashboard's desktop default. Categories themselves are untouched as a data concept:
-[auto-categorization](/sessions/categorization/) still runs, `category_feedback_events` are still
-recorded, and categories are still managed through the `manage_categories` MCP tool, the REST API
-under `/api/v1/categories`, and the `/supervisor` dashboards. What went is the *grid*: the
-per-category sections, their drag-and-drop, the pinned Starred group, the per-category paginator and
-the per-category Refresh buttons.
+dashboard's desktop default. What went first was the *grid*: the per-category sections, their
+drag-and-drop, the pinned Starred group, the per-category paginator and the per-category Refresh
+buttons. Categories themselves followed ([#16](https://github.com/tadasant/zimmer/issues/16)): the
+auto-categorizer, the correction corpus and its tuning page, the `manage_categories` MCP tool, the
+`action_session` `change_category` action, the REST endpoints under `/api/v1/categories` and
+`set_category` / `reorder`, and the "frozen category" exclusion the recovery sweeps honoured. The
+`categories` and `category_feedback_events` tables and the `sessions.category_id` and
+`sessions.sort_order` columns stay in the database, unread, until a later two-phase drop.
 
 A cookie that still says `categories` is remapped to `user`, so an operator who had chosen the grid
 lands on the view that replaced it rather than silently on the mobile default.

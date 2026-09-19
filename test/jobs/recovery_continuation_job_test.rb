@@ -53,17 +53,6 @@ class RecoveryContinuationJobTest < ActiveJob::TestCase
     assert_equal "archived", @session.reload.status
   end
 
-  test "leaves a frozen category alone, as both sweeps do" do
-    category = Category.create!(name: "Frozen #{SecureRandom.hex(4)}", is_frozen: true)
-    @session.update!(category: category)
-
-    assert_no_enqueued_jobs only: AgentSessionJob do
-      RecoveryContinuationJob.perform_now(@session.id)
-    end
-
-    assert_equal "needs_input", @session.reload.status
-  end
-
   test "does nothing for a session that no longer exists" do
     id = @session.id
     @session.destroy!

@@ -200,7 +200,6 @@ write:
 - **A session carrying a spot-ceiling pause or an auth-outage park.** Each has its own resume owner,
   and a `pause_into_spot_queue` park is a per-session choice a trigger-wide one must not override —
   the same rule that leaves a hand-moved session's class where somebody put it.
-- **A session in a frozen category**, which is opted out of every bulk start.
 
 One session that cannot be started does not abandon the rest of the backlog.
 
@@ -426,11 +425,10 @@ does **not** suppress top-up, and sessions in `waiting` do not count against it,
 ceilings are therefore about work actually executing — "hold spot work above 10 on a worker, top up
 below 3" — but they are **not the same count**, so do not expect the two numbers on the page to
 match. The
-concurrency limit reads `Session.running_claude_code_count`: Claude Code sessions only, frozen
-categories included. The top-up ceiling reads `FleetIdleMonitor.running_sessions`: every runtime,
-frozen categories excluded. A fleet running Codex or Pi work shows up in the second and not the first. Both
-go through `RunningTurns`, so they agree about what a `running` row *means* and differ only on runtime
-and frozen categories. The full rules live under
+concurrency limit reads `Session.running_claude_code_count`: Claude Code sessions only. The top-up
+ceiling reads `FleetIdleMonitor.running_sessions`: every runtime. A fleet running Codex or Pi work
+shows up in the second and not the first. Both go through `RunningTurns`, so they agree about what a
+`running` row *means* and differ only on runtime. The full rules live under
 [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress).
 
 The card's **Under its ceiling since** is the moment the fleet crossed *below* that ceiling, not the

@@ -24,11 +24,10 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     Notification.delete_all
     Log.delete_all
     Session.delete_all
-    Category.delete_all
     AppSetting.delete_all
   end
 
-  def make_session(favorited: false, category: nil, prompt: "p")
+  def make_session(favorited: false, prompt: "p")
     Session.create!(
       agent_runtime: "claude_code",
       status: :needs_input,
@@ -37,8 +36,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
       config: {},
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      favorited: favorited,
-      category: category
+      favorited: favorited
     )
   end
 

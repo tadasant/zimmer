@@ -117,7 +117,6 @@ class AbandonedStatusSummaryForkSweepJob < ApplicationJob
   # turn is asked in Ruby, over this much smaller set.
   def candidates
     relation = Session
-      .not_in_frozen_category
       .status_summary_forks
       .where(status: [ :needs_input, :waiting ])
       .where(created_at: ...ABANDONED_AFTER.ago)

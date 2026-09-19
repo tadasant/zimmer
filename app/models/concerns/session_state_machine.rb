@@ -1352,19 +1352,15 @@ module SessionStateMachine
   # wake the callback just declined to fire, which is the same spurious wake reached
   # a few seconds later.
   #
-  # A recovery pause qualifies only when a sweep will actually reach the session.
-  # Both CleanupOrphanedSessionsJob and DeploymentRecoveryJob scope every query
-  # through Session.not_in_frozen_category, so a session parked in a frozen category
-  # is one neither will ever select. AgentSessionJob's two recovery-pause writers do
-  # not check the category — they run inside the session's own job rather than in a
-  # bulk recovery flow, unlike SessionRecoveryService, which bails on a frozen
-  # category before it ever pauses — so this pause really can happen there.
-  # Suppressing it would not defer the announcement, it would delete it: no sweep
-  # continues the session, so SessionContinuation never runs and the give-up branch
-  # that makes the deferred announcement is never reached either. That session is
-  # stuck, and stuck is exactly what a watcher has to hear about.
+  # A recovery pause qualifies because a sweep will actually reach the session:
+  # CleanupOrphanedSessionsJob and DeploymentRecoveryJob select every recovery
+  # pause, and the continuation they run either resumes it or, in its give-up
+  # branch, makes the deferred announcement. Were some recovery pause ever to
+  # become one no sweep selects, suppressing it here would not defer the
+  # announcement, it would delete it — so any such carve-out belongs in this
+  # predicate too.
   def announcement_deferred_to_recovery_sweep?
-    recovery_pause? && !category&.is_frozen?
+    recovery_pause?
   end
 
   # The tracked PR urls whose last recorded status is not terminal — the PRs this
@@ -2767,30 +2763,27 @@ module SessionStateMachine
     nil
   end
 
-  # Enqueue SessionTitleJob (which both titles and categorizes) when either
-  # piece of work is still pending. Firing on a pause/fail transition runs it
-  # promptly once a transcript exists — the strongest signal for both the title
-  # and the category. Also catches sessions created without a prompt (e.g.
-  # clone-only sessions that later received one), where the after_create_commit
-  # callback skipped enqueuing because the prompt was blank at creation time.
+  # Enqueue SessionTitleJob while the title is still the auto-generated
+  # placeholder. Firing on a pause/fail transition runs it promptly once a
+  # transcript exists — the strongest signal for a title. Also catches sessions
+  # created without a prompt (e.g. clone-only sessions that later received one),
+  # where the after_create_commit callback skipped enqueuing because the prompt
+  # was blank at creation time.
   #
   # Coalesced per session: a SessionTitleJob already queued and unclaimed for
   # this session reads the transcript when it runs, so a second one behind it
   # would only find the work done. (One already running took its snapshot when
-  # it started and does not count.) A session that stays uncategorized (the inference
-  # answered NONE) re-enqueues on every pause for as long as that holds, and
-  # without this check a session sleeping and waking on a short self-wake
-  # stacks one title job per wake — see PendingSessionJob.
+  # it started and does not count.) Without this check a session sleeping and
+  # waking on a short self-wake stacks one title job per wake while its title is
+  # still the placeholder — see PendingSessionJob.
   def enqueue_session_inference_if_needed
-    title_pending = metadata&.dig("auto_generated_title") == true
-    category_pending = category_id.blank? && prompt.present? && Category.where(is_frozen: false).exists?
-    return unless title_pending || category_pending
+    return unless metadata&.dig("auto_generated_title") == true
     return if PendingSessionJob.queued?(SessionTitleJob, id)
 
     SessionTitleJob.perform_later(id)
   rescue => e
-    # Log-only: a missing title or category is cosmetic, and the next pause or
-    # fail transition re-runs this for as long as either is still pending.
+    # Log-only: a missing title is cosmetic, and the next pause or fail
+    # transition re-runs this for as long as it is still pending.
     report_swallowed_side_effect(__method__, e, alert: false)
   end
 

@@ -16,7 +16,7 @@ tools. If the caller is an agent rather than a script, that is the surface to po
 :::
 
 :::caution[API keys have names, not scopes]
-Any valid full-API key can do anything to any session, trigger, or category. Each key has a name, and
+Any valid full-API key can do anything to any session or trigger. Each key has a name, and
 the request log prints it, never the key. A revoke on `/settings/api_keys` refuses the key from the
 next request on. Every request that presents no key, an unknown key or a revoked one gets the same
 401. The one narrower kind of key is the [Quick Router key](#the-quick-router-ingest): it opens
@@ -101,8 +101,7 @@ await fetch(`${BASE_URL}/sessions/${session.id}/follow_up`, {
 ## Pagination
 
 Most list endpoints take `page` and `per_page` (default 25, max 100) and answer with a `pagination`
-object alongside the collection. `GET /categories` is the exception — it ignores both and returns
-every category.
+object alongside the collection.
 
 ```jsonc
 {
@@ -153,15 +152,13 @@ and the model refuses to write one, answering `422`.
 | `POST` | `/sessions/:id/fork` | `message_index` required → 201 |
 | `POST` | `/sessions/:id/regenerate_status_summary` | → 202. Queues a forced rewrite of the [Status summary](/sessions/status-summary/); it forks the session and spends an agent turn, so it is asynchronous and must not be polled. 422 with the reason, rather than a 202 for work that cannot run, when there is nothing to summarize: no transcript, or a session that is itself a summary fork. An archived session is a normal candidate however long ago it was archived — the fork answers from the conversation, and gets an empty working directory when Zimmer has already reclaimed the clone |
 | `POST` | `/sessions/:id/refresh` | re-read transcript from disk. A shorter filesystem transcript never overwrites a longer stored one — that happens when the clone was recreated at a new path, and the stored history wins. The write is retried on a dropped database connection, and 503 if it stays down |
-| `POST` | `/sessions/refresh_all` | → `{message, refreshed, restarted, continued, errors}`. Max 50 restarts/continues. Sessions in a frozen category are parked and excluded. A byte-identical transcript is not counted as refreshed; a transcript write the database keeps refusing counts under `errors` |
+| `POST` | `/sessions/refresh_all` | → `{message, refreshed, restarted, continued, errors}`. Max 50 restarts/continues. A byte-identical transcript is not counted as refreshed; a transcript write the database keeps refusing counts under `errors` |
 | `POST` | `/sessions/bulk_archive` | `session_ids[]` → `archived_count` and any `errors`. A session with a queued message lands in `errors` and is left alone; `force: true` applies to the whole batch, not one member of it |
 | `PATCH` | `/sessions/:id/mcp_servers` | max 50, validated against the catalog. Replaces the set; `[]` clears it and is recorded as deliberate, so the [backfill](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults) does not restore the root's defaults. Takes effect on the session's next prepare — see [Changing a session's artifacts takes effect on its next prepare](#changing-a-sessions-artifacts-takes-effect-on-its-next-prepare) |
 | `PATCH` | `/sessions/:id/catalog_skills` · `/catalog_hooks` · `/catalog_plugins` | max 100 / 100 / 50, validated against the catalog. Replaces the set; same next-prepare rule |
 | `PATCH` | `/sessions/:id/model` | validated against `ModelCatalog` for the session's runtime |
 | `PATCH` | `/sessions/:id/notes` | `session_notes` ≤ 50,000 characters; blank or absent clears. Over the cap → 422 `Too long`; a non-string → 422 `Validation failed`. Same rules as the web notes panel and the `update_notes` MCP action (which requires the parameter), all through `Sessions::UpdateNotes` |
 | `PATCH` | `/sessions/:id/heartbeat` | `enabled` and/or `interval_seconds` (30–86,400, default 60); omit either to leave it unchanged |
-| `PATCH` | `/sessions/:id/set_category` | `category_id`; blank or omitted clears. Unknown id → 404. A change writes a timeline note and, when the auto-categorizer had already ruled on the session, a correction row attributed to `api` — see [Auto-categorization](/sessions/categorization/#what-gets-recorded) |
-| `POST` | `/sessions/reorder` | `ids` — one dashboard section's cards, top to bottom — plus `category_id` (omit, null, or `"uncategorized"` for the Uncategorized bucket) and an optional `session_id` (id or slug) naming the one card that moved. → `{category_id, session_ids}`, the section's full order. Unknown category or session → 404. A `session_id` that crosses sections is a category change and is recorded like `set_category`. See [Card order](#card-order) |
 | `POST` | `/sessions/:id/toggle_favorite` | favorited sessions sort to the top of the dashboard |
 | `PATCH` | `/sessions/:id/visibility` | `visibility` (`visible` \| `hidden` \| `snoozed`), plus `snoozed_until` and `timezone` for a snooze. **Board visibility only** — see [Board visibility](#board-visibility). It changes what the dashboard draws and nothing else: no session is started, stopped, slept, woken or reordered. Unknown value, missing or past-dated `snoozed_until` → 422 |
 | `GET` | `/sessions/:id/transcript` | `format=text` → `text/plain`, else `{transcript_text}` |
@@ -659,7 +656,7 @@ semantics.
 `goal`, `goal_check`, `mcp_servers`, `all_mcp_servers`, `injected_mcp_servers`, `catalog_skills`, `catalog_hooks`,
 `catalog_plugins`, `config`, `metadata`, `custom_metadata`,
 `is_autonomous`, `heartbeat_enabled`, `heartbeat_interval_seconds`, `auto_compact_window`,
-`genesis`, `scheduling_class`, `priority_class`, `category_id`, `category{}`, `session_id`, `job_id`,
+`genesis`, `scheduling_class`, `priority_class`, `session_id`, `job_id`,
 `running_job_id`, `archived_at`, `trash_after`, `created_at`, `updated_at`, `session_notes`,
 `session_notes_updated_at`, `favorited`, `visibility`, `effective_visibility`, `snoozed_until`.
 
@@ -735,8 +732,6 @@ Five of those fields are easy to misread:
   subagent roots). A strict subset, and not evidence of what is available.
 - **`is_autonomous`** governs whether the session fires broadcast (unscoped) event triggers. It
   defaults to true; set it false for user-driven sessions that shouldn't trip global automation.
-- **`category` is a four-key summary**, not the category resource below: `{id, name, position,
-  is_frozen}`, or `null` when the session is Uncategorized.
 - **`metadata` is Zimmer's own bookkeeping** — `clone_path`, `exit_status`, `agent_root_key`, and
   friends. `custom_metadata` is the one you own.
 
@@ -1092,64 +1087,6 @@ It answers 200 with the poll response — `action`, `content`, and a `_meta` car
 `com.pulsemcp/request-id` and `com.pulsemcp/responded-at` — or 404 when nothing matches the
 identifier, 422 when the elicitation is already resolved or `action_type` is not one of the three.
 
-## Categories
-
-Organizational buckets for the dashboard. Full CRUD at `/categories[/:id]` plus
-`POST /categories/reorder`.
-
-A category is `{id, name, description, position, is_frozen, session_count, created_at, updated_at}`.
-`name` is required, unique case-insensitively, ≤100 chars, and whitespace-stripped; `description` is
-≤1000 chars and stored as null when blank. New categories append to the end of the stack. Deleting
-one nullifies its sessions' `category_id` — the sessions themselves survive as Uncategorized.
-
-A **frozen** category (`is_frozen: true`) is a parked bucket: its sessions are excluded from
-refresh-all and from recovery.
-
-`PATCH /categories/:id` is a genuine partial update — sending only `is_frozen` leaves `name` and
-`description` alone.
-
-`POST /categories/reorder` takes `ids`, an ordered array top to bottom; each listed category's
-`position` becomes its index, and any category you leave out keeps the position it had. The string
-sentinel `"uncategorized"` positions the Uncategorized section, which is stored on `AppSetting`
-rather than as a row — so it is not in the category list the call returns.
-
-```bash
-curl -X POST "$BASE_URL/categories/reorder" \
-  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"ids": [5, "uncategorized", 3, 8]}'
-```
-
-### Card order
-
-`POST /sessions/reorder` is the other half: where each *card* sits inside one section. It is what
-the dashboard's drag-and-drop posts, and it writes `sessions.sort_order`. See
-[Card order is yours to set](/sessions/lifecycle/#card-order-is-yours-to-set-and-it-stays-set) for
-the model.
-
-`ids` is one section's cards, top to bottom — normally one **page** of it, since sections paginate
-at 50 — and `category_id` names the section (omit it, send `null`, or send `"uncategorized"` for the
-Uncategorized bucket; an unknown id → 404). Ids that are not in that section are ignored, and an
-index in `ids` is never read as a position, so a card you do not name never moves.
-
-What the call does depends on `session_id`:
-
-- **With `session_id`** (an id or slug; unknown → 404), only that card moves. It goes immediately
-  above the card after it in `ids`, or immediately below the card before it when it is last — the
-  rest of `ids` is context. If the card is in another category it is moved into this one first, in
-  the same transaction, so one call persists the category change and the placement. This is what a
-  drag sends.
-- **Without it**, the cards named in `ids` are rearranged among the slots they already hold, in the
-  order given.
-
-The response is `{category_id, session_ids}` — the section's full order after the write, not just
-the page you sent.
-
-```bash
-curl -X POST "$BASE_URL/sessions/reorder" \
-  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"ids": [41, 17, 92], "category_id": 5, "session_id": 17}'
-```
-
 ## Models
 
 Models added to a runtime's catalog without a deploy. The built-in models are read-only and are
@@ -1177,7 +1114,7 @@ model list does not name the id. That response also carries `cli_listed`, `cli_v
 `cli_note`, and resending with `allow_unlisted: true` adds it anyway.
 
 A `DELETE` is refused with 422 and `error: "Model in use"` while the Settings page's session default
-or the categorization model names the model.
+names the model.
 
 ```bash
 curl -X POST "$BASE_URL/model_catalog_entries" \
