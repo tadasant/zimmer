@@ -115,7 +115,7 @@ class ClaudeTranscriptSourceTest < ActiveSupport::TestCase
 
     redacted = @source.read(path)
     refute_includes redacted, token
-    assert_includes redacted, "[REDACTED:ANTHROPIC_OAUTH_TOKEN]"
+    assert_includes redacted, "[REDACTED:MATCH:ANTHROPIC_OAUTH_TOKEN:"
   end
 
   test "read leaves ordinary transcript content alone" do

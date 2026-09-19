@@ -67,7 +67,7 @@ class TranscriptRedactionCacheTest < ActiveSupport::TestCase
     complete = TranscriptRedactionCache.redact(PATH, content)
     assert_equal TranscriptRedactor.redact(content), complete
     refute_includes complete, token, "the token survived a redaction split across two reads"
-    assert_includes complete, "[REDACTED:GITHUB_TOKEN]"
+    assert_includes complete, "[REDACTED:MATCH:GITHUB_TOKEN:"
   end
 
   test "line count is preserved exactly across incremental reads" do
@@ -159,7 +159,7 @@ class TranscriptRedactionCacheTest < ActiveSupport::TestCase
 
     complete = TranscriptRedactionCache.redact(PATH, content)
     assert_equal TranscriptRedactor.redact(content), complete
-    assert_equal 14, complete.scan("[REDACTED:PRIVATE_KEY]").length,
+    assert_equal 14, complete.scan(/\[REDACTED:MATCH:PRIVATE_KEY:\d+ch\]/).length,
       "every line of the block, including the ones read before the END marker arrived, must be armored"
     refute_includes complete, body.first
   end

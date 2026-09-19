@@ -458,7 +458,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
 
     subagent = @session.subagent_transcripts.find_by(agent_id: "agent-leaky")
     refute_includes subagent.transcript, token
-    assert_includes subagent.transcript, "[REDACTED:ANTHROPIC_OAUTH_TOKEN]"
+    assert_includes subagent.transcript, "[REDACTED:MATCH:ANTHROPIC_OAUTH_TOKEN:"
   end
 
   test "poll_subagent_transcripts updates existing records" do
