@@ -1330,9 +1330,14 @@ provider's delivery is switched on — see
 Every endpoint that returns or accepts transcript content serves the **redacted** copy —
 `GET /sessions/:id?include_transcript=true`, `GET /sessions/:id/transcript`,
 `POST /sessions/:id/refresh`, the subagent-transcript endpoints, and the transcript archive. Zimmer
-redacts on write, as bytes come off disk, so a credential an agent printed reads back as
-`[REDACTED:<LABEL>]` rather than the value. Content **posted** to
+redacts on write, as bytes come off disk, so a credential an agent printed reads back as a
+`[REDACTED:…]` marker rather than the value. Content **posted** to
 `/sessions/:session_id/subagent_transcripts` is redacted on the way in as well.
+
+The marker says which tier fired and how much text it stands in for — `[REDACTED:ENV:SLACK_BOT_TOKEN:56ch]`
+for an exact match against a known value, `[REDACTED:MATCH:GITHUB_TOKEN:40ch]` for a shape that merely
+matched. See [the marker vocabulary](/sessions/transcripts/#what-a-marker-tells-you) for the full set;
+a consumer parsing markers should treat the label as opaque and match on the `[REDACTED:` prefix.
 
 No request parameter, response field, or status code changes because of this — only the bytes inside
 `transcript`. Two consequences worth planning around: a consumer diffing a transcript against the
