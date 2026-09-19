@@ -1765,7 +1765,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     ceilings = HealthMonitorService::LANE_EXECUTION_CEILINGS
 
     assert_operator ceilings["inference"], :>, SessionStatusSummaryGenerator::HEADLESS_TIMEOUT.seconds
-    assert_operator ceilings["inference"], :>, CategorizationService::INFERENCE_TIMEOUT.seconds
+    assert_operator ceilings["inference"], :>, SessionTitleJob::INFERENCE_TIMEOUT.seconds
     assert_operator ceilings["default"], :>, PostDeployTaskJob::SLICE_BUDGET
     assert_operator ceilings["auth"], :>, RuntimeLoginJob::MAX_DURATION
     # Every scheduled sweep on `maintenance` bounds itself with SweepBudget, and
@@ -2086,45 +2086,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert results.key?(:retried)
     assert results.key?(:failed)
     assert results.key?(:skipped)
-  end
-
-  test "retry_failed_sessions bulk path excludes sessions in a frozen category" do
-    frozen = Session.create!(
-      prompt: "parked", agent_runtime: "claude_code", status: :failed,
-      git_root: "https://github.com/test/repo.git", branch: "main",
-      category: Category.create!(name: "frozen-retry", is_frozen: true)
-    )
-    active = Session.create!(
-      prompt: "active", agent_runtime: "claude_code", status: :failed,
-      git_root: "https://github.com/test/repo.git", branch: "main"
-    )
-
-    results = @service.retry_failed_sessions
-
-    considered = results[:retried] +
-      results[:skipped].map { |r| r[:session_id] } +
-      results[:failed].map { |r| r[:session_id] }
-
-    assert_includes considered, active.id, "non-frozen failed session should be considered"
-    assert_not_includes considered, frozen.id, "frozen-category session must be excluded from the bulk retry"
-    assert_equal "failed", frozen.reload.status
-  end
-
-  test "retry_failed_sessions still targets an explicitly requested frozen session by id" do
-    frozen = Session.create!(
-      prompt: "parked", agent_runtime: "claude_code", status: :failed,
-      git_root: "https://github.com/test/repo.git", branch: "main",
-      category: Category.create!(name: "frozen-targeted", is_frozen: true)
-    )
-
-    results = @service.retry_failed_sessions(session_ids: [ frozen.id ])
-
-    considered = results[:retried] +
-      results[:skipped].map { |r| r[:session_id] } +
-      results[:failed].map { |r| r[:session_id] }
-
-    # Explicit id targeting bypasses the frozen-category exclusion by design.
-    assert_includes considered, frozen.id
   end
 
   test "archive_old_sessions archives sessions older than threshold" do

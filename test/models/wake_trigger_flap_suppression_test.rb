@@ -275,27 +275,6 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     assert @watcher.reload.waiting?, "the watcher was resumed once the child became a human's problem"
   end
 
-  test "arming a watcher on a recovery pause in a frozen category fires at once" do
-    # Nothing sweeps a frozen category (Session.not_in_frozen_category), so there is
-    # no give-up branch coming to make the announcement later. Suppressing here
-    # would delete the wake rather than defer it — the predicate excludes this case,
-    # and the immediate fire has to happen for the same reason the pause announces.
-    @watched.update!(
-      status: :needs_input,
-      category: Category.create!(name: "Parked", is_frozen: true),
-      metadata: { "paused_by" => "recovery" }
-    )
-
-    run_deferred_commit_callbacks_inline
-    trigger = nil
-    perform_enqueued_jobs(only: AoEventTriggerJob) do
-      trigger = watch(@watched, "session_needs_input", reset_watcher: false)
-    end
-
-    assert_wake_delivered trigger, "no sweep is coming — this wake is owed now"
-    assert @watcher.reload.waiting?
-  end
-
   test "arming a watcher on a session a human paused still fires immediately" do
     # The check reads `paused_by == "recovery"` exactly. A human holding the session
     # is a real stop with no auto-continue behind it, and a watcher wants to know.

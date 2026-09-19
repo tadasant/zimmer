@@ -118,14 +118,6 @@ class ModelCatalogEntryTest < ActiveSupport::TestCase
     assert ModelCatalogEntry.exists?(entry.id)
   end
 
-  test "destroy is refused while the categorization model names the model" do
-    entry = ModelCatalogEntry.add(runtime: "claude_code", model_id: "opus[1m]", added_via: "api")
-    AppSetting.editable.update!(category_inference_model: "opus[1m]")
-
-    refute entry.destroy
-    assert_match(/categorization model/, entry.destroy_refusal)
-  end
-
   test "destroy succeeds when nothing names the model" do
     ModelCatalogCliCheck.stubs(:check).returns(LISTED)
     entry = add

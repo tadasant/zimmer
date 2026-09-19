@@ -903,15 +903,11 @@ class HealthMonitorService
   # @return [Hash] Results of retry operation
   def retry_failed_sessions(session_ids: nil)
     sessions = if session_ids.present?
-      # Operator is targeting specific sessions by id — honor that intent even if
-      # one happens to sit in a frozen category.
+      # Operator is targeting specific sessions by id.
       Session.where(id: session_ids, status: :failed)
     else
-      # Bulk "retry all recent failures" is a recover-all flow, so exclude sessions
-      # parked in a frozen category (same contract as refresh_all and the recovery jobs).
-      # Qualify updated_at: not_in_frozen_category LEFT JOINs categories, which also
-      # has an updated_at column, so an unqualified reference would be ambiguous.
-      Session.not_in_frozen_category.where(status: :failed).where("sessions.updated_at > ?", 24.hours.ago).limit(10)
+      # Bulk "retry all recent failures": the ten most recent in the last day.
+      Session.where(status: :failed).where("sessions.updated_at > ?", 24.hours.ago).limit(10)
     end
 
     results = { retried: [], failed: [], skipped: [] }

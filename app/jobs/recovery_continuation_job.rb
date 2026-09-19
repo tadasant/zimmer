@@ -63,11 +63,10 @@ class RecoveryContinuationJob < ApplicationJob
     return unless session
 
     # Every guard the sweeps apply, asked of this one row. The session may have been
-    # continued, resumed by a human, archived or frozen in the delay window, and in
-    # each of those cases the right move is to do nothing at all.
+    # continued, resumed by a human or archived in the delay window, and in each of
+    # those cases the right move is to do nothing at all.
     return unless session.metadata&.dig("paused_by") == "recovery"
     return unless session.needs_input? || session.waiting?
-    return if session.category&.is_frozen?
 
     continue_recovered_session(session)
   rescue => e

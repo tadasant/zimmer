@@ -54,11 +54,10 @@
 #      infer it from a ceiling that never binds.
 #
 #      This is a different population from the one the spot gate's concurrency
-#      limit counts, which is Claude Code sessions only and does not skip frozen
-#      categories (Session.running_claude_code_count). Both now read through
-#      RunningTurns, so they agree about what a `running` row means; they still
-#      differ on runtime and on frozen categories, so a fleet running Codex work
-#      will not see the same number under both.
+#      limit counts, which is Claude Code sessions only
+#      (Session.running_claude_code_count). Both now read through RunningTurns, so
+#      they agree about what a `running` row means; they still differ on runtime,
+#      so a fleet running Codex work will not see the same number under both.
 #
 #      `waiting` sessions do NOT count, of any class, and the reason is what
 #      `waiting` actually holds. It is not a queue — it is Zimmer's only resting
@@ -367,7 +366,7 @@ class FleetIdleMonitor
     #
     # @return [RunningTurns::Reading]
     def running_turns
-      Session.not_in_frozen_category.running_turns
+      Session.running_turns
     end
 
     private

@@ -4992,23 +4992,8 @@ Open issues:
 - [#14](https://github.com/tadasant/zimmer/issues/14) Dashboard actions do full page reloads
   (restart/refresh/archive/pause explicitly opt out of Turbo). Lost scroll position, collapsed sections
   spring open, the drawer closes.
-- [#15](https://github.com/tadasant/zimmer/issues/15) No per-card refresh — you must refresh the
-  entire category.
 
 Also:
-
-- **Starred cards cannot be reordered.** The pinned **Starred** group sits outside the dashboard's
-  drag-and-drop controller and its cards have no grip bar, so it is always newest-first. Unstar a
-  card to place it; starring never loses the place it had in its section.
-- **A card dropped past the end of a full page lands on the next page.** Sections paginate at 50, and
-  a card dragged in from another section onto the bottom of a page that already holds 50 is placed
-  below the 50th — which, on reload, is the top of page 2. The right-click "Move to…" menu puts the
-  card at the top of the page of that section you have open instead, for exactly this reason.
-- **A page that a broadcast has added cards to is not the page the server would render.** A new
-  session is prepended to the Uncategorized grid whichever page of it you have open, and a deleted
-  category's cards are prepended the same way. Server-side they sit at the top of page 1. A drag
-  still places correctly — it anchors on the card below the drop — but that stray card itself moves
-  to page 1 on the next reload.
 
 - **Nothing in the web UI puts a session to sleep.** The "Pause Until" control that did — a time
   preset, a datetime picker, and a "Spot Queue" choice, on the session card, the detail header and
@@ -5088,8 +5073,8 @@ Also:
   the notification badge is a lazily-loaded `<turbo-frame>`: replacing it with the server's copy
   would blank it and re-fetch, so it is left alone and its count is stale until the next broadcast.
 - A `sync` region that has been paged inside its own `<turbo-frame>` is skipped rather than
-  reconciled, because the URL the backfill re-fetches does not carry that page. So a dashboard
-  category you have paged forward in keeps the cards it had, and does not pick up sessions added or
+  reconciled, because the URL the backfill re-fetches does not carry that page. So a grid you have
+  paged forward in keeps the cards it had, and does not pick up sessions added or
   removed while you were away, until you page it again.
 - A composer draft sits in `localStorage` for up to 7 days with no UI to clear it, and nothing
   removes it when the session is archived or you sign out. On a shared browser that is a prompt
@@ -5281,13 +5266,6 @@ for — use `ac.sh` when you need isolation.
 ---
 
 ## Product gaps
-
-### Auto-categorization has no feedback loop
-
-[Issue #16](https://github.com/tadasant/zimmer/issues/16): an LLM sorts new sessions into categories.
-When you drag a mis-sorted session to the right one, the correction is written to
-`sessions.category_id` and nowhere else — the model's original choice, its context, even a timeline
-note are all discarded. The next identical session is mis-sorted identically, forever.
 
 ### A goal is checked, not enforced
 
@@ -7382,27 +7360,6 @@ small and short-lived where the held pile was neither — but the general form o
 [#1103](https://github.com/tadasant/zimmer/issues/1103), "a session that has never taken a turn
 should perhaps not hold a WIP slot at all, whatever the reason", is not closed.
 
-## Categorization replay does not tell you when it is done
-
-**Replay** on `/settings/categorization` enqueues `CategorizationReplayJob` and redirects straight
-back. The page does not update itself as the verdicts land. You reload it, and each correction's
-verdict chip appears once its row has been scored. A batch of 10 on a free `inference` lane takes
-well under a minute. Behind a backlog of title jobs it can take longer, and nothing on the page
-says it is still queued.
-
-Two related edges:
-
-- **The corpus table has no retention.** Every categorization attempt that gets an answer adds
-  one row with up to 8 KB of context, compressed by TOAST. A session placed first time
-  contributes one row. A session left Uncategorized is retried on each pause, so it contributes
-  one per attempt until it's placed. That's still small next to `logs`. Nothing prunes it yet,
-  on purpose: the rows are the eval corpus, and they are meant to outlive the sessions they came
-  from.
-- **A replay verdict is from the config at the time it ran.** Edit a description after replaying
-  and the chips still show the old verdicts until you replay again. `replay_prompt_version` and
-  `replay_model` on each row say which config produced it, and `/supervisor/category_feedback_events`
-  shows both.
-
 ## The User view's board does not update itself
 
 The [User view](/sessions/user-view/) is server-rendered on load and stays that way. A row's status
@@ -7419,26 +7376,6 @@ the board thins out as you work it, and goes stale only about things you did not
 
 The one place that shows is the **Reprioritize** button: the reordering session writes the new order
 and you have to reload to see it. The button says so.
-
-## Card order is written by agents and rendered by nobody
-
-`sessions.sort_order` — the per-category card rank `SessionCardOrder` maintains — was the ordering
-of the dashboard's category-grouped grid. That grid was replaced by the User view, which orders by
-scheduling class and precedence instead, and no human-facing screen reads `sort_order` any more.
-
-Its two remaining writers are both agent surfaces: `manage_categories`' `reorder_sessions` action
-over MCP, and `POST /api/v1/sessions/reorder` over REST. Both still work and still record a
-`category_feedback_events` correction; the order they set is simply not drawn anywhere. They were
-left in place rather than removed because the correction they record is the categorizer's training
-signal, which is worth more than the ordering was.
-
-## Editing a category is a /supervisor task now
-
-The category grid carried the only browser-facing category editor — a pencil per section header and
-a **+ New category** button. Both went with it. `/settings/categorization` still lists every
-category and flags the ones with no description (which is the classification signal), but to change
-one you go to `/supervisor/categories`, the `manage_categories` MCP tool, or the REST API under
-`/api/v1/categories`. The page points at the first of those.
 
 ## Open questions
 

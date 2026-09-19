@@ -41,10 +41,9 @@ class SessionDashboard < Administrate::BaseDashboard
     scheduling_class: Field::String,
     precedence: Field::Number,
     genesis: Field::String,
-    # `parent_session` and `category` carry the two foreign keys on the table.
-    # Administrate cannot infer the class behind `parent_session`, hence class_name.
+    # `parent_session` carries the table's foreign key. Administrate cannot infer
+    # the class behind it, hence class_name.
     parent_session: Field::BelongsTo.with_options(class_name: "Session"),
-    category: Field::BelongsTo,
     # The bags the rest of the app hangs structured state off. `metadata` is
     # Zimmer's own (clone_path, agent_root_key, trigger_id); `custom_metadata` is
     # the caller's. Between them they answer most "why is this session like this"
@@ -65,7 +64,6 @@ class SessionDashboard < Administrate::BaseDashboard
     is_autonomous: Field::Boolean,
     push_notifications_enabled: Field::Boolean,
     favorited: Field::Boolean,
-    sort_order: Field::Number,
     auto_compact_window: Field::Number,
     last_broadcast_to_index_at: Field::DateTime,
     last_timeline_entry_at: Field::DateTime,

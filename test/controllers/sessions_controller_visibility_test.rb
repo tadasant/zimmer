@@ -18,7 +18,6 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     Notification.delete_all
     Log.delete_all
     Session.delete_all
-    Category.delete_all
     AppSetting.delete_all
   end
 

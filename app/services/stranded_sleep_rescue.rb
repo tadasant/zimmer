@@ -188,7 +188,6 @@ class StrandedSleepRescue
       cutoff = now - grace
 
       relation = Session
-        .not_in_frozen_category
         .where(status: :waiting)
         # Has run. A session with no runtime id has never taken a turn, and
         # restarting one is StalledSessionStart's job, not this one — resuming it

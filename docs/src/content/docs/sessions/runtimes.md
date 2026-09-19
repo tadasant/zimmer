@@ -124,8 +124,8 @@ Both are read into constants at boot and stay in `MODELS`. To make an added mode
 new sessions, pick it under Session Defaults on the Settings page.
 
 Removing an added model stops new sessions picking it. A session already on it keeps it. Removal is
-refused while the Settings page's session default or the categorization model names the model,
-because `AppSetting` re-validates both on every save. If a later deploy makes an added id built-in,
+refused while the Settings page's session default names the model, because `AppSetting`
+re-validates it on every save. If a later deploy makes an added id built-in,
 the built-in entry wins and Settings → Models lists the redundant row for removal.
 
 ## Credentials

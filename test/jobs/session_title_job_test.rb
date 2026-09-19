@@ -2,14 +2,9 @@ require "test_helper"
 require "minitest/mock"
 require "mocha/minitest"
 
-# SessionTitleJob both names a session and auto-sorts it into a category, from a
-# single headless inference over the early transcript. These tests cover:
-# - title-only behavior (no candidate categories) and the deterministic
-#   prompt/failure-reason fallbacks,
-# - category matching/uncategorized outcomes (migrated from the former
-#   SessionCategoryInferenceJob), and
-# - the combined transcript path that produces BOTH a title and a category in
-#   one inference call.
+# SessionTitleJob names a session from a single headless inference over the
+# early transcript. These tests cover the inference path, its deterministic
+# prompt and failure-reason fallbacks, and the response parsing.
 class SessionTitleJobTest < ActiveJob::TestCase
   setup do
     @session = sessions(:waiting)
@@ -40,9 +35,9 @@ class SessionTitleJobTest < ActiveJob::TestCase
 
   # === Title behavior ========================================================
 
-  test "should skip when session has a manually set title and no category work" do
-    # Manual title (no auto_generated_title flag) and no candidate categories:
-    # there is nothing for the job to do, and inference must not run.
+  test "should skip when session has a manually set title" do
+    # Manual title (no auto_generated_title flag): there is nothing for the job
+    # to do, and inference must not run.
     @session.update!(title: "Existing Title", metadata: {})
     @mock_inference_service.expects(:generate).never
 
@@ -91,7 +86,7 @@ class SessionTitleJobTest < ActiveJob::TestCase
 
     assert_equal "haiku", captured[:opts][:model]
     assert_equal false, captured[:opts][:single_line]
-    assert_equal CategorizationService::INFERENCE_TIMEOUT, captured[:opts][:timeout]
+    assert_equal SessionTitleJob::INFERENCE_TIMEOUT, captured[:opts][:timeout]
     assert_equal "User Authentication System", @session.reload.title
   end
 
@@ -108,8 +103,8 @@ class SessionTitleJobTest < ActiveJob::TestCase
       transcript: transcript_jsonl("Plan my meals", "Session limit reached")
     )
 
-    # No candidate categories, so the inference service must not be called at
-    # all — the title is deterministic and there is nothing to categorize into.
+    # The title is deterministic, so the inference service must not be called
+    # at all.
     @mock_inference_service.expects(:generate).never
 
     @job.perform(@session.id)
@@ -234,128 +229,6 @@ class SessionTitleJobTest < ActiveJob::TestCase
     assert_equal "#{first_slug}-1", second_slug
   end
 
-  test "categorizes a chat-bubble session from the human's prompt, not the page dump" do
-    # The category context is capped at MAX_PROMPT_CHARS (1,500) and a page
-    # context runs to PAGE_CONTEXT_MAX_LENGTH (50,000), so truncating the
-    # composed prompt hands the model the block with the ask cut off the end.
-    bugs = Category.create!(name: "Bugs", description: "Defects and regressions to fix")
-
-    make_chat_bubble_session(@session)
-    @session.update!(
-      category_id: nil,
-      prompt: "<context-about-user's-current-view>\nURL: https://zimmer.example.com/sessions\n\n#{"page dump " * 400}\n</context-about-user's-current-view>\n\n#{CHAT_BUBBLE_HUMAN_PROMPT}"
-    )
-
-    captured_prompt = nil
-    @mock_inference_service.expects(:generate).with do |prompt, **|
-      captured_prompt = prompt
-      true
-    end.returns("CATEGORY: Bugs")
-
-    @job.perform(@session.id)
-
-    assert_includes captured_prompt, CHAT_BUBBLE_HUMAN_PROMPT
-    refute_includes captured_prompt, "page dump"
-    assert_equal bugs.id, @session.reload.category_id
-  end
-
-  # === The feedback corpus (tadasant/zimmer#16) ===============================
-
-  test "an auto-assignment records the answer and the context the model saw" do
-    bugs = Category.create!(name: "Bugs", description: "Defects and regressions to fix")
-    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
-    @mock_inference_service.expects(:generate).returns("CATEGORY: Bugs")
-
-    assert_difference "CategoryFeedbackEvent.count", 1 do
-      @job.perform(@session.id)
-    end
-
-    event = CategoryFeedbackEvent.last
-    assert_equal CategoryFeedbackEvent::AUTO_ASSIGNED, event.kind
-    assert_equal bugs.id, event.auto_category_id
-    assert_equal "Fix the crash on login", event.context_snapshot
-    assert_equal "prompt", event.context_source
-    assert_equal "CATEGORY: Bugs", event.raw_answer
-    assert_equal CategorizationService::DEFAULT_MODEL, event.model
-    assert_equal CategorizationService::PROMPT_VERSION, event.prompt_version
-    assert_equal bugs.id, @session.reload.category_id
-  end
-
-  test "the categorizer's own write is not recorded as a correction of itself" do
-    Category.create!(name: "Bugs", description: "Defects and regressions to fix")
-    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
-    @mock_inference_service.expects(:generate).returns("CATEGORY: Bugs")
-
-    @job.perform(@session.id)
-
-    assert_equal 0, CategoryFeedbackEvent.corrections.count
-    assert_equal [ "Auto-assigned to category \"Bugs\"" ],
-      @session.logs.where("content LIKE ?", "%categor%").pluck(:content)
-  end
-
-  test "a decline is recorded as feedback too" do
-    Category.create!(name: "Bugs", description: "Defects and regressions to fix")
-    @session.update!(category_id: nil, prompt: "Write a haiku about autumn", transcript: nil)
-    @mock_inference_service.expects(:generate).returns("CATEGORY: NONE")
-
-    @job.perform(@session.id)
-
-    event = CategoryFeedbackEvent.last
-    assert_equal CategoryFeedbackEvent::UNCATEGORIZED, event.kind
-    assert_nil event.auto_category_id
-    assert_equal "Write a haiku about autumn", event.context_snapshot
-    assert_nil @session.reload.category_id
-  end
-
-  test "a backend that did not answer is not recorded as a decline" do
-    Category.create!(name: "Bugs", description: "Defects and regressions to fix")
-    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
-    @mock_inference_service.expects(:generate).returns(nil)
-
-    assert_no_difference "CategoryFeedbackEvent.count" do
-      @job.perform(@session.id)
-    end
-    assert_nil @session.reload.category_id
-  end
-
-  test "the answer is recorded even when a manual category lands mid-flight" do
-    bugs = Category.create!(name: "Bugs", description: "Defects and regressions to fix")
-    research = Category.create!(name: "Research", description: "Spikes")
-    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
-    @mock_inference_service.expects(:generate).with do |*|
-      Session.where(id: @session.id).update_all(category_id: research.id)
-      true
-    end.returns("CATEGORY: Bugs")
-
-    @job.perform(@session.id)
-
-    assert_equal research.id, @session.reload.category_id
-    assert_equal bugs.id, CategoryFeedbackEvent.last.auto_category_id
-  end
-
-  test "a failure to record feedback never costs the session its category" do
-    bugs = Category.create!(name: "Bugs", description: "Defects and regressions to fix")
-    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
-    @mock_inference_service.expects(:generate).returns("CATEGORY: Bugs")
-    CategoryFeedbackEvent.stubs(:create!).raises(ActiveRecord::StatementInvalid, "disk full")
-
-    @job.perform(@session.id)
-
-    assert_equal bugs.id, @session.reload.category_id
-  end
-
-  test "the operator's model override is what the job runs on" do
-    AppSetting.delete_all
-    AppSetting.create!(category_inference_model: "sonnet")
-    Category.create!(name: "Bugs", description: "Defects and regressions to fix")
-    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
-    @mock_inference_service.expects(:generate).with(anything, has_entry(model: "sonnet")).returns("CATEGORY: Bugs")
-
-    @job.perform(@session.id)
-
-    assert_equal "sonnet", CategoryFeedbackEvent.last.model
-  end
-
   test "keeps titling from the prompt when there is no original_prompt" do
     # Every entry point other than the chat bubble composes nothing, so the
     # prompt column is the human's own words and remains the fallback.
@@ -409,7 +282,7 @@ class SessionTitleJobTest < ActiveJob::TestCase
 
       warning_log = @session.reload.logs.last
       assert_equal "warning", warning_log.level
-      assert_includes warning_log.content, "Failed to generate title/category"
+      assert_includes warning_log.content, "Failed to generate title"
     end
   end
 
@@ -536,14 +409,10 @@ class SessionTitleJobTest < ActiveJob::TestCase
     assert_not @session.metadata["auto_generated_title"]
   end
 
-  # === Combined title + category from the transcript =========================
+  # === The prompt and the response ==========================================
 
-  test "infers both the title and the category from the transcript in one call" do
-    research = Category.create!(name: "Research", description: "Investigations, spikes, and exploratory analysis")
-    Category.create!(name: "Bugs", description: "Defects and regressions to fix")
-
+  test "asks for a labelled title and nothing else" do
     @session.update!(
-      category_id: nil,
       title: "Session #{@session.id}",
       metadata: { "auto_generated_title" => true },
       prompt: "Investigate the slow checkout query",
@@ -554,221 +423,56 @@ class SessionTitleJobTest < ActiveJob::TestCase
     @mock_inference_service.expects(:generate).with do |prompt, **|
       captured_prompt = prompt
       true
-    end.returns("TITLE: Investigate Slow Checkout Query\nCATEGORY: Research")
+    end.returns("TITLE: Investigate Slow Checkout Query")
 
-    # Two timeline entries: one for the title, one for the category assignment.
-    assert_difference "@session.logs.count", 2 do
+    assert_difference "@session.logs.count", 1 do
       @job.perform(@session.id)
     end
 
-    @session.reload
-    assert_equal "Investigate Slow Checkout Query", @session.title
-    assert_equal research.id, @session.category_id
-
-    # The single combined prompt asks for both fields and lists the candidates.
+    assert_equal "Investigate Slow Checkout Query", @session.reload.title
     assert_includes captured_prompt, "TITLE:"
-    assert_includes captured_prompt, "CATEGORY:"
-    assert_includes captured_prompt, "Research"
-    assert_includes captured_prompt, "Bugs"
+    assert_includes captured_prompt, "Looking into the query plan and indexes."
+    refute_includes captured_prompt, "CATEGORY"
   end
 
-  test "sets the title from the transcript but leaves the session uncategorized when the category answer is NONE" do
-    Category.create!(name: "Research", description: "Investigations and analysis")
-
+  test "reads the TITLE line even when the model adds other lines around it" do
     @session.update!(
-      category_id: nil,
       title: "Session #{@session.id}",
       metadata: { "auto_generated_title" => true },
       prompt: "Write up notes",
       transcript: transcript_jsonl("Write up notes", "Jotting down some unstructured notes.")
     )
 
-    @mock_inference_service.expects(:generate).returns("TITLE: Write Up Notes\nCATEGORY: NONE")
+    @mock_inference_service.expects(:generate).returns("Sure, here it is:\nTITLE: Write Up Notes\nCATEGORY: NONE")
 
-    assert_difference "@session.logs.count", 2 do
-      @job.perform(@session.id)
-    end
+    @job.perform(@session.id)
 
-    @session.reload
-    assert_equal "Write Up Notes", @session.title
-    assert_nil @session.category_id
-    assert_includes @session.logs.last.content, "NONE"
+    assert_equal "Write Up Notes", @session.reload.title
   end
 
-  # === Category matching (no transcript; inferred from the prompt) ===========
-  #
-  # These cover the matching/uncategorized logic migrated from the former
-  # SessionCategoryInferenceJob. A manual title is set so no title work runs and
-  # the only timeline entry is the category outcome.
-
-  def setup_category_session
+  test "takes an unlabelled one-line answer as the title" do
     @session.update!(
-      category_id: nil,
-      title: "Investigate the slow checkout query",
-      metadata: {},
-      prompt: "Investigate the slow checkout query and add an index",
-      transcript: nil
+      title: "Session #{@session.id}",
+      metadata: { "auto_generated_title" => true },
+      prompt: "Write up notes",
+      transcript: transcript_jsonl("Write up notes", "Jotting down some unstructured notes.")
     )
-    @research = Category.create!(name: "Research", description: "Investigations, spikes, and exploratory analysis")
-    @bugs = Category.create!(name: "Bugs", description: "Defects and regressions to fix")
-  end
 
-  test "assigns the category when inference returns a matching name" do
-    setup_category_session
-    @mock_inference_service.expects(:generate).returns("Research")
-
-    assert_difference "@session.logs.count", 1 do
-      @job.perform(@session.id)
-    end
-
-    assert_equal @research.id, @session.reload.category_id
-    assert_includes @session.logs.last.content, "Research"
-  end
-
-  test "category matching is case-insensitive and tolerant of surrounding whitespace" do
-    setup_category_session
-    @mock_inference_service.expects(:generate).returns("  bugs  ")
+    @mock_inference_service.expects(:generate).returns("\n  Write Up Notes  \n")
 
     @job.perform(@session.id)
 
-    assert_equal @bugs.id, @session.reload.category_id
-  end
-
-  test "matches a category the model wrapped in extra words and punctuation" do
-    setup_category_session
-    @mock_inference_service.expects(:generate).returns("The best fit is Research.")
-
-    @job.perform(@session.id)
-
-    assert_equal @research.id, @session.reload.category_id
-  end
-
-  test "matches a category the model decorated with markdown" do
-    setup_category_session
-    @mock_inference_service.expects(:generate).returns("**Bugs**")
-
-    @job.perform(@session.id)
-
-    assert_equal @bugs.id, @session.reload.category_id
-  end
-
-  test "does not guess when the answer mentions more than one category name" do
-    setup_category_session
-    @mock_inference_service.expects(:generate).returns("Either Research or Bugs")
-
-    assert_difference "@session.logs.count", 1 do
-      @job.perform(@session.id)
-    end
-
-    assert_nil @session.reload.category_id
-    assert_equal "info", @session.logs.last.level
-    assert_includes @session.logs.last.content, "matched no category"
-  end
-
-  test "leaves the session uncategorized and logs when inference answers NONE" do
-    setup_category_session
-    @mock_inference_service.expects(:generate).returns("NONE")
-
-    assert_difference "@session.logs.count", 1 do
-      @job.perform(@session.id)
-    end
-
-    assert_nil @session.reload.category_id
-    log = @session.logs.last
-    assert_equal "info", log.level
-    assert_includes log.content, "NONE"
-  end
-
-  test "leaves the session uncategorized and logs when the answer matches no category" do
-    setup_category_session
-    @mock_inference_service.expects(:generate).returns("Marketing")
-
-    assert_difference "@session.logs.count", 1 do
-      @job.perform(@session.id)
-    end
-
-    assert_nil @session.reload.category_id
-    log = @session.logs.last
-    assert_equal "info", log.level
-    assert_includes log.content, "matched no category"
-    assert_includes log.content, "Marketing"
-  end
-
-  test "leaves the session uncategorized and logs when inference returns nil (timeout/error)" do
-    setup_category_session
-    @mock_inference_service.expects(:generate).returns(nil)
-
-    assert_difference "@session.logs.count", 1 do
-      @job.perform(@session.id)
-    end
-
-    assert_nil @session.reload.category_id
-    log = @session.logs.last
-    assert_equal "info", log.level
-    assert_includes log.content, "no answer"
-  end
-
-  test "skips inference when the session already has a category" do
-    setup_category_session
-    @session.update!(category_id: @bugs.id)
-    @mock_inference_service.expects(:generate).never
-
-    @job.perform(@session.id)
-
-    assert_equal @bugs.id, @session.reload.category_id
-  end
-
-  test "skips inference when the session has no prompt and a manual title" do
-    setup_category_session
-    @session.update!(prompt: nil)
-    @mock_inference_service.expects(:generate).never
-
-    @job.perform(@session.id)
-
-    assert_nil @session.reload.category_id
-  end
-
-  test "excludes frozen categories from candidates" do
-    setup_category_session
-    # Freeze every category: there are then no valid targets, so inference must
-    # never run and the session stays uncategorized.
-    Category.update_all(is_frozen: true)
-    @mock_inference_service.expects(:generate).never
-
-    @job.perform(@session.id)
-
-    assert_nil @session.reload.category_id
-  end
-
-  test "a frozen category is not a selectable target even if inference names it" do
-    setup_category_session
-    # Freeze Research, then have the model answer "Research" anyway. Because the
-    # frozen category was never a candidate, it cannot be matched.
-    @research.update!(is_frozen: true)
-    @mock_inference_service.expects(:generate).returns("Research")
-
-    @job.perform(@session.id)
-
-    assert_nil @session.reload.category_id
-    assert_includes @session.logs.last.content, "matched no category"
-  end
-
-  test "logs a warning and does not raise when assignment hits an unexpected error" do
-    setup_category_session
-    @mock_inference_service.expects(:generate).returns("Research")
-    Session.any_instance.stubs(:update!).raises(StandardError, "boom")
-
-    assert_difference "@session.logs.count", 1 do
-      assert_nothing_raised { @job.perform(@session.id) }
-    end
-
-    assert_equal "warning", @session.logs.last.level
-    assert_includes @session.logs.last.content, "Failed to generate title/category"
+    assert_equal "Write Up Notes", @session.reload.title
   end
 
   test "does not raise even when recording the failure note also fails" do
-    setup_category_session
-    @mock_inference_service.expects(:generate).returns("Research")
+    @session.update!(
+      title: "Session #{@session.id}",
+      metadata: { "auto_generated_title" => true },
+      prompt: "Investigate the slow checkout query",
+      transcript: transcript_jsonl("Investigate the slow checkout query", "Looking into it.")
+    )
+    @mock_inference_service.expects(:generate).returns("TITLE: Investigate Checkout Query")
     Session.any_instance.stubs(:update!).raises(StandardError, "boom")
     Log.any_instance.stubs(:save!).raises(StandardError, "log write failed")
 

@@ -50,9 +50,6 @@
 #     hand-moved session's class where somebody put it. Promotion out of a
 #     ceiling pause is its own open question (#613), and this deliberately does
 #     not answer it here.
-#   * A session in a frozen category. Session.not_in_frozen_category is the
-#     scope every bulk "start / recover all sessions" flow honours, and this is
-#     one.
 class TriggerPromotionReleaseJob < ApplicationJob
   # `maintenance`, not `default`. A released backlog can hold this thread for
   # minutes — one queue read and one row lock per session — and that lane exists
@@ -70,7 +67,7 @@ class TriggerPromotionReleaseJob < ApplicationJob
     trigger = Trigger.find_by(id: trigger_id)
     actor = trigger ? %(a change to trigger "#{trigger.name}") : "a trigger scheduling-class change"
 
-    Session.where(id: ids, status: "waiting").not_in_frozen_category.find_each do |session|
+    Session.where(id: ids, status: "waiting").find_each do |session|
       next unless session.priority?
       next if dormant_for_another_reason?(session)
 

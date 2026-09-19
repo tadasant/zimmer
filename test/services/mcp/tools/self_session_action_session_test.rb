@@ -124,12 +124,12 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
   # The self-management surface deliberately withholds capability/config
   # reconfiguration — the same reason it excludes change_model and
   # change_mcp_servers. A session must not be able to rewrite its own skills,
-  # plugins, goal, or category through the server injected into it.
+  # plugins or goal through the server injected into it.
   test "refuses capability/config edits that belong only to the full surface" do
     session = sessions(:needs_input)
     session.update!(catalog_skills: [ "sync-docs" ])
 
-    %w[change_skills change_hooks change_plugins change_goal change_auto_compact_window change_category toggle_push_notifications].each do |action|
+    %w[change_skills change_hooks change_plugins change_goal change_auto_compact_window toggle_push_notifications].each do |action|
       error = assert_raises(Mcp::ToolError) do
         @tool.call("action" => action, "session_id" => session.id, "skills" => [ "open-pr" ], "goal" => "x")
       end

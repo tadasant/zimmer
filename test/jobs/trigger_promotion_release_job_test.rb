@@ -4,8 +4,8 @@ require "test_helper"
 require "mocha/minitest"
 
 # The job half of #423's trigger path. The end-to-end cases — a held backlog
-# released, a demotion releasing nothing, a park and a frozen category left
-# alone — live in TriggerSchedulingClassTest, which drives this job through the
+# released, a demotion releasing nothing, a park left alone — live in
+# TriggerSchedulingClassTest, which drives this job through the
 # callback that enqueues it. What is here is what only the job can be asked
 # directly: what it does with arguments the trigger no longer backs.
 class TriggerPromotionReleaseJobTest < ActiveSupport::TestCase

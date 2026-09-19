@@ -139,7 +139,7 @@ is how a dead session also lost the summary that would have made it visible.
 
 Forking rather than a one-shot completion is a deliberate trade. The specifics that justify a link —
 "CI is red on the migration test, see message 214" — live in the session's own conversation. A
-headless inference call (the substrate `SessionTitleJob` uses for titles and categories) only ever
+headless inference call (the substrate `SessionTitleJob` uses for titles) only ever
 sees a truncated, flattened rendering of the transcript, which is exactly where those specifics get
 lost. The fork gets the real conversation at the real point it stopped.
 

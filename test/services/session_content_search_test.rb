@@ -184,7 +184,7 @@ class SessionContentSearchTest < ActiveSupport::TestCase
   end
 
   test "eager-loaded associations on the caller's scope do not leak into the id pluck" do
-    scope = Session.includes(:category).where(id: [ @old.id, @new.id ])
+    scope = Session.includes(:logs).where(id: [ @old.id, @new.id ])
 
     assert_equal [ @new.id, @old.id ],
       SessionContentSearch.new(scope: scope, query: "mitochondrion").call.matched_ids
