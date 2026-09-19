@@ -430,9 +430,23 @@ class SessionTitleJobTest < ActiveJob::TestCase
     end
 
     assert_equal "Investigate Slow Checkout Query", @session.reload.title
-    assert_includes captured_prompt, "TITLE:"
-    assert_includes captured_prompt, "Looking into the query plan and indexes."
-    refute_includes captured_prompt, "CATEGORY"
+    # Pinned byte-for-byte: this is the title half of the prompt the combined
+    # title+category call used, kept unchanged when categories were removed, so a
+    # drift in it is a change to titling rather than a refactor.
+    assert_equal <<~PROMPT, captured_prompt
+      You are summarizing a coding-agent session.
+
+      The session context:
+      User: Investigate the slow checkout query
+
+      Assistant: Looking into the query plan and indexes.
+
+      Produce the following:
+      - TITLE: a concise title (max 6 words, descriptive, action verbs, no quotes or formatting).
+
+      Respond in EXACTLY this format and nothing else:
+      TITLE: <title>
+    PROMPT
   end
 
   test "reads the TITLE line even when the model adds other lines around it" do

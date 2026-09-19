@@ -2067,7 +2067,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     end
   end
 
-  test "pause does not enqueue SessionTitleJob when title was manually set and no categories exist" do
+  test "pause does not enqueue SessionTitleJob when title was manually set" do
     session = sessions(:waiting)
     session.update!(status: :running, metadata: { "some_key" => "value" })
 
@@ -2076,7 +2076,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     end
   end
 
-  test "pause does not enqueue SessionTitleJob when auto_generated_title is false and no categories exist" do
+  test "pause does not enqueue SessionTitleJob when auto_generated_title is false" do
     session = sessions(:waiting)
     session.update!(status: :running, metadata: { "auto_generated_title" => false })
 
