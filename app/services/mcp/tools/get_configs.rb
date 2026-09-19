@@ -54,7 +54,7 @@ module Mcp
         end
 
         lines << "---" << "" << "## Runtime Models" << ""
-        ModelCatalog::MODELS.each_key do |runtime|
+        ModelCatalog.runtimes.each do |runtime|
           lines << "### #{RuntimeRegistry.label_for(runtime)}"
           lines << "- **Runtime:** `#{runtime}`"
           lines << "- **Default Model:** `#{ModelCatalog.default_for(runtime)}`"
@@ -278,6 +278,10 @@ module Mcp
           notes = []
           notes << "default" if model[:default]
           notes << "requires OAuth" if model[:requires_oauth]
+          if model[:source] == "added"
+            notes << "added"
+            notes << "not in the installed CLI's model list" if model[:cli_listed] == false
+          end
           "`#{model[:id]}`#{notes.any? ? " (#{notes.join(', ')})" : ""}"
         end.join(", ")
       end
