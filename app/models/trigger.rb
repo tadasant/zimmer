@@ -1578,9 +1578,7 @@ class Trigger < ApplicationRecord
       # spends its attempt budget and announces via
       # Session#announce_deferred_needs_input!. Both enqueue the same
       # AoEventTriggerJob, and that job re-queries the enabled conditions at fire
-      # time, so a watcher armed mid-pause is picked up by whichever happens. The
-      # one case with no sweep coming — a frozen category — is excluded from the
-      # predicate, so it still fires here immediately.
+      # time, so a watcher armed mid-pause is picked up by whichever happens.
       #
       # What that does not promise is that a lone `session_needs_input` condition
       # always gets something. The session can go on to archive, which prunes every

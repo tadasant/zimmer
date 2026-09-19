@@ -244,9 +244,9 @@ class SessionContentSearch
     )
   end
 
-  # [[id, created_at], …] newest first. `except(:includes)` matters: the callers'
-  # scopes carry `includes(:category)`, which would turn this id-only pluck into an
-  # eager load of every candidate row.
+  # [[id, created_at], …] newest first. `except(:includes)` matters: a caller's
+  # scope that carries an `includes` would turn this id-only pluck into an eager
+  # load of every candidate row.
   def candidate_rows
     relation = scope.except(:includes, :eager_load, :preload, :order, :limit, :offset)
       .reorder(created_at: :desc, id: :desc)

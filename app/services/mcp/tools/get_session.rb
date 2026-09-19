@@ -538,7 +538,6 @@ module Mcp
         ]
 
         lines << "- **Slug:** #{session.slug}" if session.slug.present?
-        lines << "- **Category:** #{session.category.name}" if session.category
         # Genesis and the class it resolves to. Present on the session itself as
         # well as on every hierarchy node, because the single most common question
         # is about THIS session and reading it off a tree of one is awkward.

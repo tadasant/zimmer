@@ -33,25 +33,6 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
     assert_not_nil @session.running_job_id
   end
 
-  test "recover skips and returns handled when the session is in a frozen category" do
-    @session.update!(category: Category.create!(name: "frozen-recover", is_frozen: true))
-
-    # A frozen category is a parked bucket: recover must short-circuit before any
-    # process check or job enqueue, and report the session as handled (true).
-    mock_pm = Object.new
-    mock_pm.define_singleton_method(:running?) { |_pid| flunk("process should not be checked for a frozen-category session") }
-
-    service = SessionRecoveryService.new(@session, process_manager: mock_pm, skip_pid_check: false)
-
-    assert_no_enqueued_jobs do
-      result = service.recover
-      assert result, "Expected recover to return true (handled) for a frozen-category session"
-    end
-
-    # Status is left untouched — no transition to needs_input.
-    assert_equal "running", @session.reload.status
-  end
-
   test "recover with stopped process transitions to needs_input" do
     # Create a mock process manager that reports the process as stopped
     mock_pm = Object.new

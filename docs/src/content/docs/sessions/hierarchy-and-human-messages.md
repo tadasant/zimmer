@@ -444,8 +444,9 @@ untouched beside the composed prompt — the chat bubble and the browser extensi
 `prompt` column everywhere else. Plenty of other entry points compose a prompt too: a trigger
 renders a template, the GitHub poller appends an event block, the backlog prepends an issue URL.
 None of them keeps an unwrapped copy, so `prompt` is the narrowest text there is and stays the
-fallback. The same string reaches category inference, which is fed at most 1,500 characters — a
-page-context block runs to 50,000, so the composed prompt would have been all block and no ask.
+fallback, and it is what the title is derived from when there is no transcript yet — a
+page-context block runs to 50,000 characters, so the composed prompt would have been all block and
+no ask.
 
 The slug is derived from the title at the moment the title is *first* applied, and
 `generate_slug_from_title!` returns early once a slug exists, so a title changed later leaves the

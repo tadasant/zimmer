@@ -22,11 +22,8 @@ class CleanupOrphanedSessionsJob < ApplicationJob
   private
 
   # Find and recover sessions stuck in 'running' status with no active job.
-  # Sessions in a frozen category are a parked bucket and are excluded from every
-  # query in this job, so the orphan cleanup never touches them (this also covers
-  # the continuation paths below, which bypass SessionRecoveryService).
   def recover_running_orphans
-    orphaned_sessions = Session.not_in_frozen_category.where(status: :running).select do |session|
+    orphaned_sessions = Session.where(status: :running).select do |session|
       orphaned_running_session?(session)
     end
 
@@ -64,7 +61,6 @@ class CleanupOrphanedSessionsJob < ApplicationJob
   # reaches waiting via pending_sleep WITHOUT paused_by).
   def continue_recovery_paused_sessions
     recovery_paused = Session
-      .not_in_frozen_category
       .where(status: [ :needs_input, :waiting ])
       .where("metadata->>'paused_by' = 'recovery'")
 
@@ -88,7 +84,6 @@ class CleanupOrphanedSessionsJob < ApplicationJob
     # Also picks up sessions left in failed+paused_by:recovery if a prior
     # recovery attempt cleared exception_class but then failed before resuming.
     interrupt_failed = Session
-      .not_in_frozen_category
       .where(status: :failed)
       .where(
         "metadata->>'exception_class' = 'GoodJob::InterruptError' OR " \

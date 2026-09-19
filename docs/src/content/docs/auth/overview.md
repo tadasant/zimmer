@@ -149,7 +149,7 @@ credential sitting in a browser. Revoke the extension's key before any such roll
 What it still isn't:
 
 - **No scoping within the API.** Any valid `api` key can read, mutate, and delete every session,
-  trigger, and category. The `quick_router` grant is a second, closed door beside that one, not a
+  and trigger. The `quick_router` grant is a second, closed door beside that one, not a
   permission system behind it.
 - **No per-session identity.** The agents share the deployment's self-session key. See
   [the limitation](/limitations/#api-keys-have-names-but-no-scope-and-the-whole-fleet-shares-one).

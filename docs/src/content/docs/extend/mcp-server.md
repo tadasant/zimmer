@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 36 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 35 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -76,7 +76,7 @@ session gets exactly the surface it should have and no more.
 
 | URL | Tools |
 | --- | --- |
-| `/mcp` | The default surface — 24 tools; the opt-in groups are not among them |
+| `/mcp` | The default surface — 26 tools; the opt-in groups are not among them |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 8 tools a session needs to run itself |
 | `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
@@ -103,9 +103,9 @@ narrowings of the full surface; [`message_parent`](#message_parent-the-one-actio
 is on this surface and on no other.
 A session can manage itself; it cannot restart, fork, or re-configure anything. In particular the
 capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_skills`,
-`change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,
+`change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`,
 `toggle_push_notifications` — are deliberately absent here: a session must not rewrite
-its own capabilities, goal, or organizational placement through the server injected into it. (The
+its own capabilities or goal through the server injected into it. (The
 *action* is narrowed, not the *target*: every tool takes a `session_id`, and a session is trusted to
 pass its own. See the caution above.)
 
@@ -202,11 +202,11 @@ production.
 
 ## The tool surface
 
-36 tools, eight domains — 27 of them on the unscoped surface.
+35 tools, eight domains — 26 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
-| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_categories`, `manage_models`, `reorder_user_view`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis` |
+| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_models`, `reorder_user_view`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
@@ -258,7 +258,7 @@ later in a prompt is not visible in the listing; `query` does not read the promp
 for the identifier a router put in `custom_metadata` instead.
 
 Rows are **compact by default**: they carry status, runtime, pause, board visibility, genesis and
-scheduling class, precedence and both timestamps, and omit six per-session fields — slug, category,
+scheduling class, precedence and both timestamps, and omit five per-session fields — slug,
 repository, branch, the prompt preview and the MCP server list. That is what makes the advertised
 `per_page: 100` a page you actually get back. With the full row a hundred results came to 54,034
 characters and the runtime refused the tool result outright, so the real ceiling was 35–40 and the
@@ -609,7 +609,7 @@ queue](/sessions/spot-and-priority/#placing-something-at-the-head-of-the-queue).
 
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
 config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,
-`change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,
+`change_plugins`, `change_goal`, `change_auto_compact_window`,
 `toggle_push_notifications` — mirror the inline editors on the session page. List-valued fields
 (`mcp_servers`, `skills`, `hooks`, `plugins`) use **replace, not merge** semantics, and every id is
 validated against its catalog, so an unknown skill/hook/plugin id is rejected with the valid options

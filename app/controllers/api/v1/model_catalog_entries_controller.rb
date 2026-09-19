@@ -49,8 +49,8 @@ class Api::V1::ModelCatalogEntriesController < Api::BaseController
 
   # DELETE /api/v1/model_catalog_entries/:id
   #
-  # Refused with 422 while the Settings page's session default or the
-  # categorization model names it. Sessions already on the model keep it.
+  # Refused with 422 while the Settings page's session default names it.
+  # Sessions already on the model keep it.
   def destroy
     entry = ModelCatalogEntry.find(params[:id])
 

@@ -35,7 +35,7 @@ module Mcp
       # and names the two calls that return them. The scheduling fields — status,
       # paused, visibility, genesis, class, precedence, timestamps — are always
       # rendered, because they are what this listing is read for.
-      COMPACT_OMITTED_FIELDS = [ "Slug", "Category", "Repository", "Branch", "Prompt", "MCP Servers" ].freeze
+      COMPACT_OMITTED_FIELDS = [ "Slug", "Repository", "Branch", "Prompt", "MCP Servers" ].freeze
 
       tool_name "quick_search_sessions"
 
@@ -65,7 +65,7 @@ module Mcp
 
         **Returns:** A list of matching sessions with their status, configuration, and metadata.
 
-        **Rows are compact by default.** Each result carries what a listing is read for — status, runtime, pause, board visibility, genesis and scheduling class, precedence, an auth-outage park and the mechanism that wakes it, and both timestamps — and omits six per-session fields: slug, category, repository, branch, the prompt preview and the MCP server list. That is what makes the advertised `per_page: 100` actually return: the full row is roughly twice the size, and a full page of them exceeds the tool-result limit. The omission is stated in every response, never silent. Pass `verbose: true` for the full rows, or `get_session` for one session in full — where the **Prompt** line is a preview of the first #{MAX_PROMPT_DISPLAY_LENGTH} characters.
+        **Rows are compact by default.** Each result carries what a listing is read for — status, runtime, pause, board visibility, genesis and scheduling class, precedence, an auth-outage park and the mechanism that wakes it, and both timestamps — and omits five per-session fields: slug, repository, branch, the prompt preview and the MCP server list. That is what makes the advertised `per_page: 100` actually return: the full row is roughly twice the size, and a full page of them exceeds the tool-result limit. The omission is stated in every response, never silent. Pass `verbose: true` for the full rows, or `get_session` for one session in full — where the **Prompt** line is a preview of the first #{MAX_PROMPT_DISPLAY_LENGTH} characters.
 
         **Session statuses:**
         - waiting: Not executing. Either its turn has been handed over and is queued for one of Zimmer's agent worker threads (it starts on its own, usually within minutes), or it is dormant — held at the spot gate, paused for quota headroom, parked on an auth outage, or asleep on a wake it armed. `get_session` names which. A `waiting` session is still in flight; it is not waiting on you.
@@ -143,7 +143,7 @@ module Mcp
           },
           verbose: {
             type: "boolean",
-            description: "Render the full row for each result — adds slug, category, repository, branch, the prompt preview and the MCP server list. Default: false. A full page of verbose rows can exceed the tool-result size limit, so raise per_page and verbose together with care; the compact row carries every scheduling field either way."
+            description: "Render the full row for each result — adds slug, repository, branch, the prompt preview and the MCP server list. Default: false. A full page of verbose rows can exceed the tool-result size limit, so raise per_page and verbose together with care; the compact row carries every scheduling field either way."
           }
         },
         required: []
@@ -272,7 +272,7 @@ module Mcp
         # Status-summary forks are Zimmer's own bookkeeping, not sessions anyone
         # searches for — excluded here for the same reason the dashboard excludes
         # them, so the two surfaces list the same sessions.
-        scope = Session.includes(:category).excluding_status_summary_forks
+        scope = Session.excluding_status_summary_forks
         scope = args["order"].to_s == "precedence" ? scope.ranked : scope.order(created_at: :desc)
 
         # One status or several: an array matches any of them, the way the
@@ -417,7 +417,6 @@ module Mcp
         lines << "- **Genesis:** #{session.genesis_key} (#{session.priority_class(genesis_class_overrides)})"
         lines << "- **Precedence:** #{session.precedence}"
         if verbose
-          lines << "- **Category:** #{session.category.name}" if session.category
           lines << "- **Repository:** #{session.git_root}" if session.git_root.present?
           lines << "- **Branch:** #{session.branch}" if session.branch.present?
           lines << "- **Prompt:** #{truncate_prompt(session.prompt)}" if session.prompt.present?

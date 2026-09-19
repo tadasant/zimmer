@@ -202,7 +202,7 @@ transition, and it does nine things beyond changing status:
    recovery pause; see [which pauses announce themselves](#which-pauses-announce-themselves).
 5. `enqueue_debounced_needs_input_push_notification(marker)` — see below. Skipped for a recovery
    pause, for the same reason. Steps 4 and 5 are the pause's *announcement* and travel together.
-6. `enqueue_session_inference_if_needed` — LLM-generates a title and category if still pending.
+6. `enqueue_session_inference_if_needed` — LLM-generates a title if still pending.
    Skipped when a `SessionTitleJob` for this session is already queued and not yet claimed: it
    reads the transcript when it runs, so a second one behind it would only find the work done. The
    job `Session` schedules two minutes after creation counts, so a session that comes to rest inside
@@ -301,11 +301,11 @@ That matters because a fired one-time wake destroys its siblings. The pattern [`
 
 **The suppression is a deferral, not a deletion, and that is what makes it safe.** `RecoveryContinuationJob` (asked for by the parking code itself, on a 30-second delay), `CleanupOrphanedSessionsJob` (every five minutes) and `DeploymentRecoveryJob` (once at boot) all select on `paused_by = 'recovery'` and auto-continue what they find. `SessionContinuation` bounds that at `MAX_CONTINUE_ATTEMPTS` — roughly an hour — and when it gives up it drops the marker, writes an `error`-level "will not be retried again" line, **and makes the announcement the pause skipped**, via `Session#announce_deferred_needs_input!`. So a recovery-paused session that is never continued still wakes its watchers and still pushes, exactly once, at the moment it stopped being Zimmer's problem and became a human's.
 
-Which is why the carve-out asks whether a sweep is actually coming, not merely whether the marker is set. A session parked in a **frozen category** is excluded from every query in both sweeps (`Session.not_in_frozen_category`), so there is no deferral to make — nothing continues it, and `SessionContinuation` never runs to announce it later either. That pause is announced at the time, like any other stop. `AgentSessionJob`'s recovery-pause writers do not check the category, because they run inside the session's own job rather than in a bulk recovery flow; `SessionRecoveryService` bails on a frozen category before it ever pauses.
+The deferral holds only because a sweep is actually coming: both sweeps select every recovery pause. If some recovery pause ever became one no sweep selects, suppressing its announcement would delete it rather than defer it — so any such carve-out has to be taught to `announcement_deferred_to_recovery_sweep?` too.
 
 Two edges the deferred announcement deliberately does not cover. A session abandoned in `failed` already fired `session_failed` and an unconditional failure push when it failed. A session bounced to `waiting` by `execute_pending_sleep` is dormant, and telling a watcher it "needs input" would be a claim about a state it is not in — the settled event would drop it anyway.
 
-**The missing-PR warning is deferred on the same test, and lands with the same announcement.** Step 1 of the pause is a *backstop*, and its budget is one warning per session — so the pause that spends it has to be a pause the session actually came to rest in. A recovery pause is not: nothing about the session's pull-request work is settled, it is on its way back to `running`, and it is the one pause nobody is told about. Session 5679 spent its whole budget on a deploy interrupt six minutes in, ran for two more days, opened a PR through a route `GithubPrUrlHook` did not recognise, and came to rest with nothing recorded and nothing said ([#558](https://github.com/tadasant/zimmer/issues/558)). So `pause` skips step 1 whenever it skips steps 4 and 5, and a frozen-category recovery pause writes it at the time, exactly as it announces at the time.
+**The missing-PR warning is deferred on the same test, and lands with the same announcement.** Step 1 of the pause is a *backstop*, and its budget is one warning per session — so the pause that spends it has to be a pause the session actually came to rest in. A recovery pause is not: nothing about the session's pull-request work is settled, it is on its way back to `running`, and it is the one pause nobody is told about. Session 5679 spent its whole budget on a deploy interrupt six minutes in, ran for two more days, opened a PR through a route `GithubPrUrlHook` did not recognise, and came to rest with nothing recorded and nothing said ([#558](https://github.com/tadasant/zimmer/issues/558)). So `pause` skips step 1 whenever it skips steps 4 and 5.
 
 The make-good is `SessionContinuation`'s give-up branch, one line above the deferred announcement — and unlike the announcement it is **not** gated on `resting_in_needs_input?`. The warning is a factual timeline note rather than a claim that a human is needed, so it is due in whatever state the session was abandoned in, and the state that needs it most is the one the guard excludes: a recovery pause carrying `pending_sleep` is bounced straight on to `waiting` by `execute_pending_sleep` with nothing armed to resume it. `fail` and `archive` stay unconditional behind that, so the warning is deferred rather than lost: a session that is never resumed says it when it is failed or trashed.
 
@@ -980,8 +980,7 @@ So the dead-process branch asks for the continuation itself. `RecoveryContinuati
 with a 30-second delay and delegates to the very same `SessionContinuation` the sweeps use, so there
 is one implementation of "continue a recovery-paused session" and one attempt budget. Every guard the
 sweeps apply is re-asked of the row at delivery time — still `paused_by: "recovery"`, still
-`needs_input` or `waiting`, not in a frozen category — because all three can change inside the delay
-window, and `Session#claim_system_recovery_turn!` re-reads the row `FOR UPDATE` so a cron tick
+`needs_input` or `waiting` — because both can change inside the delay window, and `Session#claim_system_recovery_turn!` re-reads the row `FOR UPDATE` so a cron tick
 landing at the same moment cannot produce two turns. The cron stays the backstop rather than the
 mechanism.
 
@@ -1043,7 +1042,6 @@ It moves a session only when every one of these holds, and each condition is doi
 | No runtime `session_id` | The predicate every other recovery path uses for "has never run" |
 | `RuntimeConversationPresence` says no conversation | A runtime that mints its own id (Codex) can have written a whole turn while Zimmer's column is blank; re-queueing that session would run its prompt twice |
 | A prompt to run | The same carve-out `StalledSessionStart` makes — a prompt-less session is waiting on a human, and no sweep would start it |
-| Not in a frozen category | A parked bucket every bulk flow leaves alone |
 | No wake of its own armed | `StalledSessionStart` partitions a session with a pending one-time wake out of its batch, and that disqualifier is not a metadata marker, so the return could not drop it — a session moved with one armed would be read by neither owner |
 | `unstarted_requeue_count` under `MAX_RETURNS` | See the bound below |
 
@@ -2536,24 +2534,6 @@ render their results as a paginated card grid, because that is what they are.
 The equivalent for an agent is `quick_search_sessions`, whose `status` argument takes one status
 or an array of them.
 
-### Card order is a stored rank with no dashboard that reads it
-
-`sessions.sort_order` is a card's rank inside its category bucket, and `SessionCardOrder` is the
-logic that writes it: a move places one card next to its neighbour and moves nothing else, an
-arrival goes on top of its bucket, and a move rewrites only the rows whose rank changed rather than
-renumbering the section. Drags that touch the same bucket are serialized with an advisory lock.
-
-**Nothing in the web UI reads it today.** It was the ordering of the category-grouped card grid, and
-that grid was replaced by the [User view](/sessions/user-view/), which is ordered by scheduling class
-and [precedence](/sessions/spot-and-priority/) instead. The two writers that remain are both agent
-surfaces — `manage_categories`' `reorder_sessions` action over MCP and `POST /api/v1/sessions/reorder`
-over REST — so an agent can still set a card order, and no human-facing screen currently renders it.
-That is recorded in [Limitations](/limitations/).
-
-The order was always global rather than per-viewer, and still is: Zimmer is a single circle of trust
-with no `User` model, so there is no principal to hang a per-viewer order on and the position lives
-on the session row.
-
 ## Manual refresh
 
 The dashboard's refresh controls are the human counterpart to those background actors. There
@@ -2562,7 +2542,7 @@ are four of them, and they all end up in `SessionsController`:
 | Control | Action | Scope |
 | --- | --- | --- |
 | The per-card icon next to a session's status badge | `#refresh` | that one session |
-| "Refresh all" in the header | `#refresh_all` | every non-archived session outside a frozen category |
+| "Refresh all" in the header | `#refresh_all` | every non-archived session |
 
 There were two more — a per-category button and one on the **Starred** group — and both went with
 the category grid that carried them, along with the `#refresh_category` and `#refresh_starred`
@@ -2804,9 +2784,8 @@ Three rules keep the backfill from taking something away from the reader:
 - **An `append` region never removes.** Older pages pulled in by infinite scroll are not in the
   server's tail render, and are left where they are. The one exception is a child marked
   `data-live-transient` (the empty-state placeholder), which a broadcast would have removed too.
-- **A `sync` region showing a different page is skipped.** The dashboard's category sections page
-  inside their own `<turbo-frame>` without changing `window.location`, so re-fetching that URL
-  returns page 1 — and syncing it would throw away the page the reader had paged to. Each grid
+- **A `sync` region showing a different page is skipped.** A grid that pages inside its own
+  `<turbo-frame>` does so without changing `window.location`, so re-fetching that URL returns page 1 — and syncing it would throw away the page the reader had paged to. Each grid
   records its page in `data-live-page`, and a mismatch means hands off.
 
 Appending by id needs rows that *have* ids, and timeline rows are not records — a row is a `Log`,

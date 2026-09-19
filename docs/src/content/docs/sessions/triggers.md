@@ -694,8 +694,7 @@ with no marker and no wait, so the settle window never applies, and `resting_in_
 and nothing else, by design — is true for a session parked by a recovery sweep. So the immediate-fire
 path asks the same question the `pause` callback asks,
 [`announcement_deferred_to_recovery_sweep?`](/sessions/lifecycle/#which-pauses-announce-themselves),
-and leaves the watcher armed instead of firing it. A frozen category still fires at once, because no
-sweep is coming to make the announcement later.
+and leaves the watcher armed instead of firing it.
 
 What that buys is the wake *set*, not a promise that a lone `session_needs_input` condition is
 enough. The continued session can go on to archive — which prunes every non-`session_archived`
@@ -923,10 +922,6 @@ the ceiling for the *whole* stretch, and both the sweep and the state-machine ho
 the moment it is at or over the ceiling again. A fleet that flaps *across its ceiling* never
 accumulates a stretch. Churn well *under* the ceiling is not flapping and resets nothing — a fleet of
 four with a ceiling of twelve has not stopped being quiet because a fifth session started.
-
-The `running` count is scoped `not_in_frozen_category`, matching `CleanupOrphanedSessionsJob` and
-`DeploymentRecoveryJob`: a `running` row in a frozen category is one nothing will ever repair, and
-counting it would pin the monitor to "busy" forever with nothing to say why.
 
 ##### Why a dwell and a cooldown, not just a level
 

@@ -61,16 +61,6 @@ class SessionRecoveryService
   # 2. Duplicate monitoring jobs are wasteful but not harmful
   # 3. The mitigation significantly reduces the problem even if it doesn't completely eliminate it
   def recover
-    # Sessions parked in a frozen category are intentionally left alone by every
-    # bulk recovery flow. Guarding here covers all callers (refresh-all, the
-    # cleanup cron, and deployment recovery) from a single chokepoint. Return true
-    # so callers treat the session as "handled" and don't transition it.
-    if session.category&.is_frozen?
-      add_log("Skipping recovery - category is frozen", level: "debug")
-      @logger.info("Skipped recovery - frozen category", session_id: session.id, category_id: session.category_id)
-      return true
-    end
-
     # Check if there's already a pending monitoring job for this session
     # This prevents duplicate job enqueuing when CleanupOrphanedSessionsJob runs repeatedly
     if pending_monitoring_job_exists?

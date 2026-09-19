@@ -148,7 +148,6 @@ class StalledSessionStart
       cutoff = now - grace
 
       relation = Session
-        .not_in_frozen_category
         .where(status: :waiting)
         # A blank runtime session id is what "has never run" means everywhere
         # else in recovery, and it is also what keeps this sweep off a

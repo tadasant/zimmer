@@ -143,10 +143,9 @@ class ModelCatalogEntry < ApplicationRecord
     errors.add(:model_id, "must be provider-qualified, like openrouter/<vendor>/<model>")
   end
 
-  # AppSetting re-validates its default model and categorization model on every
-  # save, so removing a model one of them names would break every later settings
-  # write, including ones that have nothing to do with models. Change the setting
-  # first. A row shadowed by a built-in entry is exempt: the id stays valid
+  # AppSetting re-validates its default model on every save, so removing the
+  # model it names would break every later settings write, including ones that
+  # have nothing to do with models. Change the setting first. A row shadowed by a built-in entry is exempt: the id stays valid
   # without it.
   def refuse_while_a_setting_uses_it
     return if shadowed_by_built_in?
@@ -155,8 +154,6 @@ class ModelCatalogEntry < ApplicationRecord
 
     if setting.default_model == model_id && default_runtime == runtime
       errors.add(:base, "#{model_id} is the session default on the Settings page. Pick another default first.")
-    elsif runtime == RuntimeRegistry::DEFAULT_RUNTIME && setting.category_inference_model == model_id
-      errors.add(:base, "#{model_id} is the categorization model. Pick another one on the Categorization page first.")
     end
 
     throw :abort if errors[:base].any?

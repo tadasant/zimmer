@@ -206,15 +206,6 @@ class AbandonedStatusSummaryForkSweepJobTest < ActiveSupport::TestCase
     refute fork.reload.archived?, "without a fork point there is no positive evidence of a missing turn"
   end
 
-  test "leaves a fork in a frozen category alone" do
-    category = Category.create!(name: "Parked #{SecureRandom.hex(3)}", is_frozen: true)
-    fork = undispatched_fork(category: category)
-
-    AbandonedStatusSummaryForkSweepJob.perform_now
-
-    refute fork.reload.archived?
-  end
-
   # A spot-held fork is the sharpest must-not-reap case in the file. The hold
   # takes CUSTODY of the turn: SpotSessionHold#hold! removes
   # `pending_follow_up_prompt` and `return_to_queue!` clears `running_job_id`, so

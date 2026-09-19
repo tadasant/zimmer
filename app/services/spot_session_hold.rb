@@ -1147,8 +1147,8 @@ class SpotSessionHold
       # an advisory lock, because the lane's width is the whole bound: two
       # re-checks performing at once — every re-check whose time passed during a
       # deploy becomes ready in the same instant — would both read an empty lane
-      # and both admit. The lock is transaction-scoped and named, the same shape
-      # SessionCardOrder uses; nothing else waits on it.
+      # and both admit. The lock is transaction-scoped and named; nothing else
+      # waits on it.
       admitted = Session.transaction do
         Session.connection.execute(
           Session.sanitize_sql_array([ "SELECT pg_advisory_xact_lock(hashtext(?))", "spot_starvation_lane" ])

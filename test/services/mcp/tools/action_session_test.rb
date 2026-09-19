@@ -1345,32 +1345,6 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/must be between 1 and/, zero.message)
   end
 
-  test "change_category assigns and clears the organizational category" do
-    session = sessions(:needs_input)
-    category = Category.create!(name: "Infra")
-
-    assign = @tool.call("action" => "change_category", "session_id" => session.id, "category_id" => category.id)
-    assert_includes assign, "## Category Updated"
-    assert_includes assign, "- **Category:** Infra"
-    assert_equal category.id, session.reload.category_id
-
-    clear = @tool.call("action" => "change_category", "session_id" => session.id, "category_id" => nil)
-    assert_includes clear, "- **Category:** (uncategorized)"
-    assert_nil session.reload.category_id
-  end
-
-  test "change_category rejects an unknown category" do
-    error = assert_raises(Mcp::ToolError) do
-      @tool.call("action" => "change_category", "session_id" => sessions(:needs_input).id, "category_id" => 999_999)
-    end
-    assert_match(/Category #999999 not found/, error.message)
-  end
-
-  test "change_category requires the category_id key" do
-    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "change_category", "session_id" => sessions(:needs_input).id) }
-    assert_match(/"category_id" parameter is required/, error.message)
-  end
-
   test "toggle_push_notifications flips the push flag" do
     session = sessions(:needs_input)
     session.update!(push_notifications_enabled: false)

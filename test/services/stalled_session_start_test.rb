@@ -255,16 +255,6 @@ class StalledSessionStartTest < ActiveSupport::TestCase
     end
   end
 
-  test "sessions in a frozen category are never touched" do
-    category = Category.create!(name: "Parked #{SecureRandom.hex(4)}", is_frozen: true)
-    session = stalled_session
-    session.update_columns(category_id: category.id)
-
-    assert_no_enqueued_jobs(only: AgentSessionJob) do
-      assert_equal 0, StalledSessionStart.sweep!.stalled
-    end
-  end
-
   test "only waiting sessions are swept" do
     session = stalled_session
     session.update_columns(status: Session.statuses[:archived])

@@ -268,17 +268,6 @@ class RunningTurnsTest < ActiveSupport::TestCase
     end
   end
 
-  # FleetIdleMonitor scopes the same reading the way Zimmer's recovery jobs do:
-  # a `running` row in a frozen category is one nothing will ever repair.
-  test "the fleet ceiling still skips frozen categories" do
-    frozen = Category.create!(name: "Frozen #{SecureRandom.hex(3)}", is_frozen: true)
-    on_a_worker!(session.tap { |s| s.update!(category: frozen) })
-    on_a_worker!(session)
-
-    assert_equal 1, FleetIdleMonitor.running_sessions
-    assert_equal 1, FleetIdleMonitor.running_turns.on_a_worker
-  end
-
   test "the worker-slot ceiling is the agents lane's own thread count" do
     assert_equal ConnectionBudget.good_job_queue_threads[:agents], RunningTurns.worker_slots
   end
