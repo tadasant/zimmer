@@ -496,7 +496,9 @@ always explicitly set on the created session.
 
 `agent_runtime` must name a registered runtime; an unregistered value → 422.
 
-Valid models are a property of the runtime, not the root (`ModelCatalog::MODELS`):
+Valid models are a property of the runtime, not the root (`ModelCatalog`). The built-in ones are
+below; models added through [`/model_catalog_entries`](#models) are valid too, and `GET /configs`
+lists both:
 
 | Runtime | Models |
 | --- | --- |
@@ -1148,6 +1150,41 @@ curl -X POST "$BASE_URL/sessions/reorder" \
   -d '{"ids": [41, 17, 92], "category_id": 5, "session_id": 17}'
 ```
 
+## Models
+
+Models added to a runtime's catalog without a deploy. The built-in models are read-only and are
+listed with the added ones under `runtime_models` in `GET /configs`. Settings → Models and the
+`manage_models` MCP tool write through the same path; see
+[Adding a model without a deploy](/sessions/runtimes/#adding-a-model-without-a-deploy).
+
+| Endpoint | |
+| --- | --- |
+| `GET /model_catalog_entries` | `{model_catalog_entries: [...]}`, every added model |
+| `POST /model_catalog_entries` | Add one. `runtime` and `model_id` are required; `label`, `requires_oauth` and `allow_unlisted` are optional. 201 with `{model_catalog_entry}` |
+| `DELETE /model_catalog_entries/:id` | Remove one. 204 |
+
+An entry is `{id, runtime, model_id, label, requires_oauth, cli_listed, cli_version, cli_note,
+shadowed_by_built_in, added_via, created_at}`. `label` falls back to `model_id`. `cli_listed` is
+what the installed CLI said when the model was added: `true`, `false`, or `null` when the runtime
+has no model list (Claude Code) or the check could not run. `shadowed_by_built_in` is true once a
+deploy has made the id built-in, and then the row does nothing. `added_via` is `web_ui`, `api` or
+`mcp`.
+
+A `POST` is refused with 422 in two ways. `error: "Validation failed"` is the id's shape: whitespace,
+a leading `-`, more than 100 characters, a dated snapshot, a Claude version pin under `claude_code`, a Pi id with no provider,
+a duplicate, or an id that is already built in. `error: "Model not listed by CLI"` means the CLI's
+model list does not name the id. That response also carries `cli_listed`, `cli_version` and
+`cli_note`, and resending with `allow_unlisted: true` adds it anyway.
+
+A `DELETE` is refused with 422 and `error: "Model in use"` while the Settings page's session default
+or the categorization model names the model.
+
+```bash
+curl -X POST "$BASE_URL/model_catalog_entries" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"runtime": "codex", "model_id": "gpt-5.7", "allow_unlisted": true}'
+```
+
 ## Work backlog
 
 The [work backlog](/operate/work-backlog/): the ranked queue of issues the issue work gate has
@@ -1257,7 +1294,7 @@ curl "$BASE_URL/gate_decisions?gate=pr_merge&surface=zimmer&decision=hold&per_pa
 | **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent · undelivered`; the read payload also carries `origin` ∈ `caller · automated_pr_merged · automated_merge_conflict · automated_recovery_nudge`, which records who wrote the row. No request can set it: every create site names its attributes literally and no `permit` list mentions it. Zimmer assigns it, and on one internal path (`SpotSessionHold`, for a refused turn it is re-queueing) derives it from the prompt body. Archiving a session is **refused** (422) while any row is `pending`, since the archive would discard it; `force: true` on the archive overrides that and retires the rows to `undelivered` — see [lifecycle](/sessions/lifecycle/). Deleting one re-numbers the positions behind it |
 | **CLIs** | `GET /clis/status` · `POST /clis/refresh` · `POST /clis/clear_cache` |
 | **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status`. `status` returns `{state, generated_at, session_count, file_size_bytes, stale, stale_reason, complete, deferred_count, incomplete_reason}` where `state` is `present`. `complete` is false while the job is still draining a backlog — a partial archive is freshly written, so `stale` is false and `complete` is the only thing that distinguishes it; a 404 carries `state` `never_built` or `missing` plus the `archive_path` it looked at, so "no archive" is a fact you can check rather than a promise to wait. The download's `X-Archive-*` headers carry the same generated-at, session count and staleness. **Not the way to search conversations** — use `/sessions/search?search_contents=true`; the zip is hundreds of megabytes and up to ten minutes stale |
-| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, and `requires_oauth` · each goal is `{id, name, description, checks}`, where `checks` names the [goal check](/sessions/goals/#how-a-goal-is-checked) criteria · `GET /mcp_servers` → `{name, title, scope, description, unavailable, unavailable_reason, startup_timeout_sec}` · `GET /skills` |
+| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, `requires_oauth` and `source` (`built_in` or `added`; an added model also carries `cli_listed`, `cli_version` and `cli_note`, see [Models](#models)) · each goal is `{id, name, description, checks}`, where `checks` names the [goal check](/sessions/goals/#how-a-goal-is-checked) criteria · `GET /mcp_servers` → `{name, title, scope, description, unavailable, unavailable_reason, startup_timeout_sec}` · `GET /skills` |
 
 **Every artifact also says which AIR catalog it came from.** A server carries `scope`, and a root
 and a skill carry `qualified_name`, so two artifacts that a composed catalog contributes under the

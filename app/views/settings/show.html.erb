@@ -89,6 +89,24 @@
         </div>
       </div>
 
+      <%# The model catalog lives on its own page: it lists every runtime's models,
+          which does not fit beside the defaults form. See ModelCatalogEntriesController. %>
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Models</h2>
+          <p class="mt-1 text-sm text-gray-500">
+            The models each runtime offers, and adding one without a deploy. Zimmer checks a new id
+            against the CLI in the image before saving it.
+          </p>
+        </div>
+        <div class="px-4 py-5 sm:px-6">
+          <%= link_to model_catalog_entries_path,
+                class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+            Manage models
+          <% end %>
+        </div>
+      </div>
+
       <%# Categorization tuning lives on its own page: the useful part of it is a
           table of corrections and a replay score, which does not fit beside a
           dropdown. See CategorizationController. %>
