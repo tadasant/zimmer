@@ -6470,6 +6470,114 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal SessionPrecedence::DEFAULT, Session.last.precedence
   end
 
+  # ---- The Quick Router's Advanced accordion: model selection ----
+  #
+  # These run against the REAL catalog rather than stub_router_agent_root, because
+  # what the picker offers and what the controller accepts are both scoped to the
+  # router root's resolved runtime — a stub with no default_runtime would prove
+  # nothing about the scoping.
+
+  test "quick_prompt pins the chosen model on the created session" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    runtime = AgentRootsConfig.find!(AgentRootsConfig.router_root_name).default_runtime
+    chosen = ModelCatalog.model_ids_for(runtime).find { |m| m != ModelCatalog.default_for(runtime) }
+    assert chosen, "the router runtime needs at least two models for this to mean anything"
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", model: chosen }
+
+    assert_equal chosen, Session.last.config["model"]
+  end
+
+  test "quick_prompt falls back to the router root's default model when none is chosen" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    root = AgentRootsConfig.find!(AgentRootsConfig.router_root_name)
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug" }
+
+    assert_equal root.default_model, Session.last.config["model"]
+  end
+
+  # An untouched <select> posts "" — the blank option is the default, and it must
+  # not pin anything.
+  test "quick_prompt treats a blank model as no selection" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    root = AgentRootsConfig.find!(AgentRootsConfig.router_root_name)
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", model: "  " }
+
+    assert_equal root.default_model, Session.last.config["model"]
+  end
+
+  test "quick_prompt ignores a model the router runtime does not offer" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    root = AgentRootsConfig.find!(AgentRootsConfig.router_root_name)
+    foreign = ModelCatalog.model_ids_for("codex").first
+    assert_not ModelCatalog.valid_model?(root.default_runtime, foreign)
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", model: foreign }
+    assert_equal root.default_model, Session.last.config["model"]
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix it again", model: "not-a-model" }
+    assert_equal root.default_model, Session.last.config["model"]
+  end
+
+  test "quick_prompt ignores a model that is not a string" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    root = AgentRootsConfig.find!(AgentRootsConfig.router_root_name)
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", model: [ "opus" ] }
+    assert_equal root.default_model, Session.last.config["model"]
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix it again", model: { value: "opus" } }
+    assert_equal root.default_model, Session.last.config["model"]
+  end
+
+  test "quick_prompt carries a chosen model and a spot opt-in together" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    runtime = AgentRootsConfig.find!(AgentRootsConfig.router_root_name).default_runtime
+    chosen = ModelCatalog.model_ids_for(runtime).find { |m| m != ModelCatalog.default_for(runtime) }
+
+    post quick_prompt_sessions_url,
+      params: { prompt: "Long unattended sweep", model: chosen, scheduling_class: "spot" }
+
+    session = Session.last
+    assert_equal chosen, session.config["model"]
+    assert_equal SessionGenesis::SPOT, session.scheduling_class
+  end
+
+  test "the dashboard offers the router runtime's models with none preselected" do
+    root = AgentRootsConfig.find!(AgentRootsConfig.router_root_name)
+    models = ModelCatalog.model_ids_for(root.default_runtime)
+
+    get root_url
+
+    assert_response :success
+    # Both surfaces — the desktop row and the mobile overlay — carry their own copy.
+    [ "quick_prompt_desktop_model", "quick_prompt_mobile_model" ].each do |id|
+      assert_select "select##{id}" do
+        assert_select "option[value=?]", "", text: /Default \(#{Regexp.escape(root.default_model)}\)/
+        models.each { |m| assert_select "option[value=?]", m }
+        assert_select "option[selected]", count: 0
+      end
+      assert_select "select##{id}[name=?]", "model"
+    end
+  end
+
+  test "the dashboard keeps both Quick Router knobs collapsed behind Advanced" do
+    get root_url
+
+    assert_response :success
+    # `<details>` with no `open` attribute: the one-box-and-go path is unchanged
+    # for anyone who just wants to type and submit.
+    assert_select "details:not([open])" do
+      assert_select "summary", text: /Advanced/
+    end
+    [ "desktop", "mobile" ].each do |scope|
+      assert_select "details:not([open]) ##{"quick_prompt_#{scope}_model"}"
+      assert_select "details:not([open]) ##{"quick_prompt_#{scope}_scheduling_class"}"
+    end
+  end
+
   test "chat_bubble stamps spot on the created session when the box is checked" do
     stub_router_agent_root
 

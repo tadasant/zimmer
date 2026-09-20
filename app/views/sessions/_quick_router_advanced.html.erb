@@ -1,0 +1,63 @@
+<%# The Quick Router's Advanced accordion: the model picker and the spot opt-in,
+    collapsed by default so the one-box-and-go path stays one box.
+
+    Rendered on both dashboard surfaces — the desktop inline row and the mobile
+    full-screen overlay — from this one partial, because the two forms post to
+    the same action and any drift between them is a bug the user only finds at
+    submit time. `scope` distinguishes the element ids, so the two copies that
+    are in the DOM at once never collide.
+
+    Locals: scope ("desktop"/"mobile"), models, default_model. %>
+<%
+  model_id = "quick_prompt_#{scope}_model"
+  spot_id = "quick_prompt_#{scope}_scheduling_class"
+  # Only the overlay carries Stimulus targets: it is reset in JS when it closes,
+  # so the controller needs a handle on these. The desktop row submits by
+  # navigating away and needs none.
+  mobile = scope == "mobile"
+%>
+<%# `inline-flex` on the summary drops the browser's default disclosure marker, so
+    the chevron is drawn here and rotated by the `group-open:` variant. Without one
+    the row reads as a label rather than as something you can open. %>
+<%= tag.details class: "group text-sm", data: (mobile ? { quick_prompt_target: "mobileAdvanced" } : {}) do %>
+  <summary class="inline-flex cursor-pointer select-none items-center gap-1 text-xs text-gray-500 hover:text-gray-700">
+    <svg class="h-3 w-3 flex-shrink-0 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+    </svg>
+    Advanced
+  </summary>
+  <div class="mt-2 space-y-3 rounded-md border border-gray-200 bg-gray-50 p-3">
+    <div>
+      <label for="<%= model_id %>" class="block text-xs font-medium text-gray-700">Model</label>
+      <%# Blank is the default and submits no `model` at all, so the ordinary
+          chain applies: the router root's default_model, then the Settings
+          default, then the runtime's catalog default. The default is NAMED in
+          the blank option rather than preselected — preselecting it would pin
+          today's default onto every Quick Router session and sever that link. %>
+      <%= select_tag :model,
+            options_for_select(models),
+            include_blank: default_model.present? ? "Default (#{default_model})" : "Default",
+            id: model_id,
+            data: mobile ? { quick_prompt_target: "mobileModel" } : {},
+            aria: { describedby: "#{model_id}_help" },
+            class: "mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500" %>
+      <p id="<%= model_id %>_help" class="mt-1 text-xs leading-snug text-gray-500">
+        Leave it on Default and the router agent root's own model applies.
+      </p>
+    </div>
+
+    <%# Spot opt-in. Unchecked submits no scheduling_class at all, so the session
+        derives its class from the `web_ui` genesis. Native form field — no JS
+        needed to submit it. %>
+    <label class="flex items-start gap-2 cursor-pointer" for="<%= spot_id %>">
+      <%= check_box_tag :scheduling_class, SessionGenesis::SPOT, false,
+            id: spot_id,
+            data: mobile ? { quick_prompt_target: "mobileSpot" } : {},
+            class: "mt-0.5 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" %>
+      <span class="text-xs leading-snug text-gray-500">
+        <span class="font-medium text-gray-700">Run as spot</span> &mdash;
+        waits for quota room instead of starting now, and lands at the top of the spot queue.
+      </span>
+    </label>
+  </div>
+<% end %>
