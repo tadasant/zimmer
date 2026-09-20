@@ -2208,27 +2208,99 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     end
   end
 
-  # The difference from the system-recovery branch, and it is the whole reason
-  # they are separate branches. A recovered session is put back to sleep; a
-  # followed-up one answers and rests, because somebody asked it a question.
-  test "a follow-up resume does not put the session back to sleep afterwards" do
+  # #1212. A session that answers a follow-up while still holding the wall-clock
+  # wake it armed for itself goes back to sleep on it. Router 19239 did not: it
+  # answered at 04:18:38Z with a 04:32:00Z backstop armed and sat in the homepage
+  # action queue for the whole fourteen minutes, with two children still running
+  # and nothing whatsoever for a human to do.
+  test "a follow-up resume puts the session back to sleep on the wake it kept" do
     session = sessions(:waiting)
     session.update!(status: :needs_input)
     child = sessions(:running)
     conditions = wake_set_for(session, watched: [ child ])
 
     session.reload.resume_for_follow_up!
-    assert_not session.reload.metadata["pending_sleep"],
-      "a follow-up wants an answer, so the turn must not be re-slept out from under it"
+    assert_equal true, session.reload.metadata["pending_sleep"]
+    assert_equal Sessions::StopRecord::FOLLOW_UP_RESLEEP,
+      session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
 
     # The resume queues the turn; a worker picks it up and the turn then ends.
     session.start!
     session.pause!
 
+    assert session.reload.waiting?,
+      "a session still holding its own armed backstop is on a wait, not in the action queue"
+    conditions.each { |condition| assert_nil condition.reload.last_triggered_at }
+    assert session.awaiting_scheduled_wake?,
+      "and the wake it kept is what collects it from waiting"
+  end
+
+  # The reported sequence end to end, in the order 19239 ran it: arm a backstop
+  # mid-turn, sleep on it, take a human follow-up, answer, come to rest. The
+  # session must not touch the action queue at either rest.
+  test "answering a follow-up mid-sleep returns the session to the wait it was already on" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    conditions = wake_set_for(session, watched: [], scheduled_at: 30.minutes.from_now.iso8601)
+    session.merge_metadata!(
+      Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE)
+    )
+
+    session.reload.pause!
+    assert session.reload.waiting?, "the turn that armed the backstop slept on it"
+
+    # The human's answer arrives and the session takes a turn for it.
+    session.resume_for_follow_up!
+    session.start!
+    session.pause!
+
+    assert session.reload.waiting?,
+      "answering the human did not end the wait, so the session must not rest in needs_input"
+    assert_nil conditions.sole.reload.last_triggered_at,
+      "and the backstop that will collect it is still armed"
+  end
+
+  # The anti-over-correction guard, and the reason the re-sleep asks for a
+  # SCHEDULE rather than any armed wake. A set of session watchers can be left
+  # holding nothing if the sessions they watch never transition through a watched
+  # event again; resting in needs_input keeps such a session visible instead of
+  # trading that for an indefinite sleep (#648).
+  test "a follow-up resume rests in needs_input when only session watchers are armed" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    conditions = wake_set_for(session, watched: [ child ], scheduled_at: nil)
+
+    session.reload.resume_for_follow_up!
+    assert_not session.reload.metadata["pending_sleep"],
+      "no scheduled backstop means no guaranteed wake, so the session must not be put back to sleep"
+
+    session.start!
+    session.pause!
+
     assert session.reload.needs_input?
     conditions.each { |condition| assert_nil condition.reload.last_triggered_at }
-    assert session.reload.awaiting_scheduled_wake?,
-      "and the wake it kept is what collects it from needs_input"
+  end
+
+  # The other guard, #1172's: the intent carries PENDING_SLEEP_REQUIRES_WAKE, so a
+  # backstop that fires or is retired during the answered turn voids it and the
+  # session comes to rest where the operator can see it.
+  test "a follow-up re-sleep is dropped when its backstop fires during the turn" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    conditions = wake_set_for(session, watched: [ child ])
+
+    session.reload.resume_for_follow_up!
+    assert_equal true, session.reload.metadata["pending_sleep"]
+
+    session.start!
+    conditions.each { |condition| condition.update!(last_triggered_at: Time.current) }
+    session.pause!
+
+    assert session.reload.needs_input?,
+      "sleeping with nothing left armed strands the session where only StrandedSleepRescue looks"
+    assert_not session.metadata["pending_sleep"], "and the void intent is cleared, not left to surprise a later turn"
   end
 
   # Preserving is for wakes that can still fire. One that cannot would otherwise

@@ -99,6 +99,19 @@ class Sessions::StopRecordTest < ActiveSupport::TestCase
     assert_equal Sessions::StopRecord::AUTH_OUTAGE_PARK, stop_reason
   end
 
+  # #1212. The re-sleep after an answered follow-up is its own cause, with a
+  # sentence that says the session went back to a wait rather than into one.
+  test "a follow-up re-sleep is recorded as such, with its wake still armed" do
+    arm_wake_for(@session)
+    @session.write_follow_up_resleep_intent
+
+    @session.pause!
+
+    assert @session.reload.waiting?
+    assert_equal Sessions::StopRecord::FOLLOW_UP_RESLEEP, stop_reason
+    assert_match(/went back to the wait it was already on/, @session.metadata[Sessions::StopRecord::DETAIL])
+  end
+
   test "the provenance survives a stop whose mechanism recorded nothing else" do
     # AuthOutageParkService writes both in one statement, so it cannot produce this
     # row. It is the shape any two-write mechanism would leave on a lost second

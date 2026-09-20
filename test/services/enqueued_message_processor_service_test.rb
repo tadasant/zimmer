@@ -183,6 +183,52 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     assert_nil @session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
   end
 
+  # The other side of #1172, and it is #1212's. The drop above is right only when
+  # nothing is left to back a re-sleep. A wall-clock wake still armed is a wait
+  # the queued message did not end, so the turn the message takes goes back to
+  # sleep on it — the same resting state the same message reaches a moment later
+  # through the post-pause path's preserve branch.
+  test "process_next_message handoff from running carries a backstopped sleep intent as the follow-up re-sleep" do
+    @session.update!(
+      status: :running,
+      metadata: (@session.metadata || {}).merge(
+        Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE)
+      )
+    )
+    Trigger.create!(
+      name: "Wake ##{@session.id}",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Wake",
+      reuse_session: true,
+      last_session_id: @session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule",
+          configuration: { "scheduled_at" => 30.minutes.from_now.utc.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+    @session.enqueued_messages.create!(content: "A human typed this while the agent was busy", position: 1)
+
+    service = EnqueuedMessageProcessorService.new(@session)
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      assert service.process_next_message
+    end
+
+    @session.reload
+    assert_equal true, @session.metadata["pending_sleep"]
+    assert_equal Sessions::StopRecord::FOLLOW_UP_RESLEEP,
+      @session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
+    assert_equal true, @session.metadata[SessionStateMachine::PENDING_SLEEP_REQUIRES_WAKE],
+      "the carried intent must stay conditional, so a wake that fires mid-turn still voids it"
+
+    # The queued message's turn runs and ends: back to the wait, not the action queue.
+    @session.start!
+    @session.pause!
+    assert @session.reload.waiting?,
+      "the queued message added a turn to the session's wait; it did not end it"
+  end
+
   # The scoping that keeps the drop above from running a session the platform
   # stood down. A spot pause and an auth-outage park both mark a RUNNING session
   # `pending_sleep`, and both mean "stop", not "sleep until your wake fires".
