@@ -28,6 +28,7 @@ class MobileComposerAttachmentsTest < ApplicationSystemTestCase
 
   teardown do
     page.driver.browser.manage.window.resize_to(1400, 900)
+    @fixture_paths&.each { |path| FileUtils.rm_f(path) }
   end
 
   test "the follow-up composer offers reachable attach controls at phone width" do
@@ -121,7 +122,46 @@ class MobileComposerAttachmentsTest < ApplicationSystemTestCase
 
     assert_selector '[data-chat-bubble-target="preview"]', text: "snap.jpg"
     assert_selector '[data-chat-bubble-target="preview"]', text: "clip.mov"
+
+    # Both chips render into the same preview target, so their presence says
+    # nothing about which path each took. The controller's own lists do.
+    staged = page.evaluate_script(<<~JS)
+      (() => {
+        const controller = window.Stimulus.getControllerForElementAndIdentifier(
+          document.querySelector("#chat-bubble"), "chat-bubble"
+        )
+        return {
+          images: controller.attachedImages.map(f => f.name),
+          files: controller.attachedFiles.map(f => f.name)
+        }
+      })()
+    JS
+    # #write_fixture prefixes a unique id, so match the suffix.
+    assert_equal 1, staged["images"].length
+    assert staged["images"].first.end_with?("snap.jpg"), staged["images"].inspect
+    assert_equal 1, staged["files"].length,
+      "the quick router sent a .mov up the image path, which ImageStorageService rejects"
+    assert staged["files"].first.end_with?("clip.mov"), staged["files"].inspect
+
     assert_no_horizontal_overflow("the quick router panel with a photo and a video attached")
+  end
+
+  test "one oversize photo does not discard the rest of a phone multi-select" do
+    visit root_path
+    click_button "What do you want to do?"
+
+    # A phone multi-select is one tap over a grid. Before, a single entry over the
+    # limit aborted the whole selection; now it is dropped on its own and named.
+    over = ImageStorageService::MAX_IMAGE_SIZE + 1
+    accept_alert(wait: 5) do
+      attach_to_composer(
+        'input[data-quick-prompt-target="mobileImageInput"]',
+        [ png_fixture("keep-me.png"), png_fixture("panorama.png", bytes: "\0" * over) ]
+      )
+    end
+
+    assert_selector '[data-quick-prompt-target="mobileBadge"]', text: "1 image attached"
+    assert_equal 1, input_file_count('input[data-quick-prompt-target="mobileImageInput"]')
   end
 
   test "every prompt composer offers the phone's photo library and camera roll" do
@@ -182,7 +222,9 @@ class MobileComposerAttachmentsTest < ApplicationSystemTestCase
     path
   end
 
-  def png_fixture(name) = { name: name, bytes: Base64.decode64(ONE_PIXEL_PNG_BASE64) }
+  def png_fixture(name, bytes: nil)
+    { name: name, bytes: bytes || Base64.decode64(ONE_PIXEL_PNG_BASE64) }
+  end
 
   # A JPEG only has to start with the SOI marker to be sniffed as one.
   def jpeg_fixture(name) = { name: name, bytes: [ 0xFF, 0xD8, 0xFF, 0xE0 ].pack("C*") + ("\x00" * 64) }

@@ -152,10 +152,10 @@
         <%= form_with url: turn_underway ? session_enqueued_messages_path(agent_session) : follow_up_session_path(agent_session), method: :post, data: { follow_up_prompt_target: "form", enqueue_mode: turn_underway } do |form| %>
           <div class="space-y-3">
             <%# Attachment plumbing, shared by the desktop row and the phone row
-                below. It lives here rather than inside either layout because the
-                one that is off-screen is `display: none`, and a hidden input the
-                visible row has to click — or a hidden field the form has to
-                submit — cannot live inside it.
+                below: one set of inputs and one pair of hidden fields, so whichever
+                row is on screen stages into the same list and the form submits the
+                same params either way. Duplicating them per layout would give the
+                two rows two independent selections.
 
                 The media input accepts everything a phone's library holds, not
                 just the four types the image path can store. image-attachment
@@ -311,10 +311,9 @@
               </div>
 
               <%# Attach row for the phone layout.
-                  A touch device has no drag-and-drop and no composer to drop onto,
-                  so these buttons ARE the attachment mechanism here — the desktop
-                  row above is `display: none` at this width, which is why this
-                  composer accepted no photos from a phone at all.
+                  A touch device has no drag-and-drop, so these buttons ARE the
+                  attachment mechanism at this width — the desktop row above is
+                  `display: none` here and offers nothing a thumb can reach.
 
                   No folder button: webkitdirectory has no picker on iOS or Android.
                   The buttons target the same hidden inputs as the desktop row, and

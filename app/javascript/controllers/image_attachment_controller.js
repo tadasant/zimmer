@@ -13,7 +13,6 @@ import { partitionMedia } from "lib/media_kinds"
 // - Follow-up prompts (existing session, uses sessionId)
 // - New session creation (uses tempSessionId)
 export default class extends Controller {
-  //
   // preview / attachButton / cameraButton are PLURAL: the follow-up composer
   // renders a desktop row and a phone row, only one of which is on screen at a
   // time, and both have to be written to — a singular target would leave the
@@ -134,12 +133,6 @@ export default class extends Controller {
 
   // Upload files to the server
   async uploadFiles(files) {
-    // Check max images limit
-    if (this.images.length + files.length > this.maxImagesValue) {
-      alert(`Maximum ${this.maxImagesValue} images allowed`)
-      return
-    }
-
     // Oversize images are dropped individually rather than failing the whole
     // selection. A phone multi-select is one tap over a grid of photos, and one
     // 12MP panorama in it should not silently discard the other nine.
@@ -153,6 +146,13 @@ export default class extends Controller {
     }
     if (withinLimit.length === 0) return
     files = withinLimit
+
+    // Counted after the size filter: an image that is not going to be attached
+    // should not push the selection over the limit.
+    if (this.images.length + files.length > this.maxImagesValue) {
+      alert(`Maximum ${this.maxImagesValue} images allowed`)
+      return
+    }
 
     // Show loading state
     this.showLoading()
