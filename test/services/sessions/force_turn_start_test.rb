@@ -331,6 +331,52 @@ class Sessions::ForceTurnStartTest < ActiveSupport::TestCase
     assert_equal 1, metadata[Sessions::ForceTurnStart::FORCED_COUNT]
   end
 
+  test "a halt that does not happen leaves no record claiming it did" do
+    # The victim's turn ended between the pick and the halt — the commonest race
+    # this can lose. Its row must not say it was forced out, or it would sit in
+    # the cooldown for a force that never happened and point at a session that
+    # never got the thread. An earlier, real force's record is put back intact.
+    _oldest, newest = saturate
+    newest.merge_metadata!(
+      Sessions::ForceTurnStart::FORCED_AT => 1.hour.ago.utc.iso8601,
+      Sessions::ForceTurnStart::FORCED_FOR_SESSION => 42,
+      Sessions::ForceTurnStart::FORCED_COUNT => 2
+    )
+    session = forcing_session
+    not_halted = Sessions::HaltRunningTurn::Result.new(halted: false, reason: :not_running)
+
+    result = nil
+    with_pool do
+      Sessions::HaltRunningTurn.stub(:call, not_halted) do
+        result = Sessions::ForceTurnStart.call(session)
+      end
+    end
+
+    assert result.no_victim?, result.message
+    assert_match(/could not be stopped/, result.message)
+    metadata = newest.reload.metadata
+    assert_equal 42, metadata[Sessions::ForceTurnStart::FORCED_FOR_SESSION]
+    assert_equal 2, metadata[Sessions::ForceTurnStart::FORCED_COUNT]
+    assert_operator Time.zone.parse(metadata[Sessions::ForceTurnStart::FORCED_AT]), :<, 30.minutes.ago
+  end
+
+  test "a halt that does not happen on a never-forced session leaves its row clean" do
+    _oldest, newest = saturate
+    session = forcing_session
+    not_halted = Sessions::HaltRunningTurn::Result.new(halted: false, reason: :not_running)
+
+    with_pool do
+      Sessions::HaltRunningTurn.stub(:call, not_halted) do
+        Sessions::ForceTurnStart.call(session)
+      end
+    end
+
+    metadata = newest.reload.metadata || {}
+    assert_nil metadata[Sessions::ForceTurnStart::FORCED_AT]
+    assert_nil metadata[Sessions::ForceTurnStart::FORCED_FOR_SESSION]
+    assert_nil metadata[Sessions::ForceTurnStart::FORCED_COUNT]
+  end
+
   test "the force count accumulates across forces rather than resetting on the resume" do
     _oldest, newest = saturate
     newest.merge_metadata!(Sessions::ForceTurnStart::FORCED_COUNT => 3)
