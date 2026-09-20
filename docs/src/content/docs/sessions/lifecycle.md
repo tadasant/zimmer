@@ -65,6 +65,69 @@ rows whose job had a `performed_at`, and it still does — the pre-spawn window 
 uncounted turns wear. `SpotGateService`'s projected burn still prices the queue too, because a
 queued turn will spend as soon as a thread frees up; it now reads the job rows to find it.
 
+## Force: taking a thread off somebody else's turn
+
+A queued turn is a wait nothing shortens. The spot gate cannot help — it decides *whether* a turn
+may run, and thread contention is a different mechanism that holds priority sessions exactly as
+hard. **Start now** cannot help either: it moves a turn that is scheduled for *later*, and this one
+is already due. The pool is a fixed number of threads, and the only way to get one when they are all
+busy is to take one.
+
+So the queued-for-a-worker banner carries a **Force** button, backed by `Sessions::ForceTurnStart`.
+It stops the turn that most recently took a thread and gives that thread to the session you are
+looking at.
+
+**The victim is chosen by recency, not by class.** The most recent `performed_at` on an unfinished
+`agents` job whose worker is still alive — a priority session is as eligible as a spot one. Five
+candidates are skipped, each because taking the thread would buy nothing or would trample a record
+somebody else owns:
+
+| Skipped | Why |
+| --- | --- |
+| The forcing session itself | — |
+| A job whose lock holder is gone | Its thread died with the capsule; halting it frees nothing |
+| A session still `waiting` while its worker makes the clone | No agent process to stop, so the thread would stay taken |
+| A session carrying a spot pause or preempt record | Its slot is already coming back, and `SpotSessionPause`'s sweep is keyed on that record |
+| A status-summary fork | It takes exactly one turn; there is no conversation to put back |
+
+Plus a five-minute cooldown on a session that was already forced out, which is what stops the second
+click in a row from killing the session the first click just re-queued.
+
+**The victim's turn is not lost.** It is stopped and put straight back in the `agents` queue:
+
+1. The force record goes on the victim's row first — `forced_out_at`, `forced_out_for_session`,
+   `forced_out_count` — so its own page and timeline say what happened and whose turn took its
+   thread. The count survives the resume, deliberately.
+2. `Sessions::HaltRunningTurn` stops the process. Same cost as a spot ceiling pause: work written to
+   disk stays written, the tool call in flight is lost.
+3. `resume_for_system_recovery!` puts it back — preserving the wake-ups it had armed, since it did
+   not choose to stop — and a fresh `AgentSessionJob` carries it into the queue with a nudge naming
+   what happened.
+
+The victim ends where the forcing session began: `waiting`, with a ready turn, behind the pool. Its
+resume owner is GoodJob's poller, the same owner every queued turn has, so Force adds no sweep.
+
+**Freeing a thread is not the same as getting it.** GoodJob dequeues `priority ASC NULLS LAST,
+created_at ASC`, and nothing in Zimmer sets a job priority, so every `AgentSessionJob` carries
+GoodJob's default of `0` and the freed thread would otherwise go to whichever queued turn is oldest.
+The forced job's priority is set to `-100`, which sorts ahead of that. Two forced turns tie there and
+fall back to `created_at`.
+
+**When there is no eligible victim the button is not drawn**, and the banner prints the reason
+instead — a pool with a free thread ("your turn starts on the next poll anyway") reads differently
+from a full pool with nothing stoppable. The same sentence comes back as the flash if the state
+changes between the page render and the click.
+
+**Two things Force does not promise.** A spot session's turn still answers to the spot gate when the
+worker picks it up, so a quota window over its target can hold it even after a thread was taken for
+it — the affordance says so before the click. And Zimmer cannot tell what the victim is in the
+middle of: there is no signal on a session row for "half-way through an irreversible external
+action", so no rule here pretends to know. The confirmation names the victim, its class and how long
+its turn has been running, and leaves the judgement to the person clicking.
+
+`action_session`'s `force_start` is the same operation for an agent session, with both refusals
+raised as errors rather than returned as a cheerful summary.
+
 ## The full machine
 
 ```mermaid

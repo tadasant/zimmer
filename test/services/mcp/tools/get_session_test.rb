@@ -952,4 +952,26 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_includes output, "- **Complete:** every entry in this record is listed below, in full."
     assert_not_includes output, "summary of the record"
   end
+
+  # The one wait with a lever on it. An agent reading "queued for a worker" and
+  # nothing else reaches for `start_now` (which has nothing to bring forward on a
+  # turn that is already due) or a promotion to priority (which is the spot gate,
+  # a different mechanism). The line names `force_start` with its cost attached,
+  # so the tool surface and the session page's Force button say the same thing.
+  test "a queued turn names force_start as the only lever, and what it costs" do
+    capsule = GoodJob::Process.create!(state: { "hostname" => "worker-1" })
+    session = sessions(:waiting)
+    GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",
+      active_job_id: SecureRandom.uuid,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ session.id ] })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "Its turn is"
+    assert_includes output, %(`action_session`'s "force_start")
+    assert_includes output, "destroys another session's in-flight tool call"
+  ensure
+    GoodJob::Job.delete_all
+    GoodJob::Process.delete_all
+  end
 end
