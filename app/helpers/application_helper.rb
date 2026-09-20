@@ -112,6 +112,24 @@ module ApplicationHelper
   # Render markdown text as HTML with syntax highlighting
   # Uses filter_html: true to prevent XSS attacks
   # Rescues rendering errors so a single bad message never crashes the whole page
+  # What every composer's "Photos & videos" input accepts.
+  #
+  # Deliberately wider than ImageStorageService::SUPPORTED_TYPES. `image/*,video/*`
+  # is what puts "Photo Library" and "Take Photo or Video" on the iOS share sheet
+  # and what opens Android Chrome's media picker instead of its document browser;
+  # narrowing it to the four storable types is what used to make an iPhone's own
+  # photos unpickable, since an iPhone still is HEIC. The picked file is split
+  # client-side (app/javascript/lib/media_kinds.js) — JPEG/PNG/GIF/WebP go up the
+  # image path and the model reads them inline, everything else goes up the file
+  # path and the agent gets a path to it.
+  #
+  # Kept in lockstep with MEDIA_ACCEPT in app/javascript/lib/media_kinds.js.
+  MEDIA_PICKER_ACCEPT = "image/*,video/*,.heic,.heif,.mov"
+
+  def media_picker_accept
+    MEDIA_PICKER_ACCEPT
+  end
+
   def markdown(text)
     return "" if text.blank?
 

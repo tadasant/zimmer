@@ -497,7 +497,7 @@
             <%# Hidden inputs receive the actual files; visible buttons forward
                 clicks to them so the user gets familiar attach/camera affordances. %>
             <input type="file" name="images[]" multiple class="hidden"
-                   accept="image/jpeg,image/png,image/gif,image/webp"
+                   accept="<%= media_picker_accept %>"
                    data-quick-prompt-target="mobileImageInput"
                    data-action="change->quick-prompt#updateMobileBadge">
             <input type="file" name="images[]" class="hidden"
@@ -574,7 +574,7 @@
           <%# Hidden file inputs and visible attach buttons. Camera input has
               capture="environment" so mobile browsers open the rear camera. %>
           <input type="file" name="images[]" multiple class="hidden"
-                 accept="image/jpeg,image/png,image/gif,image/webp"
+                 accept="<%= media_picker_accept %>"
                  data-quick-prompt-target="desktopImageInput"
                  data-action="change->quick-prompt#updateDesktopBadge">
           <input type="file" name="images[]" class="hidden"

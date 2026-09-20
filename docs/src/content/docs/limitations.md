@@ -7377,6 +7377,38 @@ the board thins out as you work it, and goes stale only about things you did not
 The one place that shows is the **Reprioritize** button: the reordering session writes the new order
 and you have to reload to see it. The button says so.
 
+## An iPhone photo reaches the agent as a file, not as an image
+
+The [media split](/sessions/prompt-attachments/#the-media-split) sends HEIC stills and video down
+the file path, because `ImageStorageService` sniffs four magic-byte signatures and HEIC is not one
+of them. The agent gets a path on disk and can open it; the model does **not** see the picture
+inline the way it sees a pasted PNG. Ask "what is in this photo?" about a HEIC and the agent has
+to decode it itself before it can answer.
+
+The fix is a transcode to JPEG at upload time, and it is deliberately not here. `libvips` is in the
+image but the `image_processing` / `ruby-vips` gems are not, and libvips without `libheif` cannot
+read HEIC anyway — so shipping it means a new runtime dependency whose presence in the production
+image no test in this repo can prove. Routing to the file path is the behaviour that works at
+runtime today, and it is strictly better than the previous one, which rejected the photo outright
+with "Could not detect image type - unsupported format".
+
+In practice iOS Safari usually transcodes for us: a still picked from the Photo Library through an
+`accept="image/*"` input normally arrives as JPEG and takes the image path. It is a HEIC handed
+over verbatim — by Android, by a file picker, by a share sheet — that lands on the file path.
+
+## The phone attach flow is proven under emulation, not on a device
+
+Everything about attaching a photo is verified at a 375px viewport in headless Chrome: the buttons
+are on screen, the split routes a HEIC to the file path, the staged image rides along with the
+message. What cannot be driven from CI or from an agent session is the part that belongs to the
+phone — whether iOS Safari's own sheet actually offers *Photo Library* for a given `accept` string,
+and what a real iPhone camera hands back. Those are inferred from the markup, not observed.
+
+`accept="image/*,video/*"` is the documented shape for getting that sheet, and the camera button's
+`capture="environment"` is the documented shape for opening the rear camera. If a future iOS
+changes either, the tests here stay green and the phone stops working — the only detector is
+somebody holding one.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
