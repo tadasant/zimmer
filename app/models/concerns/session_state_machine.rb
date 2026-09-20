@@ -1000,7 +1000,7 @@ module SessionStateMachine
   # armed when the turn ends — as opposed to an unconditional "stop".
   #
   # Two spellings, both load-bearing. PENDING_SLEEP_REQUIRES_WAKE is the explicit
-  # marker the system-recovery preserve branch sets. The reason stamp is what
+  # marker the two preserve branches set. The reason stamp is what
   # every writer records in the same statement as the flag
   # (`Sessions::StopRecord.pending_sleep`), so the condition reads off provenance
   # rather than needing a second marker per writer. Either spelling means the
@@ -1380,6 +1380,27 @@ module SessionStateMachine
     statuses = custom_metadata&.dig("github_pull_request_statuses")
     statuses = {} unless statuses.is_a?(Hash)
     urls.reject { |url| TERMINAL_PR_STATUSES.include?(statuses[url]) }
+  end
+
+  # The follow-up re-sleep intent: `pending_sleep` stamped `follow_up_resleep`,
+  # plus PENDING_SLEEP_REQUIRES_WAKE so #execute_pending_sleep re-asks whether
+  # anything is still armed when the turn ends.
+  #
+  # Two writers, one statement. #preserve_pending_wakes_across_follow_up writes it
+  # on a follow-up that resumed a resting session; EnqueuedMessageProcessorService
+  # writes it on the handoff a queued message takes from a RUNNING session, where
+  # no `resume` runs and the outgoing turn's own wake-backed intent would
+  # otherwise be dropped. The same message a few hundred milliseconds apart must
+  # not leave the session in two different resting states (#1212).
+  #
+  # Public for that second caller. Callers decide whether a still-fireable
+  # one-time schedule backs the re-sleep; this only records the intent.
+  def write_follow_up_resleep_intent
+    merge_metadata!(
+      Sessions::StopRecord.pending_sleep(Sessions::StopRecord::FOLLOW_UP_RESLEEP).merge(
+        PENDING_SLEEP_REQUIRES_WAKE => true
+      )
+    )
   end
 
   private
@@ -2262,7 +2283,7 @@ module SessionStateMachine
   # Trigger#follow_up_session! queues it durably onto the running session, or
   # after it, in which case it collects the session from `waiting`.
   #
-  # THE RE-SLEEP (#1212). This branch used to mark nothing, on the reasoning that
+  # THE RE-SLEEP (#1212). Before #1212 this branch marked nothing, on the reasoning that
   # "somebody asked this session a question, and putting it straight back to sleep
   # after it answers would hide the answer". That reasoning does not survive what
   # it costs. `needs_input` is not a place answers are displayed — it is the
@@ -2294,7 +2315,10 @@ module SessionStateMachine
   #
   # A session that genuinely does need the human says so by cancelling its wake:
   # with nothing armed there is no re-sleep, and the turn ends in `needs_input`
-  # exactly as before. That is the same lever /triggers gives a human.
+  # exactly as before. That lever is `action_trigger` on the unscoped `zimmer`
+  # server (the same one /triggers gives a human); a session holding only
+  # `zimmer-self-session` has no cancel and reaches the human with
+  # `send_push_notification` instead, then is collected by its own backstop.
   #
   # A wake that can no longer fire is consumed rather than preserved. Preserving
   # one would leave an `enabled`, unfired row that reads as an armed wake on
@@ -2318,13 +2342,7 @@ module SessionStateMachine
       condition.one_time_schedule? && self.class.one_time_wake_pending?(condition)
     end
 
-    if backstopped
-      merge_metadata!(
-        Sessions::StopRecord.pending_sleep(Sessions::StopRecord::FOLLOW_UP_RESLEEP).merge(
-          PENDING_SLEEP_REQUIRES_WAKE => true
-        )
-      )
-    end
+    write_follow_up_resleep_intent if backstopped
 
     Rails.logger.info(
       "[SessionStateMachine] Preserved #{preserved.size} pending one-time wake-up(s) across a " \

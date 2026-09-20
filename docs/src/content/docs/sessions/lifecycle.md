@@ -613,7 +613,17 @@ and they are the same three that make the system-recovery re-sleep safe:
   ([#1172](https://github.com/tadasant/zimmer/issues/1172)).
 - **A session that does need the human cancels its wake.** With nothing armed there is no re-sleep
   and the turn ends in `needs_input` exactly as before. That is the same lever `/triggers` gives a
-  human who wants to take a sleeping session over.
+  human who wants to take a sleeping session over — and for an agent it is `action_trigger` on the
+  unscoped `zimmer` server. A session holding only `zimmer-self-session` has no cancel: it reaches
+  the human with `send_push_notification` and is collected by its own backstop. See
+  [Limitations](/limitations/).
+
+The queued door reaches the same rest. A follow-up that arrives while the session is `running` is
+queued and takes the next turn on the handoff `EnqueuedMessageProcessorService` performs without a
+`pause` or a `resume`; that handoff used to drop the outgoing turn's wake-backed sleep intent, so
+the same message landing a moment before the pause rested the session in `needs_input` and a moment
+after it in `waiting`. It now rewrites the intent as `follow_up_resleep` when a wall-clock wake still
+backs it, and drops it as before when none does.
 
 What sleeping costs is the debounced `needs_input` push: `SendPushNotificationJob` drops a push whose
 session is no longer in `needs_input` sixty seconds later, so the human who asked the question is not
@@ -1141,9 +1151,9 @@ week, fewer than a third of these nudges were within ten minutes of a deploy.
 instructions, so the prompt's meaning is unchanged for an agent that ignores it.
 `AutomatedPrompts.system_recovery?` is the matching predicate — compare with it rather than `==`
 against the constant. Both branches of `AgentSessionJob#resume_for_recovery_prompt` preserve the
-session's wake-ups, so a misread no longer loses them; what it loses is the conditional re-sleep,
-which only the recovery branch performs. A recovered session that should have gone back to sleep
-comes to rest in `needs_input` instead.
+session's wake-ups, so a misread no longer loses them. Since [#1212](https://github.com/tadasant/zimmer/issues/1212)
+both branches also perform the conditional re-sleep, so a misread costs only the watchers the
+follow-up branch consumes when they can no longer fire — the recovery branch keeps those armed.
 
 **Three producers name themselves today**, and between them they account for the large majority
 of nudges by volume: the `InterruptError` auto-continue, `SessionContinuation` (which covers both
