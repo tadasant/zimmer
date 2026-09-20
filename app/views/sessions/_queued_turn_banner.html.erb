@@ -40,6 +40,57 @@
           <span class="font-medium">Running</span> means a worker is executing a turn, so a
           session queued behind the pool reads <span class="font-medium">Waiting</span>.
         </p>
+        <%# "Start mine now", and the whole of what it costs.
+
+            This is the only lever that is about the POOL. Promoting the session
+            to priority moves it past the spot gate, which is a different
+            mechanism and holds nothing here; "Start it now" moves a turn that is
+            scheduled for later, and this turn is already due. The only way to get
+            a thread is to take one.
+
+            Computed here rather than threaded in from the caller because the
+            partial is only reached for a session that is genuinely queued, which
+            is a small population — and because the button's two claims (the pool
+            is full, and THIS is the turn that would be stopped) have to come from
+            one snapshot. See Sessions::ForceTurnStart. %>
+        <% force = Sessions::ForceTurnStart.preview(agent_session) %>
+        <% if force&.available? %>
+          <%# The victim by name and by age, before the click rather than after
+              it. Zimmer cannot tell what another session is in the middle of —
+              there is no signal on a session row for "half-way through an
+              irreversible external action" — so the confirmation hands the
+              person the two facts it does have and leaves the judgement to them. %>
+          <% victim = force.victim %>
+          <% age = force.victim_age ? "#{distance_of_time_in_words(force.victim_age)} ago" : "an unknown time ago" %>
+          <p class="mt-2 text-xs text-sky-700" data-queued-turn-force-cost>
+            All <%= RunningTurns.worker_slots %> threads are busy. <span class="font-medium">Force</span>
+            takes one by stopping the turn that started most recently —
+            <%= link_to "session ##{victim.id}", session_path(victim), class: "font-medium underline" %>,
+            <%= victim.priority_class %>, started <%= age %>. That turn is not cancelled: it is put
+            straight back in the queue and runs again as soon as a thread frees up. What it loses is
+            the tool call it is in the middle of.
+          </p>
+          <%= button_to "Force",
+                force_start_session_path(agent_session),
+                method: :post,
+                form: {
+                  class: "mt-2",
+                  data: {
+                    turbo_confirm: "Stop session ##{victim.id}'s turn (#{victim.priority_class}, " \
+                      "started #{age}) to free a worker thread for session ##{agent_session.id}?\n\n" \
+                      "Its work on disk survives and its turn goes back in the queue, but the tool " \
+                      "call it is in the middle of is lost — and Zimmer cannot tell what that is."
+                  }
+                },
+                class: "inline-flex items-center rounded-md border border-sky-300 bg-white px-2.5 py-1.5 text-xs font-medium text-sky-900 shadow-sm hover:bg-sky-100 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-1" %>
+        <% elsif force %>
+          <%# No button rather than a button that does nothing. The sentence is the
+              service's own, so the page and the flash a click would have produced
+              say the same thing. %>
+          <p class="mt-2 text-xs text-sky-700" data-queued-turn-force-unavailable>
+            <%= force.message %>
+          </p>
+        <% end %>
       </div>
     </div>
   </div>

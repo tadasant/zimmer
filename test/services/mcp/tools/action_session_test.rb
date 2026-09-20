@@ -2021,6 +2021,70 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/restart/, error.message)
   end
 
+  # --- force_start --------------------------------------------------------------
+  #
+  # The tool half of the queued-for-a-worker banner's Force button, and a thin
+  # dispatch over Sessions::ForceTurnStart — which has its own tests. What is
+  # asserted here is the dispatch, and above all that a force which stopped
+  # nothing does NOT come back looking like one that did: an agent told "forced"
+  # over a no-op goes on to wait for a turn nothing brought forward.
+
+  test "force_start is one of the actions the tool takes" do
+    assert_includes Mcp::Tools::ActionSession::ACTIONS, "force_start"
+
+    description = Mcp::Tools::ActionSession.input_schema.to_h.dig(:properties, :action, :description)
+    assert_match(/"force_start"/, description)
+  end
+
+  test "force_start takes a thread from the newest turn and reports whose it was" do
+    capsule = GoodJob::Process.create!(state: { "hostname" => "worker-1" })
+    victim = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", status: :running,
+      session_id: "cli-victim")
+    GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",
+      active_job_id: SecureRandom.uuid, performed_at: 1.minute.ago, locked_at: 1.minute.ago,
+      locked_by_id: capsule.id,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ victim.id ] })
+
+    session = sessions(:waiting)
+    GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",
+      active_job_id: SecureRandom.uuid,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ session.id ] })
+
+    output = nil
+    RunningTurns.stub(:worker_slots, 1) do
+      output = @tool.call("action" => "force_start", "session_id" => session.id)
+    end
+
+    assert_includes output, "## Session Forced To The Front"
+    assert_includes output, "Session #{victim.id}'s turn was stopped and put back in the queue"
+    assert victim.reload.waiting?
+  ensure
+    GoodJob::Job.delete_all
+    GoodJob::Process.delete_all
+  end
+
+  test "force_start raises rather than reporting a force that stopped nothing" do
+    session = sessions(:waiting)
+    GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",
+      active_job_id: SecureRandom.uuid,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ session.id ] })
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "force_start", "session_id" => session.id) }
+
+    assert_match(/Nothing to force/, error.message)
+    assert_match(/nothing to do but wait for a thread/, error.message)
+  ensure
+    GoodJob::Job.delete_all
+  end
+
+  test "force_start raises on a session that is not queued for a worker at all" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "force_start", "session_id" => sessions(:needs_input).id)
+    end
+
+    assert_match(/only a session queued for a worker can be forced/, error.message)
+  end
+
   # The other door from this tool into Sessions::StartNow: promoting a waiting
   # session starts it, and the promotion reports what it did. A promotion that
   # started nothing says nothing, so the two are told apart in the output rather

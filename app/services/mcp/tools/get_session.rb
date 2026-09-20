@@ -233,7 +233,16 @@ module Mcp
           "- **Its turn is #{mechanism.label}.** Nothing is stuck and nobody needs to act: " \
           "the turn was handed over#{" at #{mechanism.at.utc.iso8601}" if mechanism.at} and GoodJob's " \
           "`agents` queue starts it as soon as a thread frees up. `running` means a worker is " \
-          "executing a turn, so a session queued behind the pool reads `waiting`."
+          "executing a turn, so a session queued behind the pool reads `waiting`.",
+          # Named here because this is the one wait with a lever on it, and an
+          # agent reading this line is exactly the caller that would otherwise
+          # reach for `start_now` (which has nothing to bring forward) or a
+          # promotion to priority (which is the spot gate, a different mechanism
+          # entirely). Said with its cost attached, because the lever is a kill.
+          "- Nothing shortens this wait except `action_session`'s \"force_start\", which stops the turn " \
+          "that most recently took a thread and gives that thread to this session. It destroys another " \
+          "session's in-flight tool call — that session's turn goes back in the queue, but what it was " \
+          "part-way through does not. Reach for it only when a human is waiting on this one."
         ]
       end
 

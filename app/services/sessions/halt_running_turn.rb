@@ -140,6 +140,17 @@ module Sessions
     # apart from an ordinary halt.
     SPOT_QUEUE_REASONS = %i[pause_into_spot_queue spot_preemption].freeze
 
+    # Sessions::ForceTurnStart taking a worker thread off this turn to give it to
+    # a session a human is waiting on. Named here rather than at the caller so
+    # that the one class which decides how a halt describes itself is still the
+    # only one that knows.
+    #
+    # Not a spot-queue park: nothing about quota or the concurrency cap happened,
+    # and the caller puts the turn straight back in the `agents` queue rather than
+    # leaving the session for a sweep. So it takes the HALTED_TURN provenance,
+    # which is the accurate one, and a prefix of its own.
+    FORCED_TURN_START = :forced_turn_start
+
     def spot_queue_park? = SPOT_QUEUE_REASONS.include?(reason)
 
     # Which cause Sessions::StopRecord writes when the deferred sleep this arms is
@@ -150,12 +161,15 @@ module Sessions
       spot_queue_park? ? Sessions::StopRecord::SPOT_PAUSE : Sessions::StopRecord::HALTED_TURN
     end
 
-    # What the session's own timeline calls this. Every caller today parks into
-    # the spot queue one way or the other, so the `[Paused]` branch is reachable
-    # only from a test — it is kept so a future caller parking a session some
-    # other way names its own gesture rather than borrowing the queue's.
+    # What the session's own timeline calls this. The `[Paused]` branch is
+    # reachable only from a test — every caller today names its own gesture — and
+    # it is kept so a future caller parking a session some other way does not have
+    # to borrow one of the two below.
     def log_prefix
-      spot_queue_park? ? "[Spot Queue]" : "[Paused]"
+      return "[Spot Queue]" if spot_queue_park?
+      return "[Forced]" if reason == FORCED_TURN_START
+
+      "[Paused]"
     end
 
     # Written after the pause lands, and unconditionally: a session whose process
