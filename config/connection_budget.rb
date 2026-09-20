@@ -136,11 +136,60 @@ module ConnectionBudget
   # app_required_backends in infra/terraform/main.tf moves with it.
   def good_job_queue_threads
     {
-      # THE BINDING CONSTRAINT ON THIS NUMBER IS MEMORY, NOT CONNECTIONS.
+      # THE BINDING CONSTRAINT ON THIS NUMBER IS THE DROPLET'S CPU. Not memory,
+      # and not connections -- both of those were sized, and both have room.
       #
       # Every other queue here is sized by what its jobs do. This one is sized
-      # by what the worker's cgroup can hold, because an `agents` thread runs an
-      # agent session and an agent session is the largest thing on the box.
+      # by what the box can run, because an `agents` thread runs an agent
+      # session, an agent session is a Claude Code process with its MCP
+      # servers, and those processes are what the droplet's eight vCPUs spend
+      # themselves on.
+      #
+      # Measured on production during the 2026-09-20 recurrence of
+      # tadasant/zimmer#329, at an `agents` value of 12 (VictoriaMetrics,
+      # `node_load1` on zimmer-prod, 8 vCPU):
+      #
+      #   load1           0.61 at 01:44Z -> 20.21 at 03:59Z -> 23.52 at 04:44Z,
+      #                   2.9x cores. The worker's other lanes went from
+      #                   draining to wedged at 03:45Z, in step with it.
+      #   throughput      zimmer_good_job_processing_rate_per_hour 1005 -> 476.
+      #   round trips     a bare BEGIN took 1061 ms and `UPDATE good_job_processes
+      #                   SET updated_at` 2054 ms -- measured CLIENT-side, on a
+      #                   worker the scheduler kept descheduling. The database
+      #                   answered instantly.
+      #   the database    zimmer-production-pg, db-s-2vcpu-4gb, measured on
+      #                   2026-09-13 while the same alert fired: load 1.42-1.57 on
+      #                   2 vCPU, 57-67% idle, 33 of 97 connections, 0-1 active
+      #                   backends, 99.998% cache hit. Not the constraint, and a
+      #                   resize was ruled out on that evidence
+      #                   (tadasant/zimmer#329, comment 5654823341).
+      #
+      # So the seconds that showed up on trivial statements were the app side of
+      # the wire, and the app side of the wire is this lane. Every 2-thread lane
+      # then starves in turn -- `maintenance` on 2026-09-13, `default` on
+      # 2026-09-20 -- because a job that would take seconds takes minutes on a
+      # box at three times its cores, and two such jobs hold the whole lane.
+      #
+      # Eight is where this sat until 2026-09-05, and the droplet ran it. Twelve
+      # was reached by re-deriving the MEMORY bound after tadasant/zimmer#981
+      # moved the OOM victim out of the worker, which was correct as far as it
+      # went: the memory arithmetic below still holds at 12. What that
+      # derivation never looked at was CPU, and CPU is what a third more Claude
+      # Code processes on the same eight cores actually cost. A larger droplet
+      # is not on offer -- s-8vcpu-16gb is the largest size this account can
+      # provision in nyc3 -- so the number moves back to what the box runs.
+      #
+      # What it costs: at most 8 turns executing at once instead of 12. Excess
+      # turns are durable queued rows on this lane and start as a slot frees;
+      # RunningTurns.worker_slots reads this number, so every ceiling on
+      # /inference reports the pool that is actually in force. The four threads
+      # go to `maintenance` and `default` below, so the scheduler thread count
+      # -- and with it the connection budget Terraform enforces -- is unchanged.
+      #
+      # To raise it again: the evidence to bring is `node_load1` on the droplet
+      # staying under its core count with the lane full, not a memory dump.
+      #
+      # THE MEMORY BOUND, WHICH STILL HAS TO HOLD AT WHATEVER NUMBER THIS IS.
       #
       # The 10 GiB `memory.max` on the worker role (config/deploy.production.yml)
       # is the ceiling, and the sessions run UNDERNEATH it: cgroup v2 is
@@ -170,20 +219,17 @@ module ConnectionBudget
       #   memory.events   `max` (allocation stalled into reclaim) 133,791. Same
       #                   caveat: cache-driven reclaim fires this too.
       #
-      # Those measurements were taken at 8 and BEFORE tadasant/zimmer#981's fix.
-      # They are the reason 8 was the number, and they are why the fix came first:
+      # Those measurements were taken at 8 and BEFORE tadasant/zimmer#981's fix:
       # on 2026-09-05T09:20:24Z eight in-budget sessions -- no runaway, largest
       # process 943 MB -- summed to 8.7 GB of anon and the kernel OOM-killed the
       # GoodJob worker itself, taking every in-flight AgentSessionJob with it.
       #
-      # #981's fix moved the VICTIM, which is what makes this number a throughput
-      # decision rather than the only thing standing between a busy lane and a dead
-      # worker. Session cgroups live in a `sessions` POOL carrying its own
-      # memory.max (ZIMMER_SESSIONS_MEMORY_MAX_MB), and the pool does not contain
-      # the Rails worker: zimmer.sessions/sessions carries the cap and
-      # zimmer.sessions/app, where `bundle exec good_job start` sits, is its
-      # sibling. Overshoot costs one session, which GoodJob retries, instead of
-      # every session on the box plus the worker.
+      # #981's fix moved the VICTIM. Session cgroups live in a `sessions` POOL
+      # carrying its own memory.max (ZIMMER_SESSIONS_MEMORY_MAX_MB), and the pool
+      # does not contain the Rails worker: zimmer.sessions/sessions carries the
+      # cap and zimmer.sessions/app, where `bundle exec good_job start` sits, is
+      # its sibling. Overshoot costs one session, which GoodJob retries, instead
+      # of every session on the box plus the worker.
       #
       # READ THAT NARROWLY. It covers memory charged INSIDE the pool, which is the
       # session process and its descendants -- SessionMemoryCgroup's `sh` wrapper
@@ -191,40 +237,31 @@ module ConnectionBudget
       # dockerd: bin/docker-entrypoint runs the delegation AFTER the dockerd block
       # on purpose, so the daemon and the `.agent-containers` dev stacks it manages
       # stay in the CONTAINER cgroup, alongside the worker. That path is bounded by
-      # this number and nothing else, and it is the residual risk in raising it.
+      # this number and nothing else.
       #
       # THE POOL IS NOT SIZED FROM THIS NUMBER, which is the trap. It is sized from
       # what must survive a pile-up -- see config/deploy.production.yml. Raising
-      # this spends pool headroom; it does not create any. The arithmetic at 12
-      # against the shipped 6144 MB pool:
+      # this spends pool headroom; it does not create any. The arithmetic against
+      # the shipped 6144 MB pool:
       #
       #   per session   ~382 MB idle at #981's peak dump -- 214 MB `claude`, ~118 MB
       #                 MCP `node`, ~50 MB Playwright (averaged over sessions that
       #                 mostly did not run it; a real Chromium is 300-500 MB, so a
       #                 fleet leaning on Playwright needs this re-measured). Live at
-      #                 12 session cgroups the same figure reads ~263 MB.
-      #   12 sessions   ~4.6 GB of baseline conservatively, ~3.2 GB as observed
-      #   left to work  ~1.5 GB conservatively, ~3.0 GB as observed
+      #                 12 session cgroups the same figure read ~263 MB.
+      #   8 sessions    ~3.0 GB of baseline conservatively, ~2.1 GB as observed
+      #   left to work  ~3.0 GB conservatively, ~4.0 GB as observed
       #
-      # A capped suite is 2 Rails processes at 215-350 MB, so that headroom is two
-      # to five concurrent suites depending on which baseline holds. The band is not
-      # pinned down. This rides on sessions not all doing heavy work at once, which
-      # is a statistical bet and is stated as one; when it loses, the pool kills a
-      # session. 15 is not this number because the same arithmetic leaves ~110 MB
-      # each conservatively -- under a single test process.
+      # A capped suite is 2 Rails processes at 215-350 MB, ~560 MB together, so
+      # that headroom is five to seven concurrent suites. At 12 it was two to
+      # five, and 15 would have left ~110 MB each -- under a single test process.
       #
-      # The connection side has room but not much: 12 derives 91 required_backends
-      # against the 97 a db-s-2vcpu-4gb cluster serves -- confirmed via the DO API,
-      # `zimmer-production-pg` is on that plan. Six to spare. 15 would derive
-      # exactly 97, the entire plan, which is the other reason it is not this
-      # number.
-      #
-      # To go above 12: re-measure the POOL's own `anon` against its cap (that, not
-      # the container's, is what binds session work), re-derive the dev-stack bound
-      # in docs/operate/nested-docker.md, and move infra/terraform/main.tf's
-      # app_required_backends with this (test/config/connection_budget_test.rb fails
-      # the build otherwise). Past ~12-13 the database plan is the next wall.
-      agents: int_env("GOOD_JOB_AGENTS_THREADS", 12),
+      # The connection side: 25 scheduler threads derive 91 required_backends
+      # against the 97 a db-s-2vcpu-4gb cluster serves -- confirmed via the DO
+      # API, `zimmer-production-pg` is on that plan. Six to spare. Move
+      # infra/terraform/main.tf's app_required_backends with the total
+      # (test/config/connection_budget_test.rb fails the build otherwise).
+      agents: int_env("GOOD_JOB_AGENTS_THREADS", 8),
       pollers: int_env("GOOD_JOB_POLLERS_THREADS", 3),
       triggers: int_env("GOOD_JOB_TRIGGERS_THREADS", 2),
       auth: int_env("GOOD_JOB_AUTH_THREADS", 2),
@@ -238,12 +275,25 @@ module ConnectionBudget
       # Filesystem scans, package installs, transcript archiving and deploy
       # recovery can each hold a thread for minutes. Keep them off `default` so
       # ordinary callbacks and control work continue while maintenance drains.
-      maintenance: int_env("GOOD_JOB_MAINTENANCE_THREADS", 2),
-      default: int_env("GOOD_JOB_DEFAULT_THREADS", 2)
+      #
+      # Four threads each here, not two. A 2-thread lane is one long job away
+      # from starvation: a second long job holds the whole lane, and everything
+      # queued behind it waits for one of the two to finish. Both of these lanes
+      # wedged that way, a week apart, on a droplet running at three times its
+      # cores -- `maintenance` on 2026-09-13 (21 ready, head of line 69m) and
+      # `default` on 2026-09-20 (101 ready, head of line 75m, both threads held
+      # by SessionProvenanceBroadcastJob for 43m). Widening the `maintenance`
+      # lane alone would not have prevented the second page. Four means two
+      # long jobs leave two threads for the thirty-odd short job classes that
+      # share the lane; and these four threads are the four `agents` gave up,
+      # so the scheduler total is still 25 and the connection budget does not
+      # move. See tadasant/zimmer#329.
+      maintenance: int_env("GOOD_JOB_MAINTENANCE_THREADS", 4),
+      default: int_env("GOOD_JOB_DEFAULT_THREADS", 4)
     }
   end
 
-  # The `agents:12;pollers:3;...` string GoodJob wants.
+  # The `agents:8;pollers:3;...` string GoodJob wants.
   def good_job_queues
     good_job_queue_threads.map { |queue, threads| "#{queue}:#{threads}" }.join(";")
   end
@@ -305,7 +355,7 @@ module ConnectionBudget
   # autotrim, a SKIP-LOCKED delete of at most 100 rows in a transaction
   # (SolidCable::TrimJob, trim_chance / trim_batch_size). Call it a couple of
   # milliseconds. For a 3-wide pool to hit ActiveRecord's 5s checkout timeout, the worker
-  # would have to sustain thousands of broadcasts a second; twelve agent sessions
+  # would have to sustain thousands of broadcasts a second; eight agent sessions
   # streaming transcript updates produce single or double digits.
   #
   # Worth knowing if that estimate is ever wrong: BroadcastService rescues and does not

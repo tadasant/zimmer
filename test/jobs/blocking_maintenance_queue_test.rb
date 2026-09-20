@@ -27,7 +27,7 @@ class BlockingMaintenanceQueueTest < ActiveSupport::TestCase
     end
 
     queues = ConnectionBudget.good_job_queue_threads
-    assert_equal 2, queues.fetch(:maintenance)
-    assert_equal 2, queues.fetch(:default)
+    assert_equal 4, queues.fetch(:maintenance)
+    assert_equal 4, queues.fetch(:default)
   end
 end

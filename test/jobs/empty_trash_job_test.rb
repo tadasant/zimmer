@@ -33,7 +33,7 @@ class EmptyTrashJobTest < ActiveJob::TestCase
   # This sweep walks every expired trashed session with `find_each` and no cap,
   # and each one costs a Docker Compose teardown plus five recursive deletes — so
   # a day's worth of expired trash is an unbounded hold on one of `maintenance`'s
-  # two threads, with the per-archive DeferredCloneCleanupJob stream queued behind
+  # threads, with the per-archive DeferredCloneCleanupJob stream queued behind
   # it.
   test "stops when the wall-clock budget runs out and leaves the rest for the next run" do
     second = sessions(:waiting)

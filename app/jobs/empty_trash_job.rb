@@ -29,7 +29,7 @@ class EmptyTrashJob < ApplicationJob
   # teardown bounded at DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT plus a
   # recursive delete of the clone, the scratch dir, the Claude config dir and both
   # attachment trees — so a day's worth of expired trash is an unbounded hold on
-  # one of the `maintenance` lane's two threads. Same budget, and the same
+  # one of the `maintenance` lane's threads. Same budget, and the same
   # level-triggered argument, as the two clone sweeps: see SweepBudget.
   SWEEP_BUDGET_SECONDS = 5.minutes
 

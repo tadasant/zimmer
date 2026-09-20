@@ -2076,23 +2076,35 @@ that does it has known limits:
   does not know a top-up is coming.
 - **Neither ceiling can be reached above `GOOD_JOB_AGENTS_THREADS`, and nothing stops you setting one
   there.** Both count only the turns a worker is *executing*, and the `agents` GoodJob lane is only
-  `GOOD_JOB_AGENTS_THREADS` (default 12) deep, so a ceiling of 15 on a pool of 12 is a ceiling the
+  `GOOD_JOB_AGENTS_THREADS` (default 8) deep, so a ceiling of 15 on a pool of 8 is a ceiling the
   fleet can never touch: the spot gate never reports `fleet_at_cap`, and top-up always sees the fleet
-  as having room — while work keeps queueing behind the same twelve workers. The setting is
+  as having room — while work keeps queueing behind the same eight workers. The setting is
   deliberately not clamped (the operator's number is theirs, and growing the pool is a deploy away),
   so the mitigation is disclosure: both `/inference` cards and `get_spot_policy` say the ceiling is
   out of reach and print `min(configured, GOOD_JOB_AGENTS_THREADS)` beside it. What that leaves is a
   deployment whose only real concurrency control is the size of the worker pool — the quota ceilings
   still pace spot spend, but the slot ceiling does nothing until you lower it under the pool.
-  **Both shipped defaults sit under the pool and therefore bind:**
-  `spot_max_concurrent_sessions` defaults to 10 and the top-up ceiling to 3, both under a pool of 12,
-  so an un-retuned deployment gets ceilings that actually bind. A deployment that had *raised* its
-  ceilings to work around the old 8 — Tadasant production ran 15 — should bring them back under the
-  pool, or it keeps the unreachable-ceiling behaviour this bullet describes for no reason.
-- **The pool is bounded by memory, and raising it does not buy the memory back.**
-  `GOOD_JOB_AGENTS_THREADS` is sized by what the `sessions` cgroup pool can hold, not by the
-  database — each thread runs a whole agent session. The history is worth keeping because the
-  intuition it corrects is a common one. Over the 24 hours to 2026-09-05T14:16Z, at 8 threads and
+  **One shipped default sits above the pool:** `spot_max_concurrent_sessions` defaults to 10 and the
+  pool is 8, so on an un-retuned deployment the spot ceiling is the pool, and `/inference` and
+  `get_spot_policy` say so. The top-up ceiling's default of 3 binds. A deployment that had *raised*
+  its ceilings to work around an earlier pool of 8 — Tadasant production ran 15 — keeps the
+  unreachable-ceiling behaviour this bullet describes until it brings them back under the pool.
+- **The pool is bounded by the droplet's CPU, and that was found the hard way.** The `agents`
+  lane ran 12 threads from 2026-09-05 to 2026-09-20, sized by the memory arithmetic below — and
+  that arithmetic holds at 12. What nobody sized it against was CPU. Each thread runs a Claude Code
+  process with its MCP servers, and twelve of them on an 8-vCPU droplet took `node_load1` to 23.5
+  (2.9× cores) while the database sat at 0–1 active backends, 33 of 97 connections, 57–67% idle. A
+  worker that descheduled records seconds on a round trip the server answered instantly — a bare
+  `BEGIN` at 1061 ms — and every 2-thread lane on it starved in turn: `maintenance` on 2026-09-13,
+  `default` on 2026-09-20 ([#329](https://github.com/tadasant/zimmer/issues/329)). The lane is
+  back at 8, the four threads went to `maintenance` and `default`, and the evidence to bring for
+  raising it again is `node_load1` under the core count with the lane full — not a memory dump.
+  A larger droplet is not an option this account is offered: `s-8vcpu-16gb` is the largest size in
+  its region.
+- **Memory still has to fit, and raising the pool does not buy the memory back.**
+  Each thread runs a whole agent session, and the `sessions` cgroup pool has to hold all of them.
+  The history is worth keeping because the intuition it corrects is a common one. Over the 24 hours
+  to 2026-09-05T14:16Z, at 8 threads and
   *before* [#981](https://github.com/tadasant/zimmer/issues/981)'s fix, the worker cgroup's **`anon`**
   — unreclaimable, so it is what decides whether N sessions fit — peaked at **9.07 GiB against a
   10 GiB `memory.max`**, with real `oom_kill`s. Eight *in-budget* sessions, no runaway, largest
@@ -2122,15 +2134,16 @@ that does it has known limits:
   and covers that; at 7168 it would be 3072 MB, *under* the measured need, so the **container** cap
   would fire first — and that OOM selects across the whole container and takes the worker, which is
   #981 recurring with the new mechanism working exactly as designed. The pool must fire first.
-- **So what 12 actually costs is concurrent-heavy-work headroom.** Measured on the live worker at 12
-  session cgroups: pool `anon` 3154 MB of the 6144 cap, ~263 MB per session, leaving ~3.0 GB —
-  roughly five concurrent capped test suites at ~560 MB each. The conservative per-session figure
-  from #981's peak task dump (~382 MB) would leave ~1.6 GB, or two to three. The real tolerance is
+- **So what the thread count actually costs, memory-wise, is concurrent-heavy-work headroom.**
+  Measured on the live worker at 12 session cgroups: pool `anon` 3154 MB of the 6144 cap, ~263 MB
+  per session, leaving ~3.0 GB — roughly five concurrent capped test suites at ~560 MB each. The
+  conservative per-session figure from #981's peak task dump (~382 MB) would leave ~1.6 GB, or two
+  to three; at 8 sessions the same figures leave ~4.0 GB and ~3.0 GB. The real tolerance is
   somewhere in that band and has not been pinned down; past it the pool kills one session. Connections
-  are not what binds first, but they are not roomy either: 12 threads derive 91 required backends
-  against the 97 a `db-s-2vcpu-4gb` cluster serves, and 15 would derive exactly 97 — the entire plan,
-  zero margin. A self-hosted deployment with a different worker cap has a different number, arrived
-  at the same way.
+  are not what binds first, but they are not roomy either: 25 scheduler threads derive 91 required
+  backends against the 97 a `db-s-2vcpu-4gb` cluster serves, and three more would derive exactly 97
+  — the entire plan, zero margin. A self-hosted deployment with a different worker cap has a
+  different number, arrived at the same way.
 - **A turn is queued for a worker for as long as the `agents` lane is deep, and only the session
   page says so.** Since [#1040](https://github.com/tadasant/zimmer/pull/1040) that turn reads
   `waiting` rather than `running`, so the dashboard count and `/inference`'s ceiling agree — but
@@ -4163,20 +4176,21 @@ and `EmptyTrashJob` are deliberately kept off a session that carries one
 ([background jobs](/operate/background-jobs/#an-interrupted-clone-cleanup-comes-back)). So the clone
 is reclaimed at exactly the rate that lane drains, and nothing else is watching.
 
-The lane has two threads, shared with the recurring sweeps, and the job's arrival rate is one row per
+The lane has four threads, shared with the recurring sweeps, and the job's arrival rate is one row per
 archive — bounded by nothing. Capping the scheduled sweeps at `SWEEP_BUDGET_SECONDS` and retrying interrupted
 cleanups both raise the share of that lane the reaper gets, but neither makes it elastic — and `BundleInstallJob`
-and `McpPackageReinstallJob` remain unbudgeted on the same two threads: while the
-fleet archives faster than two threads can reclaim, the backlog and the bytes behind it grow
+and `McpPackageReinstallJob` remain unbudgeted on the same threads: while the
+fleet archives faster than the lane can reclaim, the backlog and the bytes behind it grow
 together. On 2026-09-05 that reached 124 ready rows, a head of line two hours old, and 276 clone
 directories holding 43 GB.
 
-The lever that would close the gap is `GOOD_JOB_MAINTENANCE_THREADS`, and it is not free: every
-scheduler thread is a PostgreSQL connection the deployment promises, so raising it moves
+The lever is `GOOD_JOB_MAINTENANCE_THREADS`, and it moved 2 → 4 on 2026-09-20 — paid for by
+`agents` giving up four threads rather than by the connection budget, since every scheduler thread
+is a PostgreSQL connection the deployment promises and raising one on its own moves
 `ConnectionBudget#required_backends` and the `app_required_backends` Terraform variable checked
-against the managed cluster's plan ([the connection budget](/operate/deploying/#the-database-connection-budget)). Until then the
-`starved_lane` page — `maintenance`, 100 ready, 60 minutes — is the signal that it has fallen behind,
-and it is an accurate one.
+against the managed cluster's plan ([the connection budget](/operate/deploying/#the-database-connection-budget)). Four is
+still not elastic. The `starved_lane` page — `maintenance`, 100 ready, 60 minutes — remains the
+signal that it has fallen behind, and it is an accurate one.
 
 ---
 
