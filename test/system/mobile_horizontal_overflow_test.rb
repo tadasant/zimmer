@@ -642,6 +642,13 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     JS
   end
 
+  # The non-blank option TEXT of a model <select>, in order — the catalog labels.
+  def model_option_labels(selector)
+    page.evaluate_script(
+      "Array.from(document.querySelector(#{selector.to_json}).options).filter(o => o.value !== '').map(o => o.text)"
+    )
+  end
+
   # The non-blank option values of a model <select>, in order. The blank option is
   # the "Default (…)" label and is dropped, so this compares against a plain
   # ModelCatalog list.
@@ -877,8 +884,13 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     mobile_box.click
     assert mobile_box.checked?
     # Any non-blank option: what matters is that a choice was made, not which.
-    find("#quick_prompt_mobile_model option:not([value=''])", match: :first).select_option
+    # Harness FIRST — picking one rebuilds the model list and resets it to blank,
+    # so choosing the model after is what leaves both non-blank for the reset
+    # assertions below. The other order would assert nothing about the model.
     find("#quick_prompt_mobile_agent_runtime option:not([value=''])", match: :first).select_option
+    find("#quick_prompt_mobile_model option:not([value=''])", match: :first).select_option
+    assert_not_equal "", find("#quick_prompt_mobile_model").value
+    assert_not_equal "", find("#quick_prompt_mobile_agent_runtime").value
     find("button[data-action='quick-prompt#closeMobile']").click
     find("button[data-action='quick-prompt#openMobile']").click
     # Every knob is per-submission, and the accordion itself closes with them, so
@@ -1025,15 +1037,22 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     claude_models = ModelCatalog.model_ids_for("claude_code")
     codex_models = ModelCatalog.model_ids_for("codex")
     assert_equal claude_models, model_option_values("#quick_prompt_desktop_model")
+    # The option TEXT is the catalog's label, which on Codex and Pi is the only
+    # place a model says it needs a ChatGPT login or is deprecated.
+    assert_equal ModelCatalog.models_for("claude_code").map { |m| m[:label] },
+      model_option_labels("#quick_prompt_desktop_model")
     page.save_screenshot("tmp/screenshots/proof-quick-router-harness-claude-1400.png")
 
-    find("#quick_prompt_desktop_agent_runtime").select_option(RuntimeRegistry.label_for("codex"))
+    select RuntimeRegistry.label_for("codex"), from: "quick_prompt_desktop_agent_runtime"
 
     assert_equal codex_models, model_option_values("#quick_prompt_desktop_model")
     assert_equal "", find("#quick_prompt_desktop_model").value,
       "switching harness must drop the old runtime's model rather than carry it over"
     assert_selector "#quick_prompt_desktop_model option[value='']",
       text: /Default \(#{Regexp.escape(ModelCatalog.default_for('codex'))}\)/
+    assert_equal ModelCatalog.models_for("codex").map { |m| m[:label] },
+      model_option_labels("#quick_prompt_desktop_model"),
+      "the rebuilt list must carry the catalog labels, not bare ids"
     page.save_screenshot("tmp/screenshots/proof-quick-router-harness-codex-1400.png")
   end
 
@@ -1074,9 +1093,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_selector "[data-chat-bubble-target='panel'].translate-x-0.opacity-100"
     find("[data-chat-bubble-target='advanced'] summary").click
 
-    find("[data-chat-bubble-target='runtime']").select_option(RuntimeRegistry.label_for("codex"))
+    select RuntimeRegistry.label_for("codex"), from: "quick_prompt_bubble_agent_runtime"
     chosen_model = ModelCatalog.model_ids_for("codex").last
-    find("[data-chat-bubble-target='model']").select_option(chosen_model)
+    find("#quick_prompt_bubble_model option[value='#{chosen_model}']").select_option
     page.save_screenshot("tmp/screenshots/proof-quick-router-bubble-advanced-375.png")
 
     find("[data-chat-bubble-target='textarea']").fill_in with: "Run the catalog sweep on Codex"

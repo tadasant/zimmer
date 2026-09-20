@@ -150,17 +150,7 @@ class ModelCatalog
       built_in = built_in_models_for(key)
       built_in_ids = built_in.map { |model| model[:id] }
 
-      built_in + added_entries_for(key).reject { |entry| built_in_ids.include?(entry.model_id) }.map do |entry|
-        {
-          id: entry.model_id,
-          label: entry.display_label,
-          requires_oauth: entry.requires_oauth,
-          source: "added",
-          cli_listed: entry.cli_listed,
-          cli_version: entry.cli_version,
-          cli_note: entry.cli_note
-        }
-      end
+      merge_added(built_in, built_in_ids, added_entries_for(key))
     end
 
     # @return [Array<Hash>] only the MODELS entries for the runtime
@@ -173,22 +163,24 @@ class ModelCatalog
       models_for(runtime).map { |m| m[:id] }
     end
 
-    # The same lists as #model_ids_for, for several runtimes at once, on ONE read
-    # of the added-models table instead of one per runtime.
+    # The same lists as #models_for, for several runtimes at once, on ONE read of
+    # the added-models table instead of one per runtime. Built by the same
+    # #merge_added as #models_for, so the two cannot disagree.
     #
     # The Quick Router's harness picker needs every registered runtime's models in
     # the same render, and the chat bubble renders on every page in the app — so
-    # the per-runtime `where(runtime:)` would be three queries on every request.
+    # the per-runtime `where(runtime:)` would be one query per runtime on every
+    # request in Zimmer.
     #
     # @param runtimes [Array<String>] runtime identifiers
-    # @return [Hash{String=>Array<String>}] keyed by the identifiers as given
-    def model_ids_by_runtime(runtimes)
+    # @return [Hash{String=>Array<Hash>}] keyed by the identifiers as given
+    def models_by_runtime(runtimes)
       added = all_added_entries.group_by(&:runtime)
 
       runtimes.index_with do |runtime|
         key = resolve(runtime)
-        built_in = built_in_models_for(key).map { |m| m[:id] }
-        built_in + added.fetch(key, []).map(&:model_id).reject { |id| built_in.include?(id) }
+        built_in = built_in_models_for(key)
+        merge_added(built_in, built_in.map { |m| m[:id] }, added.fetch(key, []))
       end
     end
 
@@ -231,6 +223,23 @@ class ModelCatalog
     end
 
     private
+
+    # An added model follows the built-in ones, and a deploy that promotes an added
+    # id to built-in drops the now-redundant row rather than listing it twice. The
+    # single implementation behind both #models_for and #models_by_runtime.
+    def merge_added(built_in, built_in_ids, added_entries)
+      built_in + added_entries.reject { |entry| built_in_ids.include?(entry.model_id) }.map do |entry|
+        {
+          id: entry.model_id,
+          label: entry.display_label,
+          requires_oauth: entry.requires_oauth,
+          source: "added",
+          cli_listed: entry.cli_listed,
+          cli_version: entry.cli_version,
+          cli_note: entry.cli_note
+        }
+      end
+    end
 
     # Added models are an overlay, so an unreadable table degrades to the built-in
     # list rather than taking every model picker down with it: a container booted

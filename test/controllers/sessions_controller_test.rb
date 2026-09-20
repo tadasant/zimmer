@@ -6657,6 +6657,22 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal router_runtime, Session.last.agent_runtime
   end
 
+  test "quick_prompt says so for both an unregistered harness and a model that only fit it" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    root = AgentRootsConfig.find!(AgentRootsConfig.router_root_name)
+
+    # `aider` is not registered, so the model is validated against the router
+    # root's runtime instead — where a Codex id is also not offered.
+    post quick_prompt_sessions_url,
+      params: { prompt: "Fix the login bug", agent_runtime: "aider", model: ModelCatalog.model_ids_for("codex").first }
+
+    session = Session.last
+    assert_equal root.default_runtime, session.agent_runtime
+    assert_equal root.default_model, session.config["model"]
+    assert_match(/The harness you picked is not available, so the default applied\./, flash[:notice])
+    assert_match(/The model you picked is not available for this harness, so the default applied\./, flash[:notice])
+  end
+
   # The pairing that makes the harness picker worth having: the model is validated
   # against the PICKED harness, not the router root's, so a Codex id on a Codex
   # submission is honored rather than thrown away.
@@ -6696,6 +6712,22 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session = Session.last
     assert_equal "pi", session.agent_runtime
     assert_equal ModelCatalog.default_for("pi"), session.config["model"]
+  end
+
+  # The row's runtime is the one the model was validated against, always passed
+  # explicitly rather than re-derived inside ResolveSpawnDefaults — the catalog
+  # has a TTL, and #resolve_model! leaves an already-set config["model"] alone.
+  test "quick_prompt passes the resolved runtime explicitly on the untouched path too" do
+    router_runtime = AgentRootsConfig.find!(AgentRootsConfig.router_root_name).default_runtime
+    Session.expects(:create_from_agent_root!).with { |**kw| kw[:agent_runtime] == router_runtime }
+      .returns(sessions(:running))
+    SessionsController.any_instance.stubs(:capture_web_ui_human_message)
+    SessionsController.any_instance.stubs(:copy_staged_uploads_to_session).returns([ [], [] ])
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug" }
+
+    assert_response :redirect
   end
 
   test "the dashboard offers every registered harness with none preselected" do
@@ -6770,7 +6802,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_response :unprocessable_entity
-    assert_equal "That harness is not available.", response.parsed_body["error"]
+    assert_equal "That harness is not available. Reload the page to refresh the list.", response.parsed_body["error"]
   end
 
   test "chat_bubble rejects a model that does not belong to the posted harness" do
@@ -6783,7 +6815,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_response :unprocessable_entity
-    assert_equal "That model is not available for the Codex harness.", response.parsed_body["error"]
+    assert_equal "That model is not available for the Codex harness. Reload the page to refresh the list.",
+      response.parsed_body["error"]
   end
 
   test "chat_bubble rejects a model the router runtime does not offer when no harness was posted" do

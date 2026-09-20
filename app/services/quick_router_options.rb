@@ -34,12 +34,18 @@ class QuickRouterOptions
   # because the new-session form resolves the same thing for a root of its own,
   # and the two must not disagree about what "default" means.
   #
+  # @param allowed_models [Array<String>, nil] the runtime's selectable model ids,
+  #   when the caller already has them. Both membership tests below read that list,
+  #   and looking it up costs a database read — so a caller resolving this for
+  #   every registered runtime passes the lists it already loaded rather than
+  #   re-reading the table once per runtime.
   # @return [String, nil]
-  def self.default_model_for(agent_root, runtime)
+  def self.default_model_for(agent_root, runtime, allowed_models: nil)
+    allowed = allowed_models || ModelCatalog.model_ids_for(runtime)
     declared = agent_root&.default_model
-    return declared if ModelCatalog.valid_model?(runtime, declared)
+    return declared if allowed.include?(declared.to_s)
 
-    AppSetting.current.resolved_default_model_for(runtime)
+    AppSetting.current.resolved_default_model_for(runtime, allowed_models: allowed)
   end
 
   # @return [Array<String>] the registered runtime identifiers, in registry order
@@ -63,20 +69,48 @@ class QuickRouterOptions
       RuntimeRegistry::DEFAULT_RUNTIME
   end
 
-  # Selectable model ids per runtime — one read of the added-models table for the
-  # whole map, not one per runtime.
+  # Selectable models per runtime, as ({ id:, label:, … }) — ONE read of the
+  # added-models table for the whole map, not one per runtime. The label is what
+  # the picker shows, and on Codex and Pi it is the only place a model says it
+  # needs a ChatGPT login or is deprecated.
   #
-  # @return [Hash{String=>Array<String>}]
+  # @return [Hash{String=>Array<Hash>}]
   def models_by_runtime
-    @models_by_runtime ||= ModelCatalog.model_ids_by_runtime(available_runtimes)
+    @models_by_runtime ||= ModelCatalog.models_by_runtime(available_runtimes)
   end
 
-  # What "Default" resolves to per runtime — what each blank option names.
+  # Just the ids, for validating what came back. Derived from the map above rather
+  # than re-read, so offer and accept cannot disagree.
+  #
+  # @return [Hash{String=>Array<String>}]
+  def model_ids_by_runtime
+    @model_ids_by_runtime ||= models_by_runtime.transform_values { |models| models.map { |m| m[:id] } }
+  end
+
+  # What "Default" resolves to per runtime — what each blank option names. Reads
+  # the ids already loaded above; without that this would put the per-runtime
+  # table read straight back, on every page render, through #valid_model?.
   #
   # @return [Hash{String=>String}]
   def default_models_by_runtime
-    @default_models_by_runtime ||=
-      available_runtimes.index_with { |runtime| self.class.default_model_for(router_root, runtime) }
+    @default_models_by_runtime ||= available_runtimes.index_with do |runtime|
+      self.class.default_model_for(router_root, runtime, allowed_models: model_ids_by_runtime[runtime])
+    end
+  end
+
+  # The picker's options for a runtime, as [label, id] pairs.
+  #
+  # @return [Array<Array<String>>]
+  def model_options_for(runtime)
+    models_by_runtime.fetch(runtime, []).map { |m| [ m[:label], m[:id] ] }
+  end
+
+  # The map the Stimulus controller rebuilds the model <select> from when the
+  # harness changes. Same lists, same labels, same order as the first paint.
+  #
+  # @return [Hash{String=>Array<Hash>}]
+  def models_for_javascript
+    models_by_runtime.transform_values { |models| models.map { |m| { id: m[:id], label: m[:label] } } }
   end
 
   # The harness opt-in. Blank (an untouched picker) returns nil, which leaves the
@@ -110,7 +144,13 @@ class QuickRouterOptions
     id = requested.to_s.strip
     return nil if id.blank?
 
-    models_by_runtime.fetch(runtime) { ModelCatalog.model_ids_for(runtime) }.include?(id) ? id : nil
+    # `fetch(runtime, [])` — never a lookup on miss. A runtime absent from the map
+    # is one `available_runtimes` does not carry, so the picker offered nothing for
+    # it and nothing may be accepted for it either; falling back to a catalog read
+    # would accept what the picker never offered, which is the one thing this class
+    # exists to prevent. The view and the Stimulus controller both degrade to an
+    # empty list on the same miss.
+    model_ids_by_runtime.fetch(runtime, []).include?(id) ? id : nil
   end
 
   # @return [Boolean] the caller named a harness and it did not survive validation

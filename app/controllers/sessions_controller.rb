@@ -231,13 +231,6 @@ class SessionsController < ApplicationController
     # filtered, sorted by name for a stable list.
     @agent_roots_for_filter = AgentRootsConfig.all.sort_by(&:name)
 
-    # The Quick Router's Advanced accordion — the harness picker, the model picker
-    # and the spot opt-in. Both defaults are NAMED rather than preselected, so an
-    # untouched picker submits nothing and the ordinary resolution chain applies.
-    # Assigning the ivar the `quick_router_options` helper memoizes into means the
-    # dashboard's two copies and the layout's chat bubble share one read.
-    @quick_router_options = quick_router_options
-
     if @agent_root_filter.present?
       sessions = filter_sessions_by_agent_root(sessions, @agent_root_filter)
     end
@@ -491,7 +484,7 @@ class SessionsController < ApplicationController
       session = Session.create_from_agent_root!(
         agent_root_name: AgentRootsConfig.router_root_name,
         prompt: prompt,
-        agent_runtime: quick_router_agent_runtime,
+        agent_runtime: runtime,
         metadata: { source: "quick_prompt" },
         genesis: SessionGenesis::WEB_UI,
         scheduling_class: scheduling_class,
@@ -596,13 +589,22 @@ class SessionsController < ApplicationController
     # redirect would take the typed prompt with it, whereas this panel stays open
     # with the draft in the textarea and the message under it. So there is nothing
     # to weigh against telling the user their choice did not land.
+    #
+    # Both messages name reloading, because on this surface a stale list is the
+    # likely cause rather than an exotic one: the panel is `data-turbo-permanent`,
+    # so the options it renders on a full page load survive every Turbo navigation
+    # afterwards. An operator who adds or removes a model mid-session leaves the
+    # panel offering yesterday's list until the page is reloaded — see
+    # docs/src/content/docs/limitations.md.
     runtime = quick_router_effective_runtime
     if quick_router_options.runtime_rejected?(params[:agent_runtime])
-      render json: { error: "That harness is not available." }, status: :unprocessable_entity
+      render json: { error: "That harness is not available. Reload the page to refresh the list." },
+             status: :unprocessable_entity
       return
     end
     if quick_router_options.model_rejected?(runtime, params[:model])
-      render json: { error: "That model is not available for the #{RuntimeRegistry.label_for(runtime)} harness." }, status: :unprocessable_entity
+      render json: { error: "That model is not available for the #{RuntimeRegistry.label_for(runtime)} harness. Reload the page to refresh the list." },
+             status: :unprocessable_entity
       return
     end
 
@@ -617,10 +619,13 @@ class SessionsController < ApplicationController
         agent_root_name: AgentRootsConfig.router_root_name,
         prompt: augmented_prompt,
         parent_session_id: parent_session_id,
-        # The panel's Harness picker. Blank leaves the runtime to the ordinary
-        # chain — the router root's own — which is what every chat-bubble
-        # submission did before the picker existed.
-        agent_runtime: quick_router_agent_runtime,
+        # The panel's Harness picker, already resolved: the picked harness, or the
+        # router root's own when the picker was left blank. Passing the resolved
+        # value rather than the raw opt-in is what guarantees the row lands on the
+        # runtime the model above was validated against — the catalog has a 60s TTL,
+        # so re-deriving it inside ResolveSpawnDefaults could pick up a different
+        # answer, and #resolve_model! leaves an already-set config["model"] alone.
+        agent_runtime: runtime,
         metadata: { source: "chat_bubble", original_prompt: prompt, current_url: current_url },
         # Declared, not inherited: the chat bubble carries a parent session so the
         # conversation threads, but a human typed this. Letting it inherit would
@@ -4477,18 +4482,12 @@ class SessionsController < ApplicationController
 
   # The runtime this Quick Router submission runs under: the harness the user
   # picked when they picked one the registry carries, the router root's own
-  # otherwise (which has already folded in the global base default). The model
-  # validation below is scoped to it, because a model id belongs to exactly one
-  # runtime's catalog.
+  # otherwise (which has already folded in the global base default). Both the
+  # model validation below and the created row key on this one value — the model
+  # is only valid for the runtime it was validated against, so resolving the pair
+  # twice is how they could come apart.
   def quick_router_effective_runtime
     quick_router_options.effective_runtime(params[:agent_runtime])
-  end
-
-  # The harness opt-in, nil when nobody picked one. nil leaves `agent_runtime`
-  # unset on the new row so Sessions::ResolveSpawnDefaults applies the ordinary
-  # chain, exactly as every Quick Router submission did before the picker existed.
-  def quick_router_agent_runtime
-    quick_router_options.resolve_runtime(params[:agent_runtime])
   end
 
   # The Quick Router's model opt-in.

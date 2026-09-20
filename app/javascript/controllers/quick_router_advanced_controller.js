@@ -21,7 +21,7 @@ export default class extends Controller {
 
   static values = {
     defaultRuntime: String,      // the router root's runtime — what blank means
-    runtimeModels: Object,       // { claude_code: ["opus", ...], ... }
+    runtimeModels: Object,       // { claude_code: [{ id, label }, ...], ... }
     runtimeDefaultModels: Object // { claude_code: "opus", ... }
   }
 
@@ -49,6 +49,15 @@ export default class extends Controller {
   // Rebuilds the model <select> for the effective runtime, always landing back on
   // the blank option: the model that was selected belonged to the previous
   // runtime's catalog and carrying it over is exactly the mismatch to avoid.
+  //
+  // Renders the catalog's LABEL, not the bare id. On Codex and Pi the label is the
+  // only place a model says it needs a ChatGPT login or is deprecated
+  // ("gpt-5.6-terra (default, ChatGPT auth)", "gpt-5.3-codex (deprecated)"), and
+  // the harness picker is what makes those two reachable here at all.
+  //
+  // A runtime the map does not carry offers nothing rather than falling back to
+  // another runtime's list — the same answer QuickRouterOptions#resolve_model
+  // gives on the same miss, so the picker and the server never disagree.
   renderModelOptions() {
     if (!this.hasModelTarget) return
 
@@ -58,7 +67,7 @@ export default class extends Controller {
 
     const blankLabel = fallback ? `Default (${fallback})` : "Default"
     const options = [`<option value="">${this._escape(blankLabel)}</option>`].concat(
-      models.map(model => `<option value="${this._escape(model)}">${this._escape(model)}</option>`)
+      models.map(model => `<option value="${this._escape(model.id)}">${this._escape(model.label || model.id)}</option>`)
     )
 
     this.modelTarget.innerHTML = options.join("")

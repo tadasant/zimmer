@@ -21,7 +21,10 @@
   model_id = "quick_prompt_#{scope}_model"
   spot_id = "quick_prompt_#{scope}_scheduling_class"
   help_id = "quick_prompt_#{scope}_advanced_help"
+  surface_label = { "desktop" => "prompt box", "mobile" => "prompt editor", "bubble" => "quick router panel" }.fetch(scope, scope)
   default_runtime = options.default_runtime
+  # `[]`/nil on a miss everywhere — see QuickRouterOptions#resolve_model for why a
+  # runtime the map does not carry must offer nothing rather than fall back.
   default_model = options.default_models_by_runtime[default_runtime]
 %>
 <%# `inline-flex` on the summary drops the browser's default disclosure marker, so
@@ -36,13 +39,14 @@
         controller: "quick-router-advanced",
         action: "quick-router-advanced:reset->quick-router-advanced#reset",
         quick_router_advanced_default_runtime_value: default_runtime,
-        quick_router_advanced_runtime_models_value: options.models_by_runtime.to_json,
+        quick_router_advanced_runtime_models_value: options.models_for_javascript.to_json,
         quick_router_advanced_runtime_default_models_value: options.default_models_by_runtime.to_json
-      }.merge(targets.fetch(:advanced, {})) do %>
+      }.reverse_merge(targets.fetch(:advanced, {})) do %>
   <%# Named for assistive tech: the sidebar's filter accordion is also "Advanced",
-      and several copies of this one are in the DOM, so the visible word alone would
-      read over and over with nothing to tell them apart. %>
-  <summary aria-label="Advanced prompt options: harness, model and spot"
+      and up to three copies of this one are in the DOM at once, so the visible
+      word alone would read over and over with nothing to tell any of them apart.
+      The scope is in the label for the same reason the ids carry it. %>
+  <summary aria-label="Advanced prompt options (<%= surface_label %>): harness, model and spot"
            class="inline-flex cursor-pointer select-none items-center gap-1 text-xs text-gray-500 hover:text-gray-700">
     <svg class="h-3 w-3 flex-shrink-0 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
@@ -63,7 +67,7 @@
             data: {
               quick_router_advanced_target: "runtime",
               action: "change->quick-router-advanced#runtimeChanged"
-            }.merge(targets.fetch(:runtime, {})),
+            }.reverse_merge(targets.fetch(:runtime, {})),
             aria: { describedby: help_id },
             class: "mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500" %>
     </div>
@@ -77,10 +81,10 @@
           rather than preselected: a tab left open across a Settings change
           would otherwise post yesterday's default as if someone had chosen it. %>
       <%= select_tag :model,
-            options_for_select(options.models_by_runtime.fetch(default_runtime, [])),
+            options_for_select(options.model_options_for(default_runtime)),
             include_blank: default_model.present? ? "Default (#{default_model})" : "Default",
             id: model_id,
-            data: { quick_router_advanced_target: "model" }.merge(targets.fetch(:model, {})),
+            data: { quick_router_advanced_target: "model" }.reverse_merge(targets.fetch(:model, {})),
             aria: { describedby: help_id },
             class: "mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500" %>
       <p id="<%= help_id %>" class="mt-1 text-xs leading-snug text-gray-500">
@@ -94,7 +98,7 @@
     <label class="flex items-start gap-2 cursor-pointer" for="<%= spot_id %>">
       <%= check_box_tag :scheduling_class, SessionGenesis::SPOT, false,
             id: spot_id,
-            data: { quick_router_advanced_target: "spot" }.merge(targets.fetch(:spot, {})),
+            data: { quick_router_advanced_target: "spot" }.reverse_merge(targets.fetch(:spot, {})),
             class: "mt-0.5 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" %>
       <span class="text-xs leading-snug text-gray-500">
         <span class="font-medium text-gray-700">Run as spot</span> &mdash;
