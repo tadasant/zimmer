@@ -40,7 +40,11 @@
        <%# bottom-drawer#open is on this list because on a narrow viewport the composer
            is behind the collapsed drawer, and so are both attachment previews — a drop
            that staged a file without opening it would look like nothing happened. %>
-       data-action="composer-drop:files->image-attachment#handleComposerDrop composer-drop:files->file-attachment#handleComposerDrop composer-drop:files->bottom-drawer#open"
+       <%# image-attachment:mediaHandoff carries the part of a media-picker selection
+           the image path cannot store — an iPhone HEIC still, a .mov, an .mp4 —
+           over to file-attachment, so a photo picked on a phone reaches the agent
+           as a file rather than erroring at the upload endpoint. %>
+       data-action="composer-drop:files->image-attachment#handleComposerDrop composer-drop:files->file-attachment#handleComposerDrop composer-drop:files->bottom-drawer#open image-attachment:mediaHandoff->file-attachment#handleMediaHandoff"
        data-character-counter-max-value="<%= Session::PROMPT_MAX_LENGTH %>"
        data-follow-up-prompt-prompt-max-length-value="<%= Session::PROMPT_MAX_LENGTH %>"
        data-follow-up-prompt-turn-underway-value="<%= turn_underway %>"
@@ -147,6 +151,45 @@
             correct behavior even before JS initializes or if JS fails. %>
         <%= form_with url: turn_underway ? session_enqueued_messages_path(agent_session) : follow_up_session_path(agent_session), method: :post, data: { follow_up_prompt_target: "form", enqueue_mode: turn_underway } do |form| %>
           <div class="space-y-3">
+            <%# Attachment plumbing, shared by the desktop row and the phone row
+                below: one set of inputs and one pair of hidden fields, so whichever
+                row is on screen stages into the same list and the form submits the
+                same params either way. Duplicating them per layout would give the
+                two rows two independent selections.
+
+                The media input accepts everything a phone's library holds, not
+                just the four types the image path can store. image-attachment
+                splits the selection and hands the rest to file-attachment; see
+                lib/media_kinds.js. %>
+            <%= hidden_field_tag :images, nil, data: { image_attachment_target: "imagesField" } %>
+            <%= hidden_field_tag :files_payload, nil, data: { file_attachment_target: "filesField" } %>
+            <input type="file"
+                   accept="<%= media_picker_accept %>"
+                   multiple
+                   class="hidden"
+                   data-image-attachment-target="input"
+                   data-action="change->image-attachment#handleFileSelect">
+            <%# Camera capture. `capture="environment"` opens the rear camera
+                straight away on a phone and is ignored on a desktop. %>
+            <input type="file"
+                   accept="image/*"
+                   capture="environment"
+                   class="hidden"
+                   data-image-attachment-target="cameraInput"
+                   data-action="change->image-attachment#handleFileSelect">
+            <input type="file"
+                   multiple
+                   class="hidden"
+                   data-file-attachment-target="input"
+                   data-action="change->file-attachment#handleFileSelect">
+            <%# Folder selection (webkitdirectory recursively expands). Desktop
+                only — no mobile browser offers a directory picker. %>
+            <input type="file"
+                   webkitdirectory
+                   multiple
+                   class="hidden"
+                   data-file-attachment-target="folderInput"
+                   data-action="change->file-attachment#handleFileSelect">
             <!-- Main prompt area -->
             <!-- Desktop: horizontal layout -->
             <div class="hidden sm:flex items-end space-x-4">
@@ -194,37 +237,6 @@
                 <%# File upload progress banner - visible while uploads are in flight %>
                 <div data-file-attachment-target="progress" class="hidden mt-2"></div>
               </div>
-              <%# Hidden field for image data %>
-              <%= hidden_field_tag :images, nil, data: { image_attachment_target: "imagesField" } %>
-              <%# Hidden field for file data %>
-              <%= hidden_field_tag :files_payload, nil, data: { file_attachment_target: "filesField" } %>
-              <%# Hidden file input for image selection %>
-              <input type="file"
-                     accept="image/jpeg,image/png,image/gif,image/webp"
-                     multiple
-                     class="hidden"
-                     data-image-attachment-target="input"
-                     data-action="change->image-attachment#handleFileSelect">
-              <%# Hidden file input for camera capture (uses rear camera on mobile) %>
-              <input type="file"
-                     accept="image/*"
-                     capture="environment"
-                     class="hidden"
-                     data-image-attachment-target="cameraInput"
-                     data-action="change->image-attachment#handleFileSelect">
-              <%# Hidden file input for general file selection %>
-              <input type="file"
-                     multiple
-                     class="hidden"
-                     data-file-attachment-target="input"
-                     data-action="change->file-attachment#handleFileSelect">
-              <%# Hidden file input for folder selection (webkitdirectory recursively expands) %>
-              <input type="file"
-                     webkitdirectory
-                     multiple
-                     class="hidden"
-                     data-file-attachment-target="folderInput"
-                     data-action="change->file-attachment#handleFileSelect">
               <div class="flex items-center space-x-2">
                 <%# Image attachment button %>
                 <button type="button"
@@ -296,6 +308,50 @@
                 <%# Slash command typeahead dropdown for mobile %>
                 <div data-slash-command-target="dropdown"
                      class="hidden bg-white border border-gray-300 rounded-md shadow-lg overflow-y-auto"></div>
+              </div>
+
+              <%# Attach row for the phone layout.
+                  A touch device has no drag-and-drop, so these buttons ARE the
+                  attachment mechanism at this width — the desktop row above is
+                  `display: none` here and offers nothing a thumb can reach.
+
+                  No folder button: webkitdirectory has no picker on iOS or Android.
+                  The buttons target the same hidden inputs as the desktop row, and
+                  the preview/progress targets are plural so both rows render the
+                  same staged attachments. %>
+              <div data-image-attachment-target="preview" class="hidden"></div>
+              <div data-file-attachment-target="preview" class="hidden"></div>
+              <div data-file-attachment-target="progress" class="hidden"></div>
+              <div class="flex items-center gap-2">
+                <button type="button"
+                  class="inline-flex items-center gap-1.5 px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  data-image-attachment-target="attachButton"
+                  data-action="click->image-attachment#openFileDialog"
+                  aria-label="Attach photos or videos">
+                  <svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                  </svg>
+                  <span>Photo</span>
+                </button>
+                <button type="button"
+                  class="inline-flex items-center p-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  data-image-attachment-target="cameraButton"
+                  data-action="click->image-attachment#openCameraDialog"
+                  aria-label="Take a photo">
+                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/>
+                  </svg>
+                </button>
+                <button type="button"
+                  class="inline-flex items-center p-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  data-file-attachment-target="attachButton"
+                  data-action="click->file-attachment#openFileDialog"
+                  aria-label="Attach a file">
+                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+                  </svg>
+                </button>
               </div>
               <button type="button"
                 class="w-full inline-flex items-center justify-center px-4 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"

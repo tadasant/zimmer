@@ -82,6 +82,7 @@ export default defineConfig({
             { label: "Runtimes", slug: "sessions/runtimes" },
             { label: "Goals and stop conditions", slug: "sessions/goals" },
             { label: "Transcripts", slug: "sessions/transcripts" },
+            { label: "Prompt attachments", slug: "sessions/prompt-attachments" },
             { label: "Outcome analysis", slug: "sessions/outcomes" },
             { label: "Triggers and schedules", slug: "sessions/triggers" },
             { label: "Workflows", slug: "sessions/workflows" },
