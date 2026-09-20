@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { partitionMedia } from "lib/media_kinds"
 
 // Handles the dashboard quick prompt:
 //
@@ -6,7 +7,7 @@ import { Controller } from "@hotwired/stimulus"
 // - Cmd+Enter (Mac) / Ctrl+Enter (Windows/Linux) to submit
 // - Textarea is vertically resizable via drag handle
 // - Prevents double-submission
-// - Image / camera / file attach buttons forward clicks to hidden file inputs
+// - Photo / camera / file attach buttons forward clicks to hidden file inputs
 //   (capture="environment" makes the camera button open the rear camera on mobile)
 //
 // Mobile:
@@ -19,11 +20,17 @@ import { Controller } from "@hotwired/stimulus"
 // Client-side guards reject oversize files and excess counts before the form
 // posts so the user gets immediate feedback instead of a server-side redirect
 // with a flash. Values are sourced from server-side constants via data attrs.
+//
+// The photo input accepts everything a phone's library holds, which is wider than
+// the four types ImageStorageService can store. A selection is re-routed before it
+// is ever submitted: JPEG/PNG/GIF/WebP stay on images[], HEIC stills and video are
+// moved onto files[]. Without that, picking an iPhone photo posted the whole form
+// and came back as "Failed to upload attachment", losing the typed prompt with it.
 export default class extends Controller {
   static targets = [
     "textarea",            // desktop textarea
     "desktopForm",         // desktop form
-    "desktopImageInput",   // desktop image picker
+    "desktopImageInput",   // desktop photos & videos picker
     "desktopCameraInput",  // desktop camera input (capture="environment")
     "desktopFileInput",    // desktop file picker
     "desktopBadge",        // desktop "N attached" hint
@@ -31,7 +38,7 @@ export default class extends Controller {
     "mobileTextarea",      // textarea inside overlay
     "mobileForm",          // form inside overlay
     "mobileSubmit",        // submit button (disabled during submission)
-    "mobileImageInput",    // mobile image picker
+    "mobileImageInput",    // mobile photos & videos picker
     "mobileCameraInput",   // mobile camera input
     "mobileFileInput",     // mobile file picker
     "mobileBadge",         // mobile "N attached" hint
@@ -82,7 +89,10 @@ export default class extends Controller {
   }
 
   updateDesktopBadge(event) {
-    if (event && !this._validateInputChange(event, "desktop")) return
+    if (event) {
+      this._routeMedia("desktop")
+      this._validateScope("desktop")
+    }
     this._updateBadge("desktop")
   }
 
@@ -139,79 +149,110 @@ export default class extends Controller {
   }
 
   updateMobileBadge(event) {
-    if (event && !this._validateInputChange(event, "mobile")) return
+    if (event) {
+      this._routeMedia("mobile")
+      this._validateScope("mobile")
+    }
     this._updateBadge("mobile")
   }
 
   // ---- Internal ----
 
-  // Inspect the changed input and reject if it would push us over count or
-  // size limits. Returns true if the selection is acceptable, false otherwise.
-  // On rejection, clears the input and surfaces an alert.
-  _validateInputChange(event, scope) {
-    const input = event?.target
-    if (!input || !input.files) return true
+  // Move anything the image path cannot store out of the photo input and onto the
+  // file input. An iPhone still is HEIC and a phone video is .mov/.mp4; both are
+  // offered by the picker on purpose, and both are rejected by
+  // ImageStorageService. As files[] they are stored verbatim and the agent is
+  // handed a path — see app/javascript/lib/media_kinds.js.
+  _routeMedia(scope) {
+    const media = this._mediaInput(scope)
+    const file = this._fileInput(scope)
+    if (!media || !file) return
 
-    const files = Array.from(input.files)
-    if (files.length === 0) return true
+    const { images, files } = partitionMedia(media.files)
+    if (files.length === 0) return
 
-    const isImage = (input.accept || "").includes("image")
-    const maxSize = isImage ? this.maxImageSizeValue : this.maxFileSizeValue
-    const maxCount = isImage ? this.maxImagesValue : this.maxFilesValue
-    const sizeMb = Math.round(maxSize / (1024 * 1024))
-    const kind = isImage ? "image" : "file"
+    this._setInputFiles(media, images)
+    this._setInputFiles(file, [ ...Array.from(file.files || []), ...files ])
+  }
 
-    for (const f of files) {
-      if (f.size > maxSize) {
-        input.value = ""
-        window.alert(`${kind === "image" ? "Image" : "File"} "${f.name}" is too large (max ${sizeMb}MB).`)
-        return false
+  // Drop anything over the per-kind size limit, then clear the kind entirely if
+  // it is over the count limit. Oversize entries are removed individually rather
+  // than rejecting the whole selection: a phone multi-select is one tap over a
+  // grid, and one long video in it should not discard the photos beside it.
+  _validateScope(scope) {
+    for (const group of this._scopeGroups(scope)) {
+      const { inputs, maxSize, maxCount, kind } = group
+      const sizeMb = Math.round(maxSize / (1024 * 1024))
+
+      for (const input of inputs) {
+        const picked = Array.from(input.files || [])
+        const tooLarge = picked.filter(f => f.size > maxSize)
+        if (tooLarge.length === 0) continue
+
+        this._setInputFiles(input, picked.filter(f => f.size <= maxSize))
+        const names = tooLarge.map(f => `"${f.name}"`).join(", ")
+        window.alert(`${names} ${tooLarge.length === 1 ? "is" : "are"} over the ${sizeMb}MB ${kind} limit and ${tooLarge.length === 1 ? "was" : "were"} not attached.`)
+      }
+
+      const total = inputs.reduce((n, input) => n + (input.files?.length || 0), 0)
+      if (total > maxCount) {
+        for (const input of inputs) this._setInputFiles(input, [])
+        window.alert(`Maximum ${maxCount} ${kind}${maxCount === 1 ? "" : "s"} allowed.`)
       }
     }
-
-    // Count combined images / files separately across both inputs of the same
-    // kind in this scope (image input + camera input both count as "images").
-    const sameKindTotal = this._countAttached(scope, isImage)
-    if (sameKindTotal > maxCount) {
-      input.value = ""
-      window.alert(`Maximum ${maxCount} ${kind}${maxCount === 1 ? "" : "s"} allowed.`)
-      return false
-    }
-
-    return true
   }
 
-  _countAttached(scope, isImage) {
-    const inputs = this._scopeInputs(scope)
-    let total = 0
-    for (const input of inputs) {
-      if (!input || !input.files) continue
-      const inputIsImage = (input.accept || "").includes("image")
-      if (inputIsImage === isImage) total += input.files.length
-    }
-    return total
+  // A file input's `files` is only assignable from a FileList, so the round trip
+  // goes through a DataTransfer. This is how a selection is edited in place
+  // without asking the user to pick again.
+  _setInputFiles(input, files) {
+    const dt = new DataTransfer()
+    for (const file of files) dt.items.add(file)
+    input.files = dt.files
   }
 
-  _scopeInputs(scope) {
-    return scope === "mobile"
-      ? [this.hasMobileImageInputTarget && this.mobileImageInputTarget,
-         this.hasMobileCameraInputTarget && this.mobileCameraInputTarget,
-         this.hasMobileFileInputTarget && this.mobileFileInputTarget]
-      : [this.hasDesktopImageInputTarget && this.desktopImageInputTarget,
-         this.hasDesktopCameraInputTarget && this.desktopCameraInputTarget,
-         this.hasDesktopFileInputTarget && this.desktopFileInputTarget]
+  _mediaInput(scope) {
+    if (scope === "mobile") return this.hasMobileImageInputTarget ? this.mobileImageInputTarget : null
+    return this.hasDesktopImageInputTarget ? this.desktopImageInputTarget : null
+  }
+
+  _cameraInput(scope) {
+    if (scope === "mobile") return this.hasMobileCameraInputTarget ? this.mobileCameraInputTarget : null
+    return this.hasDesktopCameraInputTarget ? this.desktopCameraInputTarget : null
+  }
+
+  _fileInput(scope) {
+    if (scope === "mobile") return this.hasMobileFileInputTarget ? this.mobileFileInputTarget : null
+    return this.hasDesktopFileInputTarget ? this.desktopFileInputTarget : null
+  }
+
+  // The two kinds, each with the inputs that post under its name. Kind is decided
+  // structurally rather than by sniffing the `accept` string, which now says
+  // "image" on an input that may be carrying a video.
+  _scopeGroups(scope) {
+    return [
+      {
+        kind: "image",
+        inputs: [ this._mediaInput(scope), this._cameraInput(scope) ].filter(Boolean),
+        maxSize: this.maxImageSizeValue,
+        maxCount: this.maxImagesValue
+      },
+      {
+        kind: "file",
+        inputs: [ this._fileInput(scope) ].filter(Boolean),
+        maxSize: this.maxFileSizeValue,
+        maxCount: this.maxFilesValue
+      }
+    ]
   }
 
   _updateBadge(scope) {
-    const inputs = this._scopeInputs(scope)
-
     let images = 0
     let files = 0
-    for (const input of inputs) {
-      if (!input || !input.files) continue
-      const isImage = (input.accept || "").includes("image")
-      if (isImage) images += input.files.length
-      else files += input.files.length
+    for (const group of this._scopeGroups(scope)) {
+      const count = group.inputs.reduce((n, input) => n + (input.files?.length || 0), 0)
+      if (group.kind === "image") images += count
+      else files += count
     }
 
     const parts = []

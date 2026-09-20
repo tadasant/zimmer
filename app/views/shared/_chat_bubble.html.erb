@@ -89,12 +89,15 @@
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
             </svg>
           </button>
-          <span class="text-[11px] text-gray-400 ml-auto">Images, photos, files</span>
+          <span class="text-[11px] text-gray-400 ml-auto">Photos, video, files</span>
         </div>
 
         <%# Hidden file inputs %>
+        <%# Photos & videos. chat-bubble splits the selection the same way the
+            composers do: JPEG/PNG/GIF/WebP ride as images[], HEIC and video ride
+            as files[]. %>
         <input type="file"
-               accept="image/jpeg,image/png,image/gif,image/webp"
+               accept="<%= media_picker_accept %>"
                multiple
                class="hidden"
                data-chat-bubble-target="imageInput"

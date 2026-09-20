@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import { csrfHeaders } from "lib/csrf"
+import { partitionMedia } from "lib/media_kinds"
 
 // Controller for handling image attachments on session prompts
 // Supports: file input, paste, and drag-and-drop
@@ -12,6 +13,11 @@ import { csrfHeaders } from "lib/csrf"
 // - Follow-up prompts (existing session, uses sessionId)
 // - New session creation (uses tempSessionId)
 export default class extends Controller {
+  //
+  // preview / attachButton / cameraButton are PLURAL: the follow-up composer
+  // renders a desktop row and a phone row, only one of which is on screen at a
+  // time, and both have to be written to — a singular target would leave the
+  // phone row showing nothing and never re-enable its buttons.
   static targets = ["input", "cameraInput", "preview", "imagesField", "attachButton", "cameraButton"]
   static values = {
     sessionId: Number,
@@ -56,14 +62,25 @@ export default class extends Controller {
     }
   }
 
-  // Handle file input change
+  // Handle file input change.
+  //
+  // The picker accepts everything a phone's media library holds, which is wider
+  // than the four types the image path can store: an iPhone still is HEIC and a
+  // phone video is QuickTime or MP4. Those are handed off to file-attachment via
+  // `image-attachment:mediaHandoff` (wired on the composer, the same way
+  // `composer-drop:files` is) so they reach the agent as files instead of being
+  // rejected by the upload endpoint.
   handleFileSelect(event) {
-    const files = event.target.files
-    if (files && files.length > 0) {
-      this.uploadFiles(Array.from(files))
-    }
+    const { images, files } = partitionMedia(event.target.files)
     // Reset the input so the same file can be selected again
     event.target.value = ""
+
+    if (files.length > 0) {
+      this.dispatch("mediaHandoff", { detail: { files: files } })
+    }
+    if (images.length > 0) {
+      this.uploadFiles(images)
+    }
   }
 
   // Handle paste events
@@ -88,10 +105,14 @@ export default class extends Controller {
       }
     }
 
-    if (imageFiles.length > 0) {
-      event.preventDefault()
-      this.uploadFiles(imageFiles)
-    }
+    if (imageFiles.length === 0) return
+
+    event.preventDefault()
+    // Same split as the picker: a phone keyboard can hand over a HEIC, which the
+    // image path would reject. file-attachment takes those.
+    const { images, files } = partitionMedia(imageFiles)
+    if (files.length > 0) this.dispatch("mediaHandoff", { detail: { files: files } })
+    if (images.length > 0) this.uploadFiles(images)
   }
 
   // Files dropped on the composer, routed here by composer-drop. Only top-level
@@ -101,9 +122,13 @@ export default class extends Controller {
     const files = event.detail?.dataTransfer?.files
     if (!files) return
 
-    const imageFiles = Array.from(files).filter(f => f.type.startsWith("image/"))
-    if (imageFiles.length > 0) {
-      this.uploadFiles(imageFiles)
+    // Same split as the media picker, and for the same reason: a dropped HEIC or
+    // .mov is an image to the OS but not to the image path. file-attachment reads
+    // the complement of this filter off the same event, so nothing is dropped twice
+    // and nothing is dropped by neither.
+    const { images } = partitionMedia(files)
+    if (images.length > 0) {
+      this.uploadFiles(images)
     }
   }
 
@@ -115,13 +140,19 @@ export default class extends Controller {
       return
     }
 
-    // Validate file sizes
-    for (const file of files) {
-      if (file.size > this.maxSizeValue) {
-        alert(`Image "${file.name}" is too large. Maximum size is ${this.maxSizeValue / (1024 * 1024)}MB`)
-        return
-      }
+    // Oversize images are dropped individually rather than failing the whole
+    // selection. A phone multi-select is one tap over a grid of photos, and one
+    // 12MP panorama in it should not silently discard the other nine.
+    const maxMb = Math.round(this.maxSizeValue / (1024 * 1024))
+    const tooLarge = files.filter(file => file.size > this.maxSizeValue)
+    const withinLimit = files.filter(file => file.size <= this.maxSizeValue)
+
+    if (tooLarge.length > 0) {
+      const names = tooLarge.map(file => `"${file.name}"`).join(", ")
+      alert(`${names} ${tooLarge.length === 1 ? "is" : "are"} over the ${maxMb}MB image limit and ${tooLarge.length === 1 ? "was" : "were"} not attached.`)
     }
+    if (withinLimit.length === 0) return
+    files = withinLimit
 
     // Show loading state
     this.showLoading()
@@ -210,15 +241,19 @@ export default class extends Controller {
 
   // Update the preview display
   updatePreview() {
-    if (!this.hasPreviewTarget) return
+    if (this.previewTargets.length === 0) return
 
     if (this.images.length === 0) {
-      this.previewTarget.innerHTML = ""
-      this.previewTarget.classList.add("hidden")
+      for (const preview of this.previewTargets) {
+        preview.innerHTML = ""
+        preview.classList.add("hidden")
+      }
       return
     }
 
-    this.previewTarget.classList.remove("hidden")
+    for (const preview of this.previewTargets) {
+      preview.classList.remove("hidden")
+    }
 
     const html = this.images.map((img, index) => `
       <div class="relative inline-block group">
@@ -237,7 +272,7 @@ export default class extends Controller {
       </div>
     `).join("")
 
-    this.previewTarget.innerHTML = `
+    const markup = `
       <div class="flex flex-wrap gap-2 p-2 bg-gray-50 rounded-lg border border-gray-200">
         <div class="flex items-center gap-1 text-xs text-gray-500 mr-2">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -248,6 +283,9 @@ export default class extends Controller {
         ${html}
       </div>
     `
+    for (const preview of this.previewTargets) {
+      preview.innerHTML = markup
+    }
   }
 
   // Get HTML for image preview (icon or thumbnail)
@@ -279,25 +317,19 @@ export default class extends Controller {
 
   // Show loading indicator on attach buttons
   showLoading() {
-    if (this.hasAttachButtonTarget) {
-      this.attachButtonTarget.disabled = true
-      this.attachButtonTarget.classList.add("opacity-50")
-    }
-    if (this.hasCameraButtonTarget) {
-      this.cameraButtonTarget.disabled = true
-      this.cameraButtonTarget.classList.add("opacity-50")
-    }
+    this.setButtonsDisabled(true)
   }
 
   // Hide loading indicator
   hideLoading() {
-    if (this.hasAttachButtonTarget) {
-      this.attachButtonTarget.disabled = false
-      this.attachButtonTarget.classList.remove("opacity-50")
-    }
-    if (this.hasCameraButtonTarget) {
-      this.cameraButtonTarget.disabled = false
-      this.cameraButtonTarget.classList.remove("opacity-50")
+    this.setButtonsDisabled(false)
+  }
+
+  // Every attach button in this composer, desktop row and phone row alike.
+  setButtonsDisabled(disabled) {
+    for (const button of [ ...this.attachButtonTargets, ...this.cameraButtonTargets ]) {
+      button.disabled = disabled
+      button.classList.toggle("opacity-50", disabled)
     }
   }
 
