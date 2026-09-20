@@ -32,7 +32,7 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(@clones_base) if @clones_base
   end
 
-  # The maintenance lane has two threads and shares them with the per-archive
+  # The maintenance lane has four threads and shares them with the per-archive
   # DeferredCloneCleanupJob stream. Nothing used to bound how long this hourly
   # sweep held one of them, and every unit of its work is a recursive delete.
   test "stops when the wall-clock budget runs out and leaves the rest for the next run" do

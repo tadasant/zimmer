@@ -272,8 +272,8 @@ module CronSchedule
     # LogRetentionJob drains it a bounded slice at a time. Ten minutes is what
     # turns that backlog into hours rather than weeks.
     #
-    # It runs on `maintenance`, a 2-thread lane, and may hold a thread for its
-    # whole 90-second slice — so at the worst duty cycle that is one of the two
+    # It runs on `maintenance`, a 4-thread lane, and may hold a thread for its
+    # whole 90-second slice — so at the worst duty cycle that is one of the four
     # threads for 15% of the time, alongside TokenUsageBackfillJob. That ceiling
     # only binds while a backlog is draining: in steady state each tick deletes the
     # ten minutes of rows that just aged out and returns its thread in well under a

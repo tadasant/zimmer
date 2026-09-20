@@ -3,18 +3,18 @@
 # A wall-clock ceiling on how long one run of a sweep may hold its scheduler
 # thread.
 #
-# **What goes wrong without it.** `maintenance` has two threads
+# **What goes wrong without it.** `maintenance` has four threads
 # (ConnectionBudget#good_job_queue_threads) and they serve two kinds of work at
 # once: recurring filesystem sweeps, and the per-archive stream of
 # DeferredCloneCleanupJob rows — one per archived session, arriving at whatever
 # rate the fleet archives. A sweep bounded only by a batch *count* can hold one
-# of those two threads for tens of minutes (OrphanCloneFilesystemCleanupJob's
+# of those threads for tens of minutes (OrphanCloneFilesystemCleanupJob's
 # BATCH_LIMIT of 20 directories, each tearing down Docker Compose bounded at
 # DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT, is 40 minutes of entirely
-# correct work), and while it does the lane runs at half capacity for everything
-# else. Two such sweeps at once take it to zero. On 2026-09-05 the lane sat 124
-# DeferredCloneCleanupJob rows deep with a head of line two hours old and rising,
-# and paged.
+# correct work), and while it does the lane is a thread down for everything
+# else. As many such sweeps at once as the lane has threads take it to zero. On
+# 2026-09-05, when the lane ran two threads, it sat 124 DeferredCloneCleanupJob
+# rows deep with a head of line two hours old and rising, and paged.
 #
 # **Why stopping early costs nothing.** These sweeps are level-triggered, which
 # is the same property SingletonSweep relies on to drop a tick outright: each run

@@ -249,12 +249,12 @@ module ConnectionBudget
       #                 mostly did not run it; a real Chromium is 300-500 MB, so a
       #                 fleet leaning on Playwright needs this re-measured). Live at
       #                 12 session cgroups the same figure read ~263 MB.
-      #   8 sessions    ~3.1 GB of baseline conservatively, ~2.1 GB as observed
+      #   8 sessions    ~3.0 GB of baseline conservatively, ~2.1 GB as observed
       #   left to work  ~3.0 GB conservatively, ~4.0 GB as observed
       #
-      # A capped suite is 2 Rails processes at 215-350 MB, so that headroom is
-      # five to seven concurrent suites. At 12 it was two to five, and 15 would
-      # have left ~110 MB each -- under a single test process.
+      # A capped suite is 2 Rails processes at 215-350 MB, ~560 MB together, so
+      # that headroom is five to seven concurrent suites. At 12 it was two to
+      # five, and 15 would have left ~110 MB each -- under a single test process.
       #
       # The connection side: 25 scheduler threads derive 91 required_backends
       # against the 97 a db-s-2vcpu-4gb cluster serves -- confirmed via the DO

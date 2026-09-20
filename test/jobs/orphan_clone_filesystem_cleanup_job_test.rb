@@ -43,7 +43,7 @@ class OrphanCloneFilesystemCleanupJobTest < ActiveJob::TestCase
   # instant of deletion.
   # The scheduled sweep had a batch cap but no wall-clock ceiling, and each
   # removal tears down Docker Compose bounded at COMPOSE_DOWN_TIMEOUT (120s) —
-  # 40 minutes holding one of the maintenance lane's two threads. The pressure
+  # 40 minutes holding one of the maintenance lane's threads. The pressure
   # path already had this bound; the scheduled one did not.
   test "the scheduled sweep stops when its wall-clock budget runs out" do
     second_orphan = File.join(@clones_base, "pulsemcp-main-1770000001-cafebabe")

@@ -798,9 +798,9 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
 
   # --- Bounded git subprocesses -------------------------------------------
   #
-  # DeferredCloneCleanupJob runs this service on `maintenance`, a two-thread
+  # DeferredCloneCleanupJob runs this service on `maintenance`, a four-thread
   # lane. Before these, every git command went through a bare Open3.capture3
-  # with no deadline, so a wedged git held one of those two threads forever and
+  # with no deadline, so a wedged git held one of those threads forever and
   # clone reclamation stopped fleet-wide.
 
   # The end-to-end proof: a git that never returns is actually killed, the call

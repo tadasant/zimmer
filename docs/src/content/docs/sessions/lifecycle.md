@@ -2136,7 +2136,7 @@ copy of the session's work.
 A `git` that had to be **killed** for exceeding its deadline is held for the same reason, reached
 from the other direction. Every git command in this path runs under a wall-clock watchdog
 (`CloneArtifactService::GIT_TIMEOUT_SECONDS`, 120s) so that a wedged one cannot hold a thread of the
-two-thread `maintenance` lane forever — see
+`maintenance` lane forever — see
 [the sweeps' section](/operate/background-jobs/#the-scheduled-sweeps-yield-the-maintenance-thread).
 When it fires, the dirty check reports **dirty** rather than clean: clean is what authorizes the
 delete, and a timeout means the question was never answered. The job preserves instead, and a
