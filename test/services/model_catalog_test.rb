@@ -142,37 +142,60 @@ class ModelCatalogTest < ActiveSupport::TestCase
 
   # The batch read the Quick Router's harness picker uses. It must agree with the
   # per-runtime read exactly — a picker offering one list while the server
-  # validates against another is the bug it exists to avoid.
-  test "model_ids_by_runtime agrees with model_ids_for on every runtime" do
+  # validates against another is the bug it exists to avoid. Both are built by the
+  # same #merge_added, and these pin that they stay that way.
+  test "models_by_runtime agrees with models_for on every runtime" do
     insert_entry("claude_code", "opus[1m]")
     insert_entry("codex", "gpt-5.7")
     runtimes = RuntimeRegistry.registered_runtimes
 
-    by_runtime = ModelCatalog.model_ids_by_runtime(runtimes)
+    by_runtime = ModelCatalog.models_by_runtime(runtimes)
 
     assert_equal runtimes, by_runtime.keys
-    runtimes.each { |runtime| assert_equal ModelCatalog.model_ids_for(runtime), by_runtime[runtime] }
+    runtimes.each { |runtime| assert_equal ModelCatalog.models_for(runtime), by_runtime[runtime] }
   end
 
-  test "model_ids_by_runtime reads the added-models table once for the whole map" do
+  # The two branches a single added row per runtime cannot exercise: the built-in
+  # dedup, and the ordering of several added rows within one runtime.
+  test "models_by_runtime drops an added row a deploy made built in, like models_for" do
+    insert_entry("codex", "gpt-5.5", label: "shadow")
+
+    models = ModelCatalog.models_by_runtime(%w[codex])["codex"]
+    assert_equal 1, models.count { |m| m[:id] == "gpt-5.5" }
+    assert_equal "built_in", models.find { |m| m[:id] == "gpt-5.5" }[:source]
+    assert_equal ModelCatalog.models_for("codex"), models
+  end
+
+  test "models_by_runtime orders several added rows for one runtime by created_at" do
+    insert_entry("codex", "gpt-5.9", created_at: 2.days.ago)
+    insert_entry("codex", "gpt-5.7", created_at: 3.days.ago)
+    insert_entry("claude_code", "opus[1m]", created_at: 1.day.ago)
+
+    added = ModelCatalog.models_by_runtime(%w[codex])["codex"].select { |m| m[:source] == "added" }
+    assert_equal %w[gpt-5.7 gpt-5.9], added.map { |m| m[:id] }
+    assert_equal ModelCatalog.models_for("codex"), ModelCatalog.models_by_runtime(%w[codex])["codex"]
+  end
+
+  test "models_by_runtime reads the added-models table once for the whole map" do
+    insert_entry("codex", "gpt-5.7")
     runtimes = RuntimeRegistry.registered_runtimes
-    queries = 0
+    statements = []
     subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
-      queries += 1 if payload[:sql].include?("model_catalog_entries")
+      statements << payload[:sql] if payload[:sql].include?("model_catalog_entries")
     end
 
-    ModelCatalog.model_ids_by_runtime(runtimes)
+    ModelCatalog.models_by_runtime(runtimes)
 
-    assert_equal 1, queries
+    assert_equal 1, statements.size, "expected one read, got:\n#{statements.join("\n")}"
   ensure
     ActiveSupport::Notifications.unsubscribe(subscriber)
   end
 
-  test "model_ids_by_runtime degrades to the built-in lists when the added-models table is unreadable" do
+  test "models_by_runtime degrades to the built-in lists when the added-models table is unreadable" do
     ModelCatalogEntry.stubs(:order).raises(ActiveRecord::StatementInvalid, "relation does not exist")
 
     assert_equal %w[opus sonnet haiku fable],
-      ModelCatalog.model_ids_by_runtime(%w[claude_code])["claude_code"]
+      ModelCatalog.models_by_runtime(%w[claude_code])["claude_code"].map { |m| m[:id] }
   end
 
   # A dated snapshot silently outlives the model it names (#85). Nothing in the

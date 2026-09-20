@@ -5044,6 +5044,7 @@ Open issues:
 
 Also:
 
+- **The chat-bubble Quick Router's Harness and Model lists go stale for the rest of a Turbo session, and it is the surface that rejects a stale value.** The `#chat-bubble` element is `data-turbo-permanent`, so the panel — including the option lists and the `Default (…)` labels the Advanced accordion renders — is carried across every Turbo navigation from the full page load that built it. An operator who adds or removes a model on Settings → Models, or changes Settings → **Default runtime** / **Default model**, leaves every already-open tab's popout offering the old list until that tab is reloaded; the dashboard's two copies of the same accordion re-render per visit and do not have this problem. The consequence is sharper on the popout than it would be elsewhere, because `chat_bubble` answers a value its picker should not have offered with a `422` rather than falling back the way `quick_prompt` does — so a user can pick a model that was valid when the tab loaded and be refused. Both `422` messages therefore say to reload the page, which is the fix. The panel's other server-derived limits (`Session::PROMPT_MAX_LENGTH`, the image and file caps) have always gone stale the same way; this is the first one that rejects.
 - **Nothing in the web UI puts a session to sleep.** The "Pause Until" control that did — a time
   preset, a datetime picker, and a "Spot Queue" choice, on the session card, the detail header and
   the phone sheet — was removed because it read as a third confusing pause beside **Pause** and the

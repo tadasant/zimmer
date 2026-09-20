@@ -1,4 +1,5 @@
 require "test_helper"
+require "ostruct"
 
 # Runs against the REAL catalog: what the Quick Router's pickers offer and what
 # the two controller actions accept are both scoped to the router root's resolved
@@ -22,8 +23,58 @@ class QuickRouterOptionsTest < ActiveSupport::TestCase
 
   test "models are offered per runtime and agree with the catalog" do
     RuntimeRegistry.registered_runtimes.each do |runtime|
-      assert_equal ModelCatalog.model_ids_for(runtime), @options.models_by_runtime[runtime]
+      assert_equal ModelCatalog.models_for(runtime), @options.models_by_runtime[runtime]
+      assert_equal ModelCatalog.model_ids_for(runtime), @options.model_ids_by_runtime[runtime]
     end
+  end
+
+  # The picker shows the catalog's label, which on Codex and Pi is the only place a
+  # model says it needs a ChatGPT login or is deprecated.
+  test "the picker's options carry the catalog labels, paired with the ids" do
+    assert_equal ModelCatalog.models_for("codex").map { |m| [ m[:label], m[:id] ] },
+      @options.model_options_for("codex")
+    assert_equal ModelCatalog.models_for("codex").map { |m| { id: m[:id], label: m[:label] } },
+      @options.models_for_javascript["codex"]
+  end
+
+  # A runtime the map does not carry offers nothing and accepts nothing. Falling
+  # back to a catalog read would accept what the picker never offered.
+  test "a runtime outside the registry offers no models and accepts none" do
+    assert_empty @options.model_options_for("aider")
+    assert_nil @options.models_for_javascript["aider"]
+    assert_nil @options.resolve_model("aider", "opus")
+    assert @options.model_rejected?("aider", "opus")
+  end
+
+  # The whole point of the batch read: the chat bubble renders on every page, so a
+  # per-runtime read anywhere on this path would be one query per runtime — or,
+  # through AgentRootsConfig, one per catalog root — on every request.
+  #
+  # Two whole-table reads are allowed and pinned: the picker's own map, and the
+  # one AgentRootsConfig.build_roots makes to resolve every root's default model.
+  # They are the same statement, so inside a request the query cache serves the
+  # second from the first; what must never come back is a `WHERE runtime = …`.
+  test "building every picker's options never reads the added-models table per runtime" do
+    ModelCatalogEntry.new(runtime: "codex", model_id: "gpt-5.7", added_via: "api").save!(validate: false)
+    options = QuickRouterOptions.new
+    statements = []
+    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+      statements << payload[:sql] if payload[:sql].include?("model_catalog_entries")
+    end
+
+    # Exactly what one render of the accordion asks for.
+    options.runtimes
+    options.default_runtime
+    options.models_by_runtime
+    options.default_models_by_runtime
+    options.model_options_for(options.default_runtime)
+    options.models_for_javascript
+
+    per_runtime = statements.select { |sql| sql.include?("WHERE") }
+    assert_empty per_runtime, "per-runtime reads crept back in:\n#{per_runtime.join("\n")}"
+    assert_operator statements.size, :<=, 2, "expected at most two whole-table reads, got:\n#{statements.join("\n")}"
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscriber)
   end
 
   # What each blank option names. For the router root's own runtime that is the
@@ -99,7 +150,8 @@ class QuickRouterOptionsTest < ActiveSupport::TestCase
       .save!(validate: false)
 
     options = QuickRouterOptions.new
-    assert_includes options.models_by_runtime["codex"], "gpt-5.7"
+    assert_includes options.model_ids_by_runtime["codex"], "gpt-5.7"
+    assert_includes options.model_options_for("codex").map(&:last), "gpt-5.7"
     assert_equal "gpt-5.7", options.resolve_model("codex", "gpt-5.7")
   end
 

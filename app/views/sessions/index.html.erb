@@ -547,7 +547,7 @@
               <div class="mb-3">
                 <%= render "sessions/quick_router_advanced",
                       scope: "mobile",
-                      options: @quick_router_options,
+                      options: quick_router_options,
                       targets: { advanced: { quick_prompt_target: "mobileAdvanced" } } %>
               </div>
               <button type="submit" data-quick-prompt-target="mobileSubmit"
@@ -623,7 +623,7 @@
           <div class="mt-2 max-w-xs">
             <%= render "sessions/quick_router_advanced",
                   scope: "desktop",
-                  options: @quick_router_options %>
+                  options: quick_router_options %>
           </div>
         <% end %>
       </div>
