@@ -544,7 +544,9 @@ null when the wake is a session-scoped watcher with no wall-clock time. `preserv
 statement that matters: a follow-up does not cancel the target's wake, so sending one does not make
 you responsible for waking that session — it wakes itself, on its own schedule, after the turn you
 just gave it. On the queued and interrupted branches the resume happens later, at the drain, and
-preserves it there. See [A follow-up does not cancel a
+preserves it there. When `at` is set, the target also goes **back to sleep** on that wake once it
+has answered, so poll for `waiting`, not `needs_input`; with `at` null (watchers only) it rests in
+`needs_input`. See [A follow-up does not cancel a
 wake](/sessions/lifecycle/#a-follow-up-does-not-cancel-a-wake).
 
 ### Reporting back to the parent that started you

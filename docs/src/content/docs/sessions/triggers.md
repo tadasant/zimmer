@@ -2493,12 +2493,17 @@ instead, because the requester has been resumed but has not yet *done* anything 
 ends, the wait it set up is still the only thing that will wake it again.
 
 A **follow-up** — a router's `follow_up`, a human's message, a queued message draining, a Slack or
-GitHub trigger — leaves the wake armed with nothing marked at all. A message sent to a sleeping
-session adds to its wait; it does not end it, and the sender rarely knows a wake was armed in the
-first place. Consuming there is what stranded session 13403 on 2026-09-04: it answered the follow-up,
-came to rest in `needs_input` believing its 08:06 self-wake would collect it, and sat idle holding a
-nearly-finished PR ([#898](https://github.com/tadasant/zimmer/issues/898)). The full table of who
-consumes what is in [A follow-up does not cancel a
+GitHub trigger — leaves the wake armed and puts the session back to sleep on it once the answered
+turn ends. A message sent to a sleeping session adds to its wait; it does not end it, and the sender
+rarely knows a wake was armed in the first place. Consuming there is what stranded session 13403 on
+2026-09-04: it answered the follow-up, came to rest in `needs_input` believing its 08:06 self-wake
+would collect it, and sat idle holding a nearly-finished PR
+([#898](https://github.com/tadasant/zimmer/issues/898)). Resting in `needs_input` rather than going
+back to sleep is what put router 19239 in the operator's action queue for fourteen minutes with two
+children still running and nothing to act on
+([#1212](https://github.com/tadasant/zimmer/issues/1212)) — so the re-sleep is now part of the
+branch, gated on a still-fireable wall-clock backstop. The full table of who consumes what, and the
+three properties that keep the re-sleep from stranding anything, is in [A follow-up does not cancel a
 wake](/sessions/lifecycle/#a-follow-up-does-not-cancel-a-wake).
 
 A wake that outlives its session is collected rather than fired: `CleanupStaleTriggersJob` destroys

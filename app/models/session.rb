@@ -1579,9 +1579,12 @@ class Session < ApplicationRecord
   # SessionStateMachine#system_recovery_resume. Recovery paths call this instead.
   #
   # This branch also re-sleeps the session afterwards when a live one-time
-  # schedule backstops the re-sleep, which is what separates it from
-  # #resume_for_follow_up!: a recovered session never chose to be awake, while a
-  # followed-up one was asked a question and has to be able to answer it.
+  # schedule backstops the re-sleep. #resume_for_follow_up! does the same since
+  # #1212; what separates the two is which wakes each keeps. A recovered session
+  # keeps every one of them — its watchers may have missed a transition during
+  # the outage, and consuming them would compound that — where a follow-up
+  # consumes the watchers that can no longer fire. Each stamps its own
+  # `pending_sleep_reason`, so the stop record says which happened.
   #
   # The flag is cleared in an ensure block so it can never leak into a later,
   # genuinely deliberate resume of the same in-memory instance.
@@ -1607,9 +1610,12 @@ class Session < ApplicationRecord
   # here: a follow-up ADDS to the session's wait. The sender rarely knows a wake
   # was armed, and the session it lands in has usually already told its transcript
   # that its wake fires at T — so it answers, comes to rest, and strands with
-  # nothing scheduled to bring it back. See
-  # SessionStateMachine#follow_up_resume and
-  # https://github.com/tadasant/zimmer/issues/898.
+  # nothing scheduled to bring it back. And having kept the wake, it goes back to
+  # sleep on it once it has answered, rather than sitting in the human action
+  # queue for the rest of a wait nobody has to act on. See
+  # SessionStateMachine#follow_up_resume,
+  # https://github.com/tadasant/zimmer/issues/898 and
+  # https://github.com/tadasant/zimmer/issues/1212.
   #
   # The flag is cleared in an ensure block so it can never leak into a later,
   # genuinely deliberate resume of the same in-memory instance.
