@@ -401,15 +401,18 @@ What production still needs:
 3. **A bound on how many sessions may hold a dev stack at once.** This is load-bearing
    because the droplet is not being resized. Measured on staging: one `.agent-containers`
    stack sits around 700 MB anon and fits; a *second* concurrent stack produced a cgroup
-   OOM kill at `anon-rss:1244540kB`. Production runs twelve `agents` scheduler threads
+   OOM kill at `anon-rss:1244540kB`. Production runs eight `agents` scheduler threads
    (`GOOD_JOB_AGENTS_THREADS`). More sessions remain durable queued jobs and start as one
-   of those twelve slots becomes free.
+   of those eight slots becomes free.
 
-   That number was 8 while a pile-up could kill the worker. Since
+   That number was 12 from 2026-09-05 to 2026-09-20. Since
    [#981](https://github.com/tadasant/zimmer/issues/981) the session cgroups sit in a
    `sessions` pool with its own `memory.max` and the Rails worker sits in an `app` sibling
    *outside* it, so the pool decides *who* the kernel kills when the sum is reached — one
-   session, not the worker that runs all of them. That is what let the number move.
+   session, not the worker that runs all of them. That is what let the number move up on the
+   memory side; what moved it back is CPU — twelve Claude Code processes on eight vCPUs ran the
+   droplet at 2.9× its cores and starved every other lane
+   ([#329](https://github.com/tadasant/zimmer/issues/329)).
 
    **The dev stacks are outside the sessions pool, and this number is the only thing that
    bounds them.** dockerd starts before the cgroup delegation — `bin/docker-entrypoint` says
@@ -417,7 +420,7 @@ What production still needs:
    container cgroup, alongside the Rails worker, in the victim set the container cap selects
    from. [#981](https://github.com/tadasant/zimmer/issues/981)'s pool does not cover this
    path. So while session *process* memory is now contained, a session that holds a dev stack
-   still spends the container's residual, and twelve threads means up to twelve of them.
+   still spends the container's residual, and eight threads means up to eight of them.
 
    Two consequences, and the second is the one that gets this backwards:
 
@@ -429,8 +432,9 @@ What production still needs:
    - Scaling only the stack term to 12 threads gives ~1.6–2.25 GiB, so ~3.2–3.85 GiB against
      that 4096 MB residual — positive margin, but thinner than at 8. Measured live it is far
      smaller (dockerd plus stacks at 63 MB, because few sessions hold one), which is what
-     makes 12 defensible rather than proven. **A fleet that leans on nested Docker should
-     re-derive this before raising the threads again.** The staging measurement above — one
+     made 12 defensible rather than proven on the memory side — CPU is what sent it back to 8.
+     **A fleet that leans on nested Docker should re-derive this before raising the threads
+     again.** The staging measurement above — one
      stack ≈ 700 MB, a second concurrent stack OOM-killing — was taken against staging's
      2g cap and does not transfer to production's 10g.
 

@@ -214,8 +214,9 @@ aggregate cap, with per-session bounds left in force.
 **The pool bounds the blast radius; it does not reduce the demand.** A pile-up still exhausts it,
 and a session still dies — what changes is that the victim is a session process rather than the
 GoodJob worker that runs all of them. The width of the `agents` lane
-(`GOOD_JOB_AGENTS_THREADS`, 12) remains what limits how often that happens, and
-`config/connection_budget.rb` carries the measurements behind that number.
+(`GOOD_JOB_AGENTS_THREADS`, 8) remains what limits how often that happens, and
+`config/connection_budget.rb` carries the measurements behind that number — the CPU ones that
+size it, and the memory ones it still has to fit.
 
 The mechanism, the sizing arguments, and what a session sees when either fires are in
 [Each session gets its own memory bound](/sessions/spawning/#each-session-gets-its-own-memory-bound);

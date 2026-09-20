@@ -30,10 +30,10 @@ class CloneArtifactService
   # milliseconds. The bound is not for the happy path.
   #
   # It is for the lane. DeferredCloneCleanupJob runs this service on
-  # `maintenance`, which has two threads, and an unbounded `Open3.capture3`
-  # there is an unbounded hold on half of them: a git wedged on stuck volume
+  # `maintenance`, which has four threads, and an unbounded `Open3.capture3`
+  # there is an unbounded hold on one of them: a git wedged on stuck volume
   # I/O or on its own lock never returns, the thread is never given back, and
-  # two such runs stop clone reclamation entirely while archived clones keep
+  # four such runs stop clone reclamation entirely while archived clones keep
   # arriving. That is the same class of failure #998 bounded for the periodic
   # sweeps, on the one path in this job it did not reach.
   #
@@ -208,7 +208,7 @@ class CloneArtifactService
 
     # git has already had to be killed on this clone during the dirty check, and
     # nothing since then can have unwedged it. Re-asking costs another
-    # GIT_TIMEOUT_SECONDS of a two-thread lane to arrive at the same answer, so
+    # GIT_TIMEOUT_SECONDS of a four-thread lane to arrive at the same answer, so
     # decline now and let the caller hold the clone for the reversible window.
     if @git_timed_out_on == clone_path
       @logger.warn("Declining artifact creation: git already timed out on this clone",
@@ -668,7 +668,7 @@ class CloneArtifactService
     [ stdout, stderr, status ]
   rescue BoundedSubprocess::TimeoutError => e
     # Remember which clone this was, so create_artifacts does not spend another
-    # GIT_TIMEOUT_SECONDS of the same two-thread lane re-asking a question that
+    # GIT_TIMEOUT_SECONDS of the same four-thread lane re-asking a question that
     # has just failed to arrive. DeferredCloneCleanupJob memoizes one service
     # per run, so this lives exactly as long as the clone it describes; keying
     # it by path rather than setting a bare boolean keeps it honest if an

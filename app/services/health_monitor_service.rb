@@ -113,9 +113,13 @@ class HealthMonitorService
   #                80 jobs/hour, so a hundred-deep lane is over an hour of
   #                legitimate work and a ten-minute head age cannot tell "full"
   #                from "wedged". 150 deep AND an hour at the head can.
-  #   maintenance  2 threads against filesystem scans, `bundle install`, docker
-  #                prune and transcript archiving — minutes each, same shape.
-  #   agents       12 threads, and AgentSessionJob holds its thread for the whole
+  #   maintenance  4 threads against filesystem scans, `bundle install`, docker
+  #                prune and transcript archiving — minutes each, same shape. The
+  #                threshold was derived at two threads and is kept at four as a
+  #                conservative bound: the package installs it is sized for are
+  #                unbudgeted, and a lane twice as wide fills half as fast, not
+  #                never.
+  #   agents       8 threads, and AgentSessionJob holds its thread for the whole
   #                life of the session. A ready AgentSessionJob waiting hours is
   #                the scheduler's admission control working as designed (see
   #                ConnectionBudget.good_job_queue_threads), not a stall.
