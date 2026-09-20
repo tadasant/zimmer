@@ -997,6 +997,12 @@ them on **both**: a normal-completion exit runs the same context-length, auth, A
 failed-resume checks before it parks, which is how a failure that arrives with Claude's exit 1 —
 `session_id_conflict?`, and the malformed tool call below — reaches them at all.
 
+Not drawn: the terminal-API-error backstop that runs after the last rung on the normal-completion
+door, and fails any turn whose last conversational entry is an API error. One wording it fails
+deliberately rather than as an unknown: Anthropic's safeguards refusing the request, which is
+never retried and never paged — see
+[A safeguards rejection fails on purpose](/auth/harness/#a-safeguards-rejection-fails-on-purpose-and-does-not-page).
+
 **Two doors onto the same ladder.** The monitoring loop notices a dead agent process two ways.
 Normally `wait_nonblock` reaps a status and everything above follows from it. When something else
 reaped the process first — the zombie reaper, another job, `init` after a parent died — a signal-0

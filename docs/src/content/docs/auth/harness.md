@@ -965,6 +965,47 @@ terminal without re-failing the session and re-alerting on it.
 So the next time Anthropic rewords an error, the cost is an alert naming the new wording, not a lost
 message someone finds by reading a transcript.
 
+### A safeguards rejection fails on purpose, and does not page
+
+One wording the backstop knows is not a stale classifier but a deliberate stop. When Anthropic's
+safeguards refuse the request a turn makes, Claude Code records a synthetic assistant entry with
+`error: "invalid_request"` and exits 1 — the same shape as every other dead turn above:
+
+```text
+API Error: Opus 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). This
+sometimes happens with safe, normal conversations. Claude Code can't respond to this message with
+Opus 5.
+
+Try rephrasing the request in a new session or change your model.
+
+Learn more: https://support.claude.com/en/articles/16049681
+
+Details: `[reasoning_extraction]`
+
+Request ID: req_…
+```
+
+`ApiErrorRetryService::SAFEGUARDS_FLAGGED_PATTERNS` matches the verb (`safeguards flagged this
+message`) and the policy link (`anthropic.com/legal/aup`), and nothing else: the model name changes
+with the session's model, and the bracketed `Details:` token names whichever classifier fired.
+
+It is recognised, so it never pages as an unknown wording. It is **not** retried, and that is the
+decision rather than an omission. The refusal is a 400 on the request the turn just made; a plain
+resume sends the same conversation back on the same model, which is the request that was refused,
+and the backoff ladder would spend the session's shared API-error budget learning that six times.
+The message's own remedies — rephrase in a new session, change the model — each change what the
+session is, and the model is the human's choice. So `ProcessLifecycleManager#handle_safeguards_rejection`
+fails the session at once under `failure_reason: safeguards_flagged`, with the CLI's text (guidance
+included) in `exit_status` and the session log, and `Session#failure_summary` says the same thing
+in one line on the homepage and in the push notification. The session stays resumable: change its
+model with the button on the session page and resume, or start a new session with the request
+rephrased.
+
+The first one, on 2026-09-20, refused Zimmer's own PR-merged notification to production session
+19243 and paged `#alerts` as an unclassified terminal API error
+([#1217](https://github.com/tadasant/zimmer/issues/1217)). The page was right — the wording was
+unknown — and this is the classifier it asked for.
+
 ### The recovery decision tree
 
 Everything below runs under a pool-wide advisory lock (`ClaudeAccount.with_pool_lock`, namespace

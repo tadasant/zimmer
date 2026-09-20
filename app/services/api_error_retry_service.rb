@@ -49,6 +49,12 @@ require "automated_prompts"
 #   no error type at all — and it belongs in the same transient category, because a
 #   fresh draw usually parses. See MALFORMED_TOOL_CALL_PATTERNS.
 #
+# Safeguards rejections:
+#   Anthropic's safeguards refusing a request is a 400 on that exact request, and
+#   a resume sends the same request back. It is recognized here so it never pages
+#   as an unknown wording, and never retried: ProcessLifecycleManager fails the
+#   session with the CLI's own remedies. See SAFEGUARDS_FLAGGED_PATTERNS.
+#
 class ApiErrorRetryService
   include DatabaseRetry
   include RespawnScaffold
@@ -152,6 +158,43 @@ class ApiErrorRetryService
     /tool call was malformed/i
   ].freeze
 
+  # Anthropic's safeguards refusing the request a turn made.
+  #
+  # A 400 +invalid_request+ on that exact request, which the CLI records as a
+  # synthetic assistant entry and follows with its turn-finished exit. The
+  # wording moves in two places, and the patterns anchor on neither: the model
+  # name ("Opus 5's safeguards") changes with the session's model, and the
+  # bracketed +Details:+ token (+[reasoning_extraction]+) names the classifier
+  # that fired. What stays is the verb and the policy link.
+  #
+  # Known message format from production (Claude Code 2.1.278, session 19243,
+  # issue #1217 — line breaks in the original):
+  #   "API Error: Opus 5's safeguards flagged this message
+  #    (https://www.anthropic.com/legal/aup). This sometimes happens with safe,
+  #    normal conversations. Claude Code can't respond to this message with
+  #    Opus 5. Try rephrasing the request in a new session or change your model.
+  #    Learn more: https://support.claude.com/en/articles/16049681
+  #    Details: `[reasoning_extraction]`
+  #    Request ID: req_…"
+  #
+  # It is NOT retryable. The backoff ladder resumes the same conversation on the
+  # same model, which is the request that was just refused — most plausibly
+  # refused again, at the cost of the shared API-error budget. The message's own
+  # remedies (rephrase in a new session, change the model) are both decisions
+  # for a human, so ProcessLifecycleManager#handle_safeguards_rejection fails the
+  # session at once with that guidance and no page: the wording is known.
+  #
+  # Both alternatives below name the per-message refusal. The AUP link is NOT
+  # matched on its own, deliberately: this classification turns the unknown-wording
+  # page off and tells the reader to rephrase or change the model, which is the
+  # wrong answer for an account- or organization-level policy action that happened
+  # to cite the same policy. A refusal that links the AUP without saying a message
+  # was flagged keeps the page.
+  SAFEGUARDS_FLAGGED_PATTERNS = [
+    /safeguards flagged this message/i,
+    %r{flagged.{0,200}anthropic\.com/legal/aup}im
+  ].freeze
+
   # Error types from the API that indicate server errors (as opposed to client errors)
   API_SERVER_ERROR_TYPES = %w[api_error overloaded_error server_error].freeze
 
@@ -192,6 +235,16 @@ class ApiErrorRetryService
   # @return [Boolean] true if the error is a malformed tool call
   def self.malformed_tool_call?(message_text)
     MALFORMED_TOOL_CALL_PATTERNS.any? { |pattern| message_text.to_s.match?(pattern) }
+  end
+
+  # Whether some error text is Anthropic's safeguards refusing the request. A
+  # class method for the same reason as .malformed_tool_call?: the pattern is
+  # owned here, and ProcessLifecycleManager asks it of a TerminalApiError.
+  #
+  # @param message_text [String] the message text from a transcript entry
+  # @return [Boolean] true if the error is a safeguards rejection
+  def self.safeguards_flagged?(message_text)
+    SAFEGUARDS_FLAGGED_PATTERNS.any? { |pattern| message_text.to_s.match?(pattern) }
   end
 
   def initialize(session, cli_adapter:, process_manager:, log_buffer:, file_system: nil, rate_limit_tracker: nil)
@@ -563,9 +616,10 @@ class ApiErrorRetryService
     (email.present? && provider.accounts.find_by(email: email)) || provider.current_account
   end
 
-  # Whether this error belongs to a classifier other than this service. Keeps the
-  # "unclassified" signal honest — an ordinary compact recovery or auth recovery
-  # must never be reported as an unknown failure mode.
+  # Whether this error belongs to a path other than this service's retry
+  # ladder. Keeps the "unclassified" signal honest — an ordinary compact
+  # recovery, an auth recovery, or a deliberate safeguards failure must never be
+  # reported as an unknown failure mode.
   #
   # Asked with the error TYPE as well as the text, because that is how
   # AuthRecoveryService recognizes an authentication failure whose prose it has
@@ -573,6 +627,9 @@ class ApiErrorRetryService
   def classified_elsewhere?(error_type, message_text)
     return true if ContextLengthRetryService::CONTEXT_LENGTH_ERROR_PATTERNS.any? { |p| message_text.match?(p) }
     return true if AuthRecoveryService.auth_error?(error_type, message_text)
+    # Owned by ProcessLifecycleManager#handle_safeguards_rejection, which fails
+    # the turn deliberately rather than retrying it.
+    return true if self.class.safeguards_flagged?(message_text)
 
     false
   end

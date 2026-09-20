@@ -92,6 +92,35 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
     @mock_file_system.write(@transcript_file, transcript_content)
   end
 
+  # The exact text Claude Code 2.1.278 recorded in production session 19243
+  # (#1217): Anthropic's safeguards refusing Zimmer's own PR-merged notification.
+  # The model name and the bracketed Details token are the two parts that vary.
+  SAFEGUARDS_FLAGGED_MESSAGE = <<~TEXT.strip
+    API Error: Opus 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). This sometimes happens with safe, normal conversations. Claude Code can't respond to this message with Opus 5.
+
+    Try rephrasing the request in a new session or change your model.
+
+    Learn more: https://support.claude.com/en/articles/16049681
+
+    Details: `[reasoning_extraction]`
+
+    Request ID: req_011CfEB55dzrzDqc9JYXY1k4
+  TEXT
+
+  # Reproduces the tail of the session 19243 transcript: the notification
+  # Zimmer sent, then the synthetic entry the CLI wrote when the API refused it
+  # (+error: "invalid_request"+, +model: "<synthetic>"+), before its
+  # turn-finished exit.
+  def setup_transcript_with_safeguards_rejection(message = SAFEGUARDS_FLAGGED_MESSAGE)
+    setup_transcript_directory
+    transcript_content = <<~JSONL
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "Holding the PR until the merge gate rates it."}]}}
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Your PR #1211 was merged. No post-merge automation fired. Archive yourself."}]}}
+      #{api_error_json(message, error_type: "invalid_request")}
+    JSONL
+    @mock_file_system.write(@transcript_file, transcript_content)
+  end
+
   def setup_transcript_with_regular_message(message)
     setup_transcript_directory
     transcript_content = <<~JSONL
@@ -283,6 +312,66 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
     assert_match(/tool call could not be parsed/, terminal.text)
     assert terminal.recognized?,
       "ApiErrorRetryService owns this wording, so it must not page as an unknown failure mode"
+  end
+
+  # ===========================================================================
+  # Anthropic safeguards rejection (#1217): recognized, never retried
+  # ===========================================================================
+
+  test "safeguards_flagged? matches the production wording and neither of its moving parts" do
+    assert ApiErrorRetryService.safeguards_flagged?(SAFEGUARDS_FLAGGED_MESSAGE)
+    assert ApiErrorRetryService.safeguards_flagged?(
+      SAFEGUARDS_FLAGGED_MESSAGE.gsub("Opus 5", "Sonnet 5").gsub("[reasoning_extraction]", "[other_classifier]")
+    ), "The model name and the Details token vary; the classifier must not anchor on either"
+    assert ApiErrorRetryService.safeguards_flagged?("API Error: Haiku's safeguards flagged this message."),
+      "The verb alone is enough"
+    assert ApiErrorRetryService.safeguards_flagged?(
+      "This request was flagged under our usage policy: https://www.anthropic.com/legal/aup"
+    ), "A reworded per-message refusal still matches on flagged + the policy link"
+  end
+
+  # The classification turns the unknown-wording page off and answers "rephrase or
+  # change the model". That is the wrong answer for an account- or org-level policy
+  # action, so the AUP link on its own must NOT claim the wording.
+  test "safeguards_flagged? does not claim a policy message that links the AUP without flagging one" do
+    assert_not ApiErrorRetryService.safeguards_flagged?(
+      "Your organization's access has been suspended under https://www.anthropic.com/legal/aup"
+    )
+  end
+
+  test "safeguards_flagged? does not match ordinary API errors" do
+    assert_not ApiErrorRetryService.safeguards_flagged?("500 Internal Server Error")
+    assert_not ApiErrorRetryService.safeguards_flagged?("You've hit your session limit · resets 5:50pm (UTC)")
+    assert_not ApiErrorRetryService.safeguards_flagged?("The model's tool call could not be parsed (retry also failed).")
+    assert_not ApiErrorRetryService.safeguards_flagged?(nil)
+  end
+
+  test "a safeguards rejection is not a retryable API error" do
+    setup_transcript_with_safeguards_rejection
+
+    service = create_service
+
+    assert_not service.retryable_api_error_detected?("/tmp/test-clone"),
+      "A 400 on this exact request must not enter the backoff ladder"
+    assert_equal :not_applicable, service.attempt_retry("/tmp/test-clone")
+    assert_equal 0, @mock_cli_adapter.resumed_sessions.length, "No same-model resume"
+  end
+
+  test "terminal_api_error marks a safeguards rejection recognized" do
+    setup_transcript_with_safeguards_rejection
+
+    terminal = create_service.terminal_api_error("/tmp/test-clone")
+
+    assert_match(/safeguards flagged this message/, terminal.text)
+    assert_match(/invalid_request/, terminal.text)
+    assert terminal.recognized?,
+      "The wording has an owner, so it must not page as an unknown failure mode"
+  end
+
+  test "unclassified_api_error_text does not report a safeguards rejection as unknown" do
+    setup_transcript_with_safeguards_rejection
+
+    assert_nil create_service.unclassified_api_error_text("/tmp/test-clone")
   end
 
   test "retries a malformed tool call by respawning the session" do
