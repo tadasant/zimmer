@@ -183,9 +183,16 @@ class ApiErrorRetryService
   # remedies (rephrase in a new session, change the model) are both decisions
   # for a human, so ProcessLifecycleManager#handle_safeguards_rejection fails the
   # session at once with that guidance and no page: the wording is known.
+  #
+  # Both alternatives below name the per-message refusal. The AUP link is NOT
+  # matched on its own, deliberately: this classification turns the unknown-wording
+  # page off and tells the reader to rephrase or change the model, which is the
+  # wrong answer for an account- or organization-level policy action that happened
+  # to cite the same policy. A refusal that links the AUP without saying a message
+  # was flagged keeps the page.
   SAFEGUARDS_FLAGGED_PATTERNS = [
     /safeguards flagged this message/i,
-    %r{anthropic\.com/legal/aup}i
+    %r{flagged.{0,200}anthropic\.com/legal/aup}im
   ].freeze
 
   # Error types from the API that indicate server errors (as opposed to client errors)

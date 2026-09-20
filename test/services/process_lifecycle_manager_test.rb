@@ -3659,6 +3659,9 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     setup_transcript_ending_with_safeguards_rejection
 
     UnclassifiedFailureReporter.expects(:report).never
+    # The other page path: StructuredLogger#error routes to GlitchTip. A known
+    # wording failed on purpose is not news on either channel.
+    ErrorReporter.expects(:report_message).never
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test")

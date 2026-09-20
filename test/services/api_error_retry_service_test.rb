@@ -325,8 +325,18 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
     ), "The model name and the Details token vary; the classifier must not anchor on either"
     assert ApiErrorRetryService.safeguards_flagged?("API Error: Haiku's safeguards flagged this message."),
       "The verb alone is enough"
-    assert ApiErrorRetryService.safeguards_flagged?("Refused, see https://www.anthropic.com/legal/aup"),
-      "The policy link alone is enough"
+    assert ApiErrorRetryService.safeguards_flagged?(
+      "This request was flagged under our usage policy: https://www.anthropic.com/legal/aup"
+    ), "A reworded per-message refusal still matches on flagged + the policy link"
+  end
+
+  # The classification turns the unknown-wording page off and answers "rephrase or
+  # change the model". That is the wrong answer for an account- or org-level policy
+  # action, so the AUP link on its own must NOT claim the wording.
+  test "safeguards_flagged? does not claim a policy message that links the AUP without flagging one" do
+    assert_not ApiErrorRetryService.safeguards_flagged?(
+      "Your organization's access has been suspended under https://www.anthropic.com/legal/aup"
+    )
   end
 
   test "safeguards_flagged? does not match ordinary API errors" do

@@ -1790,6 +1790,12 @@ class ProcessLifecycleManager
   # Production session 19243 (issue #1217): the refused request was Zimmer's
   # own PR-merged notification. It fell through to the backstop above with no
   # classifier claiming it and paged as an unknown wording.
+  #
+  # Reached from the backstop rather than from a rung of its own, so a stale
+  # retryable entry sitting after +api_error_last_checked_line+ can still send
+  # the refused conversation into one respawn before this fails it. Bounded at
+  # one — the retry advances the cursor — and the refusal is still the terminal
+  # entry when that respawn comes back, so the verdict does not change.
   def handle_safeguards_rejection(terminal)
     guidance = "#{SAFEGUARDS_REJECTION_PREFIX}, so the turn did not run. Rephrase the request in a new " \
       "session, or change this session's model and resume it — a plain resume sends the same " \
@@ -1801,8 +1807,9 @@ class ProcessLifecycleManager
     remember_terminal_api_error_line(terminal.line)
 
     @mutex.synchronize { @state = :idle }
-    # The CLI's own remedies sit in the first ~300 characters of its text; the
-    # support link and request id that follow are what the truncation costs.
+    # Headroom rather than a cut: the known wording is ~420 characters, so all of
+    # it — remedies, support link, request id — reaches `exit_status`. The bound
+    # is there for a wording that grows, and 600 keeps the remedies if one does.
     ExitDecision.new(action: :failed, error_message: guidance + terminal.text.truncate(600))
   end
 
