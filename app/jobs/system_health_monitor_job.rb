@@ -290,7 +290,7 @@ class SystemHealthMonitorJob < ApplicationJob
         "identical from the ready side alone, which is why these lines exist. " \
         "Long holds are normal in some lanes and not others: an `agents` thread lasts " \
         "as long as its session, `auth` as long as a login CLI is open, while " \
-        "`inference`, `maintenance` and `default` run a handful of threads each against " \
+        "`inference`, `maintenance` and `default` run two to four threads each against " \
         "jobs that should finish in seconds to minutes. EVERY queue old at once, with the " \
         "claims fresh or absent, is the worker itself: down, restarting, or starved of " \
         "database round-trips. The processing rate is a trailing hour and lags any of " \

@@ -72,9 +72,9 @@ class StaleCloneCleanupJob < ApplicationJob
   # Wall-clock ceiling on one run. ORPHAN_SWEEP_LIMIT and the candidate scopes
   # bound how many things this job touches; this bounds how LONG it holds a
   # scheduler thread, and every unit it touches is a recursive delete of a whole
-  # directory tree. On `maintenance` — two threads, shared with the per-archive
-  # DeferredCloneCleanupJob stream — an unbounded hourly sweep would be half the
-  # lane for as long as it runs. Five minutes an hour is not.
+  # directory tree. On `maintenance` — four threads, shared with the per-archive
+  # DeferredCloneCleanupJob stream — an unbounded hourly sweep would be a quarter
+  # of the lane for as long as it runs. Five minutes an hour is not.
   #
   # Nothing is lost by stopping early: this sweep is level-triggered, so the next
   # tick recomputes the due set and takes whatever this run did not reach. See
