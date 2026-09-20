@@ -1440,14 +1440,28 @@ module Mcp
       # wake it. The wake now survives the follow-up; this line is what makes that
       # legible to the sender, so a router does not go on to schedule a duplicate
       # wake of its own.
+      #
+      # The rest state is named too, because it is the part a sender gets wrong.
+      # A wall-clock wake still pending puts the target back to sleep once it has
+      # answered (#1212), so a router watching for it in `needs_input` would wait
+      # for a status that never arrives. `pending_wake_at` is the same predicate
+      # SessionStateMachine#preserve_pending_wakes_across_follow_up backs the
+      # re-sleep with, so the two cannot disagree.
       def pending_wake_lines(session)
         return [] unless session.armed_one_time_wake?
 
         at = session.pending_wake_at
-        when_phrase = at ? "for #{at.utc.iso8601}" : "for whenever the session it is watching transitions"
-        [ "- **Its own wake-up:** still armed #{when_phrase}. This follow-up did not cancel it — " \
-          "the wake resumes the session on its own schedule, or is queued onto the turn if its " \
-          "moment lands mid-turn." ]
+        rest_phrase =
+          if at
+            "for #{at.utc.iso8601}. This follow-up did not cancel it, so the session answers and " \
+              "goes back to sleep on it — expect it in `waiting`, not `needs_input`. The wake resumes " \
+              "it on its own schedule, or is queued onto the turn if its moment lands mid-turn."
+          else
+            "for whenever the session it is watching transitions. This follow-up did not cancel it. " \
+              "With no wall-clock backstop among them the session rests in `needs_input` after it " \
+              "answers, and a watched transition collects it from there."
+          end
+        [ "- **Its own wake-up:** still armed #{rest_phrase}" ]
       end
 
       def summary(heading, session, status_label: "Status", message: nil)

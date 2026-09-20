@@ -121,10 +121,10 @@ module SessionStateMachine
   # Transient, never persisted, cleared in an `ensure` by Session#resume_for_follow_up!.
   attr_accessor :follow_up_resume
 
-  # Metadata marker written alongside `pending_sleep` by the system-recovery
-  # preserve branch. It means "sleep only if something is still armed to wake
-  # you", and distinguishes that conditional intent from a deliberate sleep,
-  # which is executed whether or not any wake-up exists.
+  # Metadata marker written alongside `pending_sleep` by the two preserve
+  # branches — system-recovery and follow-up. It means "sleep only if something
+  # is still armed to wake you", and distinguishes that conditional intent from a
+  # deliberate sleep, which is executed whether or not any wake-up exists.
   PENDING_SLEEP_REQUIRES_WAKE = "pending_sleep_requires_wake"
 
   # The `pending_sleep_reason` values that carry the same condition as the marker
@@ -143,7 +143,8 @@ module SessionStateMachine
   # run a session the platform had just stood down.
   PENDING_SLEEP_REASONS_REQUIRING_WAKE = [
     Sessions::StopRecord::SCHEDULED_WAKE,
-    Sessions::StopRecord::SYSTEM_RECOVERY_RESLEEP
+    Sessions::StopRecord::SYSTEM_RECOVERY_RESLEEP,
+    Sessions::StopRecord::FOLLOW_UP_RESLEEP
   ].freeze
 
   # The `pending_sleep` trio, cleared together by every path that ends a sleep
@@ -2159,8 +2160,10 @@ module SessionStateMachine
   #   https://github.com/tadasant/zimmer/issues/569. See
   #   #hold_pending_one_time_wakes.
   # - A FOLLOW-UP resume takes the follow-up preserve branch. Somebody sent this
-  #   session a message; nobody cancelled its wait. See #follow_up_resume and
-  #   https://github.com/tadasant/zimmer/issues/898.
+  #   session a message; nobody cancelled its wait, so it answers and goes back to
+  #   sleep on it. See #follow_up_resume,
+  #   https://github.com/tadasant/zimmer/issues/898 and
+  #   https://github.com/tadasant/zimmer/issues/1212.
   #
   # What is left on the consuming branch is the TAKEOVER: a restart, a
   # restart-from-scratch, a resume of a failed session. Those replace the wait
@@ -2197,7 +2200,9 @@ module SessionStateMachine
     # to sleep comes to rest in needs_input instead; on the hold branch the group
     # is left armed and unmarked, so nothing retires it at the end of the turn and
     # it fires into a later, unrelated wait; on the follow-up branch the session
-    # loses the wake it is still counting on and strands in needs_input (#898).
+    # loses the wake it is still counting on and strands in needs_input (#898), or
+    # keeps it but is left sitting in the human action queue for the whole of a wait
+    # nobody has to act on (#1212).
     report_swallowed_side_effect(__method__, e, alert: true)
   end
 
@@ -2248,22 +2253,48 @@ module SessionStateMachine
     )
   end
 
-  # Leave a followed-up session's own wake-ups armed.
+  # Leave a followed-up session's own wake-ups armed, and put it back on the wait
+  # they belong to once it has answered.
   #
-  # The third leaving-armed branch, and the narrowest of the three: nothing is
-  # marked, nothing is re-slept, nothing is retired later. The conditions are
-  # simply not consumed, so the wait the session set up for itself is still the
-  # wait it is on when the turn it was just handed comes to rest. A one-time
-  # schedule fires at its wall time — before the turn ends, in which case
+  # The conditions are not consumed, so the wait the session set up for itself is
+  # still the wait it is on when the turn it was just handed comes to rest. A
+  # one-time schedule fires at its wall time — before the turn ends, in which case
   # Trigger#follow_up_session! queues it durably onto the running session, or
-  # after it, in which case it resumes the session from `needs_input` exactly as
-  # the session intended.
+  # after it, in which case it collects the session from `waiting`.
   #
-  # Deliberately NOT the #preserve_pending_one_time_wakes treatment: that branch
-  # also writes `pending_sleep`, because a system-recovered session never chose to
-  # be awake at all. Here somebody asked this session a question, and putting it
-  # straight back to sleep after it answers would hide the answer. It rests in
-  # `needs_input` and its wake collects it later.
+  # THE RE-SLEEP (#1212). This branch used to mark nothing, on the reasoning that
+  # "somebody asked this session a question, and putting it straight back to sleep
+  # after it answers would hide the answer". That reasoning does not survive what
+  # it costs. `needs_input` is not a place answers are displayed — it is the
+  # homepage's human action queue — and a session holding a live wake it armed
+  # itself is asking nothing of anybody. Session 19239 was a router mid-wait-loop
+  # with two children still `running`: it answered a follow-up at 04:18:38Z with
+  # its 04:32:00Z backstop still armed, and sat in the action queue for the whole
+  # fourteen minutes until that backstop fired. The operator stopped to ask what
+  # Zimmer wanted from him, which is the one thing the queue must never do.
+  #
+  # The answer is not hidden by sleeping. It is in the transcript, which the
+  # session page streams live, and the session stays on the homepage under
+  # `waiting` with the wake that explains it. What sleeping does cost is the
+  # debounced `needs_input` push: SendPushNotificationJob#stale_needs_input_transition?
+  # drops a push whose session is no longer in `needs_input` 60s later. That is
+  # already true of every session that answers a human and arms a wake in the same
+  # turn — the shape the `open-pr` skill prescribes — so this makes the two
+  # consistent rather than taking away a property the system reliably had.
+  #
+  # Conditional in exactly the way #preserve_pending_one_time_wakes is, and for
+  # the same reason: only a still-pending one-time SCHEDULE backs the re-sleep. A
+  # wall-clock wake fires whatever else happens; a set of session watchers can be
+  # left holding nothing if the sessions they watch never transition through a
+  # watched event again, and sleeping on that trades a visible rest for an
+  # indefinite one (#648). PENDING_SLEEP_REQUIRES_WAKE then makes even the
+  # backstopped intent void at pause time — if the wake fired or was retired
+  # during the turn, #execute_pending_sleep drops it and the session rests in
+  # `needs_input`, where the operator can see it (#1172).
+  #
+  # A session that genuinely does need the human says so by cancelling its wake:
+  # with nothing armed there is no re-sleep, and the turn ends in `needs_input`
+  # exactly as before. That is the same lever /triggers gives a human.
   #
   # A wake that can no longer fire is consumed rather than preserved. Preserving
   # one would leave an `enabled`, unfired row that reads as an armed wake on
@@ -2283,10 +2314,23 @@ module SessionStateMachine
     consumed.each { |condition| condition.update!(last_triggered_at: Time.current) }
     return if preserved.empty?
 
+    backstopped = preserved.any? do |condition|
+      condition.one_time_schedule? && self.class.one_time_wake_pending?(condition)
+    end
+
+    if backstopped
+      merge_metadata!(
+        Sessions::StopRecord.pending_sleep(Sessions::StopRecord::FOLLOW_UP_RESLEEP).merge(
+          PENDING_SLEEP_REQUIRES_WAKE => true
+        )
+      )
+    end
+
     Rails.logger.info(
       "[SessionStateMachine] Preserved #{preserved.size} pending one-time wake-up(s) across a " \
       "follow-up resume of session #{id} (trigger_conditions #{preserved.map(&:id).join(', ')}) — " \
-      "the follow-up added to this session's wait, it did not end it" \
+      "the follow-up added to this session's wait, it did not end it; " \
+      "#{backstopped ? 'will return to waiting after this turn' : 'will rest in needs_input — no one-time schedule backstop among them'}" \
       "#{consumed.any? ? "; consumed #{consumed.size} that could no longer fire" : ''}"
     )
 
@@ -2294,7 +2338,8 @@ module SessionStateMachine
     logs.create!(
       content: "Resumed by a follow-up while #{preserved.size} wake-up(s) of its own were still armed — " \
         "#{at ? "the next fires at #{at.utc.iso8601}" : 'they fire when the sessions they watch transition'}. " \
-        "The follow-up did not cancel them.",
+        "The follow-up did not cancel them, so " \
+        "#{backstopped ? 'this session goes back to sleep on them once it has answered' : 'this session will rest in needs_input — none of them is a scheduled backstop'}.",
       level: "info"
     )
   end

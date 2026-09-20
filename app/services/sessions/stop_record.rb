@@ -70,6 +70,7 @@ module Sessions
     SCHEDULED_WAKE = "scheduled_wake"
     DELIBERATE_SLEEP = "deliberate_sleep"
     SYSTEM_RECOVERY_RESLEEP = "system_recovery_resleep"
+    FOLLOW_UP_RESLEEP = "follow_up_resleep"
     HALTED_TURN = "halted_turn"
     UNSTARTED_REQUEUE = "unstarted_requeue"
     USER_PAUSE = "user_pause"
@@ -223,6 +224,9 @@ module Sessions
           "Slept on purpose by a human or an API caller, with nothing armed to wake it."
         when SYSTEM_RECOVERY_RESLEEP
           "Returned to the sleep it was recovered out of; its wake-ups are still armed."
+        when FOLLOW_UP_RESLEEP
+          "Answered a follow-up and went back to the wait it was already on; its wake-ups are " \
+          "still armed."
         when HALTED_TURN
           "Its running turn was halted deliberately."
         when UNSTARTED_REQUEUE
