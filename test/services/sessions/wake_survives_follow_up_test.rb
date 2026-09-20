@@ -7,10 +7,14 @@ require "test_helper"
 # A session schedules its own `wake_me_up_later`, somebody else follows it up
 # before that wake is due, and the session comes to rest. Until this test passed,
 # the resume consumed the wake on the way through: the session took its turn,
-# paused into `needs_input` — the correct thing for it to do — and sat there with
-# nothing scheduled to bring it back and no way to find out. Session 13403 spent
-# the morning of 2026-09-04 like that, holding a nearly-finished PR, until an
-# unrelated third session happened to nudge it.
+# paused, and sat there with nothing scheduled to bring it back and no way to find
+# out. Session 13403 spent the morning of 2026-09-04 like that, holding a
+# nearly-finished PR, until an unrelated third session happened to nudge it.
+#
+# Where it comes to rest is https://github.com/tadasant/zimmer/issues/1212, and it
+# is `waiting`: the wake the follow-up left armed is a wait the session is still
+# on, so resting in `needs_input` put a router with two running children in the
+# operator's action queue with nothing to act on.
 #
 # These go through the real surfaces (Sessions::ScheduleWakeUp, the MCP tool, the
 # REST controller, the queue drain) rather than poking the flag, because the flag
@@ -56,7 +60,8 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
     session.start!
     session.pause!
 
-    assert session.reload.needs_input?, "the followed-up turn comes to rest, which is correct"
+    assert session.reload.waiting?,
+      "the followed-up turn comes to rest back on the wait the follow-up did not end (#1212)"
     assert_nil condition.reload.last_triggered_at,
       "the follow-up must not consume the wake the session is still counting on"
     assert_equal "enabled", trigger.reload.status
@@ -141,6 +146,8 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
 
     assert_includes result, "- **Its own wake-up:** still armed for #{condition.scheduled_at_time.utc.iso8601}"
     assert_includes result, "did not cancel it"
+    assert_includes result, "expect it in `waiting`, not `needs_input`",
+      "the sender has to be told where the target comes to rest, or it waits for a status that never arrives"
   end
 
   # `Session#deliver_follow_up!` is the one shared delivery path behind the web

@@ -575,7 +575,7 @@ transient flags, never persisted, each set by the caller that knows the answer.
 | A **takeover** — `restart`, restart-from-scratch, a resume of a `failed` session | nothing; the default | **Consumed.** The wait is replaced, so the wakes are moot. Each condition gets `last_triggered_at` stamped, which closes it permanently and lets `CleanupStaleTriggersJob` collect the row as a `Trigger#dead_one_time_wake?`. |
 | A **system-recovery** nudge — a deploy restart, an orphan sweep, a hung-process reap | `Session#resume_for_system_recovery!` | **Preserved**, and the session is put back to sleep afterwards when a still-fireable one-time schedule backstops that re-sleep. The session never chose to wake. |
 | A **wake fire** — the session's own `wake_me_up_later` or state-change watcher firing | `Trigger#follow_up_session!` | **Held** across the woken turn and retired when that turn comes to rest. Consuming them at fire time, before the woken turn has re-armed anything, is the no-trigger window of [#569](https://github.com/tadasant/zimmer/issues/569). |
-| A **follow-up** — a router's `follow_up`, a human's message, a queued message draining, a Slack or GitHub trigger | `Session#resume_for_follow_up!` | **Preserved**, with nothing marked and nothing re-slept. The session takes the turn it was handed and its own wake fires afterwards, from `needs_input`, exactly as it intended. |
+| A **follow-up** — a router's `follow_up`, a human's message, a queued message draining, a Slack or GitHub trigger | `Session#resume_for_follow_up!` | **Preserved**, and the session goes back to sleep on them afterwards under the same condition the system-recovery row keeps: a still-fireable one-time schedule has to backstop the re-sleep. The follow-up added a turn to the session's wait; it did not end it. |
 
 The last row is [#898](https://github.com/tadasant/zimmer/issues/898). Consuming there was silent in
 both directions: the sender was never told it had just become the only thing that could wake the
@@ -583,6 +583,45 @@ session, and the session — which had usually already written *"my self-wake fi
 its own transcript — answered, came to rest in `needs_input`, and sat there indefinitely. Session
 13403 spent the morning of 2026-09-04 like that, holding a nearly-finished PR, until an unrelated
 third session happened to nudge it.
+
+##### And it goes back to sleep afterwards
+
+The re-sleep is [#1212](https://github.com/tadasant/zimmer/issues/1212). Preserving the wake fixed
+the strand but left the session resting in `needs_input` for the whole remainder of its own wait —
+and `needs_input` is not a neutral resting place: it is the homepage's human action list, the set of
+sessions [a person is expected to
+decide](#a-session-that-never-ran-comes-to-rest-in-waiting-not-in-the-action-queue) something about.
+A session still holding a wake it armed itself is asking nothing of anybody. Session 19239 was a router mid-wait-loop with two
+children still `running`: it answered a human follow-up at 04:18:38Z with its own 04:32:00Z backstop
+still armed, and sat in the action queue for the whole fourteen minutes until that backstop fired.
+The operator stopped to ask what Zimmer wanted from him, which is the one thing the queue must never
+provoke.
+
+So the follow-up branch now writes the same conditional `pending_sleep` the system-recovery branch
+does — `pending_sleep_reason: follow_up_resleep`, plus `pending_sleep_requires_wake` — and
+`execute_pending_sleep` runs it at the end of the answered turn. Three properties come with that,
+and they are the same three that make the system-recovery re-sleep safe:
+
+- **Only a wall-clock schedule backs it.** A one-time schedule fires whatever else happens. A set of
+  session watchers can be left holding nothing if the sessions they watch never transition through a
+  watched event again, so a watcher-only wake set does *not* back a re-sleep: that session rests in
+  `needs_input`, visible, rather than trading a visible rest for an indefinite sleep
+  ([#648](https://github.com/tadasant/zimmer/issues/648)).
+- **The intent is void at pause time if the wake is gone.** `pending_sleep_requires_wake` makes
+  `execute_pending_sleep` re-ask `armed_one_time_wake?` when the turn ends. A backstop that fired or
+  was retired during the answered turn drops the intent and the session rests in `needs_input`
+  ([#1172](https://github.com/tadasant/zimmer/issues/1172)).
+- **A session that does need the human cancels its wake.** With nothing armed there is no re-sleep
+  and the turn ends in `needs_input` exactly as before. That is the same lever `/triggers` gives a
+  human who wants to take a sleeping session over.
+
+What sleeping costs is the debounced `needs_input` push: `SendPushNotificationJob` drops a push whose
+session is no longer in `needs_input` sixty seconds later, so the human who asked the question is not
+pinged when the answer lands. That is already true of every session that answers a human and arms a
+wake in the same turn — the shape `open-pr` and `wait-for-ci` prescribe — so this makes the two
+consistent rather than removing a property Zimmer reliably had. The answer itself is not hidden:
+it is in the transcript, which the session page streams live, and the session stays on the homepage
+under `waiting` with the wake that explains why.
 
 Preserving is deliberately the eager side of that trade, and the cost is worth stating honestly. The
 wake carries the prompt the session wrote for itself, so a follow-up that *redirected* the session
@@ -1166,8 +1205,8 @@ nothing left in the world to wake it. Session 17044 sat inert for 15.5 minutes u
 The handoff now drops such an intent as it hands over, so the flag cannot cross the boundary in the
 first place, and the guard in `execute_pending_sleep` is the backstop rather than the fix. Both ask
 `Session#pending_sleep_requires_wake?`, which is true for a `pending_sleep_reason` of
-`scheduled_wake` or `system_recovery_resleep`, or for the standalone `pending_sleep_requires_wake`
-marker. What that keeps out matters as much as what it catches: a deliberate sleep
+`scheduled_wake`, `system_recovery_resleep` or `follow_up_resleep`, or for the standalone
+`pending_sleep_requires_wake` marker. What that keeps out matters as much as what it catches: a deliberate sleep
 (`POST /api/v1/sessions/:id/sleep`) arms nothing by definition and must still sleep, and a
 `spot_pause` or an `auth_outage_park` is a dormancy the platform imposed — refusing to sleep one of
 those would run a session that was deliberately stood down.
@@ -1333,7 +1372,7 @@ every sleep:
 
 | Key | What it holds |
 | --- | --- |
-| `stopped_reason` | One of `auth_outage_park`, `spot_hold`, `spot_pause`, `scheduled_wake`, `deliberate_sleep`, `system_recovery_resleep`, `halted_turn`, `unstarted_requeue`, `user_pause`, `unattributed` |
+| `stopped_reason` | One of `auth_outage_park`, `spot_hold`, `spot_pause`, `scheduled_wake`, `deliberate_sleep`, `system_recovery_resleep`, `follow_up_resleep`, `halted_turn`, `unstarted_requeue`, `user_pause`, `unattributed` |
 | `stopped_detail` | A sentence a human can read |
 | `stopped_at` | When the session went dormant, UTC |
 
@@ -1358,9 +1397,9 @@ Every writer now stamps `pending_sleep_reason` in the *same* statement as the fl
 even a mechanism whose follow-up write is lost cannot produce a stop that nothing explains.
 
 That stamp is load-bearing beyond the record. `execute_pending_sleep` reads it to tell an intent
-that exists *for a wake* from one that means "stop": `scheduled_wake` and
-`system_recovery_resleep` are honoured only while something is still armed to undo them, and the
-rest are honoured unconditionally. See
+that exists *for a wake* from one that means "stop": `scheduled_wake`, `system_recovery_resleep`
+and `follow_up_resleep` are honoured only while something is still armed to undo them, and the rest
+are honoured unconditionally. See
 [Any sleep intent that exists *for* a wake dies with that wake](#any-sleep-intent-that-exists-for-a-wake-dies-with-that-wake).
 
 `AuthOutageParkService` was the mechanism that could, and it is fixed at the source too: the outage
