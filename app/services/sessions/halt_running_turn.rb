@@ -140,6 +140,17 @@ module Sessions
     # apart from an ordinary halt.
     SPOT_QUEUE_REASONS = %i[pause_into_spot_queue spot_preemption].freeze
 
+    # Sessions::ForceTurnStart taking a worker thread off this turn to give it to
+    # a session a human is waiting on. Named here rather than at the caller so
+    # that the one class which decides how a halt describes itself is still the
+    # only one that knows.
+    #
+    # Not a spot-queue park: nothing about quota or the concurrency cap happened,
+    # and the caller puts the turn straight back in the `agents` queue rather than
+    # leaving the session for a sweep. So it takes the HALTED_TURN provenance,
+    # which is the accurate one, and a prefix of its own.
+    FORCED_TURN_START = :forced_turn_start
+
     def spot_queue_park? = SPOT_QUEUE_REASONS.include?(reason)
 
     # Which cause Sessions::StopRecord writes when the deferred sleep this arms is
@@ -150,40 +161,87 @@ module Sessions
       spot_queue_park? ? Sessions::StopRecord::SPOT_PAUSE : Sessions::StopRecord::HALTED_TURN
     end
 
-    # What the session's own timeline calls this. Every caller today parks into
-    # the spot queue one way or the other, so the `[Paused]` branch is reachable
-    # only from a test — it is kept so a future caller parking a session some
-    # other way names its own gesture rather than borrowing the queue's.
+    # What the session's own timeline calls this. The `[Paused]` branch is
+    # reachable only from a test — every caller names its own gesture — and it is
+    # kept so a caller parking a session some other way does not have to borrow
+    # one of the two below.
     def log_prefix
-      spot_queue_park? ? "[Spot Queue]" : "[Paused]"
+      return "[Spot Queue]" if spot_queue_park?
+      return "[Forced]" if reason == FORCED_TURN_START
+
+      "[Paused]"
     end
 
     # Written after the pause lands, and unconditionally: a session whose process
     # had already gone gets no line from #terminate_process, and would otherwise
     # have nothing on its timeline saying why its turn stopped.
     def halted_message
-      "#{log_prefix} This turn was stopped and the session put to sleep " \
+      stopped = @handed_to_worker ? "is being stopped by the session worker" : "was stopped"
+      "#{log_prefix} This turn #{stopped} and the session put to sleep " \
         "(now #{session.status}). Work already written to disk survives; the tool call in flight does not."
     end
 
     # Kill the CLI process the session owns. Best effort: a session whose process
     # has already gone still gets paused, which is the state we are trying to
     # reach.
+    #
+    # == The process is usually in another container
+    #
+    # Every caller of this class runs in the `web` container — a controller, or
+    # `POST /mcp` — and in production the CLI process lives in the `worker`
+    # container's PID namespace, so `resume_monitoring` fails there every time
+    # ("not running", because it cannot be seen) and a web-side kill never lands.
+    # That is the normal case, not the edge case: it is only in development and
+    # in a single-container deployment that the signal reaches.
+    #
+    # And the status flip that follows does NOT stop the worker either. The
+    # `pause!` below carries the row running -> needs_input -> waiting in one
+    # transaction, so AgentSessionJob's monitoring loop never observes the
+    # `needs_input` its branch 1b exits on; it goes on supervising a live process
+    # on a session that reads `waiting`, and its thread stays taken until the
+    # session's NEXT job claims `running_job_id` and branch 1c makes the old one
+    # stand down. For a spot preemption that is a slot given back late; for a
+    # force it is the whole point missed — a thread taken for nothing.
+    #
+    # So when the process cannot be signalled from here, the kill is handed to
+    # the worker the way Sessions::InterruptService hands an interrupt over: a
+    # pid-scoped `interrupt_terminate_pid` that the loop's branch 1a honours on
+    # its next iteration by terminating the process and returning, which is what
+    # frees the thread. The pid scope is what makes it safe to leave behind — a
+    # later turn has a different pid and can never match it. The flag is a fast
+    # path rather than the guarantee (InterruptService documents the writer that
+    # can still lose it); the guarantee stays branch 1c, exactly as before.
     def terminate_process
       pid = session.metadata&.dig("process_pid")
       return if pid.blank?
 
-      session.logs.create!(level: "info", content: "#{log_prefix} Terminating process #{pid}")
-
       manager = ProcessLifecycleManager.new(session: session, process_manager: SystemProcessManager.new)
       result = manager.resume_monitoring(pid: pid, stderr_log_path: session.stderr_log_path)
-      return unless result.success?
 
-      manager.terminate(reason: reason)
+      if result.success?
+        session.logs.create!(level: "info", content: "#{log_prefix} Terminating process #{pid}")
+        manager.terminate(reason: reason)
+      else
+        request_worker_side_termination(pid)
+      end
     rescue StandardError => e
       Rails.logger.warn(
         "[Sessions::HaltRunningTurn] Could not terminate the process of session #{session.id}: " \
         "#{e.class}: #{e.message}"
+      )
+    end
+
+    # The same durable, pid-scoped request Sessions::InterruptService writes, for
+    # the same reason. Logged at info: in production this is every halt, and it
+    # resolves within one worker loop iteration.
+    def request_worker_side_termination(pid)
+      @handed_to_worker = true
+      session.merge_metadata!("interrupt_terminate_pid" => pid)
+      session.logs.create!(
+        level: "info",
+        content: "#{log_prefix} Process #{pid} cannot be signalled from the web process (separate " \
+                 "container/PID namespace); handed its termination to the session worker, which stops it " \
+                 "on its next loop iteration and frees the thread it holds"
       )
     end
   end

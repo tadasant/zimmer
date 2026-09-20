@@ -65,6 +65,86 @@ rows whose job had a `performed_at`, and it still does — the pre-spawn window 
 uncounted turns wear. `SpotGateService`'s projected burn still prices the queue too, because a
 queued turn will spend as soon as a thread frees up; it now reads the job rows to find it.
 
+## Force: taking a thread off somebody else's turn
+
+A queued turn is a wait nothing shortens. The spot gate cannot help — it decides *whether* a turn
+may run, and thread contention is a different mechanism that holds priority sessions exactly as
+hard. **Start now** cannot help either: it moves a turn that is scheduled for *later*, and this one
+is already due. The pool is a fixed number of threads, and the only way to get one when they are all
+busy is to take one.
+
+So the queued-for-a-worker banner carries a **Force** button, backed by `Sessions::ForceTurnStart`.
+It stops the turn that most recently took a thread and gives that thread to the session you are
+looking at.
+
+**The victim is chosen by recency, not by class.** The most recent `performed_at` on an unfinished
+`agents` job whose worker is still alive — a priority session is as eligible as a spot one. Six
+candidates are skipped, each because taking the thread would buy nothing or would trample a record
+somebody else owns:
+
+| Skipped | Why |
+| --- | --- |
+| The forcing session itself, and the session calling `force_start` through MCP | The caller is running a turn right now; stopping it halts the call mid-flight with no reply read |
+| A job whose lock holder is gone | Its thread died with the capsule; halting it frees nothing |
+| A session still `waiting` while its worker makes the clone | No agent process to stop, so the thread would stay taken |
+| A session carrying a spot pause or preempt record | Its slot is already coming back, and `SpotSessionPause`'s sweep is keyed on that record |
+| A status-summary fork | It takes exactly one turn; there is no conversation to put back |
+| A job that only re-attached to a process (`resume_monitoring`) | It holds a thread and counts toward the pool being full, but its `performed_at` is the adoption's start, not the turn's — it would read as the newest turn while being the oldest |
+
+Plus a five-minute cooldown on a session that was already forced out, which is what stops the second
+click in a row from killing the session the first click just re-queued.
+
+**The victim's turn is not lost.** It is stopped and put straight back in the `agents` queue:
+
+1. The force record goes on the victim's row first — `forced_out_at`, `forced_out_for_session`,
+   `forced_out_count` — so its own page and timeline say what happened and whose turn took its
+   thread. The count survives the resume, deliberately.
+2. The forced job's priority is bumped (see below) — *before* the halt, because the thread frees a
+   moment later and the row has to already be first in line when it does.
+3. `Sessions::HaltRunningTurn` stops the process. Same cost as a spot ceiling pause: work written to
+   disk stays written, the tool call in flight is lost. In production the process is in the `worker`
+   container, where nothing in `web` can signal it, so the halt hands the kill to the worker the way
+   an interrupt does — a pid-scoped `interrupt_terminate_pid` that `AgentSessionJob`'s monitoring
+   loop honours on its next iteration by terminating the process and returning, which is what
+   actually frees the thread. (This also fixes the pre-existing spot-preemption halt, which flipped
+   the row to `waiting` in one transaction and left the worker supervising a live process the loop
+   had no exit for.)
+4. `resume_for_system_recovery!` puts it back — preserving the wake-ups it had armed, since it did
+   not choose to stop — and a fresh `AgentSessionJob` carries it into the queue with a nudge naming
+   what happened.
+
+The victim ends where the forcing session began: `waiting`, with a ready turn, behind the pool. Its
+resume owner is GoodJob's poller, the same owner every queued turn has, so Force adds no sweep.
+
+**Freeing a thread is not the same as getting it.** GoodJob dequeues `priority ASC NULLS LAST,
+created_at ASC`, and nothing in Zimmer sets a job priority, so every `AgentSessionJob` carries
+GoodJob's default of `0` and the freed thread would otherwise go to whichever queued turn is oldest.
+The forced job's priority is set to `-100`, which sorts ahead of that. Two forced turns tie there and
+fall back to `created_at`.
+
+**When there is no eligible victim the button is not drawn**, and the banner prints the reason
+instead — a pool with a free thread ("your turn starts on the next poll anyway") reads differently
+from a full pool with nothing stoppable. The same sentence comes back as the flash if the state
+changes between the page render and the click.
+
+**The session that dies is the one that was confirmed.** The form carries the previewed victim's id
+back as `expected_victim_id`, and a pick that differs at the click — the named turn ended, or someone
+else forced it first — is refused rather than quietly stopping the next one down. A turn a worker
+claimed between the page and the click is refused too: it is starting, and freeing a thread for it
+would stop someone for nothing.
+
+**Two things Force does not promise.** A spot session's turn still answers to the spot gate when the
+worker picks it up, so a quota window over its target can hold it even after a thread was taken for
+it — the affordance says so before the click. And Zimmer cannot tell what the victim is in the
+middle of: there is no signal on a session row for "half-way through an irreversible external
+action", so no rule here pretends to know. The confirmation names the victim, its class and how long
+its turn has been running, and leaves the judgement to the person clicking.
+
+`action_session`'s `force_start` is the same operation for an agent session, with both refusals
+raised as errors rather than returned as a cheerful summary. `get_session` on a queued session names
+the session that would be stopped, and the tool takes the same `expected_victim_id`. The calling
+session is never the victim.
+
 ## The full machine
 
 ```mermaid

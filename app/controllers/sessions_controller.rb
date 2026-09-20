@@ -2511,6 +2511,34 @@ class SessionsController < ApplicationController
     )
   end
 
+  # POST /sessions/:id/force_start
+  #
+  # "Force" on the queued-for-a-worker banner: take a worker thread off the turn
+  # that most recently got one and give it to this session. Distinct from
+  # #start_now, which moves a turn that is scheduled for later — a turn that is
+  # already due and merely behind the pool has nothing to bring forward.
+  def force_start
+    @session = find_session
+
+    result = Sessions::ForceTurnStart.call(
+      @session,
+      actor: "a user in the web UI",
+      expected_victim_id: params[:expected_victim_id].presence
+    )
+
+    # The same deliberate-interaction signal Start and Restart send, and for the
+    # same reason: a human has just said they are watching this session. Only on
+    # a force that actually happened — a refusal changed nothing about how often
+    # this session is worth polling.
+    reset_poll_backoff(@session) if result.forced?
+
+    respond_with_flash(
+      notice: (result.forced? ? result.message : nil),
+      alert: (result.forced? ? nil : result.message),
+      location: @session
+    )
+  end
+
   # PATCH /sessions/:id/update_precedence
   # Set one session's rank in the spot queue. JSON for the ranked view, which
   # re-sorts the row in place; HTML for the session detail page's form.

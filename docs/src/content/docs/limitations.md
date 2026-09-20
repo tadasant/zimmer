@@ -2150,6 +2150,25 @@ that does it has known limits:
   `waiting` is a state with four meanings (a spot hold, a ceiling pause, a quota park, a queued
   turn), and only the session detail page and `get_session` name which one. A session list showing
   forty `waiting` rows does not distinguish the ones about to run from the ones parked for hours.
+- **Force is the only lever on that wait, and it is a click per session, not a policy.**
+  `Sessions::ForceTurnStart` takes a thread off the most recently started turn and gives it to one
+  queued session; there is nothing that reorders the queue as a whole, nothing that keeps a session
+  at the front for its next turn too, and no record of the force anywhere but the two sessions'
+  own rows. Forcing the same session twice means clicking twice, each time at the cost of another
+  session's in-flight tool call.
+- **The Force button is invisible on a turn that has been queued for over 30 minutes** — exactly
+  when the queue is deepest. `SessionWaitingReason` names a queued turn only while `JobLiveness`
+  calls its job `:queued`, and that verdict becomes `:abandoned` past `ABANDONED_QUEUED_JOB_AGE` (30
+  minutes). A turn that old is still a turn a worker will run — `Sessions::LiveTurn::UNDERWAY_STATUSES`
+  counts it, and so does `Sessions::ForceTurnStart`, so `force_start` through MCP still works — but
+  the banner the button would be drawn on is gone, so on the session page the session reads as an
+  unexplained `waiting` row with no button. The wait that most deserves the lever is the one that
+  loses it in the UI.
+- **Zimmer cannot tell what a forced-out turn was in the middle of.** There is no signal on a session
+  row for "half-way through an irreversible external action" — a `git push`, a PR merge, a Slack
+  post — so Force has no rule that declines to stop one, and deliberately does not invent one. The
+  confirmation names the victim, its class and its turn's age; the judgement is the clicking human's.
+  An agent calling `force_start` through MCP has even less to go on.
 - **A `running` row asleep on its own wake is dropped from both ceilings, and nothing puts it back
   into `waiting`.** When a turn ends with something already in flight for the session — a queued
   message the handoff path picks up, or a recovery job — the row can stay `running` while the session

@@ -573,6 +573,10 @@ Rails.application.routes.draw do
       # queue is managed. Named :start_now rather than :start so the helper does
       # not read like the new-session form.
       post :start_now
+      # "Force" — the queued-for-a-worker banner. Unlike :start_now, which moves
+      # WHEN a turn is asked for, this takes a worker thread off the turn that
+      # most recently got one. See Sessions::ForceTurnStart.
+      post :force_start
       # The User view's Merge button. A human's click is the sign-off that lets
       # the session holding the PR merge its own work — see
       # Sessions::AuthorizeMerge.
