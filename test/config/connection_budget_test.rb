@@ -100,13 +100,13 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
     baseline = as_worker { ConnectionBudget.primary_pool }
     raised = as_worker("GOOD_JOB_AGENTS_THREADS" => 20) { ConnectionBudget.primary_pool }
 
-    assert_equal baseline + 8, raised
+    assert_equal baseline + 12, raised
   end
 
   test "the queue string GoodJob is configured with is the one the budget counted" do
     as_worker("GOOD_JOB_AGENTS_THREADS" => 20) do
       assert_includes ConnectionBudget.good_job_queues, "agents:20"
-      assert_equal 20 + 3 + 2 + 2 + 2 + 2 + 2, ConnectionBudget.good_job_scheduler_threads
+      assert_equal 20 + 3 + 2 + 2 + 2 + 4 + 4, ConnectionBudget.good_job_scheduler_threads
     end
   end
 
@@ -114,17 +114,23 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
     as_worker do
       threads = ConnectionBudget.good_job_queue_threads
 
-      assert_equal 12, threads.fetch(:agents)
+      # The `agents` lane is sized by the droplet's CPU (tadasant/zimmer#329):
+      # eight vCPUs ran at 2.9x cores with twelve Claude Code processes, and
+      # every 2-thread lane starved behind them. The four threads it gave up
+      # went to the two lanes that wedged, so the total -- and the connection
+      # budget Terraform enforces -- is unchanged.
+      assert_equal 8, threads.fetch(:agents)
       assert_equal 2, threads.fetch(:inference)
-      assert_equal 2, threads.fetch(:maintenance)
-      assert_equal 2, threads.fetch(:default)
+      assert_equal 4, threads.fetch(:maintenance)
+      assert_equal 4, threads.fetch(:default)
       assert_includes ConnectionBudget.good_job_queues, "inference:2"
-      assert_includes ConnectionBudget.good_job_queues, "maintenance:2"
+      assert_includes ConnectionBudget.good_job_queues, "maintenance:4"
+      assert_includes ConnectionBudget.good_job_queues, "default:4"
       assert_equal 25, ConnectionBudget.good_job_scheduler_threads
     end
 
     baseline = as_worker { ConnectionBudget.required_backends }
-    rebalanced = as_worker("GOOD_JOB_INFERENCE_THREADS" => 1, "GOOD_JOB_DEFAULT_THREADS" => 3) do
+    rebalanced = as_worker("GOOD_JOB_INFERENCE_THREADS" => 1, "GOOD_JOB_DEFAULT_THREADS" => 5) do
       ConnectionBudget.required_backends
     end
     assert_equal baseline, rebalanced
@@ -168,7 +174,7 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
     # it cannot boot. Kamal renders an unset `env: clear:` value to "", and Integer("")
     # raises.
     as_worker("GOOD_JOB_AGENTS_THREADS" => "", "RAILS_MAX_THREADS" => "") do
-      assert_equal 12, ConnectionBudget.good_job_queue_threads.fetch(:agents)
+      assert_equal 8, ConnectionBudget.good_job_queue_threads.fetch(:agents)
       assert_nothing_raised { ConnectionBudget.primary_pool }
     end
   end

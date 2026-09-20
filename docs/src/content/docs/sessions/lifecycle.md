@@ -25,8 +25,8 @@ The integer values are load-bearing (they're the existing ActiveRecord enum). A 
 ## `running` means a worker thread has the turn
 
 Zimmer executes agent turns on the GoodJob `agents` lane, and that lane is
-`ConnectionBudget.good_job_queue_threads[:agents]` threads deep — **12** on the Tadasant production
-deployment. Everything above that number is a durable row waiting for a thread.
+`ConnectionBudget.good_job_queue_threads[:agents]` threads deep — **8** on the Tadasant production
+deployment, sized by the droplet's CPU ([#329](https://github.com/tadasant/zimmer/issues/329)). Everything above that number is a durable row waiting for a thread.
 
 `resume` used to land in `running`, stamped by whoever *handed* the session a turn. The `agents`
 queue sits between that hand-over and any worker picking the job up, so `running` routinely held a

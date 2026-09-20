@@ -122,7 +122,7 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     result = @tool.call({})
 
     assert_includes result, "- **In flight by queue:** agents 8, inference 2, default 2 " \
-                            "(threads: agents 12, pollers 3, triggers 2, auth 2, inference 2, maintenance 2, default 2)",
+                            "(threads: agents 8, pollers 3, triggers 2, auth 2, inference 2, maintenance 4, default 4)",
                     "a hold is only readable beside the pool it is filling"
     assert_includes result, "- **In flight by job class:** AgentSessionJob 8, SessionStatusSummaryJob 4",
                     "which class is not FINISHING is a different answer from which class is waiting"
