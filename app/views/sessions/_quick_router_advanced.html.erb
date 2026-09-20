@@ -1,13 +1,12 @@
+<%# locals: (scope:, models:, default_model:) %>
 <%# The Quick Router's Advanced accordion: the model picker and the spot opt-in,
     collapsed by default so the one-box-and-go path stays one box.
 
     Rendered on both dashboard surfaces — the desktop inline row and the mobile
     full-screen overlay — from this one partial, because the two forms post to
     the same action and any drift between them is a bug the user only finds at
-    submit time. `scope` distinguishes the element ids, so the two copies that
-    are in the DOM at once never collide.
-
-    Locals: scope ("desktop"/"mobile"), models, default_model. %>
+    submit time. `scope` ("desktop"/"mobile") distinguishes the element ids, so
+    the two copies that are in the DOM at once never collide. %>
 <%
   model_id = "quick_prompt_#{scope}_model"
   spot_id = "quick_prompt_#{scope}_scheduling_class"
@@ -20,7 +19,11 @@
     the chevron is drawn here and rotated by the `group-open:` variant. Without one
     the row reads as a label rather than as something you can open. %>
 <%= tag.details class: "group text-sm", data: (mobile ? { quick_prompt_target: "mobileAdvanced" } : {}) do %>
-  <summary class="inline-flex cursor-pointer select-none items-center gap-1 text-xs text-gray-500 hover:text-gray-700">
+  <%# Named for assistive tech: the sidebar's filter accordion is also "Advanced",
+      and both copies of this one are in the DOM, so the visible word alone would
+      read three times over with nothing to tell them apart. %>
+  <summary aria-label="Advanced prompt options: model and spot"
+           class="inline-flex cursor-pointer select-none items-center gap-1 text-xs text-gray-500 hover:text-gray-700">
     <svg class="h-3 w-3 flex-shrink-0 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
     </svg>
@@ -29,11 +32,12 @@
   <div class="mt-2 space-y-3 rounded-md border border-gray-200 bg-gray-50 p-3">
     <div>
       <label for="<%= model_id %>" class="block text-xs font-medium text-gray-700">Model</label>
-      <%# Blank is the default and submits no `model` at all, so the ordinary
-          chain applies: the router root's default_model, then the Settings
-          default, then the runtime's catalog default. The default is NAMED in
-          the blank option rather than preselected — preselecting it would pin
-          today's default onto every Quick Router session and sever that link. %>
+      <%# The blank option is the default. It posts an empty `model`, which the
+          controller reads as "none", so the model is resolved at create time —
+          the router root's default_model, then the Settings default, then the
+          runtime's catalog default. The default is NAMED in the blank option
+          rather than preselected: a tab left open across a Settings change
+          would otherwise post yesterday's default as if someone had chosen it. %>
       <%= select_tag :model,
             options_for_select(models),
             include_blank: default_model.present? ? "Default (#{default_model})" : "Default",

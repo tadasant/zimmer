@@ -6508,7 +6508,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal root.default_model, Session.last.config["model"]
   end
 
-  test "quick_prompt ignores a model the router runtime does not offer" do
+  test "quick_prompt ignores a model the router runtime does not offer, and says so" do
     AgentSessionJob.stubs(:enqueue_new_session)
     root = AgentRootsConfig.find!(AgentRootsConfig.router_root_name)
     foreign = ModelCatalog.model_ids_for("codex").first
@@ -6516,9 +6516,39 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", model: foreign }
     assert_equal root.default_model, Session.last.config["model"]
+    # The swap is announced rather than silent: the pick can have been legitimate
+    # when the page rendered and gone by the time it was submitted.
+    assert_match(/The model you picked is not available for this runtime, so the default applied\./, flash[:notice])
 
     post quick_prompt_sessions_url, params: { prompt: "Fix it again", model: "not-a-model" }
     assert_equal root.default_model, Session.last.config["model"]
+    assert_match(/default applied/, flash[:notice])
+  end
+
+  test "quick_prompt says nothing about the model when none was picked" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", model: "" }
+
+    assert_no_match(/default applied/, flash[:notice])
+  end
+
+  # The list is scoped to the runtime rather than hardcoded so that a model an
+  # operator added from Settings → Models is offered and accepted here too.
+  test "quick_prompt offers and accepts a model an operator added to the router runtime" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    runtime = AgentRootsConfig.find!(AgentRootsConfig.router_root_name).default_runtime
+    ModelCatalogCliCheck.stubs(:check).returns(
+      ModelCatalogCliCheck::Result.new(listed: true, cli_version: "test", note: "Listed.")
+    )
+    added = ModelCatalogEntry.add(runtime: runtime, model_id: "opus[1m]", added_via: "api")
+    assert added.persisted?, added.errors.full_messages.join(", ")
+
+    get root_url
+    assert_select "select#quick_prompt_desktop_model option[value=?]", "opus[1m]"
+
+    post quick_prompt_sessions_url, params: { prompt: "Long context sweep", model: "opus[1m]" }
+    assert_equal "opus[1m]", Session.last.config["model"]
   end
 
   test "quick_prompt ignores a model that is not a string" do
