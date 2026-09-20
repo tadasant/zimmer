@@ -13,7 +13,6 @@ import { isModelReadableImage, partitionMedia } from "lib/media_kinds"
 // - Follow-up prompts (existing session, uses sessionId)
 // - New session creation (uses tempSessionId)
 export default class extends Controller {
-  //
   // preview / progress / attachButton / attachFolderButton are PLURAL: the
   // follow-up composer renders a desktop row and a phone row, only one of which
   // is on screen at a time, and both have to be written to.
@@ -172,11 +171,6 @@ export default class extends Controller {
   }
 
   async uploadFiles(files) {
-    if (this.files.length + files.length > this.maxFilesValue) {
-      alert(`Maximum ${this.maxFilesValue} files allowed`)
-      return
-    }
-
     // Oversize files are dropped individually rather than failing the whole
     // selection — one 600MB screen recording in a multi-select should not
     // discard the photos picked alongside it.
@@ -190,6 +184,13 @@ export default class extends Controller {
     }
     if (withinLimit.length === 0) return
     files = withinLimit
+
+    // Counted after the size filter: a file that is not going to be attached
+    // should not push the selection over the limit.
+    if (this.files.length + files.length > this.maxFilesValue) {
+      alert(`Maximum ${this.maxFilesValue} files allowed`)
+      return
+    }
 
     this.startProgress(files.length)
 

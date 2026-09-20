@@ -71,9 +71,9 @@ no fallback behind it. Three consequences the code is built around:
   desktop row and a phone row; only one is on screen at a time and the other is `display: none`.
   The Stimulus preview, progress and button targets are therefore **plural**, so both rows show the
   same staged attachments and both get disabled while an upload is in flight.
-- **The hidden `<input type="file">` elements live above the layout split**, not inside either row.
-  An input inside the hidden row cannot be clicked by the visible one, and a hidden field inside it
-  would still submit but could not be written to.
+- **The hidden `<input type="file">` elements live above the layout split**, not inside either row,
+  along with the hidden fields the form submits. One set, shared: duplicating them per layout would
+  give the two rows two independent selections that disagree about what is staged.
 - **The row has to fit 375px.** `test/system/mobile_composer_attachments_test.rb` asserts the
   buttons are visible and that nothing is clipped at that width, using the same probe as
   [the mobile QA pass](/operate/testing/).

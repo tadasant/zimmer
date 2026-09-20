@@ -24,8 +24,9 @@ import { partitionMedia } from "lib/media_kinds"
 // The photo input accepts everything a phone's library holds, which is wider than
 // the four types ImageStorageService can store. A selection is re-routed before it
 // is ever submitted: JPEG/PNG/GIF/WebP stay on images[], HEIC stills and video are
-// moved onto files[]. Without that, picking an iPhone photo posted the whole form
-// and came back as "Failed to upload attachment", losing the typed prompt with it.
+// moved onto files[]. The routing has to happen client-side because this form posts
+// natively — an unroutable photo reaches the server, is rejected, and takes the
+// typed prompt with it into a redirect.
 export default class extends Controller {
   static targets = [
     "textarea",            // desktop textarea
@@ -91,7 +92,7 @@ export default class extends Controller {
   updateDesktopBadge(event) {
     if (event) {
       this._routeMedia("desktop")
-      this._validateScope("desktop")
+      this._validateScope("desktop", event.target)
     }
     this._updateBadge("desktop")
   }
@@ -151,7 +152,7 @@ export default class extends Controller {
   updateMobileBadge(event) {
     if (event) {
       this._routeMedia("mobile")
-      this._validateScope("mobile")
+      this._validateScope("mobile", event.target)
     }
     this._updateBadge("mobile")
   }
@@ -164,22 +165,28 @@ export default class extends Controller {
   // ImageStorageService. As files[] they are stored verbatim and the agent is
   // handed a path — see app/javascript/lib/media_kinds.js.
   _routeMedia(scope) {
-    const media = this._mediaInput(scope)
     const file = this._fileInput(scope)
-    if (!media || !file) return
+    if (!file) return
 
-    const { images, files } = partitionMedia(media.files)
-    if (files.length === 0) return
+    // Both the library picker and the camera input post under `images[]`, so both
+    // have to be drained: an Android camera storing HEIF hands back a capture the
+    // image path cannot take, just as the library does.
+    for (const source of [ this._mediaInput(scope), this._cameraInput(scope) ]) {
+      if (!source) continue
 
-    this._setInputFiles(media, images)
-    this._setInputFiles(file, [ ...Array.from(file.files || []), ...files ])
+      const { images, files } = partitionMedia(source.files)
+      if (files.length === 0) continue
+
+      this._setInputFiles(source, images)
+      this._setInputFiles(file, [ ...Array.from(file.files || []), ...files ])
+    }
   }
 
   // Drop anything over the per-kind size limit, then clear the kind entirely if
   // it is over the count limit. Oversize entries are removed individually rather
   // than rejecting the whole selection: a phone multi-select is one tap over a
   // grid, and one long video in it should not discard the photos beside it.
-  _validateScope(scope) {
+  _validateScope(scope, changedInput) {
     for (const group of this._scopeGroups(scope)) {
       const { inputs, maxSize, maxCount, kind } = group
       const sizeMb = Math.round(maxSize / (1024 * 1024))
@@ -194,9 +201,13 @@ export default class extends Controller {
         window.alert(`${names} ${tooLarge.length === 1 ? "is" : "are"} over the ${sizeMb}MB ${kind} limit and ${tooLarge.length === 1 ? "was" : "were"} not attached.`)
       }
 
+      // Over the count, only the selection that crossed the line is dropped. Zeroing
+      // the whole kind would take the twenty photos already picked along with the
+      // twenty-first, which is the one thing the user did not ask for.
       const total = inputs.reduce((n, input) => n + (input.files?.length || 0), 0)
       if (total > maxCount) {
-        for (const input of inputs) this._setInputFiles(input, [])
+        const offender = inputs.includes(changedInput) ? changedInput : inputs[inputs.length - 1]
+        this._setInputFiles(offender, [])
         window.alert(`Maximum ${maxCount} ${kind}${maxCount === 1 ? "" : "s"} allowed.`)
       }
     }
@@ -205,10 +216,23 @@ export default class extends Controller {
   // A file input's `files` is only assignable from a FileList, so the round trip
   // goes through a DataTransfer. This is how a selection is edited in place
   // without asking the user to pick again.
+  //
+  // Returns false where the browser has no constructible DataTransfer. Failing
+  // loudly matters: silently leaving the selection alone would post unsplit media
+  // as `images[]` and lose the prompt to a server-side rejection, which is exactly
+  // the failure the split exists to remove.
   _setInputFiles(input, files) {
-    const dt = new DataTransfer()
-    for (const file of files) dt.items.add(file)
-    input.files = dt.files
+    try {
+      const dt = new DataTransfer()
+      for (const file of files) dt.items.add(file)
+      input.files = dt.files
+      return true
+    } catch (error) {
+      console.error("Cannot rewrite a file input's selection in this browser:", error)
+      input.value = ""
+      window.alert("This browser could not stage that selection. Please attach the file with the paperclip button instead.")
+      return false
+    }
   }
 
   _mediaInput(scope) {
@@ -227,8 +251,8 @@ export default class extends Controller {
   }
 
   // The two kinds, each with the inputs that post under its name. Kind is decided
-  // structurally rather than by sniffing the `accept` string, which now says
-  // "image" on an input that may be carrying a video.
+  // structurally rather than by sniffing the `accept` string, which says "image"
+  // on an input that may be carrying a video.
   _scopeGroups(scope) {
     return [
       {

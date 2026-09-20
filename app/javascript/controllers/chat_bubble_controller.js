@@ -248,9 +248,7 @@ export default class extends Controller {
   // The photo input accepts everything a phone's library holds, which is wider
   // than the four types ImageStorageService can store — an iPhone still is HEIC
   // and a phone video is .mov or .mp4. Those ride as files[] instead, where the
-  // agent gets a path to them; see app/javascript/lib/media_kinds.js. Without
-  // the split the quick router answered an iPhone photo with "Failed to upload
-  // attachment", which is the whole reason this surface looked broken on a phone.
+  // agent gets a path to them; see app/javascript/lib/media_kinds.js.
   handleImageSelect(event) {
     const { images, files } = partitionMedia(event.target.files)
     event.target.value = ""
@@ -265,25 +263,29 @@ export default class extends Controller {
     if (files.length > 0) this._attachFiles(files)
   }
 
+  // Size first, then count: an oversize entry is not going to be attached, so
+  // counting it toward the limit would reject a selection that fits.
   _attachImages(files) {
-    if (this.attachedImages.length + files.length > this.maxImagesValue) {
+    const kept = this._withinSizeLimit(files, this.maxImageSizeValue, "image")
+    if (kept.length === 0) return
+
+    if (this.attachedImages.length + kept.length > this.maxImagesValue) {
       this._showError(`Maximum ${this.maxImagesValue} images allowed.`)
       return
     }
-    const kept = this._withinSizeLimit(files, this.maxImageSizeValue, "image")
-    if (kept.length === 0) return
 
     this.attachedImages.push(...kept)
     this._renderPreview()
   }
 
   _attachFiles(files) {
-    if (this.attachedFiles.length + files.length > this.maxFilesValue) {
+    const kept = this._withinSizeLimit(files, this.maxFileSizeValue, "file")
+    if (kept.length === 0) return
+
+    if (this.attachedFiles.length + kept.length > this.maxFilesValue) {
       this._showError(`Maximum ${this.maxFilesValue} files allowed.`)
       return
     }
-    const kept = this._withinSizeLimit(files, this.maxFileSizeValue, "file")
-    if (kept.length === 0) return
 
     this.attachedFiles.push(...kept)
     this._renderPreview()
@@ -313,15 +315,14 @@ export default class extends Controller {
         if (f) imageFiles.push(f)
       }
     }
-    if (imageFiles.length > 0) {
-      event.preventDefault()
-      if (this.attachedImages.length + imageFiles.length > this.maxImagesValue) {
-        this._showError(`Maximum ${this.maxImagesValue} images allowed.`)
-        return
-      }
-      this.attachedImages.push(...imageFiles)
-      this._renderPreview()
-    }
+    if (imageFiles.length === 0) return
+
+    event.preventDefault()
+    // Same split and the same size guard as the picker: a clipboard can carry a
+    // HEIC or a 20MB screenshot, and neither belongs on the image path.
+    const { images, files } = partitionMedia(imageFiles)
+    if (images.length > 0) this._attachImages(images)
+    if (files.length > 0) this._attachFiles(files)
   }
 
   removeImage(event) {

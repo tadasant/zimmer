@@ -24,9 +24,13 @@ export const MODEL_READABLE_IMAGE_TYPES = [
   "image/webp"
 ]
 
-// Extensions for the same four, used when the browser reports no MIME type at
-// all — which Android pickers do for files handed over by some gallery apps.
+// Extensions for the same four, used when the browser reports no usable MIME type
+// — which Android pickers do for files handed over by some gallery apps and share
+// targets.
 const MODEL_READABLE_EXTENSIONS = [ "jpg", "jpeg", "png", "gif", "webp" ]
+
+// Types that carry no information about the bytes, so the extension decides.
+const UNINFORMATIVE_TYPES = [ "", "application/octet-stream" ]
 
 // What a "Photos & videos" input offers. `image/*,video/*` is what makes iOS
 // Safari put "Photo Library" and "Take Photo or Video" on the sheet and what
@@ -40,7 +44,13 @@ export function isModelReadableImage(file) {
   if (!file) return false
 
   const type = (file.type || "").toLowerCase()
-  if (type) return MODEL_READABLE_IMAGE_TYPES.includes(type)
+  if (!UNINFORMATIVE_TYPES.includes(type)) return MODEL_READABLE_IMAGE_TYPES.includes(type)
+
+  // Nothing to go on but the name. A dropped *directory* looks exactly like this —
+  // no type and no bytes — and one named `shots.png` would otherwise be claimed by
+  // the image path while file-attachment is walking it as a folder, uploading it
+  // twice. Requiring bytes is what separates the two.
+  if (!file.size) return false
 
   const extension = (file.name || "").split(".").pop().toLowerCase()
   return MODEL_READABLE_EXTENSIONS.includes(extension)
