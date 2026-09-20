@@ -118,9 +118,10 @@ module Sessions
     # about why there is nothing to force.
     #
     # `victim` is the session that WOULD be stopped, so the confirmation can name
-    # it. It is a preview and not a promise — the pick is made again under a lock
-    # when the button is pressed, and a turn that ended in between changes the
-    # answer. The flash reports what actually happened.
+    # it. It is a preview and not a promise — the pick is made again when the
+    # button is pressed, Sessions::HaltRunningTurn re-checks the victim under its
+    # own row lock, and a turn that ended in between changes the answer. The
+    # flash reports what actually happened.
     Preview = Data.define(:available, :victim, :victim_age, :message) do
       def available? = available
     end
@@ -255,12 +256,7 @@ module Sessions
     def choose_victim
       return nil if occupancy < RunningTurns.worker_slots
 
-      live_turns.each do |job, candidate|
-        next unless stoppable?(candidate)
-
-        return candidate
-      end
-      nil
+      live_turns.find { |_job, candidate| stoppable?(candidate) }&.last
     rescue StandardError => e
       # Every failure direction in this class is "force nothing". A read that
       # cannot be made is not evidence that a turn may be stopped.
@@ -338,7 +334,7 @@ module Sessions
     #
     # @return [Boolean] whether the thread was actually taken
     def yield_the_thread!(victim)
-      record_the_force(victim)
+      previous_record = record_the_force(victim)
 
       result = Sessions::HaltRunningTurn.call(
         session: victim, reason: Sessions::HaltRunningTurn::FORCED_TURN_START
@@ -346,6 +342,7 @@ module Sessions
       unless result.halted
         Rails.logger.info("[Sessions::ForceTurnStart] Session #{victim.id}'s turn was not halted " \
                           "(#{result.reason}) — session #{session.id} keeps its place in the queue")
+        restore_the_record(victim, previous_record)
         return false
       end
 
@@ -361,12 +358,35 @@ module Sessions
     # why rather than to one that stopped for no recorded reason. `FORCED_COUNT` is
     # cumulative and survives the resume below, which is what {COOLDOWN}'s sibling
     # stamp and any later fairness question would be read off.
+    #
+    # @return [Hash] the record as it stood before this write, so a halt that
+    #   does not happen can put it back
     def record_the_force(victim)
+      previous = (victim.metadata || {}).slice(FORCED_AT, FORCED_FOR_SESSION, FORCED_COUNT)
       victim.merge_metadata!(
         FORCED_AT => Time.current.utc.iso8601,
         FORCED_FOR_SESSION => session.id,
-        FORCED_COUNT => (victim.metadata || {})[FORCED_COUNT].to_i + 1
+        FORCED_COUNT => previous[FORCED_COUNT].to_i + 1
       )
+      previous
+    end
+
+    # A force that stopped nothing must not leave a record saying it did. Unlike
+    # a spot-queue park, where the record IS the park and stays meaningful when
+    # the halt is deferred, this record's only claim is "a thread was taken" —
+    # and a stale one would also put the session in {COOLDOWN} for a force that
+    # never happened, and point `forced_out_for_session` at a session that never
+    # got the thread. Restored to what it was rather than deleted, because it may
+    # have been an earlier, real force's record.
+    def restore_the_record(victim, previous)
+      if previous.empty?
+        victim.remove_metadata!(FORCED_AT, FORCED_FOR_SESSION, FORCED_COUNT)
+      else
+        victim.merge_metadata!(previous, [ FORCED_AT, FORCED_FOR_SESSION, FORCED_COUNT ] - previous.keys)
+      end
+    rescue StandardError => e
+      Rails.logger.warn("[Sessions::ForceTurnStart] Could not restore session #{victim.id}'s force record " \
+                        "after a halt that did not happen (#{e.class}: #{e.message})")
     end
 
     # Back into the `agents` queue, in the same gesture that stopped it.
@@ -377,7 +397,11 @@ module Sessions
     # children (see SessionStateMachine#system_recovery_resume).
     def requeue(victim)
       victim.reload
-      unless victim.waiting? && victim.may_resume?
+      # `may_resume?` is the whole gate: `resume` transitions from `waiting`,
+      # `needs_input` and `failed`, and a halt lands in the first of those or —
+      # if the pause callback's own sleep was swallowed — the second. Either is a
+      # session with no turn that this owes one to.
+      unless victim.may_resume?
         Rails.logger.warn("[Sessions::ForceTurnStart] Session #{victim.id} is #{victim.status} after its " \
                           "turn was forced out — leaving it to Zimmer's stranded-sleep rescue")
         return
@@ -448,7 +472,7 @@ module Sessions
     end
 
     def queued_turn_ready?
-      session.waiting? && !session.archived? && queued_job_status == :queued
+      session.waiting? && queued_job_status == :queued
     end
 
     # === Prose ================================================================
