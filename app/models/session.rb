@@ -2385,6 +2385,12 @@ class Session < ApplicationRecord
   #   parent, or at the default when it has none. See SessionPrecedence.
   # @param metadata [Hash] additional metadata to store on the session
   # @param custom_metadata [Hash] additional custom metadata
+  # @param config [Hash, nil] per-spawn config overrides, chiefly `"model"`. A
+  #   model named here wins outright: Sessions::ResolveSpawnDefaults leaves an
+  #   already-set `config["model"]` alone and only runs the root → AppSetting →
+  #   runtime chain when none was named. Blank/nil leaves the column NULL so that
+  #   chain applies, which is what the dashboard quick prompt's untouched model
+  #   picker relies on.
   # @yieldparam session [Session] the session, the instant its row is SAVED and before
   #   its start job is enqueued — including when the save itself raised on the way out
   #   through an after_commit callback, which is the point. Creating a session is
@@ -2401,7 +2407,7 @@ class Session < ApplicationRecord
   #   transaction and consumes an event on this signal has to account for that; no
   #   caller does today.
   # @return [Session] the created and enqueued session
-  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil, &on_created)
+  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, config: nil, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil, &on_created)
     # An explicit override is normalized through RuntimeRegistry here, so an
     # unknown runtime fails loudly at the registry (KeyError) rather than tripping
     # the agent_runtime inclusion validation with a vaguer error.
@@ -2454,7 +2460,10 @@ class Session < ApplicationRecord
       # above the session that spawned it.
       precedence: precedence,
       metadata: metadata,
-      custom_metadata: custom_metadata
+      custom_metadata: custom_metadata,
+      # Empty is the same as absent here: ResolveSpawnDefaults reads
+      # `config["model"]` and fills the whole chain in when it is missing.
+      config: config.presence
     )
 
     # Repository fields, runtime → model, the artifact lists and the

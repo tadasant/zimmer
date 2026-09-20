@@ -57,9 +57,13 @@ Every Quick Router surface carries a **Run as spot** checkbox, unchecked by defa
 | Surface | Where the checkbox is |
 | --- | --- |
 | The chat-bubble Quick Router panel, on every page | Under the prompt, above **Submit** / **Submit & Open** — both submit paths read it |
-| The dashboard's inline prompt (`md:` and wider) | At the right of the attach-button row |
-| The dashboard's full-screen prompt overlay (phones) | Above the **Submit** button |
+| The dashboard's inline prompt (`md:` and wider) | Inside the **Advanced** accordion under the attach-button row |
+| The dashboard's full-screen prompt overlay (phones) | Inside the **Advanced** accordion above the **Submit** button |
 | The mobile joystick's **Quick Router** petal | Opens the chat-bubble panel, so it inherits that one |
+
+On the two dashboard surfaces the checkbox sits in a collapsed `<details>` beside the **Model**
+picker, so the default experience is still one box you type into and submit. See [Choosing a model
+on the Quick Router](/sessions/runtimes/#choosing-a-model-on-the-quick-router).
 
 Leaving it unchecked submits no class at all: `sessions.scheduling_class` stays NULL and the session
 keeps deriving from `web_ui`, exactly as before — so promoting or demoting `web_ui` on `/inference`
