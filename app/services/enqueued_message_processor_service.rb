@@ -186,22 +186,44 @@ class EnqueuedMessageProcessorService
           # Scoped to the intents that exist FOR a wake —
           # `Session#pending_sleep_requires_wake?`, the same rule
           # `execute_pending_sleep` gates on, rather than a second list free to
-          # drift from it. Those are the ones a message legitimately supersedes:
-          # the wake they were arranged for is still armed and still the session's
-          # own to come back on, and a session that answers a question and then
-          # goes straight back to sleep has hidden the answer (#898).
-          #
+          # drift from it. Those are the ones a message legitimately supersedes.
           # Every other `pending_sleep` writer is a dormancy the platform imposed
           # rather than an intent the turn expressed — a spot pause, an auth-outage
           # park, a halted turn — and clearing one of those would run a session
           # that was deliberately stood down.
+          #
+          # Superseded, not dropped, when a wall-clock wake still backs it. The
+          # message took the next turn, but it did not end the wait the session is
+          # on: the wake is still armed and still the session's own to come back
+          # on, so the turn the message takes goes back to sleep on it when it
+          # ends, exactly as it would have had the same message arrived a moment
+          # after the pause and taken `Session#resume_for_follow_up!`'s preserve
+          # branch. That is the resting-state race this branch exists to remove,
+          # and until #1212 the two sides of it disagreed. `pending_wake_at` is the
+          # same "still-fireable one-time schedule" test the preserve branch uses.
+          # The intent is rewritten rather than left standing because the rewrite
+          # carries PENDING_SLEEP_REQUIRES_WAKE, and that marker is what keeps
+          # #1172's shape safe: a queued message that is itself a wake fired into
+          # the running turn has had its whole group held, the next `pause`
+          # retires it, and `execute_pending_sleep` then finds nothing armed and
+          # drops the intent instead of sleeping on nothing.
           if session.metadata&.dig("pending_sleep") == true && session.pending_sleep_requires_wake?
-            session.remove_metadata!(SessionStateMachine::PENDING_SLEEP_KEYS)
-            add_log(
-              "Dropped the pending auto-sleep from the finished turn — a queued message took the " \
-              "next turn, and the wake-up that sleep was arranged for is still the session's own to keep",
-              level: "info"
-            )
+            if session.pending_wake_at
+              session.write_follow_up_resleep_intent
+              add_log(
+                "Carried the finished turn's auto-sleep across the queued message that took the next " \
+                "turn — the wake-up it was arranged for is still armed, so the session goes back to " \
+                "sleep on it once that turn ends",
+                level: "info"
+              )
+            else
+              session.remove_metadata!(SessionStateMachine::PENDING_SLEEP_KEYS)
+              add_log(
+                "Dropped the pending auto-sleep from the finished turn — a queued message took the " \
+                "next turn, and no scheduled wake-up is left to back a re-sleep",
+                level: "info"
+              )
+            end
           end
 
           # Handoff path: clear the outgoing job's lock, refresh the elapsed-time
