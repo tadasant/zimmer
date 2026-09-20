@@ -14,7 +14,7 @@ import { partitionMedia } from "lib/media_kinds"
 // - Tappable pill opens full-screen overlay editor
 // - X button or Escape key dismisses the overlay
 // - Dedicated Submit button at the bottom of the screen
-// - Closing the overlay resets the Advanced accordion (model, spot) to defaults
+// - Closing the overlay resets the Advanced accordion (harness, model, spot)
 // - Attach buttons mirror the desktop behavior
 // - Double-submit protection
 //
@@ -44,9 +44,7 @@ export default class extends Controller {
     "mobileCameraInput",   // mobile camera input
     "mobileFileInput",     // mobile file picker
     "mobileBadge",         // mobile "N attached" hint
-    "mobileAdvanced",      // mobile <details> holding the model + spot controls
-    "mobileModel",         // mobile model <select> ("" = use the default)
-    "mobileSpot"           // mobile "Run as spot" checkbox
+    "mobileAdvanced"       // mobile <details> holding the harness, model + spot controls
   ]
 
   static values = {
@@ -119,11 +117,12 @@ export default class extends Controller {
     if (this.hasMobileCameraInputTarget) this.mobileCameraInputTarget.value = ""
     if (this.hasMobileFileInputTarget) this.mobileFileInputTarget.value = ""
     // Everything in Advanced is per-submission, not a sticky preference — the
-    // next open starts back at the defaults (the root's model, priority) with the
-    // accordion collapsed again.
-    if (this.hasMobileSpotTarget) this.mobileSpotTarget.checked = false
-    if (this.hasMobileModelTarget) this.mobileModelTarget.value = ""
-    if (this.hasMobileAdvancedTarget) this.mobileAdvancedTarget.open = false
+    // next open starts back at the defaults (the root's harness and model,
+    // priority) with the accordion collapsed again. The accordion owns what
+    // "defaults" means, so this asks it rather than reaching into its controls.
+    if (this.hasMobileAdvancedTarget) {
+      this.mobileAdvancedTarget.dispatchEvent(new CustomEvent("quick-router-advanced:reset"))
+    }
     this.updateMobileBadge()
   }
 

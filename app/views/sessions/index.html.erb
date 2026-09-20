@@ -542,13 +542,13 @@
                 </button>
                 <span data-quick-prompt-target="mobileBadge" class="ml-auto text-xs text-gray-500"></span>
               </div>
-              <%# Model and spot both live behind the accordion: typing and hitting
-                  Submit stays the whole path, and the knobs are one tap away. %>
+              <%# Harness, model and spot all live behind the accordion: typing and
+                  hitting Submit stays the whole path, and the knobs are one tap away. %>
               <div class="mb-3">
                 <%= render "sessions/quick_router_advanced",
                       scope: "mobile",
-                      models: @quick_router_models,
-                      default_model: @quick_router_default_model %>
+                      options: quick_router_options,
+                      targets: { advanced: { quick_prompt_target: "mobileAdvanced" } } %>
               </div>
               <button type="submit" data-quick-prompt-target="mobileSubmit"
                       class="w-full rounded-lg bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -614,8 +614,8 @@
             <span data-quick-prompt-target="desktopBadge" class="text-xs text-gray-500"></span>
           </div>
 
-          <%# Model and spot live in an accordion of their own, a sibling of the
-              attach row rather than a cell in it: expanding a `<details>` inside
+          <%# Harness, model and spot live in an accordion of their own, a sibling
+              of the attach row rather than a cell in it: expanding a `<details>` inside
               that `items-center` flex row would stretch it and float the attach
               buttons down the middle of the open panel. The accordion also has
               the room the row does not, so both controls carry the same visible
@@ -623,8 +623,7 @@
           <div class="mt-2 max-w-xs">
             <%= render "sessions/quick_router_advanced",
                   scope: "desktop",
-                  models: @quick_router_models,
-                  default_model: @quick_router_default_model %>
+                  options: quick_router_options %>
           </div>
         <% end %>
       </div>

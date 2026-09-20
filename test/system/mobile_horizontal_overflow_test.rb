@@ -628,6 +628,36 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     JS
   end
 
+  # Whether the element is entirely inside the viewport — the check a control has to
+  # pass to be reachable at all, as opposed to merely being in the DOM.
+  def fully_within_viewport?(selector)
+    page.evaluate_script(<<~JS)
+      (function () {
+        const el = document.querySelector(#{selector.to_json});
+        if (!el) return false;
+        const b = el.getBoundingClientRect();
+        return b.top >= -1 && b.left >= -1 &&
+               b.bottom <= window.innerHeight + 1 && b.right <= window.innerWidth + 1;
+      })()
+    JS
+  end
+
+  # The non-blank option TEXT of a model <select>, in order — the catalog labels.
+  def model_option_labels(selector)
+    page.evaluate_script(
+      "Array.from(document.querySelector(#{selector.to_json}).options).filter(o => o.value !== '').map(o => o.text)"
+    )
+  end
+
+  # The non-blank option values of a model <select>, in order. The blank option is
+  # the "Default (…)" label and is dropped, so this compares against a plain
+  # ModelCatalog list.
+  def model_option_values(selector)
+    page.evaluate_script(
+      "Array.from(document.querySelector(#{selector.to_json}).options).map(o => o.value).filter(v => v !== '')"
+    )
+  end
+
   # The computed `padding-left` of the node marked as the current session — the
   # depth indent, which is 8px per level below `sm:` and 20px per level above it.
   def current_node_indent(list_selector)
@@ -813,8 +843,8 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # phone-only, and the panel one is what the mobile joystick's Quick Router petal
   # opens, so a phone is the primary way it gets used rather than an afterthought.
   #
-  # On the two dashboard surfaces it sits inside the Advanced accordion beside the
-  # model picker, so this also proves the accordion: collapsed on arrival, and
+  # On all three surfaces it sits inside the Advanced accordion beside the harness
+  # and model pickers, so this also proves the accordion: collapsed on arrival, and
   # everything inside it on screen once it is opened.
   test "the Quick Router spot opt-in is on screen and reachable on a phone" do
     visit root_path
@@ -827,10 +857,13 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     mobile_advanced = find("[data-quick-prompt-target='mobileAdvanced'] summary")
     mobile_advanced.click
     assert_selector "#quick_prompt_mobile_scheduling_class", visible: true
+    assert_selector "#quick_prompt_mobile_agent_runtime", visible: true
     assert_selector "#quick_prompt_mobile_model", visible: true
 
     mobile_box = find("#quick_prompt_mobile_scheduling_class")
     assert_not mobile_box.checked?, "the spot opt-in must default to off — priority is the default"
+    assert_equal "", find("#quick_prompt_mobile_agent_runtime").value,
+      "the harness picker must start blank — blank is what lets the router root's runtime apply"
     assert_equal "", find("#quick_prompt_mobile_model").value,
       "the model picker must start blank — blank is what lets the root's default apply"
     page.save_screenshot("tmp/screenshots/proof-quick-router-spot-mobile-overlay-375.png")
@@ -851,10 +884,16 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     mobile_box.click
     assert mobile_box.checked?
     # Any non-blank option: what matters is that a choice was made, not which.
+    # Harness FIRST — picking one rebuilds the model list and resets it to blank,
+    # so choosing the model after is what leaves both non-blank for the reset
+    # assertions below. The other order would assert nothing about the model.
+    find("#quick_prompt_mobile_agent_runtime option:not([value=''])", match: :first).select_option
     find("#quick_prompt_mobile_model option:not([value=''])", match: :first).select_option
+    assert_not_equal "", find("#quick_prompt_mobile_model").value
+    assert_not_equal "", find("#quick_prompt_mobile_agent_runtime").value
     find("button[data-action='quick-prompt#closeMobile']").click
     find("button[data-action='quick-prompt#openMobile']").click
-    # Both knobs are per-submission, and the accordion itself closes with them, so
+    # Every knob is per-submission, and the accordion itself closes with them, so
     # the next prompt starts from the same one-box view as the first.
     assert_no_selector "#quick_prompt_mobile_scheduling_class", visible: true
     find("[data-quick-prompt-target='mobileAdvanced'] summary").click
@@ -862,6 +901,8 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       "reopening the overlay should start back at the default"
     assert_equal "", find("#quick_prompt_mobile_model").value,
       "reopening the overlay should drop the model choice too"
+    assert_equal "", find("#quick_prompt_mobile_agent_runtime").value,
+      "reopening the overlay should drop the harness choice too"
     find("button[data-action='quick-prompt#closeMobile']").click
 
     # Surface 2: the chat-bubble Quick Router panel, which is also what the mobile
@@ -875,10 +916,16 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # panel is still off screen. Probing then would measure the panel where it
     # started rather than where it lands.
     assert_selector "[data-chat-bubble-target='panel'].translate-x-0.opacity-100"
+    # The panel carries the same accordion as the dashboard forms, collapsed the
+    # same way: nothing new is asked of anyone who just wants to fire a prompt.
+    assert_no_selector "[data-chat-bubble-target='spot']", visible: true
+    find("[data-chat-bubble-target='advanced'] summary").click
     assert_selector "[data-chat-bubble-target='spot']", visible: true
 
     bubble_box = find("[data-chat-bubble-target='spot']")
     assert_not bubble_box.checked?, "the panel's spot opt-in must default to off too"
+    assert_equal "", find("[data-chat-bubble-target='runtime']").value
+    assert_equal "", find("[data-chat-bubble-target='model']").value
     page.save_screenshot("tmp/screenshots/proof-quick-router-spot-chat-bubble-375.png")
 
     # Per-element only, for the same reason as the overlay above and one more: the
@@ -901,6 +948,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     find("[data-chat-bubble-target='panel'] button[aria-label='Close']").click
     find("#chat-bubble button[aria-label='Open quick router']").click
     assert_selector "[data-chat-bubble-target='panel'].translate-x-0.opacity-100"
+    # The accordion re-collapses with the choices, exactly as the overlay's does.
+    assert_no_selector "[data-chat-bubble-target='spot']", visible: true
+    find("[data-chat-bubble-target='advanced'] summary").click
     assert_not find("[data-chat-bubble-target='spot']").checked?,
       "reopening the panel should start back at the default"
 
@@ -934,6 +984,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     find("[data-quick-prompt-target='desktopForm'] details summary").click
     assert_selector "#quick_prompt_desktop_scheduling_class", visible: true
     assert_not find("#quick_prompt_desktop_scheduling_class").checked?
+    assert_equal "", find("#quick_prompt_desktop_agent_runtime").value
     assert_equal "", find("#quick_prompt_desktop_model").value
     assert_empty elements_past_right_edge("[data-quick-prompt-target='desktopForm']"),
       "the desktop prompt form's Advanced panel ends past the 1400px viewport"
@@ -970,6 +1021,92 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     JS
     assert within_viewport,
       "with Advanced open on a 500px-tall overlay, Submit cannot be scrolled into view"
+  end
+
+  # The pairing the harness picker exists for: a model id belongs to exactly one
+  # runtime's catalog, so choosing a harness has to re-scope the model list rather
+  # than leave a Claude Code id selected on a Codex submission. Proven in a real
+  # browser because the swap is client-side; the server-side half (a mismatched
+  # pair is refused whatever the client posts) is in the controller tests.
+  test "the Quick Router model list follows the harness that is picked" do
+    page.driver.browser.manage.window.resize_to(1400, 900)
+    visit root_path
+    find("[data-quick-prompt-target='desktopForm'] details summary").click
+    assert_selector "#quick_prompt_desktop_model", visible: true
+
+    claude_models = ModelCatalog.model_ids_for("claude_code")
+    codex_models = ModelCatalog.model_ids_for("codex")
+    assert_equal claude_models, model_option_values("#quick_prompt_desktop_model")
+    # The option TEXT is the catalog's label, which on Codex and Pi is the only
+    # place a model says it needs a ChatGPT login or is deprecated.
+    assert_equal ModelCatalog.models_for("claude_code").map { |m| m[:label] },
+      model_option_labels("#quick_prompt_desktop_model")
+    page.save_screenshot("tmp/screenshots/proof-quick-router-harness-claude-1400.png")
+
+    select RuntimeRegistry.label_for("codex"), from: "quick_prompt_desktop_agent_runtime"
+
+    assert_equal codex_models, model_option_values("#quick_prompt_desktop_model")
+    assert_equal "", find("#quick_prompt_desktop_model").value,
+      "switching harness must drop the old runtime's model rather than carry it over"
+    assert_selector "#quick_prompt_desktop_model option[value='']",
+      text: /Default \(#{Regexp.escape(ModelCatalog.default_for('codex'))}\)/
+    assert_equal ModelCatalog.models_for("codex").map { |m| m[:label] },
+      model_option_labels("#quick_prompt_desktop_model"),
+      "the rebuilt list must carry the catalog labels, not bare ids"
+    page.save_screenshot("tmp/screenshots/proof-quick-router-harness-codex-1400.png")
+  end
+
+  # The chat bubble's panel is anchored to the bottom and grows UPWARD, so a panel
+  # taller than the viewport pushes its own header — and the Close button in it —
+  # off the top, where nothing can reach them. The Advanced accordion is what makes
+  # it that tall, and a soft keyboard is what makes the viewport that short.
+  test "the chat bubble panel stays on screen with Advanced open on a short phone" do
+    visit root_path
+    find("#chat-bubble button[aria-label='Open quick router']").click
+    assert_selector "[data-chat-bubble-target='panel'].translate-x-0.opacity-100"
+    find("[data-chat-bubble-target='advanced'] summary").click
+    assert_selector "[data-chat-bubble-target='spot']", visible: true
+
+    [ 812, 600, 500, 400 ].each do |height|
+      page.driver.browser.manage.window.resize_to(MOBILE_WIDTH, height)
+      assert fully_within_viewport?("[data-chat-bubble-target='panel'] button[aria-label='Close']"),
+        "at #{MOBILE_WIDTH}x#{height} with Advanced open, the panel's Close button is off screen"
+      assert fully_within_viewport?("[data-chat-bubble-target='submitButton']"),
+        "at #{MOBILE_WIDTH}x#{height} with Advanced open, Submit is off screen"
+    end
+
+    # The controls the cap pushes out of view are reachable by scrolling the body,
+    # which is the half of the fix a height cap alone would not give.
+    spot = find("[data-chat-bubble-target='spot']")
+    page.execute_script("arguments[0].scrollIntoView({ block: 'end' })", spot)
+    assert fully_within_viewport?("[data-chat-bubble-target='spot']"),
+      "the spot opt-in cannot be scrolled into view on a 400px-tall phone"
+    page.save_screenshot("tmp/screenshots/proof-quick-router-bubble-short-viewport-400.png")
+  end
+
+  # The chat bubble submits over `fetch`, not as a form, so its two new pickers
+  # only reach the server if `chat_bubble#_submit` reads them — the exact "renders
+  # but is dropped" failure the controller tests guard from the other side.
+  test "the chat bubble's harness and model choices reach the server" do
+    visit root_path
+    find("#chat-bubble button[aria-label='Open quick router']").click
+    assert_selector "[data-chat-bubble-target='panel'].translate-x-0.opacity-100"
+    find("[data-chat-bubble-target='advanced'] summary").click
+
+    select RuntimeRegistry.label_for("codex"), from: "quick_prompt_bubble_agent_runtime"
+    chosen_model = ModelCatalog.model_ids_for("codex").last
+    find("#quick_prompt_bubble_model option[value='#{chosen_model}']").select_option
+    page.save_screenshot("tmp/screenshots/proof-quick-router-bubble-advanced-375.png")
+
+    find("[data-chat-bubble-target='textarea']").fill_in with: "Run the catalog sweep on Codex"
+    find("[data-chat-bubble-target='submitButton']").click
+    assert_selector "[data-chat-bubble-target='panel'].translate-x-full", visible: :all
+    assert_selector "[data-chat-bubble-target='error'].hidden", visible: :all
+
+    created = Session.where("prompt LIKE ?", "%Run the catalog sweep on Codex%").last
+    assert created, "the Quick Router panel did not create a session"
+    assert_equal "codex", created.agent_runtime, "the panel's harness choice did not reach the server"
+    assert_equal chosen_model, created.config["model"], "the panel's model choice did not reach the server"
   end
 
   test "new session form does not overflow horizontally on a phone" do

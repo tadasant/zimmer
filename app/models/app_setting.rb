@@ -171,7 +171,7 @@ class AppSetting < ApplicationRecord
   # the same read interface as a blank record so AgentRootsConfig never crashes on
   # a missing table — resolution simply falls through to the hardcoded defaults.
   NULL = Data.define(:default_runtime, :default_model) do
-    def resolved_default_model_for(runtime)
+    def resolved_default_model_for(runtime, allowed_models: nil)
       ModelCatalog.default_for(runtime)
     end
 
@@ -467,9 +467,15 @@ class AppSetting < ApplicationRecord
   # own catalog default. Keeps a global model pinned to one runtime from leaking
   # into an incompatible one (e.g. global gpt-5.5 must not be handed to a root
   # that explicitly runs under Claude Code).
-  def resolved_default_model_for(runtime)
+  # @param allowed_models [Array<String>, nil] the runtime's selectable model ids,
+  #   when the caller has already loaded them. Purely an optimisation for a caller
+  #   resolving several runtimes at once — ModelCatalog reads a database table for
+  #   this, and the Quick Router's harness picker would otherwise re-read it once
+  #   per runtime on every page render. Omitted, it is looked up here as before.
+  def resolved_default_model_for(runtime, allowed_models: nil)
     m = default_model
-    return m if m.present? && ModelCatalog.valid_model?(runtime, m)
+    allowed = allowed_models || ModelCatalog.model_ids_for(runtime)
+    return m if m.present? && allowed.include?(m)
 
     ModelCatalog.default_for(runtime)
   end
