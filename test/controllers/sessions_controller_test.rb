@@ -6470,7 +6470,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal SessionPrecedence::DEFAULT, Session.last.precedence
   end
 
-  # ---- The Quick Router's Advanced accordion: model selection ----
+  # ---- The Quick Router's Advanced accordion: harness and model selection ----
   #
   # These run against the REAL catalog rather than stub_router_agent_root, because
   # what the picker offers and what the controller accepts are both scoped to the
@@ -6518,7 +6518,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal root.default_model, Session.last.config["model"]
     # The swap is announced rather than silent: the pick can have been legitimate
     # when the page rendered and gone by the time it was submitted.
-    assert_match(/The model you picked is not available for this runtime, so the default applied\./, flash[:notice])
+    assert_match(/The model you picked is not available for this harness, so the default applied\./, flash[:notice])
 
     post quick_prompt_sessions_url, params: { prompt: "Fix it again", model: "not-a-model" }
     assert_equal root.default_model, Session.last.config["model"]
@@ -6593,7 +6593,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "the dashboard keeps both Quick Router knobs collapsed behind Advanced" do
+  test "the dashboard keeps every Quick Router knob collapsed behind Advanced" do
     get root_url
 
     assert_response :success
@@ -6602,10 +6602,215 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "details:not([open])" do
       assert_select "summary", text: /Advanced/
     end
-    [ "desktop", "mobile" ].each do |scope|
+    # Three copies of the accordion are on this page: the desktop row, the phone
+    # overlay, and the chat bubble the layout renders on every page.
+    [ "desktop", "mobile", "bubble" ].each do |scope|
+      assert_select "details:not([open]) ##{"quick_prompt_#{scope}_agent_runtime"}"
       assert_select "details:not([open]) ##{"quick_prompt_#{scope}_model"}"
       assert_select "details:not([open]) ##{"quick_prompt_#{scope}_scheduling_class"}"
     end
+  end
+
+  # ---- The harness picker ----
+
+  test "quick_prompt runs the session on the harness that was picked" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    router_runtime = AgentRootsConfig.find!(AgentRootsConfig.router_root_name).default_runtime
+    other = AgentRootsConfig.available_runtimes.find { |r| r != router_runtime }
+    assert other, "need a second registered runtime for this to mean anything"
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", agent_runtime: other }
+
+    assert_equal other, Session.last.agent_runtime
+  end
+
+  test "quick_prompt leaves the harness to the router root when none is picked" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    router_runtime = AgentRootsConfig.find!(AgentRootsConfig.router_root_name).default_runtime
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug" }
+    assert_equal router_runtime, Session.last.agent_runtime
+
+    # An untouched <select> posts "" — the blank option is the default.
+    post quick_prompt_sessions_url, params: { prompt: "Fix it again", agent_runtime: "  " }
+    assert_equal router_runtime, Session.last.agent_runtime
+  end
+
+  test "quick_prompt ignores an unregistered harness, and says so" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    router_runtime = AgentRootsConfig.find!(AgentRootsConfig.router_root_name).default_runtime
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", agent_runtime: "not-a-runtime" }
+
+    assert_equal router_runtime, Session.last.agent_runtime
+    assert_match(/The harness you picked is not available, so the default applied\./, flash[:notice])
+  end
+
+  test "quick_prompt ignores a harness that is not a string" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    router_runtime = AgentRootsConfig.find!(AgentRootsConfig.router_root_name).default_runtime
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", agent_runtime: [ "codex" ] }
+    assert_equal router_runtime, Session.last.agent_runtime
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix it again", agent_runtime: { value: "codex" } }
+    assert_equal router_runtime, Session.last.agent_runtime
+  end
+
+  # The pairing that makes the harness picker worth having: the model is validated
+  # against the PICKED harness, not the router root's, so a Codex id on a Codex
+  # submission is honored rather than thrown away.
+  test "quick_prompt pins a model belonging to the picked harness" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    model = ModelCatalog.model_ids_for("codex").last
+
+    post quick_prompt_sessions_url,
+      params: { prompt: "Fix the login bug", agent_runtime: "codex", model: model }
+
+    session = Session.last
+    assert_equal "codex", session.agent_runtime
+    assert_equal model, session.config["model"]
+  end
+
+  test "quick_prompt rejects a model from a harness other than the one picked" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    claude_model = ModelCatalog.model_ids_for("claude_code").first
+
+    post quick_prompt_sessions_url,
+      params: { prompt: "Fix the login bug", agent_runtime: "codex", model: claude_model }
+
+    session = Session.last
+    assert_equal "codex", session.agent_runtime
+    # Falls back to the CODEX default, not the router root's claude_code model.
+    assert_equal ModelCatalog.default_for("codex"), session.config["model"]
+    assert_match(/The model you picked is not available for this harness/, flash[:notice])
+  end
+
+  # With no model named, ResolveSpawnDefaults self-heals: the router root declares a
+  # claude_code model, which is invalid under a picked Codex or Pi harness.
+  test "quick_prompt resolves the picked harness's own default model when no model is chosen" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", agent_runtime: "pi" }
+
+    session = Session.last
+    assert_equal "pi", session.agent_runtime
+    assert_equal ModelCatalog.default_for("pi"), session.config["model"]
+  end
+
+  test "the dashboard offers every registered harness with none preselected" do
+    router_runtime = AgentRootsConfig.find!(AgentRootsConfig.router_root_name).default_runtime
+
+    get root_url
+
+    assert_response :success
+    [ "desktop", "mobile", "bubble" ].each do |scope|
+      assert_select "select#quick_prompt_#{scope}_agent_runtime" do
+        assert_select "option[value=?]", "",
+          text: /Default \(#{Regexp.escape(RuntimeRegistry.label_for(router_runtime))}\)/
+        AgentRootsConfig.available_runtimes.each do |runtime|
+          assert_select "option[value=?]", runtime, text: RuntimeRegistry.label_for(runtime)
+        end
+        assert_select "option[selected]", count: 0
+      end
+    end
+  end
+
+  # ---- The chat bubble (Cmd/Ctrl+K) carries the same accordion ----
+
+  test "the chat bubble renders the Advanced accordion on a page outside the dashboard" do
+    router_runtime = AgentRootsConfig.find!(AgentRootsConfig.router_root_name).default_runtime
+    session = sessions(:running)
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "select#quick_prompt_bubble_agent_runtime"
+    assert_select "select#quick_prompt_bubble_model"
+    assert_select "input#quick_prompt_bubble_scheduling_class"
+    # Model options are scoped to the router root's runtime on first paint; the
+    # Stimulus controller re-scopes them when the harness changes.
+    ModelCatalog.model_ids_for(router_runtime).each do |model|
+      assert_select "select#quick_prompt_bubble_model option[value=?]", model
+    end
+  end
+
+  test "chat_bubble runs the session on the harness and model the panel posted" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    model = ModelCatalog.model_ids_for("codex").first
+
+    post chat_bubble_sessions_url,
+      params: { prompt: "Fix the login bug", agent_runtime: "codex", model: model }
+
+    assert_response :success
+    created = Session.last
+    assert_equal "codex", created.agent_runtime
+    assert_equal model, created.config["model"]
+  end
+
+  test "chat_bubble leaves harness and model to the ordinary chain when neither is posted" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    root = AgentRootsConfig.find!(AgentRootsConfig.router_root_name)
+
+    post chat_bubble_sessions_url, params: { prompt: "Fix the login bug" }
+
+    assert_response :success
+    created = Session.last
+    assert_equal root.default_runtime, created.agent_runtime
+    assert_equal root.default_model, created.config["model"]
+  end
+
+  # This surface REJECTS rather than falling back, unlike quick_prompt: its panel
+  # stays open with the draft in it, so there is no typed prompt to protect.
+  test "chat_bubble rejects an unregistered harness without creating a session" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    assert_no_difference "Session.count" do
+      post chat_bubble_sessions_url, params: { prompt: "Fix the login bug", agent_runtime: "not-a-runtime" }
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal "That harness is not available.", response.parsed_body["error"]
+  end
+
+  test "chat_bubble rejects a model that does not belong to the posted harness" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    claude_model = ModelCatalog.model_ids_for("claude_code").first
+
+    assert_no_difference "Session.count" do
+      post chat_bubble_sessions_url,
+        params: { prompt: "Fix the login bug", agent_runtime: "codex", model: claude_model }
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal "That model is not available for the Codex harness.", response.parsed_body["error"]
+  end
+
+  test "chat_bubble rejects a model the router runtime does not offer when no harness was posted" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    router_runtime = AgentRootsConfig.find!(AgentRootsConfig.router_root_name).default_runtime
+    foreign = ModelCatalog.model_ids_for("codex").first
+    assert_not ModelCatalog.valid_model?(router_runtime, foreign)
+
+    assert_no_difference "Session.count" do
+      post chat_bubble_sessions_url, params: { prompt: "Fix the login bug", model: foreign }
+    end
+
+    assert_response :unprocessable_entity
+  end
+
+  test "chat_bubble carries harness, model and spot together" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    model = ModelCatalog.model_ids_for("pi").first
+
+    post chat_bubble_sessions_url,
+      params: { prompt: "Long unattended sweep", agent_runtime: "pi", model: model, scheduling_class: "spot" }
+
+    assert_response :success
+    created = Session.last
+    assert_equal "pi", created.agent_runtime
+    assert_equal model, created.config["model"]
+    assert_equal SessionGenesis::SPOT, created.scheduling_class
   end
 
   test "chat_bubble stamps spot on the created session when the box is checked" do

@@ -173,6 +173,25 @@ class ModelCatalog
       models_for(runtime).map { |m| m[:id] }
     end
 
+    # The same lists as #model_ids_for, for several runtimes at once, on ONE read
+    # of the added-models table instead of one per runtime.
+    #
+    # The Quick Router's harness picker needs every registered runtime's models in
+    # the same render, and the chat bubble renders on every page in the app — so
+    # the per-runtime `where(runtime:)` would be three queries on every request.
+    #
+    # @param runtimes [Array<String>] runtime identifiers
+    # @return [Hash{String=>Array<String>}] keyed by the identifiers as given
+    def model_ids_by_runtime(runtimes)
+      added = all_added_entries.group_by(&:runtime)
+
+      runtimes.index_with do |runtime|
+        key = resolve(runtime)
+        built_in = built_in_models_for(key).map { |m| m[:id] }
+        built_in + added.fetch(key, []).map(&:model_id).reject { |id| built_in.include?(id) }
+      end
+    end
+
     # Read from MODELS only: an added model never becomes a runtime's fallback.
     # To make one the default for new sessions, pick it on the Settings page.
     #
@@ -220,6 +239,17 @@ class ModelCatalog
       ModelCatalogEntry.where(runtime: runtime).order(:created_at, :id).to_a
     rescue ActiveRecord::StatementInvalid, ActiveRecord::ConnectionNotEstablished, ActiveRecord::NoDatabaseError => e
       Rails.logger.warn("[ModelCatalog] could not read added models for #{runtime}: #{e.class}: #{e.message}")
+      raise if DatabaseTransactionState.aborted_by?(e)
+
+      []
+    end
+
+    # Every added model, for the batch read above. Degrades the same way
+    # #added_entries_for does, for the same reasons.
+    def all_added_entries
+      ModelCatalogEntry.order(:created_at, :id).to_a
+    rescue ActiveRecord::StatementInvalid, ActiveRecord::ConnectionNotEstablished, ActiveRecord::NoDatabaseError => e
+      Rails.logger.warn("[ModelCatalog] could not read added models: #{e.class}: #{e.message}")
       raise if DatabaseTransactionState.aborted_by?(e)
 
       []

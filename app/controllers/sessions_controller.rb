@@ -231,12 +231,12 @@ class SessionsController < ApplicationController
     # filtered, sorted by name for a stable list.
     @agent_roots_for_filter = AgentRootsConfig.all.sort_by(&:name)
 
-    # The Quick Router's Advanced accordion. Options are scoped to the router
-    # root's own runtime — it is the only root this form ever spawns — and the
-    # default is NAMED rather than preselected, so an untouched picker submits
-    # nothing and the ordinary resolution chain applies.
-    @quick_router_models = ModelCatalog.model_ids_for(quick_router_runtime)
-    @quick_router_default_model = quick_router_default_model
+    # The Quick Router's Advanced accordion — the harness picker, the model picker
+    # and the spot opt-in. Both defaults are NAMED rather than preselected, so an
+    # untouched picker submits nothing and the ordinary resolution chain applies.
+    # Assigning the ivar the `quick_router_options` helper memoizes into means the
+    # dashboard's two copies and the layout's chat bubble share one read.
+    @quick_router_options = quick_router_options
 
     if @agent_root_filter.present?
       sessions = filter_sessions_by_agent_root(sessions, @agent_root_filter)
@@ -477,17 +477,21 @@ class SessionsController < ApplicationController
     # the chat_bubble and new session flows.
     temp_session_id = "temp_#{SecureRandom.uuid}"
     scheduling_class = quick_router_scheduling_class
-    model = quick_router_model
-    # A pick the picker itself offered can still be stale by submit time — an
-    # operator removed an added model between render and click — so the swap
-    # to the default is said out loud rather than done silently.
-    model_ignored = model.nil? && params[:model].to_s.strip.present?
+    runtime = quick_router_effective_runtime
+    model = quick_router_model(runtime)
+    # A pick either picker itself offered can still be stale by submit time — an
+    # operator removed an added model, or a runtime left the registry, between
+    # render and click — so the swap to the default is said out loud rather than
+    # done silently.
+    runtime_ignored = quick_router_options.runtime_rejected?(params[:agent_runtime])
+    model_ignored = quick_router_options.model_rejected?(runtime, params[:model])
     begin
       stage_uploads_or_raise!(incoming_images, incoming_files, temp_session_id)
 
       session = Session.create_from_agent_root!(
         agent_root_name: AgentRootsConfig.router_root_name,
         prompt: prompt,
+        agent_runtime: quick_router_agent_runtime,
         metadata: { source: "quick_prompt" },
         genesis: SessionGenesis::WEB_UI,
         scheduling_class: scheduling_class,
@@ -528,8 +532,11 @@ class SessionsController < ApplicationController
     else
       "Router session created. The agent will route your request..."
     end
+    if runtime_ignored
+      notice += " The harness you picked is not available, so the default applied."
+    end
     if model_ignored
-      notice += " The model you picked is not available for this runtime, so the default applied."
+      notice += " The model you picked is not available for this harness, so the default applied."
     end
     redirect_to session, notice: notice
   rescue AgentRootsConfig::AgentRootNotFoundError => e
@@ -583,9 +590,26 @@ class SessionsController < ApplicationController
       return
     end
 
+    # The Advanced accordion's two pickers. This surface REJECTS a value neither
+    # picker could have produced instead of falling back to the default the way
+    # `quick_prompt` does, and the difference is the surface, not the policy: a
+    # redirect would take the typed prompt with it, whereas this panel stays open
+    # with the draft in the textarea and the message under it. So there is nothing
+    # to weigh against telling the user their choice did not land.
+    runtime = quick_router_effective_runtime
+    if quick_router_options.runtime_rejected?(params[:agent_runtime])
+      render json: { error: "That harness is not available." }, status: :unprocessable_entity
+      return
+    end
+    if quick_router_options.model_rejected?(runtime, params[:model])
+      render json: { error: "That model is not available for the #{RuntimeRegistry.label_for(runtime)} harness." }, status: :unprocessable_entity
+      return
+    end
+
     temp_session_id = "temp_#{SecureRandom.uuid}"
     session = nil
     scheduling_class = quick_router_scheduling_class
+    model = quick_router_model(runtime)
     begin
       stage_uploads_or_raise!(incoming_images, incoming_files, temp_session_id)
 
@@ -593,6 +617,10 @@ class SessionsController < ApplicationController
         agent_root_name: AgentRootsConfig.router_root_name,
         prompt: augmented_prompt,
         parent_session_id: parent_session_id,
+        # The panel's Harness picker. Blank leaves the runtime to the ordinary
+        # chain — the router root's own — which is what every chat-bubble
+        # submission did before the picker existed.
+        agent_runtime: quick_router_agent_runtime,
         metadata: { source: "chat_bubble", original_prompt: prompt, current_url: current_url },
         # Declared, not inherited: the chat bubble carries a parent session so the
         # conversation threads, but a human typed this. Letting it inherit would
@@ -603,6 +631,9 @@ class SessionsController < ApplicationController
         # the above — the panel's Spot checkbox says "let this one wait".
         scheduling_class: scheduling_class,
         precedence: quick_router_precedence(scheduling_class),
+        # The panel's Model picker, already validated against the harness above.
+        # nil leaves config unset, so ResolveSpawnDefaults resolves the model.
+        config: model ? { "model" => model } : nil,
         skip_enqueue: true
       )
 
@@ -3314,7 +3345,7 @@ class SessionsController < ApplicationController
     # selected default is the root's declared model when it belongs to that
     # runtime's catalog, otherwise the global base default for the runtime.
     @available_models = ModelCatalog.model_ids_for(@default_runtime)
-    @default_model = default_model_for(default_agent_root, @default_runtime)
+    @default_model = QuickRouterOptions.default_model_for(default_agent_root, @default_runtime)
 
     # Set default goal for the default agent root
     # The view will check the default agent root, so we need to match that logic
@@ -4444,38 +4475,25 @@ class SessionsController < ApplicationController
     params[:scheduling_class].to_s.strip == SessionGenesis::SPOT ? SessionGenesis::SPOT : nil
   end
 
-  # The runtime every Quick Router session runs under: the router root's own,
-  # which has already folded in the global base default. Both the picker's
-  # options and the validation below are scoped to it, because a hardcoded list
-  # would offer models the router's runtime cannot run.
-  def quick_router_runtime
-    quick_router_root&.default_runtime.presence ||
-      AppSetting.current.default_runtime.presence ||
-      RuntimeRegistry::DEFAULT_RUNTIME
+  # The runtime this Quick Router submission runs under: the harness the user
+  # picked when they picked one the registry carries, the router root's own
+  # otherwise (which has already folded in the global base default). The model
+  # validation below is scoped to it, because a model id belongs to exactly one
+  # runtime's catalog.
+  def quick_router_effective_runtime
+    quick_router_options.effective_runtime(params[:agent_runtime])
   end
 
-  # What "Default" resolves to in the picker's blank option. Shown, never
-  # preselected — see quick_router_model.
-  def quick_router_default_model
-    default_model_for(quick_router_root, quick_router_runtime)
-  end
-
-  # The model a spawn on `agent_root` lands on when nobody names one, resolved
-  # the way Sessions::ResolveSpawnDefaults resolves it: the root's declared
-  # model when the runtime's catalog has it, else the Settings base default for
-  # the runtime (which itself falls back to the catalog default). Shared by the
-  # new-session form and the Quick Router so the two never disagree about what
-  # "default" means.
-  def default_model_for(agent_root, runtime)
-    declared = agent_root&.default_model
-    return declared if ModelCatalog.valid_model?(runtime, declared)
-
-    AppSetting.current.resolved_default_model_for(runtime)
+  # The harness opt-in, nil when nobody picked one. nil leaves `agent_runtime`
+  # unset on the new row so Sessions::ResolveSpawnDefaults applies the ordinary
+  # chain, exactly as every Quick Router submission did before the picker existed.
+  def quick_router_agent_runtime
+    quick_router_options.resolve_runtime(params[:agent_runtime])
   end
 
   # The Quick Router's model opt-in.
   #
-  # Only a model the router's runtime actually offers writes anything. An
+  # Only a model the effective runtime actually offers writes anything. An
   # untouched picker posts a blank `model`, which returns nil here so `config`
   # is left unset and Sessions::ResolveSpawnDefaults resolves the model at
   # create time — the router root's default_model, then the Settings default,
@@ -4484,24 +4502,14 @@ class SessionsController < ApplicationController
   # edit would otherwise post yesterday's default as if someone had chosen it,
   # and the resolution would live in two places.
   #
-  # An unrecognized value is ignored rather than rejected, matching the spot
-  # opt-in: the prompt someone just typed is worth more than a form field. The
-  # caller says so in its notice when that happens.
-  def quick_router_model
-    requested = params[:model].to_s.strip
-    return nil if requested.blank?
-
-    ModelCatalog.valid_model?(quick_router_runtime, requested) ? requested : nil
-  end
-
-  # Resolved once per request: the catalog read behind it is shared with the
-  # filter list, and `index` asks for the runtime and the default model both.
-  # `defined?` rather than `||=` so a catalog with no router root is not
-  # re-resolved on every call.
-  def quick_router_root
-    return @quick_router_root if defined?(@quick_router_root)
-
-    @quick_router_root = AgentRootsConfig.find(AgentRootsConfig.router_root_name)
+  # On `quick_prompt` an unrecognized value is ignored rather than rejected,
+  # matching the spot opt-in: that surface redirects, so rejecting would throw
+  # away the prompt someone just typed, and the prompt is worth more than a form
+  # field. The action says so in its notice when it happens. `chat_bubble` loses
+  # nothing on a rejection — its panel stays open with the draft in it — so it
+  # rejects instead; see that action.
+  def quick_router_model(runtime)
+    quick_router_options.resolve_model(runtime, params[:model])
   end
 
   # Where a Quick-Router spot submission lands in the spot queue.
