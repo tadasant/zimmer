@@ -508,7 +508,12 @@
                    data-quick-prompt-target="mobileFileInput"
                    data-action="change->quick-prompt#updateMobileBadge">
 
-            <div class="border-t border-gray-200 px-4 py-3">
+            <%# `min-h-0 overflow-y-auto`: with Advanced open this panel is a few
+                hundred pixels tall, and a soft keyboard can leave the overlay
+                shorter than that. The textarea above has a flex basis of 0 and
+                cannot give any height back, so without this the panel would run
+                off the bottom of the overlay and take Submit with it. %>
+            <div class="min-h-0 overflow-y-auto border-t border-gray-200 px-4 py-3">
               <div class="flex items-center gap-2 mb-3">
                 <button type="button"
                         data-action="quick-prompt#openMobileImage"
@@ -609,14 +614,12 @@
             <span data-quick-prompt-target="desktopBadge" class="text-xs text-gray-500"></span>
           </div>
 
-          <%# Model and spot, out of the attach row and into an accordion of their
-              own. A sibling of the row rather than a cell in it: expanding a
-              `<details>` inside that `items-center` flex row would stretch it and
-              float the attach buttons down the middle of the open panel.
-
-              The row was already tight enough that the spot explanation had to be
-              sr-only to fit beside the buttons; here both controls carry the same
-              visible help the phone surfaces show. %>
+          <%# Model and spot live in an accordion of their own, a sibling of the
+              attach row rather than a cell in it: expanding a `<details>` inside
+              that `items-center` flex row would stretch it and float the attach
+              buttons down the middle of the open panel. The accordion also has
+              the room the row does not, so both controls carry the same visible
+              help the phone overlay shows. %>
           <div class="mt-2 max-w-xs">
             <%= render "sessions/quick_router_advanced",
                   scope: "desktop",

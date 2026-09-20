@@ -813,8 +813,8 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # phone-only, and the panel one is what the mobile joystick's Quick Router petal
   # opens, so a phone is the primary way it gets used rather than an afterthought.
   #
-  # On the two dashboard surfaces it now sits inside the Advanced accordion beside
-  # the model picker, so this also proves the accordion: collapsed on arrival, and
+  # On the two dashboard surfaces it sits inside the Advanced accordion beside the
+  # model picker, so this also proves the accordion: collapsed on arrival, and
   # everything inside it on screen once it is opened.
   test "the Quick Router spot opt-in is on screen and reachable on a phone" do
     visit root_path
@@ -954,6 +954,22 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     past_edge = elements_past_right_edge("[data-quick-prompt-target='mobileOverlay']")
     assert_empty past_edge,
       "the mobile overlay's Advanced panel ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{past_edge.join("\n  ")}"
+
+    # The bottom edge matters as much as the right one here. A soft keyboard can
+    # leave the overlay far shorter than 812px, and the open panel is a few
+    # hundred pixels tall, so Submit has to stay reachable — by scrolling the
+    # panel, since the textarea above it cannot give any height back.
+    page.driver.browser.manage.window.resize_to(MOBILE_WIDTH, 500)
+    submit = find("[data-quick-prompt-target='mobileSubmit']")
+    page.execute_script("arguments[0].scrollIntoView({ block: 'end' })", submit)
+    within_viewport = page.evaluate_script(<<~JS, submit)
+      (function (el) {
+        const r = el.getBoundingClientRect();
+        return r.top >= 0 && r.bottom <= window.innerHeight + 1;
+      })(arguments[0])
+    JS
+    assert within_viewport,
+      "with Advanced open on a 500px-tall overlay, Submit cannot be scrolled into view"
   end
 
   test "new session form does not overflow horizontally on a phone" do

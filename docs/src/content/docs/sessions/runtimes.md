@@ -137,15 +137,19 @@ row at `md:` and wider, and the full-screen overlay on phones.
 The picker offers exactly the models the **router agent root's own runtime** accepts, because that
 is the only root the Quick Router ever spawns on. Its first option is blank and reads
 `Default (<model>)`, naming the model that would apply rather than selecting it. Leaving it there
-submits no `model` at all, so `Sessions::ResolveSpawnDefaults` runs the ordinary chain — the router
-root's `default_model`, then Settings → **Default model**, then the runtime's catalog default.
-Preselecting the current default instead would pin it onto every Quick Router session and sever that
-link, the same way stamping `priority` would sever the genesis one.
+posts an empty `model`, which `SessionsController#quick_prompt` reads as none, so
+`Sessions::ResolveSpawnDefaults` resolves the model at create time — the router root's
+`default_model`, then Settings → **Default model**, then the runtime's catalog default — and stamps
+the result into `config["model"]` exactly as it does for a trigger fire. The form never posts that
+default itself: a dashboard tab left open across a Settings change or a `roots.json` edit would
+otherwise submit yesterday's default as if someone had chosen it, and the resolution would live in
+two places.
 
 A value the router's runtime does not offer is ignored rather than rejected: the prompt someone just
-typed is worth more than a form field that could only have been hand-crafted. Like the spot opt-in,
-the choice is per submission — closing the phone overlay clears it and collapses the accordion
-again.
+typed is worth more than a form field. That can happen honestly — an operator removes an added model
+between the page rendering and the click — so the flash on the new session says the default applied.
+Like the spot opt-in, the choice is per submission: closing the phone overlay clears it and collapses
+the accordion again.
 
 The chat-bubble Quick Router panel has no model picker. It is a compact floating panel on every
 page, and its **Run as spot** checkbox stays inline there.

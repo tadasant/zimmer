@@ -478,6 +478,10 @@ class SessionsController < ApplicationController
     temp_session_id = "temp_#{SecureRandom.uuid}"
     scheduling_class = quick_router_scheduling_class
     model = quick_router_model
+    # A pick the picker itself offered can still be stale by submit time — an
+    # operator removed an added model between render and click — so the swap
+    # to the default is said out loud rather than done silently.
+    model_ignored = model.nil? && params[:model].to_s.strip.present?
     begin
       stage_uploads_or_raise!(incoming_images, incoming_files, temp_session_id)
 
@@ -523,6 +527,9 @@ class SessionsController < ApplicationController
       "Router session created as spot. It starts when there is quota room, at the top of the spot queue."
     else
       "Router session created. The agent will route your request..."
+    end
+    if model_ignored
+      notice += " The model you picked is not available for this runtime, so the default applied."
     end
     redirect_to session, notice: notice
   rescue AgentRootsConfig::AgentRootNotFoundError => e
@@ -3279,12 +3286,7 @@ class SessionsController < ApplicationController
     # selected default is the root's declared model when it belongs to that
     # runtime's catalog, otherwise the global base default for the runtime.
     @available_models = ModelCatalog.model_ids_for(@default_runtime)
-    @default_model =
-      if ModelCatalog.valid_model?(@default_runtime, default_agent_root&.default_model)
-        default_agent_root.default_model
-      else
-        app_setting.resolved_default_model_for(@default_runtime)
-      end
+    @default_model = default_model_for(default_agent_root, @default_runtime)
 
     # Set default goal for the default agent root
     # The view will check the default agent root, so we need to match that logic
@@ -4425,11 +4427,19 @@ class SessionsController < ApplicationController
   end
 
   # What "Default" resolves to in the picker's blank option. Shown, never
-  # preselected — see quick_router_model. Mirrors the new-session form's
-  # resolution so the two agree about what the default is.
+  # preselected — see quick_router_model.
   def quick_router_default_model
-    runtime = quick_router_runtime
-    declared = quick_router_root&.default_model
+    default_model_for(quick_router_root, quick_router_runtime)
+  end
+
+  # The model a spawn on `agent_root` lands on when nobody names one, resolved
+  # the way Sessions::ResolveSpawnDefaults resolves it: the root's declared
+  # model when the runtime's catalog has it, else the Settings base default for
+  # the runtime (which itself falls back to the catalog default). Shared by the
+  # new-session form and the Quick Router so the two never disagree about what
+  # "default" means.
+  def default_model_for(agent_root, runtime)
+    declared = agent_root&.default_model
     return declared if ModelCatalog.valid_model?(runtime, declared)
 
     AppSetting.current.resolved_default_model_for(runtime)
@@ -4438,16 +4448,17 @@ class SessionsController < ApplicationController
   # The Quick Router's model opt-in.
   #
   # Only a model the router's runtime actually offers writes anything. An
-  # untouched picker returns nil so `config` stays NULL and
-  # Sessions::ResolveSpawnDefaults runs the whole chain — the router root's
-  # default_model, then the Settings default, then the runtime's catalog
-  # default. Stamping the current default here instead would pin it onto every
-  # Quick Router session and sever that link, exactly as stamping "priority"
-  # would sever the genesis one above.
+  # untouched picker posts a blank `model`, which returns nil here so `config`
+  # is left unset and Sessions::ResolveSpawnDefaults resolves the model at
+  # create time — the router root's default_model, then the Settings default,
+  # then the runtime's catalog default. The form never submits that default
+  # itself: a dashboard tab left open across a Settings change or a roots.json
+  # edit would otherwise post yesterday's default as if someone had chosen it,
+  # and the resolution would live in two places.
   #
   # An unrecognized value is ignored rather than rejected, matching the spot
-  # opt-in: the prompt someone just typed is worth more than a form field that
-  # could only have been hand-crafted.
+  # opt-in: the prompt someone just typed is worth more than a form field. The
+  # caller says so in its notice when that happens.
   def quick_router_model
     requested = params[:model].to_s.strip
     return nil if requested.blank?
