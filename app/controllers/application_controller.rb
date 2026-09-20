@@ -56,7 +56,20 @@ class ApplicationController < ActionController::Base
 
   before_action :reconcile_queue_recovery_mode
 
+  helper_method :quick_router_options
+
   private
+
+  # What the Quick Router's Advanced accordion offers, and what it will accept
+  # back. Lives here rather than on SessionsController because the chat bubble
+  # renders that accordion from the application layout — on every page, and so
+  # from every controller. Lazily memoized for the request rather than set in a
+  # before_action, so a request that never renders the layout never pays for it,
+  # and the dashboard (which renders the accordion twice more of its own) reads
+  # the catalog once.
+  def quick_router_options
+    @quick_router_options ||= QuickRouterOptions.new
+  end
 
   # The web-process half of QueueRecoveryMode's TTL backstop.
   #

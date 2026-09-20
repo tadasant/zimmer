@@ -23,12 +23,22 @@
        data-action="click->chat-bubble#close"
        class="hidden fixed inset-0 z-[66] bg-black/20 transition-opacity"></div>
 
-  <%# Slide-out panel %>
+  <%# Slide-out panel.
+
+      Height: the panel is anchored to the bottom (`bottom-20`) and grows upward, so
+      without a ceiling a tall panel pushes its own header — and the Close button in
+      it — off the TOP of a short viewport, where nothing can reach them. With the
+      Advanced accordion open the panel is ~620px, which a phone with a soft keyboard
+      up does not have. So it is capped to the viewport and laid out as a column whose
+      BODY scrolls: the header and the two submit buttons stay pinned at the edges
+      where they are reachable. Same fix, same reason, as the dashboard overlay's
+      bottom panel. %>
   <div data-chat-bubble-target="panel"
-       class="fixed bottom-20 right-4 z-[67] w-96 max-w-[calc(100vw-2rem)] translate-x-full opacity-0 pointer-events-none transition-all duration-200 ease-out">
-    <div class="bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden">
-      <%# Header %>
-      <div class="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-200">
+       class="fixed bottom-20 right-4 z-[67] flex w-96 max-w-[calc(100vw-2rem)] max-h-[calc(100dvh-6rem)] translate-x-full opacity-0 pointer-events-none transition-all duration-200 ease-out">
+    <div class="flex min-h-0 w-full flex-col bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden">
+      <%# Header — `flex-shrink-0` so the Close button keeps its place at the top
+          edge rather than being squeezed away when the body overflows. %>
+      <div class="flex flex-shrink-0 items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-200">
         <div class="flex items-center gap-2">
           <svg class="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
@@ -48,8 +58,8 @@
         </div>
       </div>
 
-      <%# Body %>
-      <div class="p-4">
+      <%# Body — the part that scrolls when the panel hits its height cap. %>
+      <div class="min-h-0 flex-1 overflow-y-auto p-4">
         <textarea data-chat-bubble-target="textarea"
                   data-action="keydown->chat-bubble#handleKeydown paste->chat-bubble#handlePaste"
                   placeholder="What do you want to do?"
@@ -119,27 +129,34 @@
           <kbd class="px-1 py-0.5 bg-gray-100 rounded text-[10px] font-mono">&#8984;/Ctrl&#x23CE;</kbd> to submit in background.
         </p>
 
-        <%# Spot opt-in. Unchecked submits no scheduling_class at all, so the
-            session takes the class its `web_ui` genesis resolves to. Checked, it
-            rides on BOTH submit paths (Submit and Submit & Open), because the
-            checkbox is read in _submit rather than per-button. %>
-        <label class="mt-2 flex items-start gap-2 cursor-pointer">
-          <input type="checkbox"
-                 value="<%= SessionGenesis::SPOT %>"
-                 data-chat-bubble-target="spot"
-                 class="mt-0.5 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-          <span class="text-xs leading-snug text-gray-500">
-            <span class="font-medium text-gray-700">Run as spot</span> —
-            waits for quota room instead of starting now, and lands at the top of the spot queue.
-          </span>
-        </label>
+        <%# Harness, model and spot, behind the same Advanced accordion the
+            dashboard's Quick Router forms carry — one partial, so the three
+            surfaces cannot drift. All three ride on BOTH submit paths (Submit
+            and Submit & Open), because _submit reads the controls rather than
+            the button that was clicked.
+
+            Spot moved inside the accordion here, from the inline checkbox it
+            used to be, so that this panel matches the dashboard's and so that
+            a compact floating panel does not grow three permanent controls. %>
+        <div class="mt-2">
+          <%= render "sessions/quick_router_advanced",
+                scope: "bubble",
+                options: quick_router_options,
+                targets: {
+                  advanced: { chat_bubble_target: "advanced" },
+                  runtime: { chat_bubble_target: "runtime" },
+                  model: { chat_bubble_target: "model" },
+                  spot: { chat_bubble_target: "spot" }
+                } %>
+        </div>
 
         <p data-chat-bubble-target="error"
            class="hidden mt-2 text-xs text-red-600 font-medium"></p>
       </div>
 
-      <%# Footer buttons %>
-      <div class="flex items-center gap-2 px-4 py-3 bg-gray-50 border-t border-gray-200">
+      <%# Footer buttons — `flex-shrink-0` so they keep their full height and stay
+          pinned to the bottom edge while the body above them scrolls. %>
+      <div class="flex flex-shrink-0 items-center gap-2 px-4 py-3 bg-gray-50 border-t border-gray-200">
         <button type="button"
                 data-chat-bubble-target="submitButton"
                 data-action="chat-bubble#submitBackground"

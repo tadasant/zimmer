@@ -128,31 +128,46 @@ refused while the Settings page's session default names the model, because `AppS
 re-validates it on every save. If a later deploy makes an added id built-in,
 the built-in entry wins and Settings → Models lists the redundant row for removal.
 
-### Choosing a model on the Quick Router
+### Choosing a harness and a model on the Quick Router
 
-The dashboard's Quick Router prompt box has an **Advanced** accordion, collapsed by default, holding
-a **Model** picker and the **Run as spot** checkbox. Both dashboard surfaces carry it — the inline
-row at `md:` and wider, and the full-screen overlay on phones.
+Every Quick Router surface has an **Advanced** accordion, collapsed by default, holding a
+**Harness** picker, a **Model** picker and the **Run as spot** checkbox. One partial
+(`app/views/sessions/_quick_router_advanced.html.erb`) renders all three copies, so they cannot
+drift:
 
-The picker offers exactly the models the **router agent root's own runtime** accepts, because that
-is the only root the Quick Router ever spawns on. Its first option is blank and reads
-`Default (<model>)`, naming the model that would apply rather than selecting it. Leaving it there
-posts an empty `model`, which `SessionsController#quick_prompt` reads as none, so
-`Sessions::ResolveSpawnDefaults` resolves the model at create time — the router root's
-`default_model`, then Settings → **Default model**, then the runtime's catalog default — and stamps
-the result into `config["model"]` exactly as it does for a trigger fire. The form never posts that
-default itself: a dashboard tab left open across a Settings change or a `roots.json` edit would
-otherwise submit yesterday's default as if someone had chosen it, and the resolution would live in
-two places.
+| Surface | Where |
+| --- | --- |
+| The dashboard's inline prompt row, at `md:` and wider | Under the attach buttons |
+| The dashboard's full-screen prompt overlay, on phones | Above **Submit** |
+| The chat-bubble panel (Cmd/Ctrl+K), on every page | Under the prompt, above **Submit** / **Submit & Open** |
 
-A value the router's runtime does not offer is ignored rather than rejected: the prompt someone just
-typed is worth more than a form field. That can happen honestly — an operator removes an added model
-between the page rendering and the click — so the flash on the new session says the default applied.
-Like the spot opt-in, the choice is per submission: closing the phone overlay clears it and collapses
-the accordion again.
+**Harness** offers every runtime `RuntimeRegistry` has registered — Claude Code, Codex, Pi — and is
+the per-session `agent_runtime` override, the same one `start_session` takes. **Model** offers the
+models that harness accepts. A model id belongs to exactly one runtime's catalog, so picking a
+harness rebuilds the model list from that runtime's models and drops whatever was selected;
+`quick_router_advanced_controller.js` does that client-side, and `QuickRouterOptions` validates the
+pair again server-side whatever the client posted.
 
-The chat-bubble Quick Router panel has no model picker. It is a compact floating panel on every
-page, and its **Run as spot** checkbox stays inline there.
+Both pickers lead with a blank option that **names** the fallback rather than selecting it —
+`Default (Claude Code)`, `Default (opus)`. Leaving them there posts nothing, so
+`Sessions::ResolveSpawnDefaults` resolves both at create time: the router agent root's
+`default_runtime` and `default_model`, then Settings → **Default runtime** / **Default model**, then
+the runtime's catalog default, stamped into `agent_runtime` and `config["model"]` exactly as for a
+trigger fire. The form never posts that default itself: a tab left open across a Settings change or
+a `roots.json` edit would otherwise submit yesterday's default as if someone had chosen it, and the
+resolution would live in two places. Picking a harness whose catalog does not hold the root's
+declared model is fine — `ResolveSpawnDefaults` self-heals to that runtime's own default.
+
+**What happens to a value neither picker could have produced differs by surface, and the difference
+is the surface rather than the policy.** `quick_prompt` (the two dashboard forms) redirects, so
+rejecting would throw away the prompt someone just typed — it ignores the value, falls back to the
+default and says so in the flash on the new session. That can happen honestly: an operator removes
+an added model, or a runtime leaves the registry, between the page rendering and the click.
+`chat_bubble` loses nothing on a rejection — its panel stays open with the draft in the textarea —
+so it answers `422` with the reason and the panel shows it.
+
+All three choices are per submission, not sticky preferences: closing the phone overlay or the chat
+bubble resets both pickers and the checkbox and re-collapses the accordion.
 
 ## Credentials
 

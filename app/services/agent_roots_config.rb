@@ -31,7 +31,13 @@ class AgentRootsConfig
     #   defaults. Passed in by build_roots so the singleton is read once per
     #   catalog build rather than once per root (avoiding an N+1). When nil
     #   (direct construction, e.g. in tests) it is fetched here.
-    def initialize(name, config, app_setting: nil)
+    # @param model_ids_by_runtime [Hash{String=>Array<String>}, nil] each
+    #   runtime's selectable model ids, for the same reason: resolving a root's
+    #   default model checks the configured global model against the runtime's
+    #   catalog, and that catalog is partly a database table. Passed in by
+    #   build_roots so a catalog of N roots costs one read, not N. When nil the
+    #   lookup happens here, per root, as it did before the hash existed.
+    def initialize(name, config, app_setting: nil, model_ids_by_runtime: nil)
       identify!(name, config)
       @name = name
       @display_name = config["display_name"]
@@ -59,7 +65,7 @@ class AgentRootsConfig
         app_setting.default_runtime.presence ||
         RuntimeRegistry::DEFAULT_RUNTIME
       @default_model = config["default_model"].presence ||
-        app_setting.resolved_default_model_for(@default_runtime)
+        app_setting.resolved_default_model_for(@default_runtime, allowed_models: model_ids_by_runtime&.dig(@default_runtime))
     end
 
     # All catalog-managed roots are not custom
@@ -222,7 +228,15 @@ class AgentRootsConfig
 
     def build_roots
       app_setting = AppSetting.current
-      AirCatalogService.entries_for(:roots).map { |name, entry| AgentRoot.new(name, entry, app_setting: app_setting) }
+      # One read of the added-models table for the whole catalog. Every root that
+      # leaves `default_model` blank resolves it against its runtime's catalog, and
+      # without this each of those roots read the table on its own — a cost paid on
+      # every `find`, which the chat bubble's Quick Router now makes every page.
+      model_ids_by_runtime = ModelCatalog.models_by_runtime(RuntimeRegistry.registered_runtimes)
+        .transform_values { |models| models.map { |m| m[:id] } }
+      AirCatalogService.entries_for(:roots).map do |name, entry|
+        AgentRoot.new(name, entry, app_setting: app_setting, model_ids_by_runtime: model_ids_by_runtime)
+      end
     rescue AirCatalogService::CatalogError => e
       # AirCatalogService serves a last-known-good catalog (in-memory or persisted
       # snapshot) whenever a resolve fails, so reaching here means even that

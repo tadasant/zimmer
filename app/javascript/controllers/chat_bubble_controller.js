@@ -6,7 +6,8 @@ import { partitionMedia } from "lib/media_kinds"
 //
 // - Click the bubble icon to open a slide-out panel with a textarea
 // - Cmd/Ctrl+Enter submits in the background (session runs silently)
-// - The "Run as spot" checkbox rides on both submit paths, and clears on close
+// - The Advanced accordion (harness, model, "Run as spot") rides on both submit
+//   paths, and resets to its defaults on close
 // - "Submit & Open" button creates the session and navigates to it
 // - Automatically captures the current page HTML as markdown context
 // - Escape key closes the panel
@@ -23,6 +24,13 @@ export default class extends Controller {
     "cameraInput",
     "fileInput",
     "preview",
+    // The shared Quick Router Advanced accordion (app/views/sessions/_quick_router_advanced).
+    // Its own `quick-router-advanced` controller keeps the model list scoped to
+    // the harness; these targets are how this panel reads the choices for its
+    // FormData and tells the accordion to reset.
+    "advanced",
+    "runtime",
+    "model",
     "spot"
   ]
 
@@ -60,13 +68,17 @@ export default class extends Controller {
   }
 
   close() {
-    // The spot choice does not survive the panel closing, however it closed —
+    // The Advanced choices do not survive the panel closing, however it closed —
     // Escape, the backdrop, the X, or a successful submit. The draft text
     // deliberately does survive: losing a half-typed prompt is expensive, whereas
-    // re-ticking a checkbox is not, and the two mistakes are not symmetric.
+    // re-picking a harness is not, and the two mistakes are not symmetric.
     // Submitting as priority by accident merely runs the work; submitting as spot
-    // by accident parks it behind the quota gate for as long as the gate holds.
-    if (this.hasSpotTarget) this.spotTarget.checked = false
+    // by accident parks it behind the quota gate for as long as the gate holds,
+    // and submitting on a harness someone chose for the last prompt runs this one
+    // somewhere they did not ask for.
+    if (this.hasAdvancedTarget) {
+      this.advancedTarget.dispatchEvent(new CustomEvent("quick-router-advanced:reset"))
+    }
     this.openValue = false
   }
 
@@ -419,11 +431,20 @@ export default class extends Controller {
         body.append("parent_session_id", String(sessionId))
       }
 
-      // Read from the checkbox rather than from the button that was clicked, so
-      // Submit and Submit & Open both honor it. Only an explicit opt-in is sent;
-      // an unchecked box sends nothing and the server leaves the class to derive.
+      // Read from the Advanced controls rather than from the button that was
+      // clicked, so Submit and Submit & Open both honor them. Only explicit
+      // opt-ins are sent: an unticked box and a picker left on its blank
+      // "Default (…)" option send nothing at all, and the server resolves the
+      // class, the runtime and the model exactly as it did before this panel had
+      // any of them.
       if (this.hasSpotTarget && this.spotTarget.checked) {
         body.append("scheduling_class", this.spotTarget.value)
+      }
+      if (this.hasRuntimeTarget && this.runtimeTarget.value) {
+        body.append("agent_runtime", this.runtimeTarget.value)
+      }
+      if (this.hasModelTarget && this.modelTarget.value) {
+        body.append("model", this.modelTarget.value)
       }
 
       for (const f of this.attachedImages) body.append("images[]", f, f.name)
