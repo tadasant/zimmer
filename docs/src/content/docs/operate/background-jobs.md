@@ -477,9 +477,9 @@ deployments (staging ~5.4 MB, production ~330 KB), so count is not a proxy for r
 
 ## The scheduled sweeps yield the `maintenance` thread
 
-The lane has two threads and serves two shapes of work at once: the recurring filesystem sweeps below, and `DeferredCloneCleanupJob` — one row per archived session, arriving at whatever rate the fleet archives, and the only thing that reclaims an archived session's clone inside the reversible window.
+The lane has four threads and serves two shapes of work at once: the recurring filesystem sweeps below, and `DeferredCloneCleanupJob` — one row per archived session, arriving at whatever rate the fleet archives, and the only thing that reclaims an archived session's clone inside the reversible window.
 
-A sweep bounded only by a batch *count* can hold one of those two threads for a very long time. `OrphanCloneFilesystemCleanupJob`'s scheduled path takes up to `BATCH_LIMIT` (20) directories and each removal tears down Docker Compose bounded at `COMPOSE_DOWN_TIMEOUT` (120s), so 40 minutes sits inside its contract; `StaleCloneCleanupJob` walks `ORPHAN_SWEEP_LIMIT` (200) recursive deletes; `EmptyTrashJob` walks *every* expired trashed session with `find_each` and no cap at all, doing a Compose teardown and five recursive deletes each. While one runs the lane is at half capacity for everything else, and two at once take it to zero. On 2026-09-05 the lane paged with 124 `DeferredCloneCleanupJob` rows ready and a head of line two hours old and rising.
+A sweep bounded only by a batch *count* can hold one of those threads for a very long time. `OrphanCloneFilesystemCleanupJob`'s scheduled path takes up to `BATCH_LIMIT` (20) directories and each removal tears down Docker Compose bounded at `COMPOSE_DOWN_TIMEOUT` (120s), so 40 minutes sits inside its contract; `StaleCloneCleanupJob` walks `ORPHAN_SWEEP_LIMIT` (200) recursive deletes; `EmptyTrashJob` walks *every* expired trashed session with `find_each` and no cap at all, doing a Compose teardown and five recursive deletes each. While one runs the lane is a thread down for everything else, and as many at once as the lane has threads take it to zero — which at the two threads the lane ran until 2026-09-20 was two. On 2026-09-05 the lane paged with 124 `DeferredCloneCleanupJob` rows ready and a head of line two hours old and rising.
 
 All three open a wall-clock budget (`SWEEP_BUDGET_SECONDS`, five minutes) and check it at the top of each unit of work, so a run holds a thread for at most the budget plus one more unit — a directory, a session, or the tombstone reap, which is a single unbudgeted unit of up to `AtomicCloneRemoval::REAP_LIMIT` (50) deletes. What a run does not reach is logged at `warn` and left for the next tick.
 
@@ -1363,20 +1363,24 @@ way. Those are the [#458](https://github.com/tadasant/zimmer/issues/458) shape r
 
 Most short jobs run on `default`. Six kinds of work are deliberately isolated:
 
-- **`:agents`** — `AgentSessionJob`, capped at twelve concurrent turns. The cap is set by what the
-  `sessions` cgroup pool can hold, not by the database, because each thread runs a whole agent
-  session. [#981](https://github.com/tadasant/zimmer/issues/981) put every session cgroup in a pool
-  with its own `memory.max` and left the Rails worker in a sibling outside it, so overshoot costs
-  one session rather than the worker and all of them — which is what makes this a throughput number
-  rather than a safety one. Excess turns stay as durable queued rows and start as slots
-  finish. Raising it further is bounded by the pool, and the pool is *not* sized from this number —
-  see `agents:` in `config/connection_budget.rb` for the arithmetic and the measurements.
+- **`:agents`** — `AgentSessionJob`, capped at eight concurrent turns. The cap is set by the
+  droplet's CPU, not by the database and not by memory, because each thread runs a whole agent
+  session — a Claude Code process and its MCP servers — and those are what the box's eight vCPUs
+  spend themselves on. At twelve threads `node_load1` reached 23.5 (2.9× cores) while the database
+  sat at 0–1 active backends, and every 2-thread lane on the worker starved in turn
+  ([#329](https://github.com/tadasant/zimmer/issues/329)). Memory was the bound that took the
+  number from 8 to 12: [#981](https://github.com/tadasant/zimmer/issues/981) put every session
+  cgroup in a pool with its own `memory.max` and left the Rails worker in a sibling outside it, so
+  overshoot costs one session rather than the worker and all of them. That arithmetic still holds
+  at 12; it was never checked against CPU, and CPU is what bound. Excess turns stay as durable
+  queued rows and start as slots finish. See `agents:` in `config/connection_budget.rb` for both
+  sets of measurements.
 
 - **`:triggers`** — `AoEventTriggerJob` and `ScheduleTriggerJob`. They were previously starved on
   `default`; `AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD = 120s` exists because of it.
 - **`:auth`** — `RuntimeLoginJob` and `CleanupRuntimeLoginAttemptsJob`. The `triggers` argument with
   a human added: someone is watching the /inference login panel spin for exactly as long as the job sits
-  unstarted. `default` is two threads shared with around thirty job classes, fifteen of them cron'd
+  unstarted. `default` is four threads shared with around thirty job classes, fifteen of them cron'd
   as often as every 30 seconds and several running for minutes (bundle install, npm installs,
   transcript archiving, and package installs) — and `RuntimeLoginJob` used to starve *itself*
   there, because it holds its thread for as long as the login CLI is open, up to
@@ -1398,9 +1402,18 @@ Most short jobs run on `default`. Six kinds of work are deliberately isolated:
 - **`:maintenance`** — package and bundle installs, deploy recovery, transcript archiving, token
   backfill, Docker cleanup, clone/trash filesystem sweeps, and `TriggerPromotionReleaseJob` (which
   starts every session a trigger's scheduling-class change promoted, one queue read and one row lock
-  apiece). These operations are bounded but may run for minutes or scale with the data they inspect. Two workers let that backlog drain without
-  occupying both `default` threads; rows inherited from an older image are moved by a deploy-time
+  apiece). These operations are bounded but may run for minutes or scale with the data they inspect. Four workers let that backlog drain without
+  occupying `default`'s threads; rows inherited from an older image are moved by a deploy-time
   migration and a converging post-deploy task.
+
+  `maintenance` and `default` run four threads each, not two, since
+  [#329](https://github.com/tadasant/zimmer/issues/329)'s 2026-09-20 recurrence. A 2-thread lane is
+  one long job away from starvation — a second long job holds the whole lane — and on a droplet at
+  three times its cores a job that takes seconds takes minutes, so both lanes wedged that way a week
+  apart: `maintenance` on 2026-09-13 (21 ready, head of line 69m) and `default` on 2026-09-20
+  (101 ready, head of line 75m, both threads held by `SessionProvenanceBroadcastJob` for 43m). The
+  four threads are the four `agents` gave up, so the scheduler total is still 25 and the connection
+  budget is unchanged.
 - **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob` and `GithubTriggerPollerJob`, and
   since then the rest of the periodic work that must not queue behind session jobs:
   `GithubPrPollPassJob`,
@@ -2421,8 +2434,8 @@ than looking like a day-old stall the moment it becomes runnable.
 ### The page says which queue, of what, and how old there
 
 A ready count on its own is not triageable. Zimmer runs seven queues with very different shapes — an
-`agents` thread is held for the entire life of a session, `inference` and `maintenance` run two
-threads each against jobs that block for a minute or more, while `default` and `pollers` turn jobs
+`agents` thread is held for the entire life of a session, `inference` and `maintenance` run a
+few threads each against jobs that block for a minute or more, while `default` and `pollers` turn jobs
 over in milliseconds — so the same number is equally consistent with "one queue is starved" and
 "everything is busy", and those want opposite responses. Worse, the healthy-looking signals stay
 healthy in the starved case: the other queues keep draining, and `processing_rate_per_hour` is a

@@ -135,13 +135,25 @@ class SessionProvenanceBroadcastJobTest < ActiveSupport::TestCase
   # drags it in; for Session itself ActiveRecord has enumerated the columns since
   # `execution_provider` went into `ignored_columns` (#172), so naming the transcript
   # column is what actually catches a whole-row read today.
+  #
+  # Since #110 the transcript is not a column at all: it is assembled from
+  # `session_transcript_chunks`, and `Session#transcript` reads every chunk of it
+  # in one `SELECT content … ORDER BY seq`. That query is the same megabytes by
+  # another name, and a check that only looked at `FROM "sessions"` would wave it
+  # through -- so any read of the chunk table is an offender here too. The 2026-09-20
+  # recurrence of #329 wedged `default` on this job with that statement in the slow
+  # log; this is the assertion that the fan-out was not the caller, and cannot become one.
   test "the fan-out never asks Postgres for a session's transcript" do
     router = create_session(title: "Router")
     10.times { |i| create_session(title: "Child #{i}", parent_session_id: router.id) }
     child = create_session(title: "Newest", parent_session_id: router.id)
 
     statements = session_selects_during { SessionProvenanceBroadcastJob.perform_now(child.id) }
-    offenders = statements.select { |sql| sql.match?(/SELECT\s+"sessions"\.\*/) || sql.include?('"sessions"."transcript"') }
+    offenders = statements.select do |sql|
+      sql.match?(/SELECT\s+"sessions"\.\*/) ||
+        sql.include?('"sessions"."transcript"') ||
+        sql.include?('FROM "session_transcript_chunks"')
+    end
 
     # A negative assertion alone would pass on a job that queried nothing at all —
     # a nil seed, an early return, a refactor that no-ops the fan-out — and the
@@ -213,12 +225,13 @@ class SessionProvenanceBroadcastJobTest < ActiveSupport::TestCase
 
   private
 
-  # Every non-schema statement against `sessions` issued while the block runs.
+  # Every non-schema statement against `sessions` or its transcript chunks issued
+  # while the block runs.
   def session_selects_during
     statements = []
     subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |_n, _s, _f, _i, payload|
       next if [ "SCHEMA", "TRANSACTION" ].include?(payload[:name])
-      statements << payload[:sql] if payload[:sql].include?('FROM "sessions"')
+      statements << payload[:sql] if payload[:sql].match?(/FROM "session(s|_transcript_chunks)"/)
     end
     yield
     statements

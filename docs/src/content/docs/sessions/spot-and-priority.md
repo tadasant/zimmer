@@ -303,7 +303,7 @@ to the operator's number rather than growing past it.
 
 A turn is **handed to** a session — by a fired wake trigger, a follow-up, a poller, or the end-of-turn
 handoff to a queued message — well before a worker starts executing it. Between the two sits the
-`agents` GoodJob queue, which is only `GOOD_JOB_AGENTS_THREADS` (default 12) deep, and on a busy
+`agents` GoodJob queue, which is only `GOOD_JOB_AGENTS_THREADS` (default 8) deep, and on a busy
 deployment that gap runs to minutes.
 
 Since [#1040](https://github.com/tadasant/zimmer/pull/1040) that queue reads `waiting` rather than
@@ -346,22 +346,37 @@ repairs). Reading the count *with* the queue folded in is exactly how
 `RunningTurns` is the one place the distinction is made; both ceilings read through it.
 
 **The consequence for tuning: the `agents` pool is a hard bound on both ceilings.** The count is
-turns a worker is running and the pool runs `GOOD_JOB_AGENTS_THREADS` (default 12) of them, so a
+turns a worker is running and the pool runs `GOOD_JOB_AGENTS_THREADS` (default 8) of them, so a
 ceiling above that can never be reached — the spot gate would never report `fleet_at_cap`, and top-up
-would always see the fleet as having room, while work keeps queueing behind the same twelve workers.
+would always see the fleet as having room, while work keeps queueing behind the same eight workers.
 Nothing clamps the setting: the number you type is yours, and growing the pool is a deploy away. Both
 `/inference` cards and `get_spot_policy` say so when your number is above the pool, and print the
-effective ceiling — `min(configured, GOOD_JOB_AGENTS_THREADS)` — beside it. Both shipped defaults —
-`spot_max_concurrent_sessions` 10 and the top-up ceiling 3 — now sit *under* the default pool of 12,
-so an un-retuned deployment gets ceilings that bind. A deployment that raised its ceilings to work
-around the old pool of 8 should bring them back under 12, or it keeps the unreachable-ceiling
-behaviour for no reason.
+effective ceiling — `min(configured, GOOD_JOB_AGENTS_THREADS)` — beside it. Of the two shipped
+defaults, the top-up ceiling of 3 sits under the pool and binds; `spot_max_concurrent_sessions`
+defaults to 10, above the pool of 8, so on an un-retuned deployment the effective spot ceiling is
+the pool and the cards say so. A deployment that raised its ceilings past the pool keeps the
+unreachable-ceiling behaviour until it brings them back under it.
 
-#### What actually bounds the pool: memory, and not the way you would guess
+#### What actually bounds the pool: the droplet's CPU
 
-`GOOD_JOB_AGENTS_THREADS` is sized by what the `sessions` cgroup pool can hold, not by the database,
-because each of its threads runs a whole agent session. The history is worth keeping, because the
-intuition it corrects is a common one.
+`GOOD_JOB_AGENTS_THREADS` is sized by what the droplet can run, because each of its threads runs a
+whole agent session — a Claude Code process and its MCP servers — and those processes are what the
+box's cores spend themselves on. The lane ran 12 from 2026-09-05 to 2026-09-20, sized by the memory
+arithmetic in the next section, which holds at 12 and was never checked against CPU. Measured on
+production during the 2026-09-20 recurrence of [#329](https://github.com/tadasant/zimmer/issues/329),
+on an 8-vCPU droplet: `node_load1` 0.61 at 01:44Z, 20.21 at 03:59Z, 23.52 at 04:44Z — 2.9× cores —
+while the managed database, measured a week earlier under the same alert, sat at 0–1 active
+backends, 33 of 97 connections and 57–67% idle. Worker throughput halved (1005 → 476 jobs/hour), a
+bare `BEGIN` took 1061 ms *client-side* on a worker the scheduler kept descheduling, and every
+2-thread lane behind it starved in turn. A larger droplet is not on offer — `s-8vcpu-16gb` is the
+largest size this account can provision in its region — so the lane went back to 8, the number the
+box had run, and the four threads went to `maintenance` and `default`. The evidence for raising it
+again is `node_load1` staying under the core count with the lane full.
+
+#### Memory still has to fit, and not the way you would guess
+
+Each thread runs a whole agent session, and the `sessions` cgroup pool has to hold all of them. The
+history is worth keeping, because the intuition it corrects is a common one.
 
 Measured over the 24 hours to 2026-09-05T14:16Z, at **8** threads and *before*
 [#981](https://github.com/tadasant/zimmer/issues/981)'s fix, against the worker's 10 GiB
@@ -403,13 +418,14 @@ that. At 7168 it would be 3072 MB — *under* the measured need — so the **con
 first, and that OOM selects across the whole container and takes the worker. The pool has to fire
 first, so 6144 stayed put when the threads moved.
 
-What 12 costs is headroom for concurrent heavy work. Measured on the live worker at 12 session
-cgroups: pool `anon` 3154 MB of the 6144 cap, ~263 MB per session, leaving ~3.0 GB — about five
-concurrent capped test suites at ~560 MB each. The conservative figure from #981's peak task dump
-(~382 MB per session) would leave ~1.6 GB, or two to three. The real tolerance is somewhere in that
-band and is not pinned down. The connection budget is not what binds first, and is not roomy either:
-12 threads derive 91 required backends against the 97 a `db-s-2vcpu-4gb` cluster serves, and 15 would
-derive exactly 97 — the whole plan, zero margin, which is the other reason 12 rather than 15.
+What the thread count costs is headroom for concurrent heavy work. Measured on the live worker at 12
+session cgroups: pool `anon` 3154 MB of the 6144 cap, ~263 MB per session, leaving ~3.0 GB — about
+five concurrent capped test suites at ~560 MB each. The conservative figure from #981's peak task
+dump (~382 MB per session) would leave ~1.6 GB, or two to three; at 8 sessions the same figures leave
+~4.0 GB and ~3.0 GB. The real tolerance is somewhere in that band and is not pinned down. The
+connection budget is not what binds first, and is not roomy either: 25 scheduler threads derive 91
+required backends against the 97 a `db-s-2vcpu-4gb` cluster serves, and three more would derive
+exactly 97 — the whole plan, zero margin.
 
 ### Its sibling: the backlog top-up ceiling
 
