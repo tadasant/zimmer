@@ -1698,7 +1698,7 @@ repaired from Zimmer's stored bytes before the resume.
 | --- | --- | --- |
 | Quota exhausted → rotate accounts, then park | `/hit your\b.*\blimit\b.*\bresets\b/i` | `api_error_retry_service.rb` |
 | Unparseable tool call → retry with backoff | `/tool call could not be parsed/i`, `/tool call was malformed/i` | `api_error_retry_service.rb` |
-| Safeguards rejection → fail with the CLI's remedies, no retry | `/safeguards flagged this message/i`, `anthropic.com/legal/aup` | `api_error_retry_service.rb` |
+| Safeguards rejection → fail with the CLI's remedies, no retry | `/safeguards flagged this message/i`, `%r{flagged.{0,200}anthropic\.com/legal/aup}im` | `api_error_retry_service.rb` |
 | Auth lost → adopt/rotate/wait, respawn, then park | the `error` types `authentication_failed` / `oauth_error`, plus a prose net | `auth_recovery_service.rb` |
 | Context overflow → compact and retry | a pattern list | `context_length_retry_service.rb` |
 | Corrupted npx cache → delete it | `ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT` | `npx_cache_heal_service.rb` |
@@ -1717,6 +1717,13 @@ CLI says those happen, and the first one Zimmer saw was its own PR-merged notifi
 costs a failed session that a human resumes after changing its model. Nothing tries a different
 model on Zimmer's behalf. See
 [A safeguards rejection fails on purpose](/auth/harness/#a-safeguards-rejection-fails-on-purpose-and-does-not-page).
+
+Nor does a *wave* of them alert. Each one fails its own session quietly and by design, and the only
+place a run of them shows up is the `safeguards_flagged` bucket in the failure-reason distribution on
+`/health` — which nothing reads on a schedule. The wording that triggered the first one was Zimmer's
+own PR-merged notification, which is the same text in every session, so a safeguards classifier that
+started flagging that template would fail finishing sessions fleet-wide with nothing paging. The
+per-session silence is deliberate; the missing rate signal is a gap.
 
 This has already caused an outage. When Claude Code's wording changed, account rotation stopped firing:
 the session fell through to the transient-rate-limit path, retried six times against an already-capped

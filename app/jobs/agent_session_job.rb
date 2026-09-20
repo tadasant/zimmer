@@ -4574,7 +4574,7 @@ class AgentSessionJob < ApplicationJob
       # failure class that means a classifier has gone stale, and the health
       # dashboard is where that shows up.
       "terminal_api_error"
-    when /^#{Regexp.escape(ProcessLifecycleManager::SAFEGUARDS_REJECTION_PREFIX)}/i
+    when /\A#{Regexp.escape(ProcessLifecycleManager::SAFEGUARDS_REJECTION_PREFIX)}/i
       # ProcessLifecycleManager#handle_safeguards_rejection: Anthropic's safeguards
       # refused the request, and the session failed deliberately with the CLI's
       # remedies. Its own bucket so a wave of them reads as one thing on the health
