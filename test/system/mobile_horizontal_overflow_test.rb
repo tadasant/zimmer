@@ -812,16 +812,27 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # moment the description stops shrinking. It ships on three surfaces, two of them
   # phone-only, and the panel one is what the mobile joystick's Quick Router petal
   # opens, so a phone is the primary way it gets used rather than an afterthought.
+  #
+  # On the two dashboard surfaces it now sits inside the Advanced accordion beside
+  # the model picker, so this also proves the accordion: collapsed on arrival, and
+  # everything inside it on screen once it is opened.
   test "the Quick Router spot opt-in is on screen and reachable on a phone" do
     visit root_path
     assert_selector "[data-controller='quick-prompt']"
 
     # Surface 1: the dashboard's full-screen mobile prompt overlay.
     find("button[data-action='quick-prompt#openMobile']").click
+    # Collapsed on arrival: typing and hitting Submit is still the whole path.
+    assert_no_selector "#quick_prompt_mobile_scheduling_class", visible: true
+    mobile_advanced = find("[data-quick-prompt-target='mobileAdvanced'] summary")
+    mobile_advanced.click
     assert_selector "#quick_prompt_mobile_scheduling_class", visible: true
+    assert_selector "#quick_prompt_mobile_model", visible: true
 
     mobile_box = find("#quick_prompt_mobile_scheduling_class")
     assert_not mobile_box.checked?, "the spot opt-in must default to off — priority is the default"
+    assert_equal "", find("#quick_prompt_mobile_model").value,
+      "the model picker must start blank — blank is what lets the root's default apply"
     page.save_screenshot("tmp/screenshots/proof-quick-router-spot-mobile-overlay-375.png")
 
     # Only the per-element probe here, deliberately. The overlay is `fixed inset-0`
@@ -839,10 +850,18 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # per-submission, not a sticky preference the next prompt silently inherits.
     mobile_box.click
     assert mobile_box.checked?
+    # Any non-blank option: what matters is that a choice was made, not which.
+    find("#quick_prompt_mobile_model option:not([value=''])", match: :first).select_option
     find("button[data-action='quick-prompt#closeMobile']").click
     find("button[data-action='quick-prompt#openMobile']").click
+    # Both knobs are per-submission, and the accordion itself closes with them, so
+    # the next prompt starts from the same one-box view as the first.
+    assert_no_selector "#quick_prompt_mobile_scheduling_class", visible: true
+    find("[data-quick-prompt-target='mobileAdvanced'] summary").click
     assert_not find("#quick_prompt_mobile_scheduling_class").checked?,
       "reopening the overlay should start back at the default"
+    assert_equal "", find("#quick_prompt_mobile_model").value,
+      "reopening the overlay should drop the model choice too"
     find("button[data-action='quick-prompt#closeMobile']").click
 
     # Surface 2: the chat-bubble Quick Router panel, which is also what the mobile
@@ -907,14 +926,34 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_equal SessionGenesis::WEB_UI, created.genesis
 
     # Surface 3 is the dashboard's inline desktop prompt row, hidden below `md:`.
-    # Check it at a laptop width, where it is the last item in the attach-button row
-    # and therefore the one that would land off the edge if the row could not hold it.
+    # Check it at a laptop width, where its accordion is the bottom of the form and
+    # therefore what would land off the edge if the column could not hold it.
     page.driver.browser.manage.window.resize_to(1400, 900)
     visit root_path
+    assert_no_selector "#quick_prompt_desktop_scheduling_class", visible: true
+    find("[data-quick-prompt-target='desktopForm'] details summary").click
     assert_selector "#quick_prompt_desktop_scheduling_class", visible: true
     assert_not find("#quick_prompt_desktop_scheduling_class").checked?
+    assert_equal "", find("#quick_prompt_desktop_model").value
     assert_empty elements_past_right_edge("[data-quick-prompt-target='desktopForm']"),
-      "the desktop prompt row's spot opt-in ends past the 1400px viewport"
+      "the desktop prompt form's Advanced panel ends past the 1400px viewport"
+  end
+
+  # The accordion is a phone surface too: the overlay is 375px wide and the open
+  # panel holds a full-width <select> plus two lines of help under each control.
+  test "the Quick Router Advanced panel fits a phone once it is open" do
+    visit root_path
+    find("button[data-action='quick-prompt#openMobile']").click
+    find("[data-quick-prompt-target='mobileAdvanced'] summary").click
+    assert_selector "#quick_prompt_mobile_model", visible: true
+
+    page.save_screenshot("tmp/screenshots/proof-quick-router-advanced-mobile-overlay-375.png")
+
+    # Per-element only, for the same reason the spot test gives: the overlay is
+    # `fixed inset-0` over a body that clips while it is open.
+    past_edge = elements_past_right_edge("[data-quick-prompt-target='mobileOverlay']")
+    assert_empty past_edge,
+      "the mobile overlay's Advanced panel ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{past_edge.join("\n  ")}"
   end
 
   test "new session form does not overflow horizontally on a phone" do

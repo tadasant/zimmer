@@ -45,9 +45,9 @@ code.
 
 ## Models
 
-`ModelCatalog` is the authoritative per-runtime list, and it is what the new-session form,
-the detail-page model editor, the Settings defaults, the REST API and `start_session` all validate
-against. It has two parts: the built-in models in `ModelCatalog::MODELS`, which ship with Zimmer,
+`ModelCatalog` is the authoritative per-runtime list, and it is what the new-session form, the
+Quick Router's **Advanced** accordion, the detail-page model editor, the Settings defaults, the REST
+API and `start_session` all validate against. It has two parts: the built-in models in `ModelCatalog::MODELS`, which ship with Zimmer,
 and the models an operator added while it runs, which follow them. The built-in models are:
 
 | Runtime | Model ids |
@@ -127,6 +127,28 @@ Removing an added model stops new sessions picking it. A session already on it k
 refused while the Settings page's session default names the model, because `AppSetting`
 re-validates it on every save. If a later deploy makes an added id built-in,
 the built-in entry wins and Settings → Models lists the redundant row for removal.
+
+### Choosing a model on the Quick Router
+
+The dashboard's Quick Router prompt box has an **Advanced** accordion, collapsed by default, holding
+a **Model** picker and the **Run as spot** checkbox. Both dashboard surfaces carry it — the inline
+row at `md:` and wider, and the full-screen overlay on phones.
+
+The picker offers exactly the models the **router agent root's own runtime** accepts, because that
+is the only root the Quick Router ever spawns on. Its first option is blank and reads
+`Default (<model>)`, naming the model that would apply rather than selecting it. Leaving it there
+submits no `model` at all, so `Sessions::ResolveSpawnDefaults` runs the ordinary chain — the router
+root's `default_model`, then Settings → **Default model**, then the runtime's catalog default.
+Preselecting the current default instead would pin it onto every Quick Router session and sever that
+link, the same way stamping `priority` would sever the genesis one.
+
+A value the router's runtime does not offer is ignored rather than rejected: the prompt someone just
+typed is worth more than a form field that could only have been hand-crafted. Like the spot opt-in,
+the choice is per submission — closing the phone overlay clears it and collapses the accordion
+again.
+
+The chat-bubble Quick Router panel has no model picker. It is a compact floating panel on every
+page, and its **Run as spot** checkbox stays inline there.
 
 ## Credentials
 

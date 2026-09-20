@@ -231,6 +231,13 @@ class SessionsController < ApplicationController
     # filtered, sorted by name for a stable list.
     @agent_roots_for_filter = AgentRootsConfig.all.sort_by(&:name)
 
+    # The Quick Router's Advanced accordion. Options are scoped to the router
+    # root's own runtime — it is the only root this form ever spawns — and the
+    # default is NAMED rather than preselected, so an untouched picker submits
+    # nothing and the ordinary resolution chain applies.
+    @quick_router_models = ModelCatalog.model_ids_for(quick_router_runtime)
+    @quick_router_default_model = quick_router_default_model
+
     if @agent_root_filter.present?
       sessions = filter_sessions_by_agent_root(sessions, @agent_root_filter)
     end
@@ -470,6 +477,7 @@ class SessionsController < ApplicationController
     # the chat_bubble and new session flows.
     temp_session_id = "temp_#{SecureRandom.uuid}"
     scheduling_class = quick_router_scheduling_class
+    model = quick_router_model
     begin
       stage_uploads_or_raise!(incoming_images, incoming_files, temp_session_id)
 
@@ -480,6 +488,7 @@ class SessionsController < ApplicationController
         genesis: SessionGenesis::WEB_UI,
         scheduling_class: scheduling_class,
         precedence: quick_router_precedence(scheduling_class),
+        config: model ? { "model" => model } : nil,
         skip_enqueue: true
       )
 
@@ -4403,6 +4412,57 @@ class SessionsController < ApplicationController
   # the shipped default onto every Quick Router session and sever that link.
   def quick_router_scheduling_class
     params[:scheduling_class].to_s.strip == SessionGenesis::SPOT ? SessionGenesis::SPOT : nil
+  end
+
+  # The runtime every Quick Router session runs under: the router root's own,
+  # which has already folded in the global base default. Both the picker's
+  # options and the validation below are scoped to it, because a hardcoded list
+  # would offer models the router's runtime cannot run.
+  def quick_router_runtime
+    quick_router_root&.default_runtime.presence ||
+      AppSetting.current.default_runtime.presence ||
+      RuntimeRegistry::DEFAULT_RUNTIME
+  end
+
+  # What "Default" resolves to in the picker's blank option. Shown, never
+  # preselected — see quick_router_model. Mirrors the new-session form's
+  # resolution so the two agree about what the default is.
+  def quick_router_default_model
+    runtime = quick_router_runtime
+    declared = quick_router_root&.default_model
+    return declared if ModelCatalog.valid_model?(runtime, declared)
+
+    AppSetting.current.resolved_default_model_for(runtime)
+  end
+
+  # The Quick Router's model opt-in.
+  #
+  # Only a model the router's runtime actually offers writes anything. An
+  # untouched picker returns nil so `config` stays NULL and
+  # Sessions::ResolveSpawnDefaults runs the whole chain — the router root's
+  # default_model, then the Settings default, then the runtime's catalog
+  # default. Stamping the current default here instead would pin it onto every
+  # Quick Router session and sever that link, exactly as stamping "priority"
+  # would sever the genesis one above.
+  #
+  # An unrecognized value is ignored rather than rejected, matching the spot
+  # opt-in: the prompt someone just typed is worth more than a form field that
+  # could only have been hand-crafted.
+  def quick_router_model
+    requested = params[:model].to_s.strip
+    return nil if requested.blank?
+
+    ModelCatalog.valid_model?(quick_router_runtime, requested) ? requested : nil
+  end
+
+  # Resolved once per request: the catalog read behind it is shared with the
+  # filter list, and `index` asks for the runtime and the default model both.
+  # `defined?` rather than `||=` so a catalog with no router root is not
+  # re-resolved on every call.
+  def quick_router_root
+    return @quick_router_root if defined?(@quick_router_root)
+
+    @quick_router_root = AgentRootsConfig.find(AgentRootsConfig.router_root_name)
   end
 
   # Where a Quick-Router spot submission lands in the spot queue.
