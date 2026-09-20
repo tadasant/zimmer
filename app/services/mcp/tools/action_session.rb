@@ -62,6 +62,8 @@ module Mcp
 
       HALT_DESC = 'Optional for "pause_into_spot_queue": stop the target session\'s turn where it stands instead of letting it finish. Terminates the agent process — work already written to disk survives, the tool call in flight does not. Do NOT set it on your own session: you would be killing the process that is waiting for this call to return.'
 
+      EXPECTED_VICTIM_ID_DESC = 'Optional for "force_start": the id of the session whose turn you decided to stop — the one `get_session` on the queued session named as the turn that would be stopped. If a different turn would be stopped by the time this call runs (that one ended, or somebody forced it first), the call is refused and nothing is touched, so you never stop a session you did not decide on.'
+
       ACTIONS = %w[
         follow_up
         pause
@@ -162,7 +164,7 @@ module Mcp
         - **pause_into_spot_queue**: Put this session to sleep in the spot queue instead of at a wall-clock time — the counterpart of `wake_me_up_later` when there is no time worth naming. The session goes dormant in "waiting" with NO wake-up trigger and no time attached, and resumes when the spot scheduler reaches it: a Claude Code account under both quota targets, a free session slot, highest precedence first. Any unfired one-time wake this session had is cancelled, since it was replaced by this. A session that resolves to "priority" is set to "spot" (a priority session cannot sit in the queue) — reverse it with `change_scheduling_class`, which resumes it on the next sweep. Optionally takes "prompt": what the session should be resumed with, in place of the default recovery nudge. A running session sleeps when its current turn ends, not mid-turn — pass "halt": true to stop the turn where it stands instead. Only use "halt" on a session that is NOT you: it terminates the agent process, so a session halting itself never gets a reply to this call. Any message still queued for the session waits with it, and unlike a timed pause nothing bounds how long — drain the queue first if that matters. Use this instead of a made-up wake time when the answer to "when should this come back" is "whenever there is quota headroom for it".
         - **restart**: Restart an idle or failed session without providing new input. On a connection restricted to specific agent roots, only sessions belonging to one of those roots can be restarted
         - **start_now**: Take a waiting session's next turn now instead of when the scheduler gets round to it — the tool half of the Ranked view's ⋮ menu entry. Reach for it when one session should not wait out the gate's deferred re-check, which can sit up to an hour out. It moves WHEN the turn is asked for and not WHETHER it is allowed: a spot session stays spot, so a window still over its target holds it again — `change_scheduling_class` to "priority" is what removes the gate. A session that has never run has its first turn enqueued, with the images and files it was created with. One that has run before with nothing queued is stranded rather than queued, and is refused with the error naming "follow_up" or "restart" instead; so is one asleep on a wake-up it has not reached, because a pause outranks the queue and it wakes on its own schedule.
-        - **force_start**: Take a worker thread AWAY from another session's turn and give it to this one. Only for a session that is "waiting" with its turn queued for a worker — the `agents` lane runs a fixed number of threads, and when they are all busy a queued turn waits however long the turns ahead of it take. "start_now" cannot help there (the turn is already due, there is nothing to bring forward) and neither can "change_scheduling_class": the spot gate decides WHETHER a turn may run and this is thread contention, which applies to priority sessions identically. The victim is the turn that started most recently, whatever its class; its process is stopped — work on disk survives, the tool call in flight does not — and its turn goes straight back into the queue, so nothing is cancelled. Its row records that it was forced out and for whom. Refused when the pool has a free thread already (the turn starts on the next poll anyway) or when no turn on a thread can be stopped. This is expensive and destroys another session's in-flight tool call: reach for it only when a human is actually waiting on this session.
+        - **force_start**: Take a worker thread AWAY from another session's turn and give it to this one. Only for a session that is "waiting" with its turn queued for a worker — the `agents` lane runs a fixed number of threads, and when they are all busy a queued turn waits however long the turns ahead of it take. "start_now" cannot help there (the turn is already due, there is nothing to bring forward) and neither can "change_scheduling_class": the spot gate decides WHETHER a turn may run and this is thread contention, which applies to priority sessions identically. The victim is the turn that started most recently, whatever its class — never you, the caller; its process is stopped — work on disk survives, the tool call in flight does not — and its turn goes straight back into the queue, so nothing is cancelled. Its row records that it was forced out and for whom. `get_session` on the queued session names the session that would be stopped; pass it as "expected_victim_id" and the call is refused if the pick has changed since, rather than stopping a different session than the one you decided on. Refused when the pool has a free thread already (the turn starts on the next poll anyway) or when no turn on a thread can be stopped. This is expensive and destroys another session's in-flight tool call: reach for it only when a human is actually waiting on this session.
         - **archive**: Archive a session (marks as completed). Refused when messages are still queued for the session, since archiving discards them — the error names them, and "force" overrides it deliberately. Also refused when you are archiving a session OTHER than your own and it has an agent turn in flight: that archive kills the running process mid-turn and deletes its clone. Archiving yourself is never refused for that reason — your own turn is the one in flight, and you are the only caller that knows whether it is finished.
         - **unarchive**: Restore an archived session to idle "needs_input" status
         - **change_mcp_servers**: Update the MCP servers for a session (requires "mcp_servers" parameter; replaces the set). Takes effect the next time the session's runtime config is prepared — its next turn, a restart, or an unarchive — never on an already-running process. If a newly selected server needs authorizing, the answer names it under "Needs authorization" and the session is moved to "failed" with failure_reason "oauth_required" so its page shows the Authorize buttons; a session that is currently running is left alone instead.
@@ -237,7 +239,8 @@ module Mcp
           snoozed_until: { type: "string", description: SNOOZED_UNTIL_DESC },
           timezone: { type: "string", description: TIMEZONE_DESC },
           uncle_session_id: { type: [ "number", "string" ], description: UNCLE_SESSION_ID_DESC },
-          acting_session_id: { type: [ "number", "string" ], description: ACTING_SESSION_ID_DESC }
+          acting_session_id: { type: [ "number", "string" ], description: ACTING_SESSION_ID_DESC },
+          expected_victim_id: { type: [ "number", "string" ], description: EXPECTED_VICTIM_ID_DESC }
         },
         required: [ "action" ]
       })
@@ -329,7 +332,7 @@ module Mcp
         when "pause_into_spot_queue" then pause_into_spot_queue(find_session(args["session_id"]), args)
         when "restart" then restart(fenced_session(args["session_id"], action))
         when "start_now" then start_now(find_session(args["session_id"]))
-        when "force_start" then force_start(find_session(args["session_id"]))
+        when "force_start" then force_start(find_session(args["session_id"]), args)
         when "archive" then archive(find_session(args["session_id"]), args)
         when "unarchive" then unarchive(find_session(args["session_id"]))
         when *CATALOG_LIST_FIELDS.keys then change_catalog_list(find_session(args["session_id"]), action, args)
@@ -649,8 +652,19 @@ module Mcp
       # An agent calling this is spending another session's in-flight tool call,
       # so both refusals come back as errors naming what to do instead rather than
       # as a quiet no-op.
-      def force_start(session)
-        result = Sessions::ForceTurnStart.call(session, actor: "an agent through MCP")
+      #
+      # The calling session is never the victim. It is running a turn right now —
+      # that is how it is making this call — and may well be the newest one, and
+      # stopping it would halt the caller mid-call with no reply ever read. The
+      # tool is the one caller that knows its own id, so it is the one that
+      # passes the exclusion.
+      def force_start(session, args)
+        result = Sessions::ForceTurnStart.call(
+          session,
+          actor: "an agent through MCP",
+          expected_victim_id: args["expected_victim_id"].presence,
+          excluding: [ context.self_session_id ].compact
+        )
         raise ToolError, result.message if result.refused?
 
         if result.no_victim?

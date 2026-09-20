@@ -970,6 +970,34 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_includes output, "Its turn is"
     assert_includes output, %(`action_session`'s "force_start")
     assert_includes output, "destroys another session's in-flight tool call"
+    # Nothing is on a thread, so the preview degrades to the reason — the same
+    # sentence the session page prints under the banner.
+    assert_includes output, "Nothing to force"
+  ensure
+    GoodJob::Job.delete_all
+    GoodJob::Process.delete_all
+  end
+
+  # And when there IS a turn to stop, the line names it, so the agent can decide
+  # on a session rather than on a rule — and pin the call to it.
+  test "a queued turn names the session force_start would stop, and how to pin the call to it" do
+    capsule = GoodJob::Process.create!(state: { "hostname" => "worker-1" })
+    victim = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", status: :running,
+      session_id: "cli-victim", scheduling_class: SessionGenesis::PRIORITY)
+    GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",
+      active_job_id: SecureRandom.uuid, performed_at: 3.minutes.ago, locked_at: 3.minutes.ago,
+      locked_by_id: capsule.id,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ victim.id ] })
+    session = sessions(:waiting)
+    GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",
+      active_job_id: SecureRandom.uuid,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ session.id ] })
+
+    output = nil
+    RunningTurns.stub(:worker_slots, 1) { output = @tool.call("id" => session.id) }
+
+    assert_includes output, "Right now that would stop session #{victim.id} (priority, its turn started 3 minutes ago)"
+    assert_includes output, "`expected_victim_id: #{victim.id}`"
   ensure
     GoodJob::Job.delete_all
     GoodJob::Process.delete_all

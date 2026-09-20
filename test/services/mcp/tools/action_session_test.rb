@@ -2063,6 +2063,66 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     GoodJob::Process.delete_all
   end
 
+  test "force_start never stops the calling session, even when it is the newest turn" do
+    capsule = GoodJob::Process.create!(state: { "hostname" => "worker-1" })
+    me = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", status: :running,
+      session_id: "cli-me")
+    GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",
+      active_job_id: SecureRandom.uuid, performed_at: 1.second.ago, locked_at: 1.second.ago,
+      locked_by_id: capsule.id,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ me.id ] })
+    other = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", status: :running,
+      session_id: "cli-other")
+    GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",
+      active_job_id: SecureRandom.uuid, performed_at: 5.minutes.ago, locked_at: 5.minutes.ago,
+      locked_by_id: capsule.id,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ other.id ] })
+
+    session = sessions(:waiting)
+    GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",
+      active_job_id: SecureRandom.uuid,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ session.id ] })
+
+    tool = Mcp::Tools::ActionSession.new(context: Mcp::Context.new(tool_groups: "sessions", session_id: me.id))
+    output = nil
+    RunningTurns.stub(:worker_slots, 2) do
+      output = tool.call("action" => "force_start", "session_id" => session.id)
+    end
+
+    assert_includes output, "Session #{other.id}'s turn was stopped"
+    assert me.reload.running?, "the caller kept its own thread"
+  ensure
+    GoodJob::Job.delete_all
+    GoodJob::Process.delete_all
+  end
+
+  test "force_start refuses when the victim the agent decided on is no longer the pick" do
+    capsule = GoodJob::Process.create!(state: { "hostname" => "worker-1" })
+    victim = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", status: :running,
+      session_id: "cli-victim")
+    GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",
+      active_job_id: SecureRandom.uuid, performed_at: 1.minute.ago, locked_at: 1.minute.ago,
+      locked_by_id: capsule.id,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ victim.id ] })
+    session = sessions(:waiting)
+    GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",
+      active_job_id: SecureRandom.uuid,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ session.id ] })
+
+    error = nil
+    RunningTurns.stub(:worker_slots, 1) do
+      error = assert_raises(Mcp::ToolError) do
+        @tool.call("action" => "force_start", "session_id" => session.id, "expected_victim_id" => 424_242)
+      end
+    end
+
+    assert_match(/is no longer the one that would be stopped/, error.message)
+    assert victim.reload.running?
+  ensure
+    GoodJob::Job.delete_all
+    GoodJob::Process.delete_all
+  end
+
   test "force_start raises rather than reporting a force that stopped nothing" do
     session = sessions(:waiting)
     GoodJob::Job.create!(queue_name: "agents", job_class: "AgentSessionJob",

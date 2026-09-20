@@ -2504,7 +2504,11 @@ class SessionsController < ApplicationController
   def force_start
     @session = find_session
 
-    result = Sessions::ForceTurnStart.call(@session, actor: "a user in the web UI")
+    result = Sessions::ForceTurnStart.call(
+      @session,
+      actor: "a user in the web UI",
+      expected_victim_id: params[:expected_victim_id].presence
+    )
 
     # The same deliberate-interaction signal Start and Restart send, and for the
     # same reason: a human has just said they are watching this session. Only on

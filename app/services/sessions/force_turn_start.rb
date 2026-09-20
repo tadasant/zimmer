@@ -32,10 +32,15 @@ module Sessions
   # introduced this class for the alternative (prefer spot victims, fall back to
   # priority) and why it was not substituted for what was asked for.
   #
-  # Five exclusions, and each one is a case where taking the thread would buy
+  # Six exclusions, and each one is a case where taking the thread would buy
   # nothing or would break somebody else's record:
   #
-  #   * **The forcing session itself.** Obvious, and cheap to get wrong.
+  #   * **The forcing session itself, and the session CALLING for the force.**
+  #     The first is obvious. The second is the agent driving `force_start`
+  #     through MCP: it is running a turn right now, may well be the newest one,
+  #     and stopping it would halt the caller mid-call — it would never read the
+  #     reply (the hazard `pause_into_spot_queue` with `halt` documents). Passed
+  #     in as `excluding:` by the tool, which is the one caller that knows.
   #   * **A job whose worker is not alive** (`JobLiveness` says anything but
   #     `:running`). Its thread is already gone; halting it frees nothing and the
   #     session belongs to a recovery sweep.
@@ -49,6 +54,12 @@ module Sessions
   #   * **A status-summary fork.** It takes exactly one turn and is then done, so
   #     there is no conversation to put back in the queue — re-enqueuing one would
   #     hand it a second turn it has no use for.
+  #   * **A job that only re-attached to a process** (`resume_monitoring`, the
+  #     orphan sweep's and the post-deploy adoption's shape). It holds a thread,
+  #     so it counts toward the pool being full, but its `performed_at` is when
+  #     the ADOPTION started and says nothing about how old the turn is — the
+  #     rule would call an hours-old turn "started 20 seconds ago" and pick it as
+  #     the one with the least to lose, which is the opposite of the truth.
   #
   # Plus a {COOLDOWN}: a session that was forced out in the last few minutes is
   # skipped in favour of the next candidate. Without it, forcing twice in a row
@@ -67,7 +78,11 @@ module Sessions
   #      its thread.
   #   2. Sessions::HaltRunningTurn stops the process and lands the session in
   #      `waiting` — the same cost a spot ceiling pause pays: work written to disk
-  #      stays written, the tool call in flight is lost.
+  #      stays written, the tool call in flight is lost. In production the process
+  #      is in the worker container, so the kill is handed to the worker's own
+  #      monitoring loop and lands on its next iteration — which is why the
+  #      forced job's priority (below) is bumped BEFORE the halt, so the row is
+  #      already first in line when the thread frees a second later.
   #   3. `resume_for_system_recovery!` puts it straight back, which preserves the
   #      wake-ups it had armed (it did not choose to stop, so they are still
   #      exactly what it is waiting on), and a fresh AgentSessionJob carries it
@@ -83,10 +98,10 @@ module Sessions
   # == How the forced turn actually gets the thread
   #
   # Freeing a thread is not the same as getting it. GoodJob dequeues
-  # `priority ASC NULLS LAST, created_at ASC`, and nothing in Zimmer sets a job
-  # priority — so every AgentSessionJob carries GoodJob's own DEFAULT_PRIORITY of
-  # 0, and the freed thread would go to whichever queued turn is oldest, which is
-  # very unlikely to be this one. The forced job's priority is therefore set to
+  # `priority ASC NULLS LAST, created_at ASC`, and nothing in the `agents` lane
+  # sets a job priority — so every AgentSessionJob carries GoodJob's own
+  # DEFAULT_PRIORITY of 0, and the freed thread would go to whichever queued turn
+  # is oldest, which is very unlikely to be this one. The forced job's priority is therefore set to
   # {FORCED_JOB_PRIORITY}, a negative number that sorts ahead of that. Two forced
   # turns tie there and fall back to `created_at`, which is first-come among forced
   # turns and is the order a human forcing two sessions in a row would expect.
@@ -103,7 +118,11 @@ module Sessions
   # And Zimmer cannot tell what the victim is in the middle of. There is no signal
   # on a session row that says "this turn is half-way through an irreversible
   # external action", so no rule here pretends to know: the confirmation names the
-  # victim and its age and leaves the judgement to the person clicking.
+  # victim and its age and leaves the judgement to the person clicking. Which is
+  # only worth anything if the session that dies is the one that was named — so
+  # the form carries the previewed victim's id back as `expected_victim_id`, and
+  # a pick that differs (the named turn ended, or somebody else forced it first)
+  # is refused rather than quietly stopping the next one down.
   class ForceTurnStart
     # `forced`    - a thread was taken and this session's turn has it
     # `no_victim` - nothing could be stopped; `message` says why
@@ -145,30 +164,46 @@ module Sessions
     FORCED_COUNT = "forced_out_count"
 
     # Sorts ahead of the 0 every AgentSessionJob carries — `GoodJob::Job`'s own
-    # DEFAULT_PRIORITY, since nothing here calls `queue_with_priority`. Negative
-    # rather than zero because zero would only tie, and nowhere near the integer
-    # bounds so a future lane with priorities of its own has room on both sides.
+    # DEFAULT_PRIORITY, since nothing in the `agents` lane calls
+    # `queue_with_priority`. Negative rather than zero because zero would only
+    # tie, and nowhere near the integer bounds so a lane with priorities of its
+    # own has room on both sides.
     FORCED_JOB_PRIORITY = -100
+
+    # The JobLiveness verdicts that mean "ready, unclaimed, a worker takes it on
+    # its next poll". `:abandoned` is in here for the reason
+    # Sessions::LiveTurn::UNDERWAY_STATUSES gives: it is only `:queued` past
+    # ABANDONED_QUEUED_JOB_AGE, and a turn that has waited 31 minutes behind a
+    # full pool is exactly the turn this exists for — refusing it as "no turn
+    # queued" would be wrong precisely when the queue is deepest.
+    QUEUED_STATUSES = %i[queued abandoned].freeze
 
     class << self
       # @param session [Session]
       # @param actor [String] who asked, for both sessions' logs
+      # @param expected_victim_id [Integer, nil] the session the caller was shown
+      #   and confirmed; a pick that differs is refused
+      # @param excluding [Array<Integer>] session ids that may not be the victim
+      #   beyond the built-in exclusions — the MCP caller's own id
       # @return [Result]
-      def call(session, actor: "a user")
-        new(session, actor: actor).call
+      def call(session, actor: "a user", expected_victim_id: nil, excluding: [])
+        new(session, actor: actor, expected_victim_id: expected_victim_id, excluding: excluding).call
       end
 
       # @param session [Session]
+      # @param excluding [Array<Integer>] as for {.call}
       # @return [Preview, nil] nil when this session is not queued for a worker
       #   at all, which is when the banner this feeds is not drawn either
-      def preview(session)
-        new(session).preview
+      def preview(session, excluding: [])
+        new(session, excluding: excluding).preview
       end
     end
 
-    def initialize(session, actor: "a user")
+    def initialize(session, actor: "a user", expected_victim_id: nil, excluding: [])
       @session = session
       @actor = actor
+      @expected_victim_id = expected_victim_id&.to_i
+      @excluding = Array(excluding).map(&:to_i)
     end
 
     def call
@@ -178,7 +213,32 @@ module Sessions
       victim = choose_victim
       return Result.new(outcome: :no_victim, message: no_victim_message, victim: nil) if victim.nil?
 
+      if expected_victim_id && victim.id != expected_victim_id
+        return Result.new(
+          outcome: :no_victim, victim: nil,
+          message: "The turn you confirmed — session #{expected_victim_id}'s — is no longer the one that " \
+                   "would be stopped (it ended, or was forced out already); session #{victim.id}'s is. " \
+                   "Nothing was touched. Reload to see what Force would stop now."
+        )
+      end
+
+      # Before the halt, not after: in production the kill lands on the worker's
+      # next loop iteration, and the freed thread goes to whichever queued job
+      # sorts first at THAT instant. A bump that arrived a second later would
+      # hand the thread to the oldest queued turn instead.
+      bump = promote_the_queued_job
+      if bump == :claimed
+        # A worker took this turn between the check at the top and here. Stopping
+        # anyone now would free a thread this session no longer needs.
+        return Result.new(
+          outcome: :refused, victim: nil,
+          message: "A worker picked session #{session.id}'s turn up just now, so there is nothing to force " \
+                   "— it is starting. Nothing was touched."
+        )
+      end
+
       unless yield_the_thread!(victim)
+        demote_the_queued_job if bump == :bumped
         return Result.new(
           outcome: :no_victim, victim: nil,
           message: "Session #{victim.id}'s turn could not be stopped, so nothing was taken from it and " \
@@ -186,10 +246,8 @@ module Sessions
         )
       end
 
-      promote_the_queued_job
-
       session.logs.create!(level: "warning", content: forced_message(victim))
-      Result.new(outcome: :forced, message: success_message(victim), victim: victim)
+      Result.new(outcome: :forced, message: success_message(victim, bump), victim: victim)
     end
 
     # @return [Preview, nil]
@@ -204,7 +262,7 @@ module Sessions
 
     private
 
-    attr_reader :session, :actor
+    attr_reader :session, :actor, :expected_victim_id, :excluding
 
     # Why this session cannot be forced. Deliberately the SAME question the banner
     # is gated on, asked again at the click: the page a human is looking at can be
@@ -217,7 +275,7 @@ module Sessions
       end
 
       case queued_job_status
-      when :queued
+      when *QUEUED_STATUSES
         nil
       when :running
         "Session #{session.id}'s turn already has a worker — it is making the clone and starting the " \
@@ -241,8 +299,9 @@ module Sessions
         "so a thread is already free and session #{session.id}'s turn starts on GoodJob's next poll."
       else
         "Nothing to force: all #{RunningTurns.worker_slots} worker threads are busy, but none of the turns " \
-        "on them can be stopped right now — they are being set up, already parked, or were forced out in " \
-        "the last #{COOLDOWN.inspect}. Session #{session.id} keeps its place in the queue."
+        "on them can be stopped right now — they are being set up, already parked, re-attached by a " \
+        "recovery rather than started, or were forced out in the last #{COOLDOWN.inspect}. Session " \
+        "#{session.id} keeps its place in the queue."
       end
     end
 
@@ -256,7 +315,7 @@ module Sessions
     def choose_victim
       return nil if occupancy < RunningTurns.worker_slots
 
-      live_turns.find { |_job, candidate| stoppable?(candidate) }&.last
+      candidate_turns.find { |_job, candidate| stoppable?(candidate) }&.last
     rescue StandardError => e
       # Every failure direction in this class is "force nothing". A read that
       # cannot be made is not evidence that a turn may be stopped.
@@ -267,6 +326,7 @@ module Sessions
 
     def stoppable?(candidate)
       return false if candidate.id == session.id
+      return false if excluding.include?(candidate.id)
       return false unless candidate.running?
       return false if candidate.status_summary_fork?
       return false if SpotSessionPause.pause_record?(candidate)
@@ -287,14 +347,20 @@ module Sessions
     # lock holder has gone still has a `performed_at` forever, and its thread died
     # with the capsule that held it. See RunningTurns for why the two facts are
     # both needed.
+    #
+    # Liveness is asked of `good_job_processes` ONCE for the whole set rather
+    # than once per job through JobLiveness: this runs on every render of a
+    # queued session's page, and a full pool is a dozen rows.
     def live_turns
       @live_turns ||= begin
         jobs = GoodJob::Job
           .where(job_class: AgentSessionJob.name, finished_at: nil)
           .where.not(performed_at: nil)
+          .where.not(locked_by_id: nil)
           .order(performed_at: :desc)
           .to_a
-          .select { |job| JobLiveness.status(job) == :running }
+        alive = GoodJob::Process.active.where(id: jobs.map(&:locked_by_id).uniq).pluck(:id).to_set
+        jobs = jobs.select { |job| alive.include?(job.locked_by_id) }
 
         sessions = Session.where(id: jobs.map { |job| session_id_of(job) }.compact).index_by(&:id)
         jobs.filter_map do |job|
@@ -302,6 +368,14 @@ module Sessions
           [ job, candidate ] if candidate
         end
       end
+    end
+
+    # The turns that may be picked from, newest first: every live turn except a
+    # re-attach, whose `performed_at` is not the turn's start (see the class
+    # comment). Still in {#live_turns}, and so still in {#occupancy}: the thread
+    # is held either way.
+    def candidate_turns
+      @candidate_turns ||= live_turns.reject { |job, _candidate| AgentJobIntent.monitor_only_job?(job) }
     end
 
     # How many of the pool's threads are held right now.
@@ -408,9 +482,15 @@ module Sessions
       end
 
       victim.resume_for_system_recovery!
+      # Not through Session#claim_system_recovery_turn!, which every sweep uses
+      # for exactly this enqueue: it refuses while Sessions::LiveTurn.underway?,
+      # and the victim's old job is still on its thread for the second or two it
+      # takes the worker to act on the halt. The claim's own protection — a
+      # second job never starting over a live one — is AgentSessionJob's
+      # concurrency guard, which this new job passes through like any other.
       AgentSessionJob.enqueue_with_prompt(
         victim.id,
-        AutomatedPrompts.system_recovery(
+        victim.recovery_turn_prompt(
           reason: "Zimmer stopped this session's turn to give its worker thread to session " \
                   "#{session.id}, which a human had been waiting on, and put this turn straight back " \
                   "in the queue"
@@ -431,18 +511,39 @@ module Sessions
     # picked the turn up anyway, and re-prioritising a job that is already running
     # is meaningless — but it would also be a write against a row GoodJob holds a
     # lock on, which is worth not doing.
+    #
+    # @return [Symbol] `:bumped` when the row was moved; `:claimed` when a worker
+    #   took it in the meantime, so the turn is starting anyway and nothing should
+    #   be stopped for it; `:unbumped` when the write itself failed — the thread
+    #   is still worth freeing, and losing the bump costs this session only the
+    #   race against whatever else is queued, not the turn
     def promote_the_queued_job
+      job = queued_job
+      return :unbumped if job.nil?
+
+      @previous_priority = job.priority
+      moved = GoodJob::Job.where(id: job.id, finished_at: nil, performed_at: nil, locked_by_id: nil)
+                          .update_all(priority: FORCED_JOB_PRIORITY)
+      moved == 1 ? :bumped : :claimed
+    rescue StandardError => e
+      Rails.logger.warn("[Sessions::ForceTurnStart] Could not prioritise session #{session.id}'s queued " \
+                        "turn (#{e.class}: #{e.message}) — it keeps its place in the queue")
+      :unbumped
+    end
+
+    # The bump undone, for a force whose halt did not happen: no thread was freed,
+    # so a turn left at the head of the queue would be jumping the next one that
+    # frees on its own, for nothing anyone confirmed.
+    def demote_the_queued_job
       job = queued_job
       return if job.nil?
 
-      GoodJob::Job.where(id: job.id, finished_at: nil, performed_at: nil, locked_by_id: nil)
-                  .update_all(priority: FORCED_JOB_PRIORITY)
+      GoodJob::Job.where(id: job.id, finished_at: nil, performed_at: nil, locked_by_id: nil,
+                         priority: FORCED_JOB_PRIORITY)
+                  .update_all(priority: @previous_priority)
     rescue StandardError => e
-      # The thread is free either way, and this session's turn is in the queue for
-      # it. Losing the bump costs it the race against whatever else is queued, not
-      # the turn.
-      Rails.logger.warn("[Sessions::ForceTurnStart] Could not prioritise session #{session.id}'s queued " \
-                        "turn (#{e.class}: #{e.message}) — it keeps its place in the queue")
+      Rails.logger.warn("[Sessions::ForceTurnStart] Could not undo the priority bump on session " \
+                        "#{session.id}'s queued turn (#{e.class}: #{e.message})")
     end
 
     # === This session's own queued turn =======================================
@@ -456,7 +557,7 @@ module Sessions
         .reject { |job| AgentJobIntent.clone_only?(job) }
       classified = jobs.map { |job| [ job, JobLiveness.status(job) ] }
       @queued_job = (classified.find { |_job, st| st == :running } ||
-                     classified.find { |_job, st| st == :queued })&.first
+                     classified.find { |_job, st| QUEUED_STATUSES.include?(st) })&.first
     end
 
     # @return [Symbol] :queued, :running, :none, or :unreadable
@@ -472,7 +573,7 @@ module Sessions
     end
 
     def queued_turn_ready?
-      session.waiting? && queued_job_status == :queued
+      session.waiting? && QUEUED_STATUSES.include?(queued_job_status)
     end
 
     # === Prose ================================================================
@@ -481,10 +582,9 @@ module Sessions
     # cannot report this itself — its process is already gone — and names who took
     # the thread, so a reader of this row never has to guess.
     def victim_message
-      "[Forced] This turn was stopped to give its worker thread to session #{session.id}, which #{actor} " \
-      "had been waiting on. Work already written to disk survives; the tool call in flight does not. " \
-      "The turn was not cancelled — it went straight back into the agents queue and runs again as soon " \
-      "as a thread frees up."
+      "[Forced] Stopped to give its worker thread to session #{session.id}, which #{actor} had been " \
+      "waiting on. The turn was not cancelled — it went straight back into the agents queue and runs " \
+      "again as soon as a thread frees up."
     end
 
     # What the forcing session's own timeline says. The same event from the other
@@ -494,9 +594,14 @@ module Sessions
       "free a worker thread; its turn was put back in the queue."
     end
 
-    def success_message(victim)
+    def success_message(victim, bump)
+      place = if bump == :bumped
+        "is first in line for the thread it freed"
+      else
+        "is in the queue for it, though its place could not be moved to the front — see the log"
+      end
       base = "Session #{victim.id}'s turn was stopped and put back in the queue, and session " \
-             "#{session.id}'s turn is first in line for the thread it freed."
+             "#{session.id}'s turn #{place}."
       return base unless session.spot?
 
       "#{base} It stays spot, so the gate is asked again when a worker picks it up — a quota window " \

@@ -235,6 +235,203 @@ class Sessions::ForceTurnStartTest < ActiveSupport::TestCase
     end
   end
 
+  test "a session the caller excludes — its own — is not a victim even when it is the newest turn" do
+    # The MCP caller is running a turn right now; if it is the newest, stopping
+    # it halts the call with no reply ever read.
+    caller = session_in(:running)
+    turn_on_a_worker(caller, started: 1.second.ago)
+    older = session_in(:running)
+    turn_on_a_worker(older, started: 5.minutes.ago)
+
+    session = forcing_session
+
+    with_pool do
+      result = Sessions::ForceTurnStart.call(session, excluding: [ caller.id ])
+
+      assert result.forced?, result.message
+      assert_equal older.id, result.victim.id
+      assert caller.reload.running?
+    end
+  end
+
+  test "a job that only re-attached to a process is not a victim, but still fills the pool" do
+    # `performed_at` on a resume_monitoring job is when the ADOPTION started, not
+    # the turn: it would read as the newest turn while being the oldest.
+    adopted = session_in(:running)
+    GoodJob::Job.create!(
+      queue_name: "agents", job_class: "AgentSessionJob", active_job_id: SecureRandom.uuid,
+      serialized_params: { "job_class" => "AgentSessionJob",
+                           "arguments" => [ adopted.id, nil, { "resume_monitoring" => true } ] },
+      performed_at: 1.second.ago, locked_at: 1.second.ago, locked_by_id: @capsule.id
+    )
+    older = session_in(:running)
+    turn_on_a_worker(older, started: 5.minutes.ago)
+
+    session = forcing_session
+
+    with_pool do
+      result = Sessions::ForceTurnStart.call(session)
+
+      assert result.forced?, result.message
+      assert_equal older.id, result.victim.id
+      assert adopted.reload.running?
+    end
+  end
+
+  test "a re-attach job alone fills its thread: the pool reads full, nothing is stoppable" do
+    adopted = session_in(:running)
+    GoodJob::Job.create!(
+      queue_name: "agents", job_class: "AgentSessionJob", active_job_id: SecureRandom.uuid,
+      serialized_params: { "job_class" => "AgentSessionJob",
+                           "arguments" => [ adopted.id, nil, { "resume_monitoring" => true } ] },
+      performed_at: 1.second.ago, locked_at: 1.second.ago, locked_by_id: @capsule.id
+    )
+    setting_up = session_in(:waiting)
+    turn_on_a_worker(setting_up, started: 2.seconds.ago)
+
+    session = forcing_session
+
+    with_pool do
+      result = Sessions::ForceTurnStart.call(session)
+
+      assert result.no_victim?, result.message
+      assert_match(/all #{SLOTS} worker threads are busy/i, result.message)
+      assert_match(/re-attached by a recovery/, result.message)
+    end
+  end
+
+  # --- the confirmed victim ----------------------------------------------------
+
+  test "a pick that differs from the one the caller confirmed is refused, and nothing is touched" do
+    _oldest, newest = saturate
+    session = forcing_session
+    ended = 987_654_321
+
+    with_pool do
+      result = Sessions::ForceTurnStart.call(session, expected_victim_id: ended)
+
+      assert result.no_victim?, result.message
+      assert_match(/session #{ended}'s — is no longer the one that would be stopped/, result.message)
+      assert_match(/session #{newest.id}'s is/, result.message)
+      assert newest.reload.running?, "the turn that would now be picked was left alone"
+    end
+    job = GoodJob::Job.where("serialized_params->'arguments'->>0 = ?", session.id.to_s).first
+    assert_nil job.priority, "the queued turn was not moved either"
+  end
+
+  test "a pick that matches the confirmed one goes ahead" do
+    _oldest, newest = saturate
+    session = forcing_session
+
+    with_pool do
+      result = Sessions::ForceTurnStart.call(session, expected_victim_id: newest.id.to_s)
+
+      assert result.forced?, result.message
+      assert_equal newest.id, result.victim.id
+    end
+  end
+
+  # --- the forced turn's own job -----------------------------------------------
+
+  test "a turn a worker claimed between the check and the force is refused before anyone is stopped" do
+    _oldest, newest = saturate
+    session = session_in(:waiting)
+    job = queued_turn(session)
+
+    # The service reads the job as queued, then a worker claims it before the
+    # bump. Simulated by claiming the row on the service's first read of it.
+    claimed = false
+    original = Sessions::LiveTurn.method(:unfinished_turns)
+    stubbed = lambda do |s|
+      turns = original.call(s)
+      unless claimed
+        claimed = true
+        job.update_columns(performed_at: Time.current, locked_at: Time.current, locked_by_id: @capsule.id)
+        turns.each { |t| t.assign_attributes(performed_at: nil, locked_by_id: nil) }
+      end
+      turns
+    end
+
+    with_pool do
+      Sessions::LiveTurn.stub(:unfinished_turns, stubbed) do
+        result = Sessions::ForceTurnStart.call(session)
+
+        assert result.refused?, result.message
+        assert_match(/A worker picked session #{session.id}'s turn up just now/, result.message)
+      end
+    end
+    assert newest.reload.running?, "no turn was stopped for a session that was already starting"
+    assert_nil job.reload.priority, "a claimed row is not re-prioritised"
+  end
+
+  test "the priority bump is undone when the halt does not happen" do
+    _oldest, _newest = saturate
+    session = session_in(:waiting)
+    job = queued_turn(session)
+    not_halted = Sessions::HaltRunningTurn::Result.new(halted: false, reason: :not_running)
+
+    with_pool do
+      Sessions::HaltRunningTurn.stub(:call, not_halted) do
+        Sessions::ForceTurnStart.call(session)
+      end
+    end
+
+    assert_nil job.reload.priority, "no thread was freed, so the turn must not jump the queue"
+  end
+
+  test "a turn queued for over 30 minutes is still a turn that can be forced" do
+    # JobLiveness calls it :abandoned past ABANDONED_QUEUED_JOB_AGE; it is still a
+    # turn a worker will run, and the deepest queue is where this matters most.
+    _oldest, newest = saturate
+    session = session_in(:waiting)
+    queued_turn(session, created: (JobLiveness::ABANDONED_QUEUED_JOB_AGE + 5.minutes).ago)
+
+    with_pool do
+      result = Sessions::ForceTurnStart.call(session)
+
+      assert result.forced?, result.message
+      assert_equal newest.id, result.victim.id
+    end
+  end
+
+  test "a victim the pause callback left in needs_input is still given its turn back" do
+    _oldest, newest = saturate
+    session = forcing_session
+    # A halt whose belt-and-braces sleep did not land: the victim rests in
+    # needs_input, which `resume` also transitions from.
+    halted = Sessions::HaltRunningTurn::Result.new(halted: true, reason: :halted)
+    park = ->(session:, reason:) { session.update!(status: :needs_input); halted }
+
+    with_pool do
+      Sessions::HaltRunningTurn.stub(:call, park) do
+        assert_enqueued_with(job: AgentSessionJob) do
+          result = Sessions::ForceTurnStart.call(session)
+          assert result.forced?, result.message
+        end
+      end
+    end
+
+    assert newest.reload.waiting?, "resumed out of needs_input and back into the queue"
+  end
+
+  test "a wake the victim had armed survives the force" do
+    # The victim did not choose to stop, so what it was waiting on is still what
+    # it is waiting on — the system-recovery resume preserves it.
+    _oldest, newest = saturate
+    Sessions::ScheduleWakeUp.call(
+      session: newest,
+      wake_at: 2.hours.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
+      prompt: "Check the children"
+    )
+    pending_before = newest.reload.pending_wake_phrase
+    assert pending_before.present?, "fixture must have a wake armed"
+    session = forcing_session
+
+    with_pool { Sessions::ForceTurnStart.call(session) }
+
+    assert_equal pending_before, newest.reload.pending_wake_phrase, "the armed wake was not consumed"
+  end
+
   # --- no eligible victim ----------------------------------------------------
 
   test "a pool with a free thread forces nothing and says the turn is already coming" do

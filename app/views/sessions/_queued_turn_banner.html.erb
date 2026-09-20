@@ -70,9 +70,13 @@
             straight back in the queue and runs again as soon as a thread frees up. What it loses is
             the tool call it is in the middle of.
           </p>
+          <%# The previewed victim rides along, so the session that dies is the one
+              the person confirmed: a pick that differs at the click is refused
+              rather than quietly stopping the next one down. %>
           <%= button_to "Force",
                 force_start_session_path(agent_session),
                 method: :post,
+                params: { expected_victim_id: victim.id },
                 form: {
                   class: "mt-2",
                   data: {

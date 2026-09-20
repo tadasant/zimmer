@@ -162,9 +162,9 @@ module Sessions
     end
 
     # What the session's own timeline calls this. The `[Paused]` branch is
-    # reachable only from a test — every caller today names its own gesture — and
-    # it is kept so a future caller parking a session some other way does not have
-    # to borrow one of the two below.
+    # reachable only from a test — every caller names its own gesture — and it is
+    # kept so a caller parking a session some other way does not have to borrow
+    # one of the two below.
     def log_prefix
       return "[Spot Queue]" if spot_queue_park?
       return "[Forced]" if reason == FORCED_TURN_START
@@ -176,28 +176,72 @@ module Sessions
     # had already gone gets no line from #terminate_process, and would otherwise
     # have nothing on its timeline saying why its turn stopped.
     def halted_message
-      "#{log_prefix} This turn was stopped and the session put to sleep " \
+      stopped = @handed_to_worker ? "is being stopped by the session worker" : "was stopped"
+      "#{log_prefix} This turn #{stopped} and the session put to sleep " \
         "(now #{session.status}). Work already written to disk survives; the tool call in flight does not."
     end
 
     # Kill the CLI process the session owns. Best effort: a session whose process
     # has already gone still gets paused, which is the state we are trying to
     # reach.
+    #
+    # == The process is usually in another container
+    #
+    # Every caller of this class runs in the `web` container — a controller, or
+    # `POST /mcp` — and in production the CLI process lives in the `worker`
+    # container's PID namespace, so `resume_monitoring` fails there every time
+    # ("not running", because it cannot be seen) and a web-side kill never lands.
+    # That is the normal case, not the edge case: it is only in development and
+    # in a single-container deployment that the signal reaches.
+    #
+    # And the status flip that follows does NOT stop the worker either. The
+    # `pause!` below carries the row running -> needs_input -> waiting in one
+    # transaction, so AgentSessionJob's monitoring loop never observes the
+    # `needs_input` its branch 1b exits on; it goes on supervising a live process
+    # on a session that reads `waiting`, and its thread stays taken until the
+    # session's NEXT job claims `running_job_id` and branch 1c makes the old one
+    # stand down. For a spot preemption that is a slot given back late; for a
+    # force it is the whole point missed — a thread taken for nothing.
+    #
+    # So when the process cannot be signalled from here, the kill is handed to
+    # the worker the way Sessions::InterruptService hands an interrupt over: a
+    # pid-scoped `interrupt_terminate_pid` that the loop's branch 1a honours on
+    # its next iteration by terminating the process and returning, which is what
+    # frees the thread. The pid scope is what makes it safe to leave behind — a
+    # later turn has a different pid and can never match it. The flag is a fast
+    # path rather than the guarantee (InterruptService documents the writer that
+    # can still lose it); the guarantee stays branch 1c, exactly as before.
     def terminate_process
       pid = session.metadata&.dig("process_pid")
       return if pid.blank?
 
-      session.logs.create!(level: "info", content: "#{log_prefix} Terminating process #{pid}")
-
       manager = ProcessLifecycleManager.new(session: session, process_manager: SystemProcessManager.new)
       result = manager.resume_monitoring(pid: pid, stderr_log_path: session.stderr_log_path)
-      return unless result.success?
 
-      manager.terminate(reason: reason)
+      if result.success?
+        session.logs.create!(level: "info", content: "#{log_prefix} Terminating process #{pid}")
+        manager.terminate(reason: reason)
+      else
+        request_worker_side_termination(pid)
+      end
     rescue StandardError => e
       Rails.logger.warn(
         "[Sessions::HaltRunningTurn] Could not terminate the process of session #{session.id}: " \
         "#{e.class}: #{e.message}"
+      )
+    end
+
+    # The same durable, pid-scoped request Sessions::InterruptService writes, for
+    # the same reason. Logged at info: in production this is every halt, and it
+    # resolves within one worker loop iteration.
+    def request_worker_side_termination(pid)
+      @handed_to_worker = true
+      session.merge_metadata!("interrupt_terminate_pid" => pid)
+      session.logs.create!(
+        level: "info",
+        content: "#{log_prefix} Process #{pid} cannot be signalled from the web process (separate " \
+                 "container/PID namespace); handed its termination to the session worker, which stops it " \
+                 "on its next loop iteration and frees the thread it holds"
       )
     end
   end

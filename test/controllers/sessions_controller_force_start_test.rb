@@ -70,6 +70,9 @@ class SessionsControllerForceStartTest < ActionDispatch::IntegrationTest
     assert_select "[data-queued-turn-banner]"
     assert_select "form[action=?]", force_start_session_path(session)
     assert_select "[data-queued-turn-force-cost]", /session ##{newest.id}/
+    # The confirmed victim rides along, so a pick that changes is refused.
+    assert_select "form[action=?] input[name=expected_victim_id][value=?]",
+      force_start_session_path(session), newest.id.to_s
   end
 
   test "the confirmation says what is about to be killed" do
@@ -124,6 +127,20 @@ class SessionsControllerForceStartTest < ActionDispatch::IntegrationTest
     assert_match(/Session #{newest.id}'s turn was stopped and put back in the queue/, flash[:notice])
     assert newest.reload.waiting?
     assert_equal session.id, newest.metadata[Sessions::ForceTurnStart::FORCED_FOR_SESSION]
+  end
+
+  test "Force refuses when the turn the person confirmed is no longer the one that would be stopped" do
+    _oldest, newest = saturate
+    session = queued_session
+
+    with_pool do
+      assert_no_enqueued_jobs(only: AgentSessionJob) do
+        post force_start_session_path(session), params: { expected_victim_id: 424_242 }
+      end
+    end
+
+    assert_match(/no longer the one that would be stopped/, flash[:alert])
+    assert newest.reload.running?
   end
 
   test "Force reports the honest refusal rather than pretending" do
