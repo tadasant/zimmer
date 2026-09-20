@@ -99,6 +99,34 @@ class Sessions::HaltRunningTurnTest < ActiveSupport::TestCase
     assert_equal true, session.metadata["pending_sleep"]
   end
 
+  # The production shape: the CLI process is in the worker container, so the web
+  # process cannot see it — `resume_monitoring` reports "not running" for a pid
+  # that is very much running, one container over. The halt has to hand the kill
+  # to the worker, or the status flips to `waiting` under a monitoring loop that
+  # has no exit for that and the thread stays taken (the whole point of a force
+  # missed, and a preempted slot given back only when the NEXT job starts).
+  test "hands the kill to the worker when the process cannot be signalled from here" do
+    session = running_with_pending_sleep(metadata: { "process_pid" => 999_999_999 })
+
+    result = Sessions::HaltRunningTurn.call(session: session, reason: Sessions::HaltRunningTurn::FORCED_TURN_START)
+
+    assert result.halted
+    assert session.reload.waiting?
+    assert_equal 999_999_999, session.metadata["interrupt_terminate_pid"].to_i,
+      "the pid-scoped request AgentSessionJob's branch 1a terminates on"
+    assert session.logs.any? { |log| log.content.include?("handed its termination to the session worker") }
+    assert session.logs.any? { |log| log.content.include?("[Forced] This turn is being stopped by the session worker") },
+      "the timeline says the stop is the worker's to make, not that it already happened"
+  end
+
+  test "does not hand the kill to the worker when there is no process to kill" do
+    session = running_with_pending_sleep
+
+    Sessions::HaltRunningTurn.call(session: session)
+
+    assert_nil session.reload.metadata["interrupt_terminate_pid"]
+  end
+
   test "terminating a live process does not stop the pause from landing" do
     session = running_with_pending_sleep(metadata: { "process_pid" => 4242 })
 

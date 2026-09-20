@@ -1736,6 +1736,7 @@ control that combines with the others, and each persists exactly as pressing **A
 | Choose a class when spawning | **Scheduling class** on the new-session form; **Run as spot** on every Quick Router surface | `start_session` (`scheduling_class`) |
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
 | Start a queued session now, without waiting out its re-check | **Start now** in the Ranked view's ⋮ menu; promoting a waiting row does it too | `action_session` (`start_now`, or as a side effect of `change_scheduling_class` to `priority`) |
+| Give a turn that is queued for a worker a thread NOW, by stopping the turn that most recently got one | **Force** on the queued-for-a-worker banner | `action_session` (`force_start`) |
 | Park a session in the spot queue with no wake-up time | — (MCP only; the web UI has no control that sleeps a session) | `action_session` (`pause_into_spot_queue`) |
 | Sleep a session until a chosen wall-clock time | — (MCP only) | `wake_me_up_later` |
 | Stop a *running* session's turn while parking it | — (MCP only) | `action_session` (`pause_into_spot_queue` with `halt: true`; the default lets the turn finish, and `self_session` does not offer it) |

@@ -58,6 +58,19 @@ class AgentJobIntent
     # @param arguments [Array, nil] `serialized_params["arguments"]`
     # @return [Boolean] false for anything unreadable, which preserves the
     #   pre-existing behaviour of every caller
+    # The same question as {.monitor_only?}, asked of a job row the caller already
+    # holds rather than of an id to look up — for a caller reading the whole
+    # `agents` lane at once, where a lookup per row would be a query per row.
+    #
+    # @param job [GoodJob::Job]
+    # @return [Boolean]
+    def monitor_only_job?(job)
+      monitor_only_arguments?(job.try(:serialized_params)&.dig("arguments"))
+    rescue StandardError => e
+      Rails.logger.error("[AgentJobIntent] Could not read intent for job #{job.try(:id)}: #{e.class}: #{e.message}")
+      false
+    end
+
     def clone_only?(job)
       arguments = job.try(:serialized_params)&.dig("arguments")
       return false unless arguments.is_a?(Array)
