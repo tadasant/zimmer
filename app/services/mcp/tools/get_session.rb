@@ -216,7 +216,7 @@ module Mcp
         when SessionWaitingReason::SPOT_HOLD then spot_hold_lines(session)
         when SessionWaitingReason::SPOT_PAUSE then spot_pause_lines(session)
         when SessionWaitingReason::AUTH_OUTAGE_PARK then auth_outage_lines(session)
-        when SessionWaitingReason::TURN_QUEUED then turn_queued_lines(mechanism)
+        when SessionWaitingReason::TURN_QUEUED then turn_queued_lines(session, mechanism)
         else raise ArgumentError, "no lines for waiting mechanism #{mechanism.key}"
         end
       end
@@ -228,7 +228,7 @@ module Mcp
       # caller that reads this most is a router deciding whether a child is stuck.
       # `waiting` is the state a queued turn has read since #1040; before that it
       # read `running`, and the dashboard's session count was the sum of both.
-      def turn_queued_lines(mechanism)
+      def turn_queued_lines(session, mechanism)
         [
           "- **Its turn is #{mechanism.label}.** Nothing is stuck and nobody needs to act: " \
           "the turn was handed over#{" at #{mechanism.at.utc.iso8601}" if mechanism.at} and GoodJob's " \
@@ -242,8 +242,32 @@ module Mcp
           "- Nothing shortens this wait except `action_session`'s \"force_start\", which stops the turn " \
           "that most recently took a thread and gives that thread to this session. It destroys another " \
           "session's in-flight tool call — that session's turn goes back in the queue, but what it was " \
-          "part-way through does not. Reach for it only when a human is waiting on this one."
-        ]
+          "part-way through does not. Reach for it only when a human is waiting on this one.",
+          force_preview_line(session)
+        ].compact
+      end
+
+      # Which session `force_start` would stop right now, so the agent deciding
+      # whether to call it knows what it is about to kill and can pin the call to
+      # that session with `expected_victim_id` — the same two facts the session
+      # page's confirmation gives a human. Nil when the caller is excluded from
+      # the pick (it is its own session) or nothing can be forced.
+      def force_preview_line(session)
+        preview = Sessions::ForceTurnStart.preview(session, excluding: [ context.self_session_id ].compact)
+        return nil if preview.nil?
+
+        if preview.available?
+          age = preview.victim_age ? "#{ActionController::Base.helpers.distance_of_time_in_words(preview.victim_age)} ago" : "an unknown time ago"
+          "- Right now that would stop session #{preview.victim.id} (#{preview.victim.priority_class}, " \
+          "its turn started #{age}). Pass `expected_victim_id: #{preview.victim.id}` so the call is refused " \
+          "if that changes before it runs."
+        else
+          "- #{preview.message}"
+        end
+      rescue StandardError => e
+        Rails.logger.warn("[Mcp::Tools::GetSession] Could not preview a force for session #{session.id}: " \
+                          "#{e.class}: #{e.message}")
+        nil
       end
 
       # Where a hold stands against the starvation age ceiling, in the words the
