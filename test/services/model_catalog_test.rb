@@ -140,6 +140,41 @@ class ModelCatalogTest < ActiveSupport::TestCase
     assert_equal %w[opus sonnet haiku fable], ModelCatalog.model_ids_for("claude_code")
   end
 
+  # The batch read the Quick Router's harness picker uses. It must agree with the
+  # per-runtime read exactly — a picker offering one list while the server
+  # validates against another is the bug it exists to avoid.
+  test "model_ids_by_runtime agrees with model_ids_for on every runtime" do
+    insert_entry("claude_code", "opus[1m]")
+    insert_entry("codex", "gpt-5.7")
+    runtimes = RuntimeRegistry.registered_runtimes
+
+    by_runtime = ModelCatalog.model_ids_by_runtime(runtimes)
+
+    assert_equal runtimes, by_runtime.keys
+    runtimes.each { |runtime| assert_equal ModelCatalog.model_ids_for(runtime), by_runtime[runtime] }
+  end
+
+  test "model_ids_by_runtime reads the added-models table once for the whole map" do
+    runtimes = RuntimeRegistry.registered_runtimes
+    queries = 0
+    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+      queries += 1 if payload[:sql].include?("model_catalog_entries")
+    end
+
+    ModelCatalog.model_ids_by_runtime(runtimes)
+
+    assert_equal 1, queries
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscriber)
+  end
+
+  test "model_ids_by_runtime degrades to the built-in lists when the added-models table is unreadable" do
+    ModelCatalogEntry.stubs(:order).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+
+    assert_equal %w[opus sonnet haiku fable],
+      ModelCatalog.model_ids_by_runtime(%w[claude_code])["claude_code"]
+  end
+
   # A dated snapshot silently outlives the model it names (#85). Nothing in the
   # catalog, on any runtime, is one — in Anthropic's `-YYYYMMDD` form or
   # Vertex's `@YYYYMMDD`.
