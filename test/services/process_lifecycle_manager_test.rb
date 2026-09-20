@@ -3623,6 +3623,101 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
       "The same dead turn must not be failed and alerted on again"
   end
 
+  # ===========================================================================
+  # Anthropic safeguards rejection (#1217, production session 19243): a known
+  # wording, failed deliberately, never retried, never paged.
+  # ===========================================================================
+
+  # The exact text Claude Code 2.1.278 recorded when the API refused Zimmer's
+  # own PR-merged notification, on an `invalid_request` entry followed by the
+  # CLI's turn-finished exit 1.
+  SAFEGUARDS_FLAGGED_MESSAGE = <<~TEXT.strip
+    API Error: Opus 5's safeguards flagged this message (https://www.anthropic.com/legal/aup). This sometimes happens with safe, normal conversations. Claude Code can't respond to this message with Opus 5.
+
+    Try rephrasing the request in a new session or change your model.
+
+    Learn more: https://support.claude.com/en/articles/16049681
+
+    Details: `[reasoning_extraction]`
+
+    Request ID: req_011CfEB55dzrzDqc9JYXY1k4
+  TEXT
+
+  def setup_transcript_ending_with_safeguards_rejection
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "Holding the PR until the merge gate rates it."}]}}
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Your PR #1211 was merged. No post-merge automation fired. Archive yourself."}]}}
+      #{api_error_json(SAFEGUARDS_FLAGGED_MESSAGE, error_type: "invalid_request")}
+      {"type": "last-prompt", "prompt": "Your PR #1211 was merged."}
+    JSONL
+  end
+
+  test "handle_exit fails a safeguards rejection deliberately, with the CLI's remedies, and does not page" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_ending_with_safeguards_rejection
+
+    UnclassifiedFailureReporter.expects(:report).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action,
+      "A refused request is a dead turn, and must not park as needs_input"
+    assert_equal 0, @mock_cli_adapter.resumed_sessions.length,
+      "A plain same-model resume is the request that was just refused; nothing may retry it"
+    assert_match(/\A#{Regexp.escape(ProcessLifecycleManager::SAFEGUARDS_REJECTION_PREFIX)}/, decision.error_message,
+      "AgentSessionJob buckets the failure as safeguards_flagged off this prefix")
+    assert_match(/Try rephrasing the request in a new session or change your model/, decision.error_message,
+      "The exit status carries the CLI's own guidance, so the homepage says what to do")
+    assert_match(/change this session's model/, decision.error_message)
+    assert_no_match(/no recovery path claimed/, decision.error_message,
+      "This is not the generic unclassified verdict")
+
+    @log_buffer.flush
+    log_contents = @session.logs.pluck(:content).join("\n")
+    assert_match(/safeguards flagged this turn's request/, log_contents)
+    assert_match(/Request ID: req_011CfEB55dzrzDqc9JYXY1k4/, log_contents,
+      "The session log keeps the runtime's full text, request id included")
+  end
+
+  test "AgentSessionJob buckets a safeguards rejection as safeguards_flagged" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_ending_with_safeguards_rejection
+    UnclassifiedFailureReporter.expects(:report).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal "safeguards_flagged", AgentSessionJob.new.send(:failure_reason_for, decision.error_message)
+    assert_equal "terminal_api_error",
+      AgentSessionJob.new.send(:failure_reason_for, "Turn ended on an API error no recovery path claimed: x"),
+      "The generic backstop keeps its own bucket"
+  end
+
+  test "handle_exit does not fail twice on the same safeguards rejection" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_ending_with_safeguards_rejection
+    UnclassifiedFailureReporter.expects(:report).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    first = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+    assert_equal :failed, first.action
+
+    @session.update!(status: :running)
+    manager2 = create_manager
+    manager2.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    second = manager2.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, second.action,
+      "The same refused turn must not be failed again by a resume that wrote nothing new"
+  end
+
   # A backstop that cannot answer must not become the thing that breaks exit
   # handling — it sits on the hot path for every normal completion.
   test "handle_exit parks as before when the terminal-error check raises" do

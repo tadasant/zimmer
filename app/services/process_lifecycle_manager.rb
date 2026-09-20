@@ -1728,6 +1728,8 @@ class ProcessLifecycleManager
   # failed session says all three on the homepage and stays resumable, where
   # `needs_input` said the opposite of all three.
   def handle_terminal_api_error(terminal)
+    return handle_safeguards_rejection(terminal) if ApiErrorRetryService.safeguards_flagged?(terminal.text)
+
     add_log(
       "Turn ended on an API error and no recovery path claimed it, so it did not complete — failing " \
         "loudly rather than parking it as finished. The runtime said: #{terminal.text}",
@@ -1763,6 +1765,45 @@ class ProcessLifecycleManager
       action: :failed,
       error_message: "Turn ended on an API error no recovery path claimed: #{terminal.text.truncate(300)}"
     )
+  end
+
+  # The prefix every safeguards failure's exit_status starts with. AgentSessionJob
+  # greps it out of the ExitDecision to bucket the failure as `safeguards_flagged`
+  # — the same coupling handle_terminal_api_error has with `terminal_api_error`.
+  SAFEGUARDS_REJECTION_PREFIX = "Anthropic's safeguards flagged this turn's request"
+
+  # A turn that ended on Anthropic's safeguards refusing the request it made
+  # (ApiErrorRetryService::SAFEGUARDS_FLAGGED_PATTERNS). Fails the session at
+  # once, deliberately, with the CLI's own remedies in the exit status.
+  #
+  # No recovery path is taken, and that is the decision rather than an
+  # omission. The refusal is a 400 on the request the turn just made; a plain
+  # resume sends the same conversation back on the same model, which is the
+  # request that was refused, and the backoff ladder would spend the session's
+  # shared API-error budget learning that six times. The message's own
+  # remedies — rephrase in a new session, or change the model — each change
+  # what the session is, and a session's model is the human's choice (there is a
+  # button for it on the session page). So the human decides, from a failed
+  # session that names both remedies, and nothing is paged: the wording is
+  # known, and the failure is the intended answer to it.
+  #
+  # Production session 19243 (issue #1217): the refused request was Zimmer's
+  # own PR-merged notification. It fell through to the backstop above with no
+  # classifier claiming it and paged as an unknown wording.
+  def handle_safeguards_rejection(terminal)
+    guidance = "#{SAFEGUARDS_REJECTION_PREFIX}, so the turn did not run. Rephrase the request in a new " \
+      "session, or change this session's model and resume it — a plain resume sends the same " \
+      "conversation back and is likely flagged again. The runtime said: "
+    add_log(guidance + terminal.text, level: "error")
+    @log_buffer&.flush
+    @logger.warn("Turn ended on an Anthropic safeguards rejection", runtime_output: terminal.text)
+
+    remember_terminal_api_error_line(terminal.line)
+
+    @mutex.synchronize { @state = :idle }
+    # The CLI's own remedies sit in the first ~300 characters of its text; the
+    # support link and request id that follow are what the truncation costs.
+    ExitDecision.new(action: :failed, error_message: guidance + terminal.text.truncate(600))
   end
 
   def report_terminal_api_error(error_text)

@@ -2017,6 +2017,13 @@ class Session < ApplicationRecord
       "This session never started: its setup failed #{spent + 1} times#{detail}, each time before " \
         "the agent ran, and the automatic retries are spent. Nothing was done and nothing was lost — " \
         "restart it to re-run the whole setup"
+    when "safeguards_flagged"
+      # `humanize` would render "Safeguards flagged" — a verdict with no verb for
+      # the reader. The two remedies are the CLI's own; both are the human's call,
+      # which is why the session failed instead of retrying. The model button is
+      # on the session page (PATCH /sessions/:id/update_model).
+      "Anthropic's safeguards flagged this turn's request, so it did not run — rephrase it in a " \
+        "new session, or change this session's model and resume it"
     when Sessions::SilentRecoveryGuard::FAILURE_REASON
       # `humanize` would render "Recovery produced no output", which states the
       # symptom and hides the two facts a reader needs: Zimmer already tried this

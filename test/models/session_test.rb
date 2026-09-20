@@ -3580,6 +3580,20 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal "OAuth authorization required: bad-eggs", session.failure_summary
   end
 
+  # #1217: "Safeguards flagged" names a verdict; the reader needs the remedies.
+  test "failure_summary carries the remedies for safeguards_flagged" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
+      metadata: { "failure_reason" => "safeguards_flagged" }
+    )
+
+    summary = session.failure_summary
+    assert_match(/safeguards flagged/, summary)
+    assert_match(/new session/, summary)
+    assert_match(/change this session's model/, summary)
+    assert_no_match(/\ASafeguards flagged\z/, summary)
+  end
+
   # #127: the variable names were already persisted by AgentSessionJob and had
   # zero readers, so the user saw "Air secret unresolvable" and nothing else.
   test "failure_summary names the missing secrets for air_secret_unresolvable" do
