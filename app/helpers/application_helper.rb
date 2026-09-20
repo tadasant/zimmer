@@ -2,6 +2,25 @@ require "rouge"
 require "rouge/plugins/redcarpet"
 
 module ApplicationHelper
+  # What every composer's "Photos & videos" input accepts.
+  #
+  # Deliberately wider than ImageStorageService::SUPPORTED_TYPES. `image/*,video/*`
+  # is what puts "Photo Library" and "Take Photo or Video" on the iOS share sheet
+  # and what opens Android Chrome's media picker instead of its document browser.
+  # A list narrowed to the four storable types greys out an iPhone's own photos,
+  # since an iPhone still is HEIC. The picked file is split client-side
+  # (app/javascript/lib/media_kinds.js) — JPEG/PNG/GIF/WebP go up the image path
+  # and the model reads them inline, everything else goes up the file path and the
+  # agent gets a path to it.
+  #
+  # Kept in lockstep with MEDIA_ACCEPT in app/javascript/lib/media_kinds.js, which
+  # test/helpers/media_picker_accept_parity_test.rb pins.
+  MEDIA_PICKER_ACCEPT = "image/*,video/*,.heic,.heif,.mov"
+
+  def media_picker_accept
+    MEDIA_PICKER_ACCEPT
+  end
+
   # Custom HTML renderer with Rouge syntax highlighting
   class MarkdownRenderer < Redcarpet::Render::HTML
     include Rouge::Plugins::Redcarpet

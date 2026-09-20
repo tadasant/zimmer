@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import { csrfToken } from "lib/csrf"
+import { isModelReadableImage, partitionMedia } from "lib/media_kinds"
 
 // Controller for handling general file attachments on session prompts.
 // Sibling to image_attachment_controller — supports drag-and-drop and the
@@ -12,6 +13,9 @@ import { csrfToken } from "lib/csrf"
 // - Follow-up prompts (existing session, uses sessionId)
 // - New session creation (uses tempSessionId)
 export default class extends Controller {
+  // preview / progress / attachButton / attachFolderButton are PLURAL: the
+  // follow-up composer renders a desktop row and a phone row, only one of which
+  // is on screen at a time, and both have to be written to.
   static targets = ["input", "folderInput", "preview", "filesField", "attachButton", "attachFolderButton", "progress"]
   static values = {
     sessionId: Number,
@@ -45,6 +49,17 @@ export default class extends Controller {
     event.target.value = ""
   }
 
+  // Media the image path cannot store — an iPhone HEIC still, a .mov or .mp4 —
+  // picked from the composer's "Photos & videos" input and handed over by
+  // image-attachment. It is stored verbatim and the agent gets a path to it,
+  // which is the whole difference from the image path.
+  handleMediaHandoff(event) {
+    const files = event.detail?.files || []
+    if (files.length > 0) {
+      this.uploadFiles(files)
+    }
+  }
+
   // Files dropped on the composer, routed here by composer-drop.
   //
   // Supports both files and folders. When `dataTransfer.items` is available we walk
@@ -66,8 +81,11 @@ export default class extends Controller {
 
     const collected = []
     // Snapshot the flat list now, for the same reason: by the time the walk below
-    // falls back to it, the DataTransfer may no longer be readable.
-    const flatFiles = Array.from(dt.files || []).filter(f => !f.type.startsWith("image/"))
+    // falls back to it, the DataTransfer may no longer be readable. The filter is
+    // the exact complement of image-attachment's, which reads the same event —
+    // a dropped HEIC or .mov is an image to the OS but not to the image path, so
+    // it belongs here.
+    const flatFiles = partitionMedia(dt.files).files
 
     const entries = []
     if (dt.items && dt.items.length > 0 && typeof dt.items[0].webkitGetAsEntry === "function") {
@@ -94,8 +112,8 @@ export default class extends Controller {
 
           if (entry.isFile) {
             const file = await new Promise((resolve, reject) => entry.file(resolve, reject))
-            // Top-level file: defer to image controller for image MIME types.
-            if (!file.type.startsWith("image/")) collected.push(file)
+            // Top-level file: defer to image controller for the types it can store.
+            if (!isModelReadableImage(file)) collected.push(file)
           } else if (entry.isDirectory) {
             // Folder contents: keep everything (including images) since
             // image_attachment never sees folders.
@@ -153,16 +171,25 @@ export default class extends Controller {
   }
 
   async uploadFiles(files) {
+    // Oversize files are dropped individually rather than failing the whole
+    // selection — one 600MB screen recording in a multi-select should not
+    // discard the photos picked alongside it.
+    const maxMb = Math.round(this.maxSizeValue / (1024 * 1024))
+    const tooLarge = files.filter(file => file.size > this.maxSizeValue)
+    const withinLimit = files.filter(file => file.size <= this.maxSizeValue)
+
+    if (tooLarge.length > 0) {
+      const names = tooLarge.map(file => `"${file.name}"`).join(", ")
+      alert(`${names} ${tooLarge.length === 1 ? "is" : "are"} over the ${maxMb}MB file limit and ${tooLarge.length === 1 ? "was" : "were"} not attached.`)
+    }
+    if (withinLimit.length === 0) return
+    files = withinLimit
+
+    // Counted after the size filter: a file that is not going to be attached
+    // should not push the selection over the limit.
     if (this.files.length + files.length > this.maxFilesValue) {
       alert(`Maximum ${this.maxFilesValue} files allowed`)
       return
-    }
-
-    for (const file of files) {
-      if (file.size > this.maxSizeValue) {
-        alert(`File "${file.name}" is too large. Maximum size is ${this.maxSizeValue / (1024 * 1024)}MB`)
-        return
-      }
     }
 
     this.startProgress(files.length)
@@ -230,15 +257,19 @@ export default class extends Controller {
   }
 
   updatePreview() {
-    if (!this.hasPreviewTarget) return
+    if (this.previewTargets.length === 0) return
 
     if (this.files.length === 0) {
-      this.previewTarget.innerHTML = ""
-      this.previewTarget.classList.add("hidden")
+      for (const preview of this.previewTargets) {
+        preview.innerHTML = ""
+        preview.classList.add("hidden")
+      }
       return
     }
 
-    this.previewTarget.classList.remove("hidden")
+    for (const preview of this.previewTargets) {
+      preview.classList.remove("hidden")
+    }
 
     const html = this.files.map((f, index) => `
       <div class="relative inline-flex items-center gap-2 bg-white border border-gray-300 rounded-md px-2 py-1 text-xs group">
@@ -259,7 +290,7 @@ export default class extends Controller {
       </div>
     `).join("")
 
-    this.previewTarget.innerHTML = `
+    const markup = `
       <div class="flex flex-wrap gap-2 p-2 bg-gray-50 rounded-lg border border-gray-200">
         <div class="flex items-center gap-1 text-xs text-gray-500 mr-2">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -270,6 +301,9 @@ export default class extends Controller {
         ${html}
       </div>
     `
+    for (const preview of this.previewTargets) {
+      preview.innerHTML = markup
+    }
   }
 
   updateHiddenField() {
@@ -304,19 +338,18 @@ export default class extends Controller {
     this.uploadTotal = 0
     this.uploadCompleted = 0
     this.setButtonsDisabled(false)
-    if (this.hasProgressTarget) {
-      this.progressTarget.innerHTML = ""
-      this.progressTarget.classList.add("hidden")
+    for (const progress of this.progressTargets) {
+      progress.innerHTML = ""
+      progress.classList.add("hidden")
     }
   }
 
   renderProgress() {
-    if (!this.hasProgressTarget) return
+    if (this.progressTargets.length === 0) return
     const total = this.uploadTotal || 0
     const done = Math.min(this.uploadCompleted || 0, total)
     const pct = total === 0 ? 0 : Math.round((done / total) * 100)
-    this.progressTarget.classList.remove("hidden")
-    this.progressTarget.innerHTML = `
+    const markup = `
       <div class="flex items-center gap-3 p-2 bg-indigo-50 border border-indigo-200 rounded-lg">
         <svg class="w-4 h-4 text-indigo-600 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -332,13 +365,14 @@ export default class extends Controller {
         </div>
       </div>
     `
+    for (const progress of this.progressTargets) {
+      progress.classList.remove("hidden")
+      progress.innerHTML = markup
+    }
   }
 
   setButtonsDisabled(disabled) {
-    const targets = []
-    if (this.hasAttachButtonTarget) targets.push(this.attachButtonTarget)
-    if (this.hasAttachFolderButtonTarget) targets.push(this.attachFolderButtonTarget)
-    for (const target of targets) {
+    for (const target of [ ...this.attachButtonTargets, ...this.attachFolderButtonTargets ]) {
       target.disabled = disabled
       target.classList.toggle("opacity-50", disabled)
       target.classList.toggle("cursor-not-allowed", disabled)
