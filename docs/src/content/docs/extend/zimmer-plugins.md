@@ -131,6 +131,10 @@ is refused. Returns:
 
 Any outcome other than `fired` comes back as a tool error (`isError: true`) with the same JSON.
 
+A variable is text from outside the deployment, and the session reads it as part of its prompt. Write
+it into the trigger's template as `{{text|untrusted}}`, so it is [fenced off as untrusted
+input](/sessions/triggers/#fencing-untrusted-text-nameuntrusted) rather than read as instructions.
+
 ### REST: `/api/v1/external_app`
 
 The same two operations with the same bodies:
