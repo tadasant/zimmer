@@ -11,6 +11,9 @@ module Triggers
   # cap, heals stale catalog references and increments the fire counter exactly
   # as a poller-driven fire does. Nothing here reimplements any of that.
   #
+  # A fourth caller is a Zimmer plugin (ExternalApps::InvokeTrigger), which is the
+  # API path with the plugin's name stamped on the session it creates.
+  #
   # What this class adds is the part all three surfaces were about to duplicate:
   # restricting the variables to the ones the template can name, and turning the
   # five possible outcomes of a fire into something each surface can render.
@@ -47,20 +50,24 @@ module Triggers
       end
     end
 
-    def self.call(trigger:, genesis:, variables: {})
-      new(trigger: trigger, genesis: genesis, variables: variables).call
+    # `session_metadata` is stamped on a session this fire creates — who fired it,
+    # when that is more than the genesis says. A Zimmer plugin passes
+    # ExternalApp#session_metadata; see Trigger#create_session!.
+    def self.call(trigger:, genesis:, variables: {}, session_metadata: {})
+      new(trigger: trigger, genesis: genesis, variables: variables, session_metadata: session_metadata).call
     end
 
-    def initialize(trigger:, genesis:, variables: {})
+    def initialize(trigger:, genesis:, variables: {}, session_metadata: {})
       @trigger = trigger
       @genesis = genesis
       @variables = variables
+      @session_metadata = session_metadata
     end
 
     def call
       prompt = @trigger.interpolate_prompt(**permitted_variables)
       fired_at_before = @trigger.last_triggered_at
-      session = @trigger.create_session!(prompt: prompt, genesis: @genesis)
+      session = @trigger.create_session!(prompt: prompt, genesis: @genesis, session_metadata: @session_metadata)
 
       if session.nil?
         return result(nil, :burst_suppressed) if @trigger.last_fire_burst_suppressed?

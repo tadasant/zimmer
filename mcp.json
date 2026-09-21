@@ -134,6 +134,15 @@
       "X-API-Key": "${ZIMMER_PROD_API_KEY}"
     }
   },
+  "zimmer-external-apps": {
+    "title": "Zimmer plugins",
+    "description": "Zimmer's native MCP server, scoped to Zimmer plugins (external apps): search_external_apps lists them with their trigger allowlists and keys, and action_external_app registers, edits, enables or disables and deletes them, and mints and revokes their keys. A minted key's secret is returned once. A plugin key can only list and invoke its allowlisted triggers, on POST /mcp/external_app or /api/v1/external_app; every other route refuses it. external_apps is an opt-in tool group, so this is the only catalog entry that reaches these tools — attach it only for work that is asked to register or rotate a plugin.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=external_apps",
+    "headers": {
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
+    }
+  },
   "figma": {
     "title": "Figma",
     "description": "Figma design MCP server (hosted, streamable-http). OAuth via browser flow.",

@@ -123,6 +123,7 @@ export default defineConfig({
             { label: "Extensions", slug: "extend/extensions" },
             { label: "Transcript hooks", slug: "extend/transcript-hooks" },
             { label: "The browser extension", slug: "extend/browser-extension" },
+            { label: "Zimmer plugins", slug: "extend/zimmer-plugins" },
           ],
         },
         {

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_13_150000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_21_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -69,6 +69,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_13_150000) do
 
   create_table "api_keys", force: :cascade do |t|
     t.datetime "created_at", null: false
+    t.bigint "external_app_id"
     t.string "grant", default: "api", null: false
     t.datetime "last_used_at"
     t.string "name", null: false
@@ -77,7 +78,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_13_150000) do
     t.string "token_digest", null: false
     t.datetime "updated_at", null: false
     t.index "lower((name)::text)", name: "index_api_keys_on_lower_name", unique: true
+    t.index ["external_app_id"], name: "index_api_keys_on_external_app_id"
     t.index ["token_digest"], name: "index_api_keys_on_token_digest", unique: true
+    t.check_constraint "(\"grant\"::text = 'external_app'::text) = (external_app_id IS NOT NULL)", name: "api_keys_external_app_grant_has_app"
   end
 
   create_table "app_settings", force: :cascade do |t|
@@ -248,6 +251,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_13_150000) do
     t.datetime "updated_at", null: false
     t.index ["session_id", "status"], name: "index_enqueued_messages_on_session_id_and_status"
     t.unique_constraint ["session_id", "position"], deferrable: :deferred, name: "index_enqueued_messages_on_session_id_and_position"
+  end
+
+  create_table "external_app_triggers", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "external_app_id", null: false
+    t.bigint "trigger_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["external_app_id", "trigger_id"], name: "index_external_app_triggers_on_app_and_trigger", unique: true
+    t.index ["trigger_id"], name: "index_external_app_triggers_on_trigger_id"
+  end
+
+  create_table "external_apps", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.text "description"
+    t.boolean "enabled", default: true, null: false
+    t.datetime "last_invoked_at"
+    t.string "name", null: false
+    t.datetime "updated_at", null: false
+    t.index "lower((name)::text)", name: "index_external_apps_on_lower_name", unique: true
   end
 
   create_table "gate_decision_feedbacks", force: :cascade do |t|
@@ -1054,6 +1076,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_13_150000) do
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_from_id", on_delete: :nullify
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_to_id", on_delete: :nullify
   add_foreign_key "agent_posted_github_comments", "sessions", on_delete: :nullify
+  add_foreign_key "api_keys", "external_apps", on_delete: :cascade
   add_foreign_key "category_feedback_events", "categories", column: "auto_category_id", on_delete: :nullify
   add_foreign_key "category_feedback_events", "categories", column: "corrected_category_id", on_delete: :nullify
   add_foreign_key "category_feedback_events", "categories", column: "replay_category_id", on_delete: :nullify
@@ -1061,6 +1084,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_13_150000) do
   add_foreign_key "claude_account_quota_snapshots", "claude_accounts", on_delete: :nullify
   add_foreign_key "elicitations", "sessions", on_delete: :cascade
   add_foreign_key "enqueued_messages", "sessions", on_delete: :cascade
+  add_foreign_key "external_app_triggers", "external_apps", on_delete: :cascade
+  add_foreign_key "external_app_triggers", "triggers", on_delete: :cascade
   add_foreign_key "gate_decision_feedbacks", "gate_decisions"
   add_foreign_key "gate_decisions", "sessions", column: "writing_session_id", on_delete: :nullify
   add_foreign_key "human_messages", "sessions", on_delete: :cascade
