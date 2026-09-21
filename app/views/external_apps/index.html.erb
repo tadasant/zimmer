@@ -1,0 +1,92 @@
+<%# Settings → Zimmer plugins. See ExternalAppsController and ExternalApp. %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div class="mb-8">
+      <div class="flex items-center mb-4">
+        <%= link_to settings_path, class: "text-gray-500 hover:text-gray-700 mr-4" do %>
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Zimmer plugins</h1>
+      </div>
+      <p class="text-sm text-gray-600">
+        An app outside Zimmer that may invoke a few chosen triggers, and do nothing else. Its key opens
+        <code class="bg-gray-100 px-1 rounded break-all">POST /mcp/external_app</code> and
+        <code class="bg-gray-100 px-1 rounded break-all">/api/v1/external_app</code>, which list and invoke the
+        triggers on its allowlist. Every other API route and <code class="bg-gray-100 px-1 rounded">/mcp</code> refuse it.
+      </p>
+      <p class="mt-2 text-sm text-gray-600">
+        Not the same thing as a catalog plugin, which bundles skills and servers into a session.
+      </p>
+    </div>
+
+    <div class="space-y-6">
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Register a plugin</h2>
+          <p class="mt-1 text-sm text-gray-500">
+            Name it after the app. The name is stamped on every session it starts.
+          </p>
+        </div>
+        <div class="px-4 py-5 sm:px-6">
+          <% if @create_errors.present? %>
+            <div class="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">
+              <%= @create_errors.join(", ") %>
+            </div>
+          <% end %>
+          <%= form_with url: external_apps_path, method: :post, class: "space-y-3" do %>
+            <div>
+              <label for="external_app_name" class="block text-sm font-medium text-gray-700">Name</label>
+              <input type="text" name="external_app[name]" id="external_app_name" required maxlength="100"
+                     value="<%= @external_app&.name %>" placeholder="e.g. Housing search"
+                     class="mt-1 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+            </div>
+            <div>
+              <label for="external_app_description" class="block text-sm font-medium text-gray-700">What it is</label>
+              <textarea name="external_app[description]" id="external_app_description" rows="2" maxlength="2000"
+                        placeholder="Optional"
+                        class="mt-1 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2"><%= @external_app&.description %></textarea>
+            </div>
+            <button type="submit"
+                    class="inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+              Register
+            </button>
+          <% end %>
+        </div>
+      </div>
+
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Plugins</h2>
+        </div>
+        <% if @external_apps.empty? %>
+          <p class="px-4 py-5 sm:px-6 text-sm text-gray-500">None registered.</p>
+        <% else %>
+          <ul class="divide-y divide-gray-200">
+            <% @external_apps.each do |external_app| %>
+              <li id="<%= dom_id(external_app) %>" class="px-4 py-4 sm:px-6">
+                <div class="flex flex-wrap items-center gap-2">
+                  <%= link_to external_app.name, external_app_path(external_app), class: "text-sm font-medium text-indigo-600 hover:text-indigo-500 break-all" %>
+                  <% if external_app.enabled? %>
+                    <span class="inline-flex rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">Enabled</span>
+                  <% else %>
+                    <span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">Disabled</span>
+                  <% end %>
+                </div>
+                <% if external_app.description.present? %>
+                  <p class="mt-1 text-sm text-gray-600 break-words"><%= external_app.description %></p>
+                <% end %>
+                <p class="mt-1 text-xs text-gray-500">
+                  <%= pluralize(external_app.triggers.size, "trigger") %> ·
+                  <%= pluralize(external_app.active_keys.size, "active key") %> ·
+                  last invoked <%= external_app.last_invoked_at ? "#{time_ago_in_words(external_app.last_invoked_at)} ago" : "never" %>
+                </p>
+              </li>
+            <% end %>
+          </ul>
+        <% end %>
+      </div>
+    </div>
+  </div>
+</div>

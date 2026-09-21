@@ -19,7 +19,9 @@
         The keys that open the REST API and the MCP endpoint at <code class="bg-gray-100 px-1 rounded">/mcp</code>.
         A full-API key can do everything — there are no per-resource scopes. The one narrower kind is a
         Quick Router key, which opens <code class="bg-gray-100 px-1 rounded">POST /api/v1/quick_router</code> and nothing else;
-        it is the key the browser extension holds. The request log names the key behind each call,
+        it is the key the browser extension holds. Keys for Zimmer plugins are narrower still, and are
+        created on <%= link_to "the plugin's own page", external_apps_path, class: "text-indigo-600 hover:text-indigo-500" %>.
+        The request log names the key behind each call,
         and revoking one refuses it from the next request on, without a restart.
       </p>
     </div>
@@ -68,7 +70,7 @@
                 Create key
               </button>
             </div>
-            <% attempted_grant = ApiKey::GRANTS.include?(@attempted_grant) ? @attempted_grant : ApiKey::API_GRANT %>
+            <% attempted_grant = ApiKey::FORM_GRANTS.include?(@attempted_grant) ? @attempted_grant : ApiKey::API_GRANT %>
             <fieldset class="mt-4">
               <legend class="text-sm font-medium text-gray-700">What it opens</legend>
               <div class="mt-2 space-y-2">
@@ -130,6 +132,13 @@
                       <% if api_key.quick_router? %>
                         <span class="inline-flex rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800"
                               title="Opens POST /api/v1/quick_router and nothing else">Quick Router only</span>
+                      <% end %>
+                      <% if api_key.external_app? %>
+                        <% if api_key.external_app %>
+                          <%= link_to "Zimmer plugin: #{api_key.external_app.name}", external_app_path(api_key.external_app),
+                                class: "inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-800 hover:bg-violet-200",
+                                title: "Invokes its plugin's allowlisted triggers and nothing else" %>
+                        <% end %>
                       <% end %>
                       <% if self_session %>
                         <span class="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"

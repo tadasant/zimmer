@@ -180,7 +180,9 @@ analysis](/sessions/outcomes/#over-mcp): it is the only entry that can start an 
 Analyze All batch, because every analysis is a full session. Every `zimmer*` entry that carries
 `sessions` can read analyses. `zimmer-settings` is the only entry that can change the Settings
 page's global defaults (`settings` is opt-in too, because those are what every later session runs
-under); `zimmer-settings-readonly` reads them and nothing else.
+under); `zimmer-settings-readonly` reads them and nothing else. `zimmer-external-apps` is the only
+entry that reaches the opt-in `external_apps` group, which registers [Zimmer plugins](/extend/zimmer-plugins/)
+and mints their keys.
 
 → [Zimmer's MCP server](/extend/mcp-server/) for the tool surface, the scoped variants, and auth.
 

@@ -440,6 +440,16 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert_equal %w[zimmer-settings zimmer-settings-readonly].sort,
                  reach.select { |_, names| names.include?("get_app_settings") }.keys.sort
   end
+  test "zimmer-external-apps is the only catalog entry that reaches the Zimmer plugin tools" do
+    reach = ServersConfig.all.to_h do |server|
+      groups = Rack::Utils.parse_query(URI.parse(server.url.to_s).query.to_s)["tool_groups"].to_s.split(",").map(&:strip)
+      [ server.name, Mcp::Registry.tools_for(groups.presence || Mcp::Registry::BASE_GROUPS).map(&:tool_name) ]
+    end
+
+    assert_equal [ "zimmer-external-apps" ], reach.select { |_, names| names.include?("action_external_app") }.keys
+    assert_equal [ "zimmer-external-apps" ], reach.select { |_, names| names.include?("search_external_apps") }.keys
+  end
+
   test "required_variables spans env, headers, url and args" do
     server = ServersConfig::Server.new("composite", {
       "type" => "streamable-http",

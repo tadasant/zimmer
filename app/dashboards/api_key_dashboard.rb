@@ -6,6 +6,8 @@ class ApiKeyDashboard < Administrate::BaseDashboard
     name: Field::String,
     source: Field::String,
     effective_grant: Field::String,
+    # The Zimmer plugin an `external_app` key belongs to; managed on /settings/plugins.
+    external_app_id: Field::Number,
     last_used_at: Field::DateTime,
     revoked_at: Field::DateTime,
     created_at: Field::DateTime,

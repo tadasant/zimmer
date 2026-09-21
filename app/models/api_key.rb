@@ -18,6 +18,13 @@ require "digest"
 # the caller to name the grant it will honour — so a `quick_router` key presented
 # to `/api/v1/sessions` or `/mcp` is refused the same way a revoked key is.
 #
+# The third grant is `external_app` — a Zimmer plugin's key. It opens
+# `POST /mcp/external_app` and `/api/v1/external_app/...`, which reach only the
+# triggers on its app's allowlist; see ExternalApp. Such a key always belongs to
+# an ExternalApp (`external_app_id`), and only such a key does — the model and a
+# check constraint both say so. It is minted from the app's settings page or
+# `action_external_app`, never from the API keys form, which has no app to give it.
+#
 # Every read of that column goes through `effective_grant`, which answers `api`
 # when the table does not have the column at all. Code that hard-requires a column its own
 # deploy adds is code that breaks whenever the migration has not run yet, and on
@@ -66,9 +73,14 @@ class ApiKey < ApplicationRecord
   # What a key opens. `api` is the whole REST API and the MCP endpoint — every
   # `API_KEYS` entry is this, and so is a minted key unless the operator chose
   # otherwise. `quick_router` is `POST /api/v1/quick_router` and nothing else.
+  # `external_app` is a Zimmer plugin's allowlisted-trigger surface (ExternalApp).
   API_GRANT = "api"
   QUICK_ROUTER_GRANT = "quick_router"
-  GRANTS = [ API_GRANT, QUICK_ROUTER_GRANT ].freeze
+  EXTERNAL_APP_GRANT = "external_app"
+  GRANTS = [ API_GRANT, QUICK_ROUTER_GRANT, EXTERNAL_APP_GRANT ].freeze
+  # The grants the API keys form offers. A plugin key needs an app to belong to,
+  # so it is minted from that app instead.
+  FORM_GRANTS = [ API_GRANT, QUICK_ROUTER_GRANT ].freeze
 
   FINGERPRINT_LENGTH = 8
 
@@ -93,6 +105,8 @@ class ApiKey < ApplicationRecord
     # The name goes into log lines and a confirm dialog: no newlines, no bidi
     # overrides, nothing that renders as something other than what it is.
     format: { without: /[\p{Cc}\p{Cf}]/, message: "can't contain control or formatting characters" }
+  belongs_to :external_app, optional: true
+
   validates :token_digest, presence: true, uniqueness: true
   validates :source, inclusion: { in: SOURCES }
   validates :grant, inclusion: { in: GRANTS }, if: :grant_column?
@@ -101,6 +115,7 @@ class ApiKey < ApplicationRecord
   validates :grant, inclusion: { in: [ API_GRANT ], message: "must be #{API_GRANT} for an #{ENV_VAR} entry" },
     if: -> { grant_column? && env? }
   validate :name_not_reserved, if: :minted?
+  validate :external_app_matches_grant, if: -> { grant_column? && external_app_column? }
 
   scope :listed, -> { order(Arel.sql("revoked_at IS NOT NULL"), created_at: :desc) }
 
@@ -136,9 +151,15 @@ class ApiKey < ApplicationRecord
     # Create a key and return it with the only copy of its secret there will ever be.
     #
     # @return [Array(ApiKey, String)]
-    def mint!(name:, grant: API_GRANT)
+    def mint!(name:, grant: API_GRANT, external_app: nil)
       token = "#{MINTED_PREFIX}#{SecureRandom.hex(32)}"
       attributes = { name: name.to_s.strip, source: MINTED_SOURCE, token_digest: digest(token) }
+      if external_app
+        # Same reasoning as the grant below: no column, nowhere to record whose key it is.
+        raise ActiveRecord::ActiveRecordError, "api_keys.external_app_id does not exist yet, so a plugin key cannot be minted" unless column_names.include?("external_app_id")
+
+        attributes[:external_app] = external_app
+      end
 
       # A database that has the column records the choice. One that does not can
       # still mint the key every key was before the column existed; a narrow one
@@ -211,6 +232,7 @@ class ApiKey < ApplicationRecord
   def minted? = source == MINTED_SOURCE
   def revoked? = revoked_at.present?
   def quick_router? = effective_grant == QUICK_ROUTER_GRANT
+  def external_app? = effective_grant == EXTERNAL_APP_GRANT
 
   # What this key opens — `api` on a database whose `grant` column has not been
   # added yet. Every read of the attribute goes through here, the dashboard's
@@ -271,6 +293,21 @@ class ApiKey < ApplicationRecord
   # to the whole API. Nothing selects partially from this table today, and this
   # keeps that from becoming a way in.
   def grant_column? = self.class.column_names.include?("grant")
+
+  def external_app_column? = self.class.column_names.include?("external_app_id")
+
+  # A plugin key belongs to exactly one app, and only a plugin key belongs to one.
+  # The check constraint `api_keys_external_app_grant_has_app` says the same thing
+  # to the database. Only reached when both columns exist: registering an
+  # `API_KEYS` entry runs these validations on every first authentication, and
+  # reading a column the table does not have would refuse a valid key.
+  def external_app_matches_grant
+    if external_app?
+      errors.add(:external_app, "must be set for an #{EXTERNAL_APP_GRANT} key") if external_app_id.nil? && external_app.nil?
+    elsif external_app_id.present? || external_app.present?
+      errors.add(:external_app, "can only be set on an #{EXTERNAL_APP_GRANT} key")
+    end
+  end
 
   # Case-insensitive, like the unique index on `lower(name)`.
   def name_not_reserved
