@@ -114,8 +114,10 @@ returned, and neither are the agent root and equipment. `max_sessions_per_minute
 trigger has no cap.
 
 **`invoke_trigger`** — `trigger_id` (integer, required) and `variables` (object, optional). The
-known variable names are `link`, `text`, `author`, `channel`, `event`, `repo`, `number`, `title`,
-`labels` (a string or an array), `channel_id`, `message_ts`, `thread_ts` and `author_id`. A placeholder
+known variable names are `link`, `text`, `author`, `channel`, `event`, `repo`, `number`, `title`
+and `labels` (a string or an array). The Slack identifiers (`channel_id`, `message_ts`, `thread_ts`,
+`author_id`) are refused: a template renders them unfenced because Zimmer normally takes them from
+Slack itself, and a plugin is not Slack. A placeholder
 the template uses but you omit renders empty. An unknown name, or a value over 10,000 characters,
 is refused. Returns:
 
@@ -160,7 +162,8 @@ A refusal also carries the API's usual `error` / `message` / `messages` keys.
 | `not_reusable` | `422` | A one-time reuse trigger whose target session is gone. Nothing fired |
 | `not_found` | `404` | No trigger with that id is on this plugin's allowlist |
 | `invalid_variables` | `422` | An unknown variable name, or a value that is too long |
-| `not_invokable` | `422` | The trigger now runs a workflow, so it takes no variables |
+| `not_invokable` | `422` | The trigger runs a workflow, so it takes no variables |
+| `error` | `422` | Firing failed on the Zimmer side, such as an agent root the catalog cannot resolve. The plugin gets a generic message and the detail goes to the WARN log. `session` is null unless the session was created before the failure |
 
 ## Batches and the burst cap
 

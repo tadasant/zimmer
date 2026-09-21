@@ -21,7 +21,8 @@ class Api::V1::ExternalAppTriggersController < Api::BaseController
     not_reusable: :unprocessable_entity,
     not_found: :not_found,
     invalid_variables: :unprocessable_entity,
-    not_invokable: :unprocessable_entity
+    not_invokable: :unprocessable_entity,
+    error: :unprocessable_entity
   }.freeze
 
   def index
@@ -43,8 +44,5 @@ class Api::V1::ExternalAppTriggersController < Api::BaseController
       # The API's one error envelope, with the invocation's fields beside it.
       render_api_error(result.outcome.to_s.humanize, result.message, status: status, **body.except(:message))
     end
-  rescue AgentRootsConfig::AgentRootNotFoundError => e
-    render_api_error("Invalid agent_root", "The trigger's agent root cannot be resolved: #{e.message}",
-                     status: :unprocessable_entity, outcome: "error", fired: false)
   end
 end

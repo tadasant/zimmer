@@ -46,8 +46,12 @@ class ExternalAppsController < ApplicationController
     end
     log_lifecycle("updated", @external_app, "enabled=#{@external_app.enabled?} triggers=#{@external_app.trigger_ids.sort.join(',')}")
     redirect_to external_app_path(@external_app), notice: "Saved #{@external_app.name}."
-  rescue ActiveRecord::RecordInvalid, ExternalApp::InvalidAllowlist => e
-    @update_errors = e.is_a?(ActiveRecord::RecordInvalid) ? e.record.errors.full_messages : [ e.message ]
+  rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique, ExternalApp::InvalidAllowlist => e
+    @update_errors = case e
+    when ActiveRecord::RecordInvalid then e.record.errors.full_messages
+    when ActiveRecord::RecordNotUnique then [ "Name has already been taken" ]
+    else [ e.message ]
+    end
     @external_app.reload
     load_show
     render :show, status: :unprocessable_entity
