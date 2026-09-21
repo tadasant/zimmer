@@ -72,6 +72,23 @@ class Mcp::Tools::ExternalAppsAdminTest < ActiveSupport::TestCase
     assert_nil ApiKey.find_by(id: key_id)
   end
 
+  test "a connection restricted to other agent roots cannot allowlist, mint for or see a plugin outside them" do
+    app_id = action(action: "create", name: "Housing search", trigger_ids: [ @trigger.id ])[:external_app][:id]
+    restricted = Mcp::Context.new(tool_groups: "external_apps", allowed_agent_roots: "some-other-root", base_url: "http://test.host")
+    restricted_action = ->(**args) { Mcp::Tools::ActionExternalApp.new(context: restricted).call(args.deep_stringify_keys) }
+
+    assert_raises(Mcp::ToolError) { restricted_action.(action: "create", name: "Sneaky", trigger_ids: [ @trigger.id ]) }
+    assert_nil ExternalApp.find_by(name: "Sneaky")
+    assert_raises(Mcp::ToolError) { restricted_action.(action: "mint_key", id: app_id) }
+    assert_raises(Mcp::ToolError) { restricted_action.(action: "update", id: app_id, trigger_ids: []) }
+    assert_equal [ @trigger.id ], ExternalApp.find(app_id).trigger_ids
+    assert_empty Mcp::Tools::SearchExternalApps.new(context: restricted).call({})[:external_apps]
+
+    # Inside its roots it works as usual.
+    allowed = Mcp::Context.new(tool_groups: "external_apps", allowed_agent_roots: @trigger.agent_root_name, base_url: "http://test.host")
+    assert Mcp::Tools::ActionExternalApp.new(context: allowed).call("action" => "mint_key", "id" => app_id)[:key][:secret]
+  end
+
   test "a duplicate name and an unknown action are readable errors" do
     action(action: "create", name: "Housing search")
     assert_raises(ActiveRecord::RecordInvalid) { action(action: "create", name: "housing search") }

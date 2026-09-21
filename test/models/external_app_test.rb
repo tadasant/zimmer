@@ -55,6 +55,14 @@ class ExternalAppTest < ActiveSupport::TestCase
     assert_equal ApiKey.digest(token), key.token_digest
   end
 
+  test "mint_key! keeps working for a 100-character name, however often it is called" do
+    app = ExternalApp.create!(name: "h" * 100)
+    keys = 3.times.map { app.mint_key!.first }
+
+    assert_equal 3, keys.map(&:name).uniq.size
+    assert(keys.all? { |key| key.name.length <= 100 })
+  end
+
   test "an external_app key needs an app, and no other key may have one" do
     app = ExternalApp.create!(name: "Housing search")
 
@@ -96,15 +104,6 @@ class ExternalAppTest < ActiveSupport::TestCase
     app.destroy!
     assert_nil ApiKey.find_by(token_digest: ApiKey.digest(token))
     assert_equal 0, ExternalAppTrigger.where(external_app_id: app.id).count
-  end
-
-  test "may_invoke? needs the app enabled and the trigger on its list" do
-    app, = create_plugin_with_key(triggers: [ @trigger ])
-
-    assert app.may_invoke?(@trigger)
-    assert_not app.may_invoke?(triggers(:disabled_slack_trigger))
-    app.update!(enabled: false)
-    assert_not app.may_invoke?(@trigger)
   end
 
   test "record_invocation! writes at most once per resolution" do

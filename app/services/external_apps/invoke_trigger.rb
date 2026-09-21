@@ -21,6 +21,18 @@ module ExternalApps
     # a paragraph of context and not for a leaked key to stuff prompts with.
     MAX_VARIABLE_CHARS = 10_000
 
+    # The variables a plugin may send: every template variable except the Slack
+    # identifiers. Those render unfenced because Zimmer takes them from Slack's
+    # own fields (Trigger::TRUSTED_IDENTIFIER_FORMATS), and a plugin is not Slack —
+    # letting it pass one would let it point a Slack-acting trigger anywhere.
+    VARIABLES = (Trigger::USER_INPUT_VARIABLES - Trigger::TRUSTED_IDENTIFIER_FORMATS.keys).freeze
+
+    # What a plugin is told when the fire itself fails. The detail — an agent
+    # root the catalog cannot resolve, a validation naming catalog artifacts — is
+    # the deployment's, not the plugin's, so it goes to the WARN log instead.
+    ERROR_MESSAGE = "The trigger could not be fired because of a problem on the Zimmer side; " \
+                    "the operator has the details."
+
     # Outcomes. The first five are Triggers::ManualFire's; the rest never fire.
     #
     #   :fired             a session was created (or a reuse trigger's followed up)
@@ -32,7 +44,12 @@ module ExternalApps
     #   :not_reusable      a one-time reuse trigger whose target is gone
     #   :not_found         no such trigger on this app's allowlist
     #   :invalid_variables a variable name it does not know, or a value too long
-    #   :not_invokable     the trigger now runs a workflow, which has no template
+    #   :not_invokable     the trigger runs a workflow, which has no template
+    #   :error             the fire raised, and the plugin is told only that
+    #                      (ERROR_MESSAGE). `session` is set when the raise came
+    #                      after the session row was committed
+    #                      (Trigger#last_fire_created_session) — it exists, so
+    #                      the caller must not retry as if nothing happened
     Result = Data.define(:outcome, :message, :trigger, :session) do
       def fired? = outcome == :fired
     end
@@ -63,12 +80,19 @@ module ExternalApps
       variables, problem = checked_variables
       return refusal(:invalid_variables, problem, trigger) if problem
 
-      fire = Triggers::ManualFire.call(
-        trigger: trigger,
-        genesis: SessionGenesis::API,
-        variables: variables,
-        session_metadata: @external_app.session_metadata
-      )
+      begin
+        fire = Triggers::ManualFire.call(
+          trigger: trigger,
+          genesis: SessionGenesis::API,
+          variables: variables,
+          session_metadata: @external_app.session_metadata
+        )
+      rescue AgentRootsConfig::AgentRootNotFoundError, ActiveRecord::ActiveRecordError, ArgumentError => e
+        created = trigger.last_fire_created_session
+        log(:warn, "invoking trigger #{trigger.id} raised #{e.class}: #{e.message.truncate(300)}" \
+                   "#{" after creating session #{created.id}" if created}")
+        return Result.new(outcome: :error, message: ERROR_MESSAGE, trigger: trigger, session: created)
+      end
       @external_app.record_invocation!
 
       log(fire.fired? ? :info : :warn, "invoked trigger #{trigger.id} (#{trigger.name.inspect}): #{fire.outcome}" \
@@ -95,10 +119,10 @@ module ExternalApps
       return [ nil, "variables must be an object" ] unless raw.is_a?(Hash)
 
       raw = raw.stringify_keys
-      unknown = raw.keys - Trigger::USER_INPUT_VARIABLES
+      unknown = raw.keys - VARIABLES
       if unknown.any?
         return [ nil, "Unknown variable(s): #{unknown.map { |k| k.truncate(40) }.join(', ')}. " \
-                      "Known: #{Trigger::USER_INPUT_VARIABLES.join(', ')}." ]
+                      "Known: #{VARIABLES.join(', ')}." ]
       end
 
       checked = {}

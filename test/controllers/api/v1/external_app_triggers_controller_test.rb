@@ -116,6 +116,30 @@ class Api::V1::ExternalAppTriggersControllerTest < ActionDispatch::IntegrationTe
     end
   end
 
+  test "the Slack identifiers are refused: a plugin is not Slack" do
+    assert_no_difference("Session.count") do
+      post api_v1_external_app_invoke_trigger_path(@trigger), params: { variables: { channel_id: "C0A6BF8T45R" } }, headers: @headers
+    end
+    assert_response :unprocessable_entity
+    assert_equal "invalid_variables", JSON.parse(response.body)["outcome"]
+  end
+
+  test "a fire that raises is an error outcome with a generic message, and the detail stays in the log" do
+    Triggers::ManualFire.stubs(:call).raises(AgentRootsConfig::AgentRootNotFoundError, "Agent root 'secret-internal-root' not found")
+
+    entries = capture_log_entries do
+      post api_v1_external_app_invoke_trigger_path(@trigger), headers: @headers
+    end
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_equal "error", json["outcome"]
+    assert_equal false, json["fired"]
+    assert_equal({ "id" => @trigger.id, "name" => @trigger.name }, json["trigger"])
+    assert_nil json["session"]
+    assert_not_includes response.body, "secret-internal-root"
+    assert(entries.any? { |level, message| level == "WARN" && message.include?("secret-internal-root") })
+  end
+
   # --- Refusals on the surface ---
 
   test "a trigger not on the allowlist answers exactly as one that does not exist" do

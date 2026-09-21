@@ -10,6 +10,11 @@ module Mcp
     # so minting one over MCP widens nothing. The secret does land in the calling
     # session's context, and TranscriptRedactor masks the `zmr_` shape in the
     # stored transcript.
+    #
+    # A connection restricted with `allowed_agent_roots` may act only on a plugin
+    # whose whole allowlist — before and after the change — is triggers of those
+    # roots, the same scope `action_trigger` honours. Otherwise a restricted
+    # connection could hand a plugin a trigger it cannot invoke itself.
     class ActionExternalApp < Tool
       ACTIONS = %w[create update delete mint_key revoke_key].freeze
 
@@ -68,6 +73,7 @@ module Mcp
       def create(args)
         app = ExternalApp.new(name: require_arg(args, "name").to_s.strip, description: args["description"].to_s.strip.presence)
         app.enabled = boolean(args["enabled"]) if args.key?("enabled")
+        enforce_roots!(requested_triggers(args)) if args.key?("trigger_ids")
         ExternalApp.transaction do
           app.save!
           app.replace_triggers!(args["trigger_ids"]) if args.key?("trigger_ids")
@@ -82,6 +88,7 @@ module Mcp
 
       def update(args)
         app = find_app(args)
+        enforce_roots!(requested_triggers(args)) if args.key?("trigger_ids")
         ExternalApp.transaction do
           app.name = args["name"].to_s.strip if args.key?("name")
           app.description = args["description"].to_s.strip.presence if args.key?("description")
@@ -93,6 +100,8 @@ module Mcp
         { action: "update", external_app: SearchExternalApps.external_app_json(app.reload) }
       rescue ExternalApp::InvalidAllowlist => e
         raise ToolError, e.message
+      rescue ActiveRecord::RecordNotUnique
+        raise ToolError, "Validation failed: Name has already been taken"
       end
 
       def delete(args)
@@ -113,7 +122,9 @@ module Mcp
           note: "This is the only time the secret is shown. Send it as X-API-Key (or Authorization: Bearer) " \
                 "to POST /mcp/external_app or /api/v1/external_app/*."
         }
-      rescue ActiveRecord::RecordNotSaved => e
+      rescue ActiveRecord::RecordInvalid
+        raise
+      rescue ActiveRecord::ActiveRecordError => e
         raise ToolError, e.message
       end
 
@@ -128,9 +139,24 @@ module Mcp
         { action: "revoke_key", key: { id: api_key.id, name: api_key.name, revoked_at: api_key.revoked_at.iso8601 } }
       end
 
+      # Every action but create names a plugin, and on a restricted connection
+      # that plugin's current allowlist has to be inside the connection's roots.
       def find_app(args)
         id = require_arg(args, "id")
-        ExternalApp.find_by(id: id) || raise(ToolError, "No Zimmer plugin with id #{id}")
+        app = ExternalApp.find_by(id: id) || raise(ToolError, "No Zimmer plugin with id #{id}")
+        enforce_roots!(app.triggers)
+        app
+      end
+
+      # The triggers a `trigger_ids` argument names that exist. Unknown ids are
+      # left for ExternalApp#replace_triggers! to refuse with its own message.
+      def requested_triggers(args)
+        ids = Array(args["trigger_ids"]).map(&:to_s).select { |id| id.match?(/\A\d{1,18}\z/) }
+        Trigger.where(id: ids).to_a
+      end
+
+      def enforce_roots!(triggers)
+        triggers.each { |trigger| enforce_allowed_root!(trigger.agent_root_name) }
       end
 
       def boolean(value)

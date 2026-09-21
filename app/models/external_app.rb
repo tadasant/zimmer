@@ -61,11 +61,13 @@ class ExternalApp < ApplicationRecord
   # second get a suffix.
   #
   # @return [Array(ApiKey, String)]
-  def mint_key!(label: nil)
-    base = "Zimmer plugin #{name}: #{label.presence || Time.current.utc.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-    candidates = [ base ] + (2..5).map { |n| "#{base} (#{n})" }
+  def mint_key!
+    # The name is cut short first, so the timestamp and the suffix always survive
+    # ApiKey's 100-character limit.
+    base = "Zimmer plugin #{name.truncate(48)}: #{Time.current.utc.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    candidates = [ base ] + (2..4).map { |n| "#{base} (#{n})" } + [ "#{base} #{SecureRandom.hex(4)}" ]
     candidates.each do |candidate|
-      return ApiKey.mint!(name: candidate.truncate(100, omission: ""), grant: ApiKey::EXTERNAL_APP_GRANT, external_app: self)
+      return ApiKey.mint!(name: candidate, grant: ApiKey::EXTERNAL_APP_GRANT, external_app: self)
     rescue ActiveRecord::RecordInvalid => e
       raise unless e.record.errors.of_kind?(:name, :taken)
     end
@@ -97,11 +99,6 @@ class ExternalApp < ApplicationRecord
     end
 
     transaction { self.triggers = found }
-  end
-
-  # Whether this app may invoke `trigger` right now.
-  def may_invoke?(trigger)
-    enabled? && trigger.present? && external_app_triggers.exists?(trigger_id: trigger.id)
   end
 
   # Stamp `last_invoked_at`, at most once per LAST_INVOKED_RESOLUTION. One

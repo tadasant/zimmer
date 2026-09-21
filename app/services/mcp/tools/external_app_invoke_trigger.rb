@@ -27,6 +27,8 @@ module Mcp
         - `not_found` — no trigger with that id is on this credential's allowlist.
         - `invalid_variables` — an unknown variable name, or a value over 10,000 characters.
         - `not_invokable` — the trigger runs a workflow, so it takes no variables.
+        - `error` — firing failed on the Zimmer side. `session` is null unless the session was created
+          before the failure.
         Anything other than `fired` is returned as a tool error, with the same JSON.
       DESC
 
@@ -37,7 +39,7 @@ module Mcp
           variables: {
             type: "object",
             description: "Values for the trigger's prompt-template placeholders. Known names: " \
-                         "#{Trigger::USER_INPUT_VARIABLES.join(', ')}. `labels` may be an array; every other " \
+                         "#{ExternalApps::InvokeTrigger::VARIABLES.join(', ')}. `labels` may be an array; every other " \
                          "value is a string. A placeholder the template uses but this omits renders empty. " \
                          "An unknown name is an error.",
             additionalProperties: true
@@ -56,10 +58,6 @@ module Mcp
         raise ToolError, JSON.pretty_generate(payload) unless result.fired?
 
         payload
-      rescue AgentRootsConfig::AgentRootNotFoundError => e
-        raise ToolError, JSON.pretty_generate(outcome: "error", fired: false,
-                                              message: "The trigger's agent root cannot be resolved: #{e.message}",
-                                              trigger: nil, session: nil)
       end
     end
   end

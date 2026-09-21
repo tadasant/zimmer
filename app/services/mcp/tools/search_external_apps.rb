@@ -30,9 +30,21 @@ module Mcp
         scope = scope.where(id: args["id"]) if args["id"].present?
         scope = scope.where("name ILIKE ?", "%#{ExternalApp.sanitize_sql_like(args['query'].to_s)}%") if args["query"].present?
         apps = scope.to_a
+        # A connection restricted to some agent roots sees only the plugins whose
+        # whole allowlist is inside them — the ones action_external_app lets it touch.
+        apps = apps.select { |app| app.triggers.all? { |t| root_allowed?(t.agent_root_name) } } if context.restricted?
         raise ToolError, "No Zimmer plugin with id #{args['id']}" if args["id"].present? && apps.empty?
 
         { external_apps: apps.map { |app| self.class.external_app_json(app) } }
+      end
+
+      private
+
+      def root_allowed?(agent_root_name)
+        enforce_allowed_root!(agent_root_name)
+        true
+      rescue ToolError
+        false
       end
 
       def self.external_app_json(app)

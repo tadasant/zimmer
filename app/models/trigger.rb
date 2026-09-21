@@ -172,9 +172,11 @@ class Trigger < ApplicationRecord
 
   belongs_to :last_session, class_name: "Session", optional: true
   has_many :trigger_conditions, dependent: :destroy
-  # The Zimmer plugins allowed to invoke this trigger (ExternalApp). The FK
-  # cascades on delete; `dependent` makes a Rails-side destroy do the same.
-  has_many :external_app_triggers, dependent: :delete_all
+  # The Zimmer plugins allowed to invoke this trigger (ExternalApp). No
+  # `dependent:` on purpose: the FK cascades on delete, and a Rails-side delete
+  # would make every trigger destroy fail on a database whose migration has not
+  # run yet.
+  has_many :external_app_triggers
   has_many :external_apps, through: :external_app_triggers
   accepts_nested_attributes_for :trigger_conditions, allow_destroy: true, reject_if: :all_blank
 

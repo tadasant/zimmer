@@ -241,6 +241,12 @@ class ApiKey < ApplicationRecord
     grant_column? ? self[:grant] : API_GRANT
   end
 
+  # The Zimmer plugin this key belongs to, or nil — including on a database whose
+  # `external_app_id` column has not been added yet. The dashboard reads this.
+  def effective_external_app_id
+    external_app_column? ? self[:external_app_id] : nil
+  end
+
   # The first characters of the key's SHA-256 — what the settings page shows.
   def fingerprint
     token_digest.to_s[0, FINGERPRINT_LENGTH]
