@@ -308,7 +308,10 @@ module SlackTriggerFiring
       end
 
       if fired.any?
-        session = trigger.create_session!(prompt: rendered.prompt)
+        session = trigger.create_session!(
+          prompt: rendered.prompt,
+          session_metadata: SlackOutageMarker.source_metadata(channel_id: channel_id, message_ts: rendered.head.ts)
+        )
 
         if session
           # We record the human's OWN words, never the rendered prompt: `prompt`

@@ -397,6 +397,45 @@ know you have picked it up. The reaction is a commitment to reply — never add 
 before you have decided to. Then do the work and reply in the thread.
 ```
 
+#### When the model is unreachable: the outage marker
+
+Both Slack prompts above make the :eyes: reaction the agent's own act, so it costs a model turn.
+While the provider is answering 529 Overloaded there is no model turn to take, and without help the
+person who posted would see nothing at all until the API recovered.
+
+So Zimmer reacts on its own, with :hourglass_flowing_sand:, never :eyes:, and only during an outage.
+A session gets the marker when all of these are true:
+
+- a Slack trigger spawned it (reuse follow-ups are someone else's session, and carry no source message)
+- it runs on Claude Code
+- it is `running` or `waiting`
+- its transcript has an API error and no turn from the model — the "No response requested." stub
+  Claude Code writes on resume is not a model turn
+- the message is more than five minutes old (`SlackOutageMarker::THRESHOLD`)
+
+The marker comes off when the agent's first model turn lands, or when the session stops without
+one. After that the agent's own :eyes:, or its silence, is the answer. Nothing about the passive
+listener's rules changes. A message the agent would have stayed silent on can carry the hourglass
+for the length of an outage, and it comes off once the agent reads it and decides. The hourglass
+means "Zimmer has this and is waiting on the model", not "Zimmer will reply".
+
+`SlackOutageMarkerJob` does this, once a minute, from the session's stored transcript. Its record
+is on the session:
+
+| Metadata key | Meaning |
+| --- | --- |
+| `slack_channel_id`, `slack_message_ts` | the message the session was spawned for, stamped at fire (the head of a coalesced group) |
+| `slack_outage_marker_added_at` | when Zimmer added the hourglass |
+| `slack_outage_marker_settled_at` | nothing more to do for this session. It is never marked again |
+| `slack_outage_marker_outcome` | why it settled: `not_needed`, `removed`, `removed:<slack code>`, `add_failed:<slack code>`, `unsupported_runtime` |
+| `slack_outage_marker_error` | the last Slack error the next sweep will retry past |
+
+The bot token needs the `reactions:write` scope. Without it Slack answers `missing_scope`: the job
+settles the session `add_failed:missing_scope`, writes a warning to the session's log naming the
+scope, and moves on. It raises nothing and pages no one. A failed *removal* is retried every minute
+for as long as the session is a candidate (one day from creation), except when Slack says the
+message or channel is gone.
+
 #### Slack Events API delivery
 
 Slack triggers can also fire from Slack's Events API, which pushes each message to Zimmer as it is

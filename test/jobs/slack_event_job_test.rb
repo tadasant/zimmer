@@ -228,6 +228,27 @@ class SlackEventJobTest < ActiveJob::TestCase
     assert_equal %w[poll poll webhook], TriggerEventClaim.order(:claimed_via).pluck(:claimed_via)
   end
 
+  # --- the source message, on the session (SlackOutageMarker) --------------------------
+
+  test "a fired session records the channel and ts of the message it was spawned for" do
+    run_event(slack_event(ts: "1756500000.000100"))
+
+    metadata = Session.order(:id).last.metadata
+    assert_equal CHANNEL, metadata["slack_channel_id"]
+    assert_equal "1756500000.000100", metadata["slack_message_ts"]
+  end
+
+  test "a poller fire that lost its head to the webhook records the first message it won" do
+    run_event(slack_event(ts: "1756500000.000100", user: "U_ALERTS", text: "alert one"))
+
+    poll_channel([
+      polled_message(ts: "1756500000.000100", user: "U_ALERTS", text: "alert one"),
+      polled_message(ts: "1756500000.600100", user: "U_ALERTS", text: "alert two")
+    ])
+
+    assert_equal "1756500000.600100", Session.order(:id).last.metadata["slack_message_ts"]
+  end
+
   # --- failure and folding ------------------------------------------------------------
 
   test "a fire that raises rolls its claim back, so the poller can still fire the message" do

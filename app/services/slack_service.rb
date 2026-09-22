@@ -7,7 +7,18 @@ require "slack-ruby-client"
 class SlackService
   class SlackError < StandardError; end
   class ConfigurationError < SlackError; end
-  class ApiError < SlackError; end
+  # Slack answered, and the answer was an error. `code` is Slack's own error
+  # string ("missing_scope", "already_reacted", "message_not_found") when the
+  # failure came from Slack, so a caller can tell a scope it lacks from a message
+  # that is gone without matching on prose.
+  class ApiError < SlackError
+    attr_reader :code
+
+    def initialize(message = nil, code: nil)
+      super(message)
+      @code = code
+    end
+  end
 
   # A failure that is expected to clear on its own: a network blip, or Slack
   # telling us to come back later. Subclasses ApiError so every existing
@@ -144,6 +155,44 @@ class SlackService
     # @return [Hash] the chat.postMessage response
     def send_dm(user_id:, text:, blocks: nil)
       post_message(channel: open_dm(user_id), text: text, blocks: blocks)
+    end
+
+    # Add an emoji reaction to a message, as the bot.
+    #
+    # Needs the `reactions:write` scope. Without it Slack answers `missing_scope`,
+    # which surfaces as ApiError with that code and is not retried. A reaction the
+    # bot already left is not an error: reacting is the point, and it is done.
+    #
+    # @param channel [String] channel or IM ID
+    # @param timestamp [String] the message's ts
+    # @param name [String] emoji name without colons ("hourglass_flowing_sand")
+    # @return [Symbol] :added, or :already_present when the bot had already reacted
+    def add_reaction(channel:, timestamp:, name:)
+      with_error_handling do
+        client.reactions_add(channel: channel, timestamp: timestamp, name: name)
+        :added
+      end
+    rescue ApiError => e
+      raise unless e.code == "already_reacted"
+
+      :already_present
+    end
+
+    # Remove the bot's own emoji reaction from a message.
+    #
+    # Same scope as {add_reaction}. A reaction that is not there is not an error:
+    # the caller wanted it gone, and it is.
+    #
+    # @return [Symbol] :removed, or :absent when there was nothing to remove
+    def remove_reaction(channel:, timestamp:, name:)
+      with_error_handling do
+        client.reactions_remove(channel: channel, timestamp: timestamp, name: name)
+        :removed
+      end
+    rescue ApiError => e
+      raise unless e.code == "no_reaction"
+
+      :absent
     end
 
     # List all channels the bot has access to
@@ -367,7 +416,7 @@ class SlackService
       rescue Slack::Web::Api::Errors::SlackError => e
         # SlackError inherits from Faraday::Error, so catch it before Faraday::Error
         # Don't retry API errors (invalid channel, permission denied, etc.)
-        raise ApiError, "Slack API error: #{e.message}"
+        raise ApiError.new("Slack API error: #{e.message}", code: e.message)
       rescue Faraday::Error => e
         # Retry transient network errors (timeouts, connection failures, server errors)
         # with exponential backoff, so a genuinely-down endpoint is not hit at a

@@ -665,4 +665,59 @@ class SlackServiceTest < ActiveSupport::TestCase
 
     SlackService.send_dm(user_id: "U9", text: "ping")
   end
+
+  # --- reactions ----------------------------------------------------------------------
+
+  def slack_api_error(klass, code)
+    klass.new(code)
+  end
+
+  test "add_reaction reacts as the bot" do
+    mock_client = mock("slack_client")
+    mock_client.expects(:reactions_add).with(channel: "C1", timestamp: "1.2", name: "hourglass_flowing_sand").returns(OpenStruct.new(ok: true))
+    SlackService.stubs(:client).returns(mock_client)
+
+    assert_equal :added, SlackService.add_reaction(channel: "C1", timestamp: "1.2", name: "hourglass_flowing_sand")
+  end
+
+  test "add_reaction treats a reaction the bot already left as done" do
+    mock_client = mock("slack_client")
+    mock_client.expects(:reactions_add).raises(slack_api_error(Slack::Web::Api::Errors::AlreadyReacted, "already_reacted"))
+    SlackService.stubs(:client).returns(mock_client)
+
+    assert_equal :already_present, SlackService.add_reaction(channel: "C1", timestamp: "1.2", name: "x")
+  end
+
+  test "add_reaction without reactions:write raises an ApiError carrying Slack's code, once" do
+    mock_client = mock("slack_client")
+    mock_client.expects(:reactions_add).once.raises(slack_api_error(Slack::Web::Api::Errors::MissingScope, "missing_scope"))
+    SlackService.stubs(:client).returns(mock_client)
+
+    error = assert_raises(SlackService::ApiError) do
+      SlackService.add_reaction(channel: "C1", timestamp: "1.2", name: "x")
+    end
+    assert_equal "missing_scope", error.code
+  end
+
+  test "remove_reaction removes, and treats a reaction that is not there as done" do
+    mock_client = mock("slack_client")
+    mock_client.expects(:reactions_remove).with(channel: "C1", timestamp: "1.2", name: "x").returns(OpenStruct.new(ok: true))
+    mock_client.expects(:reactions_remove).with(channel: "C1", timestamp: "1.3", name: "x")
+      .raises(slack_api_error(Slack::Web::Api::Errors::NoReaction, "no_reaction"))
+    SlackService.stubs(:client).returns(mock_client)
+
+    assert_equal :removed, SlackService.remove_reaction(channel: "C1", timestamp: "1.2", name: "x")
+    assert_equal :absent, SlackService.remove_reaction(channel: "C1", timestamp: "1.3", name: "x")
+  end
+
+  test "remove_reaction on a message that is gone raises with the code" do
+    mock_client = mock("slack_client")
+    mock_client.expects(:reactions_remove).raises(slack_api_error(Slack::Web::Api::Errors::MessageNotFound, "message_not_found"))
+    SlackService.stubs(:client).returns(mock_client)
+
+    error = assert_raises(SlackService::ApiError) do
+      SlackService.remove_reaction(channel: "C1", timestamp: "1.2", name: "x")
+    end
+    assert_equal "message_not_found", error.code
+  end
 end
