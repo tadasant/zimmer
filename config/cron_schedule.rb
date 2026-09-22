@@ -180,6 +180,12 @@ module CronSchedule
       description: "Poll Slack channels for triggers and create sessions",
       environments: %i[production staging development]
     },
+    slack_outage_marker: {
+      cron: "* * * * *", # Every minute — one query; Slack is called only during an outage
+      class: "SlackOutageMarkerJob",
+      description: "Put :hourglass_flowing_sand: on a Slack message whose session is stuck on API errors, and take it off when the agent's turn lands",
+      environments: %i[production staging development]
+    },
     github_trigger_poller: {
       cron: "* * * * *", # Every minute — one search request per condition, against a 30/min budget
       class: "GithubTriggerPollerJob",
