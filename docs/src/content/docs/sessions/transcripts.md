@@ -157,6 +157,18 @@ The flags are matched against a literal `true`. Anything looser — truthiness, 
 relabel a turn a person really did type as machine-written, which is the same misattribution with
 the sign flipped, so both directions are covered by tests.
 
+One line wears `type: "assistant"` and belongs in the same bucket: the stand-in reply Claude Code
+inserts on resume when the history it loaded ends on a user message, as it does after its own
+"Continue from where you left off.". It is `model: "<synthetic>"` with one text block, "No response
+requested.", and the model never wrote it. Drawn as an assistant turn, it reads as the agent
+declining to act on each resume. That misled an investigation of Slack routers stuck through a 529
+outage: the model had never been reached at all. The normalizer matches both the synthetic model
+and the exact text, and marks the notice `model: <synthetic>`. That is a matched field value, not a JSONL flag.
+`Session#formatted_conversation` drops the stub, so the push-notification summary built from the
+last assistant message never quotes it. Every other synthetic
+entry, including the "API Error: 529 …" lines the CLI writes the same way, still renders as an
+assistant turn.
+
 A runtime notice stays in the `message` filter bucket and keeps its fork affordance. It is not a
 message, but it sits in the conversational slot the CLI wrote it into, and "the turn was cut off
 here" is context a reader on the `minimal` filter still needs. A flagged line with no text is not
@@ -903,7 +915,8 @@ and drifted apart.
 
 `user`, `assistant`, `tool_use` and `tool_result` get a labelled section each — and a `user` line
 carrying one of the runtime-notice flags gets `--- Runtime Notice (agent runtime, not a person) ---`
-instead of `--- User ---`. Every other entry type is labelled and dumped rather than dropped, so the
+instead of `--- User ---`, as does the synthetic "No response requested." `assistant` line instead of
+`--- Assistant ---`. Every other entry type is labelled and dumped rather than dropped, so the
 text never quietly disagrees with the raw transcript — this matters most for Codex, whose rollout lines are all `session_meta` /
 `response_item` / `event_msg` / `turn_context` and would otherwise render as nothing at all.
 

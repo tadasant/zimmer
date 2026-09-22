@@ -851,7 +851,25 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
 
     service.attempt_retry("/tmp/test-clone")
 
-    assert_equal AutomatedPrompts::SYSTEM_RECOVERY, captured_prompt
+    assert_equal ApiErrorRetryService::RESUME_PROMPT, captured_prompt
+    # Still a recovery nudge, so the wake-up preservation keyed on it holds.
+    assert AutomatedPrompts.nudge?(captured_prompt)
+    assert AutomatedPrompts.system_recovery?(captured_prompt)
+  end
+
+  # Sessions 19830/19831: Slack routers resumed during a 529 outage into Claude
+  # Code's "Continue from where you left off." / "No response requested."
+  # scaffolding, followed by the bare nudge, whose "if you had completed your
+  # work ... please wait" is the do-nothing reading of that history. The resume
+  # prompt has to say the turn failed and the request is still open.
+  test "the resume prompt says the last turn died on an API error and the request is unhandled" do
+    prompt = ApiErrorRetryService::RESUME_PROMPT
+
+    assert prompt.start_with?(AutomatedPrompts::SYSTEM_RECOVERY)
+    assert_includes prompt, "What triggered this nudge: an API error"
+    assert_includes prompt, "still unhandled"
+    assert_includes prompt, "\"No response requested.\""
+    assert_includes prompt, "not by you"
   end
 
   # ===========================================================================

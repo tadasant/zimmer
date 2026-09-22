@@ -242,6 +242,41 @@ class ClaudeTranscriptNormalizerTest < ActiveSupport::TestCase
     assert_equal [ { "flag" => "isMeta", "reason" => "CLI-internal scaffolding" } ], events.first[:payload]["markers"]
   end
 
+  # Sessions 19830/19831: the stand-in reply Claude Code inserts after its own
+  # "Continue from where you left off." was read as the model declining to act.
+  test "normalize routes the synthetic resume stub to a runtime-notice SystemEvent" do
+    raw = {
+      "type" => "assistant",
+      "uuid" => "a-stub",
+      "message" => {
+        "role" => "assistant",
+        "model" => "<synthetic>",
+        "content" => [ { "type" => "text", "text" => "No response requested." } ]
+      }
+    }
+
+    events = @normalizer.normalize(raw, session: @session)
+
+    assert_equal [ Types::SYSTEM_EVENT ], types_of(events)
+    assert_equal OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE, events.first[:subtype]
+    assert_equal "No response requested.", events.first[:payload]["text"]
+    assert_equal [ ClaudeTranscriptNormalizer::RESUME_STUB_MARKER ], events.first[:payload]["markers"]
+  end
+
+  test "normalize keeps the model's own words and other synthetic entries as AssistantMessages" do
+    [
+      { "model" => "claude-opus-5", "content" => [ { "type" => "text", "text" => "No response requested." } ] },
+      { "model" => "<synthetic>", "content" => [ { "type" => "text", "text" => "API Error: 529 Overloaded." } ] }
+    ].each do |message|
+      raw = { "type" => "assistant", "uuid" => "a-#{message['model']}", "message" => message.merge("role" => "assistant") }
+
+      events = @normalizer.normalize(raw, session: @session)
+
+      assert_equal Types::ASSISTANT_MESSAGE, events.first[:type], message.inspect
+      assert_empty ClaudeTranscriptNormalizer.runtime_notice_markers(raw)
+    end
+  end
+
   test "normalize records both markers when a line carries both flags" do
     raw = {
       "type" => "user",

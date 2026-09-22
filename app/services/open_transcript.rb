@@ -62,8 +62,9 @@ module OpenTranscript
   # `type` carried through (see ClaudeTranscriptNormalizer#normalize_other_line,
   # which is where "queue-operation" comes from). RUNTIME_NOTICE is different:
   # it is minted by Zimmer for a line the coding agent's CLI wrote into its own
-  # transcript wearing a user role, so that the renderers can say who actually
-  # wrote it. See ClaudeTranscriptNormalizer::RUNTIME_NOTICE_FLAGS.
+  # transcript wearing a user role, or the synthetic assistant reply it inserts
+  # on resume, so that the renderers can say who actually wrote it. See
+  # ClaudeTranscriptNormalizer::RUNTIME_NOTICE_FLAGS and RESUME_STUB_MARKER.
   module SystemEventSubtypes
     RUNTIME_NOTICE = "runtime-notice"
   end
