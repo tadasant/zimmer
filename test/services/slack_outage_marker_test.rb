@@ -11,10 +11,14 @@ require "mocha/minitest"
 #   API errors, no model turn, poster waited < 5m   | none      | waiting
 #   no API error yet, no model turn                 | none      | waiting
 #   a model turn landed                             | none      | settled not_needed
-#   stopped (archived/failed/needs_input)           | none      | settled not_needed
+#   only non-outage API errors (quota, malformed)   | none      | waiting
+#   ended (archived/failed)                         | none      | settled not_needed
+#   needs_input                                     | none      | waiting
 #   not Claude Code                                 | any       | settled unsupported_runtime
-#   still no model turn                             | on        | waiting (kept)
-#   model turn landed / stopped                     | on        | removed
+#   still no model turn, or needs_input             | on        | waiting (kept)
+#   model turn landed / ended                       | on        | removed
+#   add started, never confirmed, still due         | adding    | added (retried)
+#   add started, never confirmed, turn landed       | adding    | removed
 class SlackOutageMarkerTest < ActiveSupport::TestCase
   CHANNEL = "C0BTK3BHNCE"
 
@@ -135,8 +139,8 @@ class SlackOutageMarkerTest < ActiveSupport::TestCase
     assert_equal "not_needed", metadata["slack_outage_marker_outcome"]
   end
 
-  test "settles without reacting when the session stopped" do
-    %w[archived failed needs_input].each do |status|
+  test "settles without reacting when the session ended" do
+    %w[archived failed].each do |status|
       @session.update_columns(status: Session.statuses[status], metadata: SlackOutageMarker.source_metadata(channel_id: CHANNEL, message_ts: ts_ago(10.minutes)))
       transcript(user_line, api_error_line)
       SlackService.expects(:add_reaction).never
@@ -144,6 +148,38 @@ class SlackOutageMarkerTest < ActiveSupport::TestCase
       assert_equal :settled, converge, status
       assert_equal "not_needed", metadata["slack_outage_marker_outcome"], status
     end
+  end
+
+  test "a session in needs_input is neither marked nor settled" do
+    @session.update_column(:status, Session.statuses[:needs_input])
+    transcript(user_line, api_error_line)
+    SlackService.expects(:add_reaction).never
+
+    assert_equal :waiting, converge
+    assert_nil metadata["slack_outage_marker_settled_at"]
+  end
+
+  test "an API error that is not the provider being down is not an outage" do
+    quota = line(type: "assistant", isApiErrorMessage: true, error: "rate_limit",
+                 message: { model: "<synthetic>", content: [ { type: "text", text: "You've hit your session limit · resets 5:50pm (UTC)" } ] })
+    malformed = line(type: "assistant", isApiErrorMessage: true,
+                     message: { model: "<synthetic>", content: [ { type: "text", text: "The model's tool call could not be parsed (retry also failed)." } ] })
+    SlackService.expects(:add_reaction).never
+
+    [ quota, malformed ].each do |error_line|
+      transcript(user_line, error_line)
+      assert_equal :waiting, converge
+    end
+  end
+
+  test "rechecks the row right before reacting, so a turn that landed mid-sweep is not marked" do
+    transcript(user_line, api_error_line)
+    stale = Session.find(@session.id)
+    @session.update!(transcript: [ user_line, api_error_line, model_turn_line ].join("\n") + "\n")
+    SlackService.expects(:add_reaction).never
+
+    assert_equal :settled, SlackOutageMarker.new(stale, now: @now).converge!
+    assert_equal "not_needed", metadata["slack_outage_marker_outcome"]
   end
 
   test "a session on another runtime is settled and never marked" do
@@ -186,6 +222,34 @@ class SlackOutageMarkerTest < ActiveSupport::TestCase
     assert_equal "add_failed:ConfigurationError", metadata["slack_outage_marker_outcome"]
   end
 
+  test "Slack's own try-again answers are retried, not settled" do
+    transcript(user_line, api_error_line)
+    SlackService.expects(:add_reaction).raises(slack_error("internal_error"))
+
+    assert_equal :error, converge
+    assert_nil metadata["slack_outage_marker_settled_at"]
+  end
+
+  test "an add that was started and never confirmed is retried while still due" do
+    transcript(user_line, api_error_line)
+    @session.merge_metadata!("slack_outage_marker_adding_at" => (@now - 1.minute).iso8601)
+    SlackService.expects(:add_reaction).returns(:already_present)
+
+    assert_equal :added, converge
+    assert metadata["slack_outage_marker_added_at"].present?
+    assert_nil metadata["slack_outage_marker_adding_at"]
+  end
+
+  test "an add that was started and never confirmed is taken off once the turn lands" do
+    transcript(user_line, api_error_line, model_turn_line)
+    @session.merge_metadata!("slack_outage_marker_adding_at" => (@now - 1.minute).iso8601)
+    SlackService.expects(:add_reaction).never
+    SlackService.expects(:remove_reaction).returns(:absent)
+
+    assert_equal :removed, converge
+    assert_nil metadata["slack_outage_marker_adding_at"]
+  end
+
   test "a transient failure to add is retried by the next sweep" do
     transcript(user_line, api_error_line)
     SlackService.expects(:add_reaction).raises(SlackService::TransientError, "Network error communicating with Slack: timeout")
@@ -203,6 +267,24 @@ class SlackOutageMarkerTest < ActiveSupport::TestCase
 
   def mark!
     @session.merge_metadata!("slack_outage_marker_added_at" => (@now - 1.minute).iso8601)
+  end
+
+  test "keeps the marker through needs_input, which a deploy pause or an auth park comes back from" do
+    mark!
+    @session.update_column(:status, Session.statuses[:needs_input])
+    transcript(user_line, api_error_line)
+    SlackService.expects(:remove_reaction).never
+
+    assert_equal :waiting, converge
+  end
+
+  test "a transient removal failure is retried" do
+    mark!
+    transcript(user_line, model_turn_line)
+    SlackService.expects(:remove_reaction).raises(SlackService::RateLimitedError.new("Slack rate limit exceeded", retry_after: 30))
+
+    assert_equal :error, converge
+    assert_nil metadata["slack_outage_marker_settled_at"]
   end
 
   test "keeps the marker while the session is still stuck" do
@@ -273,7 +355,11 @@ class SlackOutageMarkerTest < ActiveSupport::TestCase
     settled = sessions(:needs_input)
     settled.update_columns(metadata: young.metadata.merge("slack_outage_marker_settled_at" => @now.iso8601), created_at: @now - 1.hour)
 
+    old_marked = sessions(:failed)
+    old_marked.update_columns(metadata: young.metadata.merge("slack_outage_marker_added_at" => @now.iso8601), created_at: @now - 3.days)
+
     candidate_ids = SlackOutageMarker.candidates(now: @now).pluck(:id)
+    assert_includes candidate_ids, old_marked.id, "a marked session stays a candidate until its marker comes off"
     assert_includes candidate_ids, young.id
     refute_includes candidate_ids, old.id
     refute_includes candidate_ids, settled.id
