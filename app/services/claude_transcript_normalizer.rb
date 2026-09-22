@@ -56,6 +56,25 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
     "isMeta" => "CLI-internal scaffolding"
   }.freeze
 
+  # The other half of the resume scaffolding, which wears `type: "assistant"`.
+  # When a resumed history ends on a user message (the meta "Continue from where
+  # you left off." does exactly that), Claude Code inserts a stand-in reply so
+  # the conversation alternates: `model: "<synthetic>"`, one text block reading
+  # "No response requested.". The model did not write it, and rendering it as an
+  # AssistantMessage says it did. An investigation of sessions 19830/19831 read
+  # three of these as the model declining to act on each resume, when the model
+  # had never been reached at all: every resume was hitting 529 Overloaded.
+  #
+  # Matched on both the synthetic model and the exact text, so every other
+  # synthetic entry (the "API Error: 529 …" lines the CLI writes the same way)
+  # keeps rendering as it does.
+  SYNTHETIC_MODEL = "<synthetic>"
+  RESUME_STUB_TEXT = "No response requested."
+  RESUME_STUB_MARKER = {
+    "flag" => "model: #{SYNTHETIC_MODEL}",
+    "reason" => "the CLI's stand-in reply while resuming, not written by the model"
+  }.freeze
+
   # The RUNTIME_NOTICE_FLAGS set on a raw Claude line, as [{flag, reason}], in
   # declaration order. Empty for an ordinary user line — including one that
   # merely carries the keys with a falsey or non-boolean value.
@@ -64,12 +83,31 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
   # normalizing first: TranscriptTextRenderer's plain-text export and
   # SessionsController's copy-to-clipboard both read `parsed_transcript`
   # directly, and both were printing these lines as "User".
+  #
+  # An assistant line is marked only when it is the resume stub (see
+  # RESUME_STUB_MARKER).
   def self.runtime_notice_markers(raw_line)
     return [] unless raw_line.is_a?(Hash)
+    return (resume_stub?(raw_line) ? [ RESUME_STUB_MARKER.dup ] : []) if raw_line["type"] == "assistant"
 
     RUNTIME_NOTICE_FLAGS.filter_map do |flag, reason|
       { "flag" => flag, "reason" => reason } if raw_line[flag] == true
     end
+  end
+
+  # Whether a raw assistant line is Claude Code's "No response requested."
+  # stand-in reply rather than anything the model said.
+  def self.resume_stub?(raw_line)
+    message = raw_line["message"]
+    return false unless message.is_a?(Hash) && message["model"] == SYNTHETIC_MODEL
+
+    content = message["content"]
+    text = if content.is_a?(String)
+      content
+    elsif content.is_a?(Array) && content.one? && content.first.is_a?(Hash) && content.first["type"] == "text"
+      content.first["text"]
+    end
+    text.is_a?(String) && text.strip == RESUME_STUB_TEXT
   end
 
   # @see TranscriptNormalizer#normalize
@@ -320,6 +358,19 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
   def normalize_assistant_line(ctx)
     message = ctx.message
     content = message["content"]
+
+    if (notice = runtime_notice_payload(ctx, content))
+      return [
+        build_event(
+          ctx,
+          type: OpenTranscript::Types::SYSTEM_EVENT,
+          event_order: 0,
+          subtype: OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE,
+          payload: notice
+        )
+      ]
+    end
+
     events = []
     order = 0
 

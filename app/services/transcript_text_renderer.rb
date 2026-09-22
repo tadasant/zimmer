@@ -54,7 +54,11 @@ class TranscriptTextRenderer
           [ "--- User ---", content_text(content), "" ]
         end
       when "assistant"
-        [ "--- Assistant ---", content_text(content), "" ]
+        if ClaudeTranscriptNormalizer.runtime_notice_markers(entry).any?
+          runtime_notice_lines(content_text(content))
+        else
+          [ "--- Assistant ---", content_text(content), "" ]
+        end
       when "tool_use"
         [ "--- Tool Use: #{message['name'] || 'unknown'} ---", content_text(message["input"] || content), "" ]
       when "tool_result"

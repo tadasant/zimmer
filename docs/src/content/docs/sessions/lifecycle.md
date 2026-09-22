@@ -1235,14 +1235,25 @@ session's wake-ups, so a misread no longer loses them. Since [#1212](https://git
 both branches also perform the conditional re-sleep, so a misread costs only the watchers the
 follow-up branch consumes when they can no longer fire — the recovery branch keeps those armed.
 
-**Three producers name themselves today**, and between them they account for the large majority
+**Four producers name themselves today**, and between them they account for the large majority
 of nudges by volume: the `InterruptError` auto-continue, `SessionContinuation` (which covers both
-the orphan sweep and deployment recovery, via `continuation_source`), and `AuthOutageParkService`
-resuming a session whose login pool refilled. The rest — the SIGTERM retry, the API-error retry,
-the auth-recovery resume, the health monitor, the manual restarts from the web UI, the REST API
+the orphan sweep and deployment recovery, via `continuation_source`), `AuthOutageParkService`
+resuming a session whose login pool refilled, and the API-error retry. The rest — the SIGTERM
+retry, the auth-recovery resume, the health monitor, the manual restarts from the web UI, the REST API
 and the MCP tool, and the `ProcessLifecycleManager` continuations — still send the bare constant.
 `system_recovery(reason: nil)` returns it unchanged, so converting one is a one-line change; the
 gap is unfinished work, not a designed-in default.
+
+**The API-error retry's reason carries an instruction as well as a name.**
+`ApiErrorRetryService::RESUME_PROMPT` says the previous turn ended on an API error before it
+finished, that whatever the agent was last asked is still unhandled unless it can see it already
+did it, and that a "No response requested." reply just above was written by the runtime, not by the
+agent. That last point matters because of what a Claude resume puts in front of the nudge: the
+failed turn is an error entry, not a reply, and Claude Code follows it with its own meta "Continue
+from where you left off." plus a synthetic "No response requested." assistant turn (see
+[Who wrote this line](/sessions/transcripts/#who-wrote-this-line)). Read after that, the bare
+nudge's "if you had completed your work … please wait" is the invitation to do nothing. The Slack
+routers of sessions 19830 and 19831 sat on that shape through a 30-minute 529 outage.
 
 #### A system-recovery resume keeps the wake-ups
 
