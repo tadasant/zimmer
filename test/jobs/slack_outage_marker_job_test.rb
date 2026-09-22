@@ -12,7 +12,8 @@ class SlackOutageMarkerJobTest < ActiveJob::TestCase
       status: Session.statuses[:running],
       created_at: 1.hour.ago,
       metadata: SlackOutageMarker.source_metadata(channel_id: channel, message_ts: format("%.6f", 10.minutes.ago.to_f)),
-      transcript: { type: "assistant", isApiErrorMessage: true, message: { model: "<synthetic>", content: [] } }.to_json + "\n"
+      transcript: { type: "assistant", isApiErrorMessage: true, error: "overloaded_error",
+                    message: { model: "<synthetic>", content: [ { type: "text", text: "API Error: 529 Overloaded" } ] } }.to_json + "\n"
     )
     session
   end
@@ -36,8 +37,9 @@ class SlackOutageMarkerJobTest < ActiveJob::TestCase
 
     assert_nothing_raised { SlackOutageMarkerJob.perform_now }
     assert healthy.reload.metadata["slack_outage_marker_added_at"].present?
-    # Untouched, so the next sweep tries it again.
+    # Not settled, so the next sweep tries it again, and does not report it a second time.
     assert_nil broken.reload.metadata["slack_outage_marker_settled_at"]
+    assert_nothing_raised { SlackOutageMarkerJob.perform_now }
   end
 
   test "a sweep marks, and a later sweep after the model turn lands removes" do

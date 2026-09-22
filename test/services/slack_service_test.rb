@@ -699,6 +699,16 @@ class SlackServiceTest < ActiveSupport::TestCase
     assert_equal "missing_scope", error.code
   end
 
+  test "add_reaction lets a rate limit through for the caller to retry" do
+    mock_client = mock("slack_client")
+    mock_client.expects(:reactions_add).raises(Slack::Web::Api::Errors::TooManyRequestsError.new(OpenStruct.new(headers: { "retry-after" => "30" })))
+    SlackService.stubs(:client).returns(mock_client)
+
+    assert_raises(SlackService::RateLimitedError) do
+      SlackService.add_reaction(channel: "C1", timestamp: "1.2", name: "x")
+    end
+  end
+
   test "remove_reaction removes, and treats a reaction that is not there as done" do
     mock_client = mock("slack_client")
     mock_client.expects(:reactions_remove).with(channel: "C1", timestamp: "1.2", name: "x").returns(OpenStruct.new(ok: true))

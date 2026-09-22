@@ -9,22 +9,27 @@
 #
 # It is deliberately NOT :eyes:. On the passive listener, :eyes: means "I will reply", and the
 # agent withholds it from chatter it decides to stay out of. A Zimmer-side :eyes: would change what
-# the reaction means. So Zimmer uses a different emoji, and only during an outage: a session must
-# have hit an API error and never had a model turn, and the message must be older than
-# THRESHOLD. On an ordinary day Zimmer never reacts on a message, and the passive listener's
-# silence stays silent.
+# the reaction means. So Zimmer uses a different emoji, and only during an outage: a `running` or
+# `waiting` session must have hit an outage-class API error (ApiErrorRetryService.outage_error? —
+# a server error or transient rate limit, not a quota wall or a malformed tool call) and never had
+# a model turn, and the message must be older than THRESHOLD. On an ordinary day Zimmer never
+# reacts on a message, and the passive listener's silence stays silent.
 #
-# The marker comes off when the agent's first model turn lands, or when the session stops
-# (archived, failed, needs input) without one. From then on the agent's own :eyes: or silence is
-# the answer.
+# The marker comes off when the agent's first model turn lands, or when the session ends
+# (archived, failed) without one. A session in `needs_input` keeps a marker it already has: a
+# deploy pause or an auth-outage park comes back into the same outage, and a marker removed there
+# would never return.
 #
 # State lives in the session's metadata, so it is visible on the session without a shell:
 #
 #   slack_channel_id / slack_message_ts   the message the session was spawned for (set at fire)
-#   slack_outage_marker_added_at          when Zimmer added the reaction
+#   slack_outage_marker_adding_at         Zimmer is about to call Slack to add it (written first, so a
+#                                         crash mid-call cannot leave a reaction nothing knows about)
+#   slack_outage_marker_added_at          when Slack confirmed the reaction
 #   slack_outage_marker_settled_at        nothing more to do for this session, ever
 #   slack_outage_marker_outcome           why it settled: not_needed, removed, add_failed:<code>, ...
 #   slack_outage_marker_error             the last Slack error that is worth retrying
+#   slack_outage_marker_reported_at       when SlackOutageMarkerJob first reported an exception for it
 #
 # Every write is idempotent and the job that drives this (SlackOutageMarkerJob) is a singleton
 # sweep, so running it twice is a no-op. Once settled, a session is never marked again: a marker
@@ -45,18 +50,28 @@ class SlackOutageMarker
   # The only runtime whose stored transcript this reads.
   SUPPORTED_RUNTIME = "claude_code"
 
+  # Where a marker may be added.
   ACTIVE_STATUSES = %w[running waiting].freeze
+
+  # Where a session has ended, and a marker comes off.
+  ENDED_STATUSES = %w[archived failed].freeze
 
   # Slack answers that mean the message or its channel is out of reach for good. Nothing to
   # remove, and nothing a retry would change.
   GONE_CODES = %w[message_not_found channel_not_found not_in_channel is_archived thread_locked].freeze
 
+  # Slack's own "try again" answers, which arrive as an HTTP 200 body and so as a plain ApiError
+  # rather than a TransientError.
+  RETRYABLE_CODES = %w[internal_error fatal_error service_unavailable request_timeout ratelimited].freeze
+
   CHANNEL_KEY = "slack_channel_id"
   TS_KEY = "slack_message_ts"
+  ADDING_KEY = "slack_outage_marker_adding_at"
   ADDED_KEY = "slack_outage_marker_added_at"
   SETTLED_KEY = "slack_outage_marker_settled_at"
   OUTCOME_KEY = "slack_outage_marker_outcome"
   ERROR_KEY = "slack_outage_marker_error"
+  REPORTED_KEY = "slack_outage_marker_reported_at"
 
   # The metadata a Slack trigger fire stamps on the session it spawns.
   # @return [Hash]
@@ -66,14 +81,17 @@ class SlackOutageMarker
     { CHANNEL_KEY => channel_id, TS_KEY => message_ts.to_s }
   end
 
-  # Sessions this may still have work for: spawned by a Slack trigger, not yet settled, and young
-  # enough that a reaction on the message still means something. Everything else about "is it due"
-  # needs the transcript, so it is decided per session in #converge!.
+  # Sessions this may still have work for: spawned by a Slack trigger and not yet settled. An
+  # unmarked one must also be young enough that a reaction on the message still means something;
+  # a marked one stays a candidate however old it is, until its marker comes off. Everything else
+  # about "is it due" needs the transcript, so it is decided per session in #converge!.
   # @return [ActiveRecord::Relation]
   def self.candidates(now: Time.current, window: 1.day)
+    marked = Session.where("metadata ?| array[:keys]", keys: [ ADDING_KEY, ADDED_KEY ])
+
     Session.where("metadata ? :key", key: TS_KEY)
       .where("NOT metadata ? :key", key: SETTLED_KEY)
-      .where(created_at: (now - window)..)
+      .merge(Session.where(created_at: (now - window)..).or(marked))
   end
 
   def initialize(session, now: Time.current, logger: Rails.logger)
@@ -91,7 +109,15 @@ class SlackOutageMarker
 
     return settle!("unsupported_runtime") unless session.agent_runtime == SUPPORTED_RUNTIME
 
-    marked? ? converge_marked : converge_unmarked
+    if added?
+      converge_marked
+    elsif adding?
+      # An add was started and not confirmed: a crash, or a Slack error worth retrying. Finish it
+      # while it is still due. Otherwise the reaction may be on the message, so take it off.
+      due? ? add_marker : converge_marked
+    else
+      converge_unmarked
+    end
   end
 
   private
@@ -99,11 +125,22 @@ class SlackOutageMarker
   attr_reader :session, :now, :logger
 
   def converge_unmarked
-    return settle!("not_needed") if model_turn? || !active?
-    return :waiting unless api_error? && waited_past_threshold?
+    return settle!("not_needed") if model_turn? || ended?
+    return :waiting unless due?
 
+    # The sweep loaded this row in a batch. Read it again right before touching Slack, so a model
+    # turn that landed since is not answered with a marker.
+    session.reload
+    @transcript_signals = nil
+    return converge_unmarked unless due?
+
+    session.merge_metadata!(ADDING_KEY => now.iso8601)
+    add_marker
+  end
+
+  def add_marker
     SlackService.add_reaction(channel: channel_id, timestamp: message_ts, name: REACTION)
-    session.merge_metadata!({ ADDED_KEY => now.iso8601 }, [ ERROR_KEY ])
+    session.merge_metadata!({ ADDED_KEY => now.iso8601 }, [ ERROR_KEY, ADDING_KEY ])
     session.logs.create!(
       content: "Slack: this session has hit API errors and has not reached the model yet, so Zimmer put " \
                ":#{REACTION}: on the message that started it. It comes off when the agent gets its first turn.",
@@ -114,17 +151,19 @@ class SlackOutageMarker
   rescue SlackService::TransientError => e
     retry_later(e)
   rescue SlackService::SlackError => e
+    code = error_code(e)
+    return retry_later(e) if RETRYABLE_CODES.include?(code)
+
     # A scope the bot lacks does not grow back, and a message that is gone does not return, so
     # there is nothing to retry. Settled with the code, and said on the session, where an operator
     # reading it can see why the poster got nothing.
-    code = error_code(e)
     logger.warn "[SlackOutageMarker] Could not add :#{REACTION}: for session #{session.id}: #{e.message}"
     session.logs.create!(content: add_failure_note(code), level: "warning")
     settle!("add_failed:#{code}")
   end
 
   def converge_marked
-    return :waiting if active? && !model_turn?
+    return :waiting unless model_turn? || ended?
 
     result = SlackService.remove_reaction(channel: channel_id, timestamp: message_ts, name: REACTION)
     logger.info "[SlackOutageMarker] Removed :#{REACTION}: from #{channel_id}/#{message_ts} for session #{session.id} (#{result})"
@@ -158,7 +197,7 @@ class SlackOutageMarker
   end
 
   def settle!(outcome)
-    session.merge_metadata!({ SETTLED_KEY => now.iso8601, OUTCOME_KEY => outcome }, [ ERROR_KEY ])
+    session.merge_metadata!({ SETTLED_KEY => now.iso8601, OUTCOME_KEY => outcome }, [ ERROR_KEY, ADDING_KEY ])
     :settled
   end
 
@@ -171,11 +210,17 @@ class SlackOutageMarker
   end
 
   def settled? = metadata[SETTLED_KEY].present?
-  def marked? = metadata[ADDED_KEY].present?
+  def added? = metadata[ADDED_KEY].present?
+  def adding? = metadata[ADDING_KEY].present?
   def active? = ACTIVE_STATUSES.include?(session.status.to_s)
+  def ended? = ENDED_STATUSES.include?(session.status.to_s)
   def channel_id = metadata[CHANNEL_KEY]
   def message_ts = metadata[TS_KEY]
   def metadata = session.metadata || {}
+
+  def due?
+    active? && !model_turn? && outage_error? && waited_past_threshold?
+  end
 
   def waited_past_threshold?
     seconds = message_ts.to_s.to_f
@@ -186,24 +231,32 @@ class SlackOutageMarker
     transcript_signals[:model_turn]
   end
 
-  def api_error?
-    transcript_signals[:api_error]
+  def outage_error?
+    transcript_signals[:outage_error]
   end
 
   # One pass over the stored transcript. An API-error entry is the runtime's own line
-  # (`isApiErrorMessage: true`, `model: "<synthetic>"`). A model turn is an assistant entry from a
-  # real model: not an API error, and not `<synthetic>`, which also rules out the "No response
-  # requested." stub Claude Code writes on resume (ClaudeTranscriptNormalizer.resume_stub?).
+  # (`isApiErrorMessage: true`, `model: "<synthetic>"`), and it counts only when it is the provider
+  # being unavailable. A model turn is an assistant entry from a real model: not an API error, and
+  # not `<synthetic>`, which also rules out the "No response requested." stub Claude Code writes on
+  # resume (ClaudeTranscriptNormalizer.resume_stub?).
   def transcript_signals
-    @transcript_signals ||= session.parsed_transcript.each_with_object({ model_turn: false, api_error: false }) do |entry, found|
+    @transcript_signals ||= session.parsed_transcript.each_with_object({ model_turn: false, outage_error: false }) do |entry, found|
       next unless entry.is_a?(Hash) && entry["type"] == "assistant"
 
       if entry["isApiErrorMessage"] == true
-        found[:api_error] = true
+        found[:outage_error] = true if ApiErrorRetryService.outage_error?(entry["error"], entry_text(entry))
       else
         model = entry.dig("message", "model").to_s
         found[:model_turn] = true if model.present? && model != ClaudeTranscriptNormalizer::SYNTHETIC_MODEL
       end
     end
+  end
+
+  def entry_text(entry)
+    content = entry.dig("message", "content")
+    return content.to_s unless content.is_a?(Array)
+
+    content.filter_map { |block| block["text"] if block.is_a?(Hash) }.join(" ")
   end
 end

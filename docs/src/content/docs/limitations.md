@@ -4518,11 +4518,12 @@ The marker has gaps of its own:
 - **It is late by design.** Five minutes from the message, plus up to a minute for the sweep, and it
   shows only once Claude Code has written an API error into the transcript. Claude Code retries
   a 529 several times in-process before it gives up and writes one.
+- **A session parked in `needs_input` with no model turn keeps its hourglass** until it is archived
+  or fails. That is deliberate, since most such parks resume into the same outage, but a park that
+  never resumes leaves the hourglass up until someone archives the session.
 - **It reads the stored transcript,** which the poller writes while the process runs. The marker
   can come off up to a minute after the agent's first turn, so for a moment the hourglass and the
   agent's :eyes: can sit side by side.
-- **A candidate is at most a day old.** A marked session still stuck without a model turn after a
-  day keeps its hourglass.
 
 ### While Slack is rate-limiting you, Slack triggers fire late
 

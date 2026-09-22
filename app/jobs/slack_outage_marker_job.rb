@@ -20,9 +20,12 @@ class SlackOutageMarkerJob < ApplicationJob
       SlackOutageMarker.new(session, now: now).converge!
     rescue => e
       # One session's failure must not stop the others. Its row is untouched, so the next sweep
-      # tries it again.
+      # tries it again. Reported once per session, not once a minute for as long as it keeps failing.
       Rails.logger.warn "[SlackOutageMarkerJob] Could not converge session #{session.id}: #{e.class}: #{e.message}"
+      next if session.metadata&.dig(SlackOutageMarker::REPORTED_KEY).present?
+
       ErrorReporter.report_exception(e, context: { session_id: session.id, stage: "slack_outage_marker" })
+      session.merge_metadata!(SlackOutageMarker::REPORTED_KEY => Time.current.iso8601)
     end
   end
 end

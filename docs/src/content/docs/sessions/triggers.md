@@ -409,12 +409,15 @@ A session gets the marker when all of these are true:
 - a Slack trigger spawned it (reuse follow-ups are someone else's session, and carry no source message)
 - it runs on Claude Code
 - it is `running` or `waiting`
-- its transcript has an API error and no turn from the model — the "No response requested." stub
-  Claude Code writes on resume is not a model turn
+- its transcript has an outage-class API error — a server error or a transient rate limit, as
+  `ApiErrorRetryService.outage_error?` reads it, so not an account quota wall, a malformed tool call
+  or a safeguards rejection — and no turn from the model. The "No response requested." stub Claude
+  Code writes on resume is not a model turn
 - the message is more than five minutes old (`SlackOutageMarker::THRESHOLD`)
 
-The marker comes off when the agent's first model turn lands, or when the session stops without
-one. After that the agent's own :eyes:, or its silence, is the answer. Nothing about the passive
+The marker comes off when the agent's first model turn lands, or when the session is archived or
+fails without one. A session in `needs_input` keeps a marker it already has, because a deploy pause
+or an auth-outage park resumes into the same outage. It gets no new one there either. After that the agent's own :eyes:, or its silence, is the answer. Nothing about the passive
 listener's rules changes. A message the agent would have stayed silent on can carry the hourglass
 for the length of an outage, and it comes off once the agent reads it and decides. The hourglass
 means "Zimmer has this and is waiting on the model", not "Zimmer will reply".
@@ -425,16 +428,19 @@ is on the session:
 | Metadata key | Meaning |
 | --- | --- |
 | `slack_channel_id`, `slack_message_ts` | the message the session was spawned for, stamped at fire (the head of a coalesced group) |
-| `slack_outage_marker_added_at` | when Zimmer added the hourglass |
+| `slack_outage_marker_adding_at` | Zimmer is about to ask Slack for the hourglass. It is written first, so if the call dies midway the next sweep finishes the add, or removes the reaction if the session no longer needs it |
+| `slack_outage_marker_added_at` | when Slack confirmed the hourglass |
 | `slack_outage_marker_settled_at` | nothing more to do for this session. It is never marked again |
 | `slack_outage_marker_outcome` | why it settled: `not_needed`, `removed`, `removed:<slack code>`, `add_failed:<slack code>`, `unsupported_runtime` |
 | `slack_outage_marker_error` | the last Slack error the next sweep will retry past |
+| `slack_outage_marker_reported_at` | when the job first sent an exception for this session to error reporting. It reports once, not every minute |
 
 The bot token needs the `reactions:write` scope. Without it Slack answers `missing_scope`: the job
 settles the session `add_failed:missing_scope`, writes a warning to the session's log naming the
-scope, and moves on. It raises nothing and pages no one. A failed *removal* is retried every minute
-for as long as the session is a candidate (one day from creation), except when Slack says the
-message or channel is gone.
+scope, and moves on. It raises nothing and pages no one. Slack's own try-again answers (`internal_error`, `ratelimited` and the like) and network failures are
+retried by the next sweep. A failed *removal* is retried every minute until it works, except when
+Slack says the message or channel is gone. A marked session stays a candidate however old it is. An
+unmarked one stops being considered a day after it was created.
 
 #### Slack Events API delivery
 
