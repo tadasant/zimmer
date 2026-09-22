@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 35 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 37 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -67,6 +67,11 @@ A key has a name but no scope — the same caveat as [the REST API](/extend/rest
 the URL, so a caller that holds a key can always widen it by asking for a different URL — or skip MCP
 and call `/api/v1` directly. It exists to give an agent the *right* surface, not to contain a
 determined one. Anyone you hand a key to can do anything a key can do.
+
+The one scoped credential is a [Zimmer plugin](/extend/zimmer-plugins/)'s key. It has its own
+endpoint, `POST /mcp/external_app`, which serves exactly `list_triggers` and `invoke_trigger` for the
+triggers on that plugin's allowlist and ignores the query string. `/mcp` and every `/api/v1` route
+refuse it. That is enforced on the server, not by the URL.
 :::
 
 ## Scoped variants: `tool_groups`
@@ -83,11 +88,12 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=work_backlog` | The [work backlog](/operate/work-backlog/): read the ranked queue, append a cleared issue, pull the top items into spot sessions |
 | `/mcp?tool_groups=sessions_readonly,outcome_analyses` | [Outcome analysis](/sessions/outcomes/#over-mcp): start, batch and stop analyses, plus the session reads |
 | `/mcp?tool_groups=settings` | The Settings page's global defaults: read and change the base runtime and model and the Experimental toggles |
+| `/mcp?tool_groups=external_apps` | [Zimmer plugins](/extend/zimmer-plugins/): register one, set the triggers it may invoke, mint and revoke its keys |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
 The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions`,
-`work_backlog`, `outcome_analyses` and `settings` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
+`work_backlog`, `outcome_analyses`, `settings` and `external_apps` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
 `_readonly` variant. Omitting `tool_groups` enables the four base groups and nothing else — an
 opt-in group is valid and addressable but never handed out by default, so `/mcp` on its own does
 not carry `record_gate_decision`. An unknown group is dropped with a warning rather than failing
@@ -202,7 +208,7 @@ production.
 
 ## The tool surface
 
-35 tools, eight domains — 26 of them on the unscoped surface.
+37 tools, nine domains — 26 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
@@ -214,6 +220,7 @@ production.
 | `work_backlog` (opt-in) | `get_work_backlog`, `append_work_backlog_item`, `pull_work_backlog_items` |
 | `outcome_analyses` (opt-in) | `action_outcome_analysis` (its read, `get_outcome_analysis`, is in `sessions`) |
 | `settings` (opt-in) | `get_app_settings`, `action_app_settings` |
+| `external_apps` (opt-in) | `search_external_apps`, `action_external_app` — register [Zimmer plugins](/extend/zimmer-plugins/) and mint their keys |
 
 `get_user_view` and `reorder_user_view` are the read and write halves of the dashboard's
 [User view](/sessions/user-view/) — the human's decision board. The read returns the board in the

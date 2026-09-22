@@ -280,6 +280,10 @@ module TranscriptRedactor
     # form is underscore-separated and so is missed by the `sk-` patterns above.
     pattern("STRIPE_KEY", /\b(?:sk|rk|pk)_(?:live|test)_[0-9a-zA-Z]{16,}/),
     pattern("NPM_TOKEN", /\bnpm_[A-Za-z0-9]{30,}/),
+    # Zimmer's own minted API keys (ApiKey::MINTED_PREFIX + 64 hex). A Zimmer
+    # plugin's key is minted over MCP by `action_external_app`, which puts the
+    # secret in the calling session's transcript.
+    pattern("ZIMMER_API_KEY", /\bzmr_[0-9a-f]{64}\b/),
     # 1Password service-account token — the credential the `1password-provisioning`
     # MCP server runs on. The `op://` references it consumes are not secret; its
     # token is, and so is anything `op read` prints (which has no shape and is

@@ -14,6 +14,7 @@ module Mcp
   #   outcome_analyses → start and stop Outcomes analyses. OPT-IN too
   #   settings       → read and change the Settings page's global defaults.
   #                    OPT-IN, like gate_decisions
+  #   external_apps  → register Zimmer plugins and mint their keys. OPT-IN
   #   self_session   → the curated set auto-injected into every session, so a
   #                    session can manage itself (notes/title/heartbeat/archive),
   #                    notify its user, and schedule its own wake-ups
@@ -35,7 +36,7 @@ module Mcp
     # included — but deliberately outside the default-everything set, the way
     # COMPOSITE_GROUPS is. A group lands here when the cost of every unscoped
     # connection carrying its write tools outweighs the convenience.
-    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings].freeze
+    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings external_apps].freeze
 
     COMPOSITE_GROUPS = %w[self_session].freeze
 
@@ -238,7 +239,23 @@ module Mcp
       # fleet's shared API key can compose `?tool_groups=settings` itself. What
       # holds regardless is the `[AppSettings]` audit line every write leaves.
       Definition.new(klass: "Mcp::Tools::GetAppSettings", group: "settings", write: false),
-      Definition.new(klass: "Mcp::Tools::ActionAppSettings", group: "settings", write: true)
+      Definition.new(klass: "Mcp::Tools::ActionAppSettings", group: "settings", write: true),
+
+      # Zimmer plugins — Settings → Zimmer plugins: register an external app, set
+      # the triggers it may invoke, mint and revoke its keys.
+      #
+      # OPT-IN because `action_external_app` hands out credentials. A plugin key is
+      # narrow — it invokes allowlisted triggers and nothing else, a subset of what
+      # `action_trigger` already does — but a session that can mint one can hand a
+      # trigger to something outside the deployment, and that is a decision to make
+      # on purpose. `zimmer-external-apps` (mcp.json) is the catalog entry that names
+      # the group; no root carries it by default.
+      #
+      # What a plugin's OWN key sees is not here at all: `list_triggers` and
+      # `invoke_trigger` are served only on `POST /mcp/external_app`, from
+      # Mcp::ExternalAppContext, and no group reaches them.
+      Definition.new(klass: "Mcp::Tools::SearchExternalApps", group: "external_apps", write: false),
+      Definition.new(klass: "Mcp::Tools::ActionExternalApp", group: "external_apps", write: true)
     ].freeze
 
     module_function

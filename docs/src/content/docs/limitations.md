@@ -1132,6 +1132,8 @@ restart. What is still true:
   [`POST /api/v1/quick_router`](/extend/rest-api/#the-quick-router-ingest) and nothing else — a
   second closed door for the [browser extension](/extend/browser-extension/), not a permission
   system. A leaked one can start Quick Router sessions (ten a minute per address) and read nothing.
+  The other exception is a [Zimmer plugin](/extend/zimmer-plugins/)'s `external_app` key, which
+  lists and invokes its plugin's allowlisted triggers and reaches nothing else.
 - **The agents share one key, and can reach all of `API_KEYS`.** Every session's Zimmer MCP servers
   carry the deployment's self-session key, the first `API_KEYS` entry, so the log can say "the
   fleet's key did this" and not which session did it. Revoking that key disconnects every session
@@ -1150,6 +1152,18 @@ restart. What is still true:
 - **An `API_KEYS` entry is stored as an unsalted SHA-256.** A minted key has 256 random bits, so its
   digest gives nothing away. An `API_KEYS` entry is only as strong as whoever chose it: a short one
   can be brute-forced from a database dump.
+
+### A Zimmer plugin's follow-up into a reused session is not stamped
+
+A session a [Zimmer plugin](/extend/zimmer-plugins/) creates records `external_app_id` and
+`external_app_name` in its metadata. An invoke of a **reuse** trigger does not create a session: it
+follows up one that already exists, and that session's metadata is not rewritten, so nothing on it
+says a plugin sent the follow-up. The `[external_app] … invoked trigger` log line is the only record,
+at INFO, which obs does not ship. The burst-notice session a plugin's invoke tips over the cap is not
+stamped either, on purpose: it is not the work the plugin asked for.
+
+A plugin's only rate limit is the trigger's own `max_sessions_per_minute`. A plugin allowlisted to a
+trigger with no cap can start sessions as fast as it can call. Set a cap on any trigger you allowlist.
 
 ### Agents run unsandboxed on the app host
 

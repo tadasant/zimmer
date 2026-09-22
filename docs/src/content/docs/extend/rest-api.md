@@ -801,6 +801,22 @@ client address — the ceiling on what a leaked key can spend from one place, no
 dropping pins meets. The `session_url` is built on the instance's configured base URL
 (`ZIMMER_PROD_BASE_URL`), not on the host the request came in on.
 
+## Zimmer plugins
+
+A [Zimmer plugin](/extend/zimmer-plugins/)'s key opens two routes and nothing else. Every other
+route on this page answers it `401`, and these two answer every other key `401`:
+
+- `GET /api/v1/external_app/triggers` — the triggers this key may invoke:
+  `{ "external_app": {id, name, description}, "triggers": [{id, name, variables, max_sessions_per_minute}] }`.
+- `POST /api/v1/external_app/triggers/:id/invoke` with `{ "variables": { "text": "…" } }` —
+  `{ outcome, fired, message, trigger: {id, name}, session: {id, status, url} | null }`. `201` when it
+  fired; `429` for `burst_notice` / `burst_suppressed`, `409` for `pending_session`, `404` for a
+  trigger not on the allowlist, `422` for bad variables and the rest. A disabled plugin gets `403`.
+
+The full contract, with the MCP equivalent, is on [Zimmer plugins](/extend/zimmer-plugins/#the-plugins-contract).
+Plugins are registered on **Settings → Zimmer plugins** or with the `external_apps` MCP tool group.
+There is no REST route for managing them.
+
 ## Triggers
 
 `GET /triggers` (filters `condition_type`, `status`) · `GET /triggers/:id` (+ `recent_sessions`,

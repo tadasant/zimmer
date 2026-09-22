@@ -93,7 +93,11 @@ class ApiKeysController < ApplicationController
   # listed — and can be revoked before it is ever used.
   def load_page
     ApiKey.register_env_keys
-    @api_keys = ApiKey.listed.to_a
+    # The plugin a key belongs to is named on its row; preloaded only once the
+    # column exists, like every other read of it.
+    scope = ApiKey.listed
+    scope = scope.includes(:external_app) if ApiKey.column_names.include?("external_app_id")
+    @api_keys = scope.to_a
     @self_session_digest = self_session_digest
   end
 

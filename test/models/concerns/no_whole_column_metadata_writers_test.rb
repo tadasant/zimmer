@@ -52,6 +52,12 @@ class NoWholeColumnMetadataWritersTest < ActiveSupport::TestCase
       "self.metadata = remaining"
     ],
     "services/fork_session_service.rb" => [ "metadata: new_metadata," ],
+    # Trigger#create_new_session! hands the new session its metadata at creation:
+    # the fire's own stamp (a Zimmer plugin's name) under the trigger's keys. The
+    # hash is built in memory for a row that does not exist yet.
+    "models/trigger.rb" => [
+      "metadata: (@fire_session_metadata || {}).merge(\"trigger_id\" => id, \"trigger_name\" => name)"
+    ],
     # Serializers, not writers.
     "controllers/concerns/api_session_serialization.rb" => [
       "metadata: session.metadata,", "custom_metadata: session.custom_metadata,"

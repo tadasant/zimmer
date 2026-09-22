@@ -66,6 +66,7 @@ class Api::BaseController < ActionController::API
     authentication = ApiKey.authenticate(api_key_from_request, grant: api_key_grant)
 
     if authentication.authenticated?
+      @authenticated_api_key = authentication.api_key
       Rails.logger.info("[api_key] #{request.request_method} #{request.path} authenticated as #{api_key_label(authentication.api_key)}")
     else
       log_api_key_refusal(authentication)

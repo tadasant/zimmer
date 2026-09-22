@@ -126,7 +126,7 @@ The success line is INFO, so it stays in the container's stdout, tagged with the
 refusal that names a known key (revoked, or no longer in `API_KEYS`) is WARN, so it ships to obs.
 `last_used_at` is stamped at most once a minute per key.
 
-Every key has a **grant**, and there are two. `api` is the whole REST API and `POST /mcp` — every
+Every key has a **grant**, and there are three. `api` is the whole REST API and `POST /mcp` — every
 `API_KEYS` entry is this, and so is a minted key unless the page was told otherwise. `quick_router`
 opens exactly one endpoint, [`POST /api/v1/quick_router`](/extend/rest-api/#the-quick-router-ingest),
 which creates a Quick Router session and returns its id and URL; it is the
@@ -136,6 +136,14 @@ grant the calling controller honours and matches it exactly, so a `quick_router`
 `/api/v1/sessions` or `/mcp` is refused the way a revoked key is (and logged at WARN, by name), and
 an `api` key presented to the Quick Router ingest is refused too. The grant is a column the
 comparison reads, not a promise about how the key is used.
+
+The third, `external_app`, is a [Zimmer plugin](/extend/zimmer-plugins/)'s key. It opens
+`POST /mcp/external_app` and `/api/v1/external_app/...`, which list and invoke the triggers on its
+plugin's allowlist, and nothing else. Such a key always belongs to one plugin
+(`api_keys.external_app_id`, enforced by a check constraint as well as the model). It is minted from
+the plugin's page on **Settings → Zimmer plugins**, or with `action_external_app`, never from the API
+keys form, which has no plugin to give it. The API keys page lists it with a link to its plugin, and
+revoking it there works like revoking any key.
 
 Every read of that column goes through `ApiKey#effective_grant`, which answers `api` when the column
 is not on the table at all — the state a deployment is in between the code shipping and its migration
@@ -149,7 +157,7 @@ credential sitting in a browser. Revoke the extension's key before any such roll
 What it still isn't:
 
 - **No scoping within the API.** Any valid `api` key can read, mutate, and delete every session,
-  and trigger. The `quick_router` grant is a second, closed door beside that one, not a
+  and trigger. The `quick_router` and `external_app` grants are closed doors beside that one, not a
   permission system behind it.
 - **No per-session identity.** The agents share the deployment's self-session key. See
   [the limitation](/limitations/#api-keys-have-names-but-no-scope-and-the-whole-fleet-shares-one).
@@ -181,11 +189,14 @@ to its row:
 printf %s "$KEY" | sha256sum | cut -c1-8
 ```
 
-Three endpoints take a different credential instead:
+These endpoints take a different credential instead:
 
 - `POST /api/v1/quick_router` — the browser extension's ingest. It takes a key with the
   `quick_router` grant (above) and refuses every `api` key, so the one credential a browser holds
   opens one write and no read.
+- `POST /mcp/external_app`, `GET /api/v1/external_app/triggers` and
+  `POST /api/v1/external_app/triggers/:id/invoke` — a [Zimmer plugin](/extend/zimmer-plugins/)'s
+  surface. They take a key with the `external_app` grant and refuse every other key.
 - `POST /api/v1/elicitations/session/:token` and `GET /api/v1/elicitations/session/:token/:request_id`
   — the MCP fallback-elicitation protocol. The MCP child process has no key, so it authenticates
   with a per-session token in the URL path, which Zimmer puts in its environment at spawn. A token
