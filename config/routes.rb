@@ -18,6 +18,10 @@ Rails.application.routes.draw do
     resources :claude_account_quota_snapshots
     resources :elicitations
     resources :enqueued_messages
+    # Read-only: Zimmer plugins and their allowlists are managed on
+    # /settings/plugins (ExternalAppsController) and `action_external_app`.
+    resources :external_apps, only: [ :index, :show ]
+    resources :external_app_triggers, only: [ :index, :show ]
     # Read-only, both of them. A GateDecision is append-only — it refuses update
     # and destroy — because a ledger that can be edited after the fact is not
     # evidence of anything; a correction is a new row recorded through the API or
@@ -149,6 +153,10 @@ Rails.application.routes.draw do
   # The SDK's transport dispatches POST / GET / DELETE itself (GET and DELETE are
   # 405 in stateless mode), so every verb routes to the same action.
   match "mcp", to: "mcp#handle", via: [ :post, :get, :delete ], as: :mcp
+  # A Zimmer plugin's MCP endpoint (ExternalApp): opened only by a key with the
+  # `external_app` grant, which /mcp refuses, and serving a fixed two-tool list —
+  # list_triggers and invoke_trigger — whatever the query string says.
+  match "mcp/external_app", to: "external_app_mcp#handle", via: [ :post, :get, :delete ], as: :external_app_mcp
 
   # API routes
   # Inbound provider webhooks (#217). Outside /api because they authenticate with the
@@ -167,6 +175,14 @@ Rails.application.routes.draw do
       # page. Write-only by shape — one action, one response — and opened by an
       # ApiKey with the `quick_router` grant, which nothing else here accepts.
       post "quick_router", to: "quick_router#create"
+
+      # A Zimmer plugin's REST surface (ExternalApp): its allowlisted triggers and
+      # invoking one. Opened only by an `external_app` key, which every other
+      # route here refuses.
+      scope "external_app", as: "external_app" do
+        get "triggers", to: "external_app_triggers#index", as: :triggers
+        post "triggers/:id/invoke", to: "external_app_triggers#invoke", as: :invoke_trigger
+      end
 
       resources :configs, only: [ :index ]
       # Models added to a runtime's catalog at runtime (#85). The built-in ones
@@ -395,6 +411,15 @@ Rails.application.routes.draw do
   post "settings/api_keys/:id/revoke", to: "api_keys#revoke", as: :revoke_api_key
   post "settings/api_keys/:id/restore", to: "api_keys#restore", as: :restore_api_key
   patch "settings/session_defaults", to: "app_settings#update", as: :app_settings
+  # Zimmer plugins (ExternalApp): external apps whose key invokes an allowlisted set
+  # of triggers and nothing else. The MCP sibling is the opt-in `external_apps`
+  # tool group (search_external_apps / action_external_app).
+  resources :external_apps, path: "settings/plugins", except: [ :new, :edit ] do
+    member do
+      post :mint_key
+      post "keys/:api_key_id/revoke", action: :revoke_key, as: :revoke_key
+    end
+  end
 
   # Inference page (per-runtime via ?runtime=claude_code|codex|pi)
   # Costs sits beside Inference: same posture question, different source.

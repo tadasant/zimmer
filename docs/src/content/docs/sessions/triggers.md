@@ -2069,7 +2069,12 @@ A trigger does not have to wait for a condition. All three surfaces can fire one
 - **REST** — `POST /api/v1/triggers/:id/invoke`, with an optional `variables` object.
 - **MCP** — `action_trigger` with `action: "invoke"`, taking the same `variables` object.
 
-All three go through `Triggers::ManualFire` into `Trigger#create_session!`, the same chokepoint a
+A [Zimmer plugin](/extend/zimmer-plugins/) is a fourth caller: an app outside Zimmer whose key may
+invoke only the triggers on its allowlist. It goes through the same path, stamps `api` like the REST
+and MCP routes, and records the plugin's `external_app_id` and `external_app_name` on the session it
+creates.
+
+All of them go through `Triggers::ManualFire` into `Trigger#create_session!`, the same chokepoint a
 poller-driven fire uses. So a manual fire is a real fire: the session is linked to the trigger,
 counts toward its fire counter, reconciles the catalog references (the [agent root only where it is
 actually used](#the-agent-root-is-resolved-only-where-it-is-used)), reuses the target session if the

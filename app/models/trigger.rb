@@ -172,6 +172,12 @@ class Trigger < ApplicationRecord
 
   belongs_to :last_session, class_name: "Session", optional: true
   has_many :trigger_conditions, dependent: :destroy
+  # The Zimmer plugins allowed to invoke this trigger (ExternalApp). No
+  # `dependent:` on purpose: the FK cascades on delete, and a Rails-side delete
+  # would make every trigger destroy fail on a database whose migration has not
+  # run yet.
+  has_many :external_app_triggers
+  has_many :external_apps, through: :external_app_triggers
   accepts_nested_attributes_for :trigger_conditions, allow_destroy: true, reject_if: :all_blank
 
   validates :name, presence: true
@@ -822,7 +828,12 @@ class Trigger < ApplicationRecord
   # @param workflow_run [WorkflowRun, nil] the unsaved run record of a workflow
   #   fire. WorkflowRunner's to pass, and required exactly when this trigger is
   #   workflow-backed; it is saved against the session the fire spawns.
-  def create_session!(prompt:, genesis: nil, workflow_run: nil)
+  # @param session_metadata [Hash] extra metadata for a session this fire
+  #   CREATES — who fired it, when the caller knows (a Zimmer plugin stamps
+  #   ExternalApp#session_metadata). `trigger_id` / `trigger_name` always win over
+  #   it. A reuse follow-up and a burst-notice session do not carry it: the first
+  #   is someone else's session, the second is not the work that was asked for.
+  def create_session!(prompt:, genesis: nil, workflow_run: nil, session_metadata: {})
     @last_fire_burst_suppressed = false
     @last_fire_pending_session = nil
     # Reset with its siblings, and for the same reason: a caller reads it after
@@ -837,6 +848,7 @@ class Trigger < ApplicationRecord
     @last_follow_up_status = nil
     @genesis_override = genesis
     @fire_workflow_run = nil
+    @fire_session_metadata = session_metadata.to_h.stringify_keys
 
     # After the resets, so a caller reading them after this raise does not read
     # an earlier fire's outcome.
@@ -2461,7 +2473,7 @@ class Trigger < ApplicationRecord
       genesis: session_genesis,
       scheduling_class: session_scheduling_class,
       precedence: session_precedence,
-      metadata: { trigger_id: id, trigger_name: name }
+      metadata: (@fire_session_metadata || {}).merge("trigger_id" => id, "trigger_name" => name)
     ) do |created|
       @last_fire_created_session = created
       @fire_workflow_run&.update!(session: created)

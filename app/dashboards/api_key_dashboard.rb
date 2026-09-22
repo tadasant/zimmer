@@ -6,6 +6,8 @@ class ApiKeyDashboard < Administrate::BaseDashboard
     name: Field::String,
     source: Field::String,
     effective_grant: Field::String,
+    # The Zimmer plugin an `external_app` key belongs to; managed on /settings/plugins.
+    effective_external_app_id: Field::Number,
     last_used_at: Field::DateTime,
     revoked_at: Field::DateTime,
     created_at: Field::DateTime,
@@ -23,6 +25,9 @@ class ApiKeyDashboard < Administrate::BaseDashboard
     # page on a database whose migration has not run — the operator's own
     # diagnostic surface, during exactly the incident it would be opened for.
     :grant,
+    # Rendered as `effective_external_app_id`, for the same reason as `grant`: nil
+    # on a database that does not have the column yet, instead of a 500.
+    :external_app_id,
     # The SHA-256 of the key. Harmless for a minted key, but an API_KEYS entry is
     # only as strong as whoever chose it, and a short one can be brute-forced from
     # its digest. The API keys page shows an 8-character fingerprint instead.

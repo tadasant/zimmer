@@ -1,0 +1,205 @@
+<%# One Zimmer plugin: its allowlist, its keys, how to connect, what it has started.
+    See ExternalAppsController.
+
+    Exempt from Turbo's snapshot cache: after a mint this page holds a key that must
+    not be restorable by navigating away and back. %>
+<% turbo_exempts_page_from_cache %>
+<% mcp_url = "#{request.base_url}/mcp/external_app" %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div class="mb-8">
+      <div class="flex items-center mb-4 min-w-0">
+        <%= link_to external_apps_path, class: "text-gray-500 hover:text-gray-700 mr-4 shrink-0" do %>
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 break-all"><%= @external_app.name %></h1>
+      </div>
+      <p class="text-sm text-gray-600">
+        A Zimmer plugin. Its keys can list and invoke the triggers ticked below, and nothing else.
+      </p>
+    </div>
+
+    <div class="space-y-6">
+      <% if @minted_token %>
+        <div id="minted-key" class="bg-green-50 border border-green-300 rounded-lg px-4 py-4 sm:px-6">
+          <h2 class="text-base font-medium text-green-900">Created <%= @api_key.name %></h2>
+          <p class="mt-1 text-sm text-green-800">
+            Copy it now. Zimmer keeps only a digest of it, so this is the one time it can be shown.
+          </p>
+          <input type="text" readonly value="<%= @minted_token %>" aria-label="New plugin key"
+                 class="mt-3 block w-full font-mono text-xs sm:text-sm border-green-300 rounded-md bg-white px-3 py-2">
+        </div>
+      <% end %>
+
+      <% if @update_errors.present? %>
+        <div class="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">
+          <%= @update_errors.join(", ") %>
+        </div>
+      <% end %>
+
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Plugin</h2>
+        </div>
+        <%= form_with url: external_app_path(@external_app), method: :patch, class: "px-4 py-5 sm:px-6 space-y-4" do %>
+          <div>
+            <label for="external_app_name" class="block text-sm font-medium text-gray-700">Name</label>
+            <input type="text" name="external_app[name]" id="external_app_name" required maxlength="100"
+                   value="<%= @external_app.name %>"
+                   class="mt-1 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+          </div>
+          <div>
+            <label for="external_app_description" class="block text-sm font-medium text-gray-700">What it is</label>
+            <textarea name="external_app[description]" id="external_app_description" rows="2" maxlength="2000"
+                      class="mt-1 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2"><%= @external_app.description %></textarea>
+          </div>
+          <div>
+            <input type="hidden" name="external_app[enabled]" value="0">
+            <label class="flex items-start gap-2 text-sm text-gray-700">
+              <input type="checkbox" name="external_app[enabled]" value="1" <%= "checked" if @external_app.enabled? %>
+                     class="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+              <span><span class="font-medium">Enabled</span> — when off, every request with its keys is refused with a 403, without revoking them.</span>
+            </label>
+          </div>
+
+          <fieldset>
+            <legend class="text-sm font-medium text-gray-700">Triggers it may invoke</legend>
+            <p class="mt-1 text-xs text-gray-500">
+              Invoking works like the Invoke button: a disabled trigger can still be invoked, and the
+              trigger's per-minute cap applies. Workflow triggers take no variables and are not listed.
+            </p>
+            <input type="hidden" name="external_app[trigger_ids][]" value="">
+            <% if @allowlistable_triggers.empty? %>
+              <p class="mt-2 text-sm text-gray-500">No triggers yet. <%= link_to "Create one", new_trigger_path, class: "text-indigo-600 hover:text-indigo-500" %>.</p>
+            <% else %>
+              <div class="mt-2 max-h-80 overflow-y-auto rounded-md border border-gray-200 divide-y divide-gray-100">
+                <% allowlisted = @external_app.trigger_ids.to_set %>
+                <% @allowlistable_triggers.each do |trigger| %>
+                  <label class="flex items-start gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
+                    <input type="checkbox" name="external_app[trigger_ids][]" value="<%= trigger.id %>" <%= "checked" if allowlisted.include?(trigger.id) %>
+                           class="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <span class="min-w-0">
+                      <span class="font-medium break-words"><%= trigger.name %></span>
+                      <span class="text-xs text-gray-500">#<%= trigger.id %> · <%= trigger.status %></span>
+                      <% if trigger.workflow_backed? %>
+                        <span class="text-xs text-red-700">· runs a workflow — untick it</span>
+                      <% else %>
+                        <span class="block text-xs text-gray-500">
+                          Variables: <%= trigger.prompt_variables.presence&.map { |v| "{{#{v}}}" }&.join(", ") || "none" %>
+                          · cap <%= trigger.max_sessions_per_minute ? "#{trigger.max_sessions_per_minute}/min" : "none" %>
+                        </span>
+                      <% end %>
+                    </span>
+                  </label>
+                <% end %>
+              </div>
+            <% end %>
+          </fieldset>
+
+          <button type="submit"
+                  class="inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+            Save
+          </button>
+        <% end %>
+      </div>
+
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h2 class="text-lg font-medium text-gray-900">Keys</h2>
+            <p class="mt-1 text-sm text-gray-500">
+              To rotate, create a new key, move the app onto it, then revoke the old one.
+            </p>
+          </div>
+          <%# Turbo off: the response renders the new key, and Turbo Drive only follows a form with a redirect. %>
+          <%= button_to "Create key", mint_key_external_app_path(@external_app),
+                form: { data: { turbo: false } },
+                class: "shrink-0 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700" %>
+        </div>
+        <% if @api_keys.empty? %>
+          <p class="px-4 py-5 sm:px-6 text-sm text-gray-500">No keys yet.</p>
+        <% else %>
+          <ul class="divide-y divide-gray-200">
+            <% @api_keys.each do |api_key| %>
+              <li id="<%= dom_id(api_key) %>" class="px-4 py-4 sm:px-6 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-sm font-medium text-gray-900 break-all"><%= api_key.name %></span>
+                    <% if api_key.revoked? %>
+                      <span class="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800">Revoked</span>
+                    <% else %>
+                      <span class="inline-flex rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">Active</span>
+                    <% end %>
+                  </div>
+                  <p class="mt-1 text-xs text-gray-500">
+                    Fingerprint <span class="font-mono"><%= api_key.fingerprint %></span> ·
+                    last used <%= api_key.last_used_at ? "#{time_ago_in_words(api_key.last_used_at)} ago" : "never" %>
+                  </p>
+                </div>
+                <% unless api_key.revoked? %>
+                  <%= button_to "Revoke", revoke_key_external_app_path(@external_app, api_key_id: api_key.id),
+                        form: { data: { turbo_confirm: "Revoke #{api_key.name}? Requests carrying it are refused from the next one on." } },
+                        class: "shrink-0 inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50" %>
+                <% end %>
+              </li>
+            <% end %>
+          </ul>
+        <% end %>
+      </div>
+
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Connecting</h2>
+        </div>
+        <div class="px-4 py-5 sm:px-6 text-sm text-gray-700 space-y-2">
+          <p>MCP (streamable HTTP), with the key as <code class="bg-gray-100 px-1 rounded">X-API-Key</code> or a bearer token:</p>
+          <pre class="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 text-xs overflow-x-auto"><%= mcp_url %></pre>
+          <p>
+            Tools: <code class="bg-gray-100 px-1 rounded">list_triggers</code> and
+            <code class="bg-gray-100 px-1 rounded">invoke_trigger</code> (<code class="bg-gray-100 px-1 rounded">trigger_id</code>,
+            <code class="bg-gray-100 px-1 rounded">variables</code>). The REST equivalents are
+            <code class="bg-gray-100 px-1 rounded break-all">GET /api/v1/external_app/triggers</code> and
+            <code class="bg-gray-100 px-1 rounded break-all">POST /api/v1/external_app/triggers/:id/invoke</code>.
+          </p>
+        </div>
+      </div>
+
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Recent sessions</h2>
+          <p class="mt-1 text-sm text-gray-500">Sessions this plugin started, newest first.</p>
+        </div>
+        <% if @recent_sessions.empty? %>
+          <p class="px-4 py-5 sm:px-6 text-sm text-gray-500">None yet.</p>
+        <% else %>
+          <ul class="divide-y divide-gray-200">
+            <% @recent_sessions.each do |session| %>
+              <li class="px-4 py-3 sm:px-6 flex items-center justify-between gap-3">
+                <div class="min-w-0">
+                  <%= link_to (session.title.presence || "Session ##{session.id}"), session_path(session), class: "text-sm font-medium text-indigo-600 hover:text-indigo-500 break-words" %>
+                  <p class="text-xs text-gray-500">
+                    <%= session.metadata["trigger_name"] %> · <%= time_ago_in_words(session.created_at) %> ago
+                  </p>
+                </div>
+                <span class="shrink-0 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <%= status_badge_classes(session.status) %>">
+                  <%= session.status.to_s.titleize %>
+                </span>
+              </li>
+            <% end %>
+          </ul>
+        <% end %>
+      </div>
+
+      <div class="bg-white shadow-sm rounded-lg border border-red-200">
+        <div class="px-4 py-5 sm:px-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <p class="text-sm text-gray-600">Deleting removes the plugin, its allowlist and its keys. Sessions it started are kept.</p>
+          <%= button_to "Delete plugin", external_app_path(@external_app), method: :delete,
+                form: { data: { turbo_confirm: "Delete #{@external_app.name}? Its keys stop working at once." } },
+                class: "shrink-0 inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50" %>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

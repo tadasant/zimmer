@@ -60,6 +60,10 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
       "npm_#{'aBcDeFgHiJ' * 4}",
       "NPM_TOKEN"
     ],
+    "Zimmer minted API key" => [
+      "zmr_#{'0123456789abcdef' * 4}",
+      "ZIMMER_API_KEY"
+    ],
     "1Password service account token" => [
       "ops_#{'eyJzaWduSW' * 6}",
       "OP_SERVICE_ACCOUNT_TOKEN"
