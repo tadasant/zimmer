@@ -71,6 +71,23 @@ class TranscriptTextRendererTest < ActiveSupport::TestCase
     end
   end
 
+  test "renders the raw synthetic resume stub as a runtime notice, not an assistant turn" do
+    text = TranscriptTextRenderer.render([
+      {
+        "type" => "assistant",
+        "message" => {
+          "role" => "assistant",
+          "model" => "<synthetic>",
+          "content" => [ { "type" => "text", "text" => "No response requested." } ]
+        }
+      }
+    ])
+
+    assert_includes text, "--- Runtime Notice (agent runtime, not a person) ---"
+    assert_includes text, "No response requested."
+    refute_includes text, "--- Assistant ---"
+  end
+
   test "renders a raw unflagged JSONL user line as a user turn" do
     text = TranscriptTextRenderer.render([
       {

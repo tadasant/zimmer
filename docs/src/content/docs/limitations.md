@@ -4500,6 +4500,22 @@ almost never run would be a change to the lifecycle made for an edge case. So th
 `waiting`, off the homepage action queue, and the alert is the only thing that reaches a person. Any
 ordinary resume or restart clears the marker and puts the session back under the sweep's care.
 
+### During an API outage, a Slack-triggered session is silent in Slack
+
+The :eyes: a Slack trigger promises is added by the agent, as its first act. The mention trigger
+tells it to react immediately, and the passive listener tells it to react once it has decided to
+reply. Either way it takes a model turn, and while the provider is returning 529 Overloaded there
+is no model turn to take. The person who posted sees nothing until the API recovers. Sessions 19830
+and 19831 sat 30 minutes that way. Zimmer is retrying the whole time (see the API-error ladder in
+[Spawning](/sessions/spawning/)), but none of that shows in Slack.
+
+Zimmer does not react on the agent's behalf. The passive listener's :eyes: means "I will reply"
+and is deliberately withheld from chatter, so a Zimmer-side :eyes: would change what the reaction
+means. The shape of a fix is a distinct, neutral marker that Zimmer adds itself once a Slack-spawned
+session has sat on consecutive API errors past a threshold, and removes when the agent gets its
+turn. That needs the source message's channel and ts on the session, and a bot token with
+`reactions:write`. Nothing proves either yet.
+
 ### While Slack is rate-limiting you, Slack triggers fire late
 
 `SlackTriggerPollerJob` is a `total_limit: 1` singleton, so while it runs it *is* Slack polling for

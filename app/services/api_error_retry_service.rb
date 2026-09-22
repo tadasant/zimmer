@@ -195,6 +195,31 @@ class ApiErrorRetryService
     %r{flagged.{0,200}anthropic\.com/legal/aup}im
   ].freeze
 
+  # The prompt a retry resumes with: the recovery nudge, naming what sent it.
+  #
+  # The bare nudge offers two readings, "carry on" and "you were done, wait",
+  # and on an API-error resume the conversation leans toward the wrong one.
+  # The turn that failed is an error entry, not a reply, and Claude Code's
+  # resume adds its own scaffolding after it: a meta "Continue from where you
+  # left off." and, when that leaves the history ending on a user message, a
+  # stand-in assistant reply "No response requested." (+model: "<synthetic>"+)
+  # attributed to the model. Read after that, "if you had completed your work
+  # ... please wait" is an invitation to do nothing. Slack-spawned routers
+  # during a 529 outage (sessions 19830/19831) sat under exactly this shape for
+  # 30 minutes. The model never got a turn, but when one finally landed, this
+  # is the context it had to read.
+  #
+  # The reason line says what the conversation cannot: the last turn died on
+  # an error, whatever it was asked is not finished, and the placeholder is not
+  # the model's own answer. Still a nudge (AutomatedPrompts.nudge?), so a
+  # session's scheduled wake-ups survive it as before.
+  RESUME_PROMPT = AutomatedPrompts.system_recovery(
+    reason: "an API error (provider overloaded, erroring or rate-limiting) ended your previous turn before it " \
+      "finished. That turn did not complete: whatever you were last asked to do is still unhandled unless " \
+      "you can see that you already did it. A \"No response requested.\" reply just above, if there is one, " \
+      "was written by the agent runtime while resuming, not by you"
+  )
+
   # Error types from the API that indicate server errors (as opposed to client errors)
   API_SERVER_ERROR_TYPES = %w[api_error overloaded_error server_error].freeze
 
@@ -640,12 +665,12 @@ class ApiErrorRetryService
   # @param retry_attempt [Integer] Current retry attempt number
   # @return [Symbol] :success, :exhausted, :aborted
   def spawn_and_verify_retry(working_directory, retry_attempt)
-    respawn_and_verify(working_directory, retry_attempt, resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY) do
+    respawn_and_verify(working_directory, retry_attempt, resume_prompt: RESUME_PROMPT) do
       add_log("Resuming session after API error", level: "info")
 
       # Always resume (not fresh start) - API errors only occur during active
       # conversations since they require at least one API call to have been made.
-      resume_for_recovery(working_directory, prompt: AutomatedPrompts::SYSTEM_RECOVERY)
+      resume_for_recovery(working_directory, prompt: RESUME_PROMPT)
     end
   end
 
@@ -730,7 +755,7 @@ class ApiErrorRetryService
     log_buffer.flush
 
     # Wait with periodic session status checks
-    abort_result = wait_with_status_checks(retry_delay, resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY)
+    abort_result = wait_with_status_checks(retry_delay, resume_prompt: RESUME_PROMPT)
     return :aborted if abort_result == :aborted
 
     # Record retry attempt in metadata
