@@ -4506,7 +4506,7 @@ The :eyes: a Slack trigger promises is added by the agent, as its first act. The
 tells it to react immediately, and the passive listener tells it to react once it has decided to
 reply. Either way it takes a model turn, and while the provider is returning 529 Overloaded there
 is no model turn to take. The person who posted sees nothing until the API recovers. Sessions 19830
-and 19831 sat 30 minutes that way. Zimmer is retrying the whole time (see the API-error ladder in
+and 19831 sat 30 minutes that way. Zimmer keeps retrying for as long as its API-error budget lasts (see the API-error ladder in
 [Spawning](/sessions/spawning/)), but none of that shows in Slack.
 
 Zimmer does not react on the agent's behalf. The passive listener's :eyes: means "I will reply"
