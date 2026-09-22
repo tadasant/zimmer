@@ -86,6 +86,23 @@ class SessionsControllerTranscriptCopyTest < ActionDispatch::IntegrationTest
     refute_includes response.body, "[User]"
   end
 
+  test "should label the synthetic resume stub as a runtime notice, not an assistant turn" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test",
+      transcript: <<~JSONL
+        {"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]}}
+      JSONL
+    )
+
+    get transcript_session_url(session, format: :text)
+    assert_response :success
+
+    assert_includes response.body, "[Runtime Notice (agent runtime, not a person)]"
+    assert_includes response.body, "No response requested."
+    refute_includes response.body, "[Assistant]"
+  end
+
   test "should still label a genuine user turn as User" do
     session = Session.create!(
       git_root: "https://github.com/test/repo.git",

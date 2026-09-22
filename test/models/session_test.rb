@@ -1404,6 +1404,21 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal "I can help with that", formatted[0][:content]
   end
 
+  # SendPushNotificationJob summarises from the last assistant message here, so
+  # Claude Code's synthetic resume stub must not be it.
+  test "formatted_conversation drops the synthetic resume stub" do
+    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code")
+    session.transcript = [
+      { "type" => "assistant", "message" => { "role" => "assistant", "model" => "claude-opus-5",
+                                              "content" => [ { "type" => "text", "text" => "Working on it" } ] } },
+      { "type" => "assistant", "message" => { "role" => "assistant", "model" => "<synthetic>",
+                                              "content" => [ { "type" => "text", "text" => "No response requested." } ] } }
+    ]
+
+    formatted = session.formatted_conversation
+    assert_equal [ "Working on it" ], formatted.map { |m| m[:content] }
+  end
+
   test "formatted_conversation should handle tool use messages" do
     session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code")
     transcript = [

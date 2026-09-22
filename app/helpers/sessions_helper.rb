@@ -261,7 +261,8 @@ module SessionsHelper
   end
 
   # True for a line the coding agent's CLI wrote into its own transcript wearing
-  # a user role (see ClaudeTranscriptNormalizer::RUNTIME_NOTICE_FLAGS). Used to
+  # a user role, or its synthetic resume reply (see
+  # ClaudeTranscriptNormalizer::RUNTIME_NOTICE_FLAGS and RESUME_STUB_MARKER). Used to
   # keep the row out of the affordances that only make sense on a real message.
   def ot_runtime_notice?(item)
     item[:type] == OpenTranscript::Types::SYSTEM_EVENT &&
