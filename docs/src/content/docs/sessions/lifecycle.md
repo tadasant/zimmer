@@ -1235,7 +1235,7 @@ session's wake-ups, so a misread no longer loses them. Since [#1212](https://git
 both branches also perform the conditional re-sleep, so a misread costs only the watchers the
 follow-up branch consumes when they can no longer fire — the recovery branch keeps those armed.
 
-**Four producers name themselves today**, and between them they account for the large majority
+**Four producers name themselves**, and between them they account for the large majority
 of nudges by volume: the `InterruptError` auto-continue, `SessionContinuation` (which covers both
 the orphan sweep and deployment recovery, via `continuation_source`), `AuthOutageParkService`
 resuming a session whose login pool refilled, and the API-error retry. The rest — the SIGTERM

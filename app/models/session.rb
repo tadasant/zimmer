@@ -1312,8 +1312,12 @@ class Session < ApplicationRecord
 
     messages = []
 
-    # Filter to only user and assistant type messages
-    conversation_entries = entries.select { |e| e["type"].in?([ "user", "assistant" ]) }
+    # Filter to only user and assistant type messages. Claude Code's synthetic
+    # "No response requested." resume stub is dropped: the model never said it,
+    # and SendPushNotificationJob reads the last assistant message from here.
+    conversation_entries = entries.select do |e|
+      e["type"].in?([ "user", "assistant" ]) && !ClaudeTranscriptNormalizer.resume_stub?(e)
+    end
 
     conversation_entries.each do |entry|
       message_data = entry["message"] || {}

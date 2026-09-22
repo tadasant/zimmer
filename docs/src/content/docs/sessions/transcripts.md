@@ -158,12 +158,14 @@ relabel a turn a person really did type as machine-written, which is the same mi
 the sign flipped, so both directions are covered by tests.
 
 One line wears `type: "assistant"` and belongs in the same bucket: the stand-in reply Claude Code
-inserts on resume when the history it loaded ends on a user message, which its own "Continue from
-where you left off." always does. It is `model: "<synthetic>"` with one text block, "No response
+inserts on resume when the history it loaded ends on a user message, as it does after its own
+"Continue from where you left off.". It is `model: "<synthetic>"` with one text block, "No response
 requested.", and the model never wrote it. Drawn as an assistant turn, it reads as the agent
 declining to act on each resume. That misled an investigation of Slack routers stuck through a 529
 outage: the model had never been reached at all. The normalizer matches both the synthetic model
-and the exact text, and marks the notice with the flag `model: <synthetic>`. Every other synthetic
+and the exact text, and marks the notice `model: <synthetic>`. That is a matched field value, not a JSONL flag.
+`Session#formatted_conversation` drops the stub, so the push-notification summary built from the
+last assistant message never quotes it. Every other synthetic
 entry, including the "API Error: 529 …" lines the CLI writes the same way, still renders as an
 assistant turn.
 

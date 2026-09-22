@@ -212,7 +212,7 @@ class ApiErrorRetryService
   # The reason line says what the conversation cannot: the last turn died on
   # an error, whatever it was asked is not finished, and the placeholder is not
   # the model's own answer. Still a nudge (AutomatedPrompts.nudge?), so a
-  # session's scheduled wake-ups survive it as before.
+  # session's scheduled wake-ups survive it.
   RESUME_PROMPT = AutomatedPrompts.system_recovery(
     reason: "an API error (provider overloaded, erroring or rate-limiting) ended your previous turn before it " \
       "finished. That turn did not complete: whatever you were last asked to do is still unhandled unless " \
