@@ -1381,6 +1381,11 @@ of those is declared, once:
 | `RetryBudget::SILENT_RECOVERY` | `silent_recovery_count` | 3 | `last_silent_recovery_at` | `Sessions::SilentRecoveryGuard`, from `SessionRecoveryService` and `SessionContinuation` |
 | `RetryBudget::LOST_CLONE` | `lost_clone_recovery_count` | 2 | `last_lost_clone_recovery_at` | `Sessions::RecoverLostClone` |
 
+None of this retrying is visible in Slack by itself. A session a Slack trigger spawned that has
+hit API errors and not reached the model gets :hourglass_flowing_sand: on its source message after
+five minutes, from `SlackOutageMarkerJob` rather than from this ladder. See
+[the outage marker](/sessions/triggers/#when-the-model-is-unreachable-the-outage-marker).
+
 **A budget is per-incident, not per-lifetime.** Step 5 of the monitor loop walks
 `RetryBudget.all` every iteration and hands back any budget whose process has run for
 `RetryBudget::DEFAULT_RESET_AFTER` (60 s) without a fresh attempt, logging
