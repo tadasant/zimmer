@@ -272,6 +272,26 @@ class ApiErrorRetryService
     SAFEGUARDS_FLAGGED_PATTERNS.any? { |pattern| message_text.to_s.match?(pattern) }
   end
 
+  # Whether a transcript's API-error entry is the provider being unavailable: a server error or a
+  # transient rate limit. Not an account quota wall (hours, not minutes), not a malformed tool call
+  # (the model was reached), not a safeguards rejection (the request, not the API). SlackOutageMarker
+  # asks this of the stored transcript, where no instance of this service is in hand.
+  #
+  # @param error_type [String] the entry's `error` field
+  # @param message_text [String] the entry's text
+  # @return [Boolean]
+  def self.outage_error?(error_type, message_text)
+    error_type = error_type.to_s
+    message_text = message_text.to_s
+    return false if message_text.match?(ACCOUNT_QUOTA_LIMIT_PATTERN)
+    return false if malformed_tool_call?(message_text) || safeguards_flagged?(message_text)
+    return true if RETRYABLE_ERROR_TYPES.include?(error_type)
+
+    (API_SERVER_ERROR_PATTERNS + RATE_LIMIT_ERROR_PATTERNS).any? do |pattern|
+      message_text.match?(pattern) || error_type.match?(pattern)
+    end
+  end
+
   def initialize(session, cli_adapter:, process_manager:, log_buffer:, file_system: nil, rate_limit_tracker: nil)
     @session = session
     @cli_adapter = cli_adapter

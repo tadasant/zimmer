@@ -70,6 +70,11 @@
       "class": "SlackTriggerPollerJob",
       "description": "Poll Slack channels for triggers and create sessions"
     },
+    "slack_outage_marker": {
+      "cron": "* * * * *",
+      "class": "SlackOutageMarkerJob",
+      "description": "Put :hourglass_flowing_sand: on a Slack message whose session is stuck on API errors, and take it off when the agent's turn lands"
+    },
     "github_trigger_poller": {
       "cron": "* * * * *",
       "class": "GithubTriggerPollerJob",
@@ -332,6 +337,11 @@
       "class": "SlackTriggerPollerJob",
       "description": "Poll Slack channels for triggers and create sessions"
     },
+    "slack_outage_marker": {
+      "cron": "* * * * *",
+      "class": "SlackOutageMarkerJob",
+      "description": "Put :hourglass_flowing_sand: on a Slack message whose session is stuck on API errors, and take it off when the agent's turn lands"
+    },
     "github_trigger_poller": {
       "cron": "* * * * *",
       "class": "GithubTriggerPollerJob",
@@ -578,6 +588,11 @@
       "cron": "* * * * *",
       "class": "SlackTriggerPollerJob",
       "description": "Poll Slack channels for triggers and create sessions"
+    },
+    "slack_outage_marker": {
+      "cron": "* * * * *",
+      "class": "SlackOutageMarkerJob",
+      "description": "Put :hourglass_flowing_sand: on a Slack message whose session is stuck on API errors, and take it off when the agent's turn lands"
     },
     "slack_trigger_health_check": {
       "cron": "45 * * * *",

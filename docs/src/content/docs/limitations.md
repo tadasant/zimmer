@@ -4500,21 +4500,30 @@ almost never run would be a change to the lifecycle made for an edge case. So th
 `waiting`, off the homepage action queue, and the alert is the only thing that reaches a person. Any
 ordinary resume or restart clears the marker and puts the session back under the sweep's care.
 
-### During an API outage, a Slack-triggered session is silent in Slack
+### During an API outage, Slack gets an hourglass, and only some of the time
 
-The :eyes: a Slack trigger promises is added by the agent, as its first act. The mention trigger
-tells it to react immediately, and the passive listener tells it to react once it has decided to
-reply. Either way it takes a model turn, and while the provider is returning 529 Overloaded there
-is no model turn to take. The person who posted sees nothing until the API recovers. Sessions 19830
-and 19831 sat 30 minutes that way. Zimmer keeps retrying for as long as its API-error budget lasts (see the API-error ladder in
-[Spawning](/sessions/spawning/)), but none of that shows in Slack.
+While the provider is returning 529 Overloaded, a Slack-spawned session cannot take the model turn
+its :eyes: costs. Zimmer covers that gap with its own :hourglass_flowing_sand: on the source message
+(see [the outage marker](/sessions/triggers/#when-the-model-is-unreachable-the-outage-marker)).
+The marker has gaps of its own:
 
-Zimmer does not react on the agent's behalf. The passive listener's :eyes: means "I will reply"
-and is deliberately withheld from chatter, so a Zimmer-side :eyes: would change what the reaction
-means. The shape of a fix is a distinct, neutral marker that Zimmer adds itself once a Slack-spawned
-session has sat on consecutive API errors past a threshold, and removes when the agent gets its
-turn. That needs the source message's channel and ts on the session, and a bot token with
-`reactions:write`. Nothing proves either yet.
+- **It needs `reactions:write`, and that scope is not verified on this deployment's bot token.**
+  Without it every marker settles `add_failed:missing_scope`, the session log says so, and the
+  poster sees nothing, as before. The scope is granted in the Slack app's configuration, which is
+  not this repository.
+- **Claude Code only.** Codex and Pi write API errors and model turns in other shapes. A Slack
+  session on either is settled `unsupported_runtime` and never marked.
+- **Spawned sessions only.** A trigger that reuses a session hands the new message to a
+  conversation that already had its turn, and records no source message on it.
+- **It is late by design.** Five minutes from the message, plus up to a minute for the sweep, and it
+  shows only once Claude Code has written an API error into the transcript. Claude Code retries
+  a 529 several times in-process before it gives up and writes one.
+- **A session parked in `needs_input` with no model turn keeps its hourglass** until it is archived
+  or fails. That is deliberate, since most such parks resume into the same outage, but a park that
+  never resumes leaves the hourglass up until someone archives the session.
+- **It reads the stored transcript,** which the poller writes while the process runs. The marker
+  can come off up to a minute after the agent's first turn, so for a moment the hourglass and the
+  agent's :eyes: can sit side by side.
 
 ### While Slack is rate-limiting you, Slack triggers fire late
 
