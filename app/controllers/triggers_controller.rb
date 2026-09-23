@@ -180,7 +180,23 @@ class TriggersController < ApplicationController
     render json: { error: e.message }, status: :service_unavailable
   end
 
+  # The WhatsApp chats the bridge's account is in, for the form's chat picker.
+  def whatsapp_chats
+    unless WhatsappService.configured?
+      render json: { error: "WhatsApp is not configured. Set WHATSAPP_MCP_URL." }, status: :service_unavailable
+      return
+    end
+
+    render json: { chats: WhatsappService.new.list_chats(limit: 100).map { |chat| whatsapp_chat_json(chat) } }
+  rescue WhatsappService::Error => e
+    render json: { error: e.message }, status: :service_unavailable
+  end
+
   private
+
+  def whatsapp_chat_json(chat)
+    { id: chat["id"].to_s, name: chat["name"].presence || chat["id"].to_s, is_group: chat["is_group"] == true }
+  end
 
   def set_trigger
     @trigger = Trigger.includes(:trigger_conditions).find(params[:id])
@@ -294,7 +310,7 @@ class TriggersController < ApplicationController
       catalog_plugins: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
-        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [] ]
+        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [] ]
       ]
     ).tap do |p|
       # An empty number field means "no cap" (unbounded), not 0. Only rewrite the

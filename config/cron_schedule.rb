@@ -180,6 +180,12 @@ module CronSchedule
       description: "Poll Slack channels for triggers and create sessions",
       environments: %i[production staging development]
     },
+    whatsapp_trigger_poller: {
+      cron: "* * * * *", # Every minute — one bridge status call, then one read per watched chat
+      class: "WhatsappTriggerPollerJob",
+      description: "Poll the WhatsApp bridge for new messages in watched chats and create sessions",
+      environments: %i[production staging development]
+    },
     slack_outage_marker: {
       cron: "* * * * *", # Every minute — one query; Slack is called only during an outage
       class: "SlackOutageMarkerJob",

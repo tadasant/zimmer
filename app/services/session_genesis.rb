@@ -26,7 +26,7 @@
 # The defaults below are policy, not physics — but where you change them depends
 # on the kind, and the split is deliberate:
 #
-#   - Six of the nine kinds (`slack`, `github_issue`, `github_label`,
+#   - Seven of the ten kinds (`slack`, `whatsapp`, `github_issue`, `github_label`,
 #     `schedule`, `ao_event`, `system_event`) are restatements of trigger condition
 #     types. Their
 #     selector lives on the Trigger row (Trigger#scheduling_class), so one noisy
@@ -49,6 +49,7 @@ module SessionGenesis
   # Named keys, so call sites read as intent rather than as a string literal.
   WEB_UI = "web_ui"
   SLACK = "slack"
+  WHATSAPP = "whatsapp"
   GITHUB_ISSUE = "github_issue"
   GITHUB_LABEL = "github_label"
   SCHEDULE = "schedule"
@@ -75,6 +76,13 @@ module SessionGenesis
       default_class: PRIORITY,
       description: "A Slack trigger fired on a DM or a channel message. There is a human " \
                    "on the other end waiting for an answer."
+    ),
+    Kind.new(
+      key: WHATSAPP,
+      label: "WhatsApp trigger",
+      default_class: PRIORITY,
+      description: "A WhatsApp trigger fired on new messages in a chat Zimmer is listening to. " \
+                   "People are talking in that chat right now."
     ),
     Kind.new(
       key: GITHUB_ISSUE,
@@ -144,13 +152,14 @@ module SessionGenesis
     "ao_event" => "ao_event",
     "system_event" => "system_event",
     "github_label" => "github_label",
-    "github_issue" => "github_issue"
+    "github_issue" => "github_issue",
+    "whatsapp" => "whatsapp"
   }.freeze
 
   # Which genesis wins when one trigger carries several condition types. The
   # human-facing kinds come first, so a mixed trigger is never silently demoted
   # to spot on the strength of a condition that did not fire.
-  CONDITION_TYPE_PRECEDENCE = %w[slack system_event github_label github_issue ao_event schedule].freeze
+  CONDITION_TYPE_PRECEDENCE = %w[slack whatsapp system_event github_label github_issue ao_event schedule].freeze
 
   # The kinds a trigger can produce. Their class is chosen per trigger, so there
   # is no per-kind setting for them.

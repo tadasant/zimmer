@@ -613,7 +613,11 @@ class Trigger < ApplicationRecord
     "channel_id" => /\A[CDG][A-Z0-9]+\z/,
     "message_ts" => /\A\d+\.\d+\z/,
     "thread_ts" => /\A\d+\.\d+\z/,
-    "author_id" => /\A[UW][A-Z0-9]+\z/
+    "author_id" => /\A[UW][A-Z0-9]+\z/,
+    # WhatsApp conditions: the chat the poller read, and the id of the newest message in the
+    # batch — both read off the bridge's own fields, like the Slack four above.
+    "chat_id" => TriggerCondition::WHATSAPP_CHAT_ID_FORMAT,
+    "message_id" => /\A[0-9A-Za-z]{1,128}\z/
   }.freeze
 
   # Variables that require user input during manual invocation
@@ -654,7 +658,8 @@ class Trigger < ApplicationRecord
   # Supported variables: {{link}}, {{text}}, {{author}}, {{channel}}, {{time}}, {{date}},
   # {{event}}; for GitHub conditions {{repo}}, {{number}}, {{title}}, {{labels}}; and for
   # Slack conditions the trusted identifiers {{channel_id}}, {{message_ts}}, {{thread_ts}}
-  # and {{author_id}} (TRUSTED_IDENTIFIER_FORMATS). Any of them may be written
+  # and {{author_id}}, and for WhatsApp conditions {{chat_id}} and {{message_id}}
+  # (TRUSTED_IDENTIFIER_FORMATS). Any of them may be written
   # {{name|untrusted}} to render fenced off as untrusted input (#fence_untrusted).
   #
   # One pass over the template: a value is inserted once and never scanned again,
@@ -668,7 +673,8 @@ class Trigger < ApplicationRecord
   # rather than spawn a session from a prompt it does not have.
   def interpolate_prompt(link: nil, text: nil, author: nil, channel: nil, event: nil,
                          repo: nil, number: nil, title: nil, labels: nil,
-                         channel_id: nil, message_ts: nil, thread_ts: nil, author_id: nil)
+                         channel_id: nil, message_ts: nil, thread_ts: nil, author_id: nil,
+                         chat_id: nil, message_id: nil)
     raise ArgumentError, workflow_fire_mismatch_message if workflow_backed?
 
     now = Time.current
@@ -679,7 +685,8 @@ class Trigger < ApplicationRecord
       "labels" => Array(labels).join(", ")
     }
     { "channel_id" => channel_id, "message_ts" => message_ts,
-      "thread_ts" => thread_ts, "author_id" => author_id }.each do |name, value|
+      "thread_ts" => thread_ts, "author_id" => author_id,
+      "chat_id" => chat_id, "message_id" => message_id }.each do |name, value|
       value = value.to_s.strip
       values[name] = value.match?(TRUSTED_IDENTIFIER_FORMATS.fetch(name)) ? value : ""
     end

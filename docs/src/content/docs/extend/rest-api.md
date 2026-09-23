@@ -821,7 +821,10 @@ There is no REST route for managing them.
 
 `GET /triggers` (filters `condition_type`, `status`) · `GET /triggers/:id` (+ `recent_sessions`,
 limit 10) · `POST` · `PATCH` · `DELETE` · `POST /triggers/:id/toggle` ·
-`POST /triggers/:id/invoke` · `GET /triggers/channels` (Slack; 503 when Slack is unconfigured).
+`POST /triggers/:id/invoke` · `GET /triggers/channels` (Slack; 503 when Slack is unconfigured) ·
+`GET /triggers/whatsapp_chats` (the chats the WhatsApp bridge's account is in, with the `chat_id` a
+[`whatsapp` condition](/sessions/triggers/#whatsapp) takes; 503 when `WHATSAPP_MCP_URL` is unset or
+the bridge cannot be reached).
 
 Conditions are nested via `trigger_conditions_attributes`.
 

@@ -94,6 +94,7 @@ the row. It is a column on `sessions`, assigned once at creation.
 | --- | --- | --- | --- |
 | `web_ui` | A human typed it into the Zimmer web app: the new-session form, the dashboard quick prompt, the chat bubble, or the **Invoke** button on a trigger. | priority | `/inference` |
 | `slack` | A Slack trigger fired on a DM or a channel message. | priority | the trigger |
+| `whatsapp` | A `whatsapp` trigger fired on new messages in a chat Zimmer is listening to. | priority | the trigger |
 | `github_issue` | A `github_issue` trigger fired — the feed the issue-work gate reads. | spot | the trigger |
 | `github_label` | A `github_label` trigger fired — the `ready to merge` feed the PR merge gate reads. | spot | the trigger |
 | `schedule` | A cron-scheduled trigger fired. | spot | the trigger |
