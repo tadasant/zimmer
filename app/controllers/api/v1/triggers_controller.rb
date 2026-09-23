@@ -105,6 +105,14 @@ class Api::V1::TriggersController < Api::BaseController
   #         autonomous session transitioning into that state (broadcast).
   #         Combine with reuse_session: true and last_session_id to build a
   #         per-session "wake me up when session X reaches state Y" trigger.
+  #       For whatsapp:
+  #       - chat_id: the chat's WhatsApp id, e.g. "120363012345678901@g.us" (required;
+  #         GET /api/v1/triggers/whatsapp_chats lists them)
+  #       - chat_name: display name (optional)
+  #       - mode: "listen" (every message) or "addressed" (only a batch that @mentions
+  #         the linked account, replies to it, or contains a keyword) (required)
+  #       - keywords: array of words for "addressed" (default ["zimmer"])
+  #       - include_from_me: fire on the linked account's own phone messages (default false)
   def create
     @trigger = Trigger.new(trigger_params)
 
@@ -240,6 +248,30 @@ class Api::V1::TriggersController < Api::BaseController
     render_api_error(e.message, e.message, status: :service_unavailable)
   end
 
+  # GET /api/v1/triggers/whatsapp_chats
+  # List the WhatsApp chats the bridge's account is in, for a `whatsapp` condition's chat_id.
+  def whatsapp_chats
+    unless WhatsappService.configured?
+      render_api_error("WhatsApp is not configured", "WhatsApp is not configured. Set WHATSAPP_MCP_URL.", status: :service_unavailable)
+      return
+    end
+
+    chats = WhatsappService.new.list_chats(limit: 100)
+    render json: {
+      chats: chats.map do |chat|
+        {
+          id: chat["id"].to_s,
+          name: chat["name"].presence || chat["id"].to_s,
+          is_group: chat["is_group"] == true,
+          last_message_at: chat["last_message_at"],
+          participant_count: chat["participant_count"]
+        }
+      end
+    }
+  rescue WhatsappService::Error => e
+    render_api_error(e.message, e.message, status: :service_unavailable)
+  end
+
   private
 
   def set_trigger
@@ -263,7 +295,7 @@ class Api::V1::TriggersController < Api::BaseController
       catalog_skills: [], catalog_hooks: [], catalog_plugins: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
-        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [] ]
+        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [] ]
       ]
     )
     permitted[:mcp_servers] ||= []

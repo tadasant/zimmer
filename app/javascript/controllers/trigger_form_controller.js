@@ -2,7 +2,7 @@ import { Controller } from "@hotwired/stimulus"
 
 // Handles trigger form interactivity including:
 // - Adding/removing trigger conditions
-// - Condition type switching (Slack, Schedule, Zimmer Event, GitHub) per condition card
+// - Condition type switching (Slack, WhatsApp, Schedule, Zimmer Event, GitHub) per condition card
 // - Schedule mode switching (Recurring/One-time) per condition card
 // - Schedule unit-dependent field visibility (day of week, time, timezone)
 export default class extends Controller {
@@ -10,6 +10,7 @@ export default class extends Controller {
     "conditionsContainer", "conditionCard", "conditionTypeSelect",
     "slackConfig", "scheduleConfig", "aoEventConfig", "systemEventConfig",
     "githubConfig", "githubLabelFields", "githubIssueFields",
+    "whatsappConfig", "whatsappChatSelect", "whatsappChatStatus", "whatsappChatId", "whatsappChatName",
     "channelSelect", "channelStatus", "channelId", "channelName",
     "channelManual", "channelManualInput", "slackChannelField", "slackEventTypeSelect",
     "unitSelect", "dayOfWeekContainer", "timeContainer", "timezoneContainer",
@@ -21,6 +22,7 @@ export default class extends Controller {
   static values = {
     slackConfigured: Boolean,
     channelsUrl: { type: String, default: "/triggers/channels" },
+    whatsappChatsUrl: { type: String, default: "/triggers/whatsapp_chats" },
     conditions: Array,
     conditionIndex: { type: Number, default: 0 }
   }
@@ -58,6 +60,8 @@ export default class extends Controller {
 
       // Lazily load the channel dropdown for any card whose Slack config is already visible
       this.maybeLoadChannels(card)
+
+      this.updateWhatsappFieldsInCard(card, typeSelect ? typeSelect.value : "")
     })
   }
 
@@ -101,6 +105,7 @@ export default class extends Controller {
 
     this.updateEventNameFieldsInCard(card, type)
     this.updateGithubFieldsInCard(card, type)
+    this.updateWhatsappFieldsInCard(card, type)
 
     // Lazily load the channel list the first time this card's Slack config is shown
     if (type === "slack") this.loadChannelsForCard(card)
@@ -182,6 +187,73 @@ export default class extends Controller {
       issueFields.classList.toggle("hidden", !showIssueFields)
       issueFields.querySelectorAll("input, select, textarea").forEach(el => { el.disabled = !showIssueFields })
     }
+  }
+
+  // Show/hide a card's WhatsApp fields, and disable them while hidden so a condition of any
+  // other type does not submit an empty chat_id or mode into its configuration. Loads the
+  // chat list the first time the fields are shown.
+  updateWhatsappFieldsInCard(card, type) {
+    const config = card.querySelector("[data-trigger-form-target='whatsappConfig']")
+    if (!config) return
+
+    const isWhatsapp = type === "whatsapp"
+    config.classList.toggle("hidden", !isWhatsapp)
+    config.querySelectorAll("input, select, textarea").forEach(el => { el.disabled = !isWhatsapp })
+    if (isWhatsapp) this.loadWhatsappChatsForCard(card)
+  }
+
+  // Copy the picked chat into the submitted chat_id / chat_name fields.
+  handleWhatsappChatSelect(event) {
+    const card = event.target.closest("[data-trigger-form-target='conditionCard']")
+    if (!card) return
+
+    const option = event.target.selectedOptions[0]
+    const idField = card.querySelector("[data-trigger-form-target='whatsappChatId']")
+    const nameField = card.querySelector("[data-trigger-form-target='whatsappChatName']")
+    if (!option || !option.value) return
+    if (idField) idField.value = option.value
+    if (nameField) nameField.value = option.dataset.chatName || ""
+  }
+
+  loadWhatsappChatsForCard(card) {
+    const select = card.querySelector("[data-trigger-form-target='whatsappChatSelect']")
+    const status = card.querySelector("[data-trigger-form-target='whatsappChatStatus']")
+    if (!select || card.dataset.whatsappChatsLoaded === "true") return
+    card.dataset.whatsappChatsLoaded = "true"
+
+    const setStatus = (text, isError = false) => {
+      if (!status) return
+      status.textContent = text
+      status.classList.toggle("text-red-600", isError)
+      status.classList.toggle("text-gray-500", !isError)
+    }
+
+    setStatus("Loading chats…")
+    if (!this.whatsappChatsPromise) {
+      this.whatsappChatsPromise = fetch(this.whatsappChatsUrlValue, { headers: { Accept: "application/json" } })
+        .then(async (response) => {
+          const data = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`)
+          return data.chats || []
+        })
+    }
+
+    this.whatsappChatsPromise
+      .then((chats) => {
+        const current = select.value
+        chats.forEach((chat) => {
+          if (chat.id === current) return
+          const option = document.createElement("option")
+          option.value = chat.id
+          option.dataset.chatName = chat.name
+          option.textContent = chat.is_group ? `${chat.name} (group)` : chat.name
+          select.appendChild(option)
+        })
+        setStatus(chats.length === 0 ? "The WhatsApp account is in no chats yet. Paste a chat ID instead." : "")
+      })
+      .catch((error) => {
+        setStatus(`Could not load WhatsApp chats (${error.message}). Paste the chat ID below.`, true)
+      })
   }
 
   // ── Slack channel dropdown ──────────────────────────────────────────────
@@ -460,6 +532,7 @@ export default class extends Controller {
                   data-trigger-form-target="conditionTypeSelect">
             <option value="">Select condition type...</option>
             <option value="slack">Slack - Channel messages or @mentions</option>
+            <option value="whatsapp">WhatsApp - Messages in a chat</option>
             <option value="schedule">Schedule - Time-based (recurring or one-time)</option>
             <option value="ao_event">Zimmer Event - Internal system event</option>
             <option value="system_event">System Event - The deployment changed state</option>
@@ -499,6 +572,43 @@ export default class extends Controller {
               <option value="passive_listen_channel">Passive listen: channels - Messages in channels Zimmer posted in recently</option>
             </select>
             <p class="mt-1 text-xs text-gray-500">Choose how this Slack condition fires. "Bot mention" and the passive-listening types only process messages from authorized users, and never fire on Zimmer's own or another app's messages. The two passive types are separate so a trigger can carry either or both — its conditions are ORed. "Threads" has no time limit; "channels" applies while Zimmer has posted at the top level of that channel within the last 6 hours.</p>
+          </div>
+        </div>
+
+        <div data-trigger-form-target="whatsappConfig" class="hidden space-y-3">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Chat <span class="text-red-500">*</span></label>
+            <select data-trigger-form-target="whatsappChatSelect" data-action="change->trigger-form#handleWhatsappChatSelect" disabled
+                    class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+              <option value="">— Select a chat —</option>
+            </select>
+            <p data-trigger-form-target="whatsappChatStatus" class="mt-1 text-xs text-gray-500"></p>
+            <input type="text" name="${name}[configuration][chat_id]" data-trigger-form-target="whatsappChatId" disabled
+                   placeholder="Chat ID (e.g., 120363012345678901@g.us)"
+                   class="mt-2 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono">
+            <input type="hidden" name="${name}[configuration][chat_name]" data-trigger-form-target="whatsappChatName" disabled>
+            <p class="mt-1 text-xs text-gray-500">The chat the WhatsApp bridge's account is in. Pick it from the list, or paste its id. Groups end in <code class="bg-gray-100 px-1 rounded">@g.us</code>.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Fire on <span class="text-red-500">*</span></label>
+            <select name="${name}[configuration][mode]" disabled
+                    class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+              <option value="listen">Listen - every new message</option>
+              <option value="addressed">Addressed - only when someone @mentions, replies to, or names Zimmer</option>
+            </select>
+            <p class="mt-1 text-xs text-gray-500">Messages that arrive within one poll (a minute) fire once, together. "Listen" hands every batch to the session, which decides whether to say anything. "Addressed" skips a batch unless one of its messages is for Zimmer, and still includes the rest of that batch as context.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Keywords <span class="text-gray-400 font-normal">(optional, for "Addressed")</span></label>
+            <textarea name="${name}[configuration][keywords]" rows="2" placeholder="zimmer" disabled
+                      class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono"></textarea>
+            <p class="mt-1 text-xs text-gray-500">One per line. A message containing any of them, as a whole word, counts as addressing Zimmer. Blank means "zimmer".</p>
+          </div>
+          <div class="flex items-start">
+            <input type="hidden" name="${name}[configuration][include_from_me]" value="0" disabled>
+            <input type="checkbox" id="whatsapp_include_from_me_${index}" name="${name}[configuration][include_from_me]" value="1" disabled
+                   class="h-4 w-4 mt-0.5 text-indigo-600 border-gray-300 rounded">
+            <label for="whatsapp_include_from_me_${index}" class="ml-2 text-xs text-gray-600">Also fire on messages the linked account sends from its own phone. Leave off for a dedicated Zimmer number. Turn on if the bridge is linked to your personal number and your own messages should count. Messages Zimmer posts through the bridge never fire.</label>
           </div>
         </div>
 

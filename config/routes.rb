@@ -307,6 +307,7 @@ Rails.application.routes.draw do
         end
         collection do
           get :channels
+          get :whatsapp_chats
         end
       end
 
@@ -574,6 +575,7 @@ Rails.application.routes.draw do
     end
     collection do
       get :channels
+      get :whatsapp_chats
     end
   end
 
