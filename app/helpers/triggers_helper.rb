@@ -54,7 +54,8 @@ module TriggersHelper
     "ao_event" => :ao_event,
     "github_label" => :github,
     "github_issue" => :github,
-    "system_event" => :system_event
+    "system_event" => :system_event,
+    "whatsapp" => :whatsapp
   }.freeze
 
   def trigger_condition_icon_keys(condition_types)
@@ -77,7 +78,8 @@ module TriggersHelper
     "ao_event" => { label: "Zimmer Event", css: "bg-orange-100 text-orange-800" },
     "github_label" => { label: "GitHub", css: "bg-gray-800 text-white" },
     "github_issue" => { label: "GitHub", css: "bg-gray-800 text-white" },
-    "system_event" => { label: "System Event", css: "bg-emerald-100 text-emerald-800" }
+    "system_event" => { label: "System Event", css: "bg-emerald-100 text-emerald-800" },
+    "whatsapp" => { label: "WhatsApp", css: "bg-green-100 text-green-800" }
   }.freeze
 
   FALLBACK_CONDITION_BADGE_CSS = "bg-gray-100 text-gray-800"

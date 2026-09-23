@@ -22,6 +22,7 @@
     <%= cf.select :condition_type,
         [
           ["Slack - Channel messages or @mentions", "slack"],
+          ["WhatsApp - Messages in a chat", "whatsapp"],
           ["Schedule - Time-based (recurring or one-time)", "schedule"],
           ["Zimmer Event - Internal system event", "ao_event"],
           ["System Event - The deployment changed state", "system_event"],
@@ -101,6 +102,67 @@
              placeholder="e.g., 1767504875.131659"
              class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
       <p class="mt-1 text-xs text-gray-500">For "New message" and "Bot mention", with a channel. Set this to a thread's parent timestamp to watch only that thread's <em>replies</em>: every new reply for "New message" — required for feeds that post as thread replies (e.g. a daily digest thread) — or only replies that @mention Zimmer for "Bot mention", which then ignores DMs and the rest of the channel. Leave blank to monitor the channel. Not supported for "Direct message" or the passive-listening types.</p>
+    </div>
+  </div>
+
+  <!-- WhatsApp Configuration -->
+  <% whatsapp = condition.condition_type == "whatsapp" %>
+  <div data-trigger-form-target="whatsappConfig" class="<%= 'hidden' unless whatsapp %> space-y-3">
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Chat <span class="text-red-500">*</span></label>
+      <select data-trigger-form-target="whatsappChatSelect"
+              data-action="change->trigger-form#handleWhatsappChatSelect"
+              <%= "disabled" unless whatsapp %>
+              class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+        <option value="">— Select a chat —</option>
+        <% if condition.whatsapp_chat_id.present? %>
+          <option value="<%= condition.whatsapp_chat_id %>" selected><%= condition.whatsapp_chat_name.presence || condition.whatsapp_chat_id %></option>
+        <% end %>
+      </select>
+      <p data-trigger-form-target="whatsappChatStatus" class="mt-1 text-xs text-gray-500"></p>
+      <input type="text"
+             name="<%= cf.object_name %>[configuration][chat_id]"
+             value="<%= condition.whatsapp_chat_id %>"
+             placeholder="Chat ID (e.g., 120363012345678901@g.us)"
+             data-trigger-form-target="whatsappChatId"
+             <%= "disabled" unless whatsapp %>
+             class="mt-2 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono">
+      <input type="hidden"
+             name="<%= cf.object_name %>[configuration][chat_name]"
+             value="<%= condition.whatsapp_chat_name %>"
+             data-trigger-form-target="whatsappChatName"
+             <%= "disabled" unless whatsapp %>>
+      <p class="mt-1 text-xs text-gray-500">The chat the WhatsApp bridge's account is in. Pick it from the list, or paste its id. Groups end in <code class="bg-gray-100 px-1 rounded">@g.us</code>.</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Fire on <span class="text-red-500">*</span></label>
+      <select name="<%= cf.object_name %>[configuration][mode]"
+              <%= "disabled" unless whatsapp %>
+              class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+        <option value="listen" <%= "selected" if condition.whatsapp_mode == "listen" %>>Listen - every new message</option>
+        <option value="addressed" <%= "selected" if condition.whatsapp_mode == "addressed" %>>Addressed - only when someone @mentions, replies to, or names Zimmer</option>
+      </select>
+      <p class="mt-1 text-xs text-gray-500">Messages that arrive within one poll (a minute) fire once, together. "Listen" hands every batch to the session, which decides whether to say anything. "Addressed" skips a batch unless one of its messages is for Zimmer, and still includes the rest of that batch as context.</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Keywords <span class="text-gray-400 font-normal">(optional, for "Addressed")</span></label>
+      <textarea name="<%= cf.object_name %>[configuration][keywords]"
+                rows="2"
+                placeholder="zimmer"
+                <%= "disabled" unless whatsapp %>
+                class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono"><%= Array(condition.configuration["keywords"]).join("\n") if whatsapp %></textarea>
+      <p class="mt-1 text-xs text-gray-500">One per line. A message containing any of them, as a whole word, counts as addressing Zimmer. Blank means "zimmer".</p>
+    </div>
+    <div class="flex items-start">
+      <input type="hidden" name="<%= cf.object_name %>[configuration][include_from_me]" value="0" <%= "disabled" unless whatsapp %>>
+      <input type="checkbox"
+             id="<%= cf.object_name.parameterize %>_include_from_me"
+             name="<%= cf.object_name %>[configuration][include_from_me]"
+             value="1"
+             <%= "checked" if whatsapp && condition.whatsapp_include_from_me? %>
+             <%= "disabled" unless whatsapp %>
+             class="h-4 w-4 mt-0.5 text-indigo-600 border-gray-300 rounded">
+      <label for="<%= cf.object_name.parameterize %>_include_from_me" class="ml-2 text-xs text-gray-600">Also fire on messages the linked account sends from its own phone. Leave off for a dedicated Zimmer number. Turn on if the bridge is linked to your personal number and your own messages should count. Messages Zimmer posts through the bridge never fire.</label>
     </div>
   </div>
 

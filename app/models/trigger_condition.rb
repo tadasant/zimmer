@@ -22,12 +22,17 @@
 # - "github_issue": Fires when a new issue is opened in a watched repo, unless the issue
 #     carries one of the excluded labels — the opt-out an author sets at creation time.
 #     { "repos" => ["owner/a"], "exclude_labels" => ["hold issue work gate"] }
+# - "whatsapp": Fires when new messages land in one WhatsApp chat (usually a group), read
+#     through a WhatsApp bridge MCP server (WhatsappService) by WhatsappTriggerPollerJob.
+#     { "chat_id" => "1203...@g.us", "chat_name" => "Wedding", "mode" => "listen" }
+#     `mode` "listen" fires on every new message; "addressed" only on a batch in which someone
+#     @mentions the linked account, replies to it, or writes one of `keywords`.
 #
 # Both GitHub types are polled by GithubTriggerPollerJob, which owns the runtime keys
 # it stores back into `configuration` (GITHUB_POLL_STATE_KEYS). See that job for the
 # state-to-event semantics those keys implement.
 class TriggerCondition < ApplicationRecord
-  CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue system_event].freeze
+  CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue system_event whatsapp].freeze
 
   # The passive-listening event types, in the order the UI offers them. They are
   # two separate conditions on purpose: a Trigger ORs its conditions, so carrying
@@ -129,6 +134,30 @@ class TriggerCondition < ApplicationRecord
     thread_recheck_cursors
   ].freeze
 
+  # How a `whatsapp` condition decides that a batch of new messages is worth a session.
+  #
+  #   listen     every new message from somebody else. The session is listening in and decides
+  #              for itself whether to say anything.
+  #   addressed  only a batch containing a message that @mentions the linked account, replies to
+  #              one of its messages, or contains one of `keywords`. The other messages of that
+  #              batch still ride along in the prompt as context.
+  #
+  # Required rather than defaulted: a missing mode read as "listen" would be a silent widening.
+  WHATSAPP_MODES = %w[listen addressed].freeze
+
+  # The words an `addressed` condition treats as calling for Zimmer when none are configured.
+  DEFAULT_WHATSAPP_KEYWORDS = %w[zimmer].freeze
+
+  # A WhatsApp JID: a group (`…@g.us`), a person (`…@s.whatsapp.net`), or a privacy-preserving
+  # linked id (`…@lid`).
+  WHATSAPP_CHAT_ID_FORMAT = /\A[0-9A-Za-z.:_-]+@(g\.us|s\.whatsapp\.net|lid)\z/
+
+  # The poller's keys inside a `whatsapp` condition's configuration, merged back across an edit
+  # for the same reason SLACK_POLL_STATE_KEYS are. The cursor's timestamp is last_message_ts;
+  # `seen_messages` is id => timestamp for every message read inside the poller's look-back
+  # window (WhatsappTriggerPollerJob::LOOKBACK), since each poll re-reads that window.
+  WHATSAPP_POLL_STATE_KEYS = %w[seen_messages].freeze
+
   belongs_to :trigger
   # Which external events this condition has already fired on — see TriggerEventClaim.
   has_many :trigger_event_claims, dependent: :delete_all
@@ -141,6 +170,7 @@ class TriggerCondition < ApplicationRecord
   before_validation :preserve_github_poll_state, if: :github_condition?
   before_validation :preserve_slack_poll_state, if: -> { condition_type == "slack" }
   before_validation :rebaseline_on_thread_change, if: -> { condition_type == "slack" }
+  before_validation :preserve_whatsapp_poll_state, if: -> { condition_type == "whatsapp" }
 
   # Arming is what a never-fired `days`/`weeks` schedule measures its first fire
   # from (see #armed_before?). Stamped on create for every condition type, so the
@@ -152,6 +182,7 @@ class TriggerCondition < ApplicationRecord
   scope :schedule, -> { where(condition_type: "schedule") }
   scope :ao_event, -> { where(condition_type: "ao_event") }
   scope :github, -> { where(condition_type: GITHUB_CONDITION_TYPES) }
+  scope :whatsapp, -> { where(condition_type: "whatsapp") }
 
   # Slack configuration accessors
   def channel_id
@@ -325,6 +356,46 @@ class TriggerCondition < ApplicationRecord
   # stays tracked.
   def participating_threads
     Array(configuration["participating_threads"])
+  end
+
+  # WhatsApp configuration accessors
+  def whatsapp_chat_id
+    configuration["chat_id"].to_s.strip.presence
+  end
+
+  def whatsapp_chat_name
+    configuration["chat_name"].presence
+  end
+
+  def whatsapp_mode
+    configuration["mode"].presence
+  end
+
+  def whatsapp_addressed_only?
+    whatsapp_mode == "addressed"
+  end
+
+  # The keywords an `addressed` condition matches, lower-cased. The form submits them as one
+  # textarea (one per line, or comma-separated), the API as an array; both land here as a flat list.
+  def whatsapp_keywords
+    words = Array(configuration["keywords"])
+      .flat_map { |entry| entry.to_s.split(/[\r\n,]+/) }
+      .filter_map { |entry| entry.strip.downcase.presence }
+      .uniq
+    words.presence || DEFAULT_WHATSAPP_KEYWORDS
+  end
+
+  # Whether messages the linked account itself sent (from its phone, not through the bridge)
+  # fire. Off by default: on a dedicated Zimmer number there are none, and on a personal number
+  # they are the owner's own words, which usually should not wake anyone.
+  def whatsapp_include_from_me?
+    ActiveModel::Type::Boolean.new.cast(configuration["include_from_me"]) == true
+  end
+
+  # id => UNIX-seconds timestamp of the messages the poller has already read.
+  def whatsapp_seen_messages
+    seen = configuration["seen_messages"]
+    seen.is_a?(Hash) ? seen.transform_values(&:to_i) : {}
   end
 
   # Schedule configuration accessors
@@ -647,6 +718,9 @@ class TriggerCondition < ApplicationRecord
       else
         channel_name.present? ? "Slack: ##{channel_name}" : "Slack trigger"
       end
+    when "whatsapp"
+      chat = whatsapp_chat_name.presence || whatsapp_chat_id || "(no chat)"
+      whatsapp_addressed_only? ? "WhatsApp: messages addressing Zimmer in #{chat}" : "WhatsApp: every message in #{chat}"
     when "schedule"
       schedule_description || "Schedule trigger"
     when "ao_event"
@@ -848,6 +922,26 @@ class TriggerCondition < ApplicationRecord
   # that changes channel or event type simply stops consulting the entries that no
   # longer apply rather than being re-baselined by them. The exception is a change of
   # thread_ts, which #rebaseline_on_thread_change handles after this runs.
+  # The WhatsApp poller's cursor survives a UI save the same way the Slack one does. Changing the
+  # chat drops it: ids seen in one chat say nothing about another, and last_message_ts is reset so
+  # the new chat is baselined rather than replayed.
+  def preserve_whatsapp_poll_state
+    return if new_record?
+    return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
+    return unless configuration_changed?
+
+    if configuration["chat_id"].to_s.strip != configuration_was["chat_id"].to_s.strip
+      WHATSAPP_POLL_STATE_KEYS.each { |key| configuration.delete(key) }
+      self.last_message_ts = nil
+      return
+    end
+
+    WHATSAPP_POLL_STATE_KEYS.each do |key|
+      next if configuration.key?(key)
+      configuration[key] = configuration_was[key] if configuration_was.key?(key)
+    end
+  end
+
   def preserve_slack_poll_state
     return if new_record?
     return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
@@ -1136,6 +1230,21 @@ class TriggerCondition < ApplicationRecord
       validate_system_event_configuration
     when "github_label", "github_issue"
       validate_github_configuration
+    when "whatsapp"
+      validate_whatsapp_configuration
+    end
+  end
+
+  def validate_whatsapp_configuration
+    chat_id = whatsapp_chat_id
+    if chat_id.blank?
+      errors.add(:configuration, "must include chat_id for WhatsApp conditions")
+    elsif !chat_id.match?(WHATSAPP_CHAT_ID_FORMAT)
+      errors.add(:configuration, "chat_id must be a WhatsApp chat id such as 120363012345678901@g.us")
+    end
+
+    unless WHATSAPP_MODES.include?(whatsapp_mode)
+      errors.add(:configuration, "mode must be one of: #{WHATSAPP_MODES.join(', ')}")
     end
   end
 

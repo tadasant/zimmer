@@ -39,7 +39,7 @@ module Mcp
       # (wake_me_up_when_session_changes_state) remain the right way to create a
       # SESSION-scoped one-shot wake; what this opens up is the broadcast form, and
       # the account events, which no wake tool covers.
-      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue system_event].freeze
+      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue system_event whatsapp].freeze
 
       # The cap applied to a BROADCAST SESSION ao_event trigger created here when the
       # caller names none.
@@ -128,6 +128,14 @@ module Mcp
           `thread_ts` (a thread's parent timestamp, alongside its channel_id) scopes a `new_message`
           or `bot_mention` condition to that thread's replies — for `bot_mention`, only replies that
           @mention Zimmer, with no DMs and nothing else in the channel.
+        - **whatsapp**: Triggered by new messages in one WhatsApp chat, read through the WhatsApp bridge
+          MCP server. `{"chat_id": "120363012345678901@g.us", "chat_name": "Wedding", "mode": "listen"}` —
+          `mode` is required: `listen` fires on every new message, `addressed` only on a batch where
+          someone @mentions the linked account, replies to it, or writes one of `keywords` (default
+          `["zimmer"]`). `include_from_me: true` also fires on the linked account's own phone messages.
+          Messages from one poll (a minute) fire once, together; pair with `reuse_session: true` so one
+          session owns the chat. search_triggers with include_whatsapp_chats lists chat ids. The
+          template can name {{chat_id}} and {{message_id}} (the newest message in the batch).
         - **schedule**: Triggered on a recurring or one-time schedule
         - **ao_event**: Triggered by an internal Zimmer event (requires configuration with event_name)
         - **github_label**: Triggered when a watched label is ADDED to a PR/issue in a watched repo
@@ -873,7 +881,7 @@ module Mcp
           [ condition_type, config["event_type"].presence || "new_message",
             config["channel_id"].presence, config["thread_ts"].presence ]
         else
-          [ condition_type, config.except(*TriggerCondition::GITHUB_POLL_STATE_KEYS) ]
+          [ condition_type, config.except(*TriggerCondition::GITHUB_POLL_STATE_KEYS, *TriggerCondition::WHATSAPP_POLL_STATE_KEYS) ]
         end
       end
 

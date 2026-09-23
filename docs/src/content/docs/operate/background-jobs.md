@@ -52,6 +52,7 @@ From `config.good_job.cron`:
 | 30s | `HeartbeatSweepJob` | Nudge `needs_input` sessions with a heartbeat enabled |
 | 30s | `GithubPrPollPassJob` | One pass over every session tracking a PR. Enumerates once, gates on `PollBackoff` once, parses each PR url once, and takes ONE `gh pr view` reading of each PR — then hands it to four evaluators: `Github::PrStatusEvaluator` (PR state + CI status, and the merged-PR message), `Github::GoalFactsEvaluator` (the description's Verification section and checkboxes, and the labels, for [the goal check](/sessions/goals/#how-a-goal-is-checked); no GitHub call of its own, and only for a session whose goal checks them), `Github::MergeConflictEvaluator` (on its own 2-minute floor inside the pass, because its debounce is tuned to that gap) and `Github::CommentEvaluator` (its two comment endpoints are separate resources, so they stay their own fetch). It replaced three cron entries that each swept the same sessions and re-derived the same facts ([#711](https://github.com/tadasant/zimmer/issues/711)) |
 | 1m | `SlackTriggerPollerJob` | Poll Slack channels for trigger conditions |
+| 1m | `WhatsappTriggerPollerJob` | Poll the WhatsApp bridge for new messages in watched chats ([`whatsapp` triggers](/sessions/triggers/#whatsapp)) |
 | 1m | `SlackOutageMarkerJob` | Put :hourglass_flowing_sand: on the Slack message behind a Slack-spawned session that has hit API errors and not reached the model for five minutes, and take it off when the agent's first turn lands or the session is archived or fails. One query a minute, plus a read of the stored transcript for each unsettled candidate. A candidate settles on its first model turn, so on an ordinary day that is a handful of short transcripts. Slack is called only during an outage. See [the outage marker](/sessions/triggers/#when-the-model-is-unreachable-the-outage-marker) |
 | 1m | `QueueRecoveryModeExpiryJob` | Lift queue recovery mode once its TTL has elapsed |
 | 1m | `ScheduleTriggerJob` | Fire due schedule triggers |
@@ -1415,7 +1416,7 @@ Most short jobs run on `default`. Six kinds of work are deliberately isolated:
   (101 ready, head of line 75m, both threads held by `SessionProvenanceBroadcastJob` for 43m). The
   four threads are the four `agents` gave up, so the scheduler total is still 25 and the connection
   budget is unchanged.
-- **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob` and `GithubTriggerPollerJob`, and
+- **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob`, `GithubTriggerPollerJob` and `WhatsappTriggerPollerJob`, and
   since then the rest of the periodic work that must not queue behind session jobs:
   `GithubPrPollPassJob`,
   `CatalogRefreshJob`, `CliStatusRefreshJob`, `WarmSkillsCacheJob`, `EgressHealthCheckJob`,
@@ -1848,6 +1849,13 @@ condition whose state stopped landing was masked by its siblings keeping the hea
 total Slack-poller stall was invisible until a feed drifted three hours behind (and the check that
 would notice ran on the same worker). The liveness plumbing now has one implementation
 (`PollerHeartbeat`, one check job) and the freshness checks are the same shape on both sides.
+
+`WhatsappTriggerPollerJob` has the liveness half and not the freshness half. A wedding group can go
+a week without a message, so "no new message" says nothing about the feed. What does go wrong is the
+bridge losing its link to WhatsApp — the phone offline for 14 days, the linked device removed, the
+number banned — and the poller treats that as a sweep that polled nothing: it asks the bridge's
+`whatsapp_status` first and stamps the heartbeat only when the bridge is logged in and every chat was
+read. So a lost link reaches `#alerts` as "WhatsApp trigger polling stalled" 30 minutes later.
 
 ### Liveness: the heartbeat
 
