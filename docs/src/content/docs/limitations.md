@@ -4641,6 +4641,38 @@ is a `bot_mention` condition at least as wide as the passive ones; nothing enfor
 logs one `info` line naming the message and the condition that declined it, which is the only signal
 you get.
 
+### WhatsApp rides an unofficial client, and a ban lands on the linked number
+
+The [`whatsapp` trigger](/sessions/triggers/#whatsapp) reads and posts through a WhatsApp
+linked-device client (a bridge MCP server), not Meta's WhatsApp Business Cloud API. That was a
+choice, not an oversight. The Cloud API's groups support cannot put a business number into a group
+someone else created: groups are created through the API, people join by invite link, and they cap
+at eight participants. It also has no way to read history. Joining an existing chat with real people
+in it needs a linked device.
+
+The cost is that WhatsApp's terms do not allow unofficial clients, so the number the bridge is linked
+to can be banned. Link a number you can afford to lose, not your personal one. A protocol change on
+WhatsApp's side can also break the bridge until its library catches up.
+
+### A WhatsApp session sees only what the bridge has buffered
+
+WhatsApp has no server-side history. The bridge knows the history the phone synced to it when it was
+linked, plus what it has seen live since. A number added to a group sees only messages from after it
+joined. `whatsapp_get_messages` cannot reach past that.
+
+### WhatsApp authors are not recorded as human messages
+
+A Slack fire records the words of a mapped human (Tadas, Julie) as a human message on the session.
+A WhatsApp fire records nothing: there is no roster mapping from a phone number to a person yet. The
+batch is in the prompt, fenced as untrusted, and that is all.
+
+### A WhatsApp link that breaks is paged 30 minutes late, and fixed by hand
+
+The poller cannot tell a quiet chat from a dead one, so a broken link (phone offline for 14 days,
+linked device removed, number banned) shows up only as the WhatsApp liveness heartbeat going stale.
+Re-linking needs a person with the phone: call the bridge's `whatsapp_pair` and enter the code under
+*Linked devices*.
+
 ### GitHub is polled, and the webhooks have no public way in
 
 GitHub PR status and comments are polled every 30 seconds per open PR. A 30-second latency floor and

@@ -101,6 +101,26 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
           "the poller's own deferral chain. Check the GoodJob dashboard (/jobs) and " \
           "status.slack.com."
       end
+    ),
+    Poller.new(
+      key: :whatsapp,
+      # WhatsappTriggerPollerJob stamps only when the bridge says it is logged in to WhatsApp
+      # AND at least one watched chat was read (a chat that fails on its own reports through
+      # ErrorReporter on every tick). So this pages for the bridge being unlinked — the
+      # phone was offline for 14 days, someone removed the linked device, the account was
+      # banned — as well as for the poller not running, and those are the failures a
+      # WhatsApp listener has that nothing else would notice: the chat simply goes quiet.
+      threshold: 30.minutes,
+      watched: -> { TriggerCondition.whatsapp.joins(:trigger).where(triggers: { status: "enabled" }).exists? },
+      seedable: -> { WhatsappService.configured? },
+      title: "WhatsApp trigger polling stalled",
+      details: lambda do |minutes, last_at|
+        "No WhatsApp trigger poll has completed cleanly in ~#{minutes} minutes (last success " \
+          "#{last_at}). WhatsApp triggers are not firing. Likely causes: the WhatsApp bridge is no " \
+          "longer linked to the account (the phone was offline for 14+ days, or the linked device " \
+          "was removed — call the bridge's whatsapp_status, then whatsapp_pair to re-link), the " \
+          "bridge is down, or the `pollers` GoodJob worker is down. Check the GoodJob dashboard (/jobs)."
+      end
     )
   ].freeze
 

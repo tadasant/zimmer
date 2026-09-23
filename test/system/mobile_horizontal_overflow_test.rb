@@ -1200,6 +1200,38 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-trigger-form-prompt-help-375.png")
   end
 
+  # A WhatsApp chat id is one unbreakable token, and the condition card carries it in a
+  # text input and in the trigger detail's description.
+  test "a whatsapp trigger's form and detail do not overflow horizontally on a phone" do
+    trigger = Trigger.new(
+      name: "wedding-planner-whatsapp-listener",
+      prompt_template: "New messages: {{text|untrusted}}",
+      status: "enabled",
+      agent_root_name: AgentRootsConfig.all.first.name
+    )
+    trigger.trigger_conditions.build(
+      condition_type: "whatsapp",
+      configuration: { "chat_id" => "15551112222-1600000000000000000000@g.us", "mode" => "addressed" }
+    )
+    trigger.save!
+
+    visit trigger_path(trigger)
+    assert_text "15551112222-1600000000000000000000@g.us"
+    assert_no_horizontal_overflow("whatsapp trigger detail")
+
+    visit edit_trigger_path(trigger)
+    assert_selector "[data-trigger-form-target=whatsappConfig]", visible: true
+    assert_no_horizontal_overflow("whatsapp trigger edit form")
+
+    visit new_trigger_path(type: "whatsapp")
+    assert_selector "[data-trigger-form-target=whatsappConfig]", visible: true
+    # The chat picker's fetch fails without a bridge, and its error line has to wrap too.
+    assert_text "WhatsApp"
+    assert_no_horizontal_overflow("new whatsapp trigger form")
+    page.execute_script("document.querySelector('[data-trigger-form-target=\"whatsappConfig\"]').scrollIntoView({ block: 'start' })")
+    page.save_screenshot("tmp/screenshots/proof-whatsapp-trigger-form-375.png")
+  end
+
   # A failed trigger renders an error string it did not choose — an exception
   # message with no break opportunity is the normal case, not the pathological
   # one. Both surfaces show it, so both are measured with one in place.

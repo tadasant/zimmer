@@ -226,7 +226,7 @@
                     <% end %>
                   </span>
                 <% else %>
-                  <span class="text-sm text-gray-900"><%= trigger_condition_detail(condition) %></span>
+                  <span class="min-w-0 break-words text-sm text-gray-900"><%= trigger_condition_detail(condition) %></span>
                 <% end %>
                 <% if condition.last_triggered_at %>
                   <span class="text-xs text-gray-400">(last: <%= time_ago_in_words(condition.last_triggered_at) %> ago)</span>

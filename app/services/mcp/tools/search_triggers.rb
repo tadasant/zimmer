@@ -70,6 +70,7 @@ module Mcp
         - **List**: List triggers with optional filters (trigger_type, status, pagination). Each row
           names the trigger's MCP servers, so "which triggers reference server X?" is one call.
         - **Include channels**: Set include_channels=true to also list available Slack channels (useful when creating Slack triggers)
+        - **Include WhatsApp chats**: Set include_whatsapp_chats=true to list the WhatsApp chats and their chat ids (useful when creating WhatsApp triggers)
 
         **Filterable trigger types:**
         - **slack**: Triggers fired by Slack messages
@@ -108,6 +109,10 @@ module Mcp
           include_channels: {
             type: "boolean",
             description: "Include available Slack channels. Default: false"
+          },
+          include_whatsapp_chats: {
+            type: "boolean",
+            description: "Include the WhatsApp chats the bridge's account is in, with the chat ids a `whatsapp` condition takes. Default: false"
           },
           page: { type: "number", minimum: 1, description: "Page number. Default: 1" },
           per_page: {
@@ -240,6 +245,7 @@ module Mcp
         end
 
         lines.concat(slack_channel_lines) if args["include_channels"]
+        lines.concat(whatsapp_chat_lines) if args["include_whatsapp_chats"]
 
         lines.join("\n")
       end
@@ -451,6 +457,24 @@ module Mcp
         lines
       rescue StandardError => e
         [ "", "*Could not fetch Slack channels: #{e.message}*" ]
+      end
+
+      # The same footnote contract for the WhatsApp bridge's chats.
+      def whatsapp_chat_lines
+        raise WhatsappService::Error, "WhatsApp is not configured (WHATSAPP_MCP_URL is unset)" unless WhatsappService.configured?
+
+        chats = WhatsappService.new.list_chats(limit: 100)
+        lines = [ "", "## Available WhatsApp Chats", "" ]
+        if chats.empty?
+          lines << "No WhatsApp chats available."
+        else
+          chats.each do |chat|
+            lines << "- **#{chat['name'].presence || chat['id']}** (#{chat['id']})#{chat['is_group'] ? ' [group]' : ''}"
+          end
+        end
+        lines
+      rescue StandardError => e
+        [ "", "*Could not fetch WhatsApp chats: #{e.message}*" ]
       end
     end
   end

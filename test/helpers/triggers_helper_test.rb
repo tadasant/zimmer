@@ -58,7 +58,8 @@ class TriggersHelperTest < ActionView::TestCase
     "ao_event" => { "event_name" => "session_needs_input" },
     "github_label" => { "repos" => [ "tadasant/zimmer" ], "target" => "pull_request", "labels" => [ "ready to merge" ] },
     "github_issue" => { "repos" => [ "tadasant/zimmer" ], "exclude_labels" => [ "hold issue work gate" ] },
-    "system_event" => { "event_name" => "quota_available" }
+    "system_event" => { "event_name" => "quota_available" },
+    "whatsapp" => { "chat_id" => "120363012345678901@g.us", "chat_name" => "Wedding", "mode" => "listen" }
   }.freeze
 
   # The detail page's badge is the same drift hazard as the row's icon: a type
