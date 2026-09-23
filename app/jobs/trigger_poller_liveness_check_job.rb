@@ -105,7 +105,8 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
     Poller.new(
       key: :whatsapp,
       # WhatsappTriggerPollerJob stamps only when the bridge says it is logged in to WhatsApp
-      # AND every enabled chat was read. So this pages for the bridge being unlinked — the
+      # AND at least one watched chat was read (a chat that fails on its own reports through
+      # ErrorReporter on every tick). So this pages for the bridge being unlinked — the
       # phone was offline for 14 days, someone removed the linked device, the account was
       # banned — as well as for the poller not running, and those are the failures a
       # WhatsApp listener has that nothing else would notice: the chat simply goes quiet.

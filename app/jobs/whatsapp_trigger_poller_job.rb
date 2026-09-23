@@ -18,7 +18,11 @@
 #      lands as one follow-up in the session that owns the chat.
 #
 # The spawn and the cursor commit together, so a fire that raises is retried on the next tick and
-# a fire that succeeded is never repeated.
+# a fire that succeeded is never repeated. A batch that did not REACH its session — the reused
+# session still holds an undelivered earlier batch, or is mid-turn with `enqueue_messages` off, or
+# `skip_if_pending_session` held the fire — leaves the cursor where it was, so the next tick reads
+# the batch again together with anything newer and delivers it then. Only a burst-suppressed fire
+# is dropped, as on Slack: replaying a burst is what the cap exists to prevent.
 #
 # A condition the poller has never visited is baselined, not fired: its cursor is set to the
 # newest message in the chat, so turning a trigger on never replays the chat's history.
@@ -44,6 +48,8 @@ class WhatsappTriggerPollerJob < ApplicationJob
 
   # Pages read per condition per tick. 1,000 messages in a minute is not a chat anyone is
   # listening to; the rest is read on the next tick, since the cursor only moves over what was read.
+  # (A look-back window holding more than this many messages would re-read only messages it had
+  # already seen and never move the cursor. That is a chat far busier than the one this is for.)
   MAX_PAGES = 5
 
   # How many messages a prompt quotes. Past this it quotes the newest and says how many it left
@@ -125,31 +131,53 @@ class WhatsappTriggerPollerJob < ApplicationJob
     addressed = candidates.select { |message| addresses_zimmer?(condition, message) }
     fire = candidates.any? && (!condition.whatsapp_addressed_only? || addressed.any?)
 
-    session = nil
+    outcome = nil
     ActiveRecord::Base.transaction do
-      session = fire!(condition, candidates, addressed, chat_id: chat_id, chat_name: chat_name) if fire
-      condition.update!(
-        last_message_ts: new_cursor.to_s,
-        last_polled_at: Time.current,
-        last_triggered_at: session ? Time.current : condition.last_triggered_at,
-        configuration: condition.configuration.merge("seen_messages" => seen)
-      )
+      # Re-read the row under a lock: an edit that landed while this tick was reading the bridge
+      # must not be written over with the configuration loaded at the start of the sweep. An edit
+      # that moved the condition to another chat makes this batch moot — the next tick baselines
+      # the new chat.
+      condition.lock!
+      raise ActiveRecord::Rollback if condition.whatsapp_chat_id != chat_id || condition.last_message_ts.to_i != cursor
+
+      outcome = fire ? fire!(condition, candidates, addressed, chat_id: chat_id, chat_name: chat_name) : :nothing_to_fire
+
+      if outcome == :held
+        condition.update!(last_polled_at: Time.current)
+      else
+        condition.update!(
+          last_message_ts: new_cursor.to_s,
+          last_polled_at: Time.current,
+          last_triggered_at: outcome.is_a?(Session) ? Time.current : condition.last_triggered_at,
+          configuration: condition.configuration.merge("seen_messages" => seen)
+        )
+      end
     end
 
-    if fire
-      outcome = session ? "fired session #{session.id}" : "spawned nothing (burst-suppressed or a session is still pending)"
-      Rails.logger.info "[WhatsappTriggerPollerJob] Condition #{condition.id}: #{candidates.size} new message(s), #{outcome}"
-    end
+    log_outcome(condition, candidates.size, outcome) if fire
   end
 
-  # The first poll of a condition: remember where the chat is now, fire nothing.
+  def log_outcome(condition, count, outcome)
+    said = case outcome
+    when Session then "delivered to session #{outcome.id}"
+    when :held then "not delivered yet (the session is busy or a session is still pending); held for the next tick"
+    when :burst_suppressed then "burst-suppressed, dropped"
+    else "rolled back (the condition was edited mid-poll)"
+    end
+    Rails.logger.info "[WhatsappTriggerPollerJob] Condition #{condition.id}: #{count} new message(s), #{said}"
+  end
+
+  # The first poll of a condition: remember where the chat is now, fire nothing. The whole
+  # look-back window behind the newest message goes into the seen-set, since the next tick re-reads
+  # that window and would otherwise fire on ten minutes of history.
   def baseline!(service, condition, chat_id)
     newest = service.get_messages(chat_id, limit: 1).messages.last
     timestamp = newest&.timestamp || Time.current.to_i
+    window = newest ? read_since(service, chat_id, timestamp - LOOKBACK.to_i, {}).first : []
     condition.update!(
       last_message_ts: timestamp.to_s,
       last_polled_at: Time.current,
-      configuration: condition.configuration.merge("seen_messages" => newest ? { newest.id => newest.timestamp } : {})
+      configuration: condition.configuration.merge("seen_messages" => window.to_h { |message| [ message.id, message.timestamp ] })
     )
     Rails.logger.info "[WhatsappTriggerPollerJob] Condition #{condition.id} baselined at #{timestamp}"
   end
@@ -220,10 +248,19 @@ class WhatsappTriggerPollerJob < ApplicationJob
       message_id: newest.id
     )
 
-    trigger.create_session!(
+    # The transaction-scoped spawn lock SlackTriggerFiring takes for the same reason: a manual
+    # invoke, or a second condition on this trigger, must not race this fire's skip/burst checks.
+    Trigger.lock_spawn_for_transaction!(trigger.id)
+    session = trigger.create_session!(
       prompt: prompt,
       session_metadata: { "whatsapp_chat_id" => chat_id, "whatsapp_message_id" => newest.id }
     )
+
+    return :held if session.nil? && trigger.last_fire_skipped_for_pending_session?
+    return :burst_suppressed if session.nil?
+    return :held if %i[skipped_pending_exists dropped].include?(trigger.last_follow_up_status)
+
+    session
   end
 
   # The batch as a chat log, oldest first: one line per message, time, author, text. A message
@@ -235,7 +272,7 @@ class WhatsappTriggerPollerJob < ApplicationJob
 
     lines = shown.map do |message|
       at = Time.zone.at(message.timestamp).utc.strftime("%Y-%m-%d %H:%M UTC")
-      body = message.text.to_s.strip.truncate(MAX_TEXT_CHARS).presence
+      body = one_line(message.text.to_s.strip.truncate(MAX_TEXT_CHARS)).presence
       body = [ "(#{message.type})", body ].compact.join(" ") unless message.type == "text"
       flag = marked.include?(message.id) ? " [addresses Zimmer]" : ""
       "[#{at}] #{author_label(message) || 'unknown'}#{flag}: #{body || '(no text)'}"
@@ -246,13 +283,21 @@ class WhatsappTriggerPollerJob < ApplicationJob
     lines.join("\n")
   end
 
+  # A message's line breaks become " / ". Each message is exactly one line of the log, so nobody
+  # in the chat can type a line that looks like another person's message, or like one Zimmer
+  # marked as addressing it.
+  def one_line(text)
+    text.gsub(/\s*\R\s*/, " / ")
+  end
+
   # "Name (+15551234567)". The number is shown only for a phone-number JID: a `@lid` id is an
-  # opaque account id, and printing it with a + would dress it up as a phone number.
+  # opaque account id, and printing it with a + would dress it up as a phone number. The name is
+  # whatever the person set as their WhatsApp name, so it loses line breaks and brackets.
   def author_label(message)
     user, server = message.sender_jid.to_s.split("@", 2)
     number = user.to_s.split(":").first if server == "s.whatsapp.net"
     phone = "+#{number}" if number.to_s.match?(/\A\d+\z/)
-    name = message.sender_name.presence
+    name = message.sender_name.to_s.gsub(/[\[\]\r\n]+/, " ").squish.presence
 
     return "#{name} (#{phone})" if name && phone
 
