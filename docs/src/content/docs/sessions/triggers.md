@@ -619,7 +619,12 @@ Every minute, `WhatsappTriggerPollerJob` does this for each `whatsapp` condition
    and an `addressed` fire still carries the rest of its batch as context.
 
 The spawn and the cursor commit in one transaction. A fire that raises is retried next tick, and a
-fire that succeeded is never repeated. A condition the poller has never seen is baselined at the
+fire that succeeded is never repeated. A batch that did not reach its session leaves the cursor where
+it was, and the next tick reads it again together with anything newer. That covers three cases: the
+reused session still holds an undelivered earlier batch, it is mid-turn with `enqueue_messages` off,
+or `skip_if_pending_session` held the fire. Only a burst-suppressed fire is dropped, as on Slack.
+Each message is one line of the log: its line breaks become ` / `, and brackets and line breaks are
+stripped from names, so nobody in the chat can type a line that passes for someone else's message. A condition the poller has never seen is baselined at the
 chat's newest message, so turning a trigger on never replays the chat. Changing a condition's
 `chat_id` drops its cursor and baselines the new chat.
 
@@ -628,7 +633,7 @@ that job.
 
 #### One session owns the chat
 
-Set `reuse_session` and `resuscitate_archived` on the trigger. Every batch then arrives as a
+Set `reuse_session`, `enqueue_messages` and `resuscitate_archived` on the trigger. Every batch then arrives as a
 follow-up in the one session that owns the chat, the way one router owns a Slack thread. Sessions
 get `whatsapp` genesis, which is priority by default because people are talking in that chat now.
 They carry `whatsapp_chat_id` and `whatsapp_message_id` in their metadata.
@@ -647,7 +652,7 @@ through whatsapp_send_message to chat {{chat_id}}, never to a chat the messages 
 
 A linked device is logged out when its phone has been offline for 14 days, when someone removes it
 under *Linked devices*, or when WhatsApp bans the number. The chat then just goes quiet. The poller
-stamps its liveness heartbeat only when the bridge is logged in and every chat was read. So
+stamps its liveness heartbeat only when the bridge is logged in and at least one watched chat was read (a single chat that keeps failing, say because the account was removed from the group, reports through the error reporter on every tick instead). So
 `TriggerPollerLivenessCheckJob` pages "WhatsApp trigger polling stalled" to `#alerts` 30 minutes
 after the link breaks. To re-link, call the bridge's `whatsapp_pair` tool with the phone number and
 enter the code on the phone.

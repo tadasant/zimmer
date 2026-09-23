@@ -1854,8 +1854,8 @@ would notice ran on the same worker). The liveness plumbing now has one implemen
 a week without a message, so "no new message" says nothing about the feed. What does go wrong is the
 bridge losing its link to WhatsApp — the phone offline for 14 days, the linked device removed, the
 number banned — and the poller treats that as a sweep that polled nothing: it asks the bridge's
-`whatsapp_status` first and stamps the heartbeat only when the bridge is logged in and every chat was
-read. So a lost link reaches `#alerts` as "WhatsApp trigger polling stalled" 30 minutes later.
+`whatsapp_status` first and stamps the heartbeat only when the bridge is logged in and at least one
+watched chat was read. So a lost link reaches `#alerts` as "WhatsApp trigger polling stalled" 30 minutes later.
 
 ### Liveness: the heartbeat
 

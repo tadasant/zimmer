@@ -916,12 +916,7 @@ class TriggerCondition < ApplicationRecord
   # scope would look new against the old seen-set and fire at once. Dropping the state
   # instead re-baselines the condition on the next tick, which keeps the guarantee that
   # matters: an item labelled before you asked to watch it does not fire retroactively.
-  # Merge the Slack poller's cursors back in whenever the incoming configuration
-  # omits them. Unlike the GitHub equivalent there is no scope-change branch that
-  # drops them: every Slack cursor is keyed by channel or by thread, so a condition
-  # that changes channel or event type simply stops consulting the entries that no
-  # longer apply rather than being re-baselined by them. The exception is a change of
-  # thread_ts, which #rebaseline_on_thread_change handles after this runs.
+
   # The WhatsApp poller's cursor survives a UI save the same way the Slack one does. Changing the
   # chat drops it: ids seen in one chat say nothing about another, and last_message_ts is reset so
   # the new chat is baselined rather than replayed.
@@ -942,6 +937,12 @@ class TriggerCondition < ApplicationRecord
     end
   end
 
+  # Merge the Slack poller's cursors back in whenever the incoming configuration
+  # omits them. Unlike the GitHub equivalent there is no scope-change branch that
+  # drops them: every Slack cursor is keyed by channel or by thread, so a condition
+  # that changes channel or event type simply stops consulting the entries that no
+  # longer apply rather than being re-baselined by them. The exception is a change of
+  # thread_ts, which #rebaseline_on_thread_change handles after this runs.
   def preserve_slack_poll_state
     return if new_record?
     return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
