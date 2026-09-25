@@ -178,6 +178,7 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
   # human-only operation — it moves and removes nothing.
   def hold
     session = acting_session
+    @item = unresolved_row_for_key || @item
     WorkBacklog::Hold.call(
       item: @item,
       reason: params[:reason],
@@ -234,6 +235,16 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
   # pull/start name is accepted too.
   def writing_session
     Session.locate(params[:writing_session_id].presence || params[:acting_session_id])
+  end
+
+  # A key names several rows over its history. For a hold, the row that matters
+  # is the one still unresolved — the same resolution the MCP tool makes — so a
+  # key with a newer queued row does not land the hold on that one.
+  def unresolved_row_for_key
+    return nil if params[:id].to_s.match?(/\A\d+\z/)
+
+    rows = WorkBacklogItem.unresolved.where(key: params[:id].to_s).order(id: :desc).limit(2).to_a
+    rows.first if rows.size == 1
   end
 
   def set_item

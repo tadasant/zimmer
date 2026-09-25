@@ -326,14 +326,16 @@ view, `status: "awaiting_decision"` in `get_work_backlog` and the REST index, an
 not the whole pile.
 
 **A hold lapses after `HOLD_DURATION` (14 days).** The row is then stranded again with its original
-age, so the next pass pages on it as the oldest row. That page is the reminder that the decision is
-still owed. It reaches the human on the path every other page takes, every two weeks instead of
-every week. The alternative was a second, slower reminder for held rows. That would have added an
+age, and the next pass that can read GitHub pages on the lapse, whatever band the sweep last paged
+for. Only then is the spent hold cleared. That page is the reminder that the decision is still owed.
+It reaches the human on the path every other page takes, once per hold. The alternative was a second, slower reminder for held rows. That would have added an
 alert path to keep alive for a population whose whole problem was that its alert did not reach
 anyone, and a hold that never lapsed would bring back the permanent silence of
 [#1127](https://github.com/tadasant/zimmer/issues/1127) and [#1175](https://github.com/tadasant/zimmer/issues/1175).
-**A hold cannot be extended** while it is in force. Once it lapses a triager may hold the row again,
-after reading it again.
+**A hold cannot be extended** while it is in force, and a lapsed hold cannot be renewed until its
+lapse has paged. Without that second rule, a triager could re-hold the row the minute it lapsed,
+before the hourly sweep ran, and the row would never page again. After the page, a triager may read
+the row again and hold it again.
 
 **A hold is void when its evidence changes.** It records the `liveness_state` it was placed against,
 and the sweep clears it, in the same write, the first time it records a different one: the issue
@@ -342,7 +344,8 @@ closed, a PR opened, moved, stalled or merged, or a newer row superseded it. A f
 view also drops a held row whose issue its live snapshot shows closed, as it does for Stranded.
 
 `WorkBacklog::Hold` refuses a row that is not stranded (queued, in flight, parked or resolved), a
-row the sweep has not read yet (no `liveness_state`, or `unknown`), and a row already held.
+row the sweep has not read yet (no `liveness_state`, or `unknown`), a row a newer row has
+superseded, a row already held, and a row whose lapsed hold has not paged yet.
 
 Settled rows go last because the candidate population only grows: a row whose issue closed stays
 a candidate for good. In a plain least-recently-checked round-robin, most of each pass's 200 would

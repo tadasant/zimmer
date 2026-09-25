@@ -22,11 +22,11 @@ module Mcp
 
         **What it does.** The row moves from `status: "stranded"` to `status: "awaiting_decision"` in `get_work_backlog`, and out of the population whose age pages `#alerts` (`WorkBacklogLivenessSweepJob`). It is listed under "Awaiting your decision" on the Issues page with your `reason`. It does NOT change the row's `status`, remove it, or re-queue it.
 
-        **It lapses after #{WorkBacklogItem::HOLD_DURATION.inspect}.** The row is then stranded again with its original age, so the next sweep pages on it — that page is the reminder that the decision is still owed. A hold cannot be extended while it is active. After it lapses you may hold the row again, but read it first: the question is whether the decision is still the one owed.
+        **It lapses after #{WorkBacklogItem::HOLD_DURATION.inspect}.** The row is then stranded again with its original age, and the next sweep pages on the lapse — that page is the reminder that the decision is still owed. A hold cannot be extended while it is active, and cannot be renewed until its lapse has paged. After that you may hold the row again, but read it first: the question is whether the decision is still the one owed.
 
         **It is void the moment the evidence changes.** The hold records the row's `liveness_state`; if a later sweep reads a different one (the issue closed, a PR opened, moved, stalled or merged), the hold is cleared and the row is triaged afresh. A failed GitHub read (`unknown`) does not void it.
 
-        **Refused** for a row that is not stranded (queued, in flight, parked, or resolved), for a row the sweep has not read yet (no `liveness_state`, or `unknown`), and for a row already held.
+        **Refused** for a row that is not stranded (queued, in flight, parked, or resolved), for a row the sweep has not read yet (no `liveness_state`, or `unknown`), for a row a newer row has superseded, for a row already held, and for a row whose lapsed hold has not paged yet.
 
         **`reason` is required** and is what a human reads: name the decision owed and who owes it, and link the issue comment that lays it out, e.g. "Tadas to pick one of #79/#141/#217 — see https://github.com/…#issuecomment-…".
 

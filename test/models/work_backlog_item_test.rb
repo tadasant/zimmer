@@ -144,6 +144,22 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     assert_equal [ item.id ], WorkBacklogItem.stranded.pluck(:id)
   end
 
+  # The sweep holds its row objects across a slow GitHub probe. A hold recorded
+  # in that window must be judged against its own evidence, not the stale copy's.
+  test "recording liveness on a stale object judges the hold the row carries now" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    item = backlog_item(key: "zimmer#1")
+    item.mark_started!(session: sessions(:archived), by: nil)
+    item.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    stale = WorkBacklogItem.find(item.id)
+
+    item.update!(liveness_state: WorkBacklogItem::LIVENESS_PR_STALLED)
+    item.hold_for_decision!(reason: "rule on the stalled PR", by: "human")
+    stale.record_liveness!(WorkBacklogItem::LIVENESS_PR_STALLED)
+
+    assert item.reload.hold_active?, "a hold recorded against this very evidence survives"
+  end
+
   test "a hold needs a reason" do
     item = backlog_item(key: "zimmer#1")
     assert_raises(ActiveRecord::RecordInvalid) { item.hold_for_decision!(reason: "", by: "human") }

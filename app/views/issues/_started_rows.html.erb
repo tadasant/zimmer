@@ -13,7 +13,8 @@
     "nothing is running". %>
 <%# `hold_form` adds the "hold for a decision" control under each row's verdict
     — on the Stranded list only. A row whose hold is in force shows the hold
-    instead, and a row whose hold lapsed shows what it said. %>
+    instead, and a row whose hold lapsed shows what it said, with no form until
+    the sweep has paged on the lapse (WorkBacklog::Hold refuses it until then). %>
 <% liveness = local_assigns.fetch(:liveness, false) %>
 <% hold_form = local_assigns.fetch(:hold_form, false) %>
 <div class="bg-white border border-gray-200 rounded-lg overflow-hidden mb-6">
@@ -73,7 +74,7 @@
                     by <%= row.item.held_by %>: <%= row.item.hold_reason %>
                   </div>
                 <% end %>
-                <% if hold_form && !row.item.hold_active? && row.item.liveness_state.present? && row.item.liveness_state != WorkBacklogItem::LIVENESS_UNKNOWN %>
+                <% if hold_form && row.item.held_at.nil? && row.item.liveness_state.present? && row.item.liveness_state != WorkBacklogItem::LIVENESS_UNKNOWN %>
                   <%= render "hold", row: row, query_params: local_assigns.fetch(:query_params, {}) %>
                 <% end %>
               </td>

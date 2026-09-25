@@ -143,7 +143,8 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert_equal(-32602, call["error"]["code"], "a sessions-scoped connection cannot call the append tool")
 
     scoped = rpc("tools/list", path: "/mcp?tool_groups=work_backlog")["result"]["tools"].map { |t| t["name"] }
-    assert_equal %w[get_work_backlog append_work_backlog_item pull_work_backlog_items].sort, scoped.sort
+    assert_equal %w[get_work_backlog append_work_backlog_item pull_work_backlog_items
+                    hold_work_backlog_item_for_decision].sort, scoped.sort
 
     readonly = rpc("tools/list", path: "/mcp?tool_groups=work_backlog_readonly")["result"]["tools"].map { |t| t["name"] }
     assert_equal [ "get_work_backlog" ], readonly

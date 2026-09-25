@@ -14,8 +14,12 @@ module WorkBacklog
   #     day it strands;
   #   * a row whose evidence has not been read (no liveness state, or `unknown`)
   #     — the hold records the evidence it stands on, and there is none;
-  #   * a row already held — a hold is not extended in place. When it lapses the
-  #     row pages, and a triager re-reads it before holding it again.
+  #   * a row a newer row has taken over — its triage already happened;
+  #   * a row already held — a hold is not extended in place;
+  #   * a row whose hold has lapsed but whose lapse has not paged yet. The page
+  #     is the reminder the lapse exists for, so a hold renewed the minute it
+  #     lapsed would skip it and silence the row indefinitely. Once the sweep has
+  #     paged, it clears the spent hold and the row may be held again.
   class Hold
     class Refused < StandardError; end
 
@@ -41,15 +45,26 @@ module WorkBacklog
                          "(#{item.liveness_state || 'not checked'}); a hold records the evidence it stands on, " \
                          "so wait for the next WorkBacklogLivenessSweepJob pass"
         end
+        if item.superseded?
+          raise Refused, "#{item.key} (row #{item.id}) has been taken over by a newer row for the same key, " \
+                         "so its triage already happened"
+        end
         if item.hold_active?(now: now)
           raise Refused, "#{item.key} (row #{item.id}) is already held until #{item.held_until.iso8601}. " \
                          "A hold is not extended: when it lapses the row pages again, which is the reminder"
+        end
+        if item.hold_lapsed?(now: now)
+          raise Refused, "#{item.key} (row #{item.id})'s hold lapsed at #{item.held_until.iso8601} and the " \
+                         "sweep has not paged on the lapse yet. That page is the reminder; the row can be " \
+                         "held again once WorkBacklogLivenessSweepJob has sent it"
         end
 
         item.hold_for_decision!(reason: reason, by: by, session: session, now: now)
       end
 
       item
+    rescue ActiveRecord::RecordInvalid => e
+      raise Refused, "#{item.key} (row #{item.id}) could not be saved: #{e.record.errors.full_messages.to_sentence}"
     end
   end
 end

@@ -155,6 +155,8 @@ module Issues
     # out of the page until the hold lapses — see WorkBacklogItem::HOLD_DURATION.
     # Soonest-lapsing first, because that is the one about to page. Bounded like
     # the stranded list, and for the same reason.
+    def awaiting_decision_truncated? = counts[:awaiting_decision] > awaiting_decision_rows.length
+
     def awaiting_decision_rows
       @awaiting_decision_rows ||= live_awaiting_decision
         .includes(:started_session)

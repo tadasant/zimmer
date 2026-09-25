@@ -85,6 +85,7 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # Nullify on all three: a backlog row is the record of what the gate cleared
     # and what became of it, and outlives the session that appended it, the
     # session that pulled it, and the session it became.
+    [ "work_backlog_items", "held_by_session_id", :nullify ],
     [ "work_backlog_items", "started_by_session_id", :nullify ],
     [ "work_backlog_items", "started_session_id", :nullify ],
     [ "work_backlog_items", "writing_session_id", :nullify ],

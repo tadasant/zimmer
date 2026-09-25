@@ -55,7 +55,7 @@ class WorkBacklog::HoldTest < ActiveSupport::TestCase
     end
   end
 
-  test "refuses to extend an active hold, and allows a fresh one after it lapses" do
+  test "refuses to extend an active hold, or renew a lapsed one before its lapse has paged" do
     item = stranded_row
     WorkBacklog::Hold.call(item: item, reason: "first", by: "x")
 
@@ -63,9 +63,32 @@ class WorkBacklog::HoldTest < ActiveSupport::TestCase
     assert_match(/already held/, error.message)
 
     later = item.reload.held_until + 1.minute
+    error = assert_raises(WorkBacklog::Hold::Refused) do
+      WorkBacklog::Hold.call(item: item, reason: "renewed quietly", by: "x", now: later)
+    end
+    assert_match(/has not paged on the lapse yet/, error.message)
+
+    # What the sweep does once it has paged on the lapse.
+    item.update_columns(WorkBacklogItem::CLEARED_HOLD)
     WorkBacklog::Hold.call(item: item, reason: "still owed", by: "x", now: later)
     assert_equal "still owed", item.reload.hold_reason
     assert_equal later + WorkBacklogItem::HOLD_DURATION, item.held_until
+  end
+
+  test "refuses a row a newer row has taken over" do
+    item = stranded_row
+    backlog_item(key: item.key)
+
+    error = assert_raises(WorkBacklog::Hold::Refused) { WorkBacklog::Hold.call(item: item, reason: "r", by: "x") }
+    assert_match(/taken over by a newer row/, error.message)
+  end
+
+  test "a row that fails validation for another reason is a refusal, not an exception" do
+    item = stranded_row
+    item.update_columns(estimated_cost: "enormous")
+
+    error = assert_raises(WorkBacklog::Hold::Refused) { WorkBacklog::Hold.call(item: item, reason: "r", by: "x") }
+    assert_match(/could not be saved/, error.message)
   end
 
   private
