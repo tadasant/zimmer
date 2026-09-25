@@ -223,7 +223,17 @@ class Api::V1::SessionsController < Api::BaseController
     attrs = session_update_params.except(:place)
     attrs[:precedence] = placement unless placement.nil?
 
-    if @session.update(attrs)
+    # A `title` is a rename, which is Sessions::UpdateTitle's write (shared with
+    # the web UI and the `update_title` MCP action). One transaction, so a
+    # rename is not left behind when the rest of the PATCH is refused.
+    title_given = attrs.key?(:title)
+    title = attrs.delete(:title)
+    saved = Session.transaction do
+      Sessions::UpdateTitle.call(session: @session, title: title) if title_given
+      (title_given && attrs.empty?) || @session.update(attrs) || raise(ActiveRecord::Rollback)
+    end
+
+    if saved
       # Promoting a waiting session starts it, the same as the Ranked view's
       # Promote and `action_session`'s `change_scheduling_class` — which is what
       # makes the promise above ("moved to priority and started") true. The hold
@@ -243,6 +253,10 @@ class Api::V1::SessionsController < Api::BaseController
     else
       render_api_error("Validation failed", @session.errors.full_messages, status: :unprocessable_entity)
     end
+  rescue Sessions::UpdateTitle::Error => e
+    render_api_error("Validation failed", e.message, status: :unprocessable_entity)
+  rescue ActiveRecord::RecordInvalid => e
+    render_api_error("Validation failed", e.record.errors.full_messages, status: :unprocessable_entity)
   end
 
   # DELETE /api/v1/sessions/:id

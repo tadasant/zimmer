@@ -36,7 +36,7 @@ module Mcp
       MESSAGE_INDEX_DESC = 'Required for "fork" action. The transcript message index to fork from.'
       SESSION_NOTES_DESC = 'Required for "update_notes" action. The notes text to set on the session (at most 50,000 characters). An empty or whitespace-only string clears the notes.'
       SESSION_IDS_DESC = 'Required for "bulk_archive" action. Array of session IDs to archive.'
-      TITLE_DESC = 'Required for "update_title" action. The new title for the session.'
+      TITLE_DESC = 'Required for "update_title" action. The new title for the session: stripped, non-blank, at most 100 characters. A renamed session is not re-titled automatically.'
       # The `source` stamped on an uncle edge recorded by follow_up, whichever
       # delivery branch it took — the branch is an implementation detail of
       # "this session followed up that one".
@@ -1264,7 +1264,11 @@ module Mcp
         title = args["title"].to_s.strip
         raise ToolError, "The \"title\" parameter is required for the \"update_title\" action." if title.blank?
 
-        session.update!(title: title)
+        begin
+          Sessions::UpdateTitle.call(session: session, title: title)
+        rescue Sessions::UpdateTitle::Error => e
+          raise ToolError, e.message
+        end
 
         [
           "## Session Title Updated",
