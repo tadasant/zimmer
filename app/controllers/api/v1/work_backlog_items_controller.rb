@@ -2,8 +2,9 @@
 
 # The REST half of the work backlog — the ranked queue of gate-cleared issues.
 #
-# `index`, `show`, `create` and `pull` mirror the `get_work_backlog`,
-# `append_work_backlog_item` and `pull_work_backlog_items` MCP tools exactly:
+# `index`, `show`, `create`, `pull` and `hold` mirror the `get_work_backlog`,
+# `append_work_backlog_item`, `pull_work_backlog_items` and
+# `hold_work_backlog_item_for_decision` MCP tools exactly:
 # all of them go through WorkBacklog::Filters, WorkBacklog::Append and
 # WorkBacklog::Pull, so the two surfaces cannot disagree about what is on the
 # queue, where a new item lands, or what a pull does.
@@ -20,7 +21,7 @@
 # boundary is "not offered to an agent's MCP surface", not "a person typed it" —
 # the same caveat GateDecisionsController states, for the same reason.
 class Api::V1::WorkBacklogItemsController < Api::BaseController
-  before_action :set_item, only: [ :show, :start_now, :pin, :unpin, :remove ]
+  before_action :set_item, only: [ :show, :start_now, :pin, :unpin, :remove, :hold ]
 
   # GET /api/v1/work_backlog_items
   #
@@ -168,6 +169,27 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
     render json: { work_backlog_item: item_json(@item.reload) }
   end
 
+  # POST /api/v1/work_backlog_items/:id/hold
+  # Body: reason (required), acting_session_id (self-declared, provenance only).
+  #
+  # Hold a stranded row for a human decision: out of the stranded page until the
+  # hold lapses or the row's evidence changes. Mirrors the
+  # hold_work_backlog_item_for_decision MCP tool through WorkBacklog::Hold. Not a
+  # human-only operation — it moves and removes nothing.
+  def hold
+    session = acting_session
+    WorkBacklog::Hold.call(
+      item: @item,
+      reason: params[:reason],
+      by: session&.metadata&.dig("agent_root_key").presence || WorkBacklogItem::API,
+      session: session
+    )
+
+    render json: { work_backlog_item: item_json(@item.reload), counts: counts }
+  rescue WorkBacklog::Hold::Refused => e
+    render_api_error("Cannot hold", e.message, status: :unprocessable_entity)
+  end
+
   private
 
   # Everything in the body that is not the item: Rails' own keys, the wrapper
@@ -233,6 +255,8 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
       in_flight: WorkBacklogItem.in_flight.count,
       spot_held: WorkBacklogItem.spot_held.count,
       parked: WorkBacklogItem.parked.count,
+      stranded: WorkBacklogItem.stranded.count,
+      awaiting_decision: WorkBacklogItem.awaiting_decision.count,
       pinned: WorkBacklogItem.queued.pinned_items.count
     }
   end

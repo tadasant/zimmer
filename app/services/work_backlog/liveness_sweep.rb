@@ -129,6 +129,15 @@ module WorkBacklog
     # waiting to beat a high-water mark it may never reach.
     ALERT_BAND_TTL = ALERT_AFTER
 
+    # WHAT THE PAGE DOES NOT COUNT: rows a triager has held for a human decision
+    # (WorkBacklogItem.awaiting_decision). Before #1225 they could not leave the
+    # population, so a standing set of rows waiting on one person aged into a new
+    # week band every ALERT_BAND_TTL and re-paged a triage chain that could only
+    # re-confirm them. They are out of `stranded` — both the age and the row band
+    # — until their hold lapses (WorkBacklogItem::HOLD_DURATION), when they come
+    # back with their original age and page as the oldest row. The page names how
+    # many are held so a reader knows the number is not the whole pile.
+
     # What one pass found. `repos_failed` is separate from the outcome counts
     # because a repo nobody could read is a fault, where an `unknown` row might
     # just be an issue that was deleted.
@@ -360,7 +369,7 @@ module WorkBacklog
         return unless worse_band?(band, Rails.cache.read(ALERT_BAND_CACHE_KEY))
 
         Rails.cache.write(ALERT_BAND_CACHE_KEY, band, expires_in: ALERT_BAND_TTL)
-        page_stranded_rows(band, age, rows)
+        page_stranded_rows(band, age, rows, WorkBacklogItem.awaiting_decision(now: now).count)
       end
 
       # The band a population is in: the week its oldest row's age has reached, and
@@ -396,8 +405,9 @@ module WorkBacklog
         Rails.cache.read("#{ALERT_BAND_CACHE_KEY}:probe") == token
       end
 
-      def page_stranded_rows(band, age, rows)
+      def page_stranded_rows(band, age, rows, awaiting_decision)
         days = (age / 86_400.0).round(1)
+        held = awaiting_decision.positive? ? " (#{awaiting_decision} more held for a human decision, not counted)" : ""
 
         # `.error`, because THIS LINE is the page. It is what trips the
         # `zimmer_backend_log_errors` Grafana rule — the only surface here that can
@@ -410,8 +420,9 @@ module WorkBacklog
         # banded one below.
         Rails.logger.error(
           "[WorkBacklog::LivenessSweep] #{rows} work backlog row(s) stranded, oldest #{days} days " \
-          "(band: #{band[:weeks]}w/#{band[:rows]}+ rows) — nothing re-queues these automatically. " \
-          "Triage them on the Issues page under Stranded, or with get_work_backlog status: \"stranded\"."
+          "(band: #{band[:weeks]}w/#{band[:rows]}+ rows)#{held} — nothing re-queues these automatically. " \
+          "Triage them on the Issues page under Stranded, or with get_work_backlog status: \"stranded\"; " \
+          "one whose remainder is a human's call is held with hold_work_backlog_item_for_decision."
         )
 
         # Level stays :warning: this is a triage queue, not a fault, and the
@@ -422,12 +433,14 @@ module WorkBacklog
           context: {
             oldest_stranded_days: days,
             stranded_rows: rows,
+            awaiting_decision_rows: awaiting_decision,
             severity_band: band,
             source: "WorkBacklog::LivenessSweep",
             what_to_do: "Nothing re-queues these automatically — telling a finished issue from one " \
                         "with a deliberate remainder needs a judgement per issue. Triage them on the " \
                         "Issues page under Stranded, or with get_work_backlog status: \"stranded\", " \
-                        "and put the ones with work left back with append_work_backlog_item."
+                        "put the ones with work left back with append_work_backlog_item, and hold the " \
+                        "ones whose remainder is a human's call with hold_work_backlog_item_for_decision."
           },
           level: :warning,
           fingerprint: [ ALERT_FINGERPRINT, "weeks-#{band[:weeks]}", "rows-#{band[:rows]}" ]
