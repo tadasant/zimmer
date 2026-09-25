@@ -919,6 +919,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "a blank PATCH title is refused and nothing else in the PATCH lands" do
     session = sessions(:running)
+    session.update_columns(title: "Old title", slug: "old-slug")
     original_title = session.title
     original_slug = session.slug
 
@@ -958,6 +959,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "an over-long PATCH title is refused with the shared message" do
     session = sessions(:running)
+    session.update_columns(title: "Old title", slug: "old-slug")
     original_title = session.title
 
     patch api_v1_session_path(session.id), params: { title: "a" * 101 }, headers: @headers
@@ -969,6 +971,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "a rename is rolled back when the rest of the PATCH is refused" do
     session = sessions(:running)
+    session.update_columns(title: "Old title", slug: "old-slug")
     original_title = session.title
 
     assert_no_difference -> { session.logs.count } do

@@ -1421,6 +1421,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
 
   test "update_title refuses a non-string title rather than coercing it" do
     session = sessions(:needs_input)
+    session.update_columns(title: "Old title")
     original = session.title
 
     error = assert_raises(Mcp::ToolError) do
@@ -1433,6 +1434,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
 
   test "update_title refuses a title past the cap as a ToolError and keeps the old title" do
     session = sessions(:needs_input)
+    session.update_columns(title: "Old title")
     original = session.title
 
     error = assert_raises(Mcp::ToolError) do
