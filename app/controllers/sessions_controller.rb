@@ -1913,43 +1913,20 @@ class SessionsController < ApplicationController
   end
   private :status_panel_replacement
 
+  # Presentation ONLY — the write and its rules (strip, blank refused, the cap,
+  # dropping the auto-title flag) are Sessions::UpdateTitle, shared with a
+  # `title` in PATCH /api/v1/sessions/:id and the `update_title` MCP action.
   def update_title
     @session = find_session
-    title = params[:title].to_s.strip
 
-    if title.blank?
-      render json: { error: "Title cannot be empty" }, status: :unprocessable_entity
-      return
-    end
+    with_db_retry { Sessions::UpdateTitle.call(session: @session, title: params[:title]) }
+    return if performed? # with_db_retry rendered its own give-up response
 
-    if title.length > 100
-      render json: { error: "Title is too long (maximum 100 characters)" }, status: :unprocessable_entity
-      return
-    end
-
-    result = with_db_retry do
-      if @session.update(title: title)
-        # Remove the auto_generated_title flag now the user has edited the title
-        # by hand. After the update so a rejected title leaves the flag alone.
-        @session.remove_metadata!("auto_generated_title")
-        @session.logs.create!(
-          content: "Session title updated to: #{title}",
-          level: "info"
-        )
-        true
-      else
-        false
-      end
-    end
-
-    # Check if we already rendered (max retries exceeded)
-    return if performed?
-
-    if result
-      render json: { success: true, title: title }
-    else
-      render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
-    end
+    render json: { success: true, title: @session.title }
+  rescue Sessions::UpdateTitle::Error => e
+    render json: { error: e.message }, status: :unprocessable_entity
+  rescue ActiveRecord::RecordInvalid => e
+    render json: { error: e.record.errors.full_messages.join(", ") }, status: :unprocessable_entity
   end
 
   # Presentation ONLY — the write and its rules (blank clears, the cap) are

@@ -2661,6 +2661,27 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Title with spaces", session.title
   end
 
+  test "update_title drops the auto-title flag so automatic titling leaves the rename alone" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+    assert_equal true, session.reload.metadata["auto_generated_title"]
+
+    patch update_title_session_url(session), params: { title: "Hand-picked" }, as: :json
+
+    assert_response :success
+    assert_not session.reload.metadata.key?("auto_generated_title")
+  end
+
+  test "update_title refuses a non-string title" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+    original = session.reload.title
+
+    patch update_title_session_url(session), params: { title: 123 }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal "Title must be a string", JSON.parse(response.body)["error"]
+    assert_equal original, session.reload.title
+  end
+
   test "should route to update_title" do
     assert_routing(
       { method: :patch, path: "/sessions/1/update_title" },

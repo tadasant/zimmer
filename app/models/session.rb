@@ -702,6 +702,9 @@ class Session < ApplicationRecord
   # Cap on `session_notes`. Sessions::UpdateNotes refuses past it on every
   # surface; the validation below is the backstop.
   NOTES_MAX_LENGTH = 50_000
+  # Cap on `title`. Sessions::UpdateTitle refuses past it on every surface; the
+  # validation below is the backstop.
+  TITLE_MAX_LENGTH = 100
 
   # Cap on the client-supplied idempotency key. A key is a token the caller
   # invents to name one create attempt, and it should be a fresh UUID rather than
@@ -820,7 +823,7 @@ class Session < ApplicationRecord
   # never reach either: they look the key up first and return the existing
   # session. See Sessions::IdempotentCreate.
   validates :idempotency_key, uniqueness: true, length: { maximum: IDEMPOTENCY_KEY_MAX_LENGTH }, allow_nil: true
-  validates :title, length: { maximum: 100, message: "is too long (maximum 100 characters)" }, allow_nil: true
+  validates :title, length: { maximum: TITLE_MAX_LENGTH, message: "is too long (maximum #{TITLE_MAX_LENGTH} characters)" }, allow_nil: true
   validates :goal, length: { maximum: GOAL_MAX_LENGTH, message: "is too long (maximum #{GOAL_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_nil: true
   validates :goal, goal_reference: true, if: -> { will_save_change_to_goal? && !goal_inherited }
   validates :session_notes, length: { maximum: NOTES_MAX_LENGTH, message: "is too long (maximum #{NOTES_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_nil: true

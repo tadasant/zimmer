@@ -902,6 +902,87 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "New Title", json["session"]["title"]
   end
 
+  test "a PATCH title is a rename: stripped, logged, and the auto-title flag dropped" do
+    session = sessions(:running)
+    session.update_columns(metadata: (session.metadata || {}).merge("auto_generated_title" => true))
+
+    assert_difference -> { session.logs.count }, 1 do
+      patch api_v1_session_path(session.id), params: { title: "  Renamed  " }, headers: @headers
+    end
+
+    assert_response :success
+    assert_equal "Renamed", JSON.parse(response.body)["session"]["title"]
+    session.reload
+    assert_equal "Renamed", session.title
+    assert_not session.metadata.key?("auto_generated_title")
+  end
+
+  test "a blank PATCH title is refused and nothing else in the PATCH lands" do
+    session = sessions(:running)
+    session.update_columns(title: "Old title", slug: "old-slug")
+    original_title = session.title
+    original_slug = session.slug
+
+    patch api_v1_session_path(session.id), params: { title: "   ", slug: "should-not-land" }, headers: @headers
+
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_equal "Validation failed", json["error"]
+    assert_equal "Title cannot be empty", json["message"]
+    session.reload
+    assert_equal original_title, session.title
+    assert_equal original_slug, session.slug
+  end
+
+  test "a PATCH that echoes the current title keeps automatic titling on" do
+    session = sessions(:running)
+    session.update_columns(title: "Session 42", metadata: (session.metadata || {}).merge("auto_generated_title" => true))
+
+    assert_no_difference -> { session.logs.count } do
+      patch api_v1_session_path(session.id), params: { title: "Session 42", slug: "echoed-slug" }, headers: @headers
+    end
+
+    assert_response :success
+    session.reload
+    assert_equal "echoed-slug", session.slug
+    assert_equal true, session.metadata["auto_generated_title"]
+  end
+
+  test "a non-string PATCH title is refused" do
+    session = sessions(:running)
+
+    patch api_v1_session_path(session.id), params: { title: 123 }, headers: @headers, as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal "Title must be a string", JSON.parse(response.body)["message"]
+  end
+
+  test "an over-long PATCH title is refused with the shared message" do
+    session = sessions(:running)
+    session.update_columns(title: "Old title", slug: "old-slug")
+    original_title = session.title
+
+    patch api_v1_session_path(session.id), params: { title: "a" * 101 }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_equal "Title is too long (maximum 100 characters)", JSON.parse(response.body)["message"]
+    assert_equal original_title, session.reload.title
+  end
+
+  test "a rename is rolled back when the rest of the PATCH is refused" do
+    session = sessions(:running)
+    session.update_columns(title: "Old title", slug: "old-slug")
+    original_title = session.title
+
+    assert_no_difference -> { session.logs.count } do
+      patch api_v1_session_path(session.id), params: { title: "Renamed", goal: "g" * (Session::GOAL_MAX_LENGTH + 1) }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal "Validation failed", JSON.parse(response.body)["error"]
+    assert_equal original_title, session.reload.title
+  end
+
   test "should update session slug" do
     session = sessions(:running)
     patch api_v1_session_path(session.id), params: {

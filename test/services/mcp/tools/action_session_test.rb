@@ -1406,6 +1406,45 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "New title", session.reload.title
   end
 
+  test "update_title drops the auto-title flag and logs the rename" do
+    session = sessions(:needs_input)
+    session.update_columns(metadata: (session.metadata || {}).merge("auto_generated_title" => true))
+
+    assert_difference -> { session.logs.count }, 1 do
+      @tool.call("action" => "update_title", "session_id" => session.id, "title" => "  Agent-picked  ")
+    end
+
+    session.reload
+    assert_equal "Agent-picked", session.title
+    assert_not session.metadata.key?("auto_generated_title")
+  end
+
+  test "update_title refuses a non-string title rather than coercing it" do
+    session = sessions(:needs_input)
+    session.update_columns(title: "Old title")
+    original = session.title
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update_title", "session_id" => session.id, "title" => 123)
+    end
+
+    assert_equal "Title must be a string", error.message
+    assert_equal original, session.reload.title
+  end
+
+  test "update_title refuses a title past the cap as a ToolError and keeps the old title" do
+    session = sessions(:needs_input)
+    session.update_columns(title: "Old title")
+    original = session.title
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update_title", "session_id" => session.id, "title" => "a" * 101)
+    end
+
+    assert_equal "Title is too long (maximum 100 characters)", error.message
+    assert_equal original, session.reload.title
+  end
+
   test "update_notes and update_title require their parameter" do
     session = sessions(:needs_input)
 
