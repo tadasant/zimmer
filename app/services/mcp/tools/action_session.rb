@@ -1261,7 +1261,7 @@ module Mcp
       end
 
       def update_title(session, args)
-        title = args["title"].to_s.strip
+        title = args["title"]
         raise ToolError, "The \"title\" parameter is required for the \"update_title\" action." if title.blank?
 
         begin
