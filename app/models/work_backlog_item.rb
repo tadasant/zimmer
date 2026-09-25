@@ -166,11 +166,13 @@ class WorkBacklogItem < ApplicationRecord
   #
   # IT LAPSES, because a hold that did not would be the permanent silence #1127
   # and #1175 were written to end. HOLD_DURATION after it is recorded the row is
-  # stranded again with its original age, so it pages as the oldest row on the
-  # next pass: the reminder is the same page that reached the human in the first
-  # place, at half the weekly cadence, rather than a second alert path. A hold
-  # cannot be extended while it is active; after it lapses, a triager may record
-  # a fresh one only by reading the row again.
+  # stranded again with its original age, and the next sweep pass that can read
+  # GitHub PAGES ON THE LAPSE — whatever band it last paged for — and only then
+  # clears the spent hold (WorkBacklog::LivenessSweep#announce_lapsed_holds). So
+  # the reminder is the same page that reached the human in the first place, once
+  # per hold, rather than a second alert path. A hold cannot be extended while it
+  # is active, and a lapsed one cannot be renewed until that page has gone out:
+  # WorkBacklog::Hold refuses a row still carrying a spent hold.
   #
   # And it is VOID the moment the evidence it was recorded against changes. A
   # hold says "given THIS, a person has to decide"; once the issue closes, a PR
@@ -178,6 +180,10 @@ class WorkBacklogItem < ApplicationRecord
   # See `record_liveness!`.
   HOLD_DURATION = 14.days
   HOLD_REASON_MAX = 2000
+
+  # What a voided or spent hold is reset to.
+  CLEARED_HOLD = { held_at: nil, held_until: nil, held_by: nil, held_by_session_id: nil, hold_reason: nil,
+                   held_liveness_state: nil }.freeze
 
   # The keys in the file's item schema that have a column here. Everything else
   # in an item — ratings, prompt, notes, gate_session, and whatever the gate adds
@@ -500,11 +506,20 @@ class WorkBacklogItem < ApplicationRecord
   # write, so no reader can see the new evidence beside the old hold. `unknown`
   # is the exception: a read that failed says nothing about the row, and
   # voiding on it would let a GitHub blip re-page every held row at once.
+  #
+  # Under the row lock, which reloads the row first: the sweep holds this object
+  # from before its GitHub probe, and a hold recorded in the meantime must be
+  # judged against the evidence it was actually recorded against.
   def record_liveness!(state, now: Time.current)
-    attributes = { liveness_state: state, liveness_checked_at: now }
-    attributes.merge!(cleared_hold_attributes) if hold_voided_by?(state)
-    update!(attributes)
+    with_lock do
+      attributes = { liveness_state: state, liveness_checked_at: now }
+      attributes.merge!(CLEARED_HOLD) if hold_voided_by?(state)
+      update!(attributes)
+    end
   end
+
+  # A hold that has lapsed and whose lapse the sweep has not paged on yet.
+  def hold_lapsed?(now: Time.current) = held_at.present? && !hold_active?(now: now)
 
   # Is a hold in force on this row right now?
   def hold_active?(now: Time.current) = held_until.present? && held_until > now
@@ -589,11 +604,6 @@ class WorkBacklogItem < ApplicationRecord
 
   def payload_hash
     payload.is_a?(Hash) ? payload : {}
-  end
-
-  def cleared_hold_attributes
-    { held_at: nil, held_until: nil, held_by: nil, held_by_session_id: nil, hold_reason: nil,
-      held_liveness_state: nil }
   end
 
   def issueless_items_need_a_prompt_and_a_human

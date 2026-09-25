@@ -322,4 +322,24 @@ class Api::V1::WorkBacklogItemsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert_match(/already held/, body.to_s)
   end
+
+  test "hold by key lands on the unresolved row, not a newer queued one" do
+    sessions(:archived).update!(archived_at: 3.days.ago)
+    stranded = backlog_item(key: "zimmer#80")
+    stranded.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    stranded.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    requeued = backlog_item(key: "zimmer#80")
+
+    post hold_api_v1_work_backlog_item_path("zimmer#80"), params: { reason: "pick one" }, headers: @headers
+
+    assert_response :unprocessable_entity, "the stranded row is superseded by the re-queue, so nothing to hold"
+    assert_nil requeued.reload.held_at
+
+    other = backlog_item(key: "zimmer#81")
+    other.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    other.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    post hold_api_v1_work_backlog_item_path("zimmer#81"), params: { reason: "pick one" }, headers: @headers
+    assert_response :success
+    assert_equal other.id, body.dig("work_backlog_item", "id")
+  end
 end

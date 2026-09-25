@@ -135,8 +135,9 @@ module WorkBacklog
     # week band every ALERT_BAND_TTL and re-paged a triage chain that could only
     # re-confirm them. They are out of `stranded` — both the age and the row band
     # — until their hold lapses (WorkBacklogItem::HOLD_DURATION), when they come
-    # back with their original age and page as the oldest row. The page names how
-    # many are held so a reader knows the number is not the whole pile.
+    # back with their original age and the next readable pass pages on the lapse
+    # whatever band it last paged for (`lapsed_hold_ids`). The page names how many
+    # are held so a reader knows the number is not the whole pile.
 
     # What one pass found. `repos_failed` is separate from the outcome counts
     # because a repo nobody could read is a fault, where an `unknown` row might
@@ -366,10 +367,33 @@ module WorkBacklog
 
         rows = WorkBacklogItem.stranded(now: now).count
         band = severity_band(age, rows)
-        return unless worse_band?(band, Rails.cache.read(ALERT_BAND_CACHE_KEY))
+        worse = worse_band?(band, Rails.cache.read(ALERT_BAND_CACHE_KEY))
+        lapsed = lapsed_hold_ids(now)
+        return unless worse || lapsed.any?
 
-        Rails.cache.write(ALERT_BAND_CACHE_KEY, band, expires_in: ALERT_BAND_TTL)
-        page_stranded_rows(band, age, rows, WorkBacklogItem.awaiting_decision(now: now).count)
+        Rails.cache.write(ALERT_BAND_CACHE_KEY, band, expires_in: ALERT_BAND_TTL) if worse
+        page_stranded_rows(band, age, rows, WorkBacklogItem.awaiting_decision(now: now).count, lapsed.size)
+        announce_lapsed_holds(lapsed, now)
+      end
+
+      # Stranded rows still carrying a hold that has lapsed: the lapse nobody has
+      # been paged about yet. Each one pages, whatever band was last paged for,
+      # because that page is the whole reminder a hold's expiry promises — a
+      # lapsed row that merely rejoined a population already paged at its band
+      # would otherwise come back in silence (see WorkBacklogItem::HOLD_DURATION).
+      def lapsed_hold_ids(now)
+        WorkBacklogItem.stranded(now: now).where.not(held_at: nil).pluck(:id)
+      end
+
+      # The page has gone out, so the spent holds are cleared — which is what lets
+      # WorkBacklog::Hold accept a fresh one, and what keeps the next pass from
+      # paging on the same lapse again. Conditional on the hold still being the
+      # lapsed one, so a hold recorded since the read above is left alone.
+      def announce_lapsed_holds(ids, now)
+        return if ids.empty?
+
+        WorkBacklogItem.where(id: ids).where(held_until: ..now)
+                       .update_all(WorkBacklogItem::CLEARED_HOLD.merge(updated_at: now))
       end
 
       # The band a population is in: the week its oldest row's age has reached, and
@@ -405,9 +429,10 @@ module WorkBacklog
         Rails.cache.read("#{ALERT_BAND_CACHE_KEY}:probe") == token
       end
 
-      def page_stranded_rows(band, age, rows, awaiting_decision)
+      def page_stranded_rows(band, age, rows, awaiting_decision, lapsed = 0)
         days = (age / 86_400.0).round(1)
         held = awaiting_decision.positive? ? " (#{awaiting_decision} more held for a human decision, not counted)" : ""
+        held += "; #{lapsed} hold(s) for a human decision lapsed with the decision still owed" if lapsed.positive?
 
         # `.error`, because THIS LINE is the page. It is what trips the
         # `zimmer_backend_log_errors` Grafana rule — the only surface here that can
@@ -434,6 +459,7 @@ module WorkBacklog
             oldest_stranded_days: days,
             stranded_rows: rows,
             awaiting_decision_rows: awaiting_decision,
+            lapsed_holds: lapsed,
             severity_band: band,
             source: "WorkBacklog::LivenessSweep",
             what_to_do: "Nothing re-queues these automatically — telling a finished issue from one " \

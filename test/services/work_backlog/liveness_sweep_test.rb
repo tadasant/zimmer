@@ -456,6 +456,40 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     end
   end
 
+  # The review finding that shaped this: a lapsed row rejoining a population that
+  # already paged at its band would come back in silence, and a triager could
+  # re-hold it before any page went out.
+  test "a lapse pages even inside the remembered band, once, and then the row may be held again" do
+    started_row(key: "zimmer#2", number: 2, started_at: 40.days.ago)
+    held = started_row(started_at: 20.days.ago)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    held.hold_for_decision!(reason: "pick one", by: "fleet-maintenance")
+    probes = { 1 => probe, 2 => probe(number: 2) }
+
+    with_alerts do |alerts|
+      sweep(probes: probes)
+      assert_equal 1, alerts.pages.size, "the unheld 40-day row pages its band"
+
+      travel(WorkBacklogItem::HOLD_DURATION + 1.hour) do
+        assert_raises(WorkBacklog::Hold::Refused) do
+          WorkBacklog::Hold.call(item: held.reload, reason: "renewed quietly", by: "fleet-maintenance")
+        end
+
+        sweep(probes: probes)
+        assert_equal 2, alerts.pages.size, "the lapse pages although the band is no worse"
+        assert_match(/1 hold\(s\) for a human decision lapsed/, alerts.pages.last)
+        assert_equal 1, alerts.events.last.dig(:context, :lapsed_holds)
+        assert_nil held.reload.held_at, "the spent hold is cleared once paged"
+
+        sweep(probes: probes)
+        assert_equal 2, alerts.pages.size, "a lapse pages once"
+
+        WorkBacklog::Hold.call(item: held, reason: "still owed", by: "fleet-maintenance")
+        assert held.reload.hold_active?
+      end
+    end
+  end
+
   test "a sweep that reads new evidence voids the hold, and the row pages again" do
     held = started_row(started_at: 20.days.ago)
     held.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)

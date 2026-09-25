@@ -126,7 +126,7 @@
         each hold lapses, soonest first; see WorkBacklogItem::HOLD_DURATION. %>
     <h2 class="text-sm font-semibold text-gray-900 mb-2">
       Awaiting your decision
-      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.counts[:awaiting_decision]) %> stranded, held for a human decision, not paging until the hold lapses</span>
+      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.counts[:awaiting_decision]) %> stranded, held for a human decision, not paging until the hold lapses<%= ", showing the #{@board.awaiting_decision_rows.length} soonest to lapse" if @board.awaiting_decision_truncated? %></span>
     </h2>
     <%= render "started_rows", rows: @board.awaiting_decision_rows, liveness: true,
         empty_message: "No stranded row is waiting on a decision." %>
