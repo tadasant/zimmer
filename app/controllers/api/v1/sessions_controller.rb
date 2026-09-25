@@ -230,7 +230,9 @@ class Api::V1::SessionsController < Api::BaseController
     title = attrs.delete(:title)
     saved = Session.transaction do
       Sessions::UpdateTitle.call(session: @session, title: title) if title_given
-      (title_given && attrs.empty?) || @session.update(attrs) || raise(ActiveRecord::Rollback)
+      next true if attrs.empty?
+
+      @session.update(attrs) || raise(ActiveRecord::Rollback)
     end
 
     if saved
@@ -255,8 +257,6 @@ class Api::V1::SessionsController < Api::BaseController
     end
   rescue Sessions::UpdateTitle::Error => e
     render_api_error("Validation failed", e.message, status: :unprocessable_entity)
-  rescue ActiveRecord::RecordInvalid => e
-    render_api_error("Validation failed", e.record.errors.full_messages, status: :unprocessable_entity)
   end
 
   # DELETE /api/v1/sessions/:id

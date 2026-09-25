@@ -7,6 +7,8 @@ require "mocha/minitest"
 # auto-title flag — so SessionTitleJob cannot overwrite it — and that a refused
 # rename leaves both the title and the flag alone.
 class Sessions::UpdateTitleTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   def setup
     Session.any_instance.stubs(:broadcast_status_change)
     Session.any_instance.stubs(:broadcast_update_to_sessions_index)
@@ -48,6 +50,19 @@ class Sessions::UpdateTitleTest < ActiveSupport::TestCase
     Sessions::UpdateTitle.call(session: session, title: "Hand-picked")
 
     assert_no_enqueued_jobs(only: SessionTitleJob) { session.reload.enqueue_session_inference }
+  end
+
+  test "the title the session already has is a no-op that keeps the auto-title flag" do
+    session = make_session
+    placeholder = session.reload.title
+
+    assert_no_difference -> { session.logs.count } do
+      Sessions::UpdateTitle.call(session: session, title: " #{placeholder} ")
+    end
+
+    session.reload
+    assert_equal placeholder, session.title
+    assert_equal true, session.metadata["auto_generated_title"]
   end
 
   test "accepts a title exactly at the cap" do

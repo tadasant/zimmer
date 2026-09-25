@@ -1419,6 +1419,18 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_not session.metadata.key?("auto_generated_title")
   end
 
+  test "update_title refuses a non-string title rather than coercing it" do
+    session = sessions(:needs_input)
+    original = session.title
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update_title", "session_id" => session.id, "title" => 123)
+    end
+
+    assert_equal "Title must be a string", error.message
+    assert_equal original, session.reload.title
+  end
+
   test "update_title refuses a title past the cap as a ToolError and keeps the old title" do
     session = sessions(:needs_input)
     original = session.title
