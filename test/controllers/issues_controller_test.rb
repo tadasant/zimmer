@@ -81,6 +81,33 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # #1225: a row a triager held for a human decision leaves Stranded for its own
+  # section, with the decision owed beside it, and a stranded row carries the
+  # form that holds it.
+  test "a row held for a decision is listed under Awaiting your decision, not Stranded" do
+    sessions(:archived).update!(archived_at: 3.days.ago)
+    held = backlog_item(key: "zimmer#79", title: "Held on a human pick", issue_url: url(79))
+    held.mark_started!(session: sessions(:archived), by: nil, now: 14.days.ago)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    held.hold_for_decision!(reason: "Tadas to pick one of #79/#141/#217", by: "fleet-maintenance")
+    loose = backlog_item(key: "zimmer#80", title: "Nobody has looked", issue_url: url(80))
+    loose.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    loose.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+
+    with_github_snapshot(github_snapshot(issues: [ github_issue(number: 79), github_issue(number: 80) ])) { get issues_path }
+
+    assert_response :success
+    assert_select "h2", text: /Stranded\s+— 1 off the queue/
+    assert_select "h2", text: /Awaiting your decision\s+— 1 stranded, held/
+    assert_match "Tadas to pick one of #79/#141/#217", response.body
+    assert_match "Held until #{held.held_until.to_date.iso8601}", response.body
+    assert_select "form[action=?]", hold_work_backlog_item_path(loose)
+    assert_select "form[action=?]", hold_work_backlog_item_path(held), count: 0
+    assert_select "div", text: "Stranded" do |labels|
+      assert_equal "1", labels.first.parent.at_css("div.tabular-nums").text.strip
+    end
+  end
+
   # The number Tadas read off this page, and the number the WIP ceiling is
   # computed against, have to be the same number. A session parked in
   # `needs_input` for a day is counted in neither.

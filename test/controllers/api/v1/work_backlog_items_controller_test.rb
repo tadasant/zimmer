@@ -43,7 +43,7 @@ class Api::V1::WorkBacklogItemsControllerTest < ActionDispatch::IntegrationTest
     # of it the spot gate is holding before a turn, which is what tells a pull of
     # zero against a busy fleet from one against a fleet idle behind quota.
     assert_equal({ "queued" => 3, "started" => 2, "removed" => 0, "in_flight" => 1,
-                   "spot_held" => 0, "parked" => 1, "pinned" => 0 },
+                   "spot_held" => 0, "parked" => 1, "stranded" => 0, "awaiting_decision" => 0, "pinned" => 0 },
                  body["counts"])
     assert_equal 3, body.dig("ranking", "bands").size
   end
@@ -300,5 +300,46 @@ class Api::V1::WorkBacklogItemsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "human", body.dig("work_backlog_item", "removed_by")
     assert_equal "superseded by the rewrite", body.dig("work_backlog_item", "removal_reason")
     assert_equal 1, WorkBacklogItem.count
+  end
+  test "hold records a decision owed on a stranded row, mirroring the MCP tool" do
+    sessions(:archived).update!(archived_at: 3.days.ago)
+    gate = sessions(:running)
+    gate.update_columns(metadata: (gate.metadata || {}).merge("agent_root_key" => "fleet-maintenance"))
+    item = backlog_item(key: "zimmer#79")
+    item.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    item.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+
+    post hold_api_v1_work_backlog_item_path(item), params: { reason: "pick one", acting_session_id: gate.id },
+                                                   headers: @headers
+
+    assert_response :success
+    assert body.dig("work_backlog_item", "awaiting_decision")
+    assert_equal "fleet-maintenance", body.dig("work_backlog_item", "held_by")
+    assert_equal 1, body.dig("counts", "awaiting_decision")
+    assert_equal 0, body.dig("counts", "stranded")
+
+    post hold_api_v1_work_backlog_item_path(item), params: { reason: "again" }, headers: @headers
+    assert_response :unprocessable_entity
+    assert_match(/already held/, body.to_s)
+  end
+
+  test "hold by key lands on the unresolved row, not a newer queued one" do
+    sessions(:archived).update!(archived_at: 3.days.ago)
+    stranded = backlog_item(key: "zimmer#80")
+    stranded.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    stranded.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    requeued = backlog_item(key: "zimmer#80")
+
+    post hold_api_v1_work_backlog_item_path("zimmer#80"), params: { reason: "pick one" }, headers: @headers
+
+    assert_response :unprocessable_entity, "the stranded row is superseded by the re-queue, so nothing to hold"
+    assert_nil requeued.reload.held_at
+
+    other = backlog_item(key: "zimmer#81")
+    other.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    other.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    post hold_api_v1_work_backlog_item_path("zimmer#81"), params: { reason: "pick one" }, headers: @headers
+    assert_response :success
+    assert_equal other.id, body.dig("work_backlog_item", "id")
   end
 end

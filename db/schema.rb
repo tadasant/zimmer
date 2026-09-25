@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_21_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_25_140000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -986,6 +986,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_21_120000) do
     t.date "decided_at"
     t.string "estimated_cost", null: false
     t.string "gate_verdict"
+    t.datetime "held_at"
+    t.string "held_by"
+    t.bigint "held_by_session_id"
+    t.string "held_liveness_state"
+    t.datetime "held_until"
+    t.text "hold_reason"
     t.string "issue_url"
     t.string "key", null: false
     t.string "kind", null: false
@@ -1012,6 +1018,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_21_120000) do
     t.index ["decided_at"], name: "index_work_backlog_items_on_decided_at"
     t.index ["estimated_cost"], name: "index_work_backlog_items_on_estimated_cost"
     t.index ["gate_verdict"], name: "index_work_backlog_items_on_gate_verdict"
+    t.index ["held_by_session_id"], name: "index_work_backlog_items_on_held_by_session_id"
     t.index ["issue_url"], name: "index_work_backlog_items_on_issue_url"
     t.index ["key"], name: "index_work_backlog_items_on_key"
     t.index ["key"], name: "index_work_backlog_items_on_queued_key", unique: true, where: "((status)::text = 'queued'::text)"
@@ -1114,6 +1121,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_21_120000) do
   add_foreign_key "trigger_conditions", "triggers"
   add_foreign_key "trigger_event_claims", "sessions", on_delete: :nullify
   add_foreign_key "trigger_event_claims", "trigger_conditions", on_delete: :cascade
+  add_foreign_key "work_backlog_items", "sessions", column: "held_by_session_id", on_delete: :nullify
   add_foreign_key "work_backlog_items", "sessions", column: "started_by_session_id", on_delete: :nullify
   add_foreign_key "work_backlog_items", "sessions", column: "started_session_id", on_delete: :nullify
   add_foreign_key "work_backlog_items", "sessions", column: "writing_session_id", on_delete: :nullify

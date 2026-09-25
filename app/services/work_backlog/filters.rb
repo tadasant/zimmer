@@ -33,12 +33,15 @@ module WorkBacklog
     # is listable for the same reason the others are: an operator asking "why is
     # this issue neither held nor queued" needs the rows, not a number. It is the
     # one that spans statuses — a stranded row may be `started` or `removed`.
+    # `awaiting_decision` is its sibling: the unresolved rows a triager has held
+    # for a human, which are out of `stranded` for as long as the hold lasts.
     LIVE_STATUSES = {
       "in_flight" => :in_flight,
       "spot_held" => :spot_held,
       "parked" => :parked,
       "claimed" => :claimed,
-      "stranded" => :stranded
+      "stranded" => :stranded,
+      "awaiting_decision" => :awaiting_decision
     }.freeze
 
     STATUS_VOCABULARY = (WorkBacklogItem::STATUSES + LIVE_STATUSES.keys + [ ANY_STATUS ]).freeze

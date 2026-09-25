@@ -402,6 +402,121 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
   # stranded — so a repo nobody could read puts long-closed rows back into the
   # population at their original age. Paging on that census would be a false page,
   # and remembering it would suppress the true one for a week.
+  # --- rows held for a human decision (#1225) ---------------------------------
+
+  # zimmer#79's shape: triaged, left because a person has to choose, and aged
+  # into a new week band every seven days — each re-page a triage chain that
+  # could only re-confirm it.
+  test "a row held for a human decision is out of both bands, and the page says how many" do
+    held = started_row(key: "zimmer#1", number: 1, started_at: 20.days.ago)
+    started_row(key: "zimmer#2", number: 2, started_at: 9.days.ago)
+    no_pr = { 1 => probe(number: 1), 2 => probe(number: 2) }
+
+    with_alerts do |alerts|
+      sweep(probes: no_pr)
+      held.reload.hold_for_decision!(reason: "Tadas to pick #79/#141/#217", by: "fleet-maintenance")
+      Rails.cache.clear
+
+      result = sweep(probes: no_pr)
+
+      assert_in_delta 9.days.to_i, result.oldest_stranded_age, 5
+      assert_equal [ "weeks-1", "rows-1" ], alerts.events.last[:fingerprint].drop(1)
+      assert_equal 1, alerts.events.last.dig(:context, :awaiting_decision_rows)
+      assert_match(/1 more held for a human decision, not counted/, alerts.pages.last)
+      assert held.reload.hold_active?, "the same evidence keeps the hold across passes"
+    end
+  end
+
+  test "a population held for a decision does not page at all" do
+    held = started_row(started_at: 20.days.ago)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    held.hold_for_decision!(reason: "a secret only a human can seed", by: "fleet-maintenance")
+
+    with_alerts do |alerts|
+      result = sweep(probes: { 1 => probe })
+
+      assert_nil result.oldest_stranded_age
+      assert_empty alerts.pages
+      assert_empty alerts.events
+    end
+  end
+
+  test "a lapsed hold falls back into the population and pages with its original age" do
+    held = started_row(started_at: 20.days.ago)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    held.hold_for_decision!(reason: "a secret only a human can seed", by: "fleet-maintenance")
+
+    with_alerts do |alerts|
+      travel(WorkBacklogItem::HOLD_DURATION + 1.hour) do
+        sweep(probes: { 1 => probe })
+      end
+
+      assert_equal 1, alerts.pages.size
+      assert_equal "weeks-4", alerts.events.last[:fingerprint][1]
+    end
+  end
+
+  # The review finding that shaped this: a lapsed row rejoining a population that
+  # already paged at its band would come back in silence, and a triager could
+  # re-hold it before any page went out.
+  test "a lapse pages even inside the remembered band, once, and then the row may be held again" do
+    started_row(key: "zimmer#2", number: 2, started_at: 40.days.ago)
+    held = started_row(started_at: 20.days.ago)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    held.hold_for_decision!(reason: "pick one", by: "fleet-maintenance")
+    probes = { 1 => probe, 2 => probe(number: 2) }
+
+    with_alerts do |alerts|
+      sweep(probes: probes)
+      assert_equal 1, alerts.pages.size, "the unheld 40-day row pages its band"
+
+      travel(WorkBacklogItem::HOLD_DURATION + 1.hour) do
+        assert_raises(WorkBacklog::Hold::Refused) do
+          WorkBacklog::Hold.call(item: held.reload, reason: "renewed quietly", by: "fleet-maintenance")
+        end
+
+        sweep(probes: probes)
+        assert_equal 2, alerts.pages.size, "the lapse pages although the band is no worse"
+        assert_match(/1 hold\(s\) for a human decision lapsed/, alerts.pages.last)
+        assert_equal 1, alerts.events.last.dig(:context, :lapsed_holds)
+        assert_nil held.reload.held_at, "the spent hold is cleared once paged"
+
+        sweep(probes: probes)
+        assert_equal 2, alerts.pages.size, "a lapse pages once"
+
+        WorkBacklog::Hold.call(item: held, reason: "still owed", by: "fleet-maintenance")
+        assert held.reload.hold_active?
+      end
+    end
+  end
+
+  test "a sweep that reads new evidence voids the hold, and the row pages again" do
+    held = started_row(started_at: 20.days.ago)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    held.hold_for_decision!(reason: "pick one", by: "fleet-maintenance")
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe(references: [ reference(state: "MERGED", updated_at: 1.day.ago) ]) })
+
+      held.reload
+      assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, held.liveness_state
+      assert_nil held.held_at
+      assert_equal [ held.id ], WorkBacklogItem.stranded.pluck(:id)
+      assert_equal 1, alerts.pages.size
+    end
+  end
+
+  test "a repo that could not be read does not void a hold" do
+    held = started_row(started_at: 20.days.ago)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    held.hold_for_decision!(reason: "pick one", by: "fleet-maintenance")
+
+    sweep(probe_error: "boom")
+
+    assert_equal WorkBacklogItem::LIVENESS_UNKNOWN, held.reload.liveness_state
+    assert held.hold_active?
+  end
+
   test "a pass that could not read a repo says nothing" do
     started_row(started_at: 9.days.ago)
 
