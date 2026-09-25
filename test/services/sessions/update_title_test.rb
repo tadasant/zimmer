@@ -49,7 +49,7 @@ class Sessions::UpdateTitleTest < ActiveSupport::TestCase
     session = make_session
     Sessions::UpdateTitle.call(session: session, title: "Hand-picked")
 
-    assert_no_enqueued_jobs(only: SessionTitleJob) { session.reload.enqueue_session_inference }
+    assert_no_enqueued_jobs(only: SessionTitleJob) { session.reload.send(:enqueue_session_inference) }
   end
 
   test "the title the session already has is a no-op that keeps the auto-title flag" do
