@@ -101,6 +101,54 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
                  WorkBacklogItem.liveness_candidates.pluck(:id).sort
   end
 
+  # --- held for a human decision (#1225) -------------------------------------
+
+  test "a held row leaves stranded for awaiting_decision, and comes back when the hold lapses" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    held = backlog_item(key: "zimmer#1")
+    held.mark_started!(session: sessions(:archived), by: nil)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    other = backlog_item(key: "zimmer#2")
+    other.mark_started!(session: sessions(:archived), by: nil)
+
+    held.hold_for_decision!(reason: "Tadas to pick one of #79/#141/#217", by: "fleet-maintenance")
+
+    assert held.reload.started?, "a hold is not a status"
+    assert_equal [ other.id ], WorkBacklogItem.stranded.pluck(:id)
+    assert_equal [ held.id ], WorkBacklogItem.awaiting_decision.pluck(:id)
+    assert_equal [ held.id, other.id ].sort, WorkBacklogItem.unresolved.pluck(:id).sort
+    assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, held.held_liveness_state
+
+    lapsed = held.held_until + 1.second
+    assert_equal [ held.id, other.id ].sort, WorkBacklogItem.stranded(now: lapsed).pluck(:id).sort
+    assert_empty WorkBacklogItem.awaiting_decision(now: lapsed)
+  end
+
+  test "new evidence voids a hold in the same write; a failed read does not" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    item = backlog_item(key: "zimmer#1")
+    item.mark_started!(session: sessions(:archived), by: nil)
+    item.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    item.hold_for_decision!(reason: "needs a secret only a human can seed", by: "human")
+
+    item.record_liveness!(WorkBacklogItem::LIVENESS_UNKNOWN)
+    assert item.reload.hold_active?, "a GitHub blip is not evidence"
+    item.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    assert item.reload.hold_active?, "the same evidence keeps the hold"
+
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_STALLED)
+    item.reload
+    assert_not item.hold_active?
+    assert_nil item.held_at
+    assert_nil item.hold_reason
+    assert_equal [ item.id ], WorkBacklogItem.stranded.pluck(:id)
+  end
+
+  test "a hold needs a reason" do
+    item = backlog_item(key: "zimmer#1")
+    assert_raises(ActiveRecord::RecordInvalid) { item.hold_for_decision!(reason: "", by: "human") }
+  end
+
   test "a started row inside the grace is not yet a liveness candidate" do
     sessions(:archived).update_columns(archived_at: 5.minutes.ago)
     item = backlog_item(key: "zimmer#7")

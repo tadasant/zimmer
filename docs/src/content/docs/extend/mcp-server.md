@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 37 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 38 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -85,7 +85,7 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 8 tools a session needs to run itself |
 | `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
-| `/mcp?tool_groups=work_backlog` | The [work backlog](/operate/work-backlog/): read the ranked queue, append a cleared issue, pull the top items into spot sessions |
+| `/mcp?tool_groups=work_backlog` | The [work backlog](/operate/work-backlog/): read the ranked queue, append a cleared issue, pull the top items into spot sessions, hold a stranded row for a human decision |
 | `/mcp?tool_groups=sessions_readonly,outcome_analyses` | [Outcome analysis](/sessions/outcomes/#over-mcp): start, batch and stop analyses, plus the session reads |
 | `/mcp?tool_groups=settings` | The Settings page's global defaults: read and change the base runtime and model and the Experimental toggles |
 | `/mcp?tool_groups=external_apps` | [Zimmer plugins](/extend/zimmer-plugins/): register one, set the triggers it may invoke, mint and revoke its keys |
@@ -208,7 +208,7 @@ production.
 
 ## The tool surface
 
-37 tools, nine domains — 26 of them on the unscoped surface.
+38 tools, nine domains — 26 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
@@ -217,7 +217,7 @@ production.
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
 | `gate_decisions` (opt-in) | `search_gate_decisions`, `get_gate_decision_feedback`, `record_gate_decision` |
-| `work_backlog` (opt-in) | `get_work_backlog`, `append_work_backlog_item`, `pull_work_backlog_items` |
+| `work_backlog` (opt-in) | `get_work_backlog`, `append_work_backlog_item`, `pull_work_backlog_items`, `hold_work_backlog_item_for_decision` |
 | `outcome_analyses` (opt-in) | `action_outcome_analysis` (its read, `get_outcome_analysis`, is in `sessions`) |
 | `settings` (opt-in) | `get_app_settings`, `action_app_settings` |
 | `external_apps` (opt-in) | `search_external_apps`, `action_external_app` — register [Zimmer plugins](/extend/zimmer-plugins/) and mint their keys |
@@ -345,7 +345,9 @@ unattended implementing session. `get_work_backlog` returns the queue in rank or
 whole-queue position; `append_work_backlog_item` places the item by the band rules, stamps the writing
 session and its agent root from the connection, and refuses `prompt`, `precedence`, `pinned` and
 `added_by` outright; `pull_work_backlog_items` spawns a `spot` `zimmer-orchestrator` session per item as a
-child of the caller and records it on the row. What is deliberately absent, on this group or any
+child of the caller and records it on the row; `hold_work_backlog_item_for_decision` records that a
+stranded row is waiting on a human decision, which takes it out of the stranded alert until the hold
+lapses or its evidence changes, and moves nothing. What is deliberately absent, on this group or any
 other: no tool pins an item, hand-places it, removes it by judgement, or starts it as a `priority`
 session — those are the human's levers over what the fleet works on next and exist only on the REST
 controller. The one removal an agent may make is on a pull, with a reason from a fixed vocabulary of

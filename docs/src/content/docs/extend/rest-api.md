@@ -1148,8 +1148,9 @@ curl -X POST "$BASE_URL/model_catalog_entries" \
 The [work backlog](/operate/work-backlog/): the ranked queue of issues the issue work gate has
 cleared and nobody has started. `index`, `create` and `pull` mirror the `get_work_backlog`,
 `append_work_backlog_item` and `pull_work_backlog_items` MCP tools through the same filter, append
-and pull objects, so the two surfaces cannot disagree. The four member actions after `show` are the
-**human-only** operations and deliberately have no MCP counterpart.
+and pull objects, so the two surfaces cannot disagree. `start_now`, `pin`, `unpin` and `remove` are
+the **human-only** operations and deliberately have no MCP counterpart. `hold` is not one of them: it
+mirrors `hold_work_backlog_item_for_decision` through `WorkBacklog::Hold`.
 
 | Endpoint | What it does |
 | --- | --- |
@@ -1161,6 +1162,7 @@ and pull objects, so the two surfaces cannot disagree. The four member actions a
 | `PATCH /work_backlog_items/:id/pin` | Body: `precedence`. Hand-place the item and pin it there |
 | `PATCH /work_backlog_items/:id/unpin` | Release the pin; the item is re-ranked into its cost band |
 | `POST /work_backlog_items/:id/remove` | Body: `reason` (free text), optional `removed_by` (default `human`). Off the queue; the row stays as history |
+| `POST /work_backlog_items/:id/hold` | Body: `reason` (required), `acting_session_id` (self-declared). Hold a stranded row for a human decision, as `hold_work_backlog_item_for_decision` does: out of `stranded` and the alert until the hold lapses (14 days) or its evidence changes. `422` for a row that is not stranded, has no liveness evidence yet, or is already held |
 
 A filter or an enum outside the vocabulary is a `422` rather than an empty result — an empty queue
 must never be a typo. `pin`, `unpin`, `remove` and `start_now` are `422` on an item that is not

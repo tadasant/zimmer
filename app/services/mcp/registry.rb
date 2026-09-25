@@ -200,6 +200,9 @@ module Mcp
       Definition.new(klass: "Mcp::Tools::GetWorkBacklog", group: "work_backlog", write: false),
       Definition.new(klass: "Mcp::Tools::AppendWorkBacklogItem", group: "work_backlog", write: true),
       Definition.new(klass: "Mcp::Tools::PullWorkBacklogItems", group: "work_backlog", write: true),
+      # Holding a stranded row for a human decision is agent work: it moves and
+      # removes nothing, and lapses on its own (#1225).
+      Definition.new(klass: "Mcp::Tools::HoldWorkBacklogItemForDecision", group: "work_backlog", write: true),
 
       # Outcomes — starting and stopping analyses (Analyze, Analyze All, Stop).
       #

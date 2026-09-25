@@ -11,7 +11,11 @@
     Deliberately NOT narrowed by the filter bar — "what is the fleet working on"
     is a fixed question, and a repo filter that emptied this list would read as
     "nothing is running". %>
+<%# `hold_form` adds the "hold for a decision" control under each row's verdict
+    — on the Stranded list only. A row whose hold is in force shows the hold
+    instead, and a row whose hold lapsed shows what it said. %>
 <% liveness = local_assigns.fetch(:liveness, false) %>
+<% hold_form = local_assigns.fetch(:hold_form, false) %>
 <div class="bg-white border border-gray-200 rounded-lg overflow-hidden mb-6">
   <div class="overflow-x-auto">
     <table class="min-w-full text-sm">
@@ -62,6 +66,15 @@
                   </div>
                 <% else %>
                   <span class="text-xs text-gray-400">not checked yet</span>
+                <% end %>
+                <% if row.item.held_at %>
+                  <div class="mt-1 text-[11px] <%= row.item.hold_active? ? "text-gray-700" : "text-gray-500" %> wrap-anywhere max-w-xs">
+                    <span class="font-semibold"><%= row.item.hold_active? ? "Held until #{row.item.held_until.to_date.iso8601}" : "Hold lapsed #{row.item.held_until.to_date.iso8601}" %></span>
+                    by <%= row.item.held_by %>: <%= row.item.hold_reason %>
+                  </div>
+                <% end %>
+                <% if hold_form && !row.item.hold_active? && row.item.liveness_state.present? && row.item.liveness_state != WorkBacklogItem::LIVENESS_UNKNOWN %>
+                  <%= render "hold", row: row, query_params: local_assigns.fetch(:query_params, {}) %>
                 <% end %>
               </td>
             <% end %>

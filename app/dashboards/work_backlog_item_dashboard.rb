@@ -30,6 +30,12 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     removal_reason: Field::Text,
     liveness_state: Field::String,
     liveness_checked_at: Field::DateTime,
+    held_at: Field::DateTime,
+    held_until: Field::DateTime,
+    held_by: Field::String,
+    held_by_session: Field::BelongsTo,
+    hold_reason: Field::Text,
+    held_liveness_state: Field::String,
     payload: Field::String.with_options(searchable: false),
     created_at: Field::DateTime,
     updated_at: Field::DateTime
@@ -76,6 +82,12 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     removal_reason
     liveness_state
     liveness_checked_at
+    held_at
+    held_until
+    held_by
+    held_by_session
+    hold_reason
+    held_liveness_state
     payload
     created_at
     updated_at
@@ -99,6 +111,7 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     in_flight: ->(resources) { resources.in_flight },
     spot_held: ->(resources) { resources.spot_held },
     parked: ->(resources) { resources.parked },
-    stranded: ->(resources) { resources.stranded }
+    stranded: ->(resources) { resources.stranded },
+    awaiting_decision: ->(resources) { resources.awaiting_decision }
   }.freeze
 end
