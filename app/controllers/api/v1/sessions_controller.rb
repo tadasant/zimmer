@@ -966,8 +966,11 @@ class Api::V1::SessionsController < Api::BaseController
 
   # POST /api/v1/sessions/:id/toggle_favorite
   # Toggle the favorited status of a session.
+  #
+  # Dispatch ONLY — Sessions::ToggleFavorite owns the flip, shared with the web
+  # star and the `toggle_favorite` MCP action.
   def toggle_favorite
-    @session.update!(favorited: !@session.favorited)
+    Sessions::ToggleFavorite.call(session: @session)
     render json: { session: session_json(@session), favorited: @session.favorited }
   end
 
