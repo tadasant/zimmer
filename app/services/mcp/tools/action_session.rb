@@ -1279,7 +1279,7 @@ module Mcp
       end
 
       def toggle_favorite(session)
-        session.update!(favorited: !session.favorited)
+        Sessions::ToggleFavorite.call(session: session)
 
         [
           "## Favorite Toggled",
