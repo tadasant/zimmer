@@ -159,7 +159,7 @@ and the model refuses to write one, answering `422`.
 | `PATCH` | `/sessions/:id/model` | validated against `ModelCatalog` for the session's runtime |
 | `PATCH` | `/sessions/:id/notes` | `session_notes` ≤ 50,000 characters; blank or absent clears. Over the cap → 422 `Too long`; a non-string → 422 `Validation failed`. Same rules as the web notes panel and the `update_notes` MCP action (which requires the parameter), all through `Sessions::UpdateNotes` |
 | `PATCH` | `/sessions/:id/heartbeat` | `enabled` and/or `interval_seconds` (30–86,400, default 60); omit either to leave it unchanged |
-| `POST` | `/sessions/:id/toggle_favorite` | favorited sessions sort to the top of the dashboard |
+| `POST` | `/sessions/:id/toggle_favorite` | favorited sessions sort to the top of the dashboard. Same flip as the web star and the `toggle_favorite` MCP action, all through `Sessions::ToggleFavorite`, which reads the star under a row lock so concurrent toggles both land |
 | `PATCH` | `/sessions/:id/visibility` | `visibility` (`visible` \| `hidden` \| `snoozed`), plus `snoozed_until` and `timezone` for a snooze. **Board visibility only** — see [Board visibility](#board-visibility). It changes what the dashboard draws and nothing else: no session is started, stopped, slept, woken or reordered. Unknown value, missing or past-dated `snoozed_until` → 422 |
 | `GET` | `/sessions/:id/transcript` | `format=text` → `text/plain`, else `{transcript_text}` |
 
