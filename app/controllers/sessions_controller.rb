@@ -2074,7 +2074,7 @@ class SessionsController < ApplicationController
     @session = find_session
 
     result = with_db_retry do
-      @session.update!(favorited: !@session.favorited)
+      Sessions::ToggleFavorite.call(session: @session)
     end
 
     return if performed?
