@@ -38,6 +38,7 @@ not mirror issue state, and a reader re-checks the issue before acting on it.
 | `started_session_id`, `started_by_session_id`, `started_at` | The session it became, the session that pulled it, and when |
 | `removed_at`, `removed_by`, `removal_reason` | For a removed item, who and why |
 | `liveness_state`, `liveness_checked_at` | What the liveness re-check last observed about a row that left the queue, and when |
+| `held_at`, `held_until`, `held_by`, `held_by_session_id`, `hold_reason`, `held_liveness_state` | A triager's hold of a stranded row for a human decision — see [Held for a human decision](#held-for-a-human-decision) |
 | `payload` | `ratings`, `prompt`, `notes`, `gate_session`, and whatever the gate adds next |
 
 **A row is never deleted.** The file dropped an item when it was pulled, so the history of what got
@@ -303,6 +304,48 @@ computed straight after a pass, and settled rows go last, so every stranded row 
 re-checked when the alert is computed, as long as there are fewer than `MAX_EXAMINED_PER_SWEEP`
 (200) of them. The other two can be up to one pass behind the page. See
 [Limitations](/limitations/#stranded-reads-outside-the-issues-view-lag-by-up-to-a-sweep-pass).
+
+### Held for a human decision
+
+Triage of a stranded row has three outcomes. Work left: put it back with `append_work_backlog_item`.
+Nothing left: a human closes the issue or removes the row. The third is **what remains is a person's
+call** — pick one of three overlapping issues, seed a secret only a human holds, rule on a declined
+PR. Before [#1225](https://github.com/tadasant/zimmer/issues/1225) a triager had no way to write
+that down. Appending would re-queue work that must not be worked, and closing or removing is the
+human's. So the row stayed stranded, aged into a new week band every seven days, and re-paged a
+triage chain that could only re-confirm it. `zimmer#79` did that three times.
+
+A **hold** records the third outcome on the row: `hold_work_backlog_item_for_decision` over MCP,
+`POST /api/v1/work_backlog_items/:id/hold`, or the **Hold** form under a row's verdict in the
+Stranded section. All three go through `WorkBacklog::Hold`. A hold takes a required `reason` (the
+decision owed, who owes it, and where it is laid out) and stamps who recorded it and when. It is not
+a removal and does not change `status`. The row moves out of `stranded`, and out of both halves of
+the alert's band, into `awaiting_decision`: its own **Awaiting your decision** section on the Issues
+view, `status: "awaiting_decision"` in `get_work_backlog` and the REST index, and
+`counts.awaiting_decision`. The page names how many rows are held, so a reader knows its count is
+not the whole pile.
+
+**A hold lapses after `HOLD_DURATION` (14 days).** The row is then stranded again with its original
+age, and the next pass that can read GitHub pages on the lapse, whatever band the sweep last paged
+for. Only then is the spent hold cleared. That page is the reminder that the decision is still owed.
+It reaches the human on the path every other page takes, once per hold. The alternative was a second, slower reminder for held rows. That would have added an
+alert path to keep alive for a population whose whole problem was that its alert did not reach
+anyone, and a hold that never lapsed would bring back the permanent silence of
+[#1127](https://github.com/tadasant/zimmer/issues/1127) and [#1175](https://github.com/tadasant/zimmer/issues/1175).
+**A hold cannot be extended** while it is in force, and a lapsed hold cannot be renewed until its
+lapse has paged. Without that second rule, a triager could re-hold the row the minute it lapsed,
+before the hourly sweep ran, and the row would never page again. After the page, a triager may read
+the row again and hold it again.
+
+**A hold is void when its evidence changes.** It records the `liveness_state` it was placed against,
+and the sweep clears it, in the same write, the first time it records a different one: the issue
+closed, a PR opened, moved, stalled or merged, or a newer row superseded it. A failed read
+(`unknown`) does not void it, or a GitHub outage would re-page every held row at once. The Issues
+view also drops a held row whose issue its live snapshot shows closed, as it does for Stranded.
+
+`WorkBacklog::Hold` refuses a row that is not stranded (queued, in flight, parked or resolved), a
+row the sweep has not read yet (no `liveness_state`, or `unknown`), a row a newer row has
+superseded, a row already held, and a row whose lapsed hold has not paged yet.
 
 Settled rows go last because the candidate population only grows: a row whose issue closed stays
 a candidate for good. In a plain least-recently-checked round-robin, most of each pass's 200 would

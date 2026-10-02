@@ -34,7 +34,9 @@ module Mcp
 
         **`stranded` counts the rows that left the queue and went nowhere** — a `started` row whose session ended, or a mechanically `removed` row whose reason has expired — with the issue still open. 41 of 159 open convergent issues were in that state on 2026-09-11, 13 of them for four days or more. `WorkBacklogLivenessSweepJob` re-checks them hourly and records `liveness_state` on each, **but puts nothing back**: a merged PR with no closing keyword means either the work is finished or a deliberate remainder is outstanding, and no mechanical signal separates those. So this is a TRIAGE QUEUE, not a fault counter. Read the rows (`status: "stranded"`), decide per row, and put the ones with work left back with `append_work_backlog_item` — appending on a key whose only row is `started` creates a fresh `queued` row and keeps the old one as history.
 
-        **Returns** JSON: `counts` (queued / started / removed / in_flight / spot_held / parked / stranded / pinned), `ranking` (the bands), `total_matching`, `items`, and `next_offset` when there are more. Each item carries `liveness_state` and `liveness_checked_at` — what the sweep last observed about it, and when.
+        **`awaiting_decision` is the third triage outcome: rows a triager held for a HUMAN decision** with `hold_work_backlog_item_for_decision`. They are out of `stranded` and out of the page, and each carries `hold_reason`, `held_by` and `held_until`. A hold lapses after #{WorkBacklogItem::HOLD_DURATION.inspect} and the row is stranded again; it is void as soon as the sweep reads different evidence. Pass `status: "awaiting_decision"` for the list of decisions owed.
+
+        **Returns** JSON: `counts` (queued / started / removed / in_flight / spot_held / parked / stranded / awaiting_decision / pinned), `ranking` (the bands), `total_matching`, `items`, and `next_offset` when there are more. Each item carries `liveness_state` and `liveness_checked_at` — what the sweep last observed about it, and when — and the hold fields (`awaiting_decision`, `hold_reason`, `held_by`, `held_at`, `held_until`).
       DESC
 
       input_schema({
@@ -48,7 +50,8 @@ module Mcp
                          "its session: in flight = an agent is still advancing it, spot_held = the subset of those " \
                          "the spot gate is holding before a turn, parked = it has stopped on a person, " \
                          "claimed = in flight plus parked, stranded = it left the queue and went " \
-                         "nowhere. They list the items the matching count reports."
+                         "nowhere, awaiting_decision = stranded but held for a human decision. " \
+                         "They list the items the matching count reports."
           },
           surface: { type: "string", description: 'The gate surface that rated it: "zimmer", "strad", "motet", "tadasant-internal", "strad-production", "artifacts", …' },
           repo: { type: "string", description: '"owner/name", e.g. "tadasant/zimmer".' },
@@ -99,6 +102,7 @@ module Mcp
           spot_held: WorkBacklogItem.spot_held.count,
           parked: WorkBacklogItem.parked.count,
           stranded: WorkBacklogItem.stranded.count,
+          awaiting_decision: WorkBacklogItem.awaiting_decision.count,
           pinned: WorkBacklogItem.queued.pinned_items.count
         }
       end

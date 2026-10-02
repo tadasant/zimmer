@@ -261,6 +261,59 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     end
   end
 
+  # --- hold for a human decision (#1225) ------------------------------------
+
+  test "hold moves a stranded row to awaiting_decision, stamped from the connection" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    held = backlog_item(key: "zimmer#79")
+    held.mark_started!(session: sessions(:archived), by: nil)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    other = backlog_item(key: "zimmer#80")
+    other.mark_started!(session: sessions(:archived), by: nil)
+    other.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    hold = Mcp::Tools::HoldWorkBacklogItemForDecision.new(context: @context)
+
+    output = hold.call("key" => "zimmer#79", "reason" => "Tadas to pick #79/#141/#217")
+
+    assert_equal "held", output[:result]
+    assert_equal({ stranded: 1, awaiting_decision: 1 }, output[:counts])
+    assert_equal "issue-work-gate", output.dig(:item, :held_by)
+    assert_equal @gate.id, output.dig(:item, :held_by_session_id)
+    assert output.dig(:item, :awaiting_decision)
+    assert held.reload.started?, "a hold changes no status"
+
+    listed = @read.call("status" => "awaiting_decision")
+    assert_equal [ "zimmer#79" ], listed[:items].map { |i| i[:key] }
+    assert_equal "Tadas to pick #79/#141/#217", listed[:items].first[:hold_reason]
+    assert_equal 1, listed.dig(:counts, :awaiting_decision)
+    assert_equal 1, listed.dig(:counts, :stranded)
+    assert_equal [ "zimmer#80" ], @read.call("status" => "stranded")[:items].map { |i| i[:key] }
+  end
+
+  test "hold refuses without a reason, on a row that is not stranded, and twice" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    item = backlog_item(key: "zimmer#79")
+    item.mark_started!(session: sessions(:archived), by: nil)
+    item.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    queued = backlog_item(key: "zimmer#81")
+    hold = Mcp::Tools::HoldWorkBacklogItemForDecision.new(context: @context)
+
+    assert_raises(Mcp::ToolError) { hold.call("id" => item.id, "reason" => "") }
+    assert_raises(Mcp::ToolError) { hold.call("id" => queued.id, "reason" => "r") }
+    assert_raises(Mcp::ToolError) { hold.call("key" => "zimmer#81", "reason" => "r") }
+    hold.call("id" => item.id, "reason" => "r")
+    assert_raises(Mcp::ToolError) { hold.call("id" => item.id, "reason" => "again") }
+  end
+
+  test "hold is a write, so a read-only connection does not get it" do
+    readonly = Mcp::Registry.tools_for([ "work_backlog_readonly" ]).map(&:tool_name)
+    full = Mcp::Registry.tools_for([ "work_backlog" ]).map(&:tool_name)
+
+    assert_includes readonly, "get_work_backlog"
+    assert_not_includes readonly, "hold_work_backlog_item_for_decision"
+    assert_includes full, "hold_work_backlog_item_for_decision"
+  end
+
   # --- the human-only operations have no MCP path ----------------------------
 
   test "no tool anywhere pins, hand-places, removes by judgement, or promotes to priority" do

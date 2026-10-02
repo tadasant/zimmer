@@ -262,7 +262,8 @@ Rails.application.routes.draw do
 
       # The work backlog: the ranked queue of gate-cleared issues. `create` and
       # `pull` mirror the append_work_backlog_item / pull_work_backlog_items MCP
-      # tools; `start_now`, `pin`, `unpin` and `remove` are the human-only
+      # tools, and `hold` mirrors hold_work_backlog_item_for_decision;
+      # `start_now`, `pin`, `unpin` and `remove` are the human-only
       # operations and deliberately have NO MCP counterpart. :id on the member
       # routes is the row id or the item's key ("zimmer#498").
       # The id constraint lets a key with a dot in it ("next.js#5") route.
@@ -275,6 +276,7 @@ Rails.application.routes.draw do
           patch :pin
           patch :unpin
           post :remove
+          post :hold
         end
       end
 
@@ -511,6 +513,9 @@ Rails.application.routes.draw do
   post "issues/backlog/:id/pin", to: "work_backlog_pins#create", as: :pin_work_backlog_item
   delete "issues/backlog/:id/pin", to: "work_backlog_pins#destroy", as: :unpin_work_backlog_item
   post "issues/backlog/:id/remove", to: "work_backlog_removals#create", as: :remove_work_backlog_item
+  # Not a human-only write: the same hold is an MCP tool and a REST action. See
+  # WorkBacklogHoldsController.
+  post "issues/backlog/:id/hold", to: "work_backlog_holds#create", as: :hold_work_backlog_item
 
   # Connectors page: every catalog MCP server with its auth status. Each row's
   # status is fetched individually by a lazy Turbo Frame hitting #show, so the
