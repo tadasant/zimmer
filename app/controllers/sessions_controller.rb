@@ -2070,6 +2070,8 @@ class SessionsController < ApplicationController
     end
   end
 
+  # Presentation ONLY — the flip is Sessions::ToggleFavorite, shared with
+  # POST /api/v1/sessions/:id/toggle_favorite and the `toggle_favorite` MCP action.
   def toggle_favorite
     @session = find_session
 

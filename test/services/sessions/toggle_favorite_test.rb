@@ -44,9 +44,12 @@ class Sessions::ToggleFavoriteTest < ActiveSupport::TestCase
     assert_equal false, session.reload.favorited
   end
 
-  # The race the service exists to close. Two callers load the row while it is
-  # unstarred; the first toggles it on. A read-then-negate on the second
+  # The lost update the service exists to close. Two callers load the row while
+  # it is unstarred; the first toggles it on. A read-then-negate on the second
   # caller's stale copy would write `true` again, losing the second toggle.
+  # Run one after the other, this proves the flip negates the committed value;
+  # the row-lock test below is what guards truly concurrent toggles, where the
+  # second has to wait for the first to commit.
   test "two toggles from callers holding the same stale row both land" do
     session = make_session(favorited: false)
     first = Session.find(session.id)
@@ -74,11 +77,22 @@ class Sessions::ToggleFavoriteTest < ActiveSupport::TestCase
       ActiveSupport::Notifications.unsubscribe(subscriber)
     end
 
-    lock_index = statements.index { |sql| sql.match?(/\ASELECT .*"sessions".* FOR UPDATE\z/m) }
-    update_index = statements.index { |sql| sql.match?(/\AUPDATE "sessions" SET .*"favorited"/m) }
+    lock_index = statements.index { |sql| sql.match?(/FROM "sessions".*FOR UPDATE/m) }
+    update_index = statements.index { |sql| sql.match?(/UPDATE "sessions" SET .*"favorited"/m) }
     assert lock_index, "expected a SELECT … FOR UPDATE on sessions, got: #{statements.inspect}"
     assert update_index, "expected an UPDATE of favorited, got: #{statements.inspect}"
     assert_operator lock_index, :<, update_index
+  end
+
+  # `update!` rather than `update_all`, so the star on every open board refreshes:
+  # Session#should_broadcast_to_index? fires on saved_change_to_favorited?.
+  test "the flip broadcasts to the sessions index" do
+    session = make_session(favorited: false)
+    Session.any_instance.expects(:broadcast_update_to_sessions_index).once
+
+    Sessions::ToggleFavorite.call(session: session)
+
+    assert session.saved_change_to_favorited?
   end
 
   test "discards unsaved changes on the caller's instance" do
