@@ -967,7 +967,7 @@ class Api::V1::SessionsController < Api::BaseController
   # POST /api/v1/sessions/:id/toggle_favorite
   # Toggle the favorited status of a session.
   def toggle_favorite
-    @session.update!(favorited: !@session.favorited)
+    Sessions::ToggleFavorite.call(session: @session)
     render json: { session: session_json(@session), favorited: @session.favorited }
   end
 
