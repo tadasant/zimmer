@@ -17,6 +17,8 @@ module Issues
   #   ended     a started item whose session archived or failed recently
   #   stranded  a row that left the queue — started, or mechanically removed —
   #             whose issue is still open and whose premise has expired
+  #   awaiting  a stranded row a triager held for a human decision, until the
+  #   decision  hold lapses or its evidence changes
   #   loose     an open GitHub issue with no queued or CLAIMED backlog row —
   #             held, unrated, or simply not picked up yet
   #
@@ -148,6 +150,21 @@ module Issues
     # Whether the page is showing only part of the stranded population.
     def stranded_truncated? = counts[:stranded] > stranded_rows.length
 
+    # Stranded rows a triager held for a human decision (#1225): the list of
+    # decisions owed, each with the reason the triager wrote. Out of Stranded and
+    # out of the page until the hold lapses — see WorkBacklogItem::HOLD_DURATION.
+    # Soonest-lapsing first, because that is the one about to page. Bounded like
+    # the stranded list, and for the same reason.
+    def awaiting_decision_truncated? = counts[:awaiting_decision] > awaiting_decision_rows.length
+
+    def awaiting_decision_rows
+      @awaiting_decision_rows ||= live_awaiting_decision
+        .includes(:started_session)
+        .order(held_until: :asc, id: :asc)
+        .limit(MAX_STRANDED_ROWS)
+        .map { |item| build_row(item, nil) }
+    end
+
     # Open GitHub issues with no live backlog row, filtered by the repo and
     # direction the filter bar is set to. This is the half of the page that is
     # "what is going on in GitHub" rather than "what is on the queue".
@@ -197,6 +214,7 @@ module Issues
         spot_held: WorkBacklogItem.spot_held.count,
         parked: WorkBacklogItem.parked.count,
         stranded: live_stranded.count,
+        awaiting_decision: live_awaiting_decision.count,
         github_open: snapshot.issues.count(&:open?)
       }
     end
@@ -311,11 +329,18 @@ module Issues
     # Nothing is written back. The sweep records the closed verdict on its next
     # pass, which is what `get_work_backlog` and the alert read.
     def live_stranded
-      @live_stranded ||= begin
-        stored = WorkBacklogItem.stranded
-        closed = stored.distinct.pluck(:issue_url).select { |issue_url| @github_by_url[issue_url]&.open? == false }
-        stored.where.not(issue_url: closed)
-      end
+      @live_stranded ||= without_closed_issues(WorkBacklogItem.stranded)
+    end
+
+    # The same correction for the held rows: a closed issue voids its hold on
+    # the sweep's next pass, and the page should not wait for it.
+    def live_awaiting_decision
+      @live_awaiting_decision ||= without_closed_issues(WorkBacklogItem.awaiting_decision)
+    end
+
+    def without_closed_issues(stored)
+      closed = stored.distinct.pluck(:issue_url).select { |issue_url| @github_by_url[issue_url]&.open? == false }
+      stored.where.not(issue_url: closed)
     end
 
     def open_issue_directions

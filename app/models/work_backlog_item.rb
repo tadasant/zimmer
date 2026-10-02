@@ -35,6 +35,10 @@
 # form the Issues view will grow. The one removal an agent may make is the
 # mechanical one: an item whose issue is found dead at pull time, with the reason
 # drawn from MECHANICAL_REMOVAL_REASONS rather than typed.
+#
+# Holding a stranded row for a human decision is agent work too, and is over MCP
+# (`hold_work_backlog_item_for_decision`): it removes nothing, moves nothing, and
+# lapses on its own. See HOLD_DURATION.
 class WorkBacklogItem < ApplicationRecord
   QUEUED = "queued"
   STARTED = "started"
@@ -144,6 +148,43 @@ class WorkBacklogItem < ApplicationRecord
   # never shrinks: a candidate whose issue closed stays a candidate for good.
   SETTLED_LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_SUPERSEDED ].freeze
 
+  # HELD FOR A HUMAN DECISION (#1225), and why this is not a liveness state.
+  #
+  # Triage of a stranded row has three outcomes, and before this only two of
+  # them could be written down. Work left → `append_work_backlog_item`. Nothing
+  # left → a human closes the issue or removes the row. The third is "what
+  # remains is a person's call" — pick one of three overlapping issues, seed a
+  # secret, re-open a declined PR — and a triager has no action that fits it:
+  # appending re-queues work that must not be worked, and closing or removing is
+  # the human's. So the row stayed stranded, aged into a new week band every
+  # seven days, and re-paged a triage chain that could only re-confirm the hold.
+  #
+  # A hold records that outcome on the row, beside the evidence rather than in
+  # place of it, and changes nothing else: not `status`, not the liveness state.
+  # It takes the row out of `stranded` — the population that pages — and into
+  # `awaiting_decision`, which is listed on its own and never pages.
+  #
+  # IT LAPSES, because a hold that did not would be the permanent silence #1127
+  # and #1175 were written to end. HOLD_DURATION after it is recorded the row is
+  # stranded again with its original age, and the next sweep pass that can read
+  # GitHub PAGES ON THE LAPSE — whatever band it last paged for — and only then
+  # clears the spent hold (WorkBacklog::LivenessSweep#announce_lapsed_holds). So
+  # the reminder is the same page that reached the human in the first place, once
+  # per hold, rather than a second alert path. A hold cannot be extended while it
+  # is active, and a lapsed one cannot be renewed until that page has gone out:
+  # WorkBacklog::Hold refuses a row still carrying a spent hold.
+  #
+  # And it is VOID the moment the evidence it was recorded against changes. A
+  # hold says "given THIS, a person has to decide"; once the issue closes, a PR
+  # opens, or a PR merges, that sentence is about a row that no longer exists.
+  # See `record_liveness!`.
+  HOLD_DURATION = 14.days
+  HOLD_REASON_MAX = 2000
+
+  # What a voided or spent hold is reset to.
+  CLEARED_HOLD = { held_at: nil, held_until: nil, held_by: nil, held_by_session_id: nil, hold_reason: nil,
+                   held_liveness_state: nil }.freeze
+
   # The keys in the file's item schema that have a column here. Everything else
   # in an item — ratings, prompt, notes, gate_session, and whatever the gate adds
   # next — rides in `payload`.
@@ -164,6 +205,7 @@ class WorkBacklogItem < ApplicationRecord
   belongs_to :writing_session, class_name: "Session", optional: true
   belongs_to :started_session, class_name: "Session", optional: true
   belongs_to :started_by_session, class_name: "Session", optional: true
+  belongs_to :held_by_session, class_name: "Session", optional: true
 
   validates :key, presence: true, length: { maximum: 200 }
   validates :repo, presence: true, format: { with: %r{\A[\w.-]+/[\w.-]+\z}, message: "must be owner/name" }
@@ -180,6 +222,7 @@ class WorkBacklogItem < ApplicationRecord
   validates :precedence, numericality: { only_integer: true, in: PRECEDENCE_RANGE }
   validates :liveness_state, inclusion: { in: LIVENESS_STATES }, allow_nil: true
   validates :removal_reason, presence: true, if: :removed?
+  validates :hold_reason, presence: true, length: { maximum: HOLD_REASON_MAX }, if: :held_at?
   validate :issueless_items_need_a_prompt_and_a_human
   validate :payload_must_be_an_object
   validate :payload_must_be_within_size
@@ -356,12 +399,26 @@ class WorkBacklogItem < ApplicationRecord
       .or(where.not(issue_url: nil).where(id: removed_provisionally.where(removed_at: ...(now - grace))))
   }
 
-  # The candidates the re-check has NOT resolved — the honest reading of "this
-  # item is going nowhere and someone has to look at it". A row whose issue has
-  # closed, or whose PR is moving, is not here; a row nothing has examined yet is.
-  scope :stranded, ->(grace: WorkBacklog::LivenessSweep::GRACE, now: Time.current) {
+  # The candidates the re-check has NOT resolved, held or not. Split below into
+  # the two populations a reader actually wants.
+  scope :unresolved, ->(grace: WorkBacklog::LivenessSweep::GRACE, now: Time.current) {
     liveness_candidates(grace: grace, now: now)
       .where("liveness_state IS NULL OR liveness_state NOT IN (?)", RESOLVED_LIVENESS_STATES)
+  }
+
+  # The unresolved rows nobody has triaged — the honest reading of "this item is
+  # going nowhere and someone has to look at it". A row whose issue has closed,
+  # or whose PR is moving, is not here; a row nothing has examined yet is. So is
+  # a row whose hold has lapsed: see HOLD_DURATION. This is the population
+  # WorkBacklog::LivenessSweep pages on.
+  scope :stranded, ->(grace: WorkBacklog::LivenessSweep::GRACE, now: Time.current) {
+    unresolved(grace: grace, now: now).where("held_until IS NULL OR held_until <= ?", now)
+  }
+
+  # The unresolved rows a triager has held for a human decision, and whose hold
+  # has not lapsed. Not stranded, and never paged on: the list of decisions owed.
+  scope :awaiting_decision, ->(grace: WorkBacklog::LivenessSweep::GRACE, now: Time.current) {
+    unresolved(grace: grace, now: now).where("held_until > ?", now)
   }
 
   # Has a later row taken this key over? That is what the triage route leaves
@@ -444,8 +501,41 @@ class WorkBacklogItem < ApplicationRecord
   # "leave it alone", because a row nobody has drawn a conclusion about and one
   # deliberately left alone are the same row otherwise, and telling them apart is
   # the whole point of looking.
+  #
+  # A hold recorded against different evidence is voided here, in the same
+  # write, so no reader can see the new evidence beside the old hold. `unknown`
+  # is the exception: a read that failed says nothing about the row, and
+  # voiding on it would let a GitHub blip re-page every held row at once.
+  #
+  # Under the row lock, which reloads the row first: the sweep holds this object
+  # from before its GitHub probe, and a hold recorded in the meantime must be
+  # judged against the evidence it was actually recorded against.
   def record_liveness!(state, now: Time.current)
-    update!(liveness_state: state, liveness_checked_at: now)
+    with_lock do
+      attributes = { liveness_state: state, liveness_checked_at: now }
+      attributes.merge!(CLEARED_HOLD) if hold_voided_by?(state)
+      update!(attributes)
+    end
+  end
+
+  # A hold that has lapsed and whose lapse the sweep has not paged on yet.
+  def hold_lapsed?(now: Time.current) = held_at.present? && !hold_active?(now: now)
+
+  # Is a hold in force on this row right now?
+  def hold_active?(now: Time.current) = held_until.present? && held_until > now
+
+  # Record that what remains of this row is a person's decision. The caller has
+  # checked the row is unresolved and its evidence has been read (WorkBacklog::Hold
+  # does both); this only writes. `liveness_state` is copied as the evidence the
+  # hold stands on.
+  def hold_for_decision!(reason:, by:, session: nil, now: Time.current)
+    update!(held_at: now, held_until: now + HOLD_DURATION, held_by: by, held_by_session: session,
+            hold_reason: reason, held_liveness_state: liveness_state)
+  end
+
+  # Would recording `state` void the hold on this row?
+  def hold_voided_by?(state)
+    held_at.present? && state != LIVENESS_UNKNOWN && state != held_liveness_state
   end
 
   # A human's hand-placement: the item goes exactly where they put it and stays
@@ -499,6 +589,13 @@ class WorkBacklogItem < ApplicationRecord
       removal_reason: removal_reason,
       liveness_state: liveness_state,
       liveness_checked_at: liveness_checked_at&.iso8601,
+      awaiting_decision: hold_active?,
+      held_at: held_at&.iso8601,
+      held_until: held_until&.iso8601,
+      held_by: held_by,
+      held_by_session_id: held_by_session_id,
+      hold_reason: hold_reason,
+      held_liveness_state: held_liveness_state,
       payload: payload
     }
   end
