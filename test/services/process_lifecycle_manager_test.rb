@@ -709,6 +709,22 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     assert_equal [ "fable", "fable" ], @mock_cli_adapter.executed_commands.map { |c| c[:model] }
   end
 
+  test "a continuation spawn keeps the effort the turn was spawned with" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 23456, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone", model: "opus", effort: "low")
+    @mock_process_manager.stubs(:process_running?).returns(true)
+    manager.instance_variable_set(:@state, :handling_exit)
+    manager.send(:spawn_continuation, working_dir: "/tmp/test-clone", prompt: "/compact", reason: "compact")
+
+    continuation = @mock_cli_adapter.resumed_sessions.last
+    assert continuation, "the continuation should resume the conversation"
+    assert_equal "low", continuation[:effort]
+    assert_equal "opus", continuation[:model]
+  end
+
   test "handle_exit recovers from failed resume on exit code 1" do
     stderr_path = "/tmp/test-clone/claude_stderr.log"
     @mock_cli_adapter.execute_hook = ->(opts) do

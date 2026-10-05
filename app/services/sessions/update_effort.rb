@@ -20,9 +20,6 @@ module Sessions
   class UpdateEffort
     class Error < StandardError; end
 
-    # The values that mean "no override".
-    CLEAR_VALUES = [ "", "default" ].freeze
-
     ACTOR_LABELS = { web: "", api: " via API", mcp: " via MCP" }.freeze
 
     # @param session [Session]
@@ -46,7 +43,7 @@ module Sessions
       raise Error, "effort must be a string" unless effort.nil? || effort.is_a?(String)
 
       level = effort.to_s.strip.downcase
-      level = nil if CLEAR_VALUES.include?(level)
+      level = nil if Session::EFFORT_CLEAR_VALUES.include?(level)
 
       if level
         message = ModelCatalog.effort_error(session.agent_runtime, session.config&.dig("model"), level)

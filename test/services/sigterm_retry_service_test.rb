@@ -470,6 +470,19 @@ class SigtermRetryServiceTest < ActiveSupport::TestCase
     assert_equal "Test prompt", @mock_cli_adapter.executed_commands.first[:prompt]
   end
 
+  test "a fresh-start retry keeps the session's model and effort" do
+    setup_transcript_directory
+    @session.update!(config: { "model" => "fable", "effort" => "max" })
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    create_service.attempt_retry("/tmp/test-clone")
+
+    assert_equal 1, @mock_cli_adapter.executed_commands.length
+    assert_equal "fable", @mock_cli_adapter.executed_commands.first[:model]
+    assert_equal "max", @mock_cli_adapter.executed_commands.first[:effort]
+  end
+
   test "uses execute when transcript file does not exist" do
     setup_transcript_directory
     # Don't create transcript file

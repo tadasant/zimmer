@@ -71,13 +71,17 @@ class ModelCatalog
   #
   # `effort_levels` and `default_effort` describe the reasoning-effort setting a
   # session can carry in `config["effort"]` (see #effort_levels_for). They are
-  # copied from the model table bundled with the installed Claude Code CLI
-  # (2.1.289), whose aliases resolve to the models named in each comment, and
-  # agree with https://platform.claude.com/docs/en/build-with-claude/effort.
+  # copied from the model table bundled with Claude Code CLI 2.1.289, whose
+  # aliases resolve to the models named in each comment, and agree with
+  # https://platform.claude.com/docs/en/build-with-claude/effort.
   # `default_effort` is what the CLI runs when no `--effort` is passed, so it is
   # what Zimmer reports for a session that named none — Zimmer never passes it
-  # itself. Refresh discipline: re-check both when the pinned CLI is bumped. An
-  # entry without `effort_levels` takes no effort setting.
+  # itself, so a session that names no level always gets the CLI's real default
+  # even when this copy is stale. The CLI is not pinned: ClaudeCodeUpdateJob runs
+  # `claude update` daily and the aliases float, so a release can change either
+  # field with no Zimmer deploy. Refresh discipline: re-check both against the
+  # CLI's model table whenever a new model lands behind an alias. An entry
+  # without `effort_levels` takes no effort setting.
   MODELS = {
     "claude_code" => [
       # claude-opus-5-5

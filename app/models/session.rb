@@ -2771,6 +2771,9 @@ class Session < ApplicationRecord
     message
   end
 
+  # `config["effort"]` values that mean "no override — the model's default".
+  EFFORT_CLEAR_VALUES = [ "", "default" ].freeze
+
   # The reasoning-effort level this session's agent runs at, and where it came
   # from. `source` is "explicit" when `config["effort"]` names one (passed to the
   # CLI as `--effort`) and "default" when it does not, in which case no flag is
@@ -2976,12 +2979,14 @@ class Session < ApplicationRecord
     false
   end
 
-  # Effort names are case-insensitive on the way in; blank means "no override".
+  # Effort names are case-insensitive on the way in; blank or "default" means
+  # "no override", on every door — create as well as change_effort.
   def normalize_effort
     return unless config.is_a?(Hash) && config.key?("effort")
 
     effort = config["effort"]
-    normalized = effort.is_a?(String) ? effort.strip.downcase.presence : effort
+    normalized = effort.is_a?(String) ? effort.strip.downcase : effort
+    normalized = nil if EFFORT_CLEAR_VALUES.include?(normalized)
     return if normalized == effort
 
     self.config = normalized.nil? ? config.except("effort") : config.merge("effort" => normalized)
