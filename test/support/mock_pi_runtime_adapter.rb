@@ -52,7 +52,7 @@ class MockPiRuntimeAdapter
   # (ProcessLifecycleManager passes it uniformly to whichever adapter is
   # selected) but unused by Pi — recorded so tests can assert it flowed through.
   def execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
-              append_system_prompt: nil, model: nil, auto_compact_window: nil)
+              append_system_prompt: nil, model: nil, effort: nil, auto_compact_window: nil)
     validate_working_dir!(working_dir)
 
     command_info = {
@@ -73,7 +73,7 @@ class MockPiRuntimeAdapter
   # Simulate resuming a Pi session.
   # auto_compact_window accepted for contract symmetry (see #execute); unused.
   def resume(session_id:, working_dir:, prompt: nil, images: nil, mcp_config_path: nil,
-             append_system_prompt: nil, model: nil, auto_compact_window: nil)
+             append_system_prompt: nil, model: nil, effort: nil, auto_compact_window: nil)
     validate_working_dir!(working_dir)
 
     resume_info = {

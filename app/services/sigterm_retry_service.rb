@@ -174,6 +174,7 @@ class SigtermRetryService
         mcp_config_path: session.metadata&.dig("mcp_config_path"),
         append_system_prompt: system_prompt,
         model: session.config&.dig("model"),
+        effort: session.effort_override,
         auto_compact_window: session.auto_compact_window
       )
     end

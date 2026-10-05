@@ -8,6 +8,18 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     @tool = Mcp::Tools::GetSession.new(context: Mcp::Context.new(tool_groups: "sessions"))
   end
 
+  test "shows the model and the effective effort, and whether it was set or defaulted" do
+    session = sessions(:needs_input)
+    session.update!(config: { "model" => "fable", "effort" => "xhigh" })
+
+    result = @tool.call("id" => session.id)
+    assert_includes result, "- **Model:** fable"
+    assert_includes result, "- **Effort:** xhigh (set explicitly)"
+
+    session.update!(config: { "model" => "opus" })
+    assert_includes @tool.call("id" => session.id), "- **Effort:** medium (model default)"
+  end
+
   test "returns session details and the transcript file hint instead of the transcript" do
     session = sessions(:archived)
 

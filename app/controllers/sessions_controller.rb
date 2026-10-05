@@ -2252,6 +2252,23 @@ class SessionsController < ApplicationController
     end
   end
 
+  # PATCH /sessions/:id/update_effort
+  # Presentation ONLY — the write and its rules (which levels the model takes,
+  # "default" clears) are Sessions::UpdateEffort, shared with
+  # PATCH /api/v1/sessions/:id/effort and the `change_effort` MCP action.
+  def update_effort
+    @session = find_session
+
+    with_db_retry { Sessions::UpdateEffort.call(session: @session, effort: params[:effort], actor: :web) }
+    return if performed? # with_db_retry rendered its own give-up response
+
+    render json: { success: true, effort: @session.effort_summary, description: @session.effort_description }
+  rescue Sessions::UpdateEffort::Error => e
+    render json: { error: e.message }, status: :unprocessable_entity
+  rescue ActiveRecord::RecordInvalid => e
+    render json: { error: e.record.errors.full_messages.join(", ") }, status: :unprocessable_entity
+  end
+
   # PATCH /sessions/:id/update_auto_compact_window
   # Update the Claude Code auto-compact window (context window, in tokens) for a
   # session via the web UI. Mirrors update_model: the value is a top-level column
@@ -3246,6 +3263,11 @@ class SessionsController < ApplicationController
       @session.config = @session.config.merge("model" => requested_model)
     end
 
+    # Not filtered like the model: an effort the model does not take is a
+    # validation error the form re-renders with, not a silent fallback.
+    requested_effort = params[:effort].to_s.strip.presence
+    @session.config = @session.config.merge("effort" => requested_effort) if requested_effort
+
     # A root the catalog cannot resolve still records what the form posted,
     # which is what the existing-row heal and the "not in catalog" rendering
     # are for.
@@ -3290,6 +3312,9 @@ class SessionsController < ApplicationController
     # options when the runtime changes, so adding a runtime is pure data.
     @runtime_models = @available_runtimes.index_with { |runtime| ModelCatalog.model_ids_for(runtime) }
     @runtime_default_models = @available_runtimes.index_with { |runtime| ModelCatalog.default_for(runtime) }
+    # runtime => model => { levels:, default: } for the effort picker, which
+    # follows the model picker and hides itself for a model that takes none.
+    @effort_options = ModelCatalog.effort_options_by_runtime
 
     # Create a mapping of agent root names to their default models
     @agent_root_models = @agent_roots.each_with_object({}) do |agent_root, hash|

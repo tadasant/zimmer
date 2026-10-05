@@ -93,8 +93,15 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         Selecting no hooks is not the same as running with none: a plugin can bundle hooks of its own, and those are added on top of this list — to drop a hook a selected plugin bundles, narrow `plugins` too. Example: ["git-push-ci-reminder"]
       TEXT
 
+      # "opus → medium, sonnet → medium, fable → high", from ModelCatalog.
+      EFFORT_DEFAULTS_SENTENCE = ModelCatalog.effort_options_by_runtime.flat_map do |_runtime, models|
+        models.map { |model, options| "#{model} → #{options[:default]}" }
+      end.join(", ").freeze
+
       CONFIG_DESC = <<~TEXT.strip
         Additional configuration as a JSON object. Use `config.model` to choose the agent model for this session (e.g. {"model": "gpt-5.6-terra"} for a codex runtime, {"model": "fable"} for claude_code, or {"model": "#{ModelCatalog.default_for("pi")}"} for pi). The model must be valid for the resolved agent_runtime; call get_configs to see each agent root's default_model. When omitted, the session uses the agent root's default_model, then the global session default configured on the Settings page, then the runtime's catalog default; a model that is not valid for the resolved runtime is replaced by that fallback. An explicit config.model always takes precedence.
+
+        Use `config.effort` to set the reasoning-effort ("thinking") level: one of #{ModelCatalog::CLAUDE_CODE_EFFORT_LEVELS.map { |l| "\"#{l}\"" }.join(', ')} (lowest to highest; "xhigh" is extra-high). Example: {"model": "fable", "effort": "xhigh"}. Omit it and the model's own recommended default applies (#{EFFORT_DEFAULTS_SENTENCE}). Only Claude Code models take it, and not every one of those — a level the resolved model does not take is refused, not ignored. get_configs lists the levels and default for every model.
       TEXT
 
       CUSTOM_METADATA_DESC = <<~TEXT.strip
@@ -155,7 +162,7 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         - **Skills:** Add beyond `default_skills` freely. Removing a default skill should be rare and intentional — only when you have a specific reason, like replacing a skill with a more capable variant that covers the same ground. Skills are lightweight text files with no blast radius, so keeping all defaults costs nothing.
         - **Hooks:** Drop one from `default_hooks` when it fires on work this session won't do (a CI-reminder hook on a docs-only task, say) by passing the narrowed list, or `[]` to select none. Selecting no hooks is not the same as running with none: a plugin bundles hooks of its own, and those are added on top of the list you pass, so dropping a hook a selected plugin bundles means narrowing `plugins` as well.
 
-        **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code), `codex` (OpenAI Codex CLI) or `pi` (Pi coding agent). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku`/`fable` for claude_code, `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna` for codex, `#{ModelCatalog.default_for("pi")}` for pi). Both are optional: when omitted, resolution falls through the agent root's `default_runtime`/`default_model`, then the global session defaults set on the Settings page, then the hardcoded defaults. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime.
+        **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code), `codex` (OpenAI Codex CLI) or `pi` (Pi coding agent). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku`/`fable` for claude_code, `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna` for codex, `#{ModelCatalog.default_for("pi")}` for pi). Both are optional: when omitted, resolution falls through the agent root's `default_runtime`/`default_model`, then the global session defaults set on the Settings page, then the hardcoded defaults. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime. Pass `config: { effort: "..." }` alongside the model to set its reasoning-effort level — e.g. `config: { model: "fable", effort: "xhigh" }` for "Fable on extra-high reasoning"; omit it for the model's recommended default.
 
         **Scheduling class:** Pass `scheduling_class: "spot"` for long, unattended work nobody is waiting on, so it yields to work a human is watching when the Claude Code quota gets tight. Omit it and the session takes its parent's explicit class, or its genesis's default.
 

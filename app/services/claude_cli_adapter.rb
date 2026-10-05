@@ -111,12 +111,14 @@ class ClaudeCliAdapter
   # @param images [Array<Hash>, nil] Array of image data hashes with :path, :media_type keys
   # @param append_system_prompt [String, nil] Additional system prompt to append to Claude's defaults
   # @param model [String, nil] Model to use (e.g., "opus", "sonnet")
+  # @param effort [String, nil] Reasoning effort passed as `--effort`; nil passes
+  #   no flag, so the CLI applies the model's default
   # @param dangerously_skip_permissions [Boolean] Skip permission checks
   # @param debug [Boolean] Enable debug mode
   # @param auto_compact_window [Integer] Token budget for CLAUDE_CODE_AUTO_COMPACT_WINDOW
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
-              append_system_prompt: nil, model: nil, dangerously_skip_permissions: true, debug: false,
+              append_system_prompt: nil, model: nil, effort: nil, dangerously_skip_permissions: true, debug: false,
               auto_compact_window: DEFAULT_AUTO_COMPACT_WINDOW)
     # Use stdin-based delivery for images or large prompts to avoid ARG_MAX limits
     use_stdin = images.present? || large_prompt?(prompt)
@@ -130,6 +132,7 @@ class ClaudeCliAdapter
         images: images,
         append_system_prompt: append_system_prompt,
         model: model,
+        effort: effort,
         dangerously_skip_permissions: dangerously_skip_permissions,
         debug: debug,
         auto_compact_window: auto_compact_window
@@ -141,6 +144,7 @@ class ClaudeCliAdapter
         mcp_config_path: mcp_config_path,
         append_system_prompt: append_system_prompt,
         model: model,
+        effort: effort,
         dangerously_skip_permissions: dangerously_skip_permissions,
         debug: debug
       )
@@ -157,12 +161,14 @@ class ClaudeCliAdapter
   # @param mcp_config_path [String, nil] Path to MCP config file (for setting MCP_TIMEOUT)
   # @param append_system_prompt [String, nil] Additional system prompt to append to Claude's defaults
   # @param model [String, nil] Model to use (e.g., "opus", "sonnet")
+  # @param effort [String, nil] Reasoning effort passed as `--effort`; nil passes
+  #   no flag, so the CLI applies the model's default
   # @param dangerously_skip_permissions [Boolean] Skip permission checks
   # @param debug [Boolean] Enable debug mode
   # @param auto_compact_window [Integer] Token budget for CLAUDE_CODE_AUTO_COMPACT_WINDOW
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def resume(session_id:, working_dir:, prompt: nil, images: nil, mcp_config_path: nil,
-             append_system_prompt: nil, model: nil, dangerously_skip_permissions: true, debug: false,
+             append_system_prompt: nil, model: nil, effort: nil, dangerously_skip_permissions: true, debug: false,
              auto_compact_window: DEFAULT_AUTO_COMPACT_WINDOW)
     # Use stdin-based delivery for images or large prompts to avoid ARG_MAX limits
     use_stdin = images.present? || large_prompt?(prompt)
@@ -176,6 +182,7 @@ class ClaudeCliAdapter
         mcp_config_path: mcp_config_path,
         append_system_prompt: append_system_prompt,
         model: model,
+        effort: effort,
         dangerously_skip_permissions: dangerously_skip_permissions,
         debug: debug,
         auto_compact_window: auto_compact_window
@@ -187,6 +194,7 @@ class ClaudeCliAdapter
         mcp_config_path: mcp_config_path,
         append_system_prompt: append_system_prompt,
         model: model,
+        effort: effort,
         dangerously_skip_permissions: dangerously_skip_permissions,
         debug: debug
       )
@@ -255,13 +263,14 @@ class ClaudeCliAdapter
   # IMPORTANT: This uses -p mode which is single-turn and exits after response.
   # For multi-turn sessions, the session_id persists the conversation.
   def execute_with_stdin(prompt:, session_id:, working_dir:, mcp_config_path:, images:,
-                         append_system_prompt:, model:, dangerously_skip_permissions:, debug:,
+                         append_system_prompt:, model:, effort:, dangerously_skip_permissions:, debug:,
                          auto_compact_window:)
     command = build_stream_json_command(
       session_id: session_id,
       mcp_config_path: mcp_config_path,
       append_system_prompt: append_system_prompt,
       model: model,
+      effort: effort,
       dangerously_skip_permissions: dangerously_skip_permissions,
       debug: debug
     )
@@ -272,13 +281,14 @@ class ClaudeCliAdapter
 
   # Resume using stream-json input mode (for images or large prompts)
   def resume_with_stdin(session_id:, working_dir:, prompt:, images:, mcp_config_path:,
-                        append_system_prompt:, model:, dangerously_skip_permissions:, debug:,
+                        append_system_prompt:, model:, effort:, dangerously_skip_permissions:, debug:,
                         auto_compact_window:)
     command = build_stream_json_resume_command(
       session_id: session_id,
       mcp_config_path: mcp_config_path,
       append_system_prompt: append_system_prompt,
       model: model,
+      effort: effort,
       dangerously_skip_permissions: dangerously_skip_permissions,
       debug: debug
     )
@@ -288,12 +298,13 @@ class ClaudeCliAdapter
   end
 
   # Build command for stream-json mode (new session)
-  def build_stream_json_command(session_id:, mcp_config_path:, append_system_prompt:, model: nil, dangerously_skip_permissions:, debug:)
+  def build_stream_json_command(session_id:, mcp_config_path:, append_system_prompt:, model: nil, effort: nil, dangerously_skip_permissions:, debug:)
     cmd = [ "claude", "-p" ]
     cmd << "--dangerously-skip-permissions" if dangerously_skip_permissions
     append_disallowed_tools(cmd)
     cmd << "--debug" if debug
     cmd << "--model" << model if model.present?
+    cmd << "--effort" << effort if effort.present?
     cmd << "--append-system-prompt" << append_system_prompt if append_system_prompt.present?
     cmd << "--input-format" << "stream-json"
     cmd << "--output-format" << "stream-json"
@@ -304,12 +315,13 @@ class ClaudeCliAdapter
   end
 
   # Build command for stream-json resume mode
-  def build_stream_json_resume_command(session_id:, mcp_config_path:, append_system_prompt:, model: nil, dangerously_skip_permissions:, debug:)
+  def build_stream_json_resume_command(session_id:, mcp_config_path:, append_system_prompt:, model: nil, effort: nil, dangerously_skip_permissions:, debug:)
     cmd = [ "claude", "-p" ]
     cmd << "--dangerously-skip-permissions" if dangerously_skip_permissions
     append_disallowed_tools(cmd)
     cmd << "--debug" if debug
     cmd << "--model" << model if model.present?
+    cmd << "--effort" << effort if effort.present?
     cmd << "--append-system-prompt" << append_system_prompt if append_system_prompt.present?
     cmd << "--mcp-config" << mcp_config_path if mcp_config_path
     cmd << "--input-format" << "stream-json"
@@ -473,12 +485,13 @@ class ClaudeCliAdapter
     raise ClaudeCliError, "Failed to spawn Claude CLI via stdin: #{e.message}"
   end
 
-  def build_command(prompt:, session_id:, mcp_config_path:, append_system_prompt:, model: nil, dangerously_skip_permissions:, debug:)
+  def build_command(prompt:, session_id:, mcp_config_path:, append_system_prompt:, model: nil, effort: nil, dangerously_skip_permissions:, debug:)
     cmd = [ "claude" ]
     cmd << "--dangerously-skip-permissions" if dangerously_skip_permissions
     append_disallowed_tools(cmd)
     cmd << "--debug" if debug
     cmd << "--model" << model if model.present?
+    cmd << "--effort" << effort if effort.present?
     cmd << "--append-system-prompt" << append_system_prompt if append_system_prompt.present?
     cmd << "--mcp-config" << mcp_config_path if mcp_config_path
     cmd << "--session-id" << session_id
@@ -488,12 +501,13 @@ class ClaudeCliAdapter
     cmd
   end
 
-  def build_resume_command(session_id:, prompt:, mcp_config_path:, append_system_prompt:, model: nil, dangerously_skip_permissions:, debug:)
+  def build_resume_command(session_id:, prompt:, mcp_config_path:, append_system_prompt:, model: nil, effort: nil, dangerously_skip_permissions:, debug:)
     cmd = [ "claude" ]
     cmd << "--dangerously-skip-permissions" if dangerously_skip_permissions
     append_disallowed_tools(cmd)
     cmd << "--debug" if debug
     cmd << "--model" << model if model.present?
+    cmd << "--effort" << effort if effort.present?
     cmd << "--append-system-prompt" << append_system_prompt if append_system_prompt.present?
     cmd << "--mcp-config" << mcp_config_path if mcp_config_path
     cmd << "--resume" << session_id

@@ -371,6 +371,62 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_equal "opus", command[model_index + 1]
   end
 
+  # ===== EFFORT TESTS =====
+  #
+  # `effort:` is the session's config["effort"]. Set, it reaches the CLI as
+  # `--effort <level>` on every path a turn can take — argv and stream-json
+  # stdin, fresh and resumed. Unset, no flag is passed, so the CLI applies the
+  # model's own default.
+
+  def spawned_command
+    @mock_process_manager.spawned_processes.last[:command]
+  end
+
+  def assert_effort_flag(command, level)
+    index = command.index("--effort")
+    assert index, "--effort should be present in #{command.inspect}"
+    assert_equal level, command[index + 1]
+    assert_equal 1, command.count("--effort")
+  end
+
+  test "execute passes --effort when an effort is set" do
+    @adapter.execute(prompt: "test", session_id: "session-1", working_dir: @test_dir, model: "fable", effort: "xhigh")
+
+    assert_effort_flag spawned_command, "xhigh"
+    assert_equal "fable", spawned_command[spawned_command.index("--model") + 1]
+  end
+
+  test "resume passes --effort when an effort is set" do
+    @adapter.resume(session_id: "session-1", prompt: "continue", working_dir: @test_dir, model: "fable", effort: "medium")
+
+    assert_effort_flag spawned_command, "medium"
+    assert_includes spawned_command, "--resume"
+  end
+
+  test "the stream-json paths pass --effort too" do
+    large = "x" * (ClaudeCliAdapter::LARGE_PROMPT_THRESHOLD + 1)
+
+    @adapter.execute(prompt: large, session_id: "session-1", working_dir: @test_dir, model: "opus", effort: "max")
+    assert_effort_flag spawned_command, "max"
+    assert_includes spawned_command, "--input-format"
+
+    @adapter.resume(session_id: "session-1", prompt: large, working_dir: @test_dir, model: "opus", effort: "low")
+    assert_effort_flag spawned_command, "low"
+    assert_includes spawned_command, "--resume"
+  end
+
+  test "no --effort is passed when the effort is unset, so the model default applies" do
+    @adapter.execute(prompt: "test", session_id: "session-1", working_dir: @test_dir, model: "fable")
+    refute_includes spawned_command, "--effort"
+
+    @adapter.resume(session_id: "session-1", prompt: "continue", working_dir: @test_dir, model: "fable", effort: nil)
+    refute_includes spawned_command, "--effort"
+
+    @adapter.execute(prompt: "x" * (ClaudeCliAdapter::LARGE_PROMPT_THRESHOLD + 1), session_id: "session-1",
+                     working_dir: @test_dir, model: "fable", effort: "")
+    refute_includes spawned_command, "--effort"
+  end
+
   # ===== RESUME COMMAND BUILDING TESTS =====
 
   test "build_resume_command creates basic resume command" do

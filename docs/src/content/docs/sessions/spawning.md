@@ -299,10 +299,19 @@ and spawns a new session instead.
 ```bash
 claude --dangerously-skip-permissions \
   --disallowedTools Monitor ScheduleWakeup "Bash(sleep *)" "Skill(schedule)" AskUserQuestion \
-  [--model MODEL] [--append-system-prompt SYSTEM_PROMPT] [--mcp-config PATH] \
+  [--model MODEL] [--effort LEVEL] [--append-system-prompt SYSTEM_PROMPT] [--mcp-config PATH] \
   (--session-id UUID | --resume UUID) \
   -- <prompt>
 ```
+
+`--effort` is the session's reasoning-effort level, `config["effort"]` — one of `low`, `medium`,
+`high`, `xhigh`, `max`. It is passed on every spawn of the session, fresh or resumed, including the
+continuation and recovery spawns. A session with no `config["effort"]` gets no flag at all, so Claude
+Code applies the model's own default — `medium` for `opus` and `sonnet`, `high` for `fable` — which
+follows Anthropic's [recommended levels](https://platform.claude.com/docs/en/build-with-claude/effort).
+Zimmer never passes that default itself. `haiku` takes no effort setting, and a level the session's
+model does not take is refused when it is set, not passed through. The levels and defaults live in
+`ModelCatalog`, copied from the model table in the installed CLI.
 
 **Codex:**
 

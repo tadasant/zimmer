@@ -108,7 +108,7 @@ the same way to the calling session's own spend. All but one of `action_session`
 narrowings of the full surface; [`message_parent`](#message_parent-the-one-action-that-exists-only-here)
 is on this surface and on no other.
 A session can manage itself; it cannot restart, fork, or re-configure anything. In particular the
-capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_skills`,
+capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_effort`, `change_skills`,
 `change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`,
 `toggle_push_notifications` — are deliberately absent here: a session must not rewrite
 its own capabilities or goal through the server injected into it. (The
@@ -617,7 +617,7 @@ with `precedence`. It narrows the placement to one request rather than locking t
 queue](/sessions/spot-and-priority/#placing-something-at-the-head-of-the-queue).
 
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
-config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,
+config-editing actions — `change_mcp_servers`, `change_model`, `change_effort`, `change_skills`, `change_hooks`,
 `change_plugins`, `change_goal`, `change_auto_compact_window`,
 `toggle_push_notifications` — mirror the inline editors on the session page. List-valued fields
 (`mcp_servers`, `skills`, `hooks`, `plugins`) use **replace, not merge** semantics, and every id is

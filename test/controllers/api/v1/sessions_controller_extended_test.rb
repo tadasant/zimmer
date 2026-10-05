@@ -209,6 +209,37 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
     assert_equal "sonnet", json["session"]["config"]["model"]
   end
 
+  test "update_effort sets, reports and clears the effort" do
+    session = sessions(:needs_input)
+    session.update!(config: { "model" => "opus" })
+
+    patch effort_api_v1_session_path(session), params: { effort: "max" }, headers: @headers
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "max", json["session"]["config"]["effort"]
+    assert_equal "explicit", json["session"]["effort"]["source"]
+
+    patch effort_api_v1_session_path(session), params: { effort: "default" }, headers: @headers
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_not json["session"]["config"].key?("effort")
+    assert_equal({ "level" => "medium", "source" => "default", "default" => "medium",
+                   "levels" => %w[low medium high xhigh max] }, json["session"]["effort"])
+  end
+
+  test "update_effort rejects a level the model does not take, and a missing one" do
+    session = sessions(:needs_input)
+    session.update!(config: { "model" => "haiku" })
+
+    patch effort_api_v1_session_path(session), params: { effort: "high" }, headers: @headers
+    assert_response :unprocessable_entity
+    assert_match(/does not support an effort setting/, response.body)
+
+    patch effort_api_v1_session_path(session), params: {}, headers: @headers
+    assert_response :unprocessable_entity
+    assert_match(/effort is required/, response.body)
+  end
+
   test "update_model should reject non-string model" do
     session = sessions(:needs_input)
 
