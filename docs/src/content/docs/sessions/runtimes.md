@@ -67,13 +67,21 @@ The `anthropic/*` and `openai/*` entries at the end of Pi's list go direct to th
 still validates; this deployment feeds neither key, so the `openrouter/*` ids are the ones that
 run.
 
-Two of the three runtimes have a refresh discipline written into `ModelCatalog`, and Pi's has a
+All three runtimes have a refresh discipline written into `ModelCatalog`, and Pi's has a
 trap in it: `pi --list-models` only prints providers whose credential currently resolves, so
 running it without `OPENROUTER_API_KEY` set silently omits every `openrouter` row and makes the
 catalog look far smaller than it is.
 
 `requires_oauth` marks the Codex models that only work with a ChatGPT login. No Claude Code or Pi
 model sets it true.
+
+`effort_levels` and `default_effort` are the reasoning-effort levels a session on that model may set
+in `config.effort` (passed to Claude Code as `--effort`) and the level it runs at when it sets none.
+Only `opus`, `sonnet` and `fable` carry them — all five levels, defaulting to `medium`, `medium` and
+`high`. `haiku`, every Codex and Pi model, and any added model carry none, so an effort on them is
+refused. They are a copy of the model table in Claude Code CLI 2.1.289, which updates itself daily,
+so they are re-checked whenever a new model lands behind an alias. See
+[What gets spawned](/sessions/spawning/#what-gets-spawned).
 
 `messages_api_id` is the model's id on Anthropic's `POST /v1/messages`, and only `haiku` sets it
 (`claude-haiku-4-5`). The quota probe is the one caller that hits that endpoint directly

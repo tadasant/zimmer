@@ -53,6 +53,17 @@ class Mcp::Tools::GetConfigsTest < ActiveSupport::TestCase
     assert_includes result, "`gpt-5.6-luna` (requires OAuth)"
   end
 
+  test "lists the effort levels and default for every model that takes one" do
+    result = @tool.call({})
+
+    assert_includes result, "- **Effort levels** (`config.effort`, lowest to highest; models not listed take none):"
+    assert_includes result, "  - `fable`: `low`, `medium`, `high`, `xhigh`, `max` (default `high`)"
+    assert_includes result, "  - `opus`: `low`, `medium`, `high`, `xhigh`, `max` (default `medium`)"
+    assert_not_includes result, "  - `haiku`:"
+    assert_includes result, "- **Effort levels:** none — this runtime takes no `config.effort`"
+    assert_includes result, "config: { model: \"fable\", effort: \"xhigh\" }"
+  end
+
   test "marks added models, and says when the installed CLI does not list one" do
     ModelCatalogEntry.new(runtime: "codex", model_id: "gpt-9", added_via: "mcp", cli_listed: false).save!(validate: false)
     ModelCatalogEntry.new(runtime: "claude_code", model_id: "opus[1m]", added_via: "mcp").save!(validate: false)

@@ -45,7 +45,9 @@ class Api::V1::ConfigsController < Api::BaseController
     AgentRootsConfig.all.map(&:to_h)
   end
 
-  # Returns selectable model metadata grouped by runtime. `source` is
+  # Returns selectable model metadata grouped by runtime. `effort_levels` are
+  # the `config.effort` values the model takes (empty when it takes none) and
+  # `default_effort` the level it runs at when none is set. `source` is
   # "built_in" or "added" (see /api/v1/model_catalog_entries); an added model
   # also carries the CLI check stored when it was added.
   def runtime_models_data
@@ -58,7 +60,9 @@ class Api::V1::ConfigsController < Api::BaseController
             label: model[:label],
             default: !!model[:default],
             requires_oauth: !!model[:requires_oauth],
-            source: model[:source]
+            source: model[:source],
+            effort_levels: model[:effort_levels] || [],
+            default_effort: model[:default_effort]
           }
           next data unless model[:source] == "added"
 

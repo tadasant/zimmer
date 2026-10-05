@@ -18,7 +18,7 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "force_start", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "set_visibility", "remove_uncle", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "force_start", "archive", "unarchive", "change_mcp_servers", "change_model", "change_effort", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "set_visibility", "remove_uncle", "bulk_archive"'
 
       SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" or "place" leaves the session wherever its existing rank puts it, which is usually the bottom — pass one of them when you mean it to be worked on soon, and "place": "top_of_spot" when you mean it to be worked on first.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
@@ -26,6 +26,8 @@ module Mcp
       FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Set it whenever the prompt would change what the agent should be doing — a correction, a new constraint, a "you are on the wrong track". A queued prompt is not seen until the current turn ends, which can be many minutes of work in a direction you already know is wrong. Interrupting ends the in-flight turn. The agent then resumes the same conversation with your prompt as its next turn, so it keeps the context it had. Leave it off when the prompt is additive and the current turn is worth finishing. Not used for other actions.'
       MCP_SERVERS_DESC = 'Required for "change_mcp_servers" action. Array of MCP server names to set for the session. REPLACES the existing set — this is not a merge, so whatever you pass is the complete final list and every server the session currently has but you did not name is dropped. To add or remove one, read the session\'s current mcp_servers with get_session, copy that list, and edit it — do not write a fresh list from what the change seems to need.'
       MODEL_DESC = 'Required for "change_model" action. The model identifier to use (e.g., "opus", "sonnet", "fable", "gpt-5.6-sol"). Must be valid for the session runtime.'
+
+      EFFORT_DESC = 'Required for "change_effort" action. The reasoning-effort level: one of "low", "medium", "high", "xhigh" (extra-high), "max" — or "default" to clear the override so the model\'s own default applies. Must be a level the session\'s model takes; get_configs lists the levels and default for every model, and a model or runtime it lists none for takes no effort setting.'
       SKILLS_DESC = 'Required for "change_skills" action. Array of catalog skill IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected. Call get_configs / the skills catalog for valid IDs.'
       HOOKS_DESC = 'Required for "change_hooks" action. Array of catalog hook IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected.'
       PLUGINS_DESC = 'Required for "change_plugins" action. Array of catalog plugin IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected.'
@@ -75,6 +77,7 @@ module Mcp
         unarchive
         change_mcp_servers
         change_model
+        change_effort
         change_skills
         change_hooks
         change_plugins
@@ -169,6 +172,7 @@ module Mcp
         - **unarchive**: Restore an archived session to idle "needs_input" status
         - **change_mcp_servers**: Update the MCP servers for a session (requires "mcp_servers" parameter; replaces the set). Takes effect the next time the session's runtime config is prepared — its next turn, a restart, or an unarchive — never on an already-running process. If a newly selected server needs authorizing, the answer names it under "Needs authorization" and the session is moved to "failed" with failure_reason "oauth_required" so its page shows the Authorize buttons; a session that is currently running is left alone instead.
         - **change_model**: Update the model for a session (requires "model" parameter, e.g., "opus", "sonnet", "fable", "gpt-5.6-sol")
+        - **change_effort**: Set the session's reasoning-effort level (requires "effort" parameter: "low", "medium", "high", "xhigh", "max", or "default" to clear it). Passed to Claude Code as `--effort` from the next turn on; the running process keeps its level. A level the session's model does not take is refused with the valid ones listed. A session whose effort is set refuses a change_model to a model that cannot keep it — clear or change the effort first.
         - **change_skills**: Update the catalog skills for a session (requires "skills" parameter; replaces the set). Invalid skill IDs are rejected. Takes effect on the session's next prepare.
         - **change_hooks**: Update the catalog hooks for a session (requires "hooks" parameter; replaces the set). Invalid hook IDs are rejected. Takes effect on the session's next prepare.
         - **change_plugins**: Update the catalog plugins for a session (requires "plugins" parameter; replaces the set). Invalid plugin IDs are rejected. Plugins can bundle MCP servers, so this carries the same next-prepare timing and the same OAuth handling as change_mcp_servers.
@@ -217,6 +221,7 @@ module Mcp
           halt: { type: "boolean", description: HALT_DESC },
           mcp_servers: { type: "array", items: { type: "string" }, description: MCP_SERVERS_DESC },
           model: { type: "string", description: MODEL_DESC },
+          effort: { type: "string", enum: ModelCatalog::CLAUDE_CODE_EFFORT_LEVELS + [ "default" ], description: EFFORT_DESC },
           skills: { type: "array", items: { type: "string" }, description: SKILLS_DESC },
           hooks: { type: "array", items: { type: "string" }, description: HOOKS_DESC },
           plugins: { type: "array", items: { type: "string" }, description: PLUGINS_DESC },
@@ -337,6 +342,7 @@ module Mcp
         when "unarchive" then unarchive(find_session(args["session_id"]))
         when *CATALOG_LIST_FIELDS.keys then change_catalog_list(find_session(args["session_id"]), action, args)
         when "change_model" then change_model(find_session(args["session_id"]), args)
+        when "change_effort" then change_effort(find_session(args["session_id"]), args)
         when "change_goal" then change_goal(find_session(args["session_id"]), args)
         when "change_auto_compact_window" then change_auto_compact_window(find_session(args["session_id"]), args)
         when "change_scheduling_class" then change_scheduling_class(find_session(args["session_id"]), args)
@@ -867,6 +873,29 @@ module Mcp
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
           "- **Model:** #{session.config&.dig('model').presence || '(default)'}"
+        ].join("\n")
+      end
+
+      def change_effort(session, args)
+        unless args.key?("effort")
+          raise ToolError, "The \"effort\" parameter is required for the \"change_effort\" action."
+        end
+
+        begin
+          Sessions::UpdateEffort.call(session: session, effort: args["effort"], actor: :mcp)
+        rescue Sessions::UpdateEffort::Error => e
+          raise ToolError, e.message
+        end
+
+        [
+          "## Effort Updated",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Model:** #{session.config&.dig('model').presence || '(default)'}",
+          "- **Effort:** #{session.effort_description}",
+          "",
+          "*Takes effect from the session's next turn.*"
         ].join("\n")
       end
 

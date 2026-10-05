@@ -45,7 +45,7 @@ class MockClaudeCliAdapter
   # Note: images parameter added for multimodal support
   # Note: append_system_prompt parameter added for system prompt injection
   def execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
-              append_system_prompt: nil, model: nil, dangerously_skip_permissions: true, debug: false,
+              append_system_prompt: nil, model: nil, effort: nil, dangerously_skip_permissions: true, debug: false,
               auto_compact_window: ClaudeCliAdapter::DEFAULT_AUTO_COMPACT_WINDOW)
     validate_working_dir!(working_dir)
 
@@ -57,6 +57,7 @@ class MockClaudeCliAdapter
       images: images,
       append_system_prompt: append_system_prompt,
       model: model,
+      effort: effort,
       auto_compact_window: auto_compact_window
     }
     @executed_commands << command_info
@@ -78,7 +79,7 @@ class MockClaudeCliAdapter
   # Note: images and mcp_config_path parameters added for multimodal and MCP support
   # Note: append_system_prompt parameter added for system prompt injection
   def resume(session_id:, prompt: nil, working_dir:, images: nil, mcp_config_path: nil,
-             append_system_prompt: nil, model: nil, dangerously_skip_permissions: true, debug: false,
+             append_system_prompt: nil, model: nil, effort: nil, dangerously_skip_permissions: true, debug: false,
              auto_compact_window: ClaudeCliAdapter::DEFAULT_AUTO_COMPACT_WINDOW)
     validate_working_dir!(working_dir)
 
@@ -90,6 +91,7 @@ class MockClaudeCliAdapter
       mcp_config_path: mcp_config_path,
       append_system_prompt: append_system_prompt,
       model: model,
+      effort: effort,
       auto_compact_window: auto_compact_window
     }
     @resumed_sessions << resume_info

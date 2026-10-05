@@ -567,7 +567,9 @@ module Mcp
           "### Basic Information",
           "- **ID:** #{session.id}",
           "- **Status:** #{session.status}",
-          "- **Agent Runtime:** #{session.agent_runtime}"
+          "- **Agent Runtime:** #{session.agent_runtime}",
+          "- **Model:** #{session.config&.dig('model').presence || '(not yet resolved)'}",
+          "- **Effort:** #{session.effort_description}"
         ]
 
         lines << "- **Slug:** #{session.slug}" if session.slug.present?

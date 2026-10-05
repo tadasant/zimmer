@@ -40,6 +40,9 @@
 # surface that lists added models shows it. The Claude Code ids are floating
 # aliases, so a new Opus or Sonnet release reaches sessions with no change at all.
 class ModelCatalog
+  # Claude Code's `--effort` values, lowest to highest.
+  CLAUDE_CODE_EFFORT_LEVELS = %w[low medium high xhigh max].freeze
+
   # Per-runtime model definitions. Within a runtime the entry flagged
   # `default: true` is the runtime's default model (falling back to the first
   # entry when none is flagged). Keys are RuntimeRegistry runtime identifiers.
@@ -65,12 +68,31 @@ class ModelCatalog
   # OpenAI ships new models or retires old ones; see also the `ao-upgrade-codex`
   # skill. Mark a model `deprecated: true` (in its label) rather than removing it
   # immediately so sessions pinned to it keep validating.
+  #
+  # `effort_levels` and `default_effort` describe the reasoning-effort setting a
+  # session can carry in `config["effort"]` (see #effort_levels_for). They are
+  # copied from the model table bundled with Claude Code CLI 2.1.289, whose
+  # aliases resolve to the models named in each comment, and agree with
+  # https://platform.claude.com/docs/en/build-with-claude/effort.
+  # `default_effort` is what the CLI runs when no `--effort` is passed, so it is
+  # what Zimmer reports for a session that named none — Zimmer never passes it
+  # itself, so a session that names no level always gets the CLI's real default
+  # even when this copy is stale. The CLI is not pinned: ClaudeCodeUpdateJob runs
+  # `claude update` daily and the aliases float, so a release can change either
+  # field with no Zimmer deploy. Refresh discipline: re-check both against the
+  # CLI's model table whenever a new model lands behind an alias. An entry
+  # without `effort_levels` takes no effort setting.
   MODELS = {
     "claude_code" => [
-      { id: "opus", label: "opus", default: true },
-      { id: "sonnet", label: "sonnet" },
+      # claude-opus-5-5
+      { id: "opus", label: "opus", default: true, effort_levels: CLAUDE_CODE_EFFORT_LEVELS, default_effort: "medium" },
+      # claude-sonnet-5-5. The API default is `high`; Claude Code ships `medium`,
+      # which is what the docs recommend for agentic coding on this model.
+      { id: "sonnet", label: "sonnet", effort_levels: CLAUDE_CODE_EFFORT_LEVELS, default_effort: "medium" },
+      # claude-haiku-4-5 does not support the effort parameter.
       { id: "haiku", label: "haiku", messages_api_id: "claude-haiku-4-5" },
-      { id: "fable", label: "fable" }
+      # claude-fable-5-1
+      { id: "fable", label: "fable", effort_levels: CLAUDE_CODE_EFFORT_LEVELS, default_effort: "high" }
     ],
     "codex" => [
       { id: "gpt-5.6-sol", label: "gpt-5.6-sol (ChatGPT auth)", requires_oauth: true },
@@ -206,6 +228,60 @@ class ModelCatalog
       entry ? !!entry[:requires_oauth] : false
     end
 
+    # The reasoning-effort levels a session on this runtime and model may set in
+    # `config["effort"]`. Empty when the model takes none — including every Codex
+    # and Pi model, whose runtimes Zimmer does not pass an effort to, and any
+    # model an operator added, whose levels Zimmer cannot know.
+    #
+    # @return [Array<String>]
+    def effort_levels_for(runtime, model)
+      built_in_entry(runtime, model)&.dig(:effort_levels) || []
+    end
+
+    # The level the runtime applies when a session names none, or nil when the
+    # model takes no effort setting.
+    #
+    # @return [String, nil]
+    def default_effort_for(runtime, model)
+      built_in_entry(runtime, model)&.dig(:default_effort)
+    end
+
+    # Why `effort` cannot be used with this runtime and model, or nil when it
+    # can. Blank `effort` is always fine: it means "the model's default".
+    #
+    # @return [String, nil]
+    def effort_error(runtime, model, effort)
+      return nil if effort.blank?
+
+      key = resolve(runtime)
+      levels = effort_levels_for(key, model)
+      return nil if levels.include?(effort.to_s)
+
+      if levels.empty?
+        supported = MODELS.fetch(key, []).select { |m| m[:effort_levels].present? }.map { |m| m[:id] }
+        if supported.empty?
+          "effort is not supported on the #{key} runtime; omit it to use the model's default"
+        else
+          "model #{model.inspect} does not support an effort setting; omit effort, or pick one of: #{supported.join(', ')}"
+        end
+      else
+        "effort #{effort.to_s.inspect} is not valid for model #{model.inspect}. Valid levels: #{levels.join(', ')} " \
+          "(default: #{default_effort_for(key, model)})"
+      end
+    end
+
+    # Every model with an effort setting, per runtime: the shape the new-session
+    # form, get_configs and GET /api/v1/configs all describe.
+    #
+    # @return [Hash{String=>Hash{String=>Hash}}] runtime => model => { levels:, default: }
+    def effort_options_by_runtime
+      MODELS.to_h do |runtime, models|
+        options = models.select { |m| m[:effort_levels].present? }
+                        .to_h { |m| [ m[:id], { levels: m[:effort_levels], default: m[:default_effort] } ] }
+        [ runtime, options ]
+      end
+    end
+
     # The `POST /v1/messages` id for a Claude Code catalog model.
     #
     # Raises rather than returning nil: callers resolve it into a constant at
@@ -223,6 +299,10 @@ class ModelCatalog
     end
 
     private
+
+    def built_in_entry(runtime, model)
+      MODELS.fetch(resolve(runtime), []).find { |m| m[:id] == model.to_s }
+    end
 
     # An added model follows the built-in ones, and a deploy that promotes an added
     # id to built-in drops the now-redundant row rather than listing it twice. The
