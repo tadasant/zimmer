@@ -354,6 +354,42 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
     assert_equal "sonnet", Session.last.config["model"]
   end
 
+  test "create stores the effort picked on the form" do
+    post sessions_url, params: {
+      session: { prompt: "Test prompt", git_root: "https://github.com/tadasant/zimmer.git", mcp_servers: [] },
+      agent_root_name: "zimmer",
+      model: "fable",
+      effort: "xhigh"
+    }
+
+    assert_equal({ "model" => "fable", "effort" => "xhigh" }, Session.last.config.slice("model", "effort"))
+  end
+
+  test "create leaves the effort unset when the form submits Default" do
+    post sessions_url, params: {
+      session: { prompt: "Test prompt", git_root: "https://github.com/tadasant/zimmer.git", mcp_servers: [] },
+      agent_root_name: "zimmer",
+      model: "fable",
+      effort: ""
+    }
+
+    assert_not Session.last.config.key?("effort")
+  end
+
+  test "create re-renders the form when the model does not take the effort" do
+    assert_no_difference "Session.count" do
+      post sessions_url, params: {
+        session: { prompt: "Test prompt", git_root: "https://github.com/tadasant/zimmer.git", mcp_servers: [] },
+        agent_root_name: "zimmer",
+        model: "haiku",
+        effort: "max"
+      }
+    end
+
+    assert_response :unprocessable_entity
+    assert_includes response.body, "does not support an effort setting"
+  end
+
   test "create rejects an out-of-catalog model and falls back to a valid one" do
     post sessions_url, params: {
       session: {

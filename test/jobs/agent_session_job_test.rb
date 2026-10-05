@@ -165,6 +165,79 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Verify CLI adapter was called
     assert_equal 1, mock_cli_adapter.executed_commands.length
     assert_equal @session.session_id, mock_cli_adapter.executed_commands.first[:session_id]
+    assert_nil mock_cli_adapter.executed_commands.first[:effort], "no effort set means no override"
+  end
+
+  # The session's config["effort"] reaches the adapter on the turn's spawn, and an
+  # unset one reaches it as nil (no --effort flag; the model's default applies).
+  test "the spawn carries the session's effort to the CLI adapter" do
+    @session.update!(config: { "model" => "fable", "effort" => "xhigh" })
+    job = AgentSessionJob.new
+
+    # Inject mock dependencies
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    # Configure mock behaviors
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+    mock_fs.mkdir_p("/tmp/test-clone")
+
+    # Mock GitCloneService
+    GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+      # Mock TranscriptPollerService
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; end
+        mock_poller
+      }) do
+        # Configure mock process manager to simulate process completion
+        mock_process_manager.wait_hook = ->(pid, flags) do
+          if flags == Process::WNOHANG
+            # First return nil (still running), then return completed status
+            @wait_call_count ||= 0
+            @wait_call_count += 1
+            if @wait_call_count > 2
+              [ pid, MockProcessManager::MockStatus.new(0) ]
+            else
+              nil
+            end
+          else
+            [ pid, MockProcessManager::MockStatus.new(0) ]
+          end
+        end
+
+        # Configure mock CLI adapter
+        mock_cli_adapter.execute_hook = ->(opts) do
+          {
+            pid: 12345,
+            stderr_log_path: "/tmp/test-clone/claude_stderr.log"
+          }
+        end
+
+        # Stub Thread creation to avoid background work
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.perform(@session.id)
+        end
+      end
+    end
+
+    @session.reload
+    assert_equal "needs_input", @session.status
+
+    assert_equal 1, mock_cli_adapter.executed_commands.length
+    assert_equal "fable", mock_cli_adapter.executed_commands.first[:model]
+    assert_equal "xhigh", mock_cli_adapter.executed_commands.first[:effort]
   end
 
   # Test follow-up prompt execution with mock dependencies

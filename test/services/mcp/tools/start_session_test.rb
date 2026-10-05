@@ -258,6 +258,41 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_equal "gpt-5.6-luna", session.config["model"]
   end
 
+  test "persists an explicit effort alongside the model" do
+    @tool.call(
+      "agent_root" => "zimmer",
+      "title" => "Fable on extra-high",
+      "config" => { "model" => "fable", "effort" => "xhigh" }
+    )
+
+    session = Session.order(:id).last
+    assert_equal "fable", session.config["model"]
+    assert_equal "xhigh", session.config["effort"]
+    assert_equal "explicit", session.effort_summary[:source]
+  end
+
+  test "refuses an effort the resolved model does not take, and creates nothing" do
+    response = nil
+    assert_no_difference "Session.count" do
+      response = Mcp::Tools::StartSession.call(
+        server_context: Mcp::Context.new(tool_groups: "sessions"),
+        agent_root: "zimmer", title: "Haiku thinking hard", config: { model: "haiku", effort: "max" }
+      )
+    end
+
+    assert response.error?
+    assert_match(/"haiku" does not support an effort setting/, response.content.first[:text])
+  end
+
+  test "the config description teaches config.effort with the defaults" do
+    description = Mcp::Tools::StartSession::CONFIG_DESC
+
+    assert_includes description, "config.effort"
+    assert_includes description, '{"model": "fable", "effort": "xhigh"}'
+    assert_includes description, "fable → high"
+    assert_includes description, "opus → medium"
+  end
+
   test "raises for an unknown agent root" do
     error = assert_raises(Mcp::ToolError) { @tool.call("agent_root" => "nope", "title" => "x") }
     assert_match(/Invalid agent_root/, error.message)

@@ -2569,6 +2569,48 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     )
   end
 
+  test "update_effort sets the level and answers with the new description" do
+    session = sessions(:needs_input)
+    session.update!(config: { "model" => "fable" })
+
+    patch update_effort_session_url(session), params: { effort: "max" }, as: :json
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "max (set explicitly)", json["description"]
+    assert_equal "max", session.reload.config["effort"]
+  end
+
+  test "update_effort refuses a level the model does not take" do
+    session = sessions(:needs_input)
+    session.update!(config: { "model" => "haiku" })
+
+    patch update_effort_session_url(session), params: { effort: "low" }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_match(/does not support an effort setting/, JSON.parse(response.body)["error"])
+  end
+
+  test "the session page shows an editable effort for a model that takes one" do
+    session = sessions(:needs_input)
+    session.update!(config: { "model" => "fable", "effort" => "xhigh" })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-controller='editable-effort'] [data-role='effort-value']", text: "xhigh (set explicitly)"
+    assert_select "[data-editable-effort-target='select'] option[selected][value='xhigh']"
+    assert_select "[data-editable-effort-target='select'] option[value='default']", text: "Default (high)"
+  end
+
+  test "the new-session form offers the default model's effort levels" do
+    get new_session_url
+
+    assert_response :success
+    assert_select "[data-controller='effort-select'] select[name='effort'] option[value='']", text: /\ADefault \(/
+    assert_select "[data-controller='effort-select'] select[name='effort'] option[value='xhigh']"
+  end
+
   # Test update_title action
   test "should update session title" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")

@@ -691,6 +691,40 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     assert_equal true, @session.metadata["runtime_started"]
   end
 
+  # The continuation and recovery spawns reuse what the turn was spawned with,
+  # effort included — a fresh-start recovery must not quietly fall back to the
+  # model default.
+  test "the session's effort carries into a failed-resume recovery spawn" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone", model: "fable", effort: "xhigh")
+    @mock_file_system.write(stderr_path, "No conversation found with session ID: c65ced73-208f-4e45-ad49-3ea78cf6c4aa\n")
+
+    manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal 2, @mock_cli_adapter.executed_commands.size
+    assert_equal [ "xhigh", "xhigh" ], @mock_cli_adapter.executed_commands.map { |c| c[:effort] }
+    assert_equal [ "fable", "fable" ], @mock_cli_adapter.executed_commands.map { |c| c[:model] }
+  end
+
+  test "a continuation spawn keeps the effort the turn was spawned with" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 23456, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone", model: "opus", effort: "low")
+    @mock_process_manager.stubs(:process_running?).returns(true)
+    manager.instance_variable_set(:@state, :handling_exit)
+    manager.send(:spawn_continuation, working_dir: "/tmp/test-clone", prompt: "/compact", reason: "compact")
+
+    continuation = @mock_cli_adapter.resumed_sessions.last
+    assert continuation, "the continuation should resume the conversation"
+    assert_equal "low", continuation[:effort]
+    assert_equal "opus", continuation[:model]
+  end
+
   test "handle_exit recovers from failed resume on exit code 1" do
     stderr_path = "/tmp/test-clone/claude_stderr.log"
     @mock_cli_adapter.execute_hook = ->(opts) do

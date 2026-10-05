@@ -312,6 +312,35 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
       "Model should use the explicitly provided value"
   end
 
+  test "should accept an effort in config and report it" do
+    post api_v1_sessions_path, params: {
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      config: { model: "fable", effort: "xhigh" }
+    }, headers: @headers
+
+    assert_response :created
+    json = JSON.parse(response.body)
+    assert_equal "xhigh", json["session"]["config"]["effort"]
+    assert_equal({ "level" => "xhigh", "source" => "explicit", "default" => "high",
+                   "levels" => %w[low medium high xhigh max] }, json["session"]["effort"])
+  end
+
+  test "should refuse an effort the model does not take" do
+    assert_no_difference "Session.count" do
+      post api_v1_sessions_path, params: {
+        agent_runtime: "claude_code",
+        git_root: "https://github.com/test/repo.git",
+        branch: "main",
+        config: { model: "haiku", effort: "high" }
+      }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    assert_match(/"haiku" does not support an effort setting/, JSON.parse(response.body)["message"])
+  end
+
   test "should create session with custom_metadata" do
     post api_v1_sessions_path, params: {
       agent_runtime: "claude_code",

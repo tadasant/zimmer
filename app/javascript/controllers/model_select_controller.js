@@ -7,6 +7,8 @@ import { Controller } from "@hotwired/stimulus"
 // controllers (which live outside this controller's DOM subtree):
 //   - "ao:runtime-changed"     → rebuild options from the runtime's catalog
 //   - "ao:agent-root-changed"  → select that root's default model when compatible
+// and broadcasts "ao:model-changed" ({ runtime, model }) whenever the selected
+// model changes, which the effort picker follows.
 export default class extends Controller {
   static targets = ["select", "hiddenField"]
   static values = {
@@ -56,6 +58,7 @@ export default class extends Controller {
   // Update the submitted value when the user picks a model directly.
   updateHiddenField() {
     this.hiddenFieldTarget.value = this.selectTarget.value
+    this.broadcastModel()
   }
 
   modelsForCurrentRuntime() {
@@ -72,5 +75,12 @@ export default class extends Controller {
   setModel(model) {
     this.selectTarget.value = model
     this.hiddenFieldTarget.value = model
+    this.broadcastModel()
+  }
+
+  broadcastModel() {
+    document.dispatchEvent(new CustomEvent("ao:model-changed", {
+      detail: { runtime: this.runtimeValue, model: this.hiddenFieldTarget.value }
+    }))
   }
 }

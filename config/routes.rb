@@ -226,6 +226,7 @@ Rails.application.routes.draw do
           patch :catalog_hooks, action: :update_catalog_hooks
           patch :catalog_plugins, action: :update_catalog_plugins
           patch :model, action: :update_model
+          patch :effort, action: :update_effort
           get :transcript
           patch :notes, action: :update_notes
           post :toggle_favorite
@@ -621,6 +622,7 @@ Rails.application.routes.draw do
       patch :update_catalog_hooks
       patch :update_catalog_plugins
       patch :update_model
+      patch :update_effort
       patch :update_auto_compact_window
       patch :update_scheduling_class
       patch :update_precedence

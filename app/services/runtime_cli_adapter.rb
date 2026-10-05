@@ -12,12 +12,12 @@
 # == Required methods (must be implemented by including classes) ==
 #
 # execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
-#         append_system_prompt: nil, model: nil, ...) -> { pid:, stderr_log_path: }
+#         append_system_prompt: nil, model: nil, effort: nil, ...) -> { pid:, stderr_log_path: }
 #   Spawn a fresh runtime session. Returns a Hash with the spawned :pid and the
 #   :stderr_log_path the monitoring loop should tail.
 #
 # resume(session_id:, working_dir:, prompt: nil, images: nil, mcp_config_path: nil,
-#        append_system_prompt: nil, model: nil, ...) -> { pid:, stderr_log_path: }
+#        append_system_prompt: nil, model: nil, effort: nil, ...) -> { pid:, stderr_log_path: }
 #   Resume an existing runtime session with an optional follow-up prompt.
 #   Same return shape as #execute.
 #

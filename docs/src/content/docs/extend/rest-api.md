@@ -156,7 +156,8 @@ and the model refuses to write one, answering `422`.
 | `POST` | `/sessions/bulk_archive` | `session_ids[]` → `archived_count` and any `errors`. A session with a queued message lands in `errors` and is left alone; `force: true` applies to the whole batch, not one member of it |
 | `PATCH` | `/sessions/:id/mcp_servers` | max 50, validated against the catalog. Replaces the set; `[]` clears it and is recorded as deliberate, so the [backfill](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults) does not restore the root's defaults. Takes effect on the session's next prepare — see [Changing a session's artifacts takes effect on its next prepare](#changing-a-sessions-artifacts-takes-effect-on-its-next-prepare) |
 | `PATCH` | `/sessions/:id/catalog_skills` · `/catalog_hooks` · `/catalog_plugins` | max 100 / 100 / 50, validated against the catalog. Replaces the set; same next-prepare rule |
-| `PATCH` | `/sessions/:id/model` | validated against `ModelCatalog` for the session's runtime |
+| `PATCH` | `/sessions/:id/model` | validated against `ModelCatalog` for the session's runtime. Refused when the session has an `effort` the new model does not take |
+| `PATCH` | `/sessions/:id/effort` | `effort`: `low` · `medium` · `high` · `xhigh` · `max`, a level the session's model takes, or `default` (or `null`/`""`) to clear it so the model's default applies. Missing or unsupported → 422 naming the valid levels. Takes effect from the next turn. Same rules as the web effort editor and the `change_effort` MCP action, all through `Sessions::UpdateEffort` |
 | `PATCH` | `/sessions/:id/notes` | `session_notes` ≤ 50,000 characters; blank or absent clears. Over the cap → 422 `Too long`; a non-string → 422 `Validation failed`. Same rules as the web notes panel and the `update_notes` MCP action (which requires the parameter), all through `Sessions::UpdateNotes` |
 | `PATCH` | `/sessions/:id/heartbeat` | `enabled` and/or `interval_seconds` (30–86,400, default 60); omit either to leave it unchanged |
 | `POST` | `/sessions/:id/toggle_favorite` | favorited sessions sort to the top of the dashboard. Same flip as the web star and the `toggle_favorite` MCP action, all through `Sessions::ToggleFavorite`, which reads the star under a row lock so concurrent toggles both land |
@@ -504,6 +505,21 @@ lists both:
 
 `PATCH /sessions/:id/model` validates against the list for the session's own runtime; anything else
 → `422 {"error": "Invalid model"}` with a message naming the valid ones.
+
+`config.effort` sets the session's reasoning-effort level, which reaches Claude Code as `--effort`.
+Omit it and the model's own recommended default applies; every session carries an `effort` object
+saying which one it got: `{level, source, default, levels}`, where `source` is `explicit` or
+`default`. Each entry in `runtime_models` from `GET /configs` carries the model's `effort_levels`
+and `default_effort`:
+
+| Model | Levels | Default |
+| --- | --- | --- |
+| `opus` | `low` · `medium` · `high` · `xhigh` · `max` | `medium` |
+| `sonnet` | `low` · `medium` · `high` · `xhigh` · `max` | `medium` |
+| `fable` | `low` · `medium` · `high` · `xhigh` · `max` | `high` |
+| `haiku`, every Codex and Pi model, any added model | none | — |
+
+A level the resolved model does not take → 422 naming the valid ones, and no session is created.
 
 ### Following up, and the `goal` that rides along
 
@@ -1254,7 +1270,7 @@ curl "$BASE_URL/gate_decisions?gate=pr_merge&surface=zimmer&decision=hold&per_pa
 | **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent · undelivered`; the read payload also carries `origin` ∈ `caller · automated_pr_merged · automated_merge_conflict · automated_recovery_nudge`, which records who wrote the row. No request can set it: every create site names its attributes literally and no `permit` list mentions it. Zimmer assigns it, and on one internal path (`SpotSessionHold`, for a refused turn it is re-queueing) derives it from the prompt body. Archiving a session is **refused** (422) while any row is `pending`, since the archive would discard it; `force: true` on the archive overrides that and retires the rows to `undelivered` — see [lifecycle](/sessions/lifecycle/). Deleting one re-numbers the positions behind it |
 | **CLIs** | `GET /clis/status` · `POST /clis/refresh` · `POST /clis/clear_cache` |
 | **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status`. `status` returns `{state, generated_at, session_count, file_size_bytes, stale, stale_reason, complete, deferred_count, incomplete_reason}` where `state` is `present`. `complete` is false while the job is still draining a backlog — a partial archive is freshly written, so `stale` is false and `complete` is the only thing that distinguishes it; a 404 carries `state` `never_built` or `missing` plus the `archive_path` it looked at, so "no archive" is a fact you can check rather than a promise to wait. The download's `X-Archive-*` headers carry the same generated-at, session count and staleness. **Not the way to search conversations** — use `/sessions/search?search_contents=true`; the zip is hundreds of megabytes and up to ten minutes stale |
-| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, `requires_oauth` and `source` (`built_in` or `added`; an added model also carries `cli_listed`, `cli_version` and `cli_note`, see [Models](#models)) · each goal is `{id, name, description, checks}`, where `checks` names the [goal check](/sessions/goals/#how-a-goal-is-checked) criteria · `GET /mcp_servers` → `{name, title, scope, description, unavailable, unavailable_reason, startup_timeout_sec}` · `GET /skills` |
+| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, `requires_oauth`, `effort_levels`, `default_effort` and `source` (`built_in` or `added`; an added model also carries `cli_listed`, `cli_version` and `cli_note`, see [Models](#models)) · each goal is `{id, name, description, checks}`, where `checks` names the [goal check](/sessions/goals/#how-a-goal-is-checked) criteria · `GET /mcp_servers` → `{name, title, scope, description, unavailable, unavailable_reason, startup_timeout_sec}` · `GET /skills` |
 
 **Every artifact also says which AIR catalog it came from.** A server carries `scope`, and a root
 and a skill carry `qualified_name`, so two artifacts that a composed catalog contributes under the

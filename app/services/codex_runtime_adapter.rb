@@ -151,9 +151,12 @@ class CodexRuntimeAdapter
   #   by the CLAUDE_CODE_AUTO_COMPACT_WINDOW env var, which Codex has no analog for.
   #   ProcessLifecycleManager and the retry services pass it uniformly to whichever
   #   runtime adapter is selected, so the kwarg must exist here (pulsemcp/pulsemcp#3884).
+  # @param effort [String, nil] Accepted for contract symmetry; never set. Session
+  #   validation refuses `config["effort"]` on the codex runtime (ModelCatalog
+  #   lists no effort levels for its models), so Codex is never handed one.
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
-              append_system_prompt: nil, model: nil, auto_compact_window: nil)
+              append_system_prompt: nil, model: nil, effort: nil, auto_compact_window: nil)
     # Before anything touches working_dir — AGENTS.md delivery and the
     # --output-last-message path both join onto it, so the guard has to run here
     # rather than at spawn time to keep its actionable message.
@@ -186,7 +189,7 @@ class CodexRuntimeAdapter
   #   concept. Continuations and retry services pass it uniformly (pulsemcp/pulsemcp#3884).
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def resume(session_id:, working_dir:, prompt: nil, images: nil, mcp_config_path: nil,
-             append_system_prompt: nil, model: nil, auto_compact_window: nil)
+             append_system_prompt: nil, model: nil, effort: nil, auto_compact_window: nil)
     self.class.validate_working_dir!(working_dir)
     validate_model_cli_compatibility!(model)
 
