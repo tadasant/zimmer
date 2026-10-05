@@ -1830,6 +1830,7 @@ class AgentSessionJob < ApplicationJob
           images: images,
           append_system_prompt: orchestrator_system_prompt,
           model: session.config&.dig("model"),
+          effort: session.effort_override,
           resume: is_resume
         )
 

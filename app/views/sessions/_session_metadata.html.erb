@@ -341,6 +341,63 @@
     </div>
   <% end %>
   <%
+    # Reasoning effort (config["effort"], passed as --effort). Editable on the
+    # detail page (available_models is the signal, as for the model) whenever
+    # the model takes an effort setting; shown read-only wherever one is set.
+    # Takes effect on the next turn, like the model.
+    effort = agent_session.effort_summary
+    show_effort_section = (available_models && effort[:levels].any?) || effort[:source] == "explicit"
+  %>
+  <% if show_effort_section %>
+    <div class="flex items-center gap-1"
+         data-controller="editable-effort"
+         data-editable-effort-session-id-value="<%= agent_session.id %>">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd" />
+      </svg>
+
+      <div data-editable-effort-target="display" class="flex items-center gap-1">
+        <strong class="text-gray-700">Effort:</strong>
+        <span data-role="effort-value" class="text-gray-600"><%= agent_session.effort_description %></span>
+        <% if available_models && effort[:levels].any? %>
+          <button type="button"
+                  data-action="click->editable-effort#edit"
+                  class="text-gray-400 hover:text-gray-600 focus:outline-none ml-1"
+                  title="Change reasoning effort">
+            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+            </svg>
+          </button>
+        <% end %>
+      </div>
+
+      <% if available_models && effort[:levels].any? %>
+        <div data-editable-effort-target="editor" class="hidden flex flex-wrap items-center gap-2">
+          <strong class="text-gray-700">Effort:</strong>
+          <select data-editable-effort-target="select"
+                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border-gray-300 rounded-md py-1 px-2 pr-7">
+            <option value="default" <%= 'selected' if effort[:source] == "default" %>>Default (<%= effort[:default] %>)</option>
+            <% effort[:levels].each do |level| %>
+              <option value="<%= level %>" <%= 'selected' if effort[:source] == "explicit" && level == effort[:level] %>><%= level %></option>
+            <% end %>
+          </select>
+          <button type="button"
+                  data-action="click->editable-effort#save"
+                  class="inline-flex items-center px-2 py-1 text-xs font-medium rounded bg-indigo-600 text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500">
+            Save
+          </button>
+          <button type="button"
+                  data-action="click->editable-effort#cancel"
+                  class="inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500">
+            Cancel
+          </button>
+          <span class="text-xs text-gray-500">Applies from the next turn.</span>
+          <span data-editable-effort-target="status" class="text-xs text-gray-500 ml-2 self-center"></span>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+  <%
     # Context window (auto_compact_window): only Claude Code honors
     # CLAUDE_CODE_AUTO_COMPACT_WINDOW, and editing is only meaningful on the
     # detail page (where available_models is provided, the same signal the model

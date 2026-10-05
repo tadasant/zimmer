@@ -156,6 +156,18 @@ class Api::V1::ConfigsControllerTest < ActionDispatch::IntegrationTest
     refute_includes codex_ids, "fable"
   end
 
+  test "runtime_models entries expose each model's effort levels and default" do
+    get api_v1_configs_path, headers: @headers
+    assert_response :success
+
+    claude = JSON.parse(response.body).dig("runtime_models", "claude_code", "models").index_by { |m| m["id"] }
+    assert_equal %w[low medium high xhigh max], claude.dig("fable", "effort_levels")
+    assert_equal "high", claude.dig("fable", "default_effort")
+    assert_equal "medium", claude.dig("opus", "default_effort")
+    assert_equal [], claude.dig("haiku", "effort_levels")
+    assert_nil claude.dig("haiku", "default_effort")
+  end
+
   test "runtime_models entries expose labels and auth/default flags" do
     get api_v1_configs_path, headers: @headers
     assert_response :success

@@ -39,6 +39,17 @@
         <%# Hidden field to pass temp_session_id to the controller for image copying %>
         <%= hidden_field_tag :temp_session_id, temp_session_id %>
 
+        <% if @session.errors.any? %>
+          <div class="rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-700" role="alert">
+            <p class="font-medium">The session could not be created:</p>
+            <ul class="mt-1 list-disc list-inside">
+              <% @session.errors.full_messages.each do |message| %>
+                <li><%= message %></li>
+              <% end %>
+            </ul>
+          </div>
+        <% end %>
+
         <!-- Agent Runtime Selection -->
         <%# Lists every registered runtime (Claude Code, Codex, …). The choice is
             a per-session override stored on sessions.agent_runtime, so it is
@@ -134,6 +145,39 @@
               <option value="<%= model_name %>" <%= 'selected' if model_name == @default_model %>><%= model_name %></option>
             <% end %>
           </select>
+        </div>
+
+        <!-- Reasoning Effort -->
+        <%# config["effort"], passed to Claude Code as --effort. The options follow
+            the model picker (it broadcasts ao:model-changed): each model lists the
+            levels it takes, and the field hides and disables itself for a model
+            that takes none (haiku, every Codex and Pi model), so nothing is
+            submitted for it. "Default" submits nothing either, leaving the
+            model's own recommended level. %>
+        <% initial_effort = @effort_options.dig(@default_runtime, @default_model) %>
+        <div data-controller="effort-select"
+             data-effort-select-options-value="<%= @effort_options.to_json %>"
+             data-effort-select-runtime-value="<%= @default_runtime %>"
+             data-effort-select-model-value="<%= @default_model %>"
+             class="<%= "hidden" unless initial_effort %>">
+          <label for="session_effort" class="block text-sm font-medium text-gray-700 mb-2">
+            Reasoning effort
+          </label>
+          <select id="session_effort"
+                  name="effort"
+                  data-effort-select-target="select"
+                  <%= "disabled" unless initial_effort %>
+                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+            <% if initial_effort %>
+              <option value="">Default (<%= initial_effort[:default] %>)</option>
+              <% initial_effort[:levels].each do |level| %>
+                <option value="<%= level %>" <%= 'selected' if level == params[:effort] %>><%= level %></option>
+              <% end %>
+            <% end %>
+          </select>
+          <p class="mt-1 text-xs text-gray-500">
+            How much the model thinks before acting, lowest to highest. Default is the model's recommended level.
+          </p>
         </div>
 
         <!-- Auto-Compact Window (Claude Code only) -->

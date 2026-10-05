@@ -51,7 +51,7 @@ class Api::V1::SessionsController < Api::BaseController
     failed: { title: "Cannot restart", status: :internal_server_error }
   }.freeze
 
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -134,7 +134,9 @@ class Api::V1::SessionsController < Api::BaseController
   #   - catalog_skills: Array of skill names (same omitted-vs-[] rule as mcp_servers)
   #   - catalog_hooks: Array of hook names (same omitted-vs-[] rule as mcp_servers)
   #   - catalog_plugins: Array of plugin IDs (same omitted-vs-[] rule as mcp_servers)
-  #   - config: Additional configuration (JSON)
+  #   - config: Additional configuration (JSON). `model` picks the model; `effort` its
+  #     reasoning-effort level (low/medium/high/xhigh/max, valid for that model — see
+  #     `runtime_models` in GET /api/v1/configs). Omit `effort` for the model's default.
   #   - custom_metadata: Custom user metadata (JSON)
   #   - scheduling_class: "spot" or "priority" for this session, overriding the class its
   #     genesis would give it. Omit to derive (inheriting a parent's explicit class if it has one).
@@ -922,6 +924,27 @@ class Api::V1::SessionsController < Api::BaseController
     else
       render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
     end
+  end
+
+  # PATCH /api/v1/sessions/:id/effort
+  # Set or clear the session's reasoning-effort level (Sessions::UpdateEffort).
+  #
+  # Request body:
+  #   - effort: "low", "medium", "high", "xhigh" or "max", valid for the
+  #     session's model; null, "" or "default" clears it so the model's
+  #     default applies.
+  def update_effort
+    unless params.key?(:effort)
+      render_api_error("Invalid parameter", "effort is required (a level, or \"default\" to clear it)", status: :unprocessable_entity)
+      return
+    end
+
+    Sessions::UpdateEffort.call(session: @session, effort: params[:effort], actor: :api)
+    render json: { session: session_json(@session), message: "Effort updated" }
+  rescue Sessions::UpdateEffort::Error => e
+    render_api_error("Invalid effort", e.message, status: :unprocessable_entity)
+  rescue ActiveRecord::RecordInvalid => e
+    render_api_error("Update failed", e.record.errors.full_messages, status: :unprocessable_entity)
   end
 
   # GET /api/v1/sessions/:id/transcript

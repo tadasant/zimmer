@@ -20,7 +20,7 @@ module Mcp
         - **MCP servers**: Servers that can be attached right now (name, title, description), plus a
           short roster of catalog servers that currently cannot start and why
         - **Agent roots**: Preconfigured repository settings with defaults (git_root, branch, mcp_servers, skills, goal)
-        - **Runtime models**: Selectable models grouped by agent runtime, including default and auth requirements
+        - **Runtime models**: Selectable models grouped by agent runtime, including default, auth requirements, and the reasoning-effort levels (and default level) each model takes
         - **Goals**: Available session completion criteria (id, name, description)
 
         **Use this tool** to get all configuration options before calling start_session.
@@ -59,6 +59,7 @@ module Mcp
           lines << "- **Runtime:** `#{runtime}`"
           lines << "- **Default Model:** `#{ModelCatalog.default_for(runtime)}`"
           lines << "- **Models:** #{format_models(runtime)}"
+          lines.concat(effort_lines(runtime))
           lines << ""
         end
 
@@ -103,6 +104,9 @@ module Mcp
                  "spawn to fail, and say which server caused it)"
         lines << "- Use `git_root` from **Agent Roots** to start sessions with preconfigured defaults"
         lines << "- Use **Runtime Models** to choose a `config.model` value that belongs to the selected `agent_runtime`"
+        lines << "- Use a model's **Effort levels** to set `config.effort` in `start_session` (e.g. " \
+                 "`config: { model: \"fable\", effort: \"xhigh\" }` — \"xhigh\" is extra-high). Omit it and the " \
+                 "model's default applies. A model with no effort line takes none, and a level it does not list is refused"
         lines << "- If an **Agent Root** has a `default_subdirectory`, pass it as `subdirectory` in `start_session` — do not set `subdirectory` to arbitrary internal paths"
         lines << "- Skills are the one list where the usual move is to add rather than subtract: start from " \
                  "the root's **Default Skills** and append. They are cheap text files with no blast " \
@@ -271,6 +275,18 @@ module Mcp
         lines << "- **Default Model:** `#{data[:default_model]}`" if data[:default_model].present?
         lines << ""
         lines
+      end
+
+      # One line per model that takes a `config.effort`, so a router can match
+      # "Fable on extra-high reasoning" to a model and a level without guessing.
+      def effort_lines(runtime)
+        options = ModelCatalog.effort_options_by_runtime.fetch(runtime, {})
+        return [ "- **Effort levels:** none — this runtime takes no `config.effort`" ] if options.empty?
+
+        [ "- **Effort levels** (`config.effort`, lowest to highest; models not listed take none):" ] +
+          options.map do |model, opts|
+            "  - `#{model}`: #{opts[:levels].map { |level| "`#{level}`" }.join(', ')} (default `#{opts[:default]}`)"
+          end
       end
 
       def format_models(runtime)

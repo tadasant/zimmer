@@ -79,6 +79,8 @@ module ApiSessionSerialization
       catalog_hooks: session.catalog_hooks,
       catalog_plugins: session.catalog_plugins,
       config: session.config,
+      # The effective reasoning-effort level and whether it was set or defaulted.
+      effort: session.effort_summary,
       metadata: session.metadata,
       custom_metadata: session.custom_metadata,
       is_autonomous: session.is_autonomous,

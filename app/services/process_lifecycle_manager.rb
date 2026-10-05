@@ -170,9 +170,11 @@ class ProcessLifecycleManager
   # @param images [Array<Hash>, nil] Array of image data hashes with :path, :media_type keys
   # @param append_system_prompt [String, nil] Additional system prompt to append to Claude's defaults
   # @param model [String, nil] Model to use (e.g., "opus", "sonnet")
+  # @param effort [String, nil] Reasoning effort (Session#effort_override); nil
+  #   leaves the model's default
   # @param resume [Boolean] Whether to resume existing session
   # @return [SpawnResult] Result of spawn operation
-  def spawn(prompt:, working_dir:, mcp_config_path: nil, images: nil, append_system_prompt: nil, model: nil, resume: false)
+  def spawn(prompt:, working_dir:, mcp_config_path: nil, images: nil, append_system_prompt: nil, model: nil, effort: nil, resume: false)
     @mutex.synchronize do
       # Only allow spawn from idle state (not handling_exit, running, etc.)
       unless @state == :idle
@@ -209,9 +211,10 @@ class ProcessLifecycleManager
         log_buffer: @log_buffer
       )
 
-      # Store the system prompt and model for reuse in continuations (compact, retry, etc.)
+      # Store the system prompt, model and effort for reuse in continuations (compact, retry, etc.)
       @append_system_prompt = append_system_prompt
       @model = model
+      @effort = effort
 
       renew_session_id_held_by_a_stub!(working_dir) unless resume
 
@@ -224,6 +227,7 @@ class ProcessLifecycleManager
           mcp_config_path: mcp_config_path,
           append_system_prompt: append_system_prompt,
           model: model,
+          effort: effort,
           auto_compact_window: session.auto_compact_window
         )
       else
@@ -235,6 +239,7 @@ class ProcessLifecycleManager
           images: images,
           append_system_prompt: append_system_prompt,
           model: model,
+          effort: effort,
           auto_compact_window: session.auto_compact_window
         )
       end
@@ -1072,6 +1077,7 @@ class ProcessLifecycleManager
       working_dir: working_dir,
       append_system_prompt: @append_system_prompt,
       model: @model,
+      effort: @effort,
       auto_compact_window: session.auto_compact_window
     )
 
@@ -1391,6 +1397,7 @@ class ProcessLifecycleManager
       mcp_config_path: mcp_config_path,
       append_system_prompt: @append_system_prompt,
       model: @model,
+      effort: @effort,
       auto_compact_window: session.auto_compact_window
     )
 

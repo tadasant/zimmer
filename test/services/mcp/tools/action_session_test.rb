@@ -1042,6 +1042,42 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/is not valid for runtime/, error.message)
   end
 
+  test "change_effort sets a level, clears it with default, and refuses one the model does not take" do
+    session = sessions(:needs_input)
+    session.update!(config: { "model" => "fable" })
+
+    result = @tool.call("action" => "change_effort", "session_id" => session.id, "effort" => "xhigh")
+    assert_includes result, "## Effort Updated"
+    assert_includes result, "- **Effort:** xhigh (set explicitly)"
+    assert_equal "xhigh", session.reload.config["effort"]
+
+    result = @tool.call("action" => "change_effort", "session_id" => session.id, "effort" => "default")
+    assert_includes result, "- **Effort:** high (model default)"
+    assert_not session.reload.config.key?("effort")
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_effort", "session_id" => session.id, "effort" => "extreme")
+    end
+    assert_match(/"extreme" is not valid for model "fable".*xhigh/, error.message)
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "change_effort", "session_id" => session.id) }
+    assert_match(/"effort" parameter is required/, error.message)
+  end
+
+  test "change_model refuses a model that cannot keep the session's effort" do
+    session = sessions(:needs_input)
+    session.update!(config: { "model" => "fable", "effort" => "max" })
+
+    response = Mcp::Tools::ActionSession.call(
+      server_context: Mcp::Context.new(tool_groups: "sessions"),
+      action: "change_model", session_id: session.id, model: "haiku"
+    )
+
+    assert response.error?
+    assert_match(/"haiku" does not support an effort setting/, response.content.first[:text])
+    assert_equal "fable", session.reload.config["model"]
+  end
+
   test "change_model accepts GPT 5.6 models for Codex sessions" do
     session = sessions(:needs_input)
     session.update!(agent_runtime: "codex", config: { "model" => "gpt-5.5" })

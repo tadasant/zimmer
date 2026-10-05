@@ -840,6 +840,11 @@ class Session < ApplicationRecord
   catalog_reference :catalog_hooks,   config: HooksConfig,   noun: "hook",   alert_noun: "catalog hook"
   catalog_reference :catalog_plugins, config: PluginsConfig, noun: "plugin", alert_noun: "catalog plugin"
   validate :git_root_format, if: :git_root?
+  # `config["effort"]` must be a level the session's model takes (ModelCatalog).
+  # Re-checked when the runtime changes too, and when the model does — which is
+  # how change_model refuses a model that cannot keep the session's effort.
+  before_validation :normalize_effort, if: :will_save_change_to_config?
+  validate :effort_supported_by_model, if: -> { will_save_change_to_config? || will_save_change_to_agent_runtime? }
   # parent_session_id is client-supplied (POST /api/v1/sessions permits it, and the
   # dashboard passes it straight through from params), and `belongs_to ..., optional:
   # true` does not check that the row exists. The database refuses a pointer to a
@@ -2766,6 +2771,43 @@ class Session < ApplicationRecord
     message
   end
 
+  # The reasoning-effort level this session's agent runs at, and where it came
+  # from. `source` is "explicit" when `config["effort"]` names one (passed to the
+  # CLI as `--effort`) and "default" when it does not, in which case no flag is
+  # passed and `level` is the model's own default — nil for a model that takes
+  # no effort setting at all.
+  #
+  # @return [Hash] { level:, source:, default:, levels: }
+  def effort_summary
+    model = config&.dig("model")
+    explicit = config&.dig("effort").presence
+    default = ModelCatalog.default_effort_for(agent_runtime, model)
+    {
+      level: explicit || default,
+      source: explicit ? "explicit" : "default",
+      default: default,
+      levels: ModelCatalog.effort_levels_for(agent_runtime, model)
+    }
+  end
+
+  # One line for the surfaces that print the effort: "xhigh (set explicitly)",
+  # "high (model default)", or why there is none.
+  def effort_description
+    summary = effort_summary
+    if summary[:source] == "explicit"
+      "#{summary[:level]} (set explicitly)"
+    elsif summary[:level]
+      "#{summary[:level]} (model default)"
+    else
+      "not applicable (this model takes no effort setting)"
+    end
+  end
+
+  # The effort to pass the runtime CLI, or nil to let it apply the model's default.
+  def effort_override
+    config&.dig("effort").presence
+  end
+
   private
 
   # Write the back-reference the replaced session was missing (#801).
@@ -2932,6 +2974,36 @@ class Session < ApplicationRecord
     end
 
     false
+  end
+
+  # Effort names are case-insensitive on the way in; blank means "no override".
+  def normalize_effort
+    return unless config.is_a?(Hash) && config.key?("effort")
+
+    effort = config["effort"]
+    normalized = effort.is_a?(String) ? effort.strip.downcase.presence : effort
+    return if normalized == effort
+
+    self.config = normalized.nil? ? config.except("effort") : config.merge("effort" => normalized)
+  end
+
+  def effort_supported_by_model
+    effort = config&.dig("effort")
+    return if effort.nil?
+
+    unless effort.is_a?(String)
+      errors.add(:base, "effort must be a string")
+      return
+    end
+
+    message = ModelCatalog.effort_error(agent_runtime, config["model"], effort)
+    return unless message
+
+    # A model change on a session that already had this effort: say how out.
+    if persisted? && config_was.is_a?(Hash) && config_was["effort"] == effort && config_was["model"] != config["model"]
+      message += " — this session's effort is #{effort.inspect}; clear or change it before switching to this model"
+    end
+    errors.add(:base, message)
   end
 
   def parent_session_must_exist

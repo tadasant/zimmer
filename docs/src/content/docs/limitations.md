@@ -3172,6 +3172,23 @@ of them to `zimmer`. Same root cause as [#67](https://github.com/tadasant/zimmer
 
 ## Sessions
 
+### Reasoning effort is Claude Code only, and set per session
+
+🟡 A session's `config.effort` reaches Claude Code as `--effort`. Codex has a reasoning-effort setting
+of its own and Pi has thinking levels, but Zimmer passes neither: `ModelCatalog` lists no effort
+levels for their models, so a session on either runtime that names one is refused rather than run
+without it. Models added from Settings → Models get no levels either, since Zimmer cannot know what
+they take.
+
+There is no global or agent-root default for it. A session that names no level runs at the model's
+own default, and the only way to change that is per session — at spawn, or with `change_effort`.
+
+The levels and defaults are copied from the model table in the installed Claude Code CLI, so a CLI
+bump that changes them needs `ModelCatalog::MODELS` updated by hand. And on a session's page the
+effort editor offers the levels of the model the page was rendered with, so after changing the
+model, reload before changing the effort — the server refuses a level the new model does not take
+either way.
+
 ### A Codex session's `--json` event log is a second copy of the turn, sitting in the clone
 
 🟡 Capturing Codex's stdout into `codex_events.jsonl`

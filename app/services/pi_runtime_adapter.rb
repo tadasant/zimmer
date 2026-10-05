@@ -120,9 +120,12 @@ class PiRuntimeAdapter
   #   CLAUDE_CODE_AUTO_COMPACT_WINDOW env var, which Pi has no analog for (Pi
   #   compacts on its own schedule). ProcessLifecycleManager passes it uniformly
   #   to whichever adapter is selected, so the kwarg must exist here.
+  # @param effort [String, nil] Accepted for contract symmetry; never set. Session
+  #   validation refuses `config["effort"]` on the pi runtime (ModelCatalog
+  #   lists no effort levels for its models), so Pi is never handed one.
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
-              append_system_prompt: nil, model: nil, auto_compact_window: nil)
+              append_system_prompt: nil, model: nil, effort: nil, auto_compact_window: nil)
     # Before anything joins onto working_dir — the session dir, the staged prompt
     # file and the stderr log all do, so the guard has to run here rather than at
     # spawn time to keep its message actionable.
@@ -155,7 +158,7 @@ class PiRuntimeAdapter
   # @param auto_compact_window [Integer, nil] see #execute — accepted, unused
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def resume(session_id:, working_dir:, prompt: nil, images: nil, mcp_config_path: nil,
-             append_system_prompt: nil, model: nil, auto_compact_window: nil)
+             append_system_prompt: nil, model: nil, effort: nil, auto_compact_window: nil)
     self.class.validate_working_dir!(working_dir)
 
     command = build_command(
