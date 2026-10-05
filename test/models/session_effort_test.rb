@@ -27,6 +27,13 @@ class SessionEffortTest < ActiveSupport::TestCase
     assert_not session.config.key?("effort")
   end
 
+  test "\"default\" clears the effort at create, as it does on change_effort" do
+    session = build_session(config: { "model" => "fable", "effort" => "Default" })
+
+    assert session.valid?, session.errors.full_messages.to_sentence
+    assert_not session.config.key?("effort")
+  end
+
   test "a level the model does not take is refused with the valid levels" do
     session = build_session(config: { "model" => "fable", "effort" => "ultra" })
 

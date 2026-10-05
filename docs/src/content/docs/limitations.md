@@ -3183,8 +3183,12 @@ they take.
 There is no global or agent-root default for it. A session that names no level runs at the model's
 own default, and the only way to change that is per session — at spawn, or with `change_effort`.
 
-The levels and defaults are copied from the model table in the installed Claude Code CLI, so a CLI
-bump that changes them needs `ModelCatalog::MODELS` updated by hand. And on a session's page the
+The levels and defaults are a copy of the model table in Claude Code CLI 2.1.289, kept in
+`ModelCatalog::MODELS`. The CLI is not pinned — `ClaudeCodeUpdateJob` runs `claude update` daily
+and the `opus`/`sonnet`/`fable` aliases float — so a release can change a model's levels or default
+the day after it ships, and the copy only changes when someone edits it. A session that names no
+level still runs at the CLI's real default, because Zimmer passes no flag; what goes stale is the
+"(model default)" level Zimmer *reports*, and which levels it accepts. And on a session's page the
 effort editor offers the levels of the model the page was rendered with, so after changing the
 model, reload before changing the effort — the server refuses a level the new model does not take
 either way.

@@ -415,7 +415,7 @@ class RespawnScaffoldTest < ActiveJob::TestCase
   test "resume_for_recovery hands the runtime the prompt, the model and a rebuilt system prompt" do
     adapter = MockClaudeCliAdapter.new
     host = TestHost.new(@session, @process_manager, @log_buffer, cli_adapter: adapter)
-    @session.update!(config: { "model" => "opus" })
+    @session.update!(config: { "model" => "opus", "effort" => "xhigh" })
 
     host.resume("/tmp/clone", prompt: "/compact")
 
@@ -425,6 +425,7 @@ class RespawnScaffoldTest < ActiveJob::TestCase
     assert_equal "/compact", resumed[:prompt]
     assert_equal "/tmp/clone", resumed[:working_dir]
     assert_equal "opus", resumed[:model]
+    assert_equal "xhigh", resumed[:effort], "a recovery re-spawn keeps the session's effort"
     assert resumed[:append_system_prompt].present?,
            "a re-spawn told nothing about its goal or its root is a different session"
   end
