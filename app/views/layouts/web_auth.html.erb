@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Sign in · Zimmer</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="robots" content="noindex">
+    <%= csrf_meta_tags %>
+    <%= csp_meta_tag %>
+    <meta name="theme-color" content="#031942">
+    <link rel="icon" href="/favicon.ico" type="image/x-icon" sizes="16x16 32x32 48x48">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" sizes="180x180">
+    <%= stylesheet_link_tag "tailwind", "data-turbo-track": "reload" %>
+    <%# No importmap: these pages are plain forms, and a signed-out browser has no %>
+    <%# business opening the cable or running the app's controllers. %>
+  </head>
+
+  <body class="min-h-screen bg-gray-50">
+    <main class="mx-auto flex min-h-screen max-w-md flex-col justify-center px-4 py-10">
+      <div class="mb-6 flex items-center gap-3">
+        <img src="/icons/apple-touch-icon.png" alt="" class="h-10 w-10 rounded-lg">
+        <span class="text-2xl font-bold text-gray-900">Zimmer</span>
+      </div>
+
+      <% if notice.present? %>
+        <div class="mb-4 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800" role="status"><%= notice %></div>
+      <% end %>
+      <% if alert.present? %>
+        <div class="mb-4 rounded-md border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800" role="status"><%= alert %></div>
+      <% end %>
+      <% if @error.present? %>
+        <div class="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert"><%= @error %></div>
+      <% end %>
+
+      <div class="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+        <%= yield %>
+      </div>
+    </main>
+  </body>
+</html>

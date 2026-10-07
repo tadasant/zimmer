@@ -1,0 +1,35 @@
+<%# Web sign-in: who this browser is signed in as, or that nobody is asked. %>
+<%# See WebSignInRequired and docs/auth/web-sign-in.md. %>
+<div class="bg-white shadow-sm rounded-lg border border-gray-200" id="web-sign-in">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <h2 class="text-lg font-medium text-gray-900">Sign-in</h2>
+    <% if current_web_identity %>
+      <p class="mt-1 text-sm text-gray-500">
+        Signed in as <strong class="font-medium text-gray-900"><%= current_web_identity.email %></strong> with Google.
+        <% if current_web_identity.totp_enrolled?(reset_before: web_auth_configuration.second_factor_reset_before) %>
+          Authenticator set up <%= time_ago_in_words(current_web_identity.totp_enrolled_at) %> ago ·
+          <%= pluralize(current_web_identity.recovery_codes_remaining, "recovery code") %> left.
+        <% end %>
+      </p>
+    <% else %>
+      <p class="mt-1 text-sm text-gray-500">
+        Off. This deployment has not set <code class="text-xs">ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID</code>, so the web UI asks
+        nobody to sign in and the network perimeter is the only wall.
+        <%= link_to "How to turn it on", "https://docs.zimmer.tadasant.com/auth/web-sign-in/", class: "text-indigo-600 hover:text-indigo-800" %>.
+      </p>
+    <% end %>
+  </div>
+  <% if current_web_identity %>
+    <div class="px-4 py-5 sm:px-6 flex flex-wrap gap-3">
+      <% if web_auth_configuration.totp_required? %>
+        <%= link_to "Set up a new authenticator", second_factor_setup_path,
+              class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
+      <% end %>
+      <%= button_to "Sign out", logout_path, method: :delete, form_class: "inline",
+            class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
+      <%= button_to "Sign out everywhere", logout_everywhere_path, method: :post, form_class: "inline",
+            data: { turbo_confirm: "Sign out every browser signed in as #{current_web_identity.email}, this one included?" },
+            class: "inline-flex items-center px-4 py-2 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50" %>
+    </div>
+  <% end %>
+</div>

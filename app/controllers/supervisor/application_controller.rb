@@ -14,6 +14,10 @@
 # included. A dashboard that holds a column back lists it in its DELIBERATELY_OMITTED.
 module Supervisor
   class ApplicationController < Administrate::ApplicationController
+    # The panel inherits from Administrate, not from ::ApplicationController, so
+    # the login wall has to be included here as well.
+    include WebSignInRequired
+
     # Override this value to specify the number of elements to display at a time
     # on index pages. Defaults to 20.
     # def records_per_page

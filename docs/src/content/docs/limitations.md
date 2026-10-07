@@ -909,17 +909,19 @@ guardrail exists to catch.
 
 ## Security
 
-### The web UI has no login, by design (and the sharp edge that follows)
+### Web sign-in is off by default, so a stock deployment has no login (and the sharp edge that follows)
 
-🔴 No login screen is deliberate. For a [single circle of trust](/intro/philosophy/), the network
-perimeter is the authentication boundary (see [Auth overview](/auth/overview/)), so `ApplicationController`
-has no `before_action` for auth and there are no login routes or `User` model. Zimmer's own Terraform
-puts the app on a Tailscale tailnet with port 80 closed at the DigitalOcean firewall.
+🔴 A stock deployment has no login screen. For a [single circle of trust](/intro/philosophy/), the
+network perimeter is the authentication boundary (see [Auth overview](/auth/overview/)). Zimmer's own
+Terraform puts the app on a Tailscale tailnet with port 80 closed at the DigitalOcean firewall.
+[Web sign-in](/auth/web-sign-in/) adds a second wall behind it: Google Workspace sign-in limited to
+your domains, then an authenticator code. It is opt-in, and stays off until a deployment sets
+`ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID`.
 
-The sharp edge is real and load-bearing. Expose port 80 and there is no second wall anywhere: an
-anonymous visitor gets every session transcript, `/settings`, `/inference` (including the OAuth login
-flow), the GoodJob dashboard, the `/supervisor` admin panel, the API keys page, and the destructive
-`POST /health/*` actions.
+Until then the sharp edge is real and load-bearing. Expose port 80 and there is no second wall
+anywhere: an anonymous visitor gets every session transcript, `/settings`, `/inference` (including the
+OAuth login flow), the GoodJob dashboard, the `/supervisor` admin panel, the API keys page, and the
+destructive `POST /health/*` actions.
 
 Three of those carry the most blast radius:
 
@@ -936,8 +938,8 @@ Three of those carry the most blast radius:
   `enter_queue_recovery_mode`, `run_post_deploy_tasks`, `discard_queued_jobs`,
   `reschedule_queued_jobs`) terminate processes, rewrite session rows in bulk, discard queued jobs,
   and halt the fleet's demand-side job queues. `Api::V1::HealthController` requires an API key for
-  the same actions and the MCP `action_health` tool requires the `health` tool group. The web buttons
-  require nothing.
+  the same actions and the MCP `action_health` tool requires the `health` tool group. Without web
+  sign-in, the web buttons require nothing.
 
 Until 2026-09-13 those three sat behind one shared HTTP Basic password
 ([#42](https://github.com/tadasant/zimmer/issues/42),
@@ -946,7 +948,8 @@ Until 2026-09-13 those three sat behind one shared HTTP Basic password
 one auth posture, and [the next section](#the-web-ui-does-not-keep-agent-sessions-out) is the cost.
 
 There is no per-user authorization in `sessions_controller.rb`, and that is the design rather than a
-gap: no `User` model, no owner column, nothing for a policy object to compare. The six
+gap: no owner column, nothing for a policy object to compare. Web sign-in decides who gets in, not
+what they may do once inside; everyone it lets in sees everything. The six
 `# TODO: Add proper authorization checks` comments that used to imply otherwise are now a single
 explicit note at the top of the class explaining why there is nothing to check
 ([#44](https://github.com/tadasant/zimmer/issues/44)). What is above is the perimeter model itself.
@@ -971,6 +974,14 @@ CSRF is not a fence against it. `verify_authenticity_token` does run on these ro
 and the session cookie are both in the response to an anonymous `GET`, so getting past it takes two
 requests rather than one. The same exposure applies to every member of the tailnet.
 
+[Web sign-in](/auth/web-sign-in/), when a deployment turns it on, does not change this. A session's
+casual `curl` meets `/login`, but a session runs as the same user, in the same container, as the
+Rails app: it can read `SECRET_KEY_BASE` (from its own environment, or from the app's) and forge the
+encrypted sign-in cookie. Web sign-in keeps out the tailnet and the open internet. Keeping out the
+host's own sessions needs process isolation, which Zimmer does not have (see
+[agents run unsandboxed](#agents-run-unsandboxed-on-the-app-host)). The rest of this section is
+what stays open either way.
+
 The HTTP Basic password that used to guard these three surfaces closed this door, because it was the
 one credential sessions did not hold: `CliSpawnEnv` cleared it from every process it spawned. It never
 closed the other two. The same `/health` capability is on `POST /api/v1/health/*` behind `API_KEYS`,
@@ -983,6 +994,41 @@ tools a session is handed, not out of its reach.
 Halting the demand-side queues stays loud and self-healing whoever fires it: entry, extension and
 exit each emit their own page, and the TTL auto-exits. The one thing to know is that halting
 `pollers` also stops `SystemHealthMonitorJob`, so *backlog* alerting is quiet for the duration.
+
+### Web sign-in trades re-checks for long sessions
+
+🟡 [Web sign-in](/auth/web-sign-in/) is tuned so its owner rarely sees the login page, and that has
+costs:
+
+- **Google is asked once, then not for months.** The sign-in cookie rolls for 90 days from last use.
+  Suspending a Google account, or removing someone from the Workspace, does not sign them out of
+  Zimmer. Deleting their row at `/supervisor/web_identities`, or taking their domain out of
+  `ZIMMER_WEB_AUTH_ALLOWED_DOMAINS`, does, on their next request.
+- **Zimmer cannot see Google's own 2-Step Verification.** Google's ID tokens do not reliably carry
+  `amr`. That is why the default second factor is Zimmer's own TOTP. With
+  `ZIMMER_WEB_AUTH_SECOND_FACTOR=google`, whether a second factor happened at all is up to the
+  Workspace policy.
+- **TOTP can be phished.** A page that convincingly fakes Zimmer's code prompt can relay a code
+  within its 30-second window. Passkeys would resist that, and are not built.
+- **The secret store can reset the second factor.** `ZIMMER_WEB_AUTH_SECOND_FACTOR_RESET_BEFORE` is
+  the no-shell recovery path for a lost authenticator and lost recovery codes. Whoever can write the
+  store, plus whoever holds the Google account, can use it. The same writer can take the wall down
+  by removing the client ID.
+- **The authenticator secret is plaintext in the database,** like [every other
+  credential](#nothing-is-encrypted-at-rest). `/supervisor` does not render it.
+- **A store outage pauses new sign-ins.** A process keeps the configuration it last read, and one
+  that boots during the outage uses the last copy in `Rails.cache`, minus the client secret, so
+  existing sign-ins carry on and new ones wait. A process with neither (a fresh deployment, or Redis
+  down too) answers 503 on every browser page until the store answers. This applies even when the
+  wall is off, on a deployment that has configured a Parameter Store. The machine paths do not read
+  this configuration at all.
+- **It does not keep out agent sessions on the same host.** See
+  [the section above](#the-web-ui-does-not-keep-agent-sessions-out).
+- **Google takes only `https` redirect URIs,** apart from `localhost`. A deployment reachable only at
+  a plain-HTTP tailnet name needs an HTTPS name before it can turn web sign-in on.
+- **An agent driving the production UI in a browser meets the wall too.** There is no sign-in route
+  for automated UI driving yet ([#220](https://github.com/tadasant/zimmer/issues/220)). Local dev
+  servers, where the wall is off, are unaffected.
 
 ### Transcript redaction is defense in depth, not a guarantee
 
@@ -1083,8 +1129,10 @@ the appended bytes rather than the whole file — 8.5 s down to 34 ms on a real 
 `encrypts`, no `active_record.encryption` config exists, and every OAuth token, client secret, and PKCE
 verifier is a plaintext column. `XOauthCredential`'s own header says the quiet part: *"Security relies on
 database access controls."* The admin panel renders the MCP and X token columns in edit forms and asks
-for no credential, so a broken perimeter exposes them in one click, and so does any agent session. The
-columns are plaintext, and anything with database access reads them too.
+for no credential beyond [web sign-in](/auth/web-sign-in/), and that is off by default. Without it, a
+broken perimeter exposes them in one click, and so does any agent session. The columns are plaintext,
+and anything with database access reads them too. That includes `web_identities.totp_secret`, the
+web sign-in authenticator secret.
 
 Tracked in [#43](https://github.com/tadasant/zimmer/issues/43).
 

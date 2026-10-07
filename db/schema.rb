@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_25_140000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_07_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -966,6 +966,26 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_25_140000) do
     t.index "lower((email)::text)", name: "index_users_on_lower_email", unique: true, where: "(email IS NOT NULL)"
     t.index ["key"], name: "index_users_on_key", unique: true
     t.index ["slack_user_ids"], name: "index_users_on_slack_user_ids", using: :gin
+  end
+
+  create_table "web_identities", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "email", null: false
+    t.string "google_sub", null: false
+    t.string "hosted_domain", null: false
+    t.datetime "last_signed_in_at"
+    t.string "name"
+    t.jsonb "recovery_code_digests", default: [], null: false
+    t.integer "second_factor_failed_attempts", default: 0, null: false
+    t.datetime "second_factor_locked_until"
+    t.integer "session_generation", default: 0, null: false
+    t.datetime "totp_enrolled_at"
+    t.bigint "totp_last_used_step"
+    t.string "totp_pending_secret"
+    t.string "totp_secret"
+    t.datetime "updated_at", null: false
+    t.index "lower((email)::text)", name: "index_web_identities_on_lower_email"
+    t.index ["google_sub"], name: "index_web_identities_on_google_sub", unique: true
   end
 
   create_table "webhook_deliveries", force: :cascade do |t|

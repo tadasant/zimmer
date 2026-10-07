@@ -799,13 +799,23 @@ jobs:
           echo "✅ database, cache and Redis each answered a real round trip"
 
           # --- 2. a real page render ------------------------------------------
+          # With web sign-in on (ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID set), / is a 302
+          # to /login for a client with no cookie, so the login page is the page
+          # that renders. It still takes views, assets, a DB-backed config read,
+          # the session cookie and a CSRF token, which is what checks 2 and 3 need.
+          page="/"
           code=$(curl -sS -o "${tmp}/home.html" -D "${tmp}/home.headers" -w '%{http_code}' --max-time 30 "${base}/" || echo 000)
+          if [ "${code}" = "302" ] && grep -qiE '^location: .*/login[[:space:]]*$' "${tmp}/home.headers"; then
+            echo "web sign-in is on: / redirects to /login, so the smoke test renders /login"
+            page="/login"
+            code=$(curl -sS -o "${tmp}/home.html" -D "${tmp}/home.headers" -w '%{http_code}' --max-time 30 "${base}/login" || echo 000)
+          fi
           if [ "${code}" != "200" ]; then
-            echo "::error::GET / answered ${code} -- the deployed app is serving errors on its own root page."
+            echo "::error::GET ${page} answered ${code} -- the deployed app is serving errors on its own ${page} page."
             head -c 2000 "${tmp}/home.html" 2>/dev/null || true
             exit 1
           fi
-          echo "✅ GET / rendered (200)"
+          echo "✅ GET ${page} rendered (200)"
 
           # --- 3. a CSRF round trip -------------------------------------------
           # Rejected without a token, accepted with one. The target is a session id
@@ -828,10 +838,14 @@ jobs:
             echo "::error::a POST with no CSRF token answered ${code}, expected 422 -- forgery protection is not enforcing."
             exit 1
           fi
+          # Signed out behind web sign-in, a POST that passes CSRF meets the login
+          # wall next and answers 401; a 422 would still mean the token did not verify.
+          expected=404
+          [ "${page}" = "/login" ] && expected=401
           code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${probe}" \
             -H "Cookie: ${cookie}" -H "X-CSRF-Token: ${token}" || echo 000)
-          if [ "${code}" != "404" ]; then
-            echo "::error::a POST carrying the page's own CSRF token answered ${code}, expected 404 (that session id does not exist)."
+          if [ "${code}" != "${expected}" ]; then
+            echo "::error::a POST carrying the page's own CSRF token answered ${code}, expected ${expected} (404: that session id does not exist; 401: the login wall)."
             echo "::error::422 here means the token did not verify -- the session cookie is not surviving the round trip."
             exit 1
           fi

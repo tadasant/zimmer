@@ -10,8 +10,8 @@ which is most of the battle.
 
 ```mermaid
 flowchart TB
-    subgraph none["1 · Human → Zimmer: NOTHING"]
-        W["Web UI · /inference · /settings · /jobs<br/>/supervisor · /settings/api_keys · /health<br/>NO AUTH OF ANY KIND"]
+    subgraph web["1 · Human → Zimmer: optional web sign-in"]
+        W["Web UI · /inference · /settings · /jobs<br/>/supervisor · /settings/api_keys · /health · /cable<br/>OFF by default: the perimeter is the wall<br/>ON: Google Workspace (hd) + authenticator code"]
     end
     subgraph api["2 · Client → REST API"]
         A["X-API-Key header (or Bearer on /mcp)<br/>vs api_keys rows: API_KEYS entries + minted keys<br/>named, revocable; one grant: api or quick_router"]
@@ -24,6 +24,7 @@ flowchart TB
     end
 
     U["You"] --> W
+    W -. "when on" .-> GG["Google"]
     C["Script / MCP self-session"] --> A
     X["Browser extension<br/>(quick_router key)"] --> A
     W --> H
@@ -32,12 +33,18 @@ flowchart TB
     M --> S["Linear · Slack · Google · …"]
 ```
 
-## 1. Human → Zimmer: there is no authentication
+## 1. Human → Zimmer: optional web sign-in
 
-This is not a simplification. `ApplicationController` has no `before_action` for auth, no session
-auth, no Devise, no OmniAuth. There are no login routes. There is no `User` model in the auth path.
+The web UI has one optional credential: [web sign-in](/auth/web-sign-in/). A deployment turns it on
+by setting `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID` and its two companions in the secret store. Then every
+browser surface asks for a Google Workspace account from an allowed domain, checked by the ID token's
+`hd` claim, followed by a code from an authenticator app. The sign-in lasts 90 days from last use.
+The wall is `WebSignInRequired`, included by `ApplicationController`, the `/supervisor` panel, and
+GoodJob's dashboard; Action Cable checks the same cookie at connect. The REST API, `/mcp`, the
+webhooks and `/up` sit outside it and keep their own credentials.
 
-Everything is open to anyone who can reach the host:
+**It is off by default**, and while it is off there is no authentication of any kind in front of the
+web UI. Everything is open to anyone who can reach the host:
 
 - the session dashboard and every transcript,
 - `/settings`, `/inference` (including the OAuth login flow),
@@ -53,41 +60,49 @@ The last three are the ones where "anyone who can reach the host" costs the most
   refresh tokens, client secrets and PKCE verifiers. It is also where the X consent flow starts. A
   few columns are held back from the panel entirely, each in its dashboard's `DELIBERATELY_OMITTED`
   list with the reason beside it, among them `claude_accounts.oauth_config` (the tokens the whole
-  fleet runs on), `runtime_login_attempts.pasted_code` and `api_keys.token_digest`.
+  fleet runs on), `runtime_login_attempts.pasted_code`, `api_keys.token_digest` and
+  `web_identities.totp_secret`.
 - **`/settings/api_keys`** mints and revokes the credential the REST API and the MCP endpoint take.
   See [managing keys](#managing-keys).
 - **The `POST /health/*` actions** (`cleanup_processes`, `retry_sessions`, `archive_old`,
   `enter_queue_recovery_mode`, `run_post_deploy_tasks`, `discard_queued_jobs`,
   `reschedule_queued_jobs`) terminate processes, rewrite session rows in bulk, discard queued jobs,
   and halt the fleet's demand-side job queues. Their REST twins on `POST /api/v1/health/*` still
-  take an API key. The web buttons take nothing.
+  take an API key. The web buttons take a signed-in browser when web sign-in is on, and nothing
+  when it is off.
 
 Until 2026-09-13 those three sat behind one shared HTTP Basic password, `SUPERVISOR_PASSWORD`. It
 was removed so that the whole web UI has one auth posture. Nothing reads the variable any more,
 so you can delete it from your deployment's secrets. If your deploy workflow asserts that it is set,
-remove that assert first, or the next deploy fails on the missing secret.
+remove that assert first, or the next deploy fails on the missing secret. Web sign-in is that one
+posture's credential, when a deployment wants one.
 
 :::caution[Agent sessions are inside the perimeter]
-"Anyone who can reach the host" includes every agent session. Sessions run on the production host,
-and the Rails app answers from inside a session's shell. Nothing in the app stops a session from
-reading the MCP and X tokens in `/supervisor`, minting or revoking an API key, or halting the job
-queues from `/health`. The same holds for every member of the tailnet. See
+With web sign-in off, "anyone who can reach the host" includes every agent session. Sessions run on
+the production host, and the Rails app answers from inside a session's shell. Nothing in the app
+stops a session from reading the MCP and X tokens in `/supervisor`, minting or revoking an API key,
+or halting the job queues from `/health`. The same holds for every member of the tailnet. With it on,
+a session's `curl` meets `/login`, but the wall is not a boundary against a session: it runs as the
+same user as the app, can read `SECRET_KEY_BASE` and forge a sign-in cookie, and holds `API_KEYS`
+besides. Web sign-in keeps out the tailnet and the open internet, not the host's own sessions. See
 [the limitation](/limitations/#the-web-ui-does-not-keep-agent-sessions-out).
 :::
 
 CSRF protection applies to every write on these three surfaces, so a page on another origin, open
 in your browser, cannot submit their forms for you.
 
-:::danger[The security model is still "put it on a tailnet"]
-The perimeter is the authentication boundary for the whole web UI, and Zimmer's own Terraform
-enforces it. The DigitalOcean firewall allows only `22/tcp` and Tailscale's `41641/udp`, port 80 is
-closed at the edge, and the app is reachable only over the tailnet, at `http://zimmer`.
+:::danger[Keep the perimeter]
+Zimmer's own Terraform enforces a network perimeter whether or not web sign-in is on. The
+DigitalOcean firewall allows only `22/tcp` and Tailscale's `41641/udp`, port 80 is closed at the
+edge, and the app is reachable only over the tailnet.
 
-The sharp edge is real. Any deployment that exposes port 80 (a reverse proxy, a public load
-balancer, a well-meaning `docker run -p 80:80` on a box with a public IP) hands an anonymous visitor
-every session transcript, the `/inference` OAuth flow, the MCP and X OAuth tokens in `/supervisor`,
-and a page that mints full-API keys. There is no second wall behind the perimeter. Tracked in
-[#43](https://github.com/tadasant/zimmer/issues/43).
+With web sign-in off, the perimeter is the only wall, and the sharp edge is real. Any deployment that
+exposes port 80 (a reverse proxy, a public load balancer, a well-meaning `docker run -p 80:80` on a
+box with a public IP) hands an anonymous visitor every session transcript, the `/inference` OAuth
+flow, the MCP and X OAuth tokens in `/supervisor`, and a page that mints full-API keys. With it on,
+there is a second wall, but it guards only the browser surfaces. The machine paths stay behind their
+API keys and signatures, and nothing is [encrypted at rest](#nothing-is-encrypted-at-rest). Tracked
+in [#43](https://github.com/tadasant/zimmer/issues/43).
 :::
 
 ### There is no per-user authorization in `SessionsController`, and that is the design
@@ -176,11 +191,11 @@ agent's reach. From there you can:
   that a revoked `API_KEYS` entry stays revoked while the key is still in the variable.
 - **Restore** a revoked key, if you revoked the wrong one. It authenticates again at once.
 
-Like the rest of the web UI, the page has no credential in front of it. It has no REST or MCP
-sibling, on purpose. If an API key could mint keys it would issue itself new credentials, and if it
+Like the rest of the web UI, the page has no credential in front of it beyond
+[web sign-in](/auth/web-sign-in/), when that is on. It has no REST or MCP sibling, on purpose. If an API key could mint keys it would issue itself new credentials, and if it
 could revoke them any session could cut every other session off by revoking the key they share.
-Keeping the page browser-only keeps key management out of the tools a session is handed. It is not a
-wall: a session's shell can reach this page like anything else on the host.
+Keeping the page browser-only keeps key management out of the tools a session is handed. Without web
+sign-in it is not a wall: a session's shell can reach this page like anything else on the host.
 
 The fingerprint is the first eight characters of the key's SHA-256, so you can match a key you hold
 to its row:
@@ -282,9 +297,13 @@ In `db/schema.rb`:
 `XOauthCredential`'s own header admits it: *"access_token / refresh_token are stored as plain text…
 Security relies on database access controls."*
 
-Combined with an Administrate panel that renders the MCP and X token columns in edit forms and asks
-for no credential, database access controls do not help much: the panel reads the database for
-whoever asks. The network perimeter is the only thing between the plaintext and a visitor, and agent
+`web_identities.totp_secret` joins them: the authenticator secret behind web sign-in is a plain
+`string`, held back from `/supervisor` but readable by anything with database access. The recovery
+codes are stored only as SHA-256 digests.
+
+Combined with an Administrate panel that renders the MCP and X token columns in edit forms, database
+access controls do not help much: the panel reads the database for whoever reaches it. Without web
+sign-in, the network perimeter is the only thing between the plaintext and a visitor, and agent
 sessions are already inside it.
 :::
 
@@ -347,6 +366,7 @@ provider would have rotated the single-use refresh token, and only then would th
 | `X_OAUTH_CLIENT_ID` / `_SECRET` | X/Twitter token vending |
 | `X_OAUTH_REDIRECT_URI` | Where X sends the operator after consent, on both the consent request and the token exchange. Defaults to `http://localhost:8080/callback`, where nothing listens, so the operator pastes the redirect URL back into `/supervisor`. Set it to `https://<APP_HOST>/supervisor/x_oauth/callback` and the flow finishes on its own. Whatever you set must already be registered on the X app. See [X (Twitter) is minted from `/supervisor`](/auth/mcp-oauth/#x-twitter-is-minted-from-supervisor). |
 | `ANTHROPIC_API_KEY` | Local dev, when not using OAuth |
+| `ZIMMER_WEB_AUTH_*` | [Web sign-in](/auth/web-sign-in/#turning-it-on): the Google OAuth client ID and secret, the allowed Workspace domains, the second-factor mode, and how long sessions and trusted browsers last. Setting `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID` turns the wall on |
 
 :::caution[`APP_HOST` unset breaks every MCP OAuth flow]
 `McpOauthService` does `ENV.fetch("APP_HOST") { "localhost:3000" }`. It is not set in the shipped

@@ -1,0 +1,19 @@
+<h1 class="text-lg font-semibold text-gray-900">Save your recovery codes</h1>
+<p class="mt-2 text-sm text-gray-600">
+  Your authenticator is set up. If you lose it, each of these codes signs you in once in its
+  place. Put them in your password manager now. Zimmer does not show them again.
+</p>
+
+<ul class="mt-4 grid grid-cols-2 gap-2 rounded-md border border-gray-200 bg-gray-50 p-3 font-mono text-sm text-gray-900 select-all" data-testid="recovery-codes">
+  <% @recovery_codes.each do |code| %>
+    <li><%= code %></li>
+  <% end %>
+</ul>
+
+<p class="mt-4 text-xs text-gray-500">
+  This browser is trusted for <%= pluralize(web_auth_configuration.trusted_device_ttl.in_days.to_i, "day") %>,
+  and stays signed in while you use it at least every <%= pluralize(web_auth_configuration.session_ttl.in_days.to_i, "day") %>.
+</p>
+
+<%= link_to "Continue to Zimmer", @return_to,
+      class: "mt-5 block w-full rounded-md bg-indigo-600 px-4 py-2.5 text-center text-sm font-medium text-white shadow-sm hover:bg-indigo-700" %>
