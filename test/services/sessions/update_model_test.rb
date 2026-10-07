@@ -28,6 +28,17 @@ class Sessions::UpdateModelTest < ActiveSupport::TestCase
     end
   end
 
+  test "a retry after a failed write still writes the model" do
+    # A failed UPDATE leaves the new model on the in-memory record; the retry
+    # must compare against what is stored, not short-circuit as a no-op.
+    @session.config = @session.config.merge("model" => "sonnet")
+
+    Sessions::UpdateModel.call(session: @session, model: "sonnet", actor: :web)
+
+    assert_equal "sonnet", @session.reload.config["model"]
+    assert_equal "Model updated (opus → sonnet)", @session.logs.order(:created_at).last.content
+  end
+
   test "refuses a missing, blank or non-String model and writes nothing" do
     [ nil, "", "   ", 42, [ "sonnet" ] ].each do |value|
       assert_raises(Sessions::UpdateModel::InvalidParameter, "#{value.inspect} should be refused") do
