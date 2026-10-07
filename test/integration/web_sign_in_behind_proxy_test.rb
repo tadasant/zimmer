@@ -55,8 +55,10 @@ class WebSignInBehindProxyTest < ActionDispatch::IntegrationTest
 
   # --- 1. behind the local proxy --------------------------------------------
 
-  test "behind the proxy, the sign-in and trusted-device cookies are Secure" do
+  test "behind the proxy, the sign-in and trusted-device cookies are Secure, and the browser stays signed in" do
     enable_web_auth
+    # The browser's side of the tunnel is HTTPS, so it sends Secure cookies back.
+    https!
 
     proxied_sign_in_with_google
     assert_redirected_to second_factor_setup_path
@@ -72,6 +74,9 @@ class WebSignInBehindProxyTest < ActionDispatch::IntegrationTest
       assert_match(/;\s*httponly/i, line)
       assert_match(/;\s*samesite=lax/i, line)
     end
+
+    proxied_get root_path
+    assert_response :success
   end
 
   test "Secure follows the request, so plain HTTP with no forwarded proto gets no Secure flag" do
@@ -113,17 +118,57 @@ class WebSignInBehindProxyTest < ActionDispatch::IntegrationTest
 
   # --- 2. machine paths -----------------------------------------------------
 
+  test "behind a proxy that rewrites Host, form posts fail CSRF, which is why the edge must pass Host through" do
+    enable_web_auth
+    ActionController::Base.allow_forgery_protection = true
+    host! "localhost"
+
+    proxied_get login_path
+    token = css_select("meta[name=csrf-token]").first["content"]
+    proxied_post google_sign_in_path, params: { authenticity_token: token }, headers: { "Origin" => BASE_URL }
+    assert_response :unprocessable_entity
+  ensure
+    ActionController::Base.allow_forgery_protection = false
+  end
+
   test "the MCP OAuth server's machine paths, /mcp and the API are exempt by path" do
     exempt = %w[
-      /mcp /mcp/external_app /api/v1/sessions /webhooks/slack /up /up/deep
+      /mcp /mcp.json /mcp/external_app /api /api/v1/sessions /webhooks /webhooks/slack /up /up.json /up/deep
+      /oauth/token.json
       /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/mcp
       /.well-known/oauth-authorization-server /.well-known/oauth-authorization-server/mcp
       /oauth/register /oauth/token /oauth/revoke
     ]
-    walled = %w[/ /settings /oauth/authorize /oauth/authorizeX /mcpx /apix /oauth/register/extra /login]
+    walled = %w[/ /settings /oauth/authorize /oauth/authorizeX /mcpx /mcp_oauth/callback /apix /webhooksx /oauth/register/extra /login]
 
     exempt.each { |path| assert_match WebSignInRequired::MACHINE_PATHS, path }
     walled.each { |path| refute_match WebSignInRequired::MACHINE_PATHS, path }
+  end
+
+  # The routes for /.well-known/oauth-* and /oauth/register|token|revoke arrive
+  # with the MCP OAuth authorization server; until then they 404. So this asks
+  # the wall itself, on a walled controller, what it does with each path.
+  test "the wall lets machine paths through even on a controller that includes it" do
+    enable_web_auth
+
+    # SettingsController's own action, dispatched as a Rack app with the path
+    # under test: past the wall it renders the Settings page (200); stopped by
+    # it, a page load answers 302 /login.
+    dispatch = lambda do |path|
+      env = Rack::MockRequest.env_for("http://#{PUBLIC_HOST}#{path}", "HTTP_ACCEPT" => "text/html")
+      env.merge!(Rails.application.env_config)
+      env["rack.session"] = ActionController::TestSession.new
+      SettingsController.action(:show).call(env)
+    end
+
+    %w[/oauth/token /oauth/register /oauth/revoke /.well-known/oauth-authorization-server /.well-known/oauth-protected-resource/mcp /mcp].each do |path|
+      status, headers, = dispatch.call(path)
+      assert_equal 200, status, "#{path} met the wall (Location: #{headers["location"].inspect})"
+    end
+
+    status, headers, = dispatch.call("/oauth/authorize?#{AUTHORIZE_QUERY}")
+    assert_equal 302, status, "/oauth/authorize must stay behind the wall"
+    assert_equal "/login", URI(headers["location"]).path
   end
 
   test "with the wall up, no machine path is ever answered with a redirect to /login" do
@@ -194,6 +239,17 @@ class WebSignInBehindProxyTest < ActionDispatch::IntegrationTest
 
     assert_equal path, controller.send(:safe_return_to, path)
     assert_equal "/", controller.send(:safe_return_to, "https://claude.ai/oauth/authorize?#{AUTHORIZE_QUERY}")
-    assert_operator path.length, :<, 2000, "a realistic authorize URL fits under the stored-path cap"
+    assert_operator ActiveSupport::JSON.encode(path).bytesize, :<=, WebSignInRequired::RETURN_TO_MAX_BYTES,
+      "a realistic authorize URL fits under the stored-path cap"
+  end
+
+  test "a return path too long for the session cookie is dropped, not a 500" do
+    enable_web_auth
+    long = "/settings?" + Array.new(250) { |i| "a#{i}=b" }.join("&")
+
+    get long
+    assert_redirected_to "/login"
+    follow_redirect!
+    assert_response :success
   end
 end
