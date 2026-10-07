@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_07_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_07_210000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -534,6 +534,62 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_07_120000) do
     t.index ["session_id", "stale"], name: "index_notifications_on_session_id_and_stale"
     t.index ["session_id"], name: "index_notifications_on_session_id"
     t.index ["stale"], name: "index_notifications_on_stale"
+  end
+
+  create_table "oauth_server_authorization_codes", force: :cascade do |t|
+    t.string "code_challenge", null: false
+    t.string "code_digest", null: false
+    t.datetime "consumed_at"
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.bigint "oauth_server_client_id", null: false
+    t.string "redirect_uri", null: false
+    t.string "resource", null: false
+    t.string "scope"
+    t.datetime "updated_at", null: false
+    t.string "user_email", null: false
+    t.index ["code_digest"], name: "index_oauth_server_authorization_codes_on_code_digest", unique: true
+    t.index ["oauth_server_client_id"], name: "idx_on_oauth_server_client_id_f0cd5f50da"
+  end
+
+  create_table "oauth_server_clients", force: :cascade do |t|
+    t.string "client_id", null: false
+    t.string "client_name"
+    t.string "client_uri"
+    t.datetime "created_at", null: false
+    t.jsonb "grant_types", default: [], null: false
+    t.datetime "last_used_at"
+    t.datetime "metadata_expires_at"
+    t.jsonb "redirect_uris", default: [], null: false
+    t.string "registration_type", null: false
+    t.datetime "updated_at", null: false
+    t.index ["client_id"], name: "index_oauth_server_clients_on_client_id", unique: true
+  end
+
+  create_table "oauth_server_grants", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "last_used_at"
+    t.bigint "oauth_server_client_id", null: false
+    t.string "resource", null: false
+    t.string "revocation_reason"
+    t.datetime "revoked_at"
+    t.string "scope"
+    t.datetime "updated_at", null: false
+    t.string "user_email", null: false
+    t.index ["oauth_server_client_id"], name: "index_oauth_server_grants_on_oauth_server_client_id"
+  end
+
+  create_table "oauth_server_tokens", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.string "kind", null: false
+    t.bigint "oauth_server_grant_id", null: false
+    t.datetime "rotated_at"
+    t.string "token_digest", null: false
+    t.datetime "updated_at", null: false
+    t.index ["expires_at"], name: "index_oauth_server_tokens_on_expires_at"
+    t.index ["oauth_server_grant_id"], name: "index_oauth_server_tokens_on_oauth_server_grant_id"
+    t.index ["token_digest"], name: "index_oauth_server_tokens_on_token_digest", unique: true
   end
 
   create_table "outcome_analyses", force: :cascade do |t|
@@ -1119,6 +1175,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_07_120000) do
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
   add_foreign_key "notifications", "sessions", on_delete: :cascade
+  add_foreign_key "oauth_server_authorization_codes", "oauth_server_clients", on_delete: :cascade
+  add_foreign_key "oauth_server_grants", "oauth_server_clients", on_delete: :cascade
+  add_foreign_key "oauth_server_tokens", "oauth_server_grants", on_delete: :cascade
   add_foreign_key "outcome_analyses", "sessions", column: "analyzer_session_id", on_delete: :nullify
   add_foreign_key "outcome_analyses", "sessions", on_delete: :cascade
   add_foreign_key "outcome_analysis_batch_items", "outcome_analysis_batches", on_delete: :cascade

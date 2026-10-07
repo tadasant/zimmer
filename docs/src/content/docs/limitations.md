@@ -1030,6 +1030,42 @@ costs:
   for automated UI driving yet ([#220](https://github.com/tadasant/zimmer/issues/220)). Local dev
   servers, where the wall is off, are unaffected.
 
+### Connecting to /mcp over OAuth
+
+🟡 [Zimmer's authorization server](/auth/mcp-authorization-server/) has these known edges.
+
+**It issues nothing until the web UI has a sign-in.** `/oauth/authorize` asks the `WebUserIdentity`
+seam who is signed in. Outside development and test, that answer is nil until the Google sign-in gate
+fills it in, so every authorization request ends on "Sign in to Zimmer first". That is deliberate. A
+token must name a person from an allowed domain, and before the gate there is no person to name.
+
+**A token reaches every tool on `/mcp`.** There is one scope. A Claude.ai connector you approve can
+do anything an `api` key can do on `/mcp`, including archiving sessions and halting queues through
+the `health` group. Narrowing it is up to the URL you paste (`?tool_groups=`), and the client can
+change that URL.
+
+**Registration is open.** Anyone who can reach the host can register a client, and anyone can make
+Zimmer fetch a public HTTPS URL by naming it as a `client_id` at `/oauth/authorize`. A registration
+without a consent is pruned after seven days. With the web sign-in gate on, `/oauth/authorize` (and so
+the fetch) is reachable only by a signed-in browser. There is no rate limit on either beyond that.
+
+**A withdrawn metadata document does not end a connection.** The token endpoint does not fetch the
+document again, so a client whose publisher pulls the document keeps refreshing until it is revoked on
+Settings → API keys.
+
+**An access token outlives the checks that would refuse its refresh.** Removing a domain from the
+allowlist, or revoking a person's web sign-in, stops the next *refresh*. An access token already
+issued keeps working for the rest of its lifetime, an hour by default. Revoking the connection is
+immediate.
+
+**A refresh retried within 60 seconds is refused but not punished.** The grace window keeps a client
+that lost a response from being signed out. The cost is that a stolen refresh token, replayed inside
+that minute, is refused without revoking the connection.
+
+**Codes are not traced to the tokens they produced.** OAuth 2.1 suggests revoking the tokens a code
+issued when that code is presented a second time. Zimmer refuses the second presentation and stops
+there. PKCE is what stops a stolen code from being redeemed.
+
 ### Transcript redaction is defense in depth, not a guarantee
 
 🟡 `TranscriptRedactor` runs on every transcript as it is read, before anything is stored, rendered or

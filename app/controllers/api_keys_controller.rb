@@ -51,6 +51,15 @@ class ApiKeysController < ApplicationController
     redirect_to api_keys_path, notice: "Revoked #{@api_key.name}. Requests with it are refused from now on."
   end
 
+  # An OAuth connection to /mcp (OauthServer::Grant). Revoked from the same page
+  # as the keys, for the same reason this page has no REST or MCP sibling.
+  def revoke_oauth_grant
+    grant = OauthServer::Grant.find(params[:id])
+    grant.revoke!("revoked from the settings page, #{request.remote_ip}")
+    redirect_to api_keys_path(anchor: "oauth-connections"),
+      notice: "Revoked #{grant.client.client_name.presence || 'the client'}'s connection. It is refused from the next request on."
+  end
+
   def restore
     @api_key.restore!
     log_lifecycle("restored", @api_key)
@@ -99,6 +108,7 @@ class ApiKeysController < ApplicationController
     scope = scope.includes(:external_app) if ApiKey.column_names.include?("external_app_id")
     @api_keys = scope.to_a
     @self_session_digest = self_session_digest
+    @oauth_grants = OauthServer::Grant.includes(:client).listed.limit(50).to_a
   end
 
   # The digest of the key this deployment writes into its own sessions' Zimmer

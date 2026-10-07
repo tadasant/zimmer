@@ -15,6 +15,10 @@ class ExternalAppMcpController < McpController
 
   private
 
+  def oauth_access_tokens_accepted?
+    false
+  end
+
   def instructions
     "Zimmer plugin connection for \"#{current_external_app.name}\". It can list the Zimmer triggers " \
       "this credential may invoke (list_triggers) and invoke one with template variables " \

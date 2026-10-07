@@ -1,0 +1,73 @@
+<div id="oauth-connections" class="mt-6 bg-white shadow rounded-lg">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <h2 class="text-lg font-medium text-gray-900">MCP connections</h2>
+    <p class="mt-1 text-sm text-gray-500">
+      Clients that connected to <code class="bg-gray-100 px-1 rounded">/mcp</code> over OAuth instead of with a key — a
+      Claude.ai custom connector, say. Each was approved by the person named on it, and opens what a Full API key opens on
+      <code class="bg-gray-100 px-1 rounded">/mcp</code> and nothing else. Revoking one refuses its access token on the next
+      request and ends its refresh token, so the client has to be approved again.
+    </p>
+  </div>
+
+  <% if grants.empty? %>
+    <p class="px-4 py-5 sm:px-6 text-sm text-gray-500">No OAuth connections.</p>
+  <% else %>
+    <ul class="divide-y divide-gray-200">
+      <% grants.each do |grant| %>
+        <% client = grant.client %>
+        <li id="<%= dom_id(grant) %>" class="px-4 py-4 sm:px-6">
+          <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-sm font-medium text-gray-900 break-all"><%= client.client_name.presence || "Unnamed client" %></span>
+                <% if grant.revoked? %>
+                  <span class="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800">Revoked</span>
+                <% else %>
+                  <span class="inline-flex rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">Active</span>
+                <% end %>
+                <span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600"
+                      title="<%= client.cimd? ? "Described by the metadata document at its client_id URL" : "Registered itself at /oauth/register" %>">
+                  <%= client.cimd? ? "Published by #{client.publisher_host}" : "Self-registered" %>
+                </span>
+              </div>
+              <dl class="mt-1 text-xs text-gray-500 space-y-0.5">
+                <div>
+                  <dt class="inline">Approved by</dt>
+                  <dd class="inline break-all"><%= grant.user_email %></dd>
+                </div>
+                <div>
+                  <dt class="inline">Last used</dt>
+                  <dd class="inline">
+                    <% if grant.last_used_at %>
+                      <%= time_ago_in_words(grant.last_used_at) %> ago
+                    <% else %>
+                      never
+                    <% end %>
+                  </dd>
+                </div>
+                <div>
+                  <dt class="inline">Approved</dt>
+                  <dd class="inline"><%= grant.created_at.utc.strftime("%Y-%m-%d %H:%M UTC") %></dd>
+                </div>
+                <% if grant.revoked? %>
+                  <div>
+                    <dt class="inline">Revoked</dt>
+                    <dd class="inline"><%= grant.revoked_at.utc.strftime("%Y-%m-%d %H:%M UTC") %><%= " — #{grant.revocation_reason}" if grant.revocation_reason.present? %></dd>
+                  </div>
+                <% end %>
+              </dl>
+            </div>
+
+            <% unless grant.revoked? %>
+              <div class="shrink-0">
+                <%= button_to "Revoke", revoke_oauth_grant_path(grant),
+                      form: { data: { turbo_confirm: "Revoke #{client.client_name.presence || 'this client'}'s connection? It is refused from the next request on, and has to be approved again to reconnect." } },
+                      class: "inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50" %>
+              </div>
+            <% end %>
+          </div>
+        </li>
+      <% end %>
+    </ul>
+  <% end %>
+</div>
