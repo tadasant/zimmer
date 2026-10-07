@@ -18,6 +18,32 @@ module WebSignInRequired
   extend ActiveSupport::Concern
 
   LOGIN_PATH = "/login"
+
+  # Paths the wall never answers, whatever controller ends up serving them.
+  # Every one of these is a machine endpoint with its own credential (an API
+  # key, a provider signature, an OAuth client) or none at all (health checks,
+  # OAuth discovery), and a 302 to /login would break its client. None of
+  # them is served by a controller that includes this concern; the list is the
+  # second line of defence if one ever is. `/oauth/authorize` is deliberately
+  # absent: it is a browser page and belongs behind the wall. A format suffix
+  # (`/mcp.json`) is covered, because the routes accept one.
+  MACHINE_PATHS = %r{
+    \A(?:
+      /mcp(?:/external_app)?(?:\.\w+)?/?\z
+      | /api(?:/|\z)
+      | /webhooks(?:/|\z)
+      | /up(?:/deep)?(?:\.\w+)?/?\z
+      | /\.well-known/oauth-
+      | /oauth/(?:register|token|revoke)(?:\.\w+)?/?\z
+    )
+  }x
+
+  # The longest return path kept, measured as the session cookie stores it.
+  # The cookie store serializes JSON, which writes `&` `<` `>` as six-byte
+  # escapes, and the encrypted cookie must stay under 4 KB with the CSRF token
+  # and the OAuth state beside it. A longer path is not kept, and the browser
+  # lands on / after sign-in instead of a 500 for an overflowing cookie.
+  RETURN_TO_MAX_BYTES = 1500
   RETURN_TO_KEY = :web_auth_return_to
 
   included do
@@ -37,6 +63,8 @@ module WebSignInRequired
   private
 
   def require_web_sign_in
+    return if request.path.match?(MACHINE_PATHS)
+
     configuration = web_auth_configuration
     return unless configuration.enabled?
 
@@ -60,7 +88,7 @@ module WebSignInRequired
   # redirect there would land login HTML inside a fragment, or replay a write.
   def deny_signed_out_request
     if request.get? && page_load? && !request.xhr? && request.headers["Turbo-Frame"].blank?
-      session[RETURN_TO_KEY] = request.fullpath if request.fullpath.length <= 2000
+      session[RETURN_TO_KEY] = request.fullpath if ActiveSupport::JSON.encode(request.fullpath).bytesize <= RETURN_TO_MAX_BYTES
       redirect_to LOGIN_PATH
     else
       head :unauthorized

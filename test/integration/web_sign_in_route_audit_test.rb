@@ -95,6 +95,15 @@ class WebSignInRouteAuditTest < ActionDispatch::IntegrationTest
     assert_empty reached, "these routes answered a signed-out request without the login wall:\n#{reached.join("\n")}"
   end
 
+  test "the path-based machine exemption never covers a browser page" do
+    browser_pages = app_routes.select { |r| r[:controller_class]&.include?(WebSignInRequired) }
+      .reject { |r| r[:controller] == "health" && r[:action] == "deep" }
+      .select { |r| r[:sample_path].match?(WebSignInRequired::MACHINE_PATHS) }
+      .map { |r| "#{r[:verb]} #{r[:path]} -> #{r[:controller]}##{r[:action]}" }
+
+    assert_empty browser_pages, "these walled pages sit under WebSignInRequired::MACHINE_PATHS and would be let through:\n#{browser_pages.join("\n")}"
+  end
+
   test "the signed-out list names real actions, and each one is genuinely let through" do
     routed = app_routes.map { |r| "#{r[:controller]}##{r[:action]}" }.to_set
 
