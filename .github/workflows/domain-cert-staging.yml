@@ -129,10 +129,6 @@ jobs:
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           KAMAL_SSH_KEY: ${{ secrets.KAMAL_SSH_KEY }}
-          # "false" once staging's name is served by the optional Cloudflare edge: the
-          # tunnel owns it as a proxied CNAME, and the A-record upsert would fight it.
-          # Set the STAGING_MANAGE_A_RECORD Actions variable; unset keeps managing it.
-          MANAGE_A_RECORD: ${{ vars.STAGING_MANAGE_A_RECORD || 'true' }}
         run: |
           set -euo pipefail
           # Push the cert over the Kamal deploy key rather than tailscale ssh, which a

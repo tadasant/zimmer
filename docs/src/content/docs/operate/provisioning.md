@@ -101,13 +101,12 @@ resize command.
 
 ## GitHub Actions variables
 
-Not everything CI needs is a secret. These values are **variables** (Settings → Secrets and variables →
+Not everything CI needs is a secret. One value is a **variable** (Settings → Secrets and variables →
 Actions → Variables, or `gh variable set`):
 
 | Variable | Used by |
 | --- | --- |
 | `ADMIN_SSH_PUBKEYS` | `deploy-staging.yml` → `TF_VAR_admin_ssh_pubkeys`. A JSON list of strings: `["ssh-ed25519 AAAA… op@host"]`. Optional — unset means `[]` and a droplet that authorizes no operator key ([Operator keys](/operate/ssh-access/#operator-keys)). Deliberately a variable and not a secret: public keys are not secret, and GitHub masks a secret's value everywhere in a log, which would blank out the accounting line the deploy prints |
-| `STAGING_MANAGE_A_RECORD` | `domain-cert-staging.yml` → `MANAGE_A_RECORD`. Set to `false` once staging's name is served by the [optional Cloudflare edge](/operate/deploying/#optional-cloudflare-edge), so the cert job stops upserting a tailnet A record over the tunnel's CNAME. Unset means `true` |
 
 :::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key]
 A Tailscale OAuth client cannot mint `tag:ci` keys. `deploy-staging.yml`'s own comment says so.
