@@ -181,6 +181,9 @@ one that keeps the client's address:
 
 - **Caddy replaces `X-Forwarded-For`** with the peer it saw. Behind the tunnel, that peer is
   cloudflared on `localhost`, so every request would reach Rails looking like it came from the box.
+  That holds for an `https://localhost:443` origin as much as for `:80`, and its cost is concrete:
+  the Quick Router rate limit becomes one bucket shared by every client, and every refusal log line
+  names `127.0.0.1`.
   Caddy can be told to trust its peer, but its Caddyfile is cloud-init-only and
   [never reaches a running droplet](/limitations/#user_data-is-frozen-so-the-deploy-key-and-the-caddyfile-cant-be-updated-in-place).
 - **kamal-proxy appends.** With `ssl: false`, `forward_headers` defaults on, so the edge's header
@@ -223,12 +226,11 @@ proves it from inside the worker: the name resolves to the gateway, and `https:/
    - pass the token to `scripts/install-cloudflared.sh <host>` as `CLOUDFLARE_TUNNEL_TOKEN` (staging:
      the `STAGING_CLOUDFLARE_TUNNEL_TOKEN` secret, already wired);
    - export `ZIMMER_PIN_DOMAIN_TO_HOST=<domain>` for `kamal deploy`;
-   - run `scripts/domain-cert.sh` with **`MANAGE_A_RECORD=false`**. On staging, set the
-     `STAGING_MANAGE_A_RECORD` Actions variable to `false`. The tunnel owns the name as a proxied
-     CNAME, and the script's A-record upsert would otherwise fail every week or pull the name back onto
-     the tailnet. The certificate is still needed, because Caddy keeps serving it to tailnet peers and to
-     the pinned containers. The script's final check uses `--resolve` against the tailnet IP, so it tests
-     the box and not the edge.
+   - keep running `scripts/domain-cert.sh` as before. It reads the live DNS record: when `<domain>`
+     is a CNAME to `*.cfargotunnel.com`, it leaves DNS alone instead of upserting the tailnet A record.
+     The upsert would otherwise fail every week. The certificate is still needed, because Caddy keeps
+     serving it to tailnet peers and to the pinned containers. The script's final check uses
+     `--resolve` against the tailnet IP, so it tests this box's Caddy and not the edge.
 3. **DNS**: once the connector reports registered, let the tunnel's hostname replace the tailnet A
    record.
 
@@ -236,8 +238,9 @@ Nothing in the app changes. The hostname stays the same, so `APP_HOST`, OAuth ca
 (unset in production) need nothing. `assume_ssl` and `force_ssl` already treat every request as HTTPS, so
 cookies stay `Secure`, and the edge sends `X-Forwarded-Proto: https` regardless.
 
-To turn it off, run the converge once with an empty token and `ZIMMER_CLOUDFLARED_REMOVE=1`, point DNS
-back with `MANAGE_A_RECORD=true`, and unset `ZIMMER_PIN_DOMAIN_TO_HOST`.
+To turn it off, run the converge once with an empty token and `ZIMMER_CLOUDFLARED_REMOVE=1`, delete
+the tunnel's CNAME (the next `domain-cert` run puts the tailnet A record back), and unset
+`ZIMMER_PIN_DOMAIN_TO_HOST`.
 
 ## Background jobs and durable state
 

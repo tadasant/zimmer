@@ -27,13 +27,6 @@
 #   ACME_CA        ACME directory URL (default: Let's Encrypt production)
 #   RENEW_DAYS     re-issue when fewer than this many days remain (default 30)
 #   FORCE_ISSUE    "true" to issue regardless of the current cert
-#   MANAGE_A_RECORD  "false" to leave the domain's DNS alone (default "true"). Set it when
-#                  the public name is served by something else -- the optional Cloudflare
-#                  edge, whose tunnel owns the name as a proxied CNAME. Upserting an A
-#                  record there would fail (a name cannot be both) or, worse, succeed and
-#                  pull the public name back onto the tailnet. The cert is still needed:
-#                  the host Caddy keeps serving the domain to tailnet peers and to the
-#                  app's own containers (ZIMMER_PIN_DOMAIN_TO_HOST).
 set -euo pipefail
 
 : "${DOMAIN:?}" "${TS_HOST:?}" "${CF_ZONE_ID:?}" "${CF_API_TOKEN:?}" "${ACME_EMAIL:?}"
@@ -41,11 +34,6 @@ LEGO_VERSION="${LEGO_VERSION:-v4.19.2}"
 ACME_CA="${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}"
 RENEW_DAYS="${RENEW_DAYS:-30}"
 FORCE_ISSUE="${FORCE_ISSUE:-false}"
-MANAGE_A_RECORD="${MANAGE_A_RECORD:-true}"
-case "$MANAGE_A_RECORD" in
-  true | false) ;;
-  *) echo "::error::MANAGE_A_RECORD must be true or false (got '${MANAGE_A_RECORD}')"; exit 2 ;;
-esac
 
 log() { echo "[domain-cert] $*"; }
 
@@ -89,7 +77,16 @@ cf() {
     ${data:+--data "$data"}
 }
 
-if [ "$MANAGE_A_RECORD" = "true" ]; then
+# The live record decides, not a flag. When the optional Cloudflare edge serves the
+# domain, its tunnel owns the name as a proxied CNAME to <tunnel-id>.cfargotunnel.com.
+# An A-record upsert there would fail (a name cannot carry both) and turn this job red
+# every week -- so leave DNS alone. The cert is still needed: the host Caddy keeps
+# serving the domain to tailnet peers and to the app's own pinned containers.
+tunnel_target="$(cf GET "/zones/${CF_ZONE_ID}/dns_records?type=CNAME&name=${DOMAIN}" \
+  | jq -r '[.result[]? | .content | select(endswith(".cfargotunnel.com"))][0] // empty')"
+if [ -n "$tunnel_target" ]; then
+  log "${DOMAIN} is a Cloudflare Tunnel CNAME (${tunnel_target}); leaving its DNS alone"
+else
   record_id="$(cf GET "/zones/${CF_ZONE_ID}/dns_records?type=A&name=${DOMAIN}" \
     | jq -r '.result[0].id // empty')"
   body="$(jq -nc --arg n "$DOMAIN" --arg c "$TS_IP" \
@@ -101,8 +98,6 @@ if [ "$MANAGE_A_RECORD" = "true" ]; then
     cf POST "/zones/${CF_ZONE_ID}/dns_records" "$body" >/dev/null
     log "created A record ${DOMAIN} -> ${TS_IP}"
   fi
-else
-  log "MANAGE_A_RECORD=false: leaving ${DOMAIN}'s DNS to whatever fronts it"
 fi
 
 # ---------------------------------------------------------------- 3. issue?
@@ -181,7 +176,7 @@ fi
 # ---------------------------------------------------------------- 4. verify
 # Pinned to the box with --resolve rather than through public DNS: the runner is a
 # tailnet peer, so it reaches TS_IP directly, and the check stays a check of THIS box's
-# Caddy even when public DNS points the name elsewhere (MANAGE_A_RECORD=false). Assert
+# Caddy even when public DNS points the name at a Cloudflare Tunnel. Assert
 # 200 AND a real (non-self-signed) issuer, so a stuck self-signed placeholder can't pass
 # as success.
 for i in $(seq 1 10); do
