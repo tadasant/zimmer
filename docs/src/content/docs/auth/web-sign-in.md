@@ -206,7 +206,9 @@ removing `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID`, which takes the whole wall down.
 | `/cable` (Turbo Streams) | The connection is refused without a valid sign-in cookie |
 | `/mcp_oauth/*`, `/supervisor/x_oauth/*` callbacks | Sign-in required. They are browser hops, and a signed-out browser comes back to the callback after signing in |
 | REST API `/api/v1/*` | **Unchanged.** `X-API-Key` |
-| `POST /mcp`, `/mcp/external_app` | **Unchanged.** Bearer API key. MCP's own OAuth is separate work |
+| `POST /mcp`, `/mcp/external_app` | **Unchanged.** Bearer API key, or on `/mcp` an OAuth access token |
+| `/oauth/authorize` (the MCP consent screen) | Sign-in required, and back to the full `/oauth/authorize?…` URL afterwards. See [Connecting to /mcp over OAuth](/auth/mcp-authorization-server/) |
+| `/.well-known/oauth-*`, `POST /oauth/register`, `/oauth/token`, `/oauth/revoke` | **Open.** Machine endpoints for MCP clients, authenticated by PKCE or a token the client holds |
 | `/webhooks/slack`, `/webhooks/github` | **Unchanged.** Request signatures |
 | `/up`, `/up/deep` | **Unchanged.** Open, as the deploy gates need |
 | A route that does not exist | `404`, as before |

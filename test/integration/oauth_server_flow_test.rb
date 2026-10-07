@@ -8,11 +8,13 @@ require "mocha/minitest"
 # registration (DCR or a Client ID Metadata Document) → authorize with PKCE →
 # token → /mcp → refresh → revoke. The static API key path runs beside it.
 class OauthServerFlowTest < ActionDispatch::IntegrationTest
+  include WebAuthTestHelpers
+
   ISSUER = "http://www.example.com"
   RESOURCE = "#{ISSUER}/mcp".freeze
   REDIRECT = "https://claude.ai/api/mcp/auth_callback"
   CLAUDE_CIMD = "https://claude.ai/oauth/mcp-oauth-client-metadata"
-  ENV_KEYS = %w[API_KEYS OAUTH_SERVER_ISSUER OAUTH_SERVER_ALLOWED_DOMAINS ZIMMER_WEB_AUTH_ALLOWED_DOMAINS
+  ENV_KEYS = %w[API_KEYS OAUTH_SERVER_ISSUER OAUTH_SERVER_ALLOWED_DOMAINS
     ZIMMER_DEV_WEB_USER_EMAIL OAUTH_SERVER_ACCESS_TOKEN_TTL_SECONDS].freeze
 
   setup do
@@ -21,7 +23,8 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     ENV["API_KEYS"] = @api_key
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
     ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
-    ENV.delete("ZIMMER_WEB_AUTH_ALLOWED_DOMAINS")
+    # The web sign-in wall is off unless a test turns it on.
+    WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
     ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "tadas@tadasant.com"
     ENV.delete("OAUTH_SERVER_ACCESS_TOKEN_TTL_SECONDS")
   end
@@ -164,6 +167,37 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert_equal "https://zimmer.example.org", JSON.parse(response.body)["issuer"]
   ensure
     previous.nil? ? ENV.delete("APP_HOST") : ENV["APP_HOST"] = previous
+  end
+
+  test "outside development and test the issuer is never the request's own origin" do
+    ENV.delete("OAUTH_SERVER_ISSUER")
+    previous = ENV.delete("APP_HOST")
+    Rails.env.stubs(:local?).returns(false)
+
+    get "/.well-known/oauth-authorization-server"
+    assert_response :service_unavailable
+    get "/.well-known/oauth-protected-resource/mcp"
+    assert_response :service_unavailable
+
+    rpc("tools/list")
+    assert_response :unauthorized
+    refute_includes response.headers["WWW-Authenticate"], "resource_metadata"
+
+    ENV["APP_HOST"] = "zimmer.tadasant.com"
+    get "/.well-known/oauth-protected-resource/mcp", headers: { "Host" => "localhost:3000", "X-Forwarded-Proto" => "http" }
+    body = JSON.parse(response.body)
+    assert_equal "https://zimmer.tadasant.com/mcp", body["resource"], "behind a TLS-terminating edge, Rails sees http://localhost"
+    assert_equal [ "https://zimmer.tadasant.com" ], body["authorization_servers"]
+  ensure
+    previous.nil? ? ENV.delete("APP_HOST") : ENV["APP_HOST"] = previous
+  end
+
+  test "an issuer that is not a bare origin is refused rather than half-used" do
+    ENV["OAUTH_SERVER_ISSUER"] = "https://zimmer.tadasant.com/some/path"
+    Rails.env.stubs(:local?).returns(false)
+
+    get "/.well-known/oauth-authorization-server"
+    assert_response :service_unavailable
   end
 
   test "CORS preflight on the machine endpoints" do
@@ -386,6 +420,53 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Sign in to Zimmer first"
   end
 
+  test "with the web sign-in wall on: login round-trips back to /oauth/authorize with every parameter, then a token" do
+    ENV.delete("ZIMMER_DEV_WEB_USER_EMAIL")
+    ENV.delete("OAUTH_SERVER_ALLOWED_DOMAINS")
+    enable_web_auth
+    identity = sign_in_and_enroll
+    reset!
+    travel 1.minute
+
+    client_id = register["client_id"]
+    verifier, challenge = pkce
+    sent = authorize_params(client_id, challenge, resource: "#{RESOURCE}?tool_groups=sessions", state: "st/ate+with=chars&more").merge(scope: "mcp")
+
+    get "/oauth/authorize", params: sent
+    assert_redirected_to "/login"
+
+    sign_in_with_google
+    assert_redirected_to second_factor_path
+    post second_factor_path, params: { code: current_totp_code(identity.reload.totp_secret) }
+
+    assert_response :redirect
+    back = URI.parse(response.location)
+    assert_equal "/oauth/authorize", back.path
+    assert_equal sent.transform_keys(&:to_s).transform_values(&:to_s), URI.decode_www_form(back.query).to_h,
+      "client_id, redirect_uri, state, code_challenge, code_challenge_method, resource and scope all survive the login"
+
+    follow_redirect!
+    assert_response :success
+    assert_includes response.body, "tadas@tadasant.com"
+
+    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve")
+    _, query = redirect_params
+    tokens = exchange(client_id, query["code"], verifier)
+    assert_response :success, "the token endpoint is a machine path, outside the wall"
+
+    rpc("tools/list", token: tokens["access_token"])
+    assert_response :success
+  end
+
+  test "with the wall on, the dev email is ignored and a signed-out POST is refused" do
+    enable_web_auth
+    _, challenge = pkce
+
+    post "/oauth/authorize", params: authorize_params(register["client_id"], challenge).merge(decision: "approve")
+    assert_response :unauthorized
+    assert_equal 0, OauthServer::AuthorizationCode.count
+  end
+
   test "signed out: no metadata document is fetched and no error is redirected anywhere" do
     ENV.delete("ZIMMER_DEV_WEB_USER_EMAIL")
     OauthServer::ClientMetadataDocument.any_instance.expects(:fetch).never
@@ -424,9 +505,9 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
   end
 
-  test "the allowed domains fall back to the web sign-in gate's" do
+  test "the allowed domains fall back to the web sign-in's" do
     ENV.delete("OAUTH_SERVER_ALLOWED_DOMAINS")
-    ENV["ZIMMER_WEB_AUTH_ALLOWED_DOMAINS"] = "example.org, tadasant.com"
+    WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: "example.org, tadasant.com"))
     _, challenge = pkce
 
     get "/oauth/authorize", params: authorize_params(register["client_id"], challenge)
