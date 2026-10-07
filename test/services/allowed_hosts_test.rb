@@ -30,6 +30,8 @@ class AllowedHostsTest < ActiveSupport::TestCase
       "[fd7a:115c:a1e0::1]:80" => "a tailnet IPv6 address",
       "zimmer" => "http://<tailnet-hostname>/ over MagicDNS",
       "zimmer.tail1234.ts.net" => "the MagicDNS FQDN",
+      "Zimmer-1" => "Tailscale's name for a rebuilt droplet while the stale node holds `zimmer`",
+      "[fd7a:115c:a1e0::1]" => "a tailnet IPv6 address on port 80, as curl sends it",
       "localhost:8080" => "curl against kamal-proxy on the box"
     }.each do |host, why|
       assert_equal 200, status_for(hosts, host, path: "/up/deep"), "#{host} (#{why}) must be allowed"
@@ -39,7 +41,7 @@ class AllowedHostsTest < ActiveSupport::TestCase
   test "a foreign Host, or a foreign X-Forwarded-Host, is refused" do
     hosts = AllowedHosts.for("production", env: PROD_ENV)
 
-    %w[evil.example zimmer.tadasant.com.evil.example evilzimmer.tail1.ts.net staging.zimmer.tadasant.com].each do |host|
+    %w[evil.example zimmer.tadasant.com.evil.example evilzimmer.tail1.ts.net zimmer-x staging.zimmer.tadasant.com].each do |host|
       assert_equal 403, status_for(hosts, host), "#{host} must be refused"
     end
     assert_equal 403, status_for(hosts, "zimmer.tadasant.com", forwarded_host: "evil.example")

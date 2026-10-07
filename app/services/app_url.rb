@@ -23,7 +23,8 @@ module AppUrl
   PLACEHOLDER_STAGING_BASE_URL = "https://staging.zimmer.example.com"
 
   # The variable each environment reads its base URL from. `AllowedHosts` reads
-  # the same names, so the Host allow-list and every emitted link agree.
+  # the same names from the process environment at boot. Loaded before Zeitwerk
+  # (see AllowedHosts), so nothing here may reference an app constant at load time.
   BASE_URL_KEYS = { "production" => "ZIMMER_PROD_BASE_URL", "staging" => "ZIMMER_STAGING_BASE_URL" }.freeze
   LOCAL_BASE_URL_KEY = "ZIMMER_LOCAL_BASE_URL"
 

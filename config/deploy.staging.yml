@@ -142,7 +142,7 @@ env:
     # .ts.net FQDN. ZIMMER_ALLOWED_HOSTS adds any other hostname, and "*" turns the
     # check off -- the break-glass if a legitimate Host is ever refused with a 403.
     ZIMMER_TAILNET_HOSTNAME: zimmer-staging
-    ZIMMER_ALLOWED_HOSTS: "<%= ENV.fetch("ZIMMER_ALLOWED_HOSTS", "") %>"
+    ZIMMER_ALLOWED_HOSTS: <%= ENV.fetch("ZIMMER_ALLOWED_HOSTS", "").to_json %>
     DATABASE_HOST: zimmer-db
     DATABASE_PORT: "5432"
     DATABASE_USERNAME: zimmer

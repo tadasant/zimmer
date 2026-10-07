@@ -187,7 +187,9 @@ origin the client reaches Zimmer at. `resource` is always exactly `<issuer>/mcp`
 from the request**, in any environment: the `Host` header is whatever the client or the edge in front
 of Rails made it, so a forged one cannot move the metadata. A production or staging deploy that left
 the base URL at its `zimmer.example.com` placeholder answers `503` on the metadata endpoints and
-issues nothing. On a laptop with neither set, the issuer is `http://localhost:$PORT`.
+issues nothing. On a laptop with neither set, the issuer is `http://localhost:$PORT`. If you reach a dev box at any
+other origin (a tailnet name, a tunnel), set `ZIMMER_LOCAL_BASE_URL` to it, or MCP clients will be
+pointed at localhost.
 
 ## The 401
 
