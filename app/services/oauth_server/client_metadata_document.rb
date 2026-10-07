@@ -28,6 +28,10 @@ module OauthServer
     MAX_BODY_BYTES = 5 * 1024
     OPEN_TIMEOUT = 3
     READ_TIMEOUT = 3
+    # The whole exchange — DNS, connect, TLS, headers, body. READ_TIMEOUT alone
+    # bounds each read, so a server dripping a byte at a time would otherwise
+    # hold a Puma thread for hours.
+    DEADLINE = 5
     DEFAULT_TTL = 5.minutes
     MAX_TTL = 1.hour
     USER_AGENT = "Zimmer (OAuth client metadata fetch)"
@@ -60,7 +64,7 @@ module OauthServer
       return "must not carry userinfo" if uri.userinfo
       return "must not carry a fragment" if client_id.include?("#")
       return "must have a path" if uri.path.blank? || uri.path == "/"
-      return "must not contain dot path segments" if uri.path.split("/").intersect?([ ".", ".." ])
+      return "must not contain dot path segments" if uri.path.split("/").intersect?([ ".", ".." ]) || uri.path.match?(/%2e/i)
       return "must be in normal form (lowercase host, no default port)" unless normalized?(uri, client_id)
 
       ip = ip_literal(uri.host)
@@ -119,6 +123,7 @@ module OauthServer
       end
 
       parsed = ClientMetadata.parse!(doc, error_code: "invalid_client")
+      Client.prune_unused_registrations if client.nil?
       client ||= Client.new(client_id: @client_id)
       client.assign_attributes(
         registration_type: Client::CIMD,
@@ -130,15 +135,18 @@ module OauthServer
       )
       client.save!
       client
-    rescue ActiveRecord::RecordNotUnique
-      Client.find_by!(client_id: @client_id)
+    rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
+      # Two first fetches of one document racing: the other one saved it.
+      Client.find_by(client_id: @client_id, registration_type: Client::CIMD) || raise
     end
 
     private
 
     def fetch
       address = vetted_address
-      http = Net::HTTP.new(@uri.host, @uri.port)
+      # `nil` proxy: an http_proxy in the environment would resolve the name
+      # again on the proxy's side and undo the pinning below.
+      http = Net::HTTP.new(@uri.host, @uri.port, nil)
       http.ipaddr = address
       http.use_ssl = true
       http.open_timeout = OPEN_TIMEOUT
@@ -153,21 +161,8 @@ module OauthServer
 
       body = +""
       max_age = nil
-      http.start do
-        http.request(request) do |response|
-          unless response.code == "200"
-            raise fetch_error("answered #{response.code}#{' (redirects are not followed)' if response.is_a?(Net::HTTPRedirection)}")
-          end
-          unless json_content_type?(response["Content-Type"])
-            raise fetch_error("answered with Content-Type #{response['Content-Type'].inspect}, not JSON")
-          end
-
-          max_age = ttl_from(response["Cache-Control"])
-          response.read_body do |chunk|
-            body << chunk
-            raise fetch_error("is larger than #{MAX_BODY_BYTES} bytes") if body.bytesize > MAX_BODY_BYTES
-          end
-        end
+      Timeout.timeout(DEADLINE, Net::ReadTimeout) do
+        exchange(http, request, body) { |ttl| max_age = ttl }
       end
 
       [ body, max_age ]
@@ -177,6 +172,25 @@ module OauthServer
       raise fetch_error("did not answer in time")
     rescue OpenSSL::SSL::SSLError, SystemCallError, SocketError, IOError, Net::HTTPBadResponse, EOFError => e
       raise fetch_error("could not be fetched (#{e.class})")
+    end
+
+    def exchange(http, request, body)
+      http.start do
+        http.request(request) do |response|
+          unless response.code == "200"
+            raise fetch_error("answered #{response.code}#{' (redirects are not followed)' if response.is_a?(Net::HTTPRedirection)}")
+          end
+          unless json_content_type?(response["Content-Type"])
+            raise fetch_error("answered with Content-Type #{response['Content-Type'].inspect}, not JSON")
+          end
+
+          yield ttl_from(response["Cache-Control"])
+          response.read_body do |chunk|
+            body << chunk
+            raise fetch_error("is larger than #{MAX_BODY_BYTES} bytes") if body.bytesize > MAX_BODY_BYTES
+          end
+        end
+      end
     end
 
     # Resolve the host and refuse unless EVERY address is public. The connection

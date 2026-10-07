@@ -27,9 +27,10 @@ module OauthServer
     validates :registration_type, inclusion: { in: REGISTRATION_TYPES }
     validate :redirect_uris_present
 
-    # A DCR registration nobody ever consented to is pruned after this long, so
-    # open registration cannot grow the table without bound.
-    UNUSED_DCR_RETENTION = 7.days
+    # A client nobody ever consented to — a DCR registration, or a cached
+    # metadata document gone stale — is pruned after this long, so neither open
+    # registration nor document fetches can grow the table without bound.
+    UNUSED_CLIENT_RETENTION = 7.days
 
     scope :dcr, -> { where(registration_type: DCR) }
 
@@ -68,7 +69,10 @@ module OauthServer
       end
 
       def prune_unused_registrations
-        dcr.where(created_at: ...UNUSED_DCR_RETENTION.ago).where.missing(:grants).delete_all
+        cutoff = UNUSED_CLIENT_RETENTION.ago
+        unused = where.missing(:grants)
+        unused.dcr.where(created_at: ...cutoff).delete_all
+        unused.where(registration_type: CIMD, metadata_expires_at: ...cutoff).delete_all
       end
     end
 

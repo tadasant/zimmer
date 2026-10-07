@@ -1044,10 +1044,10 @@ do anything an `api` key can do on `/mcp`, including archiving sessions and halt
 the `health` group. Narrowing it is up to the URL you paste (`?tool_groups=`), and the client can
 change that URL.
 
-**Registration is open.** Anyone who can reach the host can register a client, and anyone can make
-Zimmer fetch a public HTTPS URL by naming it as a `client_id` at `/oauth/authorize`. A registration
-without a consent is pruned after seven days. With the web sign-in gate on, `/oauth/authorize` (and so
-the fetch) is reachable only by a signed-in browser. There is no rate limit on either beyond that.
+**Registration is open.** Anyone who can reach the host can register a client at `/oauth/register`,
+with no rate limit. A registration without a consent is pruned after seven days. A metadata document
+is fetched only for a signed-in person from an allowed domain, so the set of people who can make
+Zimmer fetch a URL is the set who could approve a connection anyway.
 
 **A withdrawn metadata document does not end a connection.** The token endpoint does not fetch the
 document again, so a client whose publisher pulls the document keeps refreshing until it is revoked on
@@ -1058,9 +1058,15 @@ allowlist, or revoking a person's web sign-in, stops the next *refresh*. An acce
 issued keeps working for the rest of its lifetime, an hour by default. Revoking the connection is
 immediate.
 
-**A refresh retried within 60 seconds is refused but not punished.** The grace window keeps a client
-that lost a response from being signed out. The cost is that a stolen refresh token, replayed inside
-that minute, is refused without revoking the connection.
+**A spent refresh token replayed within 60 seconds is refused but does not revoke the connection.**
+The window lets a client refresh twice at once without ending its own connection. The cost is that a
+stolen refresh token, replayed inside that minute, does not trip the replay alarm. A client that lost
+the response to its own refresh is not rescued by it: Zimmer keeps no copy of the tokens it sent, so
+that client has to be approved again.
+
+**Nothing sweeps expired rows on a schedule.** Expired codes are deleted when the next code is
+issued, and a connection's expired tokens when it next refreshes. A connection that stops refreshing
+keeps its last few token rows until it is revoked.
 
 **Codes are not traced to the tokens they produced.** OAuth 2.1 suggests revoking the tokens a code
 issued when that code is presented a second time. Zimmer refuses the second presentation and stops

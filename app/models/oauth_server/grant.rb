@@ -8,10 +8,11 @@ module OauthServer
   # connection on the next request.
   class Grant < ApplicationRecord
     # A spent refresh token presented again inside this window is refused without
-    # revoking the grant. A client that lost the response to its own refresh and
-    # retried is not an attacker, and cutting it off would mean signing in again —
-    # the one thing long-lived refresh tokens are for avoiding. Outside the window
-    # a replay revokes the grant (RFC 9700 §4.14.2).
+    # revoking the grant. The case it is for is a client that refreshes twice at
+    # once with the same token (two tabs, two workers): one call rotates it, the
+    # other loses the race, and the winner's new pair is still good. Revoking on
+    # that would end a working connection. Outside the window a replay revokes the
+    # grant (RFC 9700 §4.14.2).
     REPLAY_GRACE = 60.seconds
 
     belongs_to :client, class_name: "OauthServer::Client", foreign_key: :oauth_server_client_id,
@@ -38,6 +39,9 @@ module OauthServer
       access = "#{OauthServer::ACCESS_TOKEN_PREFIX}#{SecureRandom.urlsafe_base64(32)}"
       refresh = "#{OauthServer::REFRESH_TOKEN_PREFIX}#{SecureRandom.urlsafe_base64(32)}"
       now = Time.current
+      # Spent and expired tokens have nothing left to say; drop them so a
+      # connection refreshed hourly for months is not thousands of rows.
+      tokens.where(expires_at: ...now).delete_all
 
       Token.insert_all!([
         { oauth_server_grant_id: id, kind: Token::ACCESS, token_digest: OauthServer.digest(access),

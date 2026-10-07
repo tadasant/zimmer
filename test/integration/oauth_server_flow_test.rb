@@ -289,6 +289,8 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
 
     code, verifier = approve(client_id)
     assert_equal "invalid_grant", exchange(other_id, code, verifier)["error"]
+    exchange(client_id, code, verifier)
+    assert_response :success, "another client presenting the code does not burn it"
 
     code, verifier = approve(client_id)
     assert_equal "invalid_grant", exchange(client_id, code, verifier, redirect_uri: "https://claude.ai/elsewhere")["error"]
@@ -382,6 +384,22 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     get "/oauth/authorize", params: authorize_params(register["client_id"], challenge)
     assert_response :unauthorized
     assert_includes response.body, "Sign in to Zimmer first"
+  end
+
+  test "signed out: no metadata document is fetched and no error is redirected anywhere" do
+    ENV.delete("ZIMMER_DEV_WEB_USER_EMAIL")
+    OauthServer::ClientMetadataDocument.any_instance.expects(:fetch).never
+    _, challenge = pkce
+
+    get "/oauth/authorize", params: authorize_params(CLAUDE_CIMD, challenge)
+    assert_response :unauthorized
+
+    # A registered redirect_uri plus a bad parameter would otherwise bounce a
+    # signed-out visitor to whatever URI anyone registered: an open redirect.
+    client_id = register(redirect_uris: [ "https://evil.example/phish" ])["client_id"]
+    get "/oauth/authorize", params: authorize_params(client_id, challenge, redirect_uri: "https://evil.example/phish", response_type: "bogus")
+    assert_response :unauthorized
+    assert_nil response.location
   end
 
   test "signed in outside the allowed domain: a page, no code — even when posting the consent form directly" do
@@ -557,6 +575,26 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     %w[http://claude.ai/meta https://127.0.0.1/meta https://10.0.0.5/meta https://claude.ai/ https://claude.ai/a/../b].each do |client_id|
       get "/oauth/authorize", params: authorize_params(client_id, challenge)
       assert_response :bad_request, client_id
+    end
+  end
+
+  test "clients nobody consented to are pruned after a week; ones with a grant are kept" do
+    stale_dcr = travel_to(8.days.ago) { register["client_id"] }
+    kept_id, = travel_to(8.days.ago) { connect }
+    stale_cimd = OauthServer::Client.create!(client_id: "https://old.example/meta", registration_type: "cimd",
+      redirect_uris: [ REDIRECT ], grant_types: [ "authorization_code" ], metadata_expires_at: 8.days.ago)
+
+    register
+    refute OauthServer::Client.exists?(client_id: stale_dcr)
+    refute OauthServer::Client.exists?(stale_cimd.id)
+    assert OauthServer::Client.exists?(client_id: kept_id)
+  end
+
+  test "a refresh deletes the connection's expired tokens" do
+    client_id, tokens = connect
+    travel 61.minutes do
+      refresh(client_id, tokens["refresh_token"])
+      assert_equal 3, OauthServer::Grant.last.tokens.count, "the expired access token is gone; spent refresh, new pair remain"
     end
   end
 
