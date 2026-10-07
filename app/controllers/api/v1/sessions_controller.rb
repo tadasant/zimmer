@@ -890,40 +890,20 @@ class Api::V1::SessionsController < Api::BaseController
   end
 
   # PATCH /api/v1/sessions/:id/model
-  # Update the model for a session.
+  # Update the model for a session (Sessions::UpdateModel).
   #
   # Request body:
   #   - model: String model identifier. Must be valid for the session's
   #     agent_runtime (e.g. "opus", "sonnet", "haiku", "fable" for claude_code).
   def update_model
-    model = params[:model]
-
-    unless model.is_a?(String) && model.present?
-      render_api_error("Invalid parameter", "model must be a non-empty string", status: :unprocessable_entity)
-      return
-    end
-
-    model = model.strip.first(100)
-
-    # Reject models that don't belong to the session's runtime catalog.
-    unless ModelCatalog.valid_model?(@session.agent_runtime, model)
-      allowed = ModelCatalog.model_ids_for(@session.agent_runtime)
-      render_api_error("Invalid model", "model #{model.inspect} is not valid for runtime #{@session.agent_runtime}. Valid models: #{allowed.join(', ')}", status: :unprocessable_entity)
-      return
-    end
-
-    old_model = @session.config&.dig("model")
-    new_config = (@session.config || {}).merge("model" => model)
-
-    if @session.update(config: new_config)
-      if old_model != model
-        @session.logs.create!(content: "Model updated via API (#{old_model} → #{model})", level: "info")
-      end
-
-      render json: { session: session_json(@session), message: "Model updated" }
-    else
-      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
-    end
+    Sessions::UpdateModel.call(session: @session, model: params[:model], actor: :api)
+    render json: { session: session_json(@session), message: "Model updated" }
+  rescue Sessions::UpdateModel::InvalidParameter => e
+    render_api_error("Invalid parameter", e.message, status: :unprocessable_entity)
+  rescue Sessions::UpdateModel::InvalidModel => e
+    render_api_error("Invalid model", e.message, status: :unprocessable_entity)
+  rescue ActiveRecord::RecordInvalid => e
+    render_api_error("Update failed", e.record.errors.full_messages, status: :unprocessable_entity)
   end
 
   # PATCH /api/v1/sessions/:id/effort
