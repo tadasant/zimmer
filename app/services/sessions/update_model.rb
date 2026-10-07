@@ -18,7 +18,8 @@ module Sessions
   #   session's effort raises ActiveRecord::RecordInvalid and writes nothing.
   #
   # It touches only `config["model"]` (every other config key is kept) and one
-  # log row. It does not restart the session or touch its effort.
+  # log row, written together in one transaction. It does not restart the
+  # session or touch its effort.
   class UpdateModel
     class Error < StandardError; end
     # The value is missing or is not a non-empty String.
@@ -58,14 +59,19 @@ module Sessions
         raise InvalidModel, "model #{new_model.inspect} is not valid for runtime #{session.agent_runtime}. Valid models: #{allowed.join(', ')}"
       end
 
-      old_model = session.config&.dig("model")
+      # Compared against the stored value, not the in-memory one: a write that
+      # failed and is being retried (the web door's with_db_retry) leaves the new
+      # model on the object, and that retry must still write it.
+      old_model = session.attribute_in_database("config")&.dig("model")
       return session if old_model == new_model
 
-      session.update!(config: (session.config || {}).merge("model" => new_model))
-      session.logs.create!(
-        content: "Model updated#{ACTOR_LABELS.fetch(actor, '')} (#{old_model} → #{new_model})",
-        level: "info"
-      )
+      session.transaction do
+        session.update!(config: (session.config || {}).merge("model" => new_model))
+        session.logs.create!(
+          content: "Model updated#{ACTOR_LABELS.fetch(actor, '')} (#{old_model} → #{new_model})",
+          level: "info"
+        )
+      end
       session
     end
   end
