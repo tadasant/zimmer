@@ -804,8 +804,9 @@ handshake that needs a human signed in to X.
 ## Known problems
 
 :::danger[Anyone who can reach the host can start an OAuth flow]
-`McpOauthController` has `skip_forgery_protection only: [:callback, :initiate, :complete]` — and Zimmer has
-[no user authentication at all](/auth/overview/#1-human--zimmer-there-is-no-authentication).
+`McpOauthController` has `skip_forgery_protection only: [:callback, :initiate, :complete]` — and unless a
+deployment turns on [web sign-in](/auth/web-sign-in/), Zimmer has
+[no user authentication at all](/auth/overview/#1-human--zimmer-optional-web-sign-in).
 
 The `state` parameter is the *only* CSRF defense on the callback. On `initiate`, the
 defense is that the request cannot freely invent its target: whenever the catalog has

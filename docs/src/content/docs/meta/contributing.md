@@ -142,7 +142,7 @@ and will fail the build if you don't. See
 :::caution[This site is public; Zimmer is not]
 The Zimmer app is tailnet-only by design. This documentation site is a static, public artifact — it
 contains no secrets, but it *does* candidly describe Zimmer's security posture (including
-[that it has no authentication](/limitations/#the-web-ui-has-no-login-by-design-and-the-sharp-edge-that-follows)).
+[that, out of the box, it has no authentication](/limitations/#web-sign-in-is-off-by-default-so-a-stock-deployment-has-no-login-and-the-sharp-edge-that-follows)).
 
 That's a deliberate trade: the information is already in a public repository, and an operator who
 doesn't know their admin panel is unauthenticated is in more danger than one who does. If you'd rather

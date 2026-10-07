@@ -1720,6 +1720,7 @@ telemetry probe, which warns — broken telemetry is not a reason to withhold a 
 | `GET /up/deep` → 200 | A backing service is down; the body names which |
 | `GET /` → 200 | The app is serving errors on its own root page |
 | `POST` without a CSRF token → 422, then with the page's token → 404 | The session cookie or `secret_key_base` did not survive the deploy: every GET looks perfect while every form in the UI 422s. The target is a session id that cannot exist, so the authorized request 404s having changed nothing |
+| …with [web sign-in](/auth/web-sign-in/) on | `GET /` is a 302 to `/login`, so the step renders `/login` instead (→ 200) and takes its CSRF token and cookie from there. The authorized `POST` then meets the login wall and answers 401 rather than 404. A 422 still means the token did not verify |
 | `GET /cable` upgrades to a WebSocket | Turbo Streams cannot connect — every live update in the UI (timelines, status badges, notification counts) is dead |
 
 Two things follow from this that did not used to be true:
