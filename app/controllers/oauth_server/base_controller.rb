@@ -48,7 +48,7 @@ module OauthServer
     end
 
     def oauth_config
-      @oauth_config ||= OauthServer::Config.current(request)
+      @oauth_config ||= OauthServer::Config.current
     end
   end
 end

@@ -1,5 +1,6 @@
 require "active_support/core_ext/integer/time"
 require_relative "../../app/services/air_catalog_ref_rewriter"
+require_relative "../../app/services/allowed_hosts"
 
 Rails.application.configure do
   # Settings specified here will take precedence over those in config/application.rb.
@@ -189,12 +190,12 @@ Rails.application.configure do
   # Only use :id for inspections in staging/production.
   config.active_record.attributes_for_inspect = [ :id ]
 
-  # Enable DNS rebinding protection and other `Host` header attacks.
-  # config.hosts = [
-  #   "example.com",     # Allow requests from example.com
-  #   /.*\.example\.com/ # Allow requests from subdomains like `www.example.com`
-  # ]
-  #
-  # Skip DNS rebinding protection for the default health check endpoint.
-  # config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
+  # DNS rebinding and Host-header protection. AllowedHosts names every Host this
+  # deployment receives (the public domain, tailnet IPs and hostname, localhost)
+  # and returns nil to leave the check off (ZIMMER_ALLOWED_HOSTS=*, or no domain
+  # configured). /up is excluded so kamal-proxy's health gate never meets it.
+  if (allowed_hosts = AllowedHosts.for("staging"))
+    config.hosts = allowed_hosts
+    config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
+  end
 end

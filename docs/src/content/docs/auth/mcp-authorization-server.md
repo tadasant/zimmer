@@ -179,13 +179,15 @@ the client sent a `resource` (RFC 8707). A `resource` that names anything else i
 The comparison ignores the query string, the fragment and one trailing slash, because the URL you
 paste may carry `?tool_groups=`. `/mcp` refuses a token whose audience is not its own resource.
 
-**The issuer** is `OAUTH_SERVER_ISSUER` when set, otherwise `https://$APP_HOST`. It must be a bare
-origin, and it is what every metadata URL, the `resource`, the audience and the `iss` on the
-authorization response are built from, so it must be the origin the client reaches Zimmer at.
-**It never comes from the request** outside development and test. Behind a TLS-terminating edge,
-Rails sees `http://localhost`, which is not where the client is. With neither variable set, the
-metadata endpoints answer `503` and nothing is issued. On a laptop with neither set, the request's
-own origin is used.
+**The issuer** is `OAUTH_SERVER_ISSUER` when set, otherwise the instance's base URL
+(`ZIMMER_PROD_BASE_URL` in production, `ZIMMER_STAGING_BASE_URL` on staging), the same URL the web
+sign-in builds its callback from. It must be a bare origin, and it is what every metadata URL, the
+`resource`, the audience and the `iss` on the authorization response are built from, so it must be the
+origin the client reaches Zimmer at. `resource` is always exactly `<issuer>/mcp`. **It never comes
+from the request**, in any environment: the `Host` header is whatever the client or the edge in front
+of Rails made it, so a forged one cannot move the metadata. A production or staging deploy that left
+the base URL at its `zimmer.example.com` placeholder answers `503` on the metadata endpoints and
+issues nothing. On a laptop with neither set, the issuer is `http://localhost:$PORT`.
 
 ## The 401
 
@@ -216,7 +218,7 @@ never a token. A revocation is logged at WARN, so it ships to obs.
 
 | Variable | Default | |
 | --- | --- | --- |
-| `OAUTH_SERVER_ISSUER` | `https://$APP_HOST` | The public origin Zimmer is reached at. Never taken from the request in production |
+| `OAUTH_SERVER_ISSUER` | the base URL (`ZIMMER_PROD_BASE_URL`) | The public origin Zimmer is reached at. Never taken from the request |
 | `OAUTH_SERVER_ALLOWED_DOMAINS` | web sign-in's `ZIMMER_WEB_AUTH_ALLOWED_DOMAINS` | Who may approve a connection. Unset everywhere means nobody |
 | `OAUTH_SERVER_ACCESS_TOKEN_TTL_SECONDS` | `3600` | |
 | `OAUTH_SERVER_REFRESH_TOKEN_TTL_SECONDS` | `15552000` | 180 days |

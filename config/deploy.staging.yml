@@ -136,6 +136,13 @@ env:
     # instance whose host might get carried in through ported credentials, which
     # would point Zimmer's own sessions at someone else's box.
     ZIMMER_STAGING_BASE_URL: https://staging.zimmer.tadasant.com
+    # The Host allow-list (AllowedHosts, config/environments/staging.rb). The domain
+    # comes from the base URL above; this adds the MagicDNS name Terraform gives the
+    # droplet (`tailnet_hostname` in infra/terraform/main.tf), bare and as its
+    # .ts.net FQDN. ZIMMER_ALLOWED_HOSTS adds any other hostname, and "*" turns the
+    # check off -- the break-glass if a legitimate Host is ever refused with a 403.
+    ZIMMER_TAILNET_HOSTNAME: zimmer-staging
+    ZIMMER_ALLOWED_HOSTS: "<%= ENV.fetch("ZIMMER_ALLOWED_HOSTS", "") %>"
     DATABASE_HOST: zimmer-db
     DATABASE_PORT: "5432"
     DATABASE_USERNAME: zimmer

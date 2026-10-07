@@ -68,7 +68,7 @@ class McpController < Api::BaseController
   end
 
   def authenticate_oauth_access_token(token)
-    config = OauthServer::Config.current(request)
+    config = OauthServer::Config.current
     lookup = if config.configured?
       OauthServer::Token.authenticate_access(token, resource: config.resource)
     else
@@ -92,7 +92,7 @@ class McpController < Api::BaseController
   def challenge_oauth_client
     return unless oauth_access_tokens_accepted?
 
-    config = OauthServer::Config.current(request)
+    config = OauthServer::Config.current
     parts = [ 'realm="zimmer"' ]
     parts << 'error="invalid_token"' if @oauth_token_refused || api_key_from_request.present?
     parts << %(resource_metadata="#{config.protected_resource_metadata_url}") if config.configured?

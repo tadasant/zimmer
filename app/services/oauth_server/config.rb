@@ -9,9 +9,11 @@ module OauthServer
   # allowed domains, which fail closed.
   #
   #   OAUTH_SERVER_ISSUER                     the public origin, e.g. https://zimmer.example.com.
-  #                                           Default: https://$APP_HOST. Never the request's own
-  #                                           origin outside development and test: behind a TLS-
-  #                                           terminating edge, Rails sees http://localhost.
+  #                                           Default: AppUrl.base_url (ZIMMER_PROD_BASE_URL in
+  #                                           production), the same URL the web sign-in builds its
+  #                                           callback from. Never the request's own origin: the
+  #                                           Host header is whatever the client or the edge in
+  #                                           front of Rails made it.
   #   OAUTH_SERVER_ALLOWED_DOMAINS            comma-separated email domains a consenting human must
   #                                           belong to. Default: the web sign-in's own allowed
   #                                           domains (WebAuth::Configuration). Neither set means
@@ -32,32 +34,30 @@ module OauthServer
     MCP_PATH = "/mcp"
     PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource/mcp"
 
-    def self.current(request = nil)
-      new(request)
-    end
-
-    def initialize(request = nil)
-      @request = request
+    def self.current
+      new
     end
 
     # Raised when no issuer is configured, so nothing can be issued or checked.
     class NotConfigured < OauthServer::Error
       def initialize
         super("temporarily_unavailable",
-          "this deployment has not configured its public URL (#{ISSUER_KEY} or APP_HOST), so it cannot act as an OAuth server")
+          "this deployment has not configured its public URL (#{ISSUER_KEY} or #{AppUrl.base_url_key}), so it cannot act as an OAuth server")
       end
     end
 
     # The authorization server's issuer identifier: a bare origin, no path. Every
     # URL this server publishes — the metadata documents, the `resource`, the
-    # audience, `iss` — is built from it, and it comes from configuration: the
-    # request's own scheme and host are what the edge in front of Rails made
-    # them, not what the client reached. Development and test, with neither
-    # configured, fall back to the request so a laptop works out of the box.
+    # audience, `iss` — is built from it, and it comes from configuration only:
+    # the request's own scheme and host are what the client or the edge in front
+    # of Rails made them, so a forged Host header cannot move the metadata.
+    # Development and test fall back to AppUrl's http://localhost:$PORT, so a
+    # laptop works out of the box; production and staging with nothing set are
+    # unconfigured rather than publishing the placeholder host.
     #
     # @raise [NotConfigured]
     def issuer
-      @issuer ||= configured_issuer || (Rails.env.local? ? @request&.base_url : nil) || raise(NotConfigured)
+      @issuer ||= configured_issuer || raise(NotConfigured)
     end
 
     def configured?
@@ -123,15 +123,10 @@ module OauthServer
 
     private
 
-    # A bare http(s) origin from OAUTH_SERVER_ISSUER or APP_HOST, or nil.
+    # A bare http(s) origin from OAUTH_SERVER_ISSUER or AppUrl.base_url, or nil.
     def configured_issuer
-      configured = read(ISSUER_KEY)
-      origin = if configured.present?
-        configured
-      elsif (host = ENV["APP_HOST"].to_s.strip).present?
-        "#{local_host?(host) ? 'http' : 'https'}://#{host}"
-      end
-      return nil if origin.blank?
+      origin = read(ISSUER_KEY) || app_base_url
+      return nil if origin.blank? || AppUrl.placeholder?(origin)
 
       uri = URI.parse(origin.strip.chomp("/"))
       if !uri.is_a?(URI::HTTP) || uri.host.blank? || uri.path.present? || uri.query || uri.fragment || uri.userinfo
@@ -153,6 +148,13 @@ module OauthServer
       ENV[key].presence
     end
 
+    def app_base_url
+      AppUrl.base_url
+    rescue StandardError => e
+      Rails.logger.warn("[oauth_server] reading the base URL from the secret store failed (#{e.class}); using the process environment")
+      ENV[AppUrl.base_url_key].presence || AppUrl.fallback_base_url
+    end
+
     def read_strict(key)
       SecretProviders.chain.get(key).presence
     rescue StandardError => e
@@ -171,11 +173,6 @@ module OauthServer
       end
 
       seconds.seconds
-    end
-
-    def local_host?(host)
-      name = host.to_s.split(":").first.to_s.downcase
-      name == "localhost" || name.end_with?(".localhost") || name.start_with?("127.") || name == "[::1]"
     end
   end
 end
