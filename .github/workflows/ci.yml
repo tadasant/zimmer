@@ -522,7 +522,8 @@ jobs:
             scripts/tailnet-reap-node.sh \
             scripts/worker-watchdog.sh \
             scripts/install-worker-watchdog.sh \
-            scripts/install-needrestart-sysbox-dropin.sh; do
+            scripts/install-needrestart-sysbox-dropin.sh \
+            scripts/install-cloudflared.sh; do
             case " ${files[*]} " in
               *" $required "*) ;;
               *)

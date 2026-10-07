@@ -77,16 +77,27 @@ cf() {
     ${data:+--data "$data"}
 }
 
-record_id="$(cf GET "/zones/${CF_ZONE_ID}/dns_records?type=A&name=${DOMAIN}" \
-  | jq -r '.result[0].id // empty')"
-body="$(jq -nc --arg n "$DOMAIN" --arg c "$TS_IP" \
-  '{type:"A", name:$n, content:$c, ttl:120, proxied:false}')"
-if [ -n "$record_id" ]; then
-  cf PUT "/zones/${CF_ZONE_ID}/dns_records/${record_id}" "$body" >/dev/null
-  log "updated A record ${DOMAIN} -> ${TS_IP}"
+# The live record decides, not a flag. When the optional Cloudflare edge serves the
+# domain, its tunnel owns the name as a proxied CNAME to <tunnel-id>.cfargotunnel.com.
+# An A-record upsert there would fail (a name cannot carry both) and turn this job red
+# every week -- so leave DNS alone. The cert is still needed: the host Caddy keeps
+# serving the domain to tailnet peers and to the app's own pinned containers.
+tunnel_target="$(cf GET "/zones/${CF_ZONE_ID}/dns_records?type=CNAME&name=${DOMAIN}" \
+  | jq -r '[.result[]? | .content | select(endswith(".cfargotunnel.com"))][0] // empty')"
+if [ -n "$tunnel_target" ]; then
+  log "${DOMAIN} is a Cloudflare Tunnel CNAME (${tunnel_target}); leaving its DNS alone"
 else
-  cf POST "/zones/${CF_ZONE_ID}/dns_records" "$body" >/dev/null
-  log "created A record ${DOMAIN} -> ${TS_IP}"
+  record_id="$(cf GET "/zones/${CF_ZONE_ID}/dns_records?type=A&name=${DOMAIN}" \
+    | jq -r '.result[0].id // empty')"
+  body="$(jq -nc --arg n "$DOMAIN" --arg c "$TS_IP" \
+    '{type:"A", name:$n, content:$c, ttl:120, proxied:false}')"
+  if [ -n "$record_id" ]; then
+    cf PUT "/zones/${CF_ZONE_ID}/dns_records/${record_id}" "$body" >/dev/null
+    log "updated A record ${DOMAIN} -> ${TS_IP}"
+  else
+    cf POST "/zones/${CF_ZONE_ID}/dns_records" "$body" >/dev/null
+    log "created A record ${DOMAIN} -> ${TS_IP}"
+  fi
 fi
 
 # ---------------------------------------------------------------- 3. issue?
@@ -163,11 +174,13 @@ if [ "$need_issue" = "true" ]; then
 fi
 
 # ---------------------------------------------------------------- 4. verify
-# The runner is a tailnet peer, so it resolves ${DOMAIN} (public A record) to the
-# tailnet IP and reaches it over the tunnel. Assert 200 AND a real (non-self-signed)
-# issuer, so a stuck self-signed placeholder can't pass as success.
+# Pinned to the box with --resolve rather than through public DNS: the runner is a
+# tailnet peer, so it reaches TS_IP directly, and the check stays a check of THIS box's
+# Caddy even when public DNS points the name at a Cloudflare Tunnel. Assert
+# 200 AND a real (non-self-signed) issuer, so a stuck self-signed placeholder can't pass
+# as success.
 for i in $(seq 1 10); do
-  if issuer_now="$(curl -fsS --max-time 8 -o /dev/null -w '%{ssl_verify_result}\n' "https://${DOMAIN}/up" 2>/dev/null)" \
+  if issuer_now="$(curl -fsS --max-time 8 -o /dev/null -w '%{ssl_verify_result}\n' --resolve "${DOMAIN}:443:${TS_IP}" "https://${DOMAIN}/up" 2>/dev/null)" \
      && [ "$issuer_now" = "0" ]; then
     log "https://${DOMAIN}/up OK with a publicly-trusted cert"
     exit 0

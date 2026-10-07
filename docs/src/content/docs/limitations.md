@@ -156,6 +156,26 @@ issuances](#rebuilding-staging-costs-a-lets-encrypt-issuance-and-there-are-only-
 first real exercise of this path is whenever a droplet is next rebuilt with it enabled, and that is
 the moment to check `systemctl status node_exporter` rather than assume.
 
+### The Cloudflare edge's connector has not registered against a real tunnel from this repo
+
+The [optional Cloudflare edge](/operate/deploying/#optional-cloudflare-edge) is verified in pieces.
+The header handling was checked through a real Cloudflare edge and cloudflared, using a throwaway quick
+tunnel. The converge script was run against a real Docker daemon: the pinned image read its `0400`
+token file as its nonroot uid and got as far as server-side registration, which a fake token cannot
+pass. The domain pin was checked between a separate bridge network and a host-network Caddy. What has
+not happened is a connector registering with a **real** tunnel token. Neither repo had a Cloudflare
+account wired when this landed, so the first deploy that sets `CLOUDFLARE_TUNNEL_TOKEN` is the first
+real exercise. The converge fails that deploy if no connection registers, so the failure is loud.
+
+The domain pin reaches the web and worker containers, and no further. Containers that an agent
+session starts through the worker's own Docker daemon (`.agent-containers/`) have their own
+`/etc/hosts` and resolve the domain through public DNS. Behind the edge, a call from one of them to
+`https://<domain>` meets Cloudflare Access.
+
+Two smaller edges. The connector is delivered only by the deploy, so a droplet rebuilt from scratch has
+no tunnel until its first deploy finishes. And with the edge on, the tunnel's traffic skips Caddy, so
+Caddy-side changes (headers, logging) affect only tailnet traffic.
+
 ### RAILS_MASTER_KEY is optional on staging, and silently degrades when absent
 
 Staging *can* read encrypted credentials: `config/credentials/staging.yml.enc` is committed, and
