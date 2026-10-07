@@ -16,9 +16,14 @@
 # each, so a fast hash is enough, and a code is shown once and never again.
 class WebIdentity < ApplicationRecord
   RECOVERY_CODE_COUNT = 10
-  # Consecutive wrong codes before the second factor locks.
+  # Every this-many consecutive wrong codes, the second factor locks.
   MAX_FAILED_ATTEMPTS = 5
+  # The first lockout. Each one after it doubles, up to MAX_LOCKOUT, and the
+  # count only clears on a right answer, so slow guessing gets slower.
   LOCKOUT = 15.minutes
+  MAX_LOCKOUT = 1.day
+
+  after_destroy_commit :disconnect_cable_connections
 
   validates :google_sub, presence: true, uniqueness: true
   validates :email, presence: true
@@ -27,13 +32,21 @@ class WebIdentity < ApplicationRecord
   # @param identity [WebAuth::GoogleOauth::Identity]
   # @return [WebIdentity]
   def self.sign_in_from_google!(identity, at: Time.current)
-    record = find_or_initialize_by(google_sub: identity.sub)
-    record.email = identity.email
-    record.hosted_domain = identity.hosted_domain
-    record.name = identity.name if identity.name.present?
-    record.last_signed_in_at = at
-    record.save!
-    record
+    attempts = 0
+    begin
+      record = find_or_initialize_by(google_sub: identity.sub)
+      record.email = identity.email
+      record.hosted_domain = identity.hosted_domain
+      record.name = identity.name if identity.name.present?
+      record.last_signed_in_at = at
+      record.save!
+      record
+    rescue ActiveRecord::RecordNotUnique
+      # Two first sign-ins raced to create the row; the loser finds it.
+      attempts += 1
+      retry if attempts == 1
+      raise
+    end
   end
 
   def display_name = name.presence || email
@@ -56,7 +69,10 @@ class WebIdentity < ApplicationRecord
   end
 
   # Confirm the pending secret with a code from the app. It replaces any
-  # previous authenticator, and issues a new set of recovery codes.
+  # previous authenticator, issues a new set of recovery codes, and signs the
+  # identity out everywhere: someone replacing an authenticator may be doing it
+  # because the old one was compromised. The caller re-signs-in the browser
+  # that confirmed.
   #
   # @return [Array<String>, nil] the new recovery codes, in plain text, or nil
   #   if the code was wrong
@@ -74,8 +90,10 @@ class WebIdentity < ApplicationRecord
       totp_last_used_step: step,
       recovery_code_digests: codes.map { |c| self.class.digest_recovery_code(c) },
       second_factor_failed_attempts: 0,
-      second_factor_locked_until: nil
+      second_factor_locked_until: nil,
+      session_generation: session_generation + 1
     )
+    disconnect_cable_connections
     codes
   end
 
@@ -100,10 +118,10 @@ class WebIdentity < ApplicationRecord
         :recovery_code
       else
         failures = second_factor_failed_attempts + 1
-        if failures >= MAX_FAILED_ATTEMPTS
-          update!(second_factor_failed_attempts: 0, second_factor_locked_until: at + LOCKOUT)
-        else
-          update!(second_factor_failed_attempts: failures)
+        locked_until = (at + lockout_after(failures) if (failures % MAX_FAILED_ATTEMPTS).zero?)
+        update!(second_factor_failed_attempts: failures, second_factor_locked_until: locked_until || second_factor_locked_until)
+        if locked_until
+          Rails.logger.warn("[web_auth] second factor for #{email} locked until #{locked_until.utc.iso8601} after #{failures} wrong codes in a row")
         end
         :invalid
       end
@@ -112,9 +130,24 @@ class WebIdentity < ApplicationRecord
 
   def recovery_codes_remaining = recovery_code_digests.size
 
-  # Ends every signed-in browser for this identity at its next request.
+  # Ends every signed-in browser for this identity at its next request, voids
+  # its trusted browsers, and closes its open live-update connections now.
   def sign_out_everywhere!
     increment!(:session_generation)
+    disconnect_cable_connections
+  end
+
+  # 15 minutes, then 30, 60, … up to a day.
+  def lockout_after(failures)
+    [ LOCKOUT * (2**((failures / MAX_FAILED_ATTEMPTS) - 1)), MAX_LOCKOUT ].min
+  end
+
+  # A connection is checked only when it opens, so one already open would keep
+  # receiving Turbo Streams after its browser stopped counting as signed in.
+  def disconnect_cable_connections
+    ActionCable.server.remote_connections.where(web_identity: self).disconnect
+  rescue StandardError => e
+    Rails.logger.warn("[web_auth] could not disconnect live connections for web_identity_id=#{id}: #{e.class}: #{e.message}")
   end
 
   # Ten characters of base32, grouped for reading aloud: "k7qd-m2xa-pf".

@@ -11,7 +11,7 @@
 # walks every route and fails if one lands somewhere this list does not explain.
 #
 # With the gate off (no ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID) every check here is a
-# no-op and the UI behaves exactly as it did before the gate existed.
+# no-op and nobody is asked to sign in.
 module WebSignInRequired
   extend ActiveSupport::Concern
 
@@ -21,7 +21,7 @@ module WebSignInRequired
   included do
     before_action :require_web_sign_in
     rescue_from WebAuth::Configuration::Unavailable, with: :web_auth_unavailable
-    helper_method :current_web_identity, :web_sign_in_enabled?, :web_auth_configuration if respond_to?(:helper_method)
+    helper_method :current_web_identity, :web_auth_configuration if respond_to?(:helper_method)
   end
 
   class_methods do
@@ -72,12 +72,6 @@ module WebSignInRequired
   end
 
   def current_web_identity = @current_web_identity
-
-  def web_sign_in_enabled?
-    web_auth_configuration.enabled?
-  rescue WebAuth::Configuration::Unavailable
-    true
-  end
 
   def web_auth_configuration
     @web_auth_configuration ||= WebAuth::Configuration.current

@@ -44,7 +44,7 @@ module WebSignInFlow
   # Only a path on this host. "//evil.example" is a host, not a path.
   def safe_return_to(value)
     path = value.to_s
-    path.start_with?("/") && !path.start_with?("//") && !path.start_with?("/\\") ? path : root_path
+    path.start_with?("/") && !path.start_with?("//") && !path.start_with?("/\\") ? path : "/"
   end
 
   def second_factor_reset_before

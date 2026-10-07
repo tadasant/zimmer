@@ -974,9 +974,13 @@ CSRF is not a fence against it. `verify_authenticity_token` does run on these ro
 and the session cookie are both in the response to an anonymous `GET`, so getting past it takes two
 requests rather than one. The same exposure applies to every member of the tailnet.
 
-[Web sign-in](/auth/web-sign-in/), when a deployment turns it on, closes the browser door: a
-session's `curl` meets `/login`, and a session has no Google Workspace account to pass it with. The
-rest of this section is what stays open either way.
+[Web sign-in](/auth/web-sign-in/), when a deployment turns it on, does not change this. A session's
+casual `curl` meets `/login`, but a session runs as the same user, in the same container, as the
+Rails app: it can read `SECRET_KEY_BASE` (from its own environment, or from the app's) and forge the
+encrypted sign-in cookie. Web sign-in keeps out the tailnet and the open internet. Keeping out the
+host's own sessions needs process isolation, which Zimmer does not have (see
+[agents run unsandboxed](#agents-run-unsandboxed-on-the-app-host)). The rest of this section is
+what stays open either way.
 
 The HTTP Basic password that used to guard these three surfaces closed this door, because it was the
 one credential sessions did not hold: `CliSpawnEnv` cleared it from every process it spawned. It never
@@ -1012,9 +1016,14 @@ costs:
   by removing the client ID.
 - **The authenticator secret is plaintext in the database,** like [every other
   credential](#nothing-is-encrypted-at-rest). `/supervisor` does not render it.
-- **A process that cannot read its configuration at boot answers 503** on every browser page, until
-  the secret store answers. A process that has read it once keeps its last answer through an
-  outage. The machine paths do not read it at all.
+- **A store outage pauses new sign-ins.** A process keeps the configuration it last read, and one
+  that boots during the outage uses the last copy in `Rails.cache`, minus the client secret, so
+  existing sign-ins carry on and new ones wait. A process with neither (a fresh deployment, or Redis
+  down too) answers 503 on every browser page until the store answers. This applies even when the
+  wall is off, on a deployment that has configured a Parameter Store. The machine paths do not read
+  this configuration at all.
+- **It does not keep out agent sessions on the same host.** See
+  [the section above](#the-web-ui-does-not-keep-agent-sessions-out).
 - **Google takes only `https` redirect URIs,** apart from `localhost`. A deployment reachable only at
   a plain-HTTP tailnet name needs an HTTPS name before it can turn web sign-in on.
 - **An agent driving the production UI in a browser meets the wall too.** There is no sign-in route

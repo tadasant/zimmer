@@ -13,6 +13,9 @@ class WebSecondFactorsController < ApplicationController
 
   allow_signed_out_access
   before_action :require_totp_mode
+  # The setup page shows a TOTP secret and the confirmation shows recovery
+  # codes: neither belongs in a browser or proxy cache.
+  before_action { response.headers["Cache-Control"] = "no-store" }
   before_action :load_verifying_identity, only: %i[new create]
   before_action :load_enrolling_identity, only: %i[setup confirm_setup]
 

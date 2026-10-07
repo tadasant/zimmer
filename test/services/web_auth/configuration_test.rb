@@ -99,4 +99,35 @@ class WebAuth::ConfigurationTest < ActiveSupport::TestCase
     Process.stubs(:clock_gettime).returns(later)
     assert_equal "cid", WebAuth::Configuration.current.client_id
   end
+
+  test "a mistyped second-factor mode still requires TOTP, and a bad reset instant is a problem" do
+    configuration = web_auth_configuration_with(second_factor: "topt", second_factor_reset_before: "yesterday")
+
+    assert_predicate configuration, :totp_required?
+    refute_predicate configuration, :usable?
+    assert_includes configuration.problems, "ZIMMER_WEB_AUTH_SECOND_FACTOR_RESET_BEFORE is not an ISO 8601 time"
+  end
+
+  test "a process that boots during a store outage uses the last answer in Rails.cache, minus the secret" do
+    Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
+    working = mock("chain")
+    working.stubs(:get).returns(nil)
+    working.stubs(:get).with("ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID").returns("cid")
+    working.stubs(:get).with("ZIMMER_WEB_AUTH_GOOGLE_CLIENT_SECRET").returns("secret")
+    working.stubs(:get).with("ZIMMER_WEB_AUTH_ALLOWED_DOMAINS").returns("tadasant.com")
+    SecretProviders.stubs(:chain).returns(working)
+    WebAuth::Configuration.current
+    WebAuth::Configuration.reset!
+
+    failing = mock("chain")
+    failing.stubs(:get).raises(ParameterStore::StoreError, "store down")
+    SecretProviders.stubs(:chain).returns(failing)
+    configuration = WebAuth::Configuration.current
+
+    assert_predicate configuration, :enabled?
+    assert_nil configuration.client_secret
+    assert_equal [ "tadasant.com" ], configuration.allowed_domains
+    refute_predicate configuration, :usable?
+    assert_match "not answering", configuration.problems.first
+  end
 end

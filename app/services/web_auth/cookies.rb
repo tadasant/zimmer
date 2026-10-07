@@ -18,8 +18,9 @@ module WebAuth
   # **The trusted-device cookie** says "this browser passed the second factor
   # for identity N's current authenticator". At the next Google sign-in, after
   # the sign-in cookie has lapsed or the person signed out, it skips the code
-  # prompt. It is tied to the enrollment's timestamp, so a new authenticator or
-  # a deployment-wide second-factor reset voids every one of them.
+  # prompt. It is tied to the enrollment's timestamp and the session
+  # generation, so a new authenticator, signing out everywhere, or a
+  # deployment-wide second-factor reset voids every one of them.
   module Cookies
     module_function
 
@@ -63,12 +64,12 @@ module WebAuth
     end
 
     def trust_device(cookies, identity, configuration, at: Time.current)
-      write(cookies, TRUSTED_DEVICE, { "id" => identity.id, "e" => enrollment_stamp(identity) }, at + configuration.trusted_device_ttl)
+      write(cookies, TRUSTED_DEVICE, { "id" => identity.id, "g" => identity.session_generation, "e" => enrollment_stamp(identity) }, at + configuration.trusted_device_ttl)
     end
 
     def trusted_device?(cookies, identity, configuration)
       data = read(cookies, TRUSTED_DEVICE)
-      return false unless data && data["id"] == identity.id
+      return false unless data && data["id"] == identity.id && data["g"] == identity.session_generation
       return false unless identity.totp_enrolled?(reset_before: configuration.second_factor_reset_before)
 
       data["e"] == enrollment_stamp(identity)

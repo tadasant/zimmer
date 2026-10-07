@@ -11,8 +11,8 @@
 </ul>
 
 <p class="mt-4 text-xs text-gray-500">
-  This browser is trusted for <%= pluralize(@web_auth_configuration.trusted_device_ttl.in_days.to_i, "day") %>,
-  and stays signed in while you use it at least every <%= pluralize(@web_auth_configuration.session_ttl.in_days.to_i, "day") %>.
+  This browser is trusted for <%= pluralize(web_auth_configuration.trusted_device_ttl.in_days.to_i, "day") %>,
+  and stays signed in while you use it at least every <%= pluralize(web_auth_configuration.session_ttl.in_days.to_i, "day") %>.
 </p>
 
 <%= link_to "Continue to Zimmer", @return_to,
