@@ -69,12 +69,29 @@ builder:
 # top-level `volumes:` key, which Kamal appends to every app role's `docker run`
 # (production does exactly that for /opt/zimmer). That is the property that makes a
 # new entry below reach BOTH destinations instead of only the one it was added to.
+#
+# ZIMMER_PIN_DOMAIN_TO_HOST (optional, off when unset) pins the app's own public
+# hostname to THIS host inside the web and worker containers: Docker writes
+# `<domain> -> host-gateway` into each container's /etc/hosts. Agent sessions run in
+# the worker and call Zimmer at https://<domain>/mcp, and the deployment's public DNS
+# may not point at this box -- behind the optional Cloudflare edge it points at
+# Cloudflare, so that call would leave the box and meet Cloudflare Access. Pinned, it
+# goes to the host Caddy on :443 (bound on every interface, so host-gateway reaches
+# it), which serves the domain's own certificate, so TLS still validates. See
+# docs/operate/deploying.md#optional-cloudflare-edge.
+<% pinned_domain = ENV.fetch("ZIMMER_PIN_DOMAIN_TO_HOST", "").strip %>
+<% unless pinned_domain.empty? || pinned_domain.match?(/\A[a-z0-9]([a-z0-9.-]*[a-z0-9])?\z/i) %>
+<% raise ArgumentError, "ZIMMER_PIN_DOMAIN_TO_HOST must be a bare hostname, got #{pinned_domain.inspect}" %>
+<% end %>
 servers:
   web:
     options:
       # tini-style PID 1 so agent-spawned grandchildren (gh, git, node, chrome,
       # claude) are reaped instead of piling up as zombies.
       init: true
+<% unless pinned_domain.empty? %>
+      add-host: "<%= pinned_domain %>:host-gateway"
+<% end %>
       # Durable named volumes shared by web + worker so both see the same clones,
       # runtime credentials, and gh auth. They survive Kamal container swaps (the
       # whole point of a persistent host), so a deploy does not cost the state on them.
@@ -106,6 +123,9 @@ servers:
     options:
       init: true
       volume: *durable_volumes
+<% unless pinned_domain.empty? %>
+      add-host: "<%= pinned_domain %>:host-gateway"
+<% end %>
 
 env:
   clear:

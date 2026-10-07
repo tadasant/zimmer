@@ -30,19 +30,21 @@ module KamalConfigHelpers
 
   # The deploy shell supplies hosts and the nested-Docker switch. Pin the hosts (a role
   # with no host has no `docker run` to inspect) so a render never depends on what the
-  # machine running the suite happens to export.
+  # machine running the suite happens to export. A nil value is UNSET for the render, so
+  # an opt-in the suite's own machine happens to export cannot leak into it.
   KAMAL_RENDER_ENV = {
     "PRODUCTION_HOST" => "198.51.100.10",
     "STAGING_HOST" => "198.51.100.11",
-    "PRODUCTION_DB_HOST" => "managed-db.example.internal"
+    "PRODUCTION_DB_HOST" => "managed-db.example.internal",
+    "ZIMMER_PIN_DOMAIN_TO_HOST" => nil
   }.freeze
 
   # `nested_docker` is passed through to ZIMMER_NESTED_DOCKER; nil leaves it unset, so
-  # each destination's own default applies.
-  def kamal_config(destination, nested_docker: nil)
+  # each destination's own default applies. `env` sets any other deploy-shell variable.
+  def kamal_config(destination, nested_docker: nil, env: {})
     require "kamal"
 
-    with_kamal_render_env("ZIMMER_NESTED_DOCKER" => nested_docker) do
+    with_kamal_render_env(env.merge("ZIMMER_NESTED_DOCKER" => nested_docker)) do
       Kamal::Configuration.create_from(
         config_file: Rails.root.join("config/deploy.yml"),
         destination: destination,
@@ -60,8 +62,8 @@ module KamalConfigHelpers
   # The `docker run` Kamal would issue for a role, as one string. This is the last word
   # on what a container gets: it folds in the role's own options AND the top-level
   # `volumes:` key, which never appears under `servers`.
-  def kamal_docker_run(destination, role_name, nested_docker: nil)
-    config = kamal_config(destination, nested_docker: nested_docker)
+  def kamal_docker_run(destination, role_name, nested_docker: nil, env: {})
+    config = kamal_config(destination, nested_docker: nested_docker, env: env)
     role = config.role(role_name)
 
     Kamal::Commands::App

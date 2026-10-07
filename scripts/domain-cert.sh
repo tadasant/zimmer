@@ -27,6 +27,13 @@
 #   ACME_CA        ACME directory URL (default: Let's Encrypt production)
 #   RENEW_DAYS     re-issue when fewer than this many days remain (default 30)
 #   FORCE_ISSUE    "true" to issue regardless of the current cert
+#   MANAGE_A_RECORD  "false" to leave the domain's DNS alone (default "true"). Set it when
+#                  the public name is served by something else -- the optional Cloudflare
+#                  edge, whose tunnel owns the name as a proxied CNAME. Upserting an A
+#                  record there would fail (a name cannot be both) or, worse, succeed and
+#                  pull the public name back onto the tailnet. The cert is still needed:
+#                  the host Caddy keeps serving the domain to tailnet peers and to the
+#                  app's own containers (ZIMMER_PIN_DOMAIN_TO_HOST).
 set -euo pipefail
 
 : "${DOMAIN:?}" "${TS_HOST:?}" "${CF_ZONE_ID:?}" "${CF_API_TOKEN:?}" "${ACME_EMAIL:?}"
@@ -34,6 +41,11 @@ LEGO_VERSION="${LEGO_VERSION:-v4.19.2}"
 ACME_CA="${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}"
 RENEW_DAYS="${RENEW_DAYS:-30}"
 FORCE_ISSUE="${FORCE_ISSUE:-false}"
+MANAGE_A_RECORD="${MANAGE_A_RECORD:-true}"
+case "$MANAGE_A_RECORD" in
+  true | false) ;;
+  *) echo "::error::MANAGE_A_RECORD must be true or false (got '${MANAGE_A_RECORD}')"; exit 2 ;;
+esac
 
 log() { echo "[domain-cert] $*"; }
 
@@ -77,16 +89,20 @@ cf() {
     ${data:+--data "$data"}
 }
 
-record_id="$(cf GET "/zones/${CF_ZONE_ID}/dns_records?type=A&name=${DOMAIN}" \
-  | jq -r '.result[0].id // empty')"
-body="$(jq -nc --arg n "$DOMAIN" --arg c "$TS_IP" \
-  '{type:"A", name:$n, content:$c, ttl:120, proxied:false}')"
-if [ -n "$record_id" ]; then
-  cf PUT "/zones/${CF_ZONE_ID}/dns_records/${record_id}" "$body" >/dev/null
-  log "updated A record ${DOMAIN} -> ${TS_IP}"
+if [ "$MANAGE_A_RECORD" = "true" ]; then
+  record_id="$(cf GET "/zones/${CF_ZONE_ID}/dns_records?type=A&name=${DOMAIN}" \
+    | jq -r '.result[0].id // empty')"
+  body="$(jq -nc --arg n "$DOMAIN" --arg c "$TS_IP" \
+    '{type:"A", name:$n, content:$c, ttl:120, proxied:false}')"
+  if [ -n "$record_id" ]; then
+    cf PUT "/zones/${CF_ZONE_ID}/dns_records/${record_id}" "$body" >/dev/null
+    log "updated A record ${DOMAIN} -> ${TS_IP}"
+  else
+    cf POST "/zones/${CF_ZONE_ID}/dns_records" "$body" >/dev/null
+    log "created A record ${DOMAIN} -> ${TS_IP}"
+  fi
 else
-  cf POST "/zones/${CF_ZONE_ID}/dns_records" "$body" >/dev/null
-  log "created A record ${DOMAIN} -> ${TS_IP}"
+  log "MANAGE_A_RECORD=false: leaving ${DOMAIN}'s DNS to whatever fronts it"
 fi
 
 # ---------------------------------------------------------------- 3. issue?
@@ -163,11 +179,13 @@ if [ "$need_issue" = "true" ]; then
 fi
 
 # ---------------------------------------------------------------- 4. verify
-# The runner is a tailnet peer, so it resolves ${DOMAIN} (public A record) to the
-# tailnet IP and reaches it over the tunnel. Assert 200 AND a real (non-self-signed)
-# issuer, so a stuck self-signed placeholder can't pass as success.
+# Pinned to the box with --resolve rather than through public DNS: the runner is a
+# tailnet peer, so it reaches TS_IP directly, and the check stays a check of THIS box's
+# Caddy even when public DNS points the name elsewhere (MANAGE_A_RECORD=false). Assert
+# 200 AND a real (non-self-signed) issuer, so a stuck self-signed placeholder can't pass
+# as success.
 for i in $(seq 1 10); do
-  if issuer_now="$(curl -fsS --max-time 8 -o /dev/null -w '%{ssl_verify_result}\n' "https://${DOMAIN}/up" 2>/dev/null)" \
+  if issuer_now="$(curl -fsS --max-time 8 -o /dev/null -w '%{ssl_verify_result}\n' --resolve "${DOMAIN}:443:${TS_IP}" "https://${DOMAIN}/up" 2>/dev/null)" \
      && [ "$issuer_now" = "0" ]; then
     log "https://${DOMAIN}/up OK with a publicly-trusted cert"
     exit 0

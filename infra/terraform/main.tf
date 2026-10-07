@@ -454,6 +454,13 @@ resource "digitalocean_reserved_ip" "zimmer" {
 # saturated to the point that `Exceeded MaxStartups` reset every connection -- SSH was
 # effectively DOWN. Break-glass without a rule: `tailscale ssh root@zimmer-<env>`, or
 # the DigitalOcean web console.
+#
+# The OPTIONAL Cloudflare edge needs no rule either, and must not get one: its connector
+# (cloudflared) dials OUT to Cloudflare and serves the public hostname over that outbound
+# connection. It is deliberately not provisioned by this module -- its credential would land
+# in user_data, which every process on the box can read from the metadata service. The deploy
+# converges it instead (scripts/install-cloudflared.sh). See
+# docs/operate/deploying.md#optional-cloudflare-edge.
 resource "digitalocean_firewall" "zimmer" {
   name        = "zimmer-${var.environment}"
   droplet_ids = [digitalocean_droplet.zimmer.id]
