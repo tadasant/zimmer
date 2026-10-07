@@ -6,7 +6,7 @@
     <% if current_web_identity %>
       <p class="mt-1 text-sm text-gray-500">
         Signed in as <strong class="font-medium text-gray-900"><%= current_web_identity.email %></strong> with Google.
-        <% if current_web_identity.totp_enrolled? %>
+        <% if current_web_identity.totp_enrolled?(reset_before: web_auth_configuration.second_factor_reset_before) %>
           Authenticator set up <%= time_ago_in_words(current_web_identity.totp_enrolled_at) %> ago ·
           <%= pluralize(current_web_identity.recovery_codes_remaining, "recovery code") %> left.
         <% end %>

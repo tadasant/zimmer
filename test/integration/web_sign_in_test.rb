@@ -369,4 +369,106 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_includes response.body, "Your current authenticator keeps working"
   end
+
+  # --- review hardening ------------------------------------------------------
+
+  test "starting a sign-in and signing out need the page's CSRF token" do
+    enable_web_auth
+    ActionController::Base.allow_forgery_protection = true
+
+    post google_sign_in_path
+    assert_response :unprocessable_entity
+    delete logout_path
+    assert_response :unprocessable_entity
+  ensure
+    ActionController::Base.allow_forgery_protection = false
+  end
+
+  test "return_to only ever names a path on this host" do
+    controller = WebSignInsController.new
+
+    assert_equal "/settings?x=1", controller.send(:safe_return_to, "/settings?x=1")
+    [ "//evil.example/x", "/\\evil.example", "https://evil.example", "", nil ].each do |value|
+      assert_equal "/", controller.send(:safe_return_to, value), value.inspect
+    end
+  end
+
+  test "a trusted-device cookie only vouches for the identity it was issued to" do
+    enable_web_auth
+    other = google_claims(sub: "other-account", email: "julie@tadasant.com")
+    sign_in_and_enroll(other)
+    reset!
+
+    sign_in_and_enroll
+    delete logout_path
+    sign_in_with_google(other)
+    assert_redirected_to second_factor_path
+  end
+
+  test "signing out everywhere also voids this browser's trusted-device cookie" do
+    enable_web_auth
+    sign_in_and_enroll
+
+    post logout_everywhere_path
+    sign_in_with_google
+    assert_redirected_to second_factor_path
+  end
+
+  test "wrong codes lock the second factor, and the lock answers 429" do
+    enable_web_auth
+    sign_in_and_enroll
+    reset!
+
+    sign_in_with_google
+    WebIdentity::MAX_FAILED_ATTEMPTS.times do
+      post second_factor_path, params: { code: "000000" }
+      assert_response :unprocessable_entity
+    end
+    post second_factor_path, params: { code: "000000" }
+    assert_response :too_many_requests
+    assert_includes response.body, "Try again in 15 minutes"
+  end
+
+  test "replacing the authenticator keeps this browser signed in and signs out the rest" do
+    enable_web_auth
+    identity = sign_in_and_enroll
+    other_browser_cookie = cookies[WebAuth::Cookies::SIGN_IN.to_s]
+    old_secret = identity.totp_secret
+
+    get second_factor_setup_path
+    new_secret = identity.reload.totp_pending_secret
+    refute_equal old_secret, new_secret
+    post second_factor_setup_path, params: { code: current_totp_code(new_secret) }
+    assert_response :success
+    assert_select "[data-testid=recovery-codes] li", 10
+    assert_equal new_secret, identity.reload.totp_secret
+
+    get root_path
+    assert_response :success
+
+    cookies[WebAuth::Cookies::SIGN_IN.to_s] = other_browser_cookie
+    get root_path
+    assert_redirected_to "/login"
+  end
+
+  test "a typo in the second-factor mode fails closed" do
+    enable_web_auth(second_factor: "google")
+    sign_in_with_google
+    get root_path
+    assert_response :success
+
+    enable_web_auth(second_factor: "topt")
+    get root_path
+    assert_redirected_to "/login", "a session that never passed TOTP must not survive a mistyped mode"
+    follow_redirect!
+    assert_includes response.body, "ZIMMER_WEB_AUTH_SECOND_FACTOR must be one of totp, google"
+  end
+
+  test "the setup page is not cacheable" do
+    enable_web_auth
+    sign_in_with_google
+    get second_factor_setup_path
+
+    assert_equal "no-store", response.headers["Cache-Control"]
+  end
 end

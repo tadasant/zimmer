@@ -24,7 +24,7 @@ module WebAuth
     TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
     ISSUERS = [ "https://accounts.google.com", "accounts.google.com" ].freeze
     TIMEOUT_SECONDS = 10
-    # Clock skew tolerated on `exp` and `iat`.
+    # Clock skew tolerated on `exp`.
     LEEWAY = 5.minutes
 
     # A refusal that is safe to show the person signing in.

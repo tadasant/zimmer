@@ -39,10 +39,16 @@ change up within a minute.
 | `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID` | **The switch.** Set means the wall is up | not set, so the wall is off |
 | `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_SECRET` | The OAuth client's secret. Read only when a sign-in comes back from Google | not set |
 | `ZIMMER_WEB_AUTH_ALLOWED_DOMAINS` | Google Workspace domains allowed in, comma- or space-separated, e.g. `tadasant.com` | not set |
-| `ZIMMER_WEB_AUTH_SECOND_FACTOR` | `totp` asks for an authenticator code after Google. `google` asks for nothing more (see [below](#why-zimmer-asks-for-its-own-second-factor)) | `totp` |
+| `ZIMMER_WEB_AUTH_SECOND_FACTOR` | `totp` asks for an authenticator code after Google. `google` asks for nothing more (see [below](#why-zimmer-asks-for-its-own-second-factor)). Any other value still requires the code, and is listed as a problem on the login page | `totp` |
 | `ZIMMER_WEB_AUTH_SESSION_DAYS` | How long a browser stays signed in without being used | `90` |
 | `ZIMMER_WEB_AUTH_TRUSTED_DEVICE_DAYS` | How long a browser that passed the second factor skips it at its next Google sign-in | `365` |
-| `ZIMMER_WEB_AUTH_SECOND_FACTOR_RESET_BEFORE` | An ISO 8601 time. Any authenticator set up before it no longer counts. See [lost your second factor](#lost-your-second-factor) | not set |
+| `ZIMMER_WEB_AUTH_SECOND_FACTOR_RESET_BEFORE` | An ISO 8601 time. Any authenticator set up before it no longer counts. See [lost your second factor](#lost-your-second-factor). A value that does not parse stops new sign-ins and is named on the login page, rather than being ignored | not set |
+
+**If the secret store stops answering**, each Puma process keeps the configuration it last read. A
+process that boots during the outage uses the last configuration any process wrote to `Rails.cache`
+(everything but the client secret). Existing sign-ins keep working, and new ones wait for the store,
+because finishing one needs the secret. Only a process with neither answers `503` on browser pages.
+The machine paths never read this configuration.
 
 **Set the client ID last, or all three in one write.** Once the client ID is set the wall is up, and
 if the secret or the domains are missing, nobody gets in. The login page lists what is missing. It
@@ -78,7 +84,8 @@ the same shape as strad's console login.
   Google sets `hd` only for accounts that really belong to that Workspace. The `hd` parameter on the
   consent URL is only a hint to Google's account picker, and Zimmer never trusts it.
 - **`email_verified` must be `true`.** An unverified email is refused, whatever its domain.
-- **Issuer, audience and expiry** must be Google's, this client's, and in the future.
+- **Issuer, audience and expiry** must be Google's, this client's, and not past, with five
+  minutes allowed for clock skew.
 - **PKCE and `state`.** The sign-in starts with a `POST` that carries the CSRF token, so another site
   cannot start one in your browser. The callback must carry the `state` this browser was given
   within the last 15 minutes.
@@ -120,8 +127,10 @@ replace the authenticator and walk past it.
 ### Wrong codes
 
 A code is accepted once: Zimmer remembers the last time step it took. Clocks may be one 30-second
-step off either way. Five wrong answers in a row, authenticator or recovery code, lock the second
-factor for 15 minutes.
+step off either way. Every five wrong answers in a row, authenticator or recovery code, lock the
+second factor: 15 minutes the first time, then 30, then an hour, doubling up to a day. Only a right
+answer clears the count, so slow guessing gets slower rather than resetting. Each lockout logs a
+WARN line.
 
 ## How long you stay signed in
 
@@ -145,7 +154,10 @@ A sign-in cookie stops counting when:
 - its domain is no longer in `ZIMMER_WEB_AUTH_ALLOWED_DOMAINS`,
 - the deployment requires TOTP and that browser never passed a code.
 
-A new authenticator, or a second-factor reset, voids every trusted-device cookie for that person.
+Setting up a new authenticator signs that person out everywhere except the browser that confirmed
+it, in case the old one was compromised. A new authenticator, signing out everywhere, or a
+second-factor reset voids every trusted-device cookie for that person. Signing out everywhere, and
+deleting the row, also close that person's open live-update connections at once.
 
 The flip side of a 90-day rolling session: suspending someone's Google account does not sign them out
 of Zimmer. To end someone's access now, delete their row at `/supervisor/web_identities`, or take
@@ -156,8 +168,9 @@ their domain out of the allowed list.
 **Settings → Sign-in** shows who the browser is signed in as and how many recovery codes are left.
 It has three buttons:
 
-- **Set up a new authenticator.** The old one keeps working until the new one is confirmed, and
-  confirming issues a fresh set of recovery codes. This is how you move to a new phone.
+- **Set up a new authenticator.** The old one keeps working until the new one is confirmed.
+  Confirming issues a fresh set of recovery codes and signs you out of every other browser. This is
+  how you move to a new phone.
 - **Sign out.** This browser only.
 - **Sign out everywhere.** Every browser signed in as you, this one included.
 
@@ -205,10 +218,12 @@ base fails the build.
 
 ### Agent sessions
 
-Agent sessions run on the production host, and they used to be able to `curl` the web UI like anyone
-else ([the limitation](/limitations/#the-web-ui-does-not-keep-agent-sessions-out)). With the wall up,
-they meet `/login` instead. They have no Google account to get past it with. They still hold
-`API_KEYS`, so whatever the REST API and `/mcp` can do, they can still do.
+**The wall keeps out the tailnet and the open internet. It does not keep out agent sessions on the
+same host.** A session's casual `curl` meets `/login`, and it has no Google account to pass it with.
+But a session runs as the same user, in the same container, as the Rails app. It can read
+`SECRET_KEY_BASE`, the key that encrypts the sign-in cookie, and forge one. It also holds `API_KEYS`,
+so whatever the REST API and `/mcp` can do, it can do. See
+[the limitation](/limitations/#the-web-ui-does-not-keep-agent-sessions-out).
 
 The same wall stops an agent that drives the production UI in a browser for QA. Local dev servers,
 where the wall is off, are unaffected. A sign-in route for automated UI driving is tracked in

@@ -13,7 +13,7 @@
   </div>
   <label class="flex items-start gap-2 text-sm text-gray-700">
     <%= f.check_box :trust_device, { checked: true }, "1", "0" %>
-    <span>Trust this browser. Skip the code here for <%= pluralize(@web_auth_configuration.trusted_device_ttl.in_days.to_i, "day") %>.</span>
+    <span>Trust this browser. Skip the code here for <%= pluralize(web_auth_configuration.trusted_device_ttl.in_days.to_i, "day") %>.</span>
   </label>
   <%= f.submit "Continue", class: "w-full rounded-md bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2" %>
 <% end %>

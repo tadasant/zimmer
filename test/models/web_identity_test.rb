@@ -85,4 +85,30 @@ class WebIdentityTest < ActiveSupport::TestCase
     identity.confirm_totp_enrollment!(WebAuth::Totp.code_at(new_secret, Time.current))
     assert_equal new_secret, identity.reload.totp_secret
   end
+
+  test "lockouts escalate, and only a right answer clears the count" do
+    identity, secret, = enrolled_identity(at: 1.hour.ago)
+    now = Time.current
+
+    5.times { identity.verify_second_factor!("000000", at: now) }
+    assert_in_delta now + 15.minutes, identity.reload.second_factor_locked_until, 1
+
+    now += 16.minutes
+    5.times { identity.verify_second_factor!("000000", at: now) }
+    assert_in_delta now + 30.minutes, identity.reload.second_factor_locked_until, 1
+
+    now += 31.minutes
+    assert_equal :totp, identity.verify_second_factor!(WebAuth::Totp.code_at(secret, now), at: now)
+    assert_equal 0, identity.reload.second_factor_failed_attempts
+    assert_equal 1.day, identity.lockout_after(500)
+  end
+
+  test "confirming a new authenticator signs out everywhere" do
+    identity, = enrolled_identity(at: 2.minutes.ago)
+    generation = identity.session_generation
+    secret = identity.pending_totp_secret!
+
+    identity.confirm_totp_enrollment!(WebAuth::Totp.code_at(secret, Time.current))
+    assert_equal generation + 1, identity.reload.session_generation
+  end
 end

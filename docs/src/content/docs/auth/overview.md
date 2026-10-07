@@ -82,8 +82,9 @@ With web sign-in off, "anyone who can reach the host" includes every agent sessi
 the production host, and the Rails app answers from inside a session's shell. Nothing in the app
 stops a session from reading the MCP and X tokens in `/supervisor`, minting or revoking an API key,
 or halting the job queues from `/health`. The same holds for every member of the tailnet. With it on,
-a session meets `/login` and has no Google account to pass it with. It still holds `API_KEYS`, so
-everything the REST API and `/mcp` can do stays in reach. See
+a session's `curl` meets `/login`, but the wall is not a boundary against a session: it runs as the
+same user as the app, can read `SECRET_KEY_BASE` and forge a sign-in cookie, and holds `API_KEYS`
+besides. Web sign-in keeps out the tailnet and the open internet, not the host's own sessions. See
 [the limitation](/limitations/#the-web-ui-does-not-keep-agent-sessions-out).
 :::
 
