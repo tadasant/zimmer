@@ -22,22 +22,41 @@ module AppUrl
   PLACEHOLDER_PROD_BASE_URL = "https://zimmer.example.com"
   PLACEHOLDER_STAGING_BASE_URL = "https://staging.zimmer.example.com"
 
+  # The variable each environment reads its base URL from. `AllowedHosts` reads
+  # the same names from the process environment at boot. Loaded before Zeitwerk
+  # (see AllowedHosts), so nothing here may reference an app constant at load time.
+  BASE_URL_KEYS = { "production" => "ZIMMER_PROD_BASE_URL", "staging" => "ZIMMER_STAGING_BASE_URL" }.freeze
+  LOCAL_BASE_URL_KEY = "ZIMMER_LOCAL_BASE_URL"
+
   # The externally-reachable base URL of this Zimmer instance, no trailing slash.
   #
   # @param env [String] Rails environment name (injectable for testing)
   # @param secrets_interpolator [SecretsInterpolator] resolves the env-var / secret lookup
   # @return [String] e.g. "https://zimmer.your-domain.com" when configured
   def base_url(env: Rails.env, secrets_interpolator: SecretsInterpolator.new)
-    resolved = case env.to_s
-    when "production"
-      secrets_interpolator.get_env_value("ZIMMER_PROD_BASE_URL") || PLACEHOLDER_PROD_BASE_URL
-    when "staging"
-      secrets_interpolator.get_env_value("ZIMMER_STAGING_BASE_URL") || PLACEHOLDER_STAGING_BASE_URL
-    else
-      secrets_interpolator.get_env_value("ZIMMER_LOCAL_BASE_URL") || default_local_base_url
-    end
+    resolved = secrets_interpolator.get_env_value(base_url_key(env)) || fallback_base_url(env)
 
     resolved.to_s.chomp("/")
+  end
+
+  # @return [String] the variable `env` reads its base URL from
+  def base_url_key(env = Rails.env)
+    BASE_URL_KEYS.fetch(env.to_s, LOCAL_BASE_URL_KEY)
+  end
+
+  # What `base_url` returns when the variable is unset.
+  def fallback_base_url(env = Rails.env)
+    case env.to_s
+    when "production" then PLACEHOLDER_PROD_BASE_URL
+    when "staging" then PLACEHOLDER_STAGING_BASE_URL
+    else default_local_base_url
+    end
+  end
+
+  # Is `url` one of the non-functional placeholders, i.e. the deploy never set
+  # the base URL?
+  def placeholder?(url)
+    [ PLACEHOLDER_PROD_BASE_URL, PLACEHOLDER_STAGING_BASE_URL ].include?(url.to_s.chomp("/"))
   end
 
   def default_local_base_url

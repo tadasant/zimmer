@@ -69,4 +69,18 @@ class AppUrlTest < ActiveSupport::TestCase
       ENV["ZIMMER_LOCAL_BASE_URL"] = original
     end
   end
+
+  # AllowedHosts reads the same variable at boot, so the Host allow-list and the
+  # links Zimmer emits cannot name different domains.
+  test "base_url_key names the variable each environment reads" do
+    assert_equal "ZIMMER_PROD_BASE_URL", AppUrl.base_url_key("production")
+    assert_equal "ZIMMER_STAGING_BASE_URL", AppUrl.base_url_key("staging")
+    assert_equal "ZIMMER_LOCAL_BASE_URL", AppUrl.base_url_key("development")
+  end
+
+  test "placeholder? recognizes only the unset-deploy placeholders" do
+    assert AppUrl.placeholder?(AppUrl::PLACEHOLDER_PROD_BASE_URL)
+    assert AppUrl.placeholder?("#{AppUrl::PLACEHOLDER_STAGING_BASE_URL}/")
+    refute AppUrl.placeholder?("https://zimmer.tadasant.com")
+  end
 end
