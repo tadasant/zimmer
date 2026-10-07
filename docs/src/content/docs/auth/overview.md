@@ -14,7 +14,7 @@ flowchart TB
         W["Web UI · /inference · /settings · /jobs<br/>/supervisor · /settings/api_keys · /health · /cable<br/>OFF by default: the perimeter is the wall<br/>ON: Google Workspace (hd) + authenticator code"]
     end
     subgraph api["2 · Client → REST API"]
-        A["X-API-Key header (or Bearer on /mcp)<br/>vs api_keys rows: API_KEYS entries + minted keys<br/>named, revocable; one grant: api or quick_router"]
+        A["X-API-Key header (or Bearer on /mcp)<br/>vs api_keys rows: API_KEYS entries + minted keys<br/>named, revocable; one grant: api or quick_router<br/>+ on /mcp only: OAuth access tokens Zimmer issues"]
     end
     subgraph harness["3 · Zimmer → Agent vendor"]
         H["ClaudeAccount pool (claude_code + codex)<br/>OAuth refresh + rotation on quota<br/>tokens on disk AND in Postgres<br/>(pi: a provider API key, no pool)"]
@@ -26,6 +26,7 @@ flowchart TB
     U["You"] --> W
     W -. "when on" .-> GG["Google"]
     C["Script / MCP self-session"] --> A
+    R["Remote MCP client<br/>(Claude.ai connector)"] -. OAuth .-> A
     X["Browser extension<br/>(quick_router key)"] --> A
     W --> H
     W -. mints and revokes .-> A
@@ -168,6 +169,11 @@ Skipping that made every authenticated request 500 in production on 2026-09-11; 
 That reasoning runs one way only: it is safe while the column has never existed, and rolling the
 migration back once `quick_router` keys exist would read every one of them as `api` — a full-API
 credential sitting in a browser. Revoke the extension's key before any such rollback.
+
+`POST /mcp` takes one more credential: an OAuth access token from Zimmer's own authorization server.
+A remote MCP client such as a Claude.ai custom connector gets one after a signed-in person approves
+it at `/oauth/authorize`, so it needs no key at all. It opens what an `api` key opens on `/mcp`, and
+nothing on `/api/v1`. See [Connecting to /mcp over OAuth](/auth/mcp-authorization-server/).
 
 What it still isn't:
 

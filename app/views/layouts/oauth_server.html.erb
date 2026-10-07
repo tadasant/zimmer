@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Zimmer · Connect an MCP client</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <%= csrf_meta_tags %>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon" sizes="16x16 32x32 48x48">
+    <%= stylesheet_link_tag "tailwind" %>
+  </head>
+  <body class="min-h-screen bg-gray-50 text-gray-900">
+    <main class="mx-auto max-w-lg px-4 py-10 sm:py-16">
+      <div class="mb-6 flex items-center gap-2 text-sm font-semibold text-gray-500">
+        <img src="/icons/favicon-32x32.png" alt="" class="h-5 w-5">
+        Zimmer
+      </div>
+      <%= yield %>
+    </main>
+  </body>
+</html>

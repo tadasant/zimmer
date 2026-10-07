@@ -12,8 +12,10 @@ require "mocha/minitest"
 #                    a redirect to /login or a 401, and never reaches its action.
 #   signed-out       SIGNED_OUT_REACHABLE, exactly: the login flow, the 404 page,
 #                    /up/deep.
-#   machine          Api::BaseController and Webhooks::BaseController (REST, /mcp,
-#                    the webhooks). An API key or a signature, never a cookie.
+#   machine          Api::BaseController, Webhooks::BaseController and
+#                    OauthServer::BaseController (REST, /mcp, the webhooks, the
+#                    OAuth endpoints for /mcp). An API key, a signature, or PKCE,
+#                    never a cookie.
 #   framework        FRAMEWORK_CONTROLLERS, each with the reason it is harmless.
 class WebSignInRouteAuditTest < ActionDispatch::IntegrationTest
   include WebAuthTestHelpers
@@ -31,7 +33,10 @@ class WebSignInRouteAuditTest < ActionDispatch::IntegrationTest
     health#deep
   ].to_set.freeze
 
-  MACHINE_BASES = [ Api::BaseController, Webhooks::BaseController ].freeze
+  # OauthServer::BaseController: the OAuth discovery, registration, token and
+  # revocation endpoints for /mcp. A client authenticates with PKCE or a token
+  # it holds, never a cookie. (/oauth/authorize is a browser page, and walled.)
+  MACHINE_BASES = [ Api::BaseController, Webhooks::BaseController, OauthServer::BaseController ].freeze
 
   FRAMEWORK_CONTROLLERS = {
     "rails/health" => "/up: answers 200 to any process that booted, and says nothing else",

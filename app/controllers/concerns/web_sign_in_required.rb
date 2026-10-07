@@ -6,9 +6,11 @@
 #
 # What it does NOT cover, on purpose, because none of them inherits from those
 # controllers: the REST API and `/mcp` (Api::BaseController, an API key), the
-# inbound webhooks (Webhooks::BaseController, a signature), and `/up`
-# (Rails::HealthController). test/integration/web_sign_in_route_audit_test.rb
-# walks every route and fails if one lands somewhere this list does not explain.
+# inbound webhooks (Webhooks::BaseController, a signature), the OAuth machine
+# endpoints for `/mcp` (OauthServer::BaseController, PKCE or a token), and `/up`
+# (Rails::HealthController). `/oauth/authorize` IS covered: it is a browser page.
+# test/integration/web_sign_in_route_audit_test.rb walks every route and fails if
+# one lands somewhere this list does not explain.
 #
 # With the gate off (no ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID) every check here is a
 # no-op and nobody is asked to sign in.
