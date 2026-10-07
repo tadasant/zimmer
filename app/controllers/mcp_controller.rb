@@ -69,7 +69,11 @@ class McpController < Api::BaseController
 
   def authenticate_oauth_access_token(token)
     config = OauthServer::Config.current(request)
-    lookup = OauthServer::Token.authenticate_access(token, resource: config.resource)
+    lookup = if config.configured?
+      OauthServer::Token.authenticate_access(token, resource: config.resource)
+    else
+      OauthServer::Token::Lookup.new(token: nil, refusal: :server_not_configured)
+    end
 
     if lookup.ok?
       @oauth_grant = lookup.grant
@@ -91,7 +95,7 @@ class McpController < Api::BaseController
     config = OauthServer::Config.current(request)
     parts = [ 'realm="zimmer"' ]
     parts << 'error="invalid_token"' if @oauth_token_refused || api_key_from_request.present?
-    parts << %(resource_metadata="#{config.protected_resource_metadata_url}")
+    parts << %(resource_metadata="#{config.protected_resource_metadata_url}") if config.configured?
     parts << %(scope="#{OauthServer::SCOPE}")
     response.set_header("WWW-Authenticate", "Bearer #{parts.join(', ')}")
   end

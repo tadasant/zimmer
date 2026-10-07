@@ -8,8 +8,10 @@ module OauthServer
   #   POST /oauth/authorize   the human's decision; on approve, redirect back with a code
   #
   # The only browser page of the authorization server, so the only one on
-  # ApplicationController: it needs the web UI's sign-in (WebUserIdentity) and
-  # the CSRF check that keeps another origin from submitting the consent form.
+  # ApplicationController: it sits behind the web UI's sign-in wall
+  # (WebSignInRequired), which sends a signed-out browser through Google and
+  # back to this exact URL, and it has the CSRF check that keeps another origin
+  # from submitting the consent form.
   # The POST carries the request's parameters back as hidden fields and is
   # validated from scratch, so no pending state is stored between the two.
   #
@@ -19,9 +21,12 @@ module OauthServer
   # RFC 6749 §4.1.2.1 says.
   #
   # The human must be signed in, and their email must be in an allowed domain
-  # (OauthServer::Config#allowed_domains). Neither holding means no code.
+  # (OauthServer::Config#allowed_domains). Neither holding means no code. With
+  # the wall off there is nobody signed in, so nothing is issued — except in
+  # development and test, where ZIMMER_DEV_WEB_USER_EMAIL names a user so the
+  # flow can be walked on a laptop.
   class AuthorizationsController < ApplicationController
-    include WebUserIdentity
+    DEV_EMAIL_ENV = "ZIMMER_DEV_WEB_USER_EMAIL"
 
     CHALLENGE_FORMAT = /\A[A-Za-z0-9\-._~]{43}\z/
 
@@ -66,7 +71,7 @@ module OauthServer
     # anyone may register — which would make Zimmer an open redirector
     # (RFC 9700 §4.11.2).
     def prepare!
-      @email = current_web_user_email
+      @email = consenting_email
       raise NotSignedIn if @email.blank?
       raise DomainRefused, @email unless oauth_config.email_allowed?(@email)
 
@@ -83,6 +88,14 @@ module OauthServer
 
       @code_challenge = params[:code_challenge]
       @resource = oauth_config.resource
+    end
+
+    # The signed-in human the wall let through. With the wall off: nobody,
+    # outside development and test.
+    def consenting_email
+      return current_web_identity&.email if web_auth_configuration.enabled?
+
+      Rails.env.local? ? ENV[DEV_EMAIL_ENV].presence : nil
     end
 
     def resolve_redirect_uri!
@@ -109,8 +122,8 @@ module OauthServer
 
     rescue_from NotSignedIn do
       @heading = "Sign in to Zimmer first"
-      @detail = "Approving a connection names the person who approved it, and this browser is not signed in to Zimmer. " \
-        "This deployment has no web sign-in turned on, so it cannot issue a token for /mcp."
+      @detail = "Approving a connection names the person who approved it, and nobody is signed in. " \
+        "This deployment has not turned on web sign-in, so it cannot issue a token for /mcp."
       render :error, status: :unauthorized
     end
 
@@ -134,7 +147,7 @@ module OauthServer
 
     def redirect_to_client(**response_params)
       response_params[:state] = @state if @state
-      response_params[:iss] = oauth_config.issuer
+      response_params[:iss] = oauth_config.issuer if oauth_config.configured?
       uri = URI.parse(@redirect_uri)
       query = URI.decode_www_form(uri.query.to_s) + response_params.compact.map { |k, v| [ k.to_s, v ] }
       uri.query = URI.encode_www_form(query)

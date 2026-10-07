@@ -16,7 +16,10 @@ module OauthServer
     before_action :set_cors_headers
 
     rescue_from OauthServer::Error do |error|
-      status = error.code == "invalid_client" ? :unauthorized : :bad_request
+      status = case error
+      when OauthServer::Config::NotConfigured then :service_unavailable
+      else error.code == "invalid_client" ? :unauthorized : :bad_request
+      end
       render_oauth_error(error, status: status)
     end
 

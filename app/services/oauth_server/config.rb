@@ -9,17 +9,18 @@ module OauthServer
   # allowed domains, which fail closed.
   #
   #   OAUTH_SERVER_ISSUER                     the public origin, e.g. https://zimmer.example.com.
-  #                                           Default: https://$APP_HOST, else the request's own origin.
+  #                                           Default: https://$APP_HOST. Never the request's own
+  #                                           origin outside development and test: behind a TLS-
+  #                                           terminating edge, Rails sees http://localhost.
   #   OAUTH_SERVER_ALLOWED_DOMAINS            comma-separated email domains a consenting human must
-  #                                           belong to. Default: the web sign-in gate's
-  #                                           ZIMMER_WEB_AUTH_ALLOWED_DOMAINS. Neither set means
+  #                                           belong to. Default: the web sign-in's own allowed
+  #                                           domains (WebAuth::Configuration). Neither set means
   #                                           /oauth/authorize issues nothing.
   #   OAUTH_SERVER_ACCESS_TOKEN_TTL_SECONDS   default 3600 (one hour)
   #   OAUTH_SERVER_REFRESH_TOKEN_TTL_SECONDS  default 15552000 (180 days, renewed on every refresh)
   class Config
     ISSUER_KEY = "OAUTH_SERVER_ISSUER"
     ALLOWED_DOMAINS_KEY = "OAUTH_SERVER_ALLOWED_DOMAINS"
-    WEB_AUTH_ALLOWED_DOMAINS_KEY = "ZIMMER_WEB_AUTH_ALLOWED_DOMAINS"
     ACCESS_TTL_KEY = "OAUTH_SERVER_ACCESS_TOKEN_TTL_SECONDS"
     REFRESH_TTL_KEY = "OAUTH_SERVER_REFRESH_TOKEN_TTL_SECONDS"
 
@@ -39,19 +40,30 @@ module OauthServer
       @request = request
     end
 
-    # The authorization server's issuer identifier: a bare origin, no path.
-    def issuer
-      @issuer ||= begin
-        configured = read(ISSUER_KEY)
-        origin = if configured.present?
-          configured
-        elsif (host = ENV["APP_HOST"]).present?
-          "#{local_host?(host) ? 'http' : 'https'}://#{host}"
-        else
-          @request&.base_url
-        end
-        origin.to_s.chomp("/")
+    # Raised when no issuer is configured, so nothing can be issued or checked.
+    class NotConfigured < OauthServer::Error
+      def initialize
+        super("temporarily_unavailable",
+          "this deployment has not configured its public URL (#{ISSUER_KEY} or APP_HOST), so it cannot act as an OAuth server")
       end
+    end
+
+    # The authorization server's issuer identifier: a bare origin, no path. Every
+    # URL this server publishes — the metadata documents, the `resource`, the
+    # audience, `iss` — is built from it, and it comes from configuration: the
+    # request's own scheme and host are what the edge in front of Rails made
+    # them, not what the client reached. Development and test, with neither
+    # configured, fall back to the request so a laptop works out of the box.
+    #
+    # @raise [NotConfigured]
+    def issuer
+      @issuer ||= configured_issuer || (Rails.env.local? ? @request&.base_url : nil) || raise(NotConfigured)
+    end
+
+    def configured?
+      issuer.present?
+    rescue NotConfigured
+      false
     end
 
     # The RFC 8707 resource identifier for `/mcp`, and the audience every access
@@ -71,8 +83,13 @@ module OauthServer
     # back to the process environment when the store cannot be reached: an empty
     # list (nothing issued) beats a stale or broader one.
     def allowed_domains
-      raw = read_strict(ALLOWED_DOMAINS_KEY) || read_strict(WEB_AUTH_ALLOWED_DOMAINS_KEY)
-      raw.to_s.split(",").map { |domain| domain.strip.downcase.delete_prefix("@") }.reject(&:empty?)
+      raw = read_strict(ALLOWED_DOMAINS_KEY)
+      return raw.split(",").map { |domain| domain.strip.downcase.delete_prefix("@") }.reject(&:empty?) if raw
+
+      WebAuth::Configuration.current.allowed_domains
+    rescue StandardError => e
+      Rails.logger.warn("[oauth_server] reading the web sign-in's allowed domains failed (#{e.class}); allowing no domains")
+      []
     end
 
     def access_token_ttl
@@ -104,6 +121,29 @@ module OauthServer
     end
 
     private
+
+    # A bare http(s) origin from OAUTH_SERVER_ISSUER or APP_HOST, or nil.
+    def configured_issuer
+      configured = read(ISSUER_KEY)
+      origin = if configured.present?
+        configured
+      elsif (host = ENV["APP_HOST"].to_s.strip).present?
+        "#{local_host?(host) ? 'http' : 'https'}://#{host}"
+      end
+      return nil if origin.blank?
+
+      uri = URI.parse(origin.strip.chomp("/"))
+      if !uri.is_a?(URI::HTTP) || uri.host.blank? || uri.path.present? || uri.query || uri.fragment || uri.userinfo
+        Rails.logger.warn("[oauth_server] #{origin.inspect} is not a bare http(s) origin; the OAuth server is unconfigured")
+        return nil
+      end
+
+      uri.host = uri.host.downcase
+      uri.to_s
+    rescue URI::InvalidURIError
+      Rails.logger.warn("[oauth_server] #{origin.inspect} is not a URL; the OAuth server is unconfigured")
+      nil
+    end
 
     def read(key)
       SecretProviders.chain.get(key).presence

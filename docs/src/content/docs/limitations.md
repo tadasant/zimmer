@@ -1034,10 +1034,9 @@ costs:
 
 🟡 [Zimmer's authorization server](/auth/mcp-authorization-server/) has these known edges.
 
-**It issues nothing until the web UI has a sign-in.** `/oauth/authorize` asks the `WebUserIdentity`
-seam who is signed in. Outside development and test, that answer is nil until the Google sign-in gate
-fills it in, so every authorization request ends on "Sign in to Zimmer first". That is deliberate. A
-token must name a person from an allowed domain, and before the gate there is no person to name.
+**It issues nothing while web sign-in is off.** A token must name a person from an allowed domain, and
+with [web sign-in](/auth/web-sign-in/) off there is no person to name, so every authorization request
+ends on "Sign in to Zimmer first".
 
 **A token reaches every tool on `/mcp`.** There is one scope. A Claude.ai connector you approve can
 do anything an `api` key can do on `/mcp`, including archiving sessions and halting queues through

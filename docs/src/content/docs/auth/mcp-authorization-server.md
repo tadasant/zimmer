@@ -80,19 +80,25 @@ They are checked **before anything else on the request**. Until both hold, Zimme
 document and redirects no error to the client, so a URI anyone may register cannot turn Zimmer into
 an open redirector.
 
-1. **Someone is signed in to the web UI.** Zimmer reads that from the `WebUserIdentity` seam
-   (`app/controllers/concerns/web_user_identity.rb`). It is filled in by the web UI's Google sign-in
-   gate. Until a deployment has that gate turned on, nobody is signed in, and `/oauth/authorize`
-   answers *"Sign in to Zimmer first"* and issues nothing. With the gate on, a browser that is not
-   signed in never reaches the page: the gate sends it through Google and back.
+1. **Someone is signed in to the web UI.** `/oauth/authorize` is a browser page on
+   `ApplicationController`, so it sits behind [web sign-in](/auth/web-sign-in/): Google, then the
+   second factor. A signed-out browser is sent to `/login` and, once signed in, back to the exact
+   `/oauth/authorize?…` URL it asked for, with every query parameter intact (`client_id`,
+   `redirect_uri`, `state`, `code_challenge`, `code_challenge_method`, `resource`, `scope`). The
+   signed-in identity's email is the one the connection is issued to. With web sign-in off, nobody
+   is signed in, and `/oauth/authorize` answers *"Sign in to Zimmer first"* and issues nothing.
 2. **Their email is in an allowed domain.** That is `OAUTH_SERVER_ALLOWED_DOMAINS` (comma-separated),
-   or, when that is unset, the web sign-in gate's own `ZIMMER_WEB_AUTH_ALLOWED_DOMAINS`. If neither
-   is set, nothing is issued. The check runs at consent, again when the code is exchanged, and on
+   or, when that is unset, web sign-in's own `ZIMMER_WEB_AUTH_ALLOWED_DOMAINS`. If neither is set,
+   nothing is issued. The check runs at consent, again when the code is exchanged, and on
    every refresh. Taking a domain off the list stops that domain's refreshes and revokes those
    connections.
 
-In development and test, `ZIMMER_DEV_WEB_USER_EMAIL` names the signed-in person, so the flow can be
-walked end to end on a laptop. No other environment reads it.
+In development and test with web sign-in off, `ZIMMER_DEV_WEB_USER_EMAIL` names the signed-in
+person, so the flow can be walked end to end on a laptop. No other environment reads it, and with
+web sign-in on it is ignored.
+
+The return trip rides web sign-in's own `return_to`, which keeps a URL of up to 2,000 characters.
+A real authorization request is a few hundred.
 
 ## Registering a client
 
@@ -173,9 +179,13 @@ the client sent a `resource` (RFC 8707). A `resource` that names anything else i
 The comparison ignores the query string, the fragment and one trailing slash, because the URL you
 paste may carry `?tool_groups=`. `/mcp` refuses a token whose audience is not its own resource.
 
-**The issuer** is `OAUTH_SERVER_ISSUER` when set. Otherwise it is `https://$APP_HOST`, and failing
-that the request's own origin. It is what every metadata URL, the audience and the `iss` on the
-authorization response are built from. It must be the origin the client reaches Zimmer at.
+**The issuer** is `OAUTH_SERVER_ISSUER` when set, otherwise `https://$APP_HOST`. It must be a bare
+origin, and it is what every metadata URL, the `resource`, the audience and the `iss` on the
+authorization response are built from, so it must be the origin the client reaches Zimmer at.
+**It never comes from the request** outside development and test. Behind a TLS-terminating edge,
+Rails sees `http://localhost`, which is not where the client is. With neither variable set, the
+metadata endpoints answer `503` and nothing is issued. On a laptop with neither set, the request's
+own origin is used.
 
 ## The 401
 
@@ -206,8 +216,8 @@ never a token. A revocation is logged at WARN, so it ships to obs.
 
 | Variable | Default | |
 | --- | --- | --- |
-| `OAUTH_SERVER_ISSUER` | `https://$APP_HOST` | The public origin Zimmer is reached at |
-| `OAUTH_SERVER_ALLOWED_DOMAINS` | `ZIMMER_WEB_AUTH_ALLOWED_DOMAINS` | Who may approve a connection. Unset everywhere means nobody |
+| `OAUTH_SERVER_ISSUER` | `https://$APP_HOST` | The public origin Zimmer is reached at. Never taken from the request in production |
+| `OAUTH_SERVER_ALLOWED_DOMAINS` | web sign-in's `ZIMMER_WEB_AUTH_ALLOWED_DOMAINS` | Who may approve a connection. Unset everywhere means nobody |
 | `OAUTH_SERVER_ACCESS_TOKEN_TTL_SECONDS` | `3600` | |
 | `OAUTH_SERVER_REFRESH_TOKEN_TTL_SECONDS` | `15552000` | 180 days |
 
