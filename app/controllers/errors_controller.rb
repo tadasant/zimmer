@@ -16,6 +16,9 @@ class ErrorsController < ApplicationController
   # POST/PUT/etc — re-tripping the very alert this controller exists to silence. A 404
   # response carries no state to protect, so skipping forgery protection is safe.
   skip_forgery_protection
+  # A miss is a 404 whoever asks: the login wall would turn an API client's
+  # JSON 404 into a redirect to an HTML login page, and a 404 reveals nothing.
+  allow_signed_out_access
 
   def not_found
     Rails.logger.info("Unmatched route 404: #{request.request_method} #{request.path}")

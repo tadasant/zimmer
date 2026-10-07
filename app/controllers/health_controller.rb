@@ -10,12 +10,16 @@ class HealthController < ApplicationController
   # Minimum days for archive operation
   MIN_ARCHIVE_DAYS = 1
 
-  # No credential guards any action here, the mutating POSTs included: the web UI's
-  # authentication boundary is the network perimeter. Their REST twins,
-  # Api::V1::HealthController, require an API key, and the MCP `action_health` tool
-  # requires the `health` tool group, but this dashboard answers anyone who can reach the
-  # host, an agent session's shell among them. CSRF protection applies, so a page on
-  # another origin cannot submit these forms.
+  # The web sign-in gate (WebSignInRequired) guards every action here when the
+  # deployment turns it on; with it off, the boundary is the network perimeter and
+  # this dashboard answers anyone who can reach the host, an agent session's shell
+  # among them. Their REST twins, Api::V1::HealthController, require an API key, and
+  # the MCP `action_health` tool requires the `health` tool group. CSRF protection
+  # applies, so a page on another origin cannot submit these forms.
+
+  # The deploy pipelines ask /up/deep from outside any browser session, the same
+  # way they ask /up. It names which backing service failed and nothing else.
+  allow_signed_out_access only: :deep
 
   def dashboard
     @health_service = HealthMonitorService.new

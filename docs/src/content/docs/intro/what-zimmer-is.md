@@ -10,9 +10,10 @@ and a repository; it clones the repo, wires up the agent's context, spawns a rea
 Claude Code, Codex or Pi process, watches it work, and hands you back a pull request — or a
 specific question about why it couldn't finish.
 
-It is self-hostable and single-operator. There is no multi-tenancy, no user accounts,
-and no login screen. You run it on a box you control, on a network you control, and it is
-yours.
+It is self-hostable and single-operator. There is no multi-tenancy and no user accounts. A
+login screen is optional: [web sign-in](/auth/web-sign-in/) puts Google Workspace sign-in and an
+authenticator code in front of the web UI, and is off until you turn it on. You run it on a box you
+control, on a network you control, and it is yours.
 
 ## The shape of the thing
 
@@ -60,12 +61,13 @@ It is not a hosted product. There is no SaaS. You provision a DigitalOcean dropl
 you run it locally.
 
 It is not secured for the open internet. This is important enough that it has its own
-[known limitation](/limitations/#the-web-ui-has-no-login-by-design-and-the-sharp-edge-that-follows): there is no
-login, and nothing in the web UI authenticates anyone, including the admin panel that
+[known limitation](/limitations/#web-sign-in-is-off-by-default-so-a-stock-deployment-has-no-login-and-the-sharp-edge-that-follows): out of the box there
+is no login, and nothing in the web UI authenticates anyone, including the admin panel that
 displays OAuth tokens and the maintenance actions on the health page. The
 security model is "put it behind Tailscale," and Zimmer's own Terraform does
 exactly that — port 80 is closed at the DigitalOcean firewall and the app is reachable only
-over the tailnet.
+over the tailnet. [Web sign-in](/auth/web-sign-in/) adds a second wall behind the tailnet; it does
+not replace it.
 
 It is not an agent. Zimmer doesn't write code. [Claude Code, Codex and
 Pi](/sessions/runtimes/) write the code. Zimmer decides what context they get, when they run,

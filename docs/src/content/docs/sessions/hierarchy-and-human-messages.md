@@ -420,7 +420,7 @@ be able to close the block, or open a bullet, and forge a `here` message.
 
 | Input | Recorded? | Why |
 | --- | --- | --- |
-| A new session Tadas creates in the web UI | ✅ `web_ui.new_session` | Zimmer has no login and one human reaches the UI |
+| A new session Tadas creates in the web UI | ✅ `web_ui.new_session` | one human reaches the UI. [Web sign-in](/auth/web-sign-in/), when on, does not feed attribution |
 | A quick router session he starts himself | ✅ `web_ui.quick_prompt` | same |
 | A chat-bubble prompt | ✅ `web_ui.chat_bubble` | his words only — the page-context wrapper is machine-written |
 | A follow-up typed in the browser | ✅ `web_ui.follow_up` | same |

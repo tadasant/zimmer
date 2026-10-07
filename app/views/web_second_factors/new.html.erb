@@ -1,0 +1,25 @@
+<h1 class="text-lg font-semibold text-gray-900">Enter your code</h1>
+<p class="mt-2 text-sm text-gray-600">
+  Signed in with Google as <strong class="font-medium text-gray-900"><%= @identity.email %></strong>.
+  Enter the six-digit code from your authenticator app, or one of your recovery codes.
+</p>
+
+<%= form_with url: second_factor_path, method: :post, data: { turbo: false }, class: "mt-5 space-y-4" do |f| %>
+  <div>
+    <%= f.label :code, "Code", class: "block text-sm font-medium text-gray-700" %>
+    <%= f.text_field :code, value: nil, autofocus: true, required: true, autocomplete: "one-time-code",
+          inputmode: "text", spellcheck: false, autocapitalize: "off", maxlength: 20,
+          class: "mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-lg tracking-widest focus:border-indigo-500 focus:outline-none focus:ring-indigo-500" %>
+  </div>
+  <label class="flex items-start gap-2 text-sm text-gray-700">
+    <%= f.check_box :trust_device, { checked: true }, "1", "0" %>
+    <span>Trust this browser. Skip the code here for <%= pluralize(web_auth_configuration.trusted_device_ttl.in_days.to_i, "day") %>.</span>
+  </label>
+  <%= f.submit "Continue", class: "w-full rounded-md bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2" %>
+<% end %>
+
+<p class="mt-5 text-xs text-gray-500">
+  Lost your authenticator and your recovery codes? Whoever runs this deployment can reset your
+  second factor from its secret store. See
+  <a class="underline" href="https://docs.zimmer.tadasant.com/auth/web-sign-in/#lost-your-second-factor">lost your second factor</a>.
+</p>

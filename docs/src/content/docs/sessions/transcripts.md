@@ -931,8 +931,9 @@ There is none to have. Sessions have no owner and Zimmer has no `User` model, so
 principal to check a transcript against — `SessionsController#transcript` says as much in place of
 the TODO it used to carry.
 
-Since [the web UI has no authentication at all](/limitations/#the-web-ui-has-no-login-by-design-and-the-sharp-edge-that-follows)
-outside the `/supervisor` panel, anyone who can reach the host can read every transcript. Guarding
-that is the perimeter's job.
+Unless a deployment turns on [web sign-in](/auth/web-sign-in/), [the web UI has no authentication at
+all](/limitations/#web-sign-in-is-off-by-default-so-a-stock-deployment-has-no-login-and-the-sharp-edge-that-follows), so anyone who can reach the host can read every transcript. Guarding that is
+the perimeter's job, and web sign-in's when it is on. Either way, everyone who gets in can read
+every transcript.
 Tracked in [#44](https://github.com/tadasant/zimmer/issues/44).
 :::
