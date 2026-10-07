@@ -458,6 +458,38 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "with the wall on, a first-time user who has to set up the authenticator is also sent back to /oauth/authorize" do
+    ENV.delete("ZIMMER_DEV_WEB_USER_EMAIL")
+    enable_web_auth
+    _, challenge = pkce
+    sent = authorize_params(register["client_id"], challenge).merge(scope: "mcp")
+
+    get "/oauth/authorize", params: sent
+    original = request.fullpath
+    assert_redirected_to "/login"
+
+    sign_in_and_enroll
+    continue = css_select("a").map { |a| a["href"] }.find { |href| href.to_s.start_with?("/oauth/authorize") }
+    assert_equal original, continue, "the recovery-codes page continues to the exact authorization request"
+
+    get continue
+    assert_response :success
+    assert_includes response.body, "Connect Test client to Zimmer?"
+  end
+
+  test "an unconfigured server issues nothing at the token endpoint, refresh included" do
+    client_id, tokens = connect
+    ENV.delete("OAUTH_SERVER_ISSUER")
+    previous = ENV.delete("APP_HOST")
+    Rails.env.stubs(:local?).returns(false)
+
+    post "/oauth/token", params: { grant_type: "refresh_token", client_id: client_id, refresh_token: tokens["refresh_token"] }
+    assert_response :service_unavailable
+    refute OauthServer::Token.find_by(token_digest: OauthServer.digest(tokens["refresh_token"])).rotated_at
+  ensure
+    previous.nil? ? ENV.delete("APP_HOST") : ENV["APP_HOST"] = previous
+  end
+
   test "with the wall on, the dev email is ignored and a signed-out POST is refused" do
     enable_web_auth
     _, challenge = pkce
