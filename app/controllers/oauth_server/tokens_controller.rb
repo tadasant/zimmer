@@ -13,6 +13,9 @@ module OauthServer
 
     def create
       no_store
+      # Nothing is issued by a deployment that cannot say whose tokens they are
+      # (503 through BaseController), even a refresh that names no resource.
+      oauth_config.issuer
       case params[:grant_type]
       when "authorization_code" then exchange_code
       when "refresh_token" then refresh

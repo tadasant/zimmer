@@ -79,12 +79,13 @@ module OauthServer
 
     # @return [Array<String>] lowercase domains, empty when none is configured
     #
-    # The one value here that is policy rather than plumbing, so it does not fall
-    # back to the process environment when the store cannot be reached: an empty
-    # list (nothing issued) beats a stale or broader one.
+    # The one value here that is policy rather than plumbing, so a store that
+    # cannot be reached does not fall back to the process environment: an empty
+    # list (nothing issued) beats a broader one. The web sign-in fallback keeps
+    # serving the last list it read, the same list its own wall is enforcing.
     def allowed_domains
       raw = read_strict(ALLOWED_DOMAINS_KEY)
-      return raw.split(",").map { |domain| domain.strip.downcase.delete_prefix("@") }.reject(&:empty?) if raw
+      return raw.split(/[\s,]+/).map { |domain| domain.strip.downcase.delete_prefix("@") }.reject(&:empty?) if raw
 
       WebAuth::Configuration.current.allowed_domains
     rescue StandardError => e

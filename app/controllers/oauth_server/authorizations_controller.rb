@@ -33,7 +33,8 @@ module OauthServer
     # Error pages and the consent page render without the app chrome.
     layout "oauth_server"
 
-    before_action :harden_response
+    # Prepended, so the wall's own redirect to /login carries these headers too.
+    prepend_before_action :harden_response
 
     rescue_from OauthServer::Error, with: :render_error_page
 
@@ -74,6 +75,7 @@ module OauthServer
       @email = consenting_email
       raise NotSignedIn if @email.blank?
       raise DomainRefused, @email unless oauth_config.email_allowed?(@email)
+      oauth_config.issuer # before any outbound fetch: an unconfigured server does nothing
 
       @client = OauthServer::Client.resolve!(params[:client_id])
       @redirect_uri = resolve_redirect_uri!
@@ -118,6 +120,13 @@ module OauthServer
     rescue_from RedirectError do |error|
       Rails.logger.info("[oauth_server] authorize for #{@client.client_id.inspect} refused: #{error.code}: #{error.description}")
       redirect_to_client(error: error.code, error_description: error.description)
+    end
+
+    rescue_from OauthServer::Config::NotConfigured do |error|
+      Rails.logger.warn("[oauth_server] #{request.request_method} #{request.path}: #{error.description}")
+      @heading = "Connections are not set up on this deployment"
+      @detail = error.description
+      render :error, status: :service_unavailable
     end
 
     rescue_from NotSignedIn do
