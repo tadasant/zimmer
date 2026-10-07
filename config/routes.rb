@@ -162,6 +162,25 @@ Rails.application.routes.draw do
   # list_triggers and invoke_trigger — whatever the query string says.
   match "mcp/external_app", to: "external_app_mcp#handle", via: [ :post, :get, :delete ], as: :external_app_mcp
 
+  # Zimmer as an OAuth 2.1 authorization server for /mcp (OauthServer), so a
+  # remote MCP client such as a Claude.ai custom connector connects with no API
+  # key: discovery (RFC 9728, RFC 8414), registration (RFC 7591, or a Client ID
+  # Metadata Document), authorize with PKCE, token, revoke. Only /oauth/authorize
+  # is a browser page; the rest are machine endpoints with open CORS.
+  get ".well-known/oauth-protected-resource(/mcp)", to: "oauth_server/metadata#protected_resource",
+    as: :oauth_server_protected_resource_metadata
+  get ".well-known/oauth-authorization-server(/mcp)", to: "oauth_server/metadata#authorization_server",
+    as: :oauth_server_authorization_server_metadata
+  match ".well-known/oauth-protected-resource(/mcp)", to: "oauth_server/metadata#preflight", via: :options
+  match ".well-known/oauth-authorization-server(/mcp)", to: "oauth_server/metadata#preflight", via: :options
+  get "oauth/authorize", to: "oauth_server/authorizations#new", as: :oauth_server_authorize
+  post "oauth/authorize", to: "oauth_server/authorizations#create"
+  post "oauth/register", to: "oauth_server/registrations#create", as: :oauth_server_register
+  post "oauth/token", to: "oauth_server/tokens#create", as: :oauth_server_token
+  post "oauth/revoke", to: "oauth_server/revocations#create", as: :oauth_server_revoke
+  match "oauth/:endpoint", to: "oauth_server/metadata#preflight", via: :options,
+    constraints: { endpoint: /register|token|revoke/ }
+
   # API routes
   # Inbound provider webhooks (#217). Outside /api because they authenticate with the
   # provider's signature over the raw body, not Zimmer's API key — see Webhooks::BaseController.
@@ -418,6 +437,7 @@ Rails.application.routes.draw do
   post "settings/api_keys", to: "api_keys#create"
   post "settings/api_keys/:id/revoke", to: "api_keys#revoke", as: :revoke_api_key
   post "settings/api_keys/:id/restore", to: "api_keys#restore", as: :restore_api_key
+  post "settings/api_keys/oauth_grants/:id/revoke", to: "api_keys#revoke_oauth_grant", as: :revoke_oauth_grant
   patch "settings/session_defaults", to: "app_settings#update", as: :app_settings
   # Zimmer plugins (ExternalApp): external apps whose key invokes an allowlisted set
   # of triggers and nothing else. The MCP sibling is the opt-in `external_apps`

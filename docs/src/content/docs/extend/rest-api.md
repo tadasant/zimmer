@@ -1294,6 +1294,13 @@ One endpoint lives outside `/api/v1`: `GET /api/secrets/keys` → `{secrets: [{n
 the secret-name autocomplete. It returns *names and descriptions*, never values, and it sits behind
 the same `X-API-Key` gate as everything else.
 
+Zimmer's OAuth authorization server for `/mcp` is also outside `/api/v1`, and none of it takes an
+`X-API-Key`: `GET /.well-known/oauth-protected-resource[/mcp]`,
+`GET /.well-known/oauth-authorization-server[/mcp]`, `POST /oauth/register`,
+`GET`/`POST /oauth/authorize`, `POST /oauth/token` and `POST /oauth/revoke`. The access tokens it
+issues open `POST /mcp` and are refused everywhere under `/api/v1`. See
+[Connecting to /mcp over OAuth](/auth/mcp-authorization-server/).
+
 `POST /webhooks/slack` and `POST /webhooks/github` are not part of this API and do not take an
 `X-API-Key`. They are Slack's Events API request URL and a GitHub webhook's payload URL, each
 authenticated by the provider's own signature over the request body, and each answers 404 unless that

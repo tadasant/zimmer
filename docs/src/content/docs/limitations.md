@@ -1030,6 +1030,47 @@ costs:
   for automated UI driving yet ([#220](https://github.com/tadasant/zimmer/issues/220)). Local dev
   servers, where the wall is off, are unaffected.
 
+### Connecting to /mcp over OAuth
+
+🟡 [Zimmer's authorization server](/auth/mcp-authorization-server/) has these known edges.
+
+**It issues nothing while web sign-in is off.** A token must name a person from an allowed domain, and
+with [web sign-in](/auth/web-sign-in/) off there is no person to name, so every authorization request
+ends on "Sign in to Zimmer first".
+
+**A token reaches every tool on `/mcp`.** There is one scope. A Claude.ai connector you approve can
+do anything an `api` key can do on `/mcp`, including archiving sessions and halting queues through
+the `health` group. Narrowing it is up to the URL you paste (`?tool_groups=`), and the client can
+change that URL.
+
+**Registration is open.** Anyone who can reach the host can register a client at `/oauth/register`,
+with no rate limit. A registration without a consent is pruned after seven days. A metadata document
+is fetched only for a signed-in person from an allowed domain, so the set of people who can make
+Zimmer fetch a URL is the set who could approve a connection anyway.
+
+**A withdrawn metadata document does not end a connection.** The token endpoint does not fetch the
+document again, so a client whose publisher pulls the document keeps refreshing until it is revoked on
+Settings → API keys.
+
+**An access token outlives the checks that would refuse its refresh.** Removing a domain from the
+allowlist, or revoking a person's web sign-in, stops the next *refresh*. An access token already
+issued keeps working for the rest of its lifetime, an hour by default. Revoking the connection is
+immediate.
+
+**A spent refresh token replayed within 60 seconds is refused but does not revoke the connection.**
+The window lets a client refresh twice at once without ending its own connection. The cost is that a
+stolen refresh token, replayed inside that minute, does not trip the replay alarm. A client that lost
+the response to its own refresh is not rescued by it: Zimmer keeps no copy of the tokens it sent, so
+that client has to be approved again.
+
+**Nothing sweeps expired rows on a schedule.** Expired codes are deleted when the next code is
+issued, and a connection's expired tokens when it next refreshes. A connection that stops refreshing
+keeps its last few token rows until it is revoked.
+
+**Codes are not traced to the tokens they produced.** OAuth 2.1 suggests revoking the tokens a code
+issued when that code is presented a second time. Zimmer refuses the second presentation and stops
+there. PKCE is what stops a stolen code from being redeemed.
+
 ### Transcript redaction is defense in depth, not a guarantee
 
 🟡 `TranscriptRedactor` runs on every transcript as it is read, before anything is stored, rendered or
