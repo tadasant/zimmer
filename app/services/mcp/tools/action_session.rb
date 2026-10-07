@@ -851,21 +851,13 @@ module Mcp
       end
 
       def change_model(session, args)
-        model = args["model"]
-        unless model.is_a?(String) && model.present?
+        begin
+          Sessions::UpdateModel.call(session: session, model: args["model"], actor: :mcp)
+        rescue Sessions::UpdateModel::InvalidParameter
           raise ToolError, "The \"model\" parameter is required for the \"change_model\" action."
+        rescue Sessions::UpdateModel::InvalidModel => e
+          raise ToolError, e.message
         end
-
-        model = model.strip.first(100)
-
-        unless ModelCatalog.valid_model?(session.agent_runtime, model)
-          allowed = ModelCatalog.model_ids_for(session.agent_runtime)
-          raise ToolError, "model #{model.inspect} is not valid for runtime #{session.agent_runtime}. Valid models: #{allowed.join(', ')}"
-        end
-
-        old_model = session.config&.dig("model")
-        session.update!(config: (session.config || {}).merge("model" => model))
-        session.logs.create!(content: "Model updated via MCP (#{old_model} → #{model})", level: "info") if old_model != model
 
         [
           "## Model Updated",
