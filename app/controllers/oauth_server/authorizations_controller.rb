@@ -56,10 +56,20 @@ module OauthServer
 
     private
 
-    # Validate the authorization request. Sets @client, @redirect_uri,
-    # @code_challenge, @state and @email, or raises: OauthServer::Error before the
+    # Validate the authorization request. Sets @email, @client, @redirect_uri,
+    # @code_challenge and @state, or raises: OauthServer::Error before the
     # redirect_uri is trusted (a page), RedirectError after it (back to the client).
+    #
+    # Who is asking comes first. Until a signed-in human from an allowed domain is
+    # on the other end, nothing else happens: no client metadata document is
+    # fetched on a stranger's say-so, and no error is redirected to a URI that
+    # anyone may register — which would make Zimmer an open redirector
+    # (RFC 9700 §4.11.2).
     def prepare!
+      @email = current_web_user_email
+      raise NotSignedIn if @email.blank?
+      raise DomainRefused, @email unless oauth_config.email_allowed?(@email)
+
       @client = OauthServer::Client.resolve!(params[:client_id])
       @redirect_uri = resolve_redirect_uri!
       @state = params[:state].presence
@@ -73,9 +83,6 @@ module OauthServer
 
       @code_challenge = params[:code_challenge]
       @resource = oauth_config.resource
-      @email = current_web_user_email
-      raise NotSignedIn if @email.blank?
-      raise DomainRefused, @email unless oauth_config.email_allowed?(@email)
     end
 
     def resolve_redirect_uri!

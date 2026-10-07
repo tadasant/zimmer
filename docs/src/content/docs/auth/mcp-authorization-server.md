@@ -75,7 +75,10 @@ always says `mcp`.
 
 ## Who can approve
 
-`/oauth/authorize` names the person who approved, and issues a code only when both of these hold:
+`/oauth/authorize` names the person who approved, and issues a code only when both of these hold.
+They are checked **before anything else on the request**. Until both hold, Zimmer fetches no client
+document and redirects no error to the client, so a URI anyone may register cannot turn Zimmer into
+an open redirector.
 
 1. **Someone is signed in to the web UI.** Zimmer reads that from the `WebUserIdentity` seam
    (`app/controllers/concerns/web_user_identity.rb`). It is filled in by the web UI's Google sign-in
@@ -110,7 +113,8 @@ the list, and registers the client for `authorization_code` and `refresh_token`.
 `POST /oauth/register` takes the RFC 7591 JSON body and answers `201` with a `client_id` that
 starts with `zmc_`. Registration is open, with no initial access token: the connector dialog you paste
 the URL into has nowhere to put one. Registering grants nothing on its own. A registration that never
-gets a consent is pruned after seven days.
+gets a consent is pruned after seven days, and so is a cached document whose cache ran out seven
+days ago and that never got a consent either.
 
 ### Client ID Metadata Documents
 
@@ -119,7 +123,9 @@ URL describes the client. Claude.ai's is `https://claude.ai/oauth/mcp-oauth-clie
 Zimmer fetches the document at `/oauth/authorize`, checks it, and caches it on an
 `oauth_server_clients` row.
 
-Fetching a URL a stranger chose is how SSRF happens, so the fetch is held tight:
+Fetching a URL a stranger chose is how SSRF happens, so the fetch is held tight. Nothing is fetched
+until a signed-in person from an allowed domain has opened the authorization request. The fetch
+itself:
 
 - The URL must be `https`, already in normal form (lowercase host, no `:443`), with a path, and with
   no userinfo, fragment or `.`/`..` segments.
@@ -127,8 +133,9 @@ Fetching a URL a stranger chose is how SSRF happens, so the fetch is held tight:
   loopback, link-local, CGNAT, documentation, benchmarking and multicast ranges for IPv4, and anything
   outside `2000::/3` for IPv6. IPv4-mapped IPv6 addresses are checked as the IPv4 address they map to.
   The connection then dials the address that was checked, so a second DNS answer cannot rebind it.
-- Redirects are not followed. Every phase has a 3-second timeout, the body is capped at 5 KiB, and the
-  response must be JSON.
+- Redirects are not followed. The whole exchange (DNS, connect, TLS and body) must finish within 5
+  seconds, the body is capped at 5 KiB, and the response must be JSON. An `http_proxy` in the
+  environment is ignored, so a proxy cannot resolve the name a second time.
 - The document's `client_id` must equal the URL exactly. It must list `redirect_uris`, and it must not
   carry a `client_secret`.
 - Nothing the document points at (`logo_uri`, `jwks_uri`, `client_uri`) is ever fetched.
@@ -156,8 +163,10 @@ SHA-256 digest, and the plaintext exists only in the response that issued it.
 
 **Refresh tokens rotate.** Each refresh spends the presented refresh token and returns a new pair. If
 a spent refresh token is presented again more than 60 seconds after it was spent, the whole
-connection is revoked (RFC 9700 §4.14.2). Within those 60 seconds it is only refused, because a client
-that lost the response to its own refresh and retried is not an attacker.
+connection is revoked (RFC 9700 §4.14.2). Within those 60 seconds it is only refused. That window is
+for a client that refreshes twice at once with the same token: one call wins, and the other must not
+end a connection that the winner's new tokens are still using. It does not rescue a client that lost
+the response to its own refresh. That client is refused and has to be approved again.
 
 **Tokens are bound to the resource.** Every access token's audience is `<issuer>/mcp`, whether or not
 the client sent a `resource` (RFC 8707). A `resource` that names anything else is `invalid_target`.

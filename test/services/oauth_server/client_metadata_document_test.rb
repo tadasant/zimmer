@@ -64,6 +64,52 @@ class OauthServer::ClientMetadataDocumentTest < ActiveSupport::TestCase
     assert_raises(OauthServer::Error) { doc.send(:fetch) }
   end
 
+  FakeResponse = Struct.new(:code, :headers, :body) do
+    def [](name) = headers[name]
+    def is_a?(klass) = klass == Net::HTTPRedirection ? code.start_with?("3") : super
+    def read_body
+      body.each_char.each_slice(512) { |chunk| yield chunk.join }
+    end
+  end
+
+  def fetch_with(response)
+    doc = Doc.new("https://claude.ai/oauth/mcp-oauth-client-metadata")
+    doc.stubs(:resolve).returns([ IPAddr.new("160.79.104.10") ])
+    Net::HTTP.any_instance.stubs(:start).yields
+    Net::HTTP.any_instance.stubs(:request).yields(response)
+    doc.send(:fetch)
+  end
+
+  test "a JSON 200 is read with its cache lifetime" do
+    body, ttl = fetch_with(FakeResponse.new("200", { "Content-Type" => "application/json", "Cache-Control" => "max-age=300" }, "{}"))
+    assert_equal "{}", body
+    assert_equal 300.seconds, ttl
+  end
+
+  test "a redirect, a non-JSON answer and an oversized body are refused" do
+    {
+      FakeResponse.new("302", { "Location" => "http://127.0.0.1/" }, "") => "redirects are not followed",
+      FakeResponse.new("200", { "Content-Type" => "text/html" }, "<html>") => "not JSON",
+      FakeResponse.new("200", { "Content-Type" => "application/json" }, "x" * 6000) => "larger than"
+    }.each do |response, why|
+      error = assert_raises(OauthServer::Error) { fetch_with(response) }
+      assert_includes error.description, why
+    end
+  end
+
+  test "a timeout is refused as one" do
+    doc = Doc.new("https://claude.ai/oauth/mcp-oauth-client-metadata")
+    doc.stubs(:resolve).returns([ IPAddr.new("160.79.104.10") ])
+    Net::HTTP.any_instance.stubs(:start).raises(Net::ReadTimeout)
+
+    error = assert_raises(OauthServer::Error) { doc.send(:fetch) }
+    assert_includes error.description, "did not answer in time"
+  end
+
+  test "a percent-encoded dot segment is refused" do
+    assert_includes Doc.url_problem("https://claude.ai/a/%2e%2e/b"), "dot"
+  end
+
   test "cache lifetime follows max-age, capped at an hour; no-store means none" do
     doc = Doc.allocate
     assert_equal 300.seconds, doc.send(:ttl_from, "public, max-age=300")

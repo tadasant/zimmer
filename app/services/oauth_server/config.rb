@@ -5,7 +5,8 @@ module OauthServer
   # SecretProviders.chain (the Parameter Store, then Rails credentials, then the
   # process environment) on every request, so a changed value needs no restart.
   # None of these values is a secret, so a store that cannot be reached falls back
-  # to the process environment rather than failing the request.
+  # to the process environment rather than failing the request — except the
+  # allowed domains, which fail closed.
   #
   #   OAUTH_SERVER_ISSUER                     the public origin, e.g. https://zimmer.example.com.
   #                                           Default: https://$APP_HOST, else the request's own origin.
@@ -65,8 +66,12 @@ module OauthServer
     end
 
     # @return [Array<String>] lowercase domains, empty when none is configured
+    #
+    # The one value here that is policy rather than plumbing, so it does not fall
+    # back to the process environment when the store cannot be reached: an empty
+    # list (nothing issued) beats a stale or broader one.
     def allowed_domains
-      raw = read(ALLOWED_DOMAINS_KEY) || read(WEB_AUTH_ALLOWED_DOMAINS_KEY)
+      raw = read_strict(ALLOWED_DOMAINS_KEY) || read_strict(WEB_AUTH_ALLOWED_DOMAINS_KEY)
       raw.to_s.split(",").map { |domain| domain.strip.downcase.delete_prefix("@") }.reject(&:empty?)
     end
 
@@ -105,6 +110,13 @@ module OauthServer
     rescue StandardError => e
       Rails.logger.warn("[oauth_server] reading #{key} from the secret store failed (#{e.class}); using the process environment")
       ENV[key].presence
+    end
+
+    def read_strict(key)
+      SecretProviders.chain.get(key).presence
+    rescue StandardError => e
+      Rails.logger.warn("[oauth_server] reading #{key} from the secret store failed (#{e.class}); allowing no domains")
+      nil
     end
 
     def ttl(key, default, range)

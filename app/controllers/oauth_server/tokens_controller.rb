@@ -26,9 +26,8 @@ module OauthServer
     def exchange_code
       client = OauthServer::Client.find_known!(params[:client_id])
 
-      code = OauthServer::AuthorizationCode.consume(params[:code].to_s)
-      raise invalid_grant("the authorization code is invalid, expired, or already used") if code.nil?
-      raise invalid_grant("the authorization code was issued to a different client") unless code.oauth_server_client_id == client.id
+      code = OauthServer::AuthorizationCode.consume(params[:code].to_s, client: client)
+      raise invalid_grant("the authorization code is invalid, expired, already used, or issued to a different client") if code.nil?
       if params.key?(:redirect_uri) && params[:redirect_uri] != code.redirect_uri
         raise invalid_grant("redirect_uri does not match the authorization request")
       end
