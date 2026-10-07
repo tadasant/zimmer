@@ -145,9 +145,9 @@ class WebSignInBehindProxyTest < ActionDispatch::IntegrationTest
     walled.each { |path| refute_match WebSignInRequired::MACHINE_PATHS, path }
   end
 
-  # The routes for /.well-known/oauth-* and /oauth/register|token|revoke arrive
-  # with the MCP OAuth authorization server; until then they 404. So this asks
-  # the wall itself, on a walled controller, what it does with each path.
+  # Those endpoints sit on OauthServer::BaseController, which never includes the
+  # wall, so a request to them proves nothing about MACHINE_PATHS. This asks the
+  # wall itself, on a controller that does include it, what it does with each path.
   test "the wall lets machine paths through even on a controller that includes it" do
     enable_web_auth
 
@@ -186,7 +186,7 @@ class WebSignInBehindProxyTest < ActionDispatch::IntegrationTest
 
   test "first sign-in, through authenticator setup, returns to the authorize URL with its query byte for byte" do
     enable_web_auth
-    authorize = "/settings?#{AUTHORIZE_QUERY}"
+    authorize = "/oauth/authorize?#{AUTHORIZE_QUERY}"
 
     proxied_get authorize
     assert_redirected_to "/login"
@@ -206,7 +206,7 @@ class WebSignInBehindProxyTest < ActionDispatch::IntegrationTest
     identity = sign_in_and_enroll
     reset!
     host! PUBLIC_HOST
-    authorize = "/settings?#{AUTHORIZE_QUERY}"
+    authorize = "/oauth/authorize?#{AUTHORIZE_QUERY}"
 
     proxied_get authorize
     proxied_sign_in_with_google
@@ -222,7 +222,7 @@ class WebSignInBehindProxyTest < ActionDispatch::IntegrationTest
     enable_web_auth
     sign_in_and_enroll
     delete logout_path
-    authorize = "/settings?#{AUTHORIZE_QUERY}"
+    authorize = "/oauth/authorize?#{AUTHORIZE_QUERY}"
 
     get authorize
     post google_sign_in_path
