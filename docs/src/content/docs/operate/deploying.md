@@ -255,20 +255,27 @@ Host the deployment actually receives, and what admits it:
 | --- | --- | --- |
 | Browsers via Cloudflare, the host Caddy on `:443`, on-box sessions [pinned to the domain](#3-keep-the-boxs-own-traffic-on-the-box-zimmer_pin_domain_to_host) | `zimmer.tadasant.com` | the host of `ZIMMER_PROD_BASE_URL` / `ZIMMER_STAGING_BASE_URL`, and of `APP_HOST` |
 | Deploy health checks and smoke tests (`http://<tailnet-ip>/up/deep`, `/`, `/cable` through Caddy `:80`) | `100.x.y.z` | any IP literal, v4 or v6 |
-| A person on the tailnet using `http://<tailnet-hostname>/` | `zimmer`, `zimmer.<tailnet>.ts.net` | `ZIMMER_TAILNET_HOSTNAME`, set in `config/deploy.{production,staging}.yml` |
+| A person on the tailnet using `http://<tailnet-hostname>/` | `zimmer`, `zimmer.<tailnet>.ts.net`, and `zimmer-1` (Tailscale's name for a rebuilt droplet while the stale node holds `zimmer`) | `ZIMMER_TAILNET_HOSTNAME`, set in `config/deploy.{production,staging}.yml` |
 | `curl localhost:8080` on the box | `localhost` | always |
 | kamal-proxy's health gate | the container's own address | nothing: `/up` is excluded from the check |
 | Anything else, such as a second public hostname | | `ZIMMER_ALLOWED_HOSTS` |
+
+The list is read from the process environment, not the secret chain, so a base URL set only in the
+Parameter Store moves the links and the OAuth issuer but not the list. Name that host in
+`ZIMMER_ALLOWED_HOSTS` as well.
 
 Admitting every IP literal costs nothing: an IP cannot be a DNS-rebinding target, and Cloudflare only
 routes hostnames it has a record for. Staging's domain is not on production's list, and production's
 is not on staging's.
 
-**Break-glass:** if a legitimate Host is ever refused, export `ZIMMER_ALLOWED_HOSTS=*` for
-`kamal deploy` and the check is off on that deploy. A deployment that configured no hostname at all
+**Break-glass:** if a legitimate Host is ever refused, set `ZIMMER_ALLOWED_HOSTS=*` in the
+environment `kamal deploy` runs in and redeploy, and the check is off. On staging that is the
+`ZIMMER_ALLOWED_HOSTS` repository variable, which `Deploy staging` passes through. The production
+deploy lives in the private companion repo and has to pass it the same way. A deployment that configured no hostname at all
 also leaves it off, because an allow-list with no domain in it would refuse every real visitor. The
 refused Host is logged at ERROR as `[ActionDispatch::HostAuthorization::DefaultResponseApp] Blocked hosts: …`.
-`assume_ssl` and `force_ssl` are unaffected; they do not read the Host.
+`assume_ssl` and `force_ssl` are unaffected. Host authorization runs before the SSL middleware, so a
+forged Host gets a `403`, not an https redirect to itself.
 
 ## Background jobs and durable state
 

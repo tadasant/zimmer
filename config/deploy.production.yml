@@ -271,7 +271,7 @@ env:
     # .ts.net FQDN. ZIMMER_ALLOWED_HOSTS adds any other hostname, and "*" turns the
     # check off -- the break-glass if a legitimate Host is ever refused with a 403.
     ZIMMER_TAILNET_HOSTNAME: zimmer
-    ZIMMER_ALLOWED_HOSTS: "<%= ENV.fetch("ZIMMER_ALLOWED_HOSTS", "") %>"
+    ZIMMER_ALLOWED_HOSTS: <%= ENV.fetch("ZIMMER_ALLOWED_HOSTS", "").to_json %>
     # Managed Postgres (off-droplet), reached over the private VPC. Host/port are
     # injected from `terraform output`; TLS is mandatory for Managed Postgres.
     DATABASE_HOST: <%= ENV["PRODUCTION_DB_HOST"] %>

@@ -58,6 +58,7 @@ class ProductionBootTest < ActiveSupport::TestCase
 
     puts "BOOT_OK enabled_environments=\#{Sentry.configuration.enabled_environments.inspect} " \\
          "initialized=\#{Sentry.initialized?}"
+    puts "HOSTS=\#{Rails.application.config.hosts.first(3).inspect}"
   RUBY
 
   # Memoized so a re-run within one process does not boot twice.
@@ -95,7 +96,13 @@ class ProductionBootTest < ActiveSupport::TestCase
         "DATABASE_PORT" => "1",
         "DATABASE_SSLMODE" => "disable",
         # Production logs to STDOUT at info, which is where the health-check line lands.
-        "RAILS_LOG_LEVEL" => "info"
+        "RAILS_LOG_LEVEL" => "info",
+        # Arms config.hosts (AllowedHosts), so the pre-Zeitwerk require_relative chain
+        # in production.rb runs the branch a real deploy runs.
+        "ZIMMER_PROD_BASE_URL" => "https://zimmer.example.test",
+        "APP_HOST" => nil,
+        "ZIMMER_TAILNET_HOSTNAME" => "zimmer",
+        "ZIMMER_ALLOWED_HOSTS" => nil
       }
 
       run_with_deadline(env)
@@ -154,6 +161,8 @@ class ProductionBootTest < ActiveSupport::TestCase
       "the environment allowlist is what keeps an agent session's RAILS_ENV=test run " \
       "from paging #alerts on the production DSN (zimmer#176)\n#{excerpt}"
     assert_includes @output, "initialized=true", "the SDK did not initialize\n#{excerpt}"
+    assert_includes @output, 'HOSTS=["zimmer.example.test", "zimmer", /zimmer(?:-\\d+)?\\.',
+      "the production boot did not arm the Host allow-list from ZIMMER_PROD_BASE_URL\n#{excerpt}"
 
     # The health check rescues everything and logs a warning, so a NameError in there
     # would be silent — assert on the line it prints only when it resolved the list.
