@@ -35,6 +35,14 @@ on:
         type: boolean
         required: false
         default: true
+      remove_cloudflared:
+        description: >-
+          Take the optional Cloudflare Tunnel connector off the droplet (and its token).
+          Only acts when STAGING_CLOUDFLARE_TUNNEL_TOKEN is empty -- clear the secret
+          first. Leave off for normal deploys.
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: staging-lifecycle
@@ -637,6 +645,7 @@ jobs:
           set -euo pipefail
           w=$(ssh root@"${STAGING_HOST}" \
             'docker ps --filter "name=zimmer-worker" --format "{{.Names}}" | head -1')
+          [ -n "$w" ] || { echo "::error::no zimmer-worker container to check the pin from"; exit 1; }
           gw=$(ssh root@"${STAGING_HOST}" \
             "docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}'")
           got=$(ssh root@"${STAGING_HOST}" "docker exec $w getent hosts ${DOMAIN}" | awk '{print $1}' | head -1)
@@ -666,6 +675,7 @@ jobs:
         env:
           STAGING_HOST: ${{ steps.host.outputs.staging_host }}
           CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.STAGING_CLOUDFLARE_TUNNEL_TOKEN }}
+          ZIMMER_CLOUDFLARED_REMOVE: ${{ inputs.remove_cloudflared && '1' || '' }}
         run: bash scripts/install-cloudflared.sh "$STAGING_HOST"
 
       # The worker being "stably running" above says the container did not crash. It

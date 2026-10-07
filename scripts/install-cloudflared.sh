@@ -53,10 +53,25 @@ NAME="zimmer-cloudflared"
 TOKEN_DIR="${ZIMMER_CLOUDFLARED_DIR:-/etc/zimmer/cloudflared}"
 # The image runs as nonroot (65532:65532), so the token file belongs to that uid, mode 0400.
 CLOUDFLARED_UID="65532"
+# cloudflared's metrics server, on host loopback only. Its /ready answers 200 only while at
+# least one tunnel connection is registered -- the live answer the deploy checks below.
+METRICS="127.0.0.1:20241"
 
 TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
 REMOVE="${ZIMMER_CLOUDFLARED_REMOVE:-}"
 WAIT="${ZIMMER_CLOUDFLARED_WAIT:-90}"
+
+# Spliced into remote shell strings and, on removal, into a root `rm -rf`, so: an absolute
+# path of plain characters, ending in /cloudflared.
+if ! [[ "$TOKEN_DIR" =~ ^/[A-Za-z0-9._/-]+/cloudflared$ ]]; then
+  echo "::error::ZIMMER_CLOUDFLARED_DIR must be an absolute path ending in /cloudflared (got '${TOKEN_DIR}')"
+  exit 2
+fi
+
+if [ -n "$TOKEN" ] && [ "$REMOVE" = "1" ]; then
+  echo "::error::CLOUDFLARE_TUNNEL_TOKEN and ZIMMER_CLOUDFLARED_REMOVE=1 contradict each other; pass one"
+  exit 2
+fi
 
 case "$WAIT" in
   '' | *[!0-9]*) echo "::error::ZIMMER_CLOUDFLARED_WAIT must be a whole number of seconds (got '${WAIT}')"; exit 2 ;;
@@ -126,24 +141,23 @@ else
     --label zimmer.cloudflared.spec=${SPEC} \
     --log-opt max-size=10m --log-opt max-file=3 \
     -v ${TOKEN_DIR}:${TOKEN_DIR}:ro \
-    ${IMAGE} tunnel run --token-file ${TOKEN_DIR}/token >/dev/null"
+    ${IMAGE} tunnel --metrics ${METRICS} run --token-file ${TOKEN_DIR}/token >/dev/null"
 fi
 
-# Prove it, every run: a connector that started but never registered is a tunnel that serves
-# Cloudflare's 1033 error page, and a green deploy must not hide that. --since bounds the
-# search to this container's lifetime, so an old success line cannot vouch for a new failure.
-echo "Waiting up to ${WAIT}s for ${NAME} to register a tunnel connection"
+# Prove it, every run, against LIVE state: a connector that started but holds no registered
+# connection serves Cloudflare's 1033 error page, and a green deploy must not hide that.
+# /ready, not the logs -- on a host that was already converged, the log line from weeks ago
+# would vouch for a tunnel that has since lost every connection.
+echo "Waiting up to ${WAIT}s for ${NAME} to report a registered tunnel connection"
 deadline=$((SECONDS + WAIT))
 while :; do
-  started="$(run_q "docker inspect -f '{{.State.StartedAt}}' ${NAME}")"
-  if run_q "docker logs --since '${started}' ${NAME} 2>&1 | grep -q 'Registered tunnel connection'"; then
-    echo "${NAME} is connected:"
-    run_q "docker logs --since '${started}' ${NAME} 2>&1 | grep 'Registered tunnel connection' | tail -4" || true
+  if ready="$(run_q "curl -fsS --max-time 5 http://${METRICS}/ready")"; then
+    echo "${NAME} is connected: ${ready}"
     exit 0
   fi
   if [ "$SECONDS" -ge "$deadline" ]; then
-    echo "::error::${NAME} on ${HOST} registered no tunnel connection within ${WAIT}s"
-    run_q "docker ps -a --filter name=${NAME} --format '{{.Names}}\t{{.Status}}'; docker logs --tail 30 ${NAME} 2>&1" || true
+    echo "::error::${NAME} on ${HOST} reported no registered tunnel connection within ${WAIT}s"
+    run_q "curl -sS --max-time 5 http://${METRICS}/ready; echo; docker ps -a --filter name=${NAME} --format '{{.Names}}\t{{.Status}}'; docker logs --tail 30 ${NAME} 2>&1" || true
     exit 1
   fi
   sleep 5

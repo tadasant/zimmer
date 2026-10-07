@@ -151,9 +151,12 @@ It has three parts, and each is off until a deploy turns it on.
 The deploy runs this converge on every deploy. Given `CLOUDFLARE_TUNNEL_TOKEN`, it runs the pinned
 `cloudflare/cloudflared` image as `zimmer-cloudflared`, with `--network host` and `restart:
 unless-stopped`, the same shape as Caddy. The token is the one the Cloudflare dashboard gives a
-**remotely-managed** tunnel. The script then waits for `Registered tunnel connection` and fails the deploy
-if none appears. With the token empty it changes nothing. `ZIMMER_CLOUDFLARED_REMOVE=1` with an empty
-token is the only thing that takes a connector down.
+**remotely-managed** tunnel. The script then polls cloudflared's `/ready` on host loopback
+(`127.0.0.1:20241`), which answers 200 only while a tunnel connection is registered, and fails the deploy
+if none appears. That check runs on every deploy, including one that changed nothing, so a tunnel that has
+lost its connections is caught. With the token empty the script changes nothing.
+`ZIMMER_CLOUDFLARED_REMOVE=1` with an empty token is the only thing that takes a connector down. On
+staging that is the `remove_cloudflared` input of **Deploy staging**.
 
 It is idempotent. Same token and same image pin means a no-op that leaves the running tunnel alone. A
 rotated token, or a bumped `IMAGE=` in the script, recreates the connector on the next deploy. That is
@@ -194,7 +197,9 @@ including web sign-in's, key on the real client, with no Cloudflare-specific cod
 **Zimmer does not read `CF-Connecting-IP`, on purpose.** The tailnet path goes through Caddy, which
 passes that header through from any tailnet client untouched, so trusting it would let a tailnet peer
 choose its own address. `X-Forwarded-For` is safe on both paths: Caddy overwrites it on the tailnet path,
-and the edge appends to it on the tunnel path. `test/integration/client_ip_behind_cloudflare_test.rb`
+and the edge appends to it on the tunnel path. A third path is narrower but real: kamal-proxy
+publishes `:8080` on every interface, so a tailnet peer can skip Caddy and forge `X-Forwarded-For`
+itself. That has always been true. It reaches only the tailnet, and Tailscale ACLs decide who that is. `test/integration/client_ip_behind_cloudflare_test.rb`
 pins all three cases.
 
 ### 3. Keep the box's own traffic on the box: `ZIMMER_PIN_DOMAIN_TO_HOST`
@@ -218,7 +223,8 @@ proves it from inside the worker: the name resolves to the gateway, and `https:/
    - pass the token to `scripts/install-cloudflared.sh <host>` as `CLOUDFLARE_TUNNEL_TOKEN` (staging:
      the `STAGING_CLOUDFLARE_TUNNEL_TOKEN` secret, already wired);
    - export `ZIMMER_PIN_DOMAIN_TO_HOST=<domain>` for `kamal deploy`;
-   - run `scripts/domain-cert.sh` with **`MANAGE_A_RECORD=false`**. The tunnel owns the name as a proxied
+   - run `scripts/domain-cert.sh` with **`MANAGE_A_RECORD=false`**. On staging, set the
+     `STAGING_MANAGE_A_RECORD` Actions variable to `false`. The tunnel owns the name as a proxied
      CNAME, and the script's A-record upsert would otherwise fail every week or pull the name back onto
      the tailnet. The certificate is still needed, because Caddy keeps serving it to tailnet peers and to
      the pinned containers. The script's final check uses `--resolve` against the tailnet IP, so it tests

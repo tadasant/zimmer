@@ -37,11 +37,17 @@ class InstallCloudflaredTest < ActiveSupport::TestCase
           *State.StartedAt*) echo 2026-10-07T21:47:35.123456789Z ;;
           *zimmer.cloudflared.spec*) cat "$STATE/spec" ;;
         esac ;;
-      logs) [ -f "$STATE/registered" ] && echo 'INF Registered tunnel connection connIndex=0' ;;
       run) echo started > "$STATE/spec" ;;
       rm) rm -f "$STATE/spec" ;;
     esac
     exit 0
+  SH
+
+  # cloudflared's /ready: 200 with a connection registered, curl -f's exit 22 without.
+  CURL_STUB = <<~SH
+    printf 'curl %s\n' "$*" >> "$DOCKER_LOG"
+    [ -f "$STATE/registered" ] || exit 22
+    echo '{"status":200,"readyConnections":4}'
   SH
 
   # `install -d -m M DIR` or `install -m M -o U -g G SRC DEST`, minus the chown.
@@ -56,7 +62,7 @@ class InstallCloudflaredTest < ActiveSupport::TestCase
     @state = File.join(@dir, "state")
     @token_dir = File.join(@dir, "etc-zimmer", "cloudflared")
     FileUtils.mkdir_p([ @bin, @state ])
-    { "ssh" => SSH_STUB, "docker" => DOCKER_STUB, "install" => INSTALL_STUB, "sleep" => "exit 0" }.each do |name, body|
+    { "ssh" => SSH_STUB, "docker" => DOCKER_STUB, "install" => INSTALL_STUB, "curl" => CURL_STUB, "sleep" => "exit 0" }.each do |name, body|
       File.write(File.join(@bin, name), "#!/usr/bin/env bash\n#{body}\n")
       File.chmod(0o755, File.join(@bin, name))
     end
@@ -131,7 +137,7 @@ class InstallCloudflaredTest < ActiveSupport::TestCase
     assert_match(/--network host/, run_line)
     assert_match(/--restart unless-stopped/, run_line)
     assert_match(/--label zimmer\.cloudflared\.spec=#{spec_for(TOKEN)}/, run_line)
-    assert_match(%r{#{Regexp.escape(IMAGE)} tunnel run --token-file #{Regexp.escape(@token_dir)}/token}, run_line)
+    assert_match(%r{#{Regexp.escape(IMAGE)} tunnel --metrics 127\.0\.0\.1:\d+ run --token-file #{Regexp.escape(@token_dir)}/token}, run_line)
 
     assert_equal TOKEN, File.read(File.join(@token_dir, "token"))
     assert_match(/is connected/, out)
@@ -168,7 +174,30 @@ class InstallCloudflaredTest < ActiveSupport::TestCase
     out, status = converge("CLOUDFLARE_TUNNEL_TOKEN" => TOKEN)
 
     refute status.success?, out
-    assert_match(/registered no tunnel connection/, out)
+    assert_match(/reported no registered tunnel connection/, out)
+  end
+
+  test "a converged host whose tunnel has lost every connection still fails the deploy" do
+    running!(spec_for(TOKEN))
+    out, status = converge("CLOUDFLARE_TUNNEL_TOKEN" => TOKEN)
+
+    refute status.success?, "an old success in the logs must not vouch for a dead tunnel: #{out}"
+    assert_empty docker_calls.grep(/docker (pull|rm|run)/)
+  end
+
+  test "a token directory that could hurt a root rm -rf is refused" do
+    [ "/", "/etc", "relative/cloudflared", "/etc/zimmer/cloud flared", "/x;rm -rf /;/cloudflared" ].each do |dir|
+      out, status = converge("ZIMMER_CLOUDFLARED_REMOVE" => "1", "ZIMMER_CLOUDFLARED_DIR" => dir)
+
+      assert_equal 2, status.exitstatus, "#{dir.inspect} was accepted: #{out}"
+    end
+    refute File.exist?(File.join(@dir, "argv.log")), "the script reached the host with a bad directory"
+  end
+
+  test "a token together with remove is a contradiction, not a guess" do
+    out, status = converge("CLOUDFLARE_TUNNEL_TOKEN" => TOKEN, "ZIMMER_CLOUDFLARED_REMOVE" => "1")
+
+    assert_equal 2, status.exitstatus, out
   end
 
   test "something that is not a token is refused before anything reaches the host" do

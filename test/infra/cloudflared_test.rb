@@ -59,7 +59,9 @@ class CloudflaredTest < ActiveSupport::TestCase
       "the cloudflared image must be pinned to a release tag, never latest")
     assert_match(/--network host/, script)
     assert_match(/--restart unless-stopped/, script)
-    assert_match(/tunnel run --token-file /, script,
+    assert_match(/^METRICS="127\.0\.0\.1:\d+"$/, script,
+      "the metrics server must bind host loopback only -- it runs with --network host")
+    assert_match(/tunnel --metrics \$\{METRICS\} run --token-file /, script,
       "the token must be read from a file: as an argument or env var it shows in `docker inspect`")
     refute_match(/\s-p\s|--publish/, script, "the connector must publish no port")
   end

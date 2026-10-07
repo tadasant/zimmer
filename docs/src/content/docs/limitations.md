@@ -167,6 +167,11 @@ not happened is a connector registering with a **real** tunnel token. Neither re
 account wired when this landed, so the first deploy that sets `CLOUDFLARE_TUNNEL_TOKEN` is the first
 real exercise. The converge fails that deploy if no connection registers, so the failure is loud.
 
+The domain pin reaches the web and worker containers, and no further. Containers that an agent
+session starts through the worker's own Docker daemon (`.agent-containers/`) have their own
+`/etc/hosts` and resolve the domain through public DNS. Behind the edge, a call from one of them to
+`https://<domain>` meets Cloudflare Access.
+
 Two smaller edges. The connector is delivered only by the deploy, so a droplet rebuilt from scratch has
 no tunnel until its first deploy finishes. And with the edge on, the tunnel's traffic skips Caddy, so
 Caddy-side changes (headers, logging) affect only tailnet traffic.
