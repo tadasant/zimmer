@@ -109,6 +109,7 @@ export default defineConfig({
           label: "Auth",
           items: [
             { label: "Auth architecture", slug: "auth/overview" },
+            { label: "Web sign-in", slug: "auth/web-sign-in" },
             { label: "Agent harness credentials", slug: "auth/harness" },
             { label: "MCP server OAuth", slug: "auth/mcp-oauth" },
           ],

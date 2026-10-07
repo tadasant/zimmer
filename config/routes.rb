@@ -119,6 +119,10 @@ Rails.application.routes.draw do
     # The roster of named humans. Full CRUD: this is where a Slack user ID is
     # linked to a person, which used to require an env var and a deploy.
     resources :users
+    # Read-only plus destroy: a row is written by Google sign-in, never by hand.
+    # Destroying one signs that person out everywhere and voids their second
+    # factor, so their next sign-in sets up a new authenticator.
+    resources :web_identities, only: [ :index, :show, :destroy ]
     resources :x_oauth_credentials
     # The X OAuth consent flow that mints and re-mints an XOauthCredential (#852).
     # Under /supervisor, beside the credential rows it writes.
@@ -696,6 +700,19 @@ Rails.application.routes.draw do
       end
     end
   end
+
+  # Web sign-in: Google, then an authenticator code. WebSignInRequired walls off
+  # every other browser page when ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID is set; these
+  # are the pages a signed-out browser can still reach. See docs/auth/web-sign-in.md.
+  get "login", to: "web_sign_ins#new", as: :login
+  post "auth/google", to: "web_sign_ins#create", as: :google_sign_in
+  get "auth/google/callback", to: "web_sign_ins#callback", as: :google_sign_in_callback
+  delete "logout", to: "web_sign_ins#destroy", as: :logout
+  post "logout/everywhere", to: "web_sign_ins#destroy_everywhere", as: :logout_everywhere
+  get "login/second_factor", to: "web_second_factors#new", as: :second_factor
+  post "login/second_factor", to: "web_second_factors#create"
+  get "login/second_factor/setup", to: "web_second_factors#setup", as: :second_factor_setup
+  post "login/second_factor/setup", to: "web_second_factors#confirm_setup"
 
   # Defines the root path route ("/")
   root "sessions#index"

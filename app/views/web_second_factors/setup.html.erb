@@ -1,0 +1,31 @@
+<h1 class="text-lg font-semibold text-gray-900">
+  <%= @replacing ? "Set up a new authenticator" : "Set up your authenticator" %>
+</h1>
+<p class="mt-2 text-sm text-gray-600">
+  <% if @replacing %>
+    Your current authenticator keeps working until you confirm this one.
+  <% else %>
+    Zimmer asks for a code from an authenticator app after Google: 1Password, Google Authenticator,
+    Authy, or any app that takes a setup key.
+  <% end %>
+</p>
+
+<ol class="mt-5 space-y-4 text-sm text-gray-700">
+  <li>
+    <span class="font-medium text-gray-900">1. Add Zimmer to your app.</span>
+    On your phone, <%= link_to "open this link", WebAuth::Totp.provisioning_uri(@secret, account: @identity.email, issuer: "Zimmer"),
+                          class: "text-indigo-600 underline hover:text-indigo-800" %>.
+    Or enter this setup key by hand:
+    <div class="mt-2 select-all break-words rounded-md border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-base tracking-wider text-gray-900" data-testid="totp-secret"><%= @secret.scan(/.{1,4}/).join(" ") %></div>
+    <span class="mt-1 block text-xs text-gray-500">Account: <%= @identity.email %> · time-based · 6 digits · 30 seconds</span>
+  </li>
+  <li>
+    <span class="font-medium text-gray-900">2. Enter the code it shows.</span>
+    <%= form_with url: second_factor_setup_path, method: :post, data: { turbo: false }, class: "mt-2 space-y-3" do |f| %>
+      <%= f.text_field :code, value: nil, autofocus: true, required: true, autocomplete: "one-time-code",
+            inputmode: "numeric", pattern: "[0-9 ]*", maxlength: 7, "aria-label": "Code from your authenticator app",
+            class: "block w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-lg tracking-widest focus:border-indigo-500 focus:outline-none focus:ring-indigo-500" %>
+      <%= f.submit "Confirm", class: "w-full rounded-md bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2" %>
+    <% end %>
+  </li>
+</ol>
