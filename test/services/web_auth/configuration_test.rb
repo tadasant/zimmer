@@ -6,6 +6,10 @@ require "mocha/minitest"
 class WebAuth::ConfigurationTest < ActiveSupport::TestCase
   include WebAuthTestHelpers
 
+  # Both ends: any walled request elsewhere in this worker warms the process-wide
+  # memo, and a warm memo answers within CACHE_TTL without asking the store, so a
+  # test that needs a cold read must start cold rather than trust its neighbours.
+  setup { WebAuth::Configuration.reset! }
   teardown { WebAuth::Configuration.reset! }
 
   test "off when no client ID is set, which is every deployment that has not opted in" do
