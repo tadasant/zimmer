@@ -265,6 +265,13 @@ env:
     # Point the injected self-session MCP server at THIS instance, never at some
     # other orchestrator whose host might be carried in through ported credentials.
     ZIMMER_PROD_BASE_URL: https://zimmer.tadasant.com
+    # The Host allow-list (AllowedHosts, config/environments/production.rb). The domain
+    # comes from the base URL above; this adds the MagicDNS name Terraform gives the
+    # droplet (`tailnet_hostname` in infra/terraform/main.tf), bare and as its
+    # .ts.net FQDN. ZIMMER_ALLOWED_HOSTS adds any other hostname, and "*" turns the
+    # check off -- the break-glass if a legitimate Host is ever refused with a 403.
+    ZIMMER_TAILNET_HOSTNAME: zimmer
+    ZIMMER_ALLOWED_HOSTS: "<%= ENV.fetch("ZIMMER_ALLOWED_HOSTS", "") %>"
     # Managed Postgres (off-droplet), reached over the private VPC. Host/port are
     # injected from `terraform output`; TLS is mandatory for Managed Postgres.
     DATABASE_HOST: <%= ENV["PRODUCTION_DB_HOST"] %>
