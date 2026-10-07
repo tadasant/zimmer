@@ -2213,43 +2213,21 @@ class SessionsController < ApplicationController
   end
 
   # PATCH /sessions/:id/update_model
-  # Update the model for a session via the web UI.
+  # Presentation ONLY — the write and its rules (the model must be one the
+  # session's runtime offers, and one that can keep its effort) are
+  # Sessions::UpdateModel, shared with PATCH /api/v1/sessions/:id/model and the
+  # `change_model` MCP action.
   def update_model
     @session = find_session
 
-    model = params[:model]
+    with_db_retry { Sessions::UpdateModel.call(session: @session, model: params[:model], actor: :web) }
+    return if performed? # with_db_retry rendered its own give-up response
 
-    unless model.is_a?(String) && model.present?
-      render json: { error: "model must be a non-empty string" }, status: :unprocessable_entity
-      return
-    end
-
-    model = model.strip.first(100)
-
-    result = with_db_retry do
-      old_model = @session.config&.dig("model")
-      new_config = (@session.config || {}).merge("model" => model)
-
-      if @session.update(config: new_config)
-        if old_model != model
-          @session.logs.create!(
-            content: "Model updated (#{old_model} → #{model})",
-            level: "info"
-          )
-        end
-        true
-      else
-        false
-      end
-    end
-
-    return if performed?
-
-    if result
-      render json: { success: true, model: model }
-    else
-      render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
-    end
+    render json: { success: true, model: @session.config&.dig("model") }
+  rescue Sessions::UpdateModel::Error => e
+    render json: { error: e.message }, status: :unprocessable_entity
+  rescue ActiveRecord::RecordInvalid => e
+    render json: { error: e.record.errors.full_messages.join(", ") }, status: :unprocessable_entity
   end
 
   # PATCH /sessions/:id/update_effort
