@@ -18,6 +18,24 @@ module WebSignInRequired
   extend ActiveSupport::Concern
 
   LOGIN_PATH = "/login"
+
+  # Paths the wall never answers, whatever controller ends up serving them.
+  # Every one of these is a machine endpoint with its own credential (an API
+  # key, a provider signature, an OAuth client) or none at all (health checks,
+  # OAuth discovery), and a 302 to /login would break its client. Today none
+  # of them inherits from a controller that includes this concern; the list is
+  # the second line of defence if one ever does. `/oauth/authorize` is
+  # deliberately absent: it is a browser page and belongs behind the wall.
+  MACHINE_PATHS = %r{
+    \A(?:
+      /mcp(?:/external_app)?/?\z
+      | /api/
+      | /webhooks/
+      | /up(?:/deep)?/?\z
+      | /\.well-known/oauth-
+      | /oauth/(?:register|token|revoke)/?\z
+    )
+  }x
   RETURN_TO_KEY = :web_auth_return_to
 
   included do
@@ -37,6 +55,8 @@ module WebSignInRequired
   private
 
   def require_web_sign_in
+    return if request.path.match?(MACHINE_PATHS)
+
     configuration = web_auth_configuration
     return unless configuration.enabled?
 

@@ -144,8 +144,9 @@ These numbers are chosen to be generous, so you rarely see the login page.
   Google sign-in in that browser skips the code. Signing out keeps this cookie, so signing back in is
   one Google click.
 
-Both cookies are encrypted with `secret_key_base`, `HttpOnly` and `SameSite=Lax` (and `Secure`
-wherever `force_ssl` is on). The expiry is checked inside the cookie as well as by the browser.
+Both cookies are encrypted with `secret_key_base`, `HttpOnly` and `SameSite=Lax`, and `Secure`
+whenever the request is HTTPS, including HTTPS that a local proxy reports in `X-Forwarded-Proto`
+(see [behind a proxy](#behind-a-tls-terminating-proxy)). The expiry is checked inside the cookie as well as by the browser.
 Rotating `secret_key_base` signs everyone out.
 
 A sign-in cookie stops counting when:
@@ -211,12 +212,39 @@ removing `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID`, which takes the whole wall down.
 | `/.well-known/oauth-*`, `POST /oauth/register`, `/oauth/token`, `/oauth/revoke` | **Open.** Machine endpoints for MCP clients, authenticated by PKCE or a token the client holds |
 | `/webhooks/slack`, `/webhooks/github` | **Unchanged.** Request signatures |
 | `/up`, `/up/deep` | **Unchanged.** Open, as the deploy gates need |
+| `/.well-known/oauth-*`, `/oauth/register`, `/oauth/token`, `/oauth/revoke` (the MCP authorization server's machine endpoints) | **Never walled.** They answer MCP clients, not browsers |
+| `/oauth/authorize` (the MCP authorization server's consent page) | Sign-in required. A signed-out browser goes through Google and the code, then comes back to the full authorize URL, query string intact |
 | A route that does not exist | `404`, as before |
 
 `test/integration/web_sign_in_route_audit_test.rb` holds this table to the code. It walks every
 route Zimmer draws. A walled route must refuse a signed-out request. The rest must be on a short,
-named list. A new controller that inherits from neither `ApplicationController` nor a known machine
-base fails the build.
+named list. Every `ActionController::API` controller counts as a machine endpoint: it has no
+cookies and no views, so it cannot be a browser page. A new controller that is neither walled nor an
+API controller fails the build.
+
+The machine paths are also exempt by path (`WebSignInRequired::MACHINE_PATHS`: `/mcp`,
+`/mcp/external_app`, `/api/`, `/webhooks/`, `/up`, `/up/deep`, `/.well-known/oauth-`, and
+`/oauth/register|token|revoke`). That is a second line of defence: if a machine endpoint ever ended up
+on a controller that includes the wall, it would still not answer with a redirect to `/login`. The
+audit fails if a walled browser page sits under one of those paths.
+
+### Behind a TLS-terminating proxy
+
+When TLS ends at a proxy in front of Zimmer (cloudflared, kamal-proxy), Rails sees plain HTTP from
+`127.0.0.1` with `X-Forwarded-Proto: https`. The wall is built for that:
+
+- **The cookies are `Secure` because the request is HTTPS**, and Rails reads that from
+  `X-Forwarded-Proto`. This does not depend on `force_ssl`, so a deployment running with
+  `DISABLE_SSL=true` behind such a proxy still never sends a sign-in cookie over plain HTTP.
+- **Google's `redirect_uri` comes from the configured base URL** (`ZIMMER_PROD_BASE_URL`, through
+  `AppUrl`), never from the request's `Host`. A forged or rewritten `Host` cannot move where Google
+  sends the authorization code.
+- **The proxy must pass the public `Host` through.** Rails' CSRF check compares the browser's
+  `Origin` with the scheme and host it sees. If the proxy rewrites `Host` to `localhost`, every form
+  in the UI, the sign-in button included, is refused with a 422.
+
+`test/integration/web_sign_in_behind_proxy_test.rb` exercises all three, and returning to a
+realistic MCP authorize URL with its query string byte for byte.
 
 ### Agent sessions
 
