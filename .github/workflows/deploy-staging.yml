@@ -416,6 +416,12 @@ jobs:
           # dispatch checkbox is a real lever and the deploy log records which way it
           # went. The config still defaults this ON -- see its header.
           ZIMMER_NESTED_DOCKER: ${{ inputs.nested_docker && '1' || '0' }}
+          # Pin the domain to this host inside the containers (config/deploy.yml). On
+          # staging DNS already points at this box, so this changes where nothing goes --
+          # it is armed here so that the mechanism production needs behind the optional
+          # Cloudflare edge is proven, under sysbox, on every staging deploy. The step
+          # "Verify the domain is pinned to the host Caddy" below is the proof.
+          ZIMMER_PIN_DOMAIN_TO_HOST: staging.zimmer.tadasant.com
           KAMAL_REGISTRY_USERNAME: ${{ github.actor }}
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
           STAGING_SECRET_BASE: ${{ secrets.STAGING_SECRET_BASE }}
@@ -616,6 +622,51 @@ jobs:
           done
           echo "::error::Health check did not pass in time"
           exit 1
+
+      # ZIMMER_PIN_DOMAIN_TO_HOST (Kamal deploy step) writes `<domain> -> host-gateway` into
+      # the containers' /etc/hosts. Prove it from where agent sessions actually run -- the
+      # worker -- by resolving the name and fetching /up through it. The resolution and the
+      # 200 are hard requirements. Certificate validity is only a warning here: a droplet
+      # created by THIS run still serves cloud-init's self-signed placeholder until the
+      # `cert` job below pushes the real one, and that is equally true without the pin.
+      - name: Verify the domain is pinned to the host Caddy
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+          DOMAIN: staging.zimmer.tadasant.com
+        run: |
+          set -euo pipefail
+          w=$(ssh root@"${STAGING_HOST}" \
+            'docker ps --filter "name=zimmer-worker" --format "{{.Names}}" | head -1')
+          gw=$(ssh root@"${STAGING_HOST}" \
+            "docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}'")
+          got=$(ssh root@"${STAGING_HOST}" "docker exec $w getent hosts ${DOMAIN}" | awk '{print $1}' | head -1)
+          echo "worker=$w resolves ${DOMAIN} -> ${got:-nothing} (host-gateway is ${gw})"
+          if [ "$got" != "$gw" ]; then
+            echo "::error::${DOMAIN} does not resolve to the host gateway inside the worker; the pin did not apply"
+            exit 1
+          fi
+          code=$(ssh root@"${STAGING_HOST}" \
+            "docker exec $w curl -sk -o /dev/null -w '%{http_code}' --max-time 10 https://${DOMAIN}/up" || true)
+          if [ "$code" != "200" ]; then
+            echo "::error::https://${DOMAIN}/up through the pin answered '${code}', not 200 -- the worker cannot reach the host Caddy on :443"
+            exit 1
+          fi
+          if ssh root@"${STAGING_HOST}" "docker exec $w curl -fsS -o /dev/null --max-time 10 https://${DOMAIN}/up"; then
+            echo "✅ worker reaches https://${DOMAIN}/up on the host Caddy with a valid certificate"
+          else
+            echo "::warning::reached the host Caddy through the pin, but its certificate did not validate -- expected only on a droplet the cert job has not visited yet"
+          fi
+
+      # The OPTIONAL Cloudflare edge's connector. A no-op unless the
+      # STAGING_CLOUDFLARE_TUNNEL_TOKEN secret is set: the script changes nothing on the
+      # host for an empty token. Delivered here, over SSH, and never through Terraform --
+      # user_data is readable by every agent session on the box, and a tunnel token lets
+      # its holder serve the tunnel's traffic. See docs/operate/deploying.md#optional-cloudflare-edge.
+      - name: Cloudflare Tunnel connector (converge, optional)
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.STAGING_CLOUDFLARE_TUNNEL_TOKEN }}
+        run: bash scripts/install-cloudflared.sh "$STAGING_HOST"
 
       # The worker being "stably running" above says the container did not crash. It
       # says nothing about whether the thing this deploy turned on actually works, and

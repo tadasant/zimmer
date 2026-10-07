@@ -9,7 +9,9 @@ Zimmer deploys with [Kamal](https://kamal-deploy.org/) onto a single DigitalOcea
 only over Tailscale. Terraform bootstraps the box (Docker, Tailscale, Caddy, the deploy key); Kamal
 owns the app stack — a `web` role and a `worker` role, with durable named volumes. There is no
 Kubernetes, no load balancer, and no HA. TLS is optional and off by default — setting `var.domain`
-adds a tailnet-only HTTPS front door (see [below](#custom-domain-https-over-the-tailnet)).
+adds a tailnet-only HTTPS front door (see [below](#custom-domain-https-over-the-tailnet)). An
+[optional Cloudflare edge](#optional-cloudflare-edge) can serve that domain to the internet through an
+outbound-only tunnel, still with no public port open.
 
 These docs cover the **staging** deployment, which is the one this repo operates. A production
 deployment is self-hosted and lives in your own private infrastructure — the `config/deploy.yml` /
@@ -113,6 +115,123 @@ Certs live in a host directory, so they persist across image auto-upgrades (cont
 droplet **replacement** (a fresh `provision`) drops them; the next `domain-cert-*` run re-registers the A
 record and re-issues.
 :::
+
+## Optional Cloudflare edge
+
+Off by default. With it on, the custom domain is served to the internet through a [Cloudflare
+Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), with
+[Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front of it
+and Zimmer's own sign-in behind it. The firewall does not change: the droplet still admits no public
+TCP at all, because the connector dials **out** to Cloudflare and serves the hostname over that
+connection. Tailscale stays for everything that is not a browser. That covers SSH, Kamal deploys, the
+metrics exporter, and CI's health checks on `http://<tailnet-ip>/up`.
+
+```mermaid
+flowchart LR
+    B["Browser"] -->|"https://zimmer.example.com"| EDGE["Cloudflare edge<br/>Access policy"]
+    EDGE -->|"tunnel (outbound from the box)"| CFD
+    subgraph droplet["Droplet (firewall: 41641/udp only)"]
+        CFD["zimmer-cloudflared<br/>--network host"]
+        KP["kamal-proxy :8080"]
+        CADDY["Caddy :80 / :443<br/>(tailnet + on-box)"]
+        WEB["web"]
+        WRK["worker<br/>(agent sessions)"]
+        CFD -->|"http://localhost:8080"| KP
+        CADDY --> KP
+        KP --> WEB
+        WRK -->|"https://zimmer.example.com/mcp<br/>pinned to host-gateway"| CADDY
+    end
+    T["Tailnet peer"] -->|"tailnet IP"| CADDY
+```
+
+It has three parts, and each is off until a deploy turns it on.
+
+### 1. The connector: `scripts/install-cloudflared.sh`
+
+The deploy runs this converge on every deploy. Given `CLOUDFLARE_TUNNEL_TOKEN`, it runs the pinned
+`cloudflare/cloudflared` image as `zimmer-cloudflared`, with `--network host` and `restart:
+unless-stopped`, the same shape as Caddy. The token is the one the Cloudflare dashboard gives a
+**remotely-managed** tunnel. The script then waits for `Registered tunnel connection` and fails the deploy
+if none appears. With the token empty it changes nothing. `ZIMMER_CLOUDFLARED_REMOVE=1` with an empty
+token is the only thing that takes a connector down.
+
+It is idempotent. Same token and same image pin means a no-op that leaves the running tunnel alone. A
+rotated token, or a bumped `IMAGE=` in the script, recreates the connector on the next deploy. That is
+also how a long-lived droplet gets updated. Production reconciles its droplet rather than recreating it,
+so cloud-init could never deliver this; the deploy does.
+
+**The token is deliberately not a Terraform variable.** Anything Terraform renders into cloud-init lands
+in `user_data`, and [`user_data` is readable from the metadata
+service](/operate/provisioning/#where-secrets-end-up-that-they-shouldnt) by every process on the box,
+including every agent session. A tunnel token lets whoever holds it run a second connector for the same
+tunnel, and Cloudflare load-balances real, already-authenticated requests onto it. So the token travels
+over SSH stdin into `/etc/zimmer/cloudflared/token`. That file is mode `0400`, owned by the image's
+nonroot uid, and sits outside `/opt/zimmer`, which production bind-mounts parts of into the app
+containers. cloudflared reads it with `--token-file`, so it never appears in `docker inspect`.
+`test/infra/cloudflared_test.rb` fails the build if a token turns up in `main.tf` or the cloud-init
+template, or if any Kamal mount overlaps the token directory.
+
+### 2. The tunnel's origin is `http://localhost:8080` (kamal-proxy), not Caddy
+
+Point the tunnel's public hostname at **`http://localhost:8080`**. Of the two candidates, it is the
+one that keeps the client's address:
+
+- **Caddy replaces `X-Forwarded-For`** with the peer it saw. Behind the tunnel, that peer is
+  cloudflared on `localhost`, so every request would reach Rails looking like it came from the box.
+  Caddy can be told to trust its peer, but its Caddyfile is cloud-init-only and
+  [never reaches a running droplet](/limitations/#user_data-is-frozen-so-the-deploy-key-and-the-caddyfile-cant-be-updated-in-place).
+- **kamal-proxy appends.** With `ssl: false`, `forward_headers` defaults on, so the edge's header
+  survives with kamal-proxy's docker peer added at the end. TLS terminates at the edge, and the hop from
+  cloudflared to kamal-proxy is host loopback. Health-gated container swaps still apply.
+
+The header shape was checked end to end through a real Cloudflare edge, cloudflared 2026.10.0 and
+kamal-proxy v0.9.2. A client that sent `X-Forwarded-For: 10.9.9.9, 6.6.6.6` arrived as
+`10.9.9.9, 6.6.6.6,<client>, 172.x.0.1`. The edge **appends** the address it saw, so a forged entry
+always sits to its left. Rails' `remote_ip` takes the right-most entry that is not a private or loopback
+proxy, which is the edge's. So the Quick Router rate limit and every "refused from <ip>" log line,
+including web sign-in's, key on the real client, with no Cloudflare-specific code.
+
+**Zimmer does not read `CF-Connecting-IP`, on purpose.** The tailnet path goes through Caddy, which
+passes that header through from any tailnet client untouched, so trusting it would let a tailnet peer
+choose its own address. `X-Forwarded-For` is safe on both paths: Caddy overwrites it on the tailnet path,
+and the edge appends to it on the tunnel path. `test/integration/client_ip_behind_cloudflare_test.rb`
+pins all three cases.
+
+### 3. Keep the box's own traffic on the box: `ZIMMER_PIN_DOMAIN_TO_HOST`
+
+Agent sessions call Zimmer at `https://<domain>/mcp`. Once public DNS points the domain at Cloudflare,
+that call would leave the box and meet Cloudflare Access, which a session cannot pass. Set
+`ZIMMER_PIN_DOMAIN_TO_HOST=<domain>` in the environment `kamal deploy` runs in, and `config/deploy.yml`
+adds `--add-host <domain>:host-gateway` to both the web and the worker containers. The name then
+resolves to the host, where Caddy listens on `:443` on every interface and serves the domain's own
+certificate, so TLS still validates. Unset, nothing is added. Staging sets it on every deploy and then
+proves it from inside the worker: the name resolves to the gateway, and `https://<domain>/up` answers
+200 through it.
+
+### Turning it on
+
+1. **Cloudflare side** (not in this repo): create a remotely-managed tunnel, add a public hostname
+   `<domain>` → `http://localhost:8080`, and put an Access application on the hostname. Anything that is
+   not a browser needs its own Access policy: a service token, or a bypass for specific paths. That
+   includes REST API clients, remote MCP clients and inbound webhooks.
+2. **Deploy side**, in the same deploy:
+   - pass the token to `scripts/install-cloudflared.sh <host>` as `CLOUDFLARE_TUNNEL_TOKEN` (staging:
+     the `STAGING_CLOUDFLARE_TUNNEL_TOKEN` secret, already wired);
+   - export `ZIMMER_PIN_DOMAIN_TO_HOST=<domain>` for `kamal deploy`;
+   - run `scripts/domain-cert.sh` with **`MANAGE_A_RECORD=false`**. The tunnel owns the name as a proxied
+     CNAME, and the script's A-record upsert would otherwise fail every week or pull the name back onto
+     the tailnet. The certificate is still needed, because Caddy keeps serving it to tailnet peers and to
+     the pinned containers. The script's final check uses `--resolve` against the tailnet IP, so it tests
+     the box and not the edge.
+3. **DNS**: once the connector reports registered, let the tunnel's hostname replace the tailnet A
+   record.
+
+Nothing in the app changes. The hostname stays the same, so `APP_HOST`, OAuth callbacks and `config.hosts`
+(unset in production) need nothing. `assume_ssl` and `force_ssl` already treat every request as HTTPS, so
+cookies stay `Secure`, and the edge sends `X-Forwarded-Proto: https` regardless.
+
+To turn it off, run the converge once with an empty token and `ZIMMER_CLOUDFLARED_REMOVE=1`, point DNS
+back with `MANAGE_A_RECORD=true`, and unset `ZIMMER_PIN_DOMAIN_TO_HOST`.
 
 ## Background jobs and durable state
 
