@@ -25,6 +25,14 @@ require "mcp"
 # the bearer token is matched against the same keys, so there is exactly one
 # credential to provision.
 #
+# The second credential is an OAuth access token from Zimmer's own authorization
+# server (OauthServer): what a remote MCP client such as a Claude.ai custom
+# connector holds after a human approved it at /oauth/authorize. It opens exactly
+# what an `api` key opens here — every tool group, `?tool_groups=` honoured the
+# same way — and nothing outside /mcp. An unauthenticated request is answered 401
+# with a `WWW-Authenticate` header naming the protected-resource metadata
+# (RFC 9728), which is how such a client discovers where to get a token.
+#
 # The transport runs stateless: each POST is a complete JSON-RPC message and gets
 # a complete JSON response, so no Mcp-Session-Id is issued and any Puma worker can
 # serve any request. A server built per request is also what lets the same
@@ -44,6 +52,55 @@ class McpController < Api::BaseController
   end
 
   private
+
+  # An OAuth access token (it carries a prefix no API key does) is checked as
+  # one; anything else takes the API-key path, unchanged. Either refusal carries
+  # the WWW-Authenticate challenge an OAuth client starts from.
+  def authenticate_api_key
+    token = bearer_token
+    if oauth_access_tokens_accepted? && token&.start_with?(OauthServer::ACCESS_TOKEN_PREFIX)
+      authenticate_oauth_access_token(token)
+    else
+      super
+    end
+
+    challenge_oauth_client if performed? && response.status == 401
+  end
+
+  def authenticate_oauth_access_token(token)
+    config = OauthServer::Config.current(request)
+    lookup = OauthServer::Token.authenticate_access(token, resource: config.resource)
+
+    if lookup.ok?
+      @oauth_grant = lookup.grant
+      Rails.logger.info("[oauth_server] #{request.request_method} #{request.path} authenticated as grant #{@oauth_grant.id} " \
+        "(#{@oauth_grant.user_email}, client #{@oauth_grant.client.client_id.inspect})")
+    else
+      Rails.logger.info("[oauth_server] #{request.request_method} #{request.path} refused from #{request.remote_ip}: access token #{lookup.refusal}")
+      @oauth_token_refused = true
+      render_api_error("Unauthorized", "Invalid or expired access token", status: :unauthorized)
+    end
+  end
+
+  # RFC 6750 §3 / RFC 9728 §5.1. `error="invalid_token"` only when a credential
+  # was presented: a request with none is told where to get one, not that it
+  # sent a bad one.
+  def challenge_oauth_client
+    return unless oauth_access_tokens_accepted?
+
+    config = OauthServer::Config.current(request)
+    parts = [ 'realm="zimmer"' ]
+    parts << 'error="invalid_token"' if @oauth_token_refused || api_key_from_request.present?
+    parts << %(resource_metadata="#{config.protected_resource_metadata_url}")
+    parts << %(scope="#{OauthServer::SCOPE}")
+    response.set_header("WWW-Authenticate", "Bearer #{parts.join(', ')}")
+  end
+
+  # Whether this endpoint takes OAuth access tokens at all. /mcp does; a Zimmer
+  # plugin's endpoint (ExternalAppMcpController) takes only its plugin's key.
+  def oauth_access_tokens_accepted?
+    true
+  end
 
   def transport
     MCP::Server::Transports::StreamableHTTPTransport.new(
@@ -92,7 +149,7 @@ class McpController < Api::BaseController
         tool_groups: query["tool_groups"],
         allowed_agent_roots: query["allowed_agent_roots"],
         base_url: request.base_url,
-        caller_fingerprint: HealthActionCooldown.fingerprint(api_key_from_request),
+        caller_fingerprint: HealthActionCooldown.fingerprint(@oauth_grant ? "oauth_grant:#{@oauth_grant.id}" : api_key_from_request),
         # Which session this connection was written for, so the self-management
         # tools can default their "which session is asking" argument instead of
         # making the agent restate an id it cannot see. Read from the query string

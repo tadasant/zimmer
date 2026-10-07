@@ -1,0 +1,51 @@
+<div class="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+  <h1 class="text-xl font-semibold">Connect <%= @client.client_name.presence || "an unnamed client" %> to Zimmer?</h1>
+  <p class="mt-2 text-sm text-gray-600">
+    It will be able to call every tool on Zimmer's MCP endpoint as you: read and start sessions,
+    send them messages, archive them, and manage triggers. It stays connected until you revoke it
+    on <%= link_to "Settings → API keys", api_keys_path, class: "underline" %>.
+  </p>
+
+  <dl class="mt-5 space-y-3 text-sm">
+    <div>
+      <dt class="font-medium text-gray-500">Client</dt>
+      <dd class="mt-0.5 break-words">
+        <%= @client.client_name.presence || "(no name given)" %>
+        <% if @client_metadata_host %>
+          <span class="text-gray-500">— published by <code class="rounded bg-gray-100 px-1"><%= @client_metadata_host %></code></span>
+        <% else %>
+          <span class="text-gray-500">— self-registered; the name is the client's own claim</span>
+        <% end %>
+      </dd>
+    </div>
+    <div>
+      <dt class="font-medium text-gray-500">Endpoint</dt>
+      <dd class="mt-0.5 break-all font-mono text-xs"><%= @resource %></dd>
+    </div>
+    <div>
+      <dt class="font-medium text-gray-500">Signed in as</dt>
+      <dd class="mt-0.5 break-all"><%= @email %></dd>
+    </div>
+    <div>
+      <dt class="font-medium text-gray-500">Sends you back to</dt>
+      <dd class="mt-0.5 break-all font-mono text-xs"><%= URI.parse(@redirect_uri).host %></dd>
+    </div>
+  </dl>
+
+  <% if @loopback_redirect %>
+    <p class="mt-5 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+      The code goes to a program on this computer. Any program on this machine can claim to be
+      <%= @client.client_name.presence || "this client" %> that way, so approve only if you just started this connection yourself.
+    </p>
+  <% end %>
+
+  <%= form_with url: oauth_server_authorize_path, method: :post, local: true, data: { turbo: false }, class: "mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end" do %>
+    <% %w[client_id redirect_uri response_type code_challenge code_challenge_method state resource].each do |field| %>
+      <% if params[field].present? %>
+        <%= hidden_field_tag field, params[field], id: nil %>
+      <% end %>
+    <% end %>
+    <%= button_tag "Deny", name: "decision", value: "deny", class: "rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50" %>
+    <%= button_tag "Approve", name: "decision", value: "approve", class: "rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700" %>
+  <% end %>
+</div>
