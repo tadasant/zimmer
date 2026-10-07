@@ -430,6 +430,9 @@ jobs:
           # Cloudflare edge is proven, under sysbox, on every staging deploy. The step
           # "Verify the domain is pinned to the host Caddy" below is the proof.
           ZIMMER_PIN_DOMAIN_TO_HOST: staging.zimmer.tadasant.com
+          # The Host allow-list's extras and break-glass (AllowedHosts). A repository
+          # variable, so `*` turns the check off on the next deploy without a PR.
+          ZIMMER_ALLOWED_HOSTS: ${{ vars.ZIMMER_ALLOWED_HOSTS }}
           KAMAL_REGISTRY_USERNAME: ${{ github.actor }}
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
           STAGING_SECRET_BASE: ${{ secrets.STAGING_SECRET_BASE }}

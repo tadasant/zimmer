@@ -49,6 +49,14 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     JSON.parse(response.body)
   end
 
+  def with_base_url(value)
+    previous = ENV[AppUrl::LOCAL_BASE_URL_KEY]
+    value.nil? ? ENV.delete(AppUrl::LOCAL_BASE_URL_KEY) : ENV[AppUrl::LOCAL_BASE_URL_KEY] = value
+    yield
+  ensure
+    previous.nil? ? ENV.delete(AppUrl::LOCAL_BASE_URL_KEY) : ENV[AppUrl::LOCAL_BASE_URL_KEY] = previous
+  end
+
   def pkce
     verifier = SecureRandom.urlsafe_base64(48)
     [ verifier, Base64.urlsafe_encode64(Digest::SHA256.digest(verifier), padding: false) ]
@@ -159,20 +167,53 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "the issuer defaults to https://APP_HOST" do
+  test "the issuer defaults to the configured base URL, the one the web sign-in uses" do
     ENV.delete("OAUTH_SERVER_ISSUER")
-    previous = ENV["APP_HOST"]
-    ENV["APP_HOST"] = "zimmer.example.org"
-    get "/.well-known/oauth-authorization-server"
-    assert_equal "https://zimmer.example.org", JSON.parse(response.body)["issuer"]
-  ensure
-    previous.nil? ? ENV.delete("APP_HOST") : ENV["APP_HOST"] = previous
+    with_base_url("https://zimmer.example.org/") do
+      get "/.well-known/oauth-authorization-server"
+      assert_equal "https://zimmer.example.org", JSON.parse(response.body)["issuer"]
+      assert_equal "https://zimmer.example.org", AppUrl.base_url
+    end
   end
 
-  test "outside development and test the issuer is never the request's own origin" do
+  test "with nothing configured in development and test, the issuer is AppUrl's localhost, not the request" do
     ENV.delete("OAUTH_SERVER_ISSUER")
-    previous = ENV.delete("APP_HOST")
-    Rails.env.stubs(:local?).returns(false)
+    with_base_url(nil) do
+      get "/.well-known/oauth-authorization-server", headers: { "Host" => "evil.example" }
+      assert_equal AppUrl.default_local_base_url, JSON.parse(response.body)["issuer"]
+    end
+  end
+
+  test "a foreign Host header changes nothing in the metadata" do
+    ENV.delete("OAUTH_SERVER_ISSUER")
+    base = "https://zimmer.tadasant.com"
+    forged = { "Host" => "evil.example", "X-Forwarded-Host" => "evil.example", "X-Forwarded-Proto" => "http" }
+
+    with_base_url(base) do
+      get "/.well-known/oauth-protected-resource/mcp", headers: forged
+      assert_response :success
+      resource = JSON.parse(response.body)
+      assert_equal "#{base}/mcp", resource["resource"]
+      assert_equal [ base ], resource["authorization_servers"]
+
+      get "/.well-known/oauth-authorization-server", headers: forged
+      server = JSON.parse(response.body)
+      assert_equal base, server["issuer"]
+      { "authorization_endpoint" => "authorize", "token_endpoint" => "token",
+        "registration_endpoint" => "register", "revocation_endpoint" => "revoke" }.each do |key, path|
+        assert_equal "#{base}/oauth/#{path}", server[key], key
+      end
+
+      rpc("tools/list", headers: forged)
+      assert_response :unauthorized
+      assert_includes response.headers["WWW-Authenticate"], %(resource_metadata="#{base}/.well-known/oauth-protected-resource/mcp")
+      refute_includes response.headers["WWW-Authenticate"], "evil.example"
+    end
+  end
+
+  test "a deployment that never set its base URL is unconfigured rather than publishing the placeholder" do
+    ENV.delete("OAUTH_SERVER_ISSUER")
+    AppUrl.stubs(:base_url).returns(AppUrl::PLACEHOLDER_PROD_BASE_URL)
 
     get "/.well-known/oauth-authorization-server"
     assert_response :service_unavailable
@@ -182,19 +223,10 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     rpc("tools/list")
     assert_response :unauthorized
     refute_includes response.headers["WWW-Authenticate"], "resource_metadata"
-
-    ENV["APP_HOST"] = "zimmer.tadasant.com"
-    get "/.well-known/oauth-protected-resource/mcp", headers: { "Host" => "localhost:3000", "X-Forwarded-Proto" => "http" }
-    body = JSON.parse(response.body)
-    assert_equal "https://zimmer.tadasant.com/mcp", body["resource"], "behind a TLS-terminating edge, Rails sees http://localhost"
-    assert_equal [ "https://zimmer.tadasant.com" ], body["authorization_servers"]
-  ensure
-    previous.nil? ? ENV.delete("APP_HOST") : ENV["APP_HOST"] = previous
   end
 
   test "an issuer that is not a bare origin is refused rather than half-used" do
     ENV["OAUTH_SERVER_ISSUER"] = "https://zimmer.tadasant.com/some/path"
-    Rails.env.stubs(:local?).returns(false)
 
     get "/.well-known/oauth-authorization-server"
     assert_response :service_unavailable
@@ -480,14 +512,11 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
   test "an unconfigured server issues nothing at the token endpoint, refresh included" do
     client_id, tokens = connect
     ENV.delete("OAUTH_SERVER_ISSUER")
-    previous = ENV.delete("APP_HOST")
-    Rails.env.stubs(:local?).returns(false)
+    AppUrl.stubs(:base_url).returns(AppUrl::PLACEHOLDER_PROD_BASE_URL)
 
     post "/oauth/token", params: { grant_type: "refresh_token", client_id: client_id, refresh_token: tokens["refresh_token"] }
     assert_response :service_unavailable
     refute OauthServer::Token.find_by(token_digest: OauthServer.digest(tokens["refresh_token"])).rotated_at
-  ensure
-    previous.nil? ? ENV.delete("APP_HOST") : ENV["APP_HOST"] = previous
   end
 
   test "with the wall on, the dev email is ignored and a signed-out POST is refused" do
