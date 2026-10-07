@@ -4,6 +4,9 @@ module WebAuth
   # The two cookies that remember a person, both encrypted with
   # secret_key_base, HttpOnly, and SameSite=Lax.
   #
+  # Both carry `Secure` whenever the request is https, including https that a
+  # local TLS-terminating proxy reports in X-Forwarded-Proto.
+  #
   # **The sign-in cookie** says "this browser is signed in as identity N". It
   # rolls: every request at least REFRESH_INTERVAL after the last re-issue
   # writes it again with a fresh expiry, so a browser used at least once per
@@ -82,8 +85,12 @@ module WebAuth
       data.is_a?(Hash) ? data : nil
     end
 
+    # `secure` follows the request rather than `force_ssl`: behind a
+    # TLS-terminating local proxy (cloudflared, kamal-proxy) the request is
+    # https by its X-Forwarded-Proto even on a deployment that runs with
+    # DISABLE_SSL, and a sign-in cookie must never travel over plain HTTP.
     def write(cookies, name, value, expires)
-      cookies.encrypted[name] = { value: value, expires: expires, httponly: true, same_site: :lax }
+      cookies.encrypted[name] = { value: value, expires: expires, httponly: true, same_site: :lax, secure: cookies.request.ssl? }
     end
   end
 end
