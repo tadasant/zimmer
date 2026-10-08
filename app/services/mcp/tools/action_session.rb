@@ -1060,20 +1060,16 @@ module Mcp
         ].compact.join("\n")
       end
 
+      # Presentation ONLY — the bounds and the log row are
+      # Sessions::UpdateAutoCompactWindow, shared with the web context-window editor.
       def change_auto_compact_window(session, args)
-        raw = args["auto_compact_window"]
-        unless raw.to_s.match?(/\A\d+\z/)
+        begin
+          Sessions::UpdateAutoCompactWindow.call(session: session, auto_compact_window: args["auto_compact_window"], actor: :mcp)
+        rescue Sessions::UpdateAutoCompactWindow::InvalidParameter
           raise ToolError, "The \"auto_compact_window\" parameter is required for the \"change_auto_compact_window\" action and must be a positive integer."
-        end
-
-        window = raw.to_i
-        if window <= 0 || window > Session::MAX_AUTO_COMPACT_WINDOW
+        rescue Sessions::UpdateAutoCompactWindow::OutOfRange
           raise ToolError, "\"auto_compact_window\" must be between 1 and #{Session::MAX_AUTO_COMPACT_WINDOW}."
         end
-
-        old_window = session.auto_compact_window
-        session.update!(auto_compact_window: window)
-        session.logs.create!(content: "Context window updated via MCP (#{old_window} → #{window}); applies on next turn or restart", level: "info") if old_window != window
 
         [
           "## Context Window Updated",
