@@ -1232,6 +1232,35 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-whatsapp-trigger-form-375.png")
   end
 
+  # An email condition's query is often one unbreakable token — a long plus-address — and the
+  # trigger detail's description repeats it.
+  test "an email trigger's form and detail do not overflow horizontally on a phone" do
+    query = "to:zimmer+bug-reports-from-the-wedding-planning-spreadsheet@tadasant.com"
+    trigger = Trigger.new(
+      name: "zimmer-inbox-email-listener",
+      prompt_template: "New mail: {{text|untrusted}} ({{message_id}})",
+      status: "enabled",
+      agent_root_name: AgentRootsConfig.all.first.name
+    )
+    trigger.trigger_conditions.build(condition_type: "email", configuration: { "query" => query })
+    trigger.save!
+
+    visit trigger_path(trigger)
+    assert_text query
+    assert_no_horizontal_overflow("email trigger detail")
+    page.save_screenshot("tmp/screenshots/proof-email-trigger-detail-375.png")
+
+    visit edit_trigger_path(trigger)
+    assert_selector "[data-trigger-form-target=emailConfig]", visible: true
+    assert_no_horizontal_overflow("email trigger edit form")
+
+    visit new_trigger_path(type: "email")
+    assert_selector "[data-trigger-form-target=emailConfig]", visible: true
+    assert_no_horizontal_overflow("new email trigger form")
+    page.execute_script("document.querySelector('[data-trigger-form-target=\"emailConfig\"]').scrollIntoView({ block: 'start' })")
+    page.save_screenshot("tmp/screenshots/proof-email-trigger-form-375.png")
+  end
+
   # A failed trigger renders an error string it did not choose — an exception
   # message with no break opportunity is the normal case, not the pathological
   # one. Both surfaces show it, so both are measured with one in place.

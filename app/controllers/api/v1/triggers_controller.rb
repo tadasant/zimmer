@@ -113,6 +113,11 @@ class Api::V1::TriggersController < Api::BaseController
   #         the linked account, replies to it, or contains a keyword) (required)
   #       - keywords: array of words for "addressed" (default ["zimmer"])
   #       - include_from_me: fire on the linked account's own phone messages (default false)
+  #       For email (the mailbox EMAIL_MCP_URL reads; one session per thread with new mail):
+  #       - query: a Gmail search narrowing what counts (optional, default "in:inbox")
+  #       - include_automated: also fire on promotions/social/forums/updates, bounces, no-reply
+  #         senders and auto-replies (default false)
+  #       The template must write {{text}}, {{author}} and {{title}} as {{name|untrusted}}.
   def create
     @trigger = Trigger.new(trigger_params)
 
@@ -295,7 +300,7 @@ class Api::V1::TriggersController < Api::BaseController
       catalog_skills: [], catalog_hooks: [], catalog_plugins: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
-        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [] ]
+        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, :query, :include_automated, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [] ]
       ]
     )
     permitted[:mcp_servers] ||= []

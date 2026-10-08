@@ -27,12 +27,17 @@
 #     { "chat_id" => "1203...@g.us", "chat_name" => "Wedding", "mode" => "listen" }
 #     `mode` "listen" fires on every new message; "addressed" only on a batch in which someone
 #     @mentions the linked account, replies to it, or writes one of `keywords`.
+# - "email": Fires once per mail thread when new mail lands in a mailbox, read through a
+#     Gmail-tool MCP server (EmailService) by EmailTriggerPollerJob.
+#     { "query" => "in:inbox", "include_automated" => false }
+#     `query` narrows what counts (a Gmail search, default `in:inbox`). The mailbox's own mail
+#     never fires, and bulk, mailing-list and auto-reply mail fires only with `include_automated`.
 #
 # Both GitHub types are polled by GithubTriggerPollerJob, which owns the runtime keys
 # it stores back into `configuration` (GITHUB_POLL_STATE_KEYS). See that job for the
 # state-to-event semantics those keys implement.
 class TriggerCondition < ApplicationRecord
-  CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue system_event whatsapp].freeze
+  CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue system_event whatsapp email].freeze
 
   # The passive-listening event types, in the order the UI offers them. They are
   # two separate conditions on purpose: a Trigger ORs its conditions, so carrying
@@ -158,6 +163,19 @@ class TriggerCondition < ApplicationRecord
   # window (WhatsappTriggerPollerJob::LOOKBACK), since each poll re-reads that window.
   WHATSAPP_POLL_STATE_KEYS = %w[seen_messages].freeze
 
+  # The Gmail search an `email` condition watches when it names none.
+  DEFAULT_EMAIL_QUERY = "in:inbox"
+
+  # A condition's own query is a Gmail search the poller ANDs its own terms onto, so it is one
+  # line and short.
+  MAX_EMAIL_QUERY_LENGTH = 500
+
+  # The email poller's keys inside an `email` condition's configuration, merged back across an
+  # edit like WHATSAPP_POLL_STATE_KEYS. The cursor is last_message_ts (the UNIX second the mailbox
+  # has been read up to); `seen_messages` is message id => the second the poller first read it,
+  # for every message inside its look-back window (EmailTriggerPollerJob::LOOKBACK).
+  EMAIL_POLL_STATE_KEYS = %w[seen_messages].freeze
+
   belongs_to :trigger
   # Which external events this condition has already fired on — see TriggerEventClaim.
   has_many :trigger_event_claims, dependent: :delete_all
@@ -171,6 +189,7 @@ class TriggerCondition < ApplicationRecord
   before_validation :preserve_slack_poll_state, if: -> { condition_type == "slack" }
   before_validation :rebaseline_on_thread_change, if: -> { condition_type == "slack" }
   before_validation :preserve_whatsapp_poll_state, if: -> { condition_type == "whatsapp" }
+  before_validation :preserve_email_poll_state, if: -> { condition_type == "email" }
 
   # Arming is what a never-fired `days`/`weeks` schedule measures its first fire
   # from (see #armed_before?). Stamped on create for every condition type, so the
@@ -183,6 +202,7 @@ class TriggerCondition < ApplicationRecord
   scope :ao_event, -> { where(condition_type: "ao_event") }
   scope :github, -> { where(condition_type: GITHUB_CONDITION_TYPES) }
   scope :whatsapp, -> { where(condition_type: "whatsapp") }
+  scope :email, -> { where(condition_type: "email") }
 
   # Slack configuration accessors
   def channel_id
@@ -394,6 +414,25 @@ class TriggerCondition < ApplicationRecord
 
   # id => UNIX-seconds timestamp of the messages the poller has already read.
   def whatsapp_seen_messages
+    seen = configuration["seen_messages"]
+    seen.is_a?(Hash) ? seen.transform_values(&:to_i) : {}
+  end
+
+  # Email configuration accessors
+
+  # The Gmail search this condition watches — DEFAULT_EMAIL_QUERY when blank.
+  def email_query
+    configuration["query"].to_s.squish.presence || DEFAULT_EMAIL_QUERY
+  end
+
+  # Whether bulk, mailing-list and auto-reply mail fires too. Off by default: an inbox that wakes a
+  # session for every newsletter and out-of-office reply is a loop waiting to happen.
+  def email_include_automated?
+    ActiveModel::Type::Boolean.new.cast(configuration["include_automated"]) == true
+  end
+
+  # message id => UNIX second the poller first read it.
+  def email_seen_messages
     seen = configuration["seen_messages"]
     seen.is_a?(Hash) ? seen.transform_values(&:to_i) : {}
   end
@@ -721,6 +760,9 @@ class TriggerCondition < ApplicationRecord
     when "whatsapp"
       chat = whatsapp_chat_name.presence || whatsapp_chat_id || "(no chat)"
       whatsapp_addressed_only? ? "WhatsApp: messages addressing Zimmer in #{chat}" : "WhatsApp: every message in #{chat}"
+    when "email"
+      automated = email_include_automated? ? ", automated mail included" : ""
+      "Email: new mail matching #{email_query}#{automated}"
     when "schedule"
       schedule_description || "Schedule trigger"
     when "ao_event"
@@ -932,6 +974,28 @@ class TriggerCondition < ApplicationRecord
     end
 
     WHATSAPP_POLL_STATE_KEYS.each do |key|
+      next if configuration.key?(key)
+      configuration[key] = configuration_was[key] if configuration_was.key?(key)
+    end
+  end
+
+  # The email poller's cursor survives a UI save the same way. Changing what the poller searches
+  # for — the query, or include_automated, which adds or drops the category exclusions — drops it,
+  # so the new search is baselined rather than replayed: mail that already matched it before the
+  # edit is not new mail.
+  def preserve_email_poll_state
+    return if new_record?
+    return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
+    return unless configuration_changed?
+
+    before = TriggerCondition.new(condition_type: "email", configuration: configuration_was)
+    if email_query != before.email_query || email_include_automated? != before.email_include_automated?
+      EMAIL_POLL_STATE_KEYS.each { |key| configuration.delete(key) }
+      self.last_message_ts = nil
+      return
+    end
+
+    EMAIL_POLL_STATE_KEYS.each do |key|
       next if configuration.key?(key)
       configuration[key] = configuration_was[key] if configuration_was.key?(key)
     end
@@ -1233,6 +1297,17 @@ class TriggerCondition < ApplicationRecord
       validate_github_configuration
     when "whatsapp"
       validate_whatsapp_configuration
+    when "email"
+      validate_email_configuration
+    end
+  end
+
+  def validate_email_configuration
+    query = configuration["query"].to_s
+    if query.match?(/[\r\n]/)
+      errors.add(:configuration, "query must be a single line")
+    elsif query.length > MAX_EMAIL_QUERY_LENGTH
+      errors.add(:configuration, "query must be at most #{MAX_EMAIL_QUERY_LENGTH} characters")
     end
   end
 

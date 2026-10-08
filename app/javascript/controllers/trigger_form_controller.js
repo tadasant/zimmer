@@ -2,7 +2,7 @@ import { Controller } from "@hotwired/stimulus"
 
 // Handles trigger form interactivity including:
 // - Adding/removing trigger conditions
-// - Condition type switching (Slack, WhatsApp, Schedule, Zimmer Event, GitHub) per condition card
+// - Condition type switching (Slack, WhatsApp, Email, Schedule, Zimmer Event, GitHub) per condition card
 // - Schedule mode switching (Recurring/One-time) per condition card
 // - Schedule unit-dependent field visibility (day of week, time, timezone)
 export default class extends Controller {
@@ -10,6 +10,7 @@ export default class extends Controller {
     "conditionsContainer", "conditionCard", "conditionTypeSelect",
     "slackConfig", "scheduleConfig", "aoEventConfig", "systemEventConfig",
     "githubConfig", "githubLabelFields", "githubIssueFields",
+    "emailConfig",
     "whatsappConfig", "whatsappChatSelect", "whatsappChatStatus", "whatsappChatId", "whatsappChatName",
     "channelSelect", "channelStatus", "channelId", "channelName",
     "channelManual", "channelManualInput", "slackChannelField", "slackEventTypeSelect",
@@ -62,6 +63,7 @@ export default class extends Controller {
       this.maybeLoadChannels(card)
 
       this.updateWhatsappFieldsInCard(card, typeSelect ? typeSelect.value : "")
+      this.updateEmailFieldsInCard(card, typeSelect ? typeSelect.value : "")
     })
   }
 
@@ -106,6 +108,7 @@ export default class extends Controller {
     this.updateEventNameFieldsInCard(card, type)
     this.updateGithubFieldsInCard(card, type)
     this.updateWhatsappFieldsInCard(card, type)
+    this.updateEmailFieldsInCard(card, type)
 
     // Lazily load the channel list the first time this card's Slack config is shown
     if (type === "slack") this.loadChannelsForCard(card)
@@ -200,6 +203,17 @@ export default class extends Controller {
     config.classList.toggle("hidden", !isWhatsapp)
     config.querySelectorAll("input, select, textarea").forEach(el => { el.disabled = !isWhatsapp })
     if (isWhatsapp) this.loadWhatsappChatsForCard(card)
+  }
+
+  // Show/hide a card's email fields, disabled while hidden like the WhatsApp ones, so a condition
+  // of any other type does not submit an empty query into its configuration.
+  updateEmailFieldsInCard(card, type) {
+    const config = card.querySelector("[data-trigger-form-target='emailConfig']")
+    if (!config) return
+
+    const isEmail = type === "email"
+    config.classList.toggle("hidden", !isEmail)
+    config.querySelectorAll("input, select, textarea").forEach(el => { el.disabled = !isEmail })
   }
 
   // Copy the picked chat into the submitted chat_id / chat_name fields.
@@ -533,6 +547,7 @@ export default class extends Controller {
             <option value="">Select condition type...</option>
             <option value="slack">Slack - Channel messages or @mentions</option>
             <option value="whatsapp">WhatsApp - Messages in a chat</option>
+            <option value="email">Email - New mail in a mailbox</option>
             <option value="schedule">Schedule - Time-based (recurring or one-time)</option>
             <option value="ao_event">Zimmer Event - Internal system event</option>
             <option value="system_event">System Event - The deployment changed state</option>
@@ -609,6 +624,22 @@ export default class extends Controller {
             <input type="checkbox" id="whatsapp_include_from_me_${index}" name="${name}[configuration][include_from_me]" value="1" disabled
                    class="h-4 w-4 mt-0.5 text-indigo-600 border-gray-300 rounded">
             <label for="whatsapp_include_from_me_${index}" class="ml-2 text-xs text-gray-600">Also fire on messages the linked account sends from its own phone. Leave off for a dedicated Zimmer number. Turn on if the bridge is linked to your personal number and your own messages should count. Messages Zimmer posts through the bridge never fire.</label>
+          </div>
+        </div>
+
+        <div data-trigger-form-target="emailConfig" class="hidden space-y-3">
+          <p class="text-xs text-gray-500">Fires one session per mail thread with new mail, about a minute after it arrives. The template must fence what the sender wrote: <code class="bg-gray-100 px-1 rounded">{{text|untrusted}}</code>, <code class="bg-gray-100 px-1 rounded">{{author|untrusted}}</code>, <code class="bg-gray-100 px-1 rounded">{{title|untrusted}}</code>. <code class="bg-gray-100 px-1 rounded">{{message_id}}</code> and <code class="bg-gray-100 px-1 rounded">{{thread_id}}</code> are safe to write bare.</p>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Search <span class="text-gray-400 font-normal">(optional)</span></label>
+            <input type="text" name="${name}[configuration][query]" placeholder="in:inbox" maxlength="500" disabled
+                   class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono">
+            <p class="mt-1 text-xs text-gray-500">A Gmail search, ANDed with the poller's own terms. Blank means <code class="bg-gray-100 px-1 rounded">in:inbox</code>. Narrow it with, say, <code class="bg-gray-100 px-1 rounded">to:zimmer+bugs@example.com</code> or <code class="bg-gray-100 px-1 rounded">from:(a@example.com OR b@example.com)</code>. The mailbox is the one EMAIL_MCP_URL reads; its own mail never fires.</p>
+          </div>
+          <div class="flex items-start">
+            <input type="hidden" name="${name}[configuration][include_automated]" value="0" disabled>
+            <input type="checkbox" id="email_include_automated_${index}" name="${name}[configuration][include_automated]" value="1" disabled
+                   class="h-4 w-4 mt-0.5 text-indigo-600 border-gray-300 rounded">
+            <label for="email_include_automated_${index}" class="ml-2 text-xs text-gray-600">Also fire on automated mail: Gmail's promotions, social, forums and updates categories, bounces, no-reply senders and auto-replies. Leave off unless the mailbox exists to receive notifications. An agent that answers an auto-reply is how two mailboxes end up writing to each other forever.</label>
           </div>
         </div>
 
