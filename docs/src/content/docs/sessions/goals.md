@@ -378,8 +378,8 @@ it; if the router archived itself and handed the work to a child, it is that chi
 should leave one session in the queue, not a trail.
 
 Reaching `needs_input` on purpose takes one call when the session has armed a wake of its own. A
-session holding a `wake_me_up_later` backstop or a state-change watcher goes back to sleep in
-`waiting` when its turn ends, even a turn that answered a human, so the prompt tells it to call
+turn that arms a wake ends asleep in `waiting`, and while a `wake_me_up_later` backstop is armed so
+does every later turn, even one that answered a human, so the prompt tells it to call
 `action_session` with `rest_in_needs_input` as the last thing in a turn that hands back to a human.
 See [Handing back with a wake armed](/sessions/lifecycle/#handing-back-with-a-wake-armed).
 

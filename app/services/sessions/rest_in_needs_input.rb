@@ -47,8 +47,16 @@ module Sessions
   # platform dormancy — is somebody's decision that this session should not run,
   # and it stands; the result says so.
   #
-  # The intent is written per wake, so a wake armed AFTER this call in the same
-  # turn writes a new one and the session sleeps again. Call it last.
+  # == It lasts until the session waits again
+  #
+  # Dropping this turn's intent is not enough on its own: the next thing to
+  # resume the session — a deploy interrupting the turn before its pause, a
+  # router's follow-up, a Slack message — would write a fresh wake-backed
+  # re-sleep and bury the question again. So the hand-back is also stamped
+  # (SessionStateMachine::HANDED_BACK_TO_HUMAN), and both re-sleep branches skip
+  # a session carrying it. Arming a new wake clears the stamp, because that is
+  # the session deciding to wait again — which is also why a wake armed AFTER
+  # this call in the same turn puts the session back to sleep. Call it last.
   #
   # Refused on a session already asleep: a `waiting` session is not in a turn, so
   # there is nothing to come to rest, and a self-session caller is never there.
@@ -90,8 +98,9 @@ module Sessions
         session.reload
         if session.metadata&.dig("pending_sleep") == true && session.pending_sleep_requires_wake?
           dropped = session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON].presence || "wake-backed"
-          session.remove_metadata!(*Session::PENDING_SLEEP_KEYS)
+          session.remove_metadata!(SessionStateMachine::PENDING_SLEEP_KEYS)
         end
+        session.merge_metadata!(SessionStateMachine::HANDED_BACK_TO_HUMAN => Time.current.utc.iso8601)
 
         session.logs.create!(content: log_line(cancelled, dropped), level: "info")
       end
@@ -101,7 +110,7 @@ module Sessions
         cancelled_trigger_ids: cancelled,
         dropped_sleep_reason: dropped,
         unconditional_sleep_reason: unconditional_sleep_reason,
-        wakes_still_armed: session.armed_one_time_wake?
+        wakes_still_armed: wakes_still_armed?
       )
     end
 
@@ -111,12 +120,35 @@ module Sessions
     # eager-loading join filtered on condition columns would truncate the
     # association and make a mixed trigger look like a pure wake.
     def cancellable_triggers
+      # Row-locked so a scheduler fire racing this call either lands first (and
+      # its prompt is queued as the next turn, which the result warns about) or
+      # finds the row gone.
       Trigger
         .where(reuse_session: true, last_session_id: session.id, status: "enabled")
+        .lock
         .preload(:trigger_conditions)
         .select do |trigger|
           trigger.one_time_reuse_trigger? &&
             trigger.trigger_conditions.any? { |condition| condition.last_triggered_at.nil? }
+        end
+    end
+
+    # Armed and still able to fire after this turn. A group a wake fired into
+    # this turn is held (`wake_held_at`) and retired at this turn's pause, so it
+    # does not count.
+    def wakes_still_armed?
+      TriggerCondition
+        .joins(:trigger)
+        .includes(:trigger)
+        .where(condition_type: %w[schedule ao_event], last_triggered_at: nil)
+        .where(triggers: { last_session_id: session.id, reuse_session: true, status: "enabled", wake_held_at: nil })
+        .to_a
+        .then do |conditions|
+          watched = Session.watched_session_states(conditions)
+          conditions.any? do |condition|
+            (condition.one_time_schedule? || condition.session_scoped_ao_event?) &&
+              Session.one_time_wake_pending?(condition, watched_states: watched)
+          end
         end
     end
 

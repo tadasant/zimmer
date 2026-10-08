@@ -5,8 +5,8 @@ require "test_helper"
 # A session handing back to a human while a wake of its own is armed.
 #
 # Each re-sleep below is one a session can be in when the turn that needs the
-# human ends, and each one used to put it in `waiting` — off the homepage action
-# queue — until the wake fired. Session 20141 hit the system-recovery one on
+# human ends, and without this action each one puts it in `waiting` — off the
+# homepage action queue — until the wake fires. Session 20141 hit the system-recovery one on
 # 2026-10-08 and armed a dummy wake to get out of it; 19775 hit the
 # scheduled-wake one and was hidden for hours.
 #
@@ -163,6 +163,91 @@ class Sessions::RestInNeedsInputTest < ActionDispatch::IntegrationTest
     assert_equal Sessions::StopRecord::DELIBERATE_SLEEP, result.unconditional_sleep_reason
     assert_nil result.dropped_sleep_reason
     assert session.reload.waiting?
+  end
+
+  # --- The hand-back lasts until the session waits again ---------------------
+
+  test "a deploy interrupting the turn after the call does not put it back to sleep" do
+    session = sessions(:running)
+    schedule_wake(session)
+    Sessions::RestInNeedsInput.call(session: session)
+
+    # The turn dies before its pause and recovery resumes it.
+    session.reload.update!(status: "needs_input")
+    session.resume_for_system_recovery!
+    assert_nil session.reload.metadata["pending_sleep"], "recovery must not write a re-sleep over a hand-back"
+    session.start!
+    session.pause!
+
+    assert session.reload.needs_input?
+    assert session.armed_one_time_wake?, "the backstop is still kept"
+  end
+
+  test "a later follow-up does not bury the hand-back under a re-sleep" do
+    session = sessions(:running)
+    schedule_wake(session)
+    Sessions::RestInNeedsInput.call(session: session)
+    session.reload.pause!
+    assert session.reload.needs_input?
+
+    follow_up_over_mcp(session, prompt: "Router: any update?")
+    session.reload.start!
+    session.pause!
+
+    assert session.reload.needs_input?, "the question to the human is still the session's last word"
+  end
+
+  test "a follow-up queued during the turn drains without re-sleeping it" do
+    session = sessions(:running)
+    schedule_wake(session)
+    follow_up_over_mcp(session, prompt: "Slack: are you there?")
+    Sessions::RestInNeedsInput.call(session: session.reload)
+
+    EnqueuedMessageProcessorService.new(session.reload).process_next_message
+    session.reload
+    session.start! if session.may_start?
+    session.reload.pause! if session.running?
+
+    assert session.reload.needs_input?
+  end
+
+  test "arming a new wake ends the hand-back, and the session sleeps on it" do
+    session = sessions(:running)
+    schedule_wake(session)
+    Sessions::RestInNeedsInput.call(session: session)
+    session.reload.pause!
+    assert session.reload.handed_back_to_human?
+
+    schedule_wake(session.reload, at: 30.minutes.from_now)
+
+    assert session.reload.waiting?
+    assert_not session.handed_back_to_human?
+
+    follow_up_over_mcp(session)
+    session.reload.start!
+    session.pause!
+    assert session.reload.waiting?, "with the hand-back over, #1212's re-sleep applies again"
+  end
+
+  test "a group a wake fired into this turn does not count as still armed" do
+    session = sessions(:needs_input)
+    trigger = schedule_wake(session)
+    trigger.send(:follow_up_session!, session.reload, prompt: "Backstop")
+    session.reload.start!
+    assert_not_nil trigger.reload.wake_held_at
+
+    result = Sessions::RestInNeedsInput.call(session: session.reload)
+
+    assert_not result.wakes_still_armed, "the held group is retired at this turn's pause"
+  end
+
+  test "cancel_wakes given as the string false cancels nothing" do
+    session = sessions(:running)
+    trigger = schedule_wake(session)
+
+    self_tool.call("action" => "rest_in_needs_input", "session_id" => session.id, "cancel_wakes" => "false")
+
+    assert Trigger.exists?(trigger.id)
   end
 
   test "refuses a session that is asleep" do
