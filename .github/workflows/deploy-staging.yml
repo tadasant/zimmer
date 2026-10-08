@@ -214,26 +214,43 @@ jobs:
           # ignore_changes), so on a normal deploy the minted key just lapses unused.
           # TAILSCALE_AUTH_KEY remains the fallback for a fork with no OAuth client. Inline
           # rather than a script: this step runs against the checked-out deploy REF, which
-          # may predate any script added for it. A configured client that cannot mint FAILS
-          # the step -- better than booting a droplet nothing can reach.
+          # may predate any script added for it.
+          #
+          # A mint failure is FATAL only when this apply will create the droplet -- a box
+          # booted with no usable key is one nothing can reach. On a normal deploy to a live
+          # droplet the key goes unused, so a Tailscale API blip there is a warning, not a
+          # failed app deploy.
+          creating=false
+          if [ "${{ inputs.recreate_droplet }}" = "true" ] \
+             || ! terraform state list 2>/dev/null | grep -qx 'digitalocean_droplet.zimmer'; then
+            creating=true
+          fi
           if [ -n "${TS_OAUTH_CLIENT_ID:-}" ] && [ -n "${TS_OAUTH_SECRET:-}" ]; then
             ts_token=$(curl -fsS https://api.tailscale.com/api/v2/oauth/token \
               -d "client_id=${TS_OAUTH_CLIENT_ID}" -d "client_secret=${TS_OAUTH_SECRET}" \
-              | jq -r '.access_token // empty')
-            echo "::add-mask::$ts_token"
-            minted=$(jq -n '{capabilities: {devices: {create: {reusable: false, ephemeral: true,
-                         preauthorized: true, tags: ["tag:zimmer-staging"]}}},
-                       expirySeconds: 3600, description: "zimmer-staging cloud-init"}' \
-              | curl -fsS -X POST -H "Authorization: Bearer ${ts_token}" -H "Content-Type: application/json" \
-                  --data-binary @- https://api.tailscale.com/api/v2/tailnet/-/keys \
-              | jq -r '.key // empty')
-            if [ -z "$minted" ]; then
-              echo "::error::Could not mint a tag:zimmer-staging auth key from TS_OAUTH_CLIENT_ID (needs the auth_keys scope and ownership of tag:zimmer-staging)."
-              exit 1
+              | jq -r '.access_token // empty') || ts_token=""
+            minted=""
+            if [ -n "$ts_token" ]; then
+              echo "::add-mask::$ts_token"
+              minted=$(jq -n '{capabilities: {devices: {create: {reusable: false, ephemeral: true,
+                           preauthorized: true, tags: ["tag:zimmer-staging"]}}},
+                         expirySeconds: 3600, description: "zimmer-staging cloud-init"}' \
+                | curl -fsS -X POST -H "Authorization: Bearer ${ts_token}" -H "Content-Type: application/json" \
+                    --data-binary @- https://api.tailscale.com/api/v2/tailnet/-/keys \
+                | jq -r '.key // empty') || minted=""
             fi
-            echo "::add-mask::$minted"
-            export TF_VAR_tailscale_auth_key="$minted"
-            echo "✅ tailscale_auth_key: minted a single-use tag:zimmer-staging key from TS_OAUTH_CLIENT_ID"
+            if [ -n "$minted" ]; then
+              echo "::add-mask::$minted"
+              export TF_VAR_tailscale_auth_key="$minted"
+              echo "✅ tailscale_auth_key: minted a single-use tag:zimmer-staging key from TS_OAUTH_CLIENT_ID (droplet created this run: $creating)"
+            elif [ "$creating" = "true" ]; then
+              echo "::error::Could not mint a tag:zimmer-staging auth key from TS_OAUTH_CLIENT_ID, and this apply creates the droplet."
+              echo "::error::The client needs the auth_keys scope and ownership of tag:zimmer-staging. Refusing to boot a box nothing could reach."
+              exit 1
+            else
+              echo "::warning::Could not mint a tag:zimmer-staging auth key from TS_OAUTH_CLIENT_ID. The droplet already exists, so"
+              echo "::warning::this deploy is unaffected -- but the next droplet CREATION will fail here until the client works."
+            fi
           else
             echo "::warning::TS_OAUTH_CLIENT_ID/TS_OAUTH_SECRET are unset, so the droplet joins with the pre-minted"
             echo "::warning::TAILSCALE_AUTH_KEY -- which Tailscale expires after at most 90 days. If this run creates"
