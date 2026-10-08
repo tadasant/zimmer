@@ -212,7 +212,7 @@ removing `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID`, which takes the whole wall down.
 | `/.well-known/oauth-*`, `POST /oauth/register`, `/oauth/token`, `/oauth/revoke` | **Open.** Machine endpoints for MCP clients, authenticated by PKCE or a token the client holds |
 | `/webhooks/slack`, `/webhooks/github` | **Unchanged.** Request signatures |
 | `/up`, `/up/deep` | **Unchanged.** Open, as the deploy gates need |
-| `GET /health/export_diagnostics` | **Open to the host itself, walled to everyone else.** The fleet-telemetry collector and the worker soak sampler curl it on the droplet at `http://127.0.0.1/` with no credential, and the production deploy fails if the collector cannot parse it. A request answers signed out only when its `remote_ip` is loopback or private, which means every hop was on the box or its docker network. A request through the Cloudflare edge resolves to the public client's address and a tailnet peer to its `100.x` address, so both sign in. The rest of `/health` is walled from everywhere |
+| `GET /health/export_diagnostics` | **Open to the host's own loopback only**, for the on-host fleet-telemetry collector. Everyone else signs in. See [the limitation](/limitations/#healthexport_diagnostics-trusts-the-requests-origin-not-a-credential) |
 | `/.well-known/oauth-*`, `/oauth/register`, `/oauth/token`, `/oauth/revoke` (the MCP authorization server's machine endpoints) | **Never walled.** They answer MCP clients, not browsers |
 | `/oauth/authorize` (the MCP authorization server's consent page) | Sign-in required. A signed-out browser goes through Google and the code, then comes back to the full authorize URL, query string intact |
 | A route that does not exist | `404`, as before |

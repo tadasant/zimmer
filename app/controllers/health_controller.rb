@@ -24,11 +24,11 @@ class HealthController < ApplicationController
   # The fleet-telemetry collector and the worker soak sampler run on the host and
   # curl `http://127.0.0.1/health/export_diagnostics` with no credential (host
   # Caddy -> kamal-proxy -> web). A 302 to /login fails the collector, and the
-  # production deploy's heartbeat smoke test with it (#1251). So a request that
-  # never left the box answers signed out. Nothing from the public edge does:
-  # the edge appends the public client address to X-Forwarded-For, so its
-  # requests resolve to a public remote_ip, and a tailnet peer resolves to its
-  # 100.x address. Both still sign in.
+  # production deploy's heartbeat smoke test with it (#1251). So a request from
+  # the host's own loopback answers signed out. Nothing else does: the edge
+  # appends the public client address to X-Forwarded-For, a tailnet peer
+  # resolves to its 100.x address, and an agent session reaches Caddy from the
+  # docker bridge. All of them still sign in.
   #
   # One condition rather than `only:` plus `if:`: a skip merges each of those into
   # its own `unless`, so either alone would let the request through.
@@ -283,14 +283,17 @@ class HealthController < ApplicationController
 
   private
 
-  # True when the client Rails resolved is itself a loopback or private address:
-  # every hop from the client to the app was on the box or its docker network.
-  # Rails already treats exactly those addresses as its own proxies when it
-  # resolves remote_ip (ClientIpBehindCloudflareTest pins that reasoning).
+  # True when the client Rails resolved is the host's loopback.
+  #
+  # A request carrying an RFC 7239 `Forwarded` header is never the host's: Rails
+  # prefers that header over X-Forwarded-For, nothing on the collector's path
+  # sets it, and a client could otherwise name 127.0.0.1 there. An address
+  # remote_ip cannot settle (a spoofed Client-IP raises) is not the host's either.
   def request_from_the_host?
-    address = IPAddr.new(request.remote_ip)
-    ActionDispatch::RemoteIp::TRUSTED_PROXIES.any? { |proxy| proxy.include?(address) }
-  rescue IPAddr::Error
+    return false if request.headers["Forwarded"].present?
+
+    IPAddr.new(request.remote_ip).loopback?
+  rescue IPAddr::Error, ActionDispatch::RemoteIp::IpSpoofAttackError
     false
   end
 
