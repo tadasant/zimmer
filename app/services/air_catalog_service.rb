@@ -86,7 +86,7 @@ class AirCatalogService
     # it has always been, and qualification appears only where AIR needs it.
     # An unresolvable reference is passed through too — an id the catalog does
     # not know is `air prepare`'s to reject (or, for skills, already dropped by
-    # AirPrepareService#scrubbed_catalog_skills), and quietly swallowing it here
+    # AirPrepareService#reconciled_catalog_selection), and quietly swallowing it here
     # would hide a failure this method does not own.
     #
     # @return [String] never nil — the caller always has something to pass

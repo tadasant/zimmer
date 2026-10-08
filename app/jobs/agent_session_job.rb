@@ -6244,7 +6244,40 @@ class AgentSessionJob < ApplicationJob
     degraded_block = build_degraded_mcp_block(session)
     prompt += "\n\n#{degraded_block}" if degraded_block.present?
 
+    dropped_block = build_dropped_catalog_ids_block(session)
+    prompt += "\n\n#{dropped_block}" if dropped_block.present?
+
     prompt
+  end
+
+  # The standing notice that this session was configured with catalog artifacts
+  # the catalog has since renamed or removed, and that AirPrepareService dropped
+  # them rather than fail the session (zimmer#1257). It rides on every prompt
+  # for the same reason the degraded-server notice does: the agent cannot be
+  # expected to go looking for it, and the alternative is a task that quietly
+  # assumes a tool it no longer has.
+  #
+  # An id the session names again — re-added by a user, or restored to the
+  # catalog and re-selected — is no longer missing, so it is left out.
+  #
+  # @param session [Session]
+  # @return [String, nil] nil when nothing is still missing
+  def build_dropped_catalog_ids_block(session)
+    dropped = session.dropped_unknown_catalog_ids
+    lines = session.class.catalog_artifact_references.filter_map do |reference|
+      missing = Array(dropped[reference.attribute.to_s]) - Array(session.public_send(reference.attribute))
+      "- #{reference.alert_noun}(s): #{missing.join(', ')}" if missing.any?
+    end
+    return nil if lines.empty?
+
+    <<~BLOCK.strip
+      <dropped-catalog-artifacts>
+      <info>This session was configured with these artifacts, but the AIR catalog has since renamed or removed them, so Zimmer dropped them to keep the session running. Their tools are NOT available.</info>
+      #{lines.join("\n")}
+
+      If a task needs one of them, look for a successor you do have (a renamed server often keeps a similar name) and say which one you used; if there is none, say so plainly rather than improvising a substitute.
+      </dropped-catalog-artifacts>
+    BLOCK
   end
 
   # The standing notice that a server this session was configured with is not

@@ -44,7 +44,7 @@
 # When a collision is between two non-local scopes, neither keeps the bare
 # token and both are addressed qualified. A stored bare id in that situation
 # stops resolving, and is reported by the existing stale-reference machinery
-# (CatalogArtifactReferences, AirPrepareService#scrubbed_catalog_skills) rather
+# (CatalogArtifactReferences, AirPrepareService#reconciled_catalog_selection) rather
 # than silently picking a side.
 module ArtifactIdentity
   # AIR's scope for anything not contributed by a catalog provider.

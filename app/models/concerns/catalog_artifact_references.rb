@@ -26,9 +26,9 @@
 # a fire spawns from.
 #
 # The heal is generated for every declaration, but only Trigger calls it — from
-# `#create_session!`, via `#heal_catalog_references!`. A Session's skill list is
+# `#create_session!`, via `#heal_catalog_references!`. A Session's artifact selection is
 # scrubbed on a different schedule and by a different owner, `air prepare` time
-# in AirPrepareService#scrubbed_catalog_skills.
+# in AirPrepareService#reconciled_catalog_selection.
 #
 # --- The heal keeps the name it cannot resolve (zimmer#853) ------------------
 #
@@ -349,7 +349,7 @@ module CatalogArtifactReferences
     # this fire. Filtering in memory is still right — the fire has to spawn
     # something, and a name this catalog cannot resolve would fail session
     # validation anyway — but writing that reading down, or paging a human with
-    # it, is not. Same call AirPrepareService#persist_scrubbed_catalog_skills
+    # it, is not. Same call AirPrepareService#persist_catalog_drift!
     # makes, and the second half of zimmer#853. The WARN in the caller still
     # fires, so the filtering is not silent.
     #

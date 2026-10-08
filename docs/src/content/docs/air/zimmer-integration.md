@@ -348,23 +348,35 @@ looked like when it failed. In the race that description reports everything as p
 itself the confirmation; a file genuinely broken on disk shows up as `UNPARSEABLE` and is a different
 bug. The enrichment is skipped when AIR's message already carries a path of its own.
 
-Requested **skill** ids get one more guard, *before* the invocation. A session's `catalog_skills`
-are validated against the catalog when the session is created, but the catalog moves on
-independently: a local skill renamed (`pr` → `open-pr`) or removed leaves a stale id in a
-long-lived session's stored config. `air prepare` hard-rejects an unknown skill id with exit 1
-(`Error: Unknown skill ID "pr". …`), which would brick startup. So `AirPrepareService#scrubbed_catalog_skills`
-drops any id not in the live catalog, logs a warning, and raises a deduped "Session self-healed:
-stale catalog skill(s) removed" alert — then prepares with the survivors. This mirrors
-`Trigger#heal_stale_catalog_skills!` (which self-heals the *trigger* path) and gives an unknown
-*skill* the same non-fatal degradation an unknown *root* already gets. The pruned list is
-**persisted** (`update_column`, so no validation or `updated_at` touch): a session does not prepare
-once — every resume, unarchive, and mid-run clone recreation re-runs `air prepare`, so an
-in-memory-only scrub would re-discover the same stale id and re-alert forever.
+Requested artifact ids — MCP servers, skills, hooks and plugins — get one more guard, *before* the
+invocation. Each column is validated against the catalog when the session is created, but the
+catalog moves on independently: an artifact renamed (`pr` → `open-pr`) or removed
+(`gmail-tadas412-readonly`) leaves a stale id in a long-lived session's stored config. `air prepare`
+hard-rejects an unknown id with exit 1 (`Error: Unknown MCP server ID "gmail-tadas412-readonly". …`),
+which would fail every later resume, unarchive and follow-up of that session. So
+`AirPrepareService#reconciled_catalog_selection` drops any id not in the live catalog and prepares
+with the survivors. Catalog drift is expected, not a fault, so it logs at WARN and pages nobody. It
+records the dropped ids in the session's `custom_metadata["dropped_unknown_catalog_ids"]`, keyed by
+column, and `AgentSessionJob` tells the agent in a `<dropped-catalog-artifacts>` block on every later
+prompt, so it can pick a successor or say it cannot do the task without one. This mirrors
+`Trigger#heal_catalog_references!` (which heals the *trigger* path) and gives an unknown artifact
+the same non-fatal degradation an unknown *root* already gets. The pruned list is **persisted**
+(`update_column`, so no validation runs): a session does not prepare once — every resume, unarchive,
+and mid-run clone recreation re-runs `air prepare`, so an in-memory-only scrub would re-discover the
+same stale id on every turn.
 
-Two guards keep that write from doing damage. If the catalog failed to load *and* left `SkillsConfig`
-empty (so every id would look stale), the list is left untouched rather than stripped. And nothing is
-persisted while the catalog is **degraded** — a failed resolve usually does *not* empty
-`SkillsConfig`, it serves a last-known-good tree, which is non-empty and can predate a rename, so an
+A **fork** (including the status-summary fork) gets the same treatment one step earlier. It is a new
+row, so `Session` validation judges every id it copies, and a stale one would fail `create!`.
+`ForkSessionService` copies only the ids the catalog still knows, carries the source's
+`dropped_unknown_catalog_ids` record over, and adds to it anything it dropped itself.
+
+This is the drift path only. A fresh `start_session` naming an unknown id is a caller error and is
+still rejected at validation time, before any session exists to prepare.
+
+Two guards keep that write from doing damage. If the catalog failed to load *and* left the catalog
+facade empty (so every id would look stale), the list is left untouched rather than stripped. And nothing is
+persisted while the catalog is **degraded** — a failed resolve usually does *not* empty the
+facade, it serves a last-known-good tree, which is non-empty and can predate a rename, so an
 id that is perfectly valid today looks stale against it. Dropping such an id in memory costs one
 prepare; writing that drop back would erase a valid id permanently and undo the backfill that
 repointed it. A failed write likewise degrades to a warning, so the scrub can still keep the prepare

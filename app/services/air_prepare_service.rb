@@ -632,27 +632,30 @@ class AirPrepareService
     # forms are no longer accepted by the CLI parser. Repeat each flag per value
     # so Commander collects them unambiguously regardless of adjacent flags.
     #
-    # Skill ids are scrubbed against the live catalog first: a session's stored
-    # skills were valid when the session was created, but the catalog evolves
-    # independently, so a renamed/removed local skill (e.g. `pr` → `open-pr`)
-    # leaves a stale id that `air prepare` would hard-reject with exit 1 —
-    # bricking startup. scrubbed_catalog_skills drops such ids — persisting the
-    # pruned list, with a warning log and a one-per-session self-heal alert —
-    # instead. See its comment for the full rationale.
+    # Every id is reconciled against the live catalog first: a session's stored
+    # selection was valid when the session was created, but the catalog evolves
+    # independently, so a renamed/removed artifact (`pr` → `open-pr`,
+    # `gmail-tadas412-readonly` → `gmail-tadas412-ro`) leaves a stale id that
+    # `air prepare` would hard-reject with exit 1 — bricking every later resume,
+    # unarchive and follow-up of that session. reconciled_catalog_selection drops
+    # such ids instead. See its comment for the full rationale.
     #
     # Each id goes through air_reference, which qualifies exactly the ones AIR
     # would call ambiguous — an artifact whose short id a second composed
     # catalog also contributes — and passes everything else through unchanged.
-    skills = scrubbed_catalog_skills
+    selection = reconciled_catalog_selection
+    skills = selection[:catalog_skills]
     cmd += skills.flat_map { |id| [ "--skill", air_reference(:skills, id) ] } if skills.present?
-    effective_mcp_servers = session.user_selected_mcp_servers
+    # Plugin-contributed servers ride along exactly as Session#user_selected_mcp_servers
+    # adds them; only the directly-selected column is reconciled here.
+    effective_mcp_servers = (selection[:mcp_servers] + session.plugin_mcp_servers).uniq
     if effective_mcp_servers.present?
       cmd += effective_mcp_servers.flat_map { |id| [ "--mcp-server", air_reference(:mcp, id) ] }
     end
-    cmd += session.catalog_hooks.flat_map { |id| [ "--hook", air_reference(:hooks, id) ] } if session.catalog_hooks.present?
-    if session.catalog_plugins.present?
-      cmd += session.catalog_plugins.flat_map { |id| [ "--plugin", air_reference(:plugins, id) ] }
-    end
+    hooks = selection[:catalog_hooks]
+    cmd += hooks.flat_map { |id| [ "--hook", air_reference(:hooks, id) ] } if hooks.present?
+    plugins = selection[:catalog_plugins]
+    cmd += plugins.flat_map { |id| [ "--plugin", air_reference(:plugins, id) ] } if plugins.present?
 
     Rails.logger.info "[AirPrepareService] Running: #{cmd.join(' ')}"
 
@@ -668,114 +671,125 @@ class AirPrepareService
     Rails.logger.info "[AirPrepareService] AIR prepare completed successfully"
   end
 
-  # The session's requested catalog skills, with any id that no longer exists in
-  # the live catalog dropped.
+  # The session's artifact selection — `mcp_servers`, `catalog_skills`,
+  # `catalog_hooks`, `catalog_plugins` — with every id the live catalog no longer
+  # knows dropped.
   #
-  # A session's `catalog_skills` are validated against the catalog at creation
-  # time, but the catalog evolves independently of the sessions that reference
-  # it: a local skill can be renamed (the `pr` → `open-pr` rename that triggered
-  # this) or removed long after a session's config was frozen. `air prepare`
-  # HARD-validates every requested skill id and exits 1 on the first unknown one
-  # (`Error: Unknown skill ID "pr". Available: …@local/open-pr… (72 total).`),
-  # which AirPrepareError-bricks session startup entirely.
+  # Each column is validated against the catalog when it is written, but the
+  # catalog evolves independently of the sessions that reference it: an artifact
+  # can be renamed or removed long after a session's config was frozen. `air
+  # prepare` HARD-validates every requested id and exits 1 on the first unknown
+  # one (`Error: Unknown MCP server ID "gmail-tadas412-readonly". Available: …`),
+  # which AirPrepareError-fails the unarchive, the follow-up job, and pages
+  # #alerts (zimmer#1257). Catalog drift is not a fault in the session, so it must
+  # not be able to kill one: drop the id, prepare with the survivors, and tell the
+  # agent what it lost (Session#dropped_unknown_catalog_ids, rendered into every
+  # later prompt by AgentSessionJob#build_dropped_catalog_ids_block).
   #
-  # A stale id in stored config must not be able to brick startup, so we drop it
-  # here — with a warning log and a self-heal alert — and prepare with the
-  # survivors, which gives an unknown *skill* the same non-fatal degradation an
-  # unknown *root* already gets (RootResolutionError).
+  # This is the drift path only. A *fresh* request naming an unknown id is a
+  # caller error, and CatalogArtifactReferences still rejects it at validation
+  # time, before a session exists to prepare.
   #
   # This is the session-side counterpart of Trigger#heal_catalog_references!,
   # and the two differ in one deliberate place: the trigger heal KEEPS the name
   # it cannot resolve, because a trigger is long-lived operator config and a
   # rename has to stay remappable (zimmer#853). A session's frozen config is not
   # that, and its stale id is what `air prepare` exits 1 on, so here the cleaned
-  # list is PERSISTED (update_column, so no
-  # validation/callback runs on a config the user didn't just edit). A session
-  # does not prepare once: every resume, unarchive, and mid-run clone recreation
-  # re-runs `air prepare`, so an in-memory-only scrub re-discovers the same stale
-  # id and re-raises the same alert forever. Writing the pruned list back makes
-  # the drop a one-time event per session, which is what "self-heal" means —
-  # except while the catalog is degraded, where the drop stays in memory (see
-  # persist_scrubbed_catalog_skills).
+  # list is PERSISTED. A session does not prepare once: every resume, unarchive,
+  # and mid-run clone recreation re-runs `air prepare`, so an in-memory-only scrub
+  # would re-discover the same stale id forever. The dropped ids are kept in
+  # `custom_metadata`, so what the session was configured with is not lost.
   #
   # Named for the transformation rather than as a bare query because it is
-  # side-effecting on the drop path (persist + WARN log + self-heal alert),
-  # matching the codebase convention that a plain-noun reader is pure.
-  def scrubbed_catalog_skills
-    requested = Array(session.catalog_skills).reject(&:blank?)
+  # side-effecting on the drop path (persist + WARN log), matching the codebase
+  # convention that a plain-noun reader is pure.
+  #
+  # @return [Hash{Symbol => Array<String>}] attribute => the ids to prepare with
+  def reconciled_catalog_selection
+    references = session.class.catalog_artifact_references
+    # Safety: if the catalog failed to load, every facade's `.all` is [] (each
+    # build_* rescues CatalogError to []), so every id would look stale. Don't
+    # strip anything on a transient catalog miss — let `air prepare` run with
+    # the requested set and resolve the catalog itself.
+    #
+    # Judged on the catalog as a whole, not per type: one type can legitimately
+    # be empty (a catalog with its only hook removed), and every id still
+    # naming that type is exactly the drift `air prepare` exits 1 on.
+    catalog_unloaded = references.all? { |reference| reference.config.all.empty? }
+
+    references.to_h do |reference|
+      requested = Array(session.public_send(reference.attribute)).reject(&:blank?)
+      [ reference.attribute, catalog_unloaded ? requested : reconcile_catalog_reference(reference, requested) ]
+    end
+  end
+
+  def reconcile_catalog_reference(reference, requested)
     return requested if requested.empty?
 
-    # Safety: if the catalog failed to load, SkillsConfig.all is [] (build_skills
-    # rescues CatalogError to []), so every id would look stale. Don't strip the
-    # whole list on a transient catalog miss — let `air prepare` run with the
-    # requested set and resolve the catalog itself. Mirrors the same guard in
-    # CatalogArtifactReferences#heal_stale_catalog_reference!.
-    return requested if SkillsConfig.all.empty?
+    config = reference.config
+    unknown = requested.reject { |id| config.exists?(id) }
+    return requested if unknown.empty?
 
-    stale = requested.reject { |id| SkillsConfig.exists?(id) }
-    return requested if stale.empty?
-
-    valid = requested - stale
-    persist_scrubbed_catalog_skills(valid, stale)
+    valid = requested - unknown
+    # WARN, not ERROR: the catalog moving on is expected, and the session runs
+    # on. The record is the custom_metadata key and the agent's prompt notice.
     Rails.logger.warn(
-      "[AirPrepareService] Dropping stale skill(s) #{stale.inspect} not in the AIR catalog " \
-      "before `air prepare` for session #{session.id}. Remaining skills: #{valid.inspect}"
+      "[AirPrepareService] Dropping #{reference.alert_noun}(s) #{unknown.inspect} the AIR catalog " \
+      "no longer knows before `air prepare` for session #{session.id}" \
+      "#{' (catalog is DEGRADED, so this may be a stale reading; not persisted)' if AirCatalogService.degraded?}. " \
+      "Remaining: #{valid.inspect}"
     )
-    alert_stale_skills_dropped(stale, valid)
+    persist_catalog_drift!(reference.attribute, valid, unknown)
     valid
   end
 
-  # Write the pruned skill list back to the session so the drop happens once
-  # rather than on every prepare.
+  # Write the pruned list back to the session, and add the dropped ids to
+  # `custom_metadata["dropped_unknown_catalog_ids"]`, so the drop happens once
+  # rather than on every prepare and the agent can be told what it lost.
   #
-  # update_column for the same reason the trigger-side bookkeeping uses it: this
-  # is a repair of stored config, not a user edit, so it must not run validations (the session
-  # may legitimately fail an unrelated validation) or touch updated_at (which
-  # feeds staleness detection and the UI's "last activity" read).
+  # update_column for the column because this is a repair of stored config, not
+  # a user edit: it must not run validations (the session may legitimately fail
+  # an unrelated validation) or callbacks.
   #
   # A write failure must not be able to brick a prepare that the scrub exists to
   # keep alive, so a DB error degrades to a warning: the in-memory scrub still
   # applies and the next prepare simply tries the heal again.
   #
   # Nothing is written while the catalog is degraded. A failed resolve does not
-  # leave SkillsConfig empty — AirCatalogService serves a last-known-good tree,
-  # which is non-empty and can predate a rename, so a skill that is perfectly
-  # valid today (`open-pr`) looks stale against it. Dropping it in memory costs
-  # one prepare; writing that drop back would erase a valid id permanently and
-  # undo the very backfill that repointed it. The scrub still runs, so a stale
-  # id cannot brick `air prepare` during an outage.
-  def persist_scrubbed_catalog_skills(valid, stale)
+  # leave the facades empty — AirCatalogService serves a last-known-good tree,
+  # which is non-empty and can predate a rename, so an id that is perfectly valid
+  # today looks stale against it. Dropping it in memory costs one prepare;
+  # writing that drop back would erase a valid id permanently. The scrub still
+  # runs, so a stale id cannot brick `air prepare` during an outage.
+  #
+  # The record is written before the column, so a failure between the two
+  # leaves the id still in the column for the next prepare to drop and record
+  # again (the union makes that a no-op), never a drop nobody was told about.
+  #
+  # For `mcp_servers`, two more bookkeeping writes follow. An emptied list is
+  # marked deliberate, or McpServerBackfill would read it as a failed resolve
+  # and refill it with the root's defaults — servers this session never chose.
+  # And the dropped servers' last-reported status is forgotten, as for a user
+  # removal, so McpServerBackfill#detect_lost_mcp_servers does not re-report
+  # them as an unexplained loss on every later regeneration.
+  def persist_catalog_drift!(attribute, valid, unknown)
     return unless session.persisted?
     return if AirCatalogService.degraded?
 
-    session.update_column(:catalog_skills, valid)
+    dropped = session.dropped_unknown_catalog_ids
+    session.merge_custom_metadata!(
+      Session::DROPPED_UNKNOWN_CATALOG_IDS_KEY =>
+        dropped.merge(attribute.to_s => (Array(dropped[attribute.to_s]) | unknown))
+    )
+    session.update_column(attribute, valid)
+    return unless attribute == :mcp_servers
+
+    session.record_explicit_mcp_servers!([]) if valid.empty?
+    session.forget_mcp_server_status!(unknown)
   rescue StandardError => e
     Rails.logger.warn(
-      "[AirPrepareService] Failed to persist scrubbed skill list for session #{session.id} " \
-      "(stale: #{stale.inspect}): #{e.class}: #{e.message}. Proceeding with the in-memory scrub."
-    )
-  end
-
-  # Surface a dropped stale skill the same way the trigger self-heal does, so the
-  # stale stored config is still visible even though it's no longer fatal.
-  def alert_stale_skills_dropped(stale, valid)
-    details = "Session #{session.id} referenced catalog skill(s) that no longer exist in the catalog:\n" \
-              "• Removed: #{stale.join(', ')}\n" \
-              "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
-              "The stale reference(s) were dropped so `air prepare` could proceed. " \
-              "The session started with the remaining skills.\n\n" \
-              "#{AppUrl.base_url}/sessions/#{session.id}"
-
-    Rails.logger.error("[AirPrepareService] Session self-healed: stale catalog skill(s) removed — #{details}")
-    ErrorReporter.report_message(
-      "Session self-healed: stale catalog skill(s) removed",
-      level: :error,
-      context: {
-        source: "AirPrepareService#run_air_prepare!",
-        details: details,
-        session_id: session.id,
-        removed: stale.join(", ")
-      }
+      "[AirPrepareService] Failed to persist the reconciled #{attribute} for session #{session.id} " \
+      "(dropped: #{unknown.inspect}): #{e.class}: #{e.message}. Proceeding with the in-memory scrub."
     )
   end
 

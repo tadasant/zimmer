@@ -265,6 +265,58 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert_equal "pr_merged", result.forked_session.goal
   end
 
+  # zimmer#1257: session 22934's status-summary fork failed `create!` with
+  # "Mcp servers contains invalid server(s): gmail-tadas412-readonly" — an id
+  # the catalog removed after the source was created. The fork is a new row, so
+  # validation judges every id it copies; drift must be dropped, not copied.
+  test "forks a session naming catalog ids the catalog no longer has" do
+    @source_session.update_columns(
+      mcp_servers: [ "playwright-custom", "gmail-tadas412-readonly" ],
+      catalog_skills: [ "zimmer-start-dev-server", "renamed-away-skill" ],
+      custom_metadata: { Session::DROPPED_UNKNOWN_CATALOG_IDS_KEY => { "catalog_hooks" => [ "earlier-drop" ] } }
+    )
+
+    result = ForkSessionService.call(source_session: @source_session.reload, message_index: 1, file_system: @mock_fs)
+
+    assert result.success?, result.error
+    forked = result.forked_session
+    assert_equal [ "playwright-custom" ], forked.mcp_servers
+    assert_equal [ "zimmer-start-dev-server" ], forked.catalog_skills
+    assert_equal [ "git-push-ci-reminder" ], forked.catalog_hooks
+    assert_equal(
+      {
+        "catalog_hooks" => [ "earlier-drop" ],
+        "mcp_servers" => [ "gmail-tadas412-readonly" ],
+        "catalog_skills" => [ "renamed-away-skill" ]
+      },
+      forked.dropped_unknown_catalog_ids
+    )
+    refute forked.mcp_servers_explicitly_empty?
+  end
+
+  test "a fork drops a stale hook even when the catalog has no hooks left at all" do
+    @source_session.update_column(:catalog_hooks, [ "removed-hook" ])
+    HooksConfig.stubs(:all).returns([])
+    HooksConfig.stubs(:exists?).returns(false)
+
+    result = ForkSessionService.call(source_session: @source_session.reload, message_index: 1, file_system: @mock_fs)
+
+    assert result.success?, result.error
+    assert_equal [], result.forked_session.catalog_hooks
+    assert_equal({ "catalog_hooks" => [ "removed-hook" ] }, result.forked_session.dropped_unknown_catalog_ids)
+  end
+
+  test "a fork whose every MCP server was dropped as drift stays empty" do
+    @source_session.update_column(:mcp_servers, [ "gmail-tadas412-readonly" ])
+
+    result = ForkSessionService.call(source_session: @source_session.reload, message_index: 1, file_system: @mock_fs)
+
+    assert result.success?, result.error
+    assert_equal [], result.forked_session.mcp_servers
+    assert result.forked_session.mcp_servers_explicitly_empty?,
+      "an emptied list must not be backfilled with root defaults the source never had"
+  end
+
   test "preserves subdirectory setting" do
     @source_session.update!(subdirectory: "packages/web")
     working_dir = File.join(@clone_path, "packages/web")

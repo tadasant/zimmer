@@ -401,7 +401,6 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
   test "prepare! drops a stale/renamed skill id not in the catalog and prepares with the survivors" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
-    ErrorReporter.stubs(:report_message)
 
     captured_cmd = nil
     stub_air_subprocess(proc { |*args, **opts|
@@ -426,30 +425,25 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       "the stale skill id must never reach `air prepare`, which would hard-reject it"
   end
 
-  test "prepare! emits a session self-heal alert when it drops a stale skill id" do
+  test "prepare! records a dropped skill id in custom_metadata at WARN without paging" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
-
-    ErrorReporter.expects(:report_message).with(
-      "Session self-healed: stale catalog skill(s) removed",
-      has_entries(
-        level: :error,
-        context: has_entries(
-          source: "AirPrepareService#run_air_prepare!",
-          session_id: @session.id
-        )
-      )
-    ).once
+    # Catalog drift is expected, not a fault — it must not reach the error tracker.
+    ErrorReporter.expects(:report_message).never
+    warnings = []
+    Rails.logger.stubs(:warn).with { |msg| warnings << msg.to_s; true }
 
     stub_air_subprocess(proc { |*args, **opts|
       [ "", "", stub(success?: true, exitstatus: 0) ]
     }) do
-      service = AirPrepareService.new(
+      AirPrepareService.new(
         session: @session,
         working_directory: @working_dir,
         file_system: @mock_fs
-      )
-      service.prepare!
+      ).prepare!
     end
+
+    assert_equal 1, warnings.count { |msg| msg.include?('Dropping catalog skill(s) ["renamed-away-skill"]') }
+    assert_equal({ "catalog_skills" => [ "renamed-away-skill" ] }, @session.reload.dropped_unknown_catalog_ids)
   end
 
   test "prepare! does not alert or drop when every requested skill exists in the catalog" do
@@ -472,12 +466,12 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_includes captured_cmd[1..], "zimmer-run-tests"
   end
 
-  test "prepare! does NOT strip skills when the catalog failed to load (SkillsConfig empty)" do
-    # If the catalog load failed, SkillsConfig.all rescues to [] and every id would
-    # look stale — stripping the whole list would be destructive. Guard: leave the
-    # requested set intact and let `air prepare` resolve the catalog itself.
+  test "prepare! does NOT strip anything when the catalog failed to load (every facade empty)" do
+    # If the catalog load failed, every facade's .all rescues to [] and every id
+    # would look stale — stripping the whole list would be destructive. Guard:
+    # leave the requested set intact and let `air prepare` resolve the catalog itself.
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
-    SkillsConfig.stubs(:all).returns([])
+    [ SkillsConfig, ServersConfig, HooksConfig, PluginsConfig ].each { |config| config.stubs(:all).returns([]) }
     ErrorReporter.expects(:report_message).never
 
     captured_cmd = nil
@@ -503,7 +497,6 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
   test "prepare! persists the pruned skill list so the drop happens once" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
-    ErrorReporter.stubs(:report_message)
 
     stub_air_subprocess(proc { |*args, **opts|
       [ "", "", stub(success?: true, exitstatus: 0) ]
@@ -520,10 +513,11 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       "resume, unarchive, and clone recreation, so an in-memory-only scrub re-alerts forever"
   end
 
-  test "prepare! only alerts once across repeated prepares of the same stale session" do
+  test "prepare! drops a stale id once across repeated prepares of the same session" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
 
-    ErrorReporter.expects(:report_message).once
+    drop_warnings = 0
+    Rails.logger.stubs(:warn).with { |msg| drop_warnings += 1 if msg.to_s.include?("Dropping"); true }
 
     stub_air_subprocess(proc { |*args, **opts|
       [ "", "", stub(success?: true, exitstatus: 0) ]
@@ -536,6 +530,123 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
         ).prepare!
       end
     end
+
+    assert_equal 1, drop_warnings, "the persisted prune makes the second prepare find nothing to drop"
+    assert_equal({ "catalog_skills" => [ "renamed-away-skill" ] }, @session.reload.dropped_unknown_catalog_ids)
+  end
+
+  # --- Removed/renamed MCP server, hook and plugin ids (zimmer#1257) ----------
+  #
+  # The production failure: a session created naming `gmail-tadas412-readonly`
+  # was unarchived after the catalog removed it, and `air prepare` exited 1 on
+  # `Unknown MCP server ID`, failing the unarchive and the follow-up job.
+
+  test "prepare! drops an MCP server id the catalog no longer knows and records it" do
+    @session.update_column(:mcp_servers, [ "playwright-custom", "gmail-tadas412-readonly" ])
+    ErrorReporter.expects(:report_message).never
+
+    captured_cmd = nil
+    stub_air_subprocess(proc { |*args, **opts|
+      captured_cmd = args
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      ).prepare!
+    end
+
+    cmd_args = captured_cmd[1..]
+    mcp_values = cmd_args.each_cons(2).select { |a, _| a == "--mcp-server" }.map(&:last)
+    assert_includes mcp_values, "playwright-custom"
+    refute_includes cmd_args, "gmail-tadas412-readonly",
+      "an id the catalog no longer knows must never reach `air prepare`, which exits 1 on it"
+
+    @session.reload
+    assert_equal [ "playwright-custom" ], @session.mcp_servers
+    assert_equal({ "mcp_servers" => [ "gmail-tadas412-readonly" ] }, @session.dropped_unknown_catalog_ids)
+  end
+
+  test "prepare! drops a stale hook even when the catalog has no hooks left at all" do
+    # One empty type is not a failed load: a catalog whose only hook was removed
+    # leaves HooksConfig empty while every session naming it would still make
+    # `air prepare` exit 1.
+    @session.update_column(:catalog_hooks, [ "removed-hook" ])
+    HooksConfig.stubs(:all).returns([])
+    HooksConfig.stubs(:exists?).returns(false)
+
+    captured_cmd = nil
+    stub_air_subprocess(proc { |*args, **opts|
+      captured_cmd = args
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.new(session: @session, working_directory: @working_dir, file_system: @mock_fs).prepare!
+    end
+
+    refute_includes captured_cmd[1..], "removed-hook"
+    assert_equal [], @session.reload.catalog_hooks
+  end
+
+  test "prepare! marks an mcp_servers list emptied by drift as deliberate and forgets the dropped status" do
+    # Without the marker McpServerBackfill reads the empty column as a failed
+    # resolve and refills it with the root's defaults on the next turn.
+    @session.update_columns(
+      mcp_servers: [ "gmail-tadas412-readonly" ],
+      custom_metadata: { "mcp_servers_status" => { "gmail-tadas412-readonly" => { "status" => "connected" } } }
+    )
+
+    stub_air_subprocess(proc { |*args, **opts|
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.new(session: @session, working_directory: @working_dir, file_system: @mock_fs).prepare!
+    end
+
+    @session.reload
+    assert_equal [], @session.mcp_servers
+    assert @session.mcp_servers_explicitly_empty?,
+      "an emptied list must not be backfilled with servers the session never chose"
+    assert_not @session.custom_metadata.fetch("mcp_servers_status", {}).key?("gmail-tadas412-readonly"),
+      "a dropped server must not be re-reported as lost on every later regeneration"
+    assert_equal({ "mcp_servers" => [ "gmail-tadas412-readonly" ] }, @session.dropped_unknown_catalog_ids)
+  end
+
+  test "prepare! drops removed hook and plugin ids and accumulates every dropped id" do
+    @session.update_columns(
+      catalog_hooks: [ "git-push-ci-reminder", "removed-hook" ],
+      catalog_plugins: [ "removed-plugin" ],
+      custom_metadata: { Session::DROPPED_UNKNOWN_CATALOG_IDS_KEY => { "mcp_servers" => [ "earlier-drop" ] } }
+    )
+
+    captured_cmd = nil
+    stub_air_subprocess(proc { |*args, **opts|
+      captured_cmd = args
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      ).prepare!
+    end
+
+    cmd_args = captured_cmd[1..]
+    assert_includes cmd_args, "git-push-ci-reminder"
+    refute_includes cmd_args, "removed-hook"
+    refute_includes cmd_args, "removed-plugin"
+    refute_includes cmd_args, "--plugin", "an emptied plugin list must leave no dangling flag"
+
+    @session.reload
+    assert_equal [ "git-push-ci-reminder" ], @session.catalog_hooks
+    assert_equal [], @session.catalog_plugins
+    assert_equal(
+      {
+        "mcp_servers" => [ "earlier-drop" ],
+        "catalog_hooks" => [ "removed-hook" ],
+        "catalog_plugins" => [ "removed-plugin" ]
+      },
+      @session.dropped_unknown_catalog_ids
+    )
   end
 
   test "prepare! does NOT persist the pruned list while the catalog is degraded" do
@@ -545,7 +656,6 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     # it permanently. The in-memory scrub still runs so `air prepare` survives.
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
     AirCatalogService.stubs(:degraded?).returns(true)
-    ErrorReporter.stubs(:report_message)
 
     captured_cmd = nil
     stub_air_subprocess(proc { |*args, **opts|
@@ -563,11 +673,12 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       "the scrub must still apply in memory so a stale id can't brick `air prepare`"
     assert_equal [ "zimmer-run-tests", "renamed-away-skill" ], @session.reload.catalog_skills,
       "a degraded catalog must not be able to write a drop back to the session"
+    assert_empty @session.dropped_unknown_catalog_ids,
+      "a degraded reading must not be recorded as drift either"
   end
 
   test "prepare! still drops the stale id when persisting the pruned list fails" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
-    ErrorReporter.stubs(:report_message)
     Session.any_instance.stubs(:update_column).raises(ActiveRecord::StatementInvalid, "boom")
 
     captured_cmd = nil
