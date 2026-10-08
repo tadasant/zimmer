@@ -3215,7 +3215,7 @@ agent is told so in a `<dropped-catalog-artifacts>` prompt block. There is no al
 should carry live sessions with it needs a backfill that repoints the stored ids, as
 `db/migrate/20260801120000_backfill_renamed_open_pr_skill_id.rb` did for `pr` → `open-pr`. The
 dropped ids stay in `custom_metadata["dropped_unknown_catalog_ids"]`, and the notice rides every later
-prompt until someone removes that key.
+prompt until the session names that id again.
 
 ### The AIR CLI version is pinned in two places, and the catalog config in two files
 

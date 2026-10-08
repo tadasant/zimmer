@@ -87,8 +87,8 @@ database. A rename is therefore four moves, not one:
    triggers** from the old id to the new one —
    `db/migrate/20260801120000_backfill_renamed_open_pr_skill_id.rb` is the worked
    example. Without it the runtime self-heals by *dropping* the unknown id
-   (`AirPrepareService#scrubbed_catalog_skills`,
-   `Trigger#heal_stale_catalog_skills!`), which silently strips the skill from
+   (`AirPrepareService#reconciled_catalog_selection`,
+   `Trigger#heal_catalog_references!`), which strips the skill from
    long-lived sessions and from every session the trigger spawns.
 4. Verify with `air resolve` before pushing (see below) — a half-done rename is a
    dangling reference, and that fails the whole test suite.

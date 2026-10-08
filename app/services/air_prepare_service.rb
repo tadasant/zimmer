@@ -706,23 +706,27 @@ class AirPrepareService
   #
   # @return [Hash{Symbol => Array<String>}] attribute => the ids to prepare with
   def reconciled_catalog_selection
-    session.class.catalog_artifact_references.to_h do |reference|
-      [ reference.attribute, reconcile_catalog_reference(reference) ]
+    references = session.class.catalog_artifact_references
+    # Safety: if the catalog failed to load, every facade's `.all` is [] (each
+    # build_* rescues CatalogError to []), so every id would look stale. Don't
+    # strip anything on a transient catalog miss — let `air prepare` run with
+    # the requested set and resolve the catalog itself.
+    #
+    # Judged on the catalog as a whole, not per type: one type can legitimately
+    # be empty (a catalog with its only hook removed), and every id still
+    # naming that type is exactly the drift `air prepare` exits 1 on.
+    catalog_unloaded = references.all? { |reference| reference.config.all.empty? }
+
+    references.to_h do |reference|
+      requested = Array(session.public_send(reference.attribute)).reject(&:blank?)
+      [ reference.attribute, catalog_unloaded ? requested : reconcile_catalog_reference(reference, requested) ]
     end
   end
 
-  def reconcile_catalog_reference(reference)
-    requested = Array(session.public_send(reference.attribute)).reject(&:blank?)
+  def reconcile_catalog_reference(reference, requested)
     return requested if requested.empty?
 
     config = reference.config
-    # Safety: if the catalog failed to load, the facade's `.all` is [] (each
-    # build_* rescues CatalogError to []), so every id would look stale. Don't
-    # strip the whole list on a transient catalog miss — let `air prepare` run
-    # with the requested set and resolve the catalog itself. Mirrors the same
-    # guard in CatalogArtifactReferences#heal_stale_catalog_reference!.
-    return requested if config.all.empty?
-
     unknown = requested.reject { |id| config.exists?(id) }
     return requested if unknown.empty?
 
@@ -757,16 +761,31 @@ class AirPrepareService
   # today looks stale against it. Dropping it in memory costs one prepare;
   # writing that drop back would erase a valid id permanently. The scrub still
   # runs, so a stale id cannot brick `air prepare` during an outage.
+  #
+  # The record is written before the column, so a failure between the two
+  # leaves the id still in the column for the next prepare to drop and record
+  # again (the union makes that a no-op), never a drop nobody was told about.
+  #
+  # For `mcp_servers`, two more bookkeeping writes follow. An emptied list is
+  # marked deliberate, or McpServerBackfill would read it as a failed resolve
+  # and refill it with the root's defaults — servers this session never chose.
+  # And the dropped servers' last-reported status is forgotten, as for a user
+  # removal, so McpServerBackfill#detect_lost_mcp_servers does not re-report
+  # them as an unexplained loss on every later regeneration.
   def persist_catalog_drift!(attribute, valid, unknown)
     return unless session.persisted?
     return if AirCatalogService.degraded?
 
-    session.update_column(attribute, valid)
     dropped = session.dropped_unknown_catalog_ids
     session.merge_custom_metadata!(
       Session::DROPPED_UNKNOWN_CATALOG_IDS_KEY =>
         dropped.merge(attribute.to_s => (Array(dropped[attribute.to_s]) | unknown))
     )
+    session.update_column(attribute, valid)
+    return unless attribute == :mcp_servers
+
+    session.record_explicit_mcp_servers!([]) if valid.empty?
+    session.forget_mcp_server_status!(unknown)
   rescue StandardError => e
     Rails.logger.warn(
       "[AirPrepareService] Failed to persist the reconciled #{attribute} for session #{session.id} " \
