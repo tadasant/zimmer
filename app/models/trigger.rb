@@ -261,6 +261,7 @@ class Trigger < ApplicationRecord
   validate :validate_resuscitate_archived_requires_reuse_session
   validate :validate_last_session_requires_reuse_session, on: :create
   validate :validate_watched_session_not_requester, on: :create
+  validate :validate_email_template_fences_sender_content
 
   # A change to the selector reaches the sessions this trigger already spawned
   # and has not started yet — the whole point of changing it during a backlog.
@@ -615,10 +616,19 @@ class Trigger < ApplicationRecord
     "thread_ts" => /\A\d+\.\d+\z/,
     "author_id" => /\A[UW][A-Z0-9]+\z/,
     # WhatsApp conditions: the chat the poller read, and the id of the newest message in the
-    # batch — both read off the bridge's own fields, like the Slack four above.
+    # batch — both read off the bridge's own fields, like the Slack four above. Email conditions
+    # fill message_id too, with the Gmail id of the newest new message in the thread.
     "chat_id" => TriggerCondition::WHATSAPP_CHAT_ID_FORMAT,
-    "message_id" => /\A[0-9A-Za-z]{1,128}\z/
+    "message_id" => /\A[0-9A-Za-z]{1,128}\z/,
+    # Email conditions: the Gmail thread the fire is about, as the mailbox server printed it.
+    "thread_id" => EmailService::ID_FORMAT
   }.freeze
+
+  # The variables an `email` condition fills with what the SENDER wrote: the message, the From
+  # header, the subject. Anyone on the internet can write all three, and From is spoofable, so a
+  # trigger with an email condition must fence them (`{{text|untrusted}}`) wherever it names them
+  # (#validate_email_template_fences_sender_content).
+  EMAIL_SENDER_VARIABLES = %w[text author title].freeze
 
   # Variables that require user input during manual invocation
   # ({{time}} and {{date}} are auto-populated)
@@ -658,8 +668,8 @@ class Trigger < ApplicationRecord
   # Supported variables: {{link}}, {{text}}, {{author}}, {{channel}}, {{time}}, {{date}},
   # {{event}}; for GitHub conditions {{repo}}, {{number}}, {{title}}, {{labels}}; and for
   # Slack conditions the trusted identifiers {{channel_id}}, {{message_ts}}, {{thread_ts}}
-  # and {{author_id}}, and for WhatsApp conditions {{chat_id}} and {{message_id}}
-  # (TRUSTED_IDENTIFIER_FORMATS). Any of them may be written
+  # and {{author_id}}, for WhatsApp conditions {{chat_id}} and {{message_id}}, and for email
+  # conditions {{message_id}} and {{thread_id}} (TRUSTED_IDENTIFIER_FORMATS). Any of them may be written
   # {{name|untrusted}} to render fenced off as untrusted input (#fence_untrusted).
   #
   # One pass over the template: a value is inserted once and never scanned again,
@@ -674,7 +684,7 @@ class Trigger < ApplicationRecord
   def interpolate_prompt(link: nil, text: nil, author: nil, channel: nil, event: nil,
                          repo: nil, number: nil, title: nil, labels: nil,
                          channel_id: nil, message_ts: nil, thread_ts: nil, author_id: nil,
-                         chat_id: nil, message_id: nil)
+                         chat_id: nil, message_id: nil, thread_id: nil)
     raise ArgumentError, workflow_fire_mismatch_message if workflow_backed?
 
     now = Time.current
@@ -686,7 +696,7 @@ class Trigger < ApplicationRecord
     }
     { "channel_id" => channel_id, "message_ts" => message_ts,
       "thread_ts" => thread_ts, "author_id" => author_id,
-      "chat_id" => chat_id, "message_id" => message_id }.each do |name, value|
+      "chat_id" => chat_id, "message_id" => message_id, "thread_id" => thread_id }.each do |name, value|
       value = value.to_s.strip
       values[name] = value.match?(TRUSTED_IDENTIFIER_FORMATS.fetch(name)) ? value : ""
     end
@@ -1409,6 +1419,21 @@ class Trigger < ApplicationRecord
     if enqueue_messages && !reuse_session
       errors.add(:enqueue_messages, "can only be enabled when re-use session is enabled")
     end
+  end
+
+  # An email condition hands the template mail from anyone. Writing the sender's words bare would
+  # put them in the prompt as if whoever configured the trigger had written them, so it is refused
+  # at save rather than trusted to the template author's care. The trusted identifiers
+  # ({{message_id}}, {{thread_id}}) and {{link}} may be bare.
+  def validate_email_template_fences_sender_content
+    return if workflow_backed?
+    return unless trigger_conditions.any? { |condition| condition.condition_type == "email" && !condition.marked_for_destruction? }
+
+    bare = EMAIL_SENDER_VARIABLES & bare_placeholder_names
+    return if bare.empty?
+
+    errors.add(:prompt_template, "must fence what an email's sender wrote: write #{bare.map { |name| "{{#{name}|untrusted}}" }.join(', ')} " \
+                                 "instead of #{bare.map { |name| "{{#{name}}}" }.join(', ')}")
   end
 
   def clear_resuscitate_archived_without_reuse_session

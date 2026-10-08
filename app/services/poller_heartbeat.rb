@@ -27,7 +27,8 @@ module PollerHeartbeat
   CACHE_KEYS = {
     github: "github_trigger_poller:last_successful_poll_at",
     slack: "slack_trigger_poller:last_successful_poll_at",
-    whatsapp: "whatsapp_trigger_poller:last_successful_poll_at"
+    whatsapp: "whatsapp_trigger_poller:last_successful_poll_at",
+    email: "email_trigger_poller:last_successful_poll_at"
   }.freeze
 
   # Generous, so the key survives a multi-hour poller outage holding its LAST-success
