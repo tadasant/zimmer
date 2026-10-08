@@ -1936,6 +1936,20 @@ re-injecting a dead identity costs the user three visible auth failures and a pa
 instruction, and a fabricated `quota_exceeded` costs the whole pool an account. Worth revisiting if
 Anthropic ever exposes a structured reason.
 
+### An organization-disabled account stays benched until a human lifts it
+
+🟡 When Claude Code refuses an account with `oauth_org_not_allowed`, Zimmer benches it: `needs_reauth`
+plus `access_disabled_at` ([An organization refusal benches the account](/auth/harness/#an-organization-refusal-benches-the-account)).
+Nothing checks automatically whether the organization has turned access back on. The only signal
+would be a Claude Code turn, and a refresh or a Messages API probe already succeeds while access is
+off. So the bench lasts until a human logs the account in again on `/inference`, or sets it back to
+`active` in `/supervisor`. A login while the organization still refuses passes the login probe and
+puts the account back in the pool, and the next session that lands on it benches it again.
+
+Benching happens only inside an auth recovery. A session whose recovery budget is already spent when
+the refusal arrives parks without benching, and so does a status-summary fork, which is refused
+before recovery runs. The next session to land on the account does the benching.
+
 ### An Anthropic outage makes the account probes inconclusive, and they promote anyway
 
 🟡 Bootstrap, rotation and the UI login flow all validate an account before promoting it by probing
