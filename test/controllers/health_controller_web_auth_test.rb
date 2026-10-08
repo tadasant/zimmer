@@ -140,6 +140,34 @@ class HealthControllerWebAuthTest < ActionDispatch::IntegrationTest
     assert_redirected_to "/login"
   end
 
+  test "with the gate on, a Forwarded header naming loopback does not pass as the host" do
+    enable_web_auth
+
+    get "/health/export_diagnostics", headers: CURL.merge("Forwarded" => "for=127.0.0.1"), env: FROM_THE_TAILNET
+    assert_redirected_to "/login"
+
+    get "/health/export_diagnostics", headers: CURL.merge("Forwarded" => "for=127.0.0.1"), env: FROM_THE_EDGE
+    assert_redirected_to "/login"
+  end
+
+  test "with the gate on, an agent session on the docker bridge is sent to sign in" do
+    enable_web_auth
+
+    # Caddy writes the peer it saw: the worker container's bridge address.
+    get "/health/export_diagnostics", headers: CURL,
+      env: { "REMOTE_ADDR" => KAMAL_PROXY_CONTAINER, "HTTP_X_FORWARDED_FOR" => "172.18.0.7, 172.18.0.1" }
+
+    assert_redirected_to "/login"
+  end
+
+  test "with the gate on, the host's IPv6 loopback is the host" do
+    enable_web_auth
+
+    get "/health/export_diagnostics", headers: CURL, env: { "REMOTE_ADDR" => KAMAL_PROXY_CONTAINER, "HTTP_X_FORWARDED_FOR" => "::1, 172.18.0.1" }
+
+    assert_response :success
+  end
+
   test "the host exemption covers export_diagnostics and nothing else on /health" do
     enable_web_auth
 
