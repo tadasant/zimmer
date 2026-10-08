@@ -84,7 +84,8 @@ resize command.
 | `DIGITALOCEAN_ACCESS_TOKEN` | `terraform apply` / `destroy` (the DO provider) |
 | `SPACES_ACCESS_KEY_ID` / `SPACES_SECRET_ACCESS_KEY` | the Terraform **state backend** on DO Spaces (passed as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) |
 | `KAMAL_SSH_KEY` / `KAMAL_SSH_PUBKEY` | Kamal's SSH control channel to the droplet (private half in CI; public half baked into cloud-init) |
-| `TAILSCALE_AUTH_KEY` | the droplet's cloud-init `tailscale up` |
+| `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` | minting the droplet's cloud-init auth key on every deploy: a Tailscale OAuth client with the `auth_keys` scope that owns `tag:zimmer-staging`. The key it mints is single-use, ephemeral, pre-authorized and valid for an hour, so there is nothing to rotate |
+| `TAILSCALE_AUTH_KEY` | fallback for the droplet's cloud-init `tailscale up`, used only when the OAuth client above is unset. Tailscale caps a pre-minted key at **90 days**, and it expires silently: the next droplet creation boots with no tailnet and the deploy dies at `zimmer-staging never came online on the tailnet` |
 | `TS_CI_AUTHKEY` | **CI's own** tailnet join, to resolve the droplet's IP and health-check it |
 | `TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET` | reaping the stale tailnet node |
 | `GHCR_PULL_TOKEN` | Kamal's registry login, so the droplet can pull the image |
@@ -429,8 +430,9 @@ The app secrets — `SECRET_KEY_BASE`, the database password, the GHCR token —
 key).
 
 `user_data` is readable from the DigitalOcean metadata service by anything on the box, including every
-agent process Zimmer spawns. An ephemeral, reusable tailnet auth key limits the blast radius, but a
-long-lived one there is worth avoiding.
+agent process Zimmer spawns. That is why the staging deploy mints a single-use, one-hour key from the
+OAuth client rather than baking in the client secret or a long-lived key: by the time anything on the
+box reads it, it has been spent at first boot or has expired.
 :::
 
 :::danger[Nothing is encrypted at rest in the database]
