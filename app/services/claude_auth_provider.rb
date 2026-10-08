@@ -92,7 +92,10 @@ class ClaudeAuthProvider < RuntimeAuthProvider
 
   # Accounts stuck in needs_reauth that still hold a refresh token worth retrying.
   def needs_reauth_recovery_candidates
-    accounts.needs_reauth.where.not(oauth_config: {}).to_a.select(&:can_refresh_token?)
+    # A benched account (ClaudeAccount#disable_access!) is excluded: its refresh
+    # token still works, so a successful refresh would restore an account whose
+    # organization still refuses Claude Code.
+    accounts.needs_reauth.where(access_disabled_at: nil).where.not(oauth_config: {}).to_a.select(&:can_refresh_token?)
   end
 
   # Attempt to recover a needs_reauth account by probing its refresh token.
@@ -102,6 +105,7 @@ class ClaudeAuthProvider < RuntimeAuthProvider
   # @return [Boolean] true if the account was recovered to active
   def recover_needs_reauth(account)
     return false unless account.needs_reauth? && account.can_refresh_token?
+    return false if account.access_disabled?
 
     recovered = false
     account.with_lock do

@@ -16,6 +16,7 @@ class ClaudeAccountDashboard < Administrate::BaseDashboard
     credential_verified_at: Field::DateTime,
     credential_rejected_at: Field::DateTime,
     credential_rejection_reason: Field::String,
+    access_disabled_at: Field::DateTime,
     quota_snapshots: Field::HasMany,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
