@@ -1015,6 +1015,24 @@ Halting the demand-side queues stays loud and self-healing whoever fires it: ent
 exit each emit their own page, and the TTL auto-exits. The one thing to know is that halting
 `pollers` also stops `SystemHealthMonitorJob`, so *backlog* alerting is quiet for the duration.
 
+### `/health/export_diagnostics` trusts the request's origin, not a credential
+
+🟡 With web sign-in on, `GET /health/export_diagnostics` still answers without a cookie when the
+request's `remote_ip` is loopback or private. The fleet-telemetry collector runs on the host as a
+systemd unit, holds no Zimmer credential, and the production deploy fails if it cannot parse this
+endpoint (#1251). An address is a weaker check than a credential, in two places:
+
+- **On-box agent sessions read it.** A session's request reaches the app from a docker-bridge
+  address, so it counts as the host. That matches the [section above](#the-web-ui-does-not-keep-agent-sessions-out):
+  sessions can already forge the sign-in cookie.
+- **A tailnet peer that skips Caddy can pass as the host.** kamal-proxy publishes `:8080` on every
+  interface, and a peer that connects there directly controls `X-Forwarded-For`. Tailscale ACLs
+  decide who that is, the same exposure [the client-address reasoning](/operate/deploying/#2-the-tunnels-origin-is-httplocalhost8080-kamal-proxy-not-caddy) already names.
+
+The public edge cannot: the Cloudflare edge appends the client's public address, which is the one
+Rails resolves. Closing the remaining gap means the deploy handing the collector a credential and
+the collector reading an API-key route.
+
 ### Web sign-in trades re-checks for long sessions
 
 🟡 [Web sign-in](/auth/web-sign-in/) is tuned so its owner rarely sees the login page, and that has
