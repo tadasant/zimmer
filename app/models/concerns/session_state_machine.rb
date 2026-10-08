@@ -127,6 +127,19 @@ module SessionStateMachine
   # deliberate sleep, which is executed whether or not any wake-up exists.
   PENDING_SLEEP_REQUIRES_WAKE = "pending_sleep_requires_wake"
 
+  # When this session last handed back to a human (Sessions::RestInNeedsInput).
+  #
+  # While it is set, no wake-backed re-sleep is written for this session: not the
+  # follow-up one (#1212), not the system-recovery one. A hand-back that lasted
+  # only for the turn it was made in would be undone by the next thing to resume
+  # the session — a deploy interrupting the turn before its pause, a router's
+  # follow-up, a Slack message — each of which would put it back to sleep on the
+  # wake it already said it was not resting on, burying the question it asked.
+  #
+  # Cleared by the one thing that means the session has decided to wait again:
+  # arming a new wake (Trigger#sleep_target_session_if_applicable).
+  HANDED_BACK_TO_HUMAN = "handed_back_to_human_at"
+
   # The `pending_sleep_reason` values that carry the same condition as the marker
   # above, without needing a marker of their own: a sleep intent whose whole
   # justification is a wake-up is void once that wake-up cannot fire.
@@ -1395,6 +1408,12 @@ module SessionStateMachine
   #
   # Public for that second caller. Callers decide whether a still-fireable
   # one-time schedule backs the re-sleep; this only records the intent.
+  # Whether this session's last word was a hand-back to a human that has not
+  # been superseded by a new wait. See HANDED_BACK_TO_HUMAN.
+  def handed_back_to_human?
+    metadata&.dig(HANDED_BACK_TO_HUMAN).present?
+  end
+
   def write_follow_up_resleep_intent
     merge_metadata!(
       Sessions::StopRecord.pending_sleep(Sessions::StopRecord::FOLLOW_UP_RESLEEP).merge(
@@ -1404,6 +1423,16 @@ module SessionStateMachine
   end
 
   private
+
+  def follow_up_rest_clause(backstopped, handed_back)
+    if handed_back
+      "will rest in needs_input — it handed back to a human"
+    elsif backstopped
+      "will return to waiting after this turn"
+    else
+      "will rest in needs_input — no one-time schedule backstop among them"
+    end
+  end
 
   # The pause's announcement: the settled `session_needs_input` wake fan-out, and
   # the human's debounced push. Both gate on the same marker — see the "one bump,
@@ -2247,6 +2276,9 @@ module SessionStateMachine
     backstopped = conditions.any? do |condition|
       condition.one_time_schedule? && self.class.one_time_wake_pending?(condition)
     end
+    # A turn that handed back to a human and was interrupted before its pause is
+    # resumed here; re-sleeping it would undo the hand-back. See HANDED_BACK_TO_HUMAN.
+    backstopped &&= !handed_back_to_human?
 
     if backstopped
       # Paired with PENDING_SLEEP_REQUIRES_WAKE: this sleep intent is only good
@@ -2264,12 +2296,18 @@ module SessionStateMachine
       "[SessionStateMachine] Preserved #{conditions.size} pending wake-up(s) across a " \
       "system-recovery resume of session #{id} " \
       "(trigger_conditions #{conditions.map(&:id).join(', ')}); " \
-      "#{backstopped ? 'will return to waiting after this turn' : 'will rest in needs_input — no one-time schedule backstop among them'}"
+      "#{backstopped ? 'will return to waiting after this turn' : 'will rest in needs_input — no one-time schedule backstop among them, or it handed back to a human'}"
     )
 
     logs.create!(
       content: "Recovered from a system interruption with #{conditions.size} wake-up(s) still armed — " \
-        "#{backstopped ? 'returning to waiting after this turn' : 'no scheduled backstop, so this session will rest in needs_input'}",
+        "#{if backstopped
+             'returning to waiting after this turn'
+           elsif handed_back_to_human?
+             'it handed back to a human, so this session will rest in needs_input'
+           else
+             'no scheduled backstop, so this session will rest in needs_input'
+           end}",
       level: "info"
     )
   end
@@ -2343,13 +2381,14 @@ module SessionStateMachine
       condition.one_time_schedule? && self.class.one_time_wake_pending?(condition)
     end
 
-    write_follow_up_resleep_intent if backstopped
+    handed_back = handed_back_to_human?
+    write_follow_up_resleep_intent if backstopped && !handed_back
 
     Rails.logger.info(
       "[SessionStateMachine] Preserved #{preserved.size} pending one-time wake-up(s) across a " \
       "follow-up resume of session #{id} (trigger_conditions #{preserved.map(&:id).join(', ')}) — " \
       "the follow-up added to this session's wait, it did not end it; " \
-      "#{backstopped ? 'will return to waiting after this turn' : 'will rest in needs_input — no one-time schedule backstop among them'}" \
+      "#{follow_up_rest_clause(backstopped, handed_back)}" \
       "#{consumed.any? ? "; consumed #{consumed.size} that could no longer fire" : ''}"
     )
 
@@ -2358,7 +2397,13 @@ module SessionStateMachine
       content: "Resumed by a follow-up while #{preserved.size} wake-up(s) of its own were still armed — " \
         "#{at ? "the next fires at #{at.utc.iso8601}" : 'they fire when the sessions they watch transition'}. " \
         "The follow-up did not cancel them, so " \
-        "#{backstopped ? 'this session goes back to sleep on them once it has answered' : 'this session will rest in needs_input — none of them is a scheduled backstop'}.",
+        "#{if handed_back
+             'this session handed back to a human and arms nothing new, so it will rest in needs_input'
+           elsif backstopped
+             'this session goes back to sleep on them once it has answered'
+           else
+             'this session will rest in needs_input — none of them is a scheduled backstop'
+           end}.",
       level: "info"
     )
   end

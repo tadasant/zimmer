@@ -734,14 +734,20 @@ self-session surface only, because it is a statement about the turn the caller i
   session-scoped `ao_event` watchers) aimed at the session is destroyed.
 - It does not override an unconditional intent — a spot-queue park, a deliberate sleep, a platform
   dormancy. The result says the session will still sleep, and why.
-- A wake armed after it in the same turn writes a new intent and the session sleeps again, so the
-  tool tells the caller to call it last.
+- It lasts until the session waits again. The hand-back is stamped as
+  `handed_back_to_human_at`, and while it is set neither re-sleep branch — the follow-up one above,
+  nor the system-recovery one — writes an intent. So a deploy interrupting the turn before its
+  pause, a router's follow-up, or a Slack message does not put the session back to sleep on the
+  wake it said it was not resting on. Arming a new wake clears the stamp
+  (`Trigger#sleep_target_session_if_applicable`), which is the session deciding to wait again — and
+  is also why a wake armed after the call in the same turn puts it back to sleep, so the tool tells
+  the caller to call it last.
 - It is refused on a `waiting` session, which is not in a turn and has nothing to come to rest.
 
 The workaround it replaces is a short dummy wake armed so that its firing destroys the real
 backstop (sibling-destroy). Session 20141 did that on 2026-10-08 after a recovery re-sleep would
-have hidden its hand-back for 1h45m; a turn interrupted before the dummy fires is left asleep on
-the backstop anyway.
+have hidden its hand-back for 1h45m. The dummy only clears the wakes; the next follow-up or
+recovery with any backstop armed writes a re-sleep again, which the stamp above prevents.
 
 Preserving is deliberately the eager side of that trade, and the cost is worth stating honestly. The
 wake carries the prompt the session wrote for itself, so a follow-up that *redirected* the session
