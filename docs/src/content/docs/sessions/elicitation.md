@@ -255,7 +255,7 @@ reading the secret it needed through the service account instead.
 
 `ElicitationEndpointHealthCheckJob` probes the endpoint every 5 minutes from the host agents run on
 (it polls the token route with a token that cannot verify; any HTTP response counts — the expected
-401 proves the request reached Rails; only a transport failure is a broken gate) and records the result. It runs in production and staging;
+401 proves the request reached Rails; only a transport failure is a broken gate) and records the result. A transport failure is retried twice, after 2s and then 5s, and the gate counts as unreachable only when all three attempts fail — one slow response while Postgres is saturated is not an outage ([#1249](https://github.com/tadasant/zimmer/issues/1249)). The worst case is under a minute, well inside the 5-minute interval. It runs in production and staging;
 [not in development](/operate/background-jobs/#why-the-elicitation-probe-doesnt-run-in-development),
 where the URL it would probe describes your own laptop rather than anything agents depend on. When
 the endpoint is unreachable, the job warns on every tick and pages once per incident, and `OrchestratorSystemPromptBuilder` puts the failure in the system prompt of every session

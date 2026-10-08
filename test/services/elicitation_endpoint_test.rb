@@ -187,11 +187,50 @@ class ElicitationEndpointTest < ActiveSupport::TestCase
   test "probe reports a transport failure as unreachable" do
     # The production failure: the configured host does not resolve from the container.
     Net::HTTP.stubs(:start).raises(SocketError, "getaddrinfo: Name or service not known")
+    ElicitationEndpoint.stubs(:sleep)
 
     result = ElicitationEndpoint.probe
 
     assert_not result.reachable
     assert_includes result.detail, "getaddrinfo"
+  end
+
+  test "probe retries a transport failure and is reachable once an attempt answers" do
+    # The #1249 page: one read timeout while Postgres was slow, on a gate that was up.
+    Net::HTTP.expects(:start).twice
+      .raises(Net::ReadTimeout, "Net::ReadTimeout")
+      .then.returns(Net::HTTPUnauthorized.new("1.1", "401", "Unauthorized"))
+    ElicitationEndpoint.expects(:sleep).with(2).once
+
+    entries = capture_log_entries { @result = ElicitationEndpoint.probe }
+
+    assert @result.reachable
+    assert_includes @result.detail, "401"
+    retries = entries.select { |_severity, message| message.include?("probe attempt 1 failed") }
+    assert_equal [ "INFO" ], retries.map(&:first), "an intermediate failure logs at INFO, never at a severity that alerts"
+  end
+
+  test "probe is unreachable only after every attempt fails, carrying the last failure" do
+    Net::HTTP.expects(:start).times(3)
+      .raises(Net::ReadTimeout, "first")
+      .then.raises(Net::ReadTimeout, "second")
+      .then.raises(Errno::ECONNREFUSED, "last")
+    sleeps = sequence("backoff")
+    ElicitationEndpoint.expects(:sleep).with(2).in_sequence(sleeps)
+    ElicitationEndpoint.expects(:sleep).with(5).in_sequence(sleeps)
+
+    result = ElicitationEndpoint.probe
+
+    assert_not result.reachable
+    assert_includes result.detail, "Errno::ECONNREFUSED"
+    assert_includes result.detail, "last"
+  end
+
+  test "probe does not retry an HTTP response, whatever its status" do
+    Net::HTTP.expects(:start).once.returns(Net::HTTPInternalServerError.new("1.1", "500", "Internal Server Error"))
+    ElicitationEndpoint.expects(:sleep).never
+
+    assert ElicitationEndpoint.probe.reachable
   end
 
   test "unreachable? is false until a probe has actually observed a failure" do
