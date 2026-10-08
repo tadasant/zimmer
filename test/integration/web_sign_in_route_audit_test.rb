@@ -11,7 +11,8 @@ require "mocha/minitest"
 #                    REQUEST: with the gate on and no cookie, every route answers
 #                    a redirect to /login or a 401, and never reaches its action.
 #   signed-out       SIGNED_OUT_REACHABLE, exactly: the login flow, the 404 page,
-#                    /up/deep.
+#                    /up/deep. Plus health#export_diagnostics, but only for a
+#                    request from the host itself; the walk asks from outside.
 #   machine          Api::BaseController, Webhooks::BaseController and
 #                    OauthServer::BaseController (REST, /mcp, the webhooks, the
 #                    OAuth endpoints for /mcp). An API key, a signature, or PKCE,
@@ -32,6 +33,11 @@ class WebSignInRouteAuditTest < ActionDispatch::IntegrationTest
     errors#not_found
     health#deep
   ].to_set.freeze
+
+  # The walk asks as a client on the internet would. The test client's default
+  # address is loopback, and health#export_diagnostics answers a request that
+  # never left the host signed out (HealthControllerWebAuthTest covers that case).
+  PUBLIC_CLIENT = "198.51.100.23"
 
   # OauthServer::BaseController: the OAuth discovery, registration, token and
   # revocation endpoints for /mcp. A client authenticates with PKCE or a token
@@ -86,7 +92,7 @@ class WebSignInRouteAuditTest < ActionDispatch::IntegrationTest
       next if SIGNED_OUT_REACHABLE.include?(key)
 
       reset!
-      process(route[:verb].downcase.to_sym, route[:sample_path])
+      process(route[:verb].downcase.to_sym, route[:sample_path], env: { "REMOTE_ADDR" => PUBLIC_CLIENT })
 
       walled_off = (response.redirect? && URI(response.location).path == "/login") || response.status == 401
       reached << "#{route[:verb]} #{route[:sample_path]} -> #{key} answered #{response.status}" unless walled_off
