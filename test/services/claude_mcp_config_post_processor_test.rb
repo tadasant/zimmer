@@ -263,11 +263,14 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_equal({}, servers.dig("gmail-tadas", "headers"))
   end
 
-  test "the strad header carries a URL under strad's allow-listed production prefix" do
+  test "in production the strad header is under strad's allow-listed prefix" do
     Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new("production"))
     ENV["ZIMMER_PROD_BASE_URL"] = "https://zimmer.tadasant.com"
+    write_config("gmail-tadas" => { "type" => "http", "url" => STRAD_URL })
 
-    assert ElicitationEndpoint.session_url(@session.id)
+    build_processor.post_process!
+
+    assert read_config.dig("mcpServers", "gmail-tadas", "headers", "X-Elicitation-Url")
       .start_with?("https://zimmer.tadasant.com/api/v1/elicitations/session/#{@session.id}-")
   end
 
