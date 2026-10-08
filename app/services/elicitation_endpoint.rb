@@ -78,6 +78,11 @@ class ElicitationEndpoint
   # reached Rails — from the same route an MCP server polls, and no side effect.
   PROBE_REQUEST_ID = "zimmer-reachability-probe"
   PROBE_TIMEOUT_SECONDS = 5
+  # Seconds to wait before each retry. One slow response — a read timeout while
+  # Postgres is saturated — is not a broken gate, and paged #alerts twice (#1249)
+  # on a tick whose successor succeeded. Three attempts with these pauses between
+  # them is at most 3 x (5s open + 5s read) + 7s = 37s, well inside the 5-minute cron.
+  PROBE_RETRY_BACKOFF_SECONDS = [ 2, 5 ].freeze
 
   Result = Data.define(:reachable, :detail, :url)
 
@@ -209,25 +214,44 @@ class ElicitationEndpoint
     #
     # It polls the token route, the one MCP servers poll, with a token that cannot
     # verify, so a 401 is the expected answer and proves the request was routed
-    # to Rails. Any HTTP response counts as reachable. Only a transport failure
-    # (DNS, refused connection, TLS, timeout) is a broken gate.
+    # to Rails. Any HTTP response counts as reachable, with no retry. Only a
+    # transport failure (DNS, refused connection, TLS, timeout) is a broken gate,
+    # and only once every attempt has hit one: a failed attempt is retried after
+    # each pause in PROBE_RETRY_BACKOFF_SECONDS, and the result carries the last
+    # failure's detail.
     #
     # @return [Result]
     def probe
       probe_url = "#{url}/#{SESSION_SEGMENT}/#{PROBE_REQUEST_ID}/#{PROBE_REQUEST_ID}"
+      backoffs = PROBE_RETRY_BACKOFF_SECONDS.dup
+      attempt = 0
+
+      begin
+        attempt += 1
+        response = probe_once(probe_url)
+        Result.new(reachable: true, detail: "HTTP #{response.code} from #{probe_url}", url: url)
+      rescue StandardError => e
+        detail = "#{e.class}: #{e.message}"
+        return Result.new(reachable: false, detail: detail, url: url) if backoffs.empty?
+
+        pause = backoffs.shift
+        Rails.logger.info("[ElicitationEndpoint] probe attempt #{attempt} failed (#{detail}); retrying in #{pause}s")
+        sleep(pause)
+        retry
+      end
+    end
+
+    def probe_once(probe_url)
       uri = URI.parse(probe_url)
-      response = Net::HTTP.start(
+      Net::HTTP.start(
         uri.host,
         uri.port,
         use_ssl: uri.scheme == "https",
         open_timeout: PROBE_TIMEOUT_SECONDS,
         read_timeout: PROBE_TIMEOUT_SECONDS
       ) { |http| http.request(Net::HTTP::Get.new(uri)) }
-
-      Result.new(reachable: true, detail: "HTTP #{response.code} from #{probe_url}", url: url)
-    rescue StandardError => e
-      Result.new(reachable: false, detail: "#{e.class}: #{e.message}", url: url)
     end
+    private :probe_once
 
     # Persist a probe result. Never raises — a Redis hiccup must not fail the job.
     # Always returns a hash, so a caller reading stored["reachable"] cannot trip over
