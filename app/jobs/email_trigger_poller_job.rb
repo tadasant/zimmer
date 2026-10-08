@@ -25,7 +25,9 @@
 # retried on the next tick and one that succeeded is never repeated. The cursor moves only when
 # every thread found was settled; a thread that raised, was held (`skip_if_pending_session`, or a
 # reused session that would not take it) or is past MAX_FIRES_PER_TICK keeps the cursor where it
-# was, and the next tick re-reads it. A burst-suppressed fire is dropped, as on Slack.
+# was, and the next tick re-reads it. A burst-suppressed fire is dropped, as on Slack. A message the
+# mailbox server cannot return (MAX_READ_ATTEMPTS ticks running) is given up on with one report, so
+# one unreadable mail cannot hold the cursor for good.
 #
 # A condition the poller has never visited is baselined, not fired: what is already in the window
 # goes into the seen-set, so turning a trigger on never answers old mail.
@@ -41,8 +43,16 @@ class EmailTriggerPollerJob < ApplicationJob
 
   # How far behind the cursor each poll re-reads. Gmail's search index can trail delivery, so a
   # message delivered just before a poll may only become searchable after it; re-reading this
-  # window and dropping ids already seen catches it. The seen-set is kept for exactly this window.
+  # window and dropping ids already seen catches it.
   LOOKBACK = 10.minutes
+
+  # How much longer than the window a seen id is kept. An id is stamped with the time Zimmer first
+  # read it, which is after Gmail received it on Gmail's clock; the margin absorbs the skew between
+  # the two clocks, so an id is never forgotten while a search could still return it.
+  SEEN_MARGIN = 5.minutes
+
+  # Ticks in a row a message may fail to read before it is given up on (marked seen, reported once).
+  MAX_READ_ATTEMPTS = 5
 
   # Fires per condition per tick. A mailbox receiving more than this in a minute is being flooded;
   # the rest stay unread and are taken on the next ticks, and the trigger's own burst cap
@@ -93,12 +103,11 @@ class EmailTriggerPollerJob < ApplicationJob
       process_condition(service, condition)
       any_polled = true
     rescue EmailService::Error => e
-      # The mailbox itself is unreachable or refusing — an unconsented or revoked Google token, the
-      # server down. Every other condition would fail the same way, so stop here and leave the
-      # heartbeat stale: the liveness check pages once, with the fix in the page. WARN, not ERROR,
-      # so this does not page every minute on its own.
-      Rails.logger.warn "[EmailTriggerPollerJob] Not polling: #{e.message}"
-      break
+      # The mailbox refused this condition's search — an unconsented or revoked Google token, the
+      # server down. That is the state the liveness check pages on, once, with the fix in the page:
+      # when every condition fails this way nothing stamps the heartbeat. WARN, not ERROR, so this
+      # does not page every minute on its own.
+      Rails.logger.warn "[EmailTriggerPollerJob] Condition #{condition.id} not polled: #{e.message}"
     rescue => e
       report(condition, e)
     end
@@ -130,7 +139,21 @@ class EmailTriggerPollerJob < ApplicationJob
     )
   end
 
+  # A trigger the poller must not fire for, whatever its conditions say. The form, the API and MCP
+  # refuse to save an email trigger with an unfenced template, but /supervisor edits conditions on
+  # their own, so the poller checks again rather than trust the row.
+  class UnfireableTrigger < StandardError; end
+
+  def ensure_fireable!(trigger)
+    raise UnfireableTrigger, "trigger #{trigger.id} runs a workflow; an email condition fires only templates" if trigger.workflow_backed?
+
+    bare = trigger.unfenced_email_sender_variables
+    raise UnfireableTrigger, "trigger #{trigger.id} writes #{bare.join(', ')} unfenced; an email trigger must write them |untrusted" if bare.any?
+  end
+
   def process_condition(service, condition)
+    ensure_fireable!(condition.trigger)
+
     search = search_signature(condition)
     cursor = condition.last_message_ts.presence&.to_i
     started = Time.current.to_i
@@ -139,6 +162,7 @@ class EmailTriggerPollerJob < ApplicationJob
 
     seen = condition.email_seen_messages
     found = service.search(search_query(condition, cursor - LOOKBACK.to_i), count: EmailService::MAX_RESULTS)
+    read_at = Time.current.to_i
     fresh = found.reject { |summary| seen.key?(summary.id) }
 
     # Oldest thread first: Gmail lists newest first, so the thread whose newest new message is
@@ -152,7 +176,7 @@ class EmailTriggerPollerJob < ApplicationJob
         break
       end
 
-      outcome = settle_thread(service, condition, search, cursor, thread_id, summaries, started)
+      outcome = settle_thread(service, condition, search, cursor, thread_id, summaries, read_at)
       settled = false if %i[held rolled_back failed].include?(outcome)
     end
 
@@ -175,6 +199,7 @@ class EmailTriggerPollerJob < ApplicationJob
   # The first poll of a condition: remember what is already in the window, fire nothing.
   def baseline!(service, condition, search, started)
     found = service.search(search_query(condition, started - LOOKBACK.to_i), count: EmailService::MAX_RESULTS)
+    read_at = Time.current.to_i
     ActiveRecord::Base.transaction do
       condition.lock!
       raise ActiveRecord::Rollback unless search_signature(condition) == search && condition.last_message_ts.blank?
@@ -182,7 +207,7 @@ class EmailTriggerPollerJob < ApplicationJob
       condition.update!(
         last_message_ts: started.to_s,
         last_polled_at: Time.current,
-        configuration: condition.configuration.merge("seen_messages" => found.to_h { |summary| [ summary.id, started ] })
+        configuration: condition.configuration.merge("seen_messages" => found.to_h { |summary| [ summary.id, read_at ] })
       )
     end
     Rails.logger.info "[EmailTriggerPollerJob] Condition #{condition.id} baselined at #{started}"
@@ -191,8 +216,13 @@ class EmailTriggerPollerJob < ApplicationJob
   # Read one thread's new messages, fire for it if any of them should, and record them as seen in
   # the same transaction. Returns what happened: a Session, :burst_suppressed, :held, :skipped (no
   # message in it may fire), :rolled_back (the condition was edited mid-poll) or :failed.
-  def settle_thread(service, condition, search, cursor, thread_id, summaries, started)
-    messages = summaries.map { |summary| service.get_message(summary.id) }
+  def settle_thread(service, condition, search, cursor, thread_id, summaries, read_at)
+    messages = []
+    summaries.each do |summary|
+      messages << service.get_message(summary.id)
+    rescue EmailService::Error => e
+      return :failed unless give_up_reading?(condition, summary.id, thread_id, e)
+    end
     firing = messages.select { |message| fires?(condition, message) }
 
     outcome = :rolled_back
@@ -204,15 +234,23 @@ class EmailTriggerPollerJob < ApplicationJob
       raise ActiveRecord::Rollback if search_signature(condition) != search || condition.last_message_ts.to_i != cursor
 
       outcome = firing.any? ? fire!(condition, thread_id, firing.reverse) : :skipped
-      raise ActiveRecord::Rollback if outcome == :held
 
-      condition.update!(
-        last_polled_at: Time.current,
-        last_triggered_at: outcome.is_a?(Session) ? Time.current : condition.last_triggered_at,
-        configuration: condition.configuration.merge(
-          "seen_messages" => condition.email_seen_messages.merge(summaries.to_h { |summary| [ summary.id, started ] })
+      # A held fire commits, without the seen-set: what the trigger recorded about the fire it
+      # missed (Trigger#record_missed_fire!, which is what pages for a session that never takes its
+      # follow-ups) must survive, and the mail stays unseen for the next tick.
+      if outcome == :held
+        condition.update!(last_polled_at: Time.current)
+      else
+        ids = summaries.map(&:id)
+        condition.update!(
+          last_polled_at: Time.current,
+          last_triggered_at: outcome.is_a?(Session) ? Time.current : condition.last_triggered_at,
+          configuration: condition.configuration.merge(
+            "seen_messages" => condition.email_seen_messages.merge(ids.index_with(read_at)),
+            "failed_reads" => condition.email_failed_reads.except(*ids)
+          )
         )
-      )
+      end
     end
 
     log_outcome(condition, thread_id, firing.size, outcome) if firing.any?
@@ -225,15 +263,36 @@ class EmailTriggerPollerJob < ApplicationJob
     :failed
   end
 
+  # Counts one more failed read of +message_id+. Returns true once it has failed MAX_READ_ATTEMPTS
+  # ticks running — the caller then treats it as read and moves on, and it is reported once. Until
+  # then it is a WARN: a timeout or a 5xx on one read is retried next tick, not paged.
+  def give_up_reading?(condition, message_id, thread_id, error)
+    attempts = nil
+    ActiveRecord::Base.transaction do
+      condition.lock!
+      attempts = condition.email_failed_reads.fetch(message_id, 0) + 1
+      condition.update!(configuration: condition.configuration.merge("failed_reads" => condition.email_failed_reads.merge(message_id => attempts)))
+    end
+
+    if attempts >= MAX_READ_ATTEMPTS
+      report(condition, error, thread_id: thread_id)
+      true
+    else
+      Rails.logger.warn "[EmailTriggerPollerJob] Condition #{condition.id}: could not read message #{message_id} (attempt #{attempts} of #{MAX_READ_ATTEMPTS}): #{error.message}"
+      false
+    end
+  end
+
   # The cursor after this tick, and the seen-set trimmed to what the next tick's window reads again.
-  # A message first read at or after the horizon may still be returned by the next search; one read
-  # before it was received before it too, and cannot be.
+  # An id is stamped with when Zimmer first read it, which is no earlier than Gmail received it
+  # (give or take SEEN_MARGIN of clock skew), so one stamped before the horizon names a message the
+  # next search, `after:` the horizon, cannot return.
   def advance!(condition, search, cursor, new_cursor)
     ActiveRecord::Base.transaction do
       condition.lock!
       raise ActiveRecord::Rollback if search_signature(condition) != search || condition.last_message_ts.to_i != cursor
 
-      horizon = new_cursor - LOOKBACK.to_i
+      horizon = new_cursor - LOOKBACK.to_i - SEEN_MARGIN.to_i
       condition.update!(
         last_message_ts: new_cursor.to_s,
         last_polled_at: Time.current,

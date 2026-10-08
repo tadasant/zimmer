@@ -202,13 +202,75 @@ class EmailTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal %w[q1 q2], spawned_sessions.map { |session| session.metadata["email_message_id"] }
   end
 
+  test "a mail read before Gmail's clock says it arrived is never fired twice as the window slides" do
+    travel_to Time.zone.at(@now) do
+      baseline!
+    end
+    # Zimmer's clock runs 90s behind Google's: the mail is stamped later than the tick that reads it,
+    # so without a margin the window's trim forgets it while a search can still return it.
+    @server.deliver(id: "skew1", received_at: @now + 100)
+
+    16.times do |tick|
+      travel_to Time.zone.at(@now + 10 + (tick * 60)) do
+        EmailTriggerPollerJob.perform_now
+      end
+    end
+
+    assert_equal [ "skew1" ], spawned_sessions.map { |session| session.metadata["email_message_id"] }
+  end
+
+  test "a held follow-up keeps the mail unseen and still records the missed fire" do
+    @trigger.update!(reuse_session: true, enqueue_messages: true)
+    baseline!
+    @server.deliver(id: "h1", thread_id: "h1", received_at: @now)
+    EmailTriggerPollerJob.perform_now
+    owner = spawned_sessions.sole
+
+    owner.enqueued_messages.create!(content: "earlier mail", position: 1, status: "pending")
+    @server.deliver(id: "h2", thread_id: "h2", received_at: @now + 1)
+    EmailTriggerPollerJob.perform_now
+
+    assert_not @condition.reload.email_seen_messages.key?("h2")
+    assert_equal 1, @trigger.reload.missed_fire_count, "the missed fire must not be rolled back with the held thread"
+  end
+
+  test "a message the server will not return is given up on after a few ticks, reported once" do
+    baseline!
+    cursor = @condition.last_message_ts
+    @server.deliver(id: "big1", thread_id: "big1", received_at: @now)
+    @server.unreadable << "big1"
+    ErrorReporter.expects(:report_exception).once
+
+    (EmailTriggerPollerJob::MAX_READ_ATTEMPTS - 1).times { EmailTriggerPollerJob.perform_now }
+    assert_equal cursor, @condition.reload.last_message_ts
+    assert_equal EmailTriggerPollerJob::MAX_READ_ATTEMPTS - 1, @condition.email_failed_reads["big1"]
+
+    travel(1.minute) { EmailTriggerPollerJob.perform_now }
+    @condition.reload
+    assert @condition.email_seen_messages.key?("big1")
+    assert_empty @condition.email_failed_reads
+    assert_empty spawned_sessions
+    assert_operator @condition.last_message_ts.to_i, :>, cursor.to_i
+  end
+
+  test "a template made unfenced behind the form's back is not fired" do
+    baseline!
+    @trigger.update_columns(prompt_template: "Answer: {{text}}")
+    @server.deliver(id: "u1", received_at: @now)
+    ErrorReporter.expects(:report_exception).with { |error, **| error.message.include?("unfenced") }
+
+    EmailTriggerPollerJob.perform_now
+
+    assert_empty spawned_sessions
+  end
+
   test "a mailbox that refuses polls nothing and leaves the heartbeat stale" do
     baseline!
     Rails.cache.clear
     @server.refuse = "invalid_grant: Token has been expired or revoked."
     @server.deliver(id: "x1", received_at: @now)
 
-    Rails.logger.expects(:warn).with(regexp_matches(/Not polling: search_email_conversations failed: .*invalid_grant/)).at_least_once
+    Rails.logger.expects(:warn).with(regexp_matches(/not polled: search_email_conversations failed: .*invalid_grant/)).at_least_once
     assert_no_difference -> { spawned_sessions.count } do
       EmailTriggerPollerJob.perform_now
     end

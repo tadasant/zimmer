@@ -22,7 +22,7 @@ class FakeGmailMcpServer
 
   Mail = Struct.new(:id, :thread_id, :subject, :from, :to, :cc, :date, :labels, :body, :snippet, :received_at, :attachments, keyword_init: true)
 
-  attr_reader :mails, :calls
+  attr_reader :mails, :calls, :unreadable
   attr_accessor :refuse
 
   def self.start
@@ -33,6 +33,9 @@ class FakeGmailMcpServer
     @mails = []
     @calls = []
     @refuse = nil
+    # Ids search lists but get_email_conversation refuses — a body past McpApps::Client's response
+    # cap fails the same way.
+    @unreadable = Set.new
     @mutex = Mutex.new
   end
 
@@ -129,6 +132,7 @@ class FakeGmailMcpServer
 
   def get(id)
     mail = @mutex.synchronize { @mails.find { |candidate| candidate.id == id } }
+    return error("Error retrieving email: Backend Error") if unreadable.include?(id)
     return error("Error retrieving email: Requested entity was not found.") unless mail
 
     text(format_full_email(mail))

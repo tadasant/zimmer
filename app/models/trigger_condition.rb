@@ -173,8 +173,9 @@ class TriggerCondition < ApplicationRecord
   # The email poller's keys inside an `email` condition's configuration, merged back across an
   # edit like WHATSAPP_POLL_STATE_KEYS. The cursor is last_message_ts (the UNIX second the mailbox
   # has been read up to); `seen_messages` is message id => the second the poller first read it,
-  # for every message inside its look-back window (EmailTriggerPollerJob::LOOKBACK).
-  EMAIL_POLL_STATE_KEYS = %w[seen_messages].freeze
+  # for every message inside its look-back window (EmailTriggerPollerJob::LOOKBACK);
+  # `failed_reads` is message id => ticks in a row the mailbox server would not return it.
+  EMAIL_POLL_STATE_KEYS = %w[seen_messages failed_reads].freeze
 
   belongs_to :trigger
   # Which external events this condition has already fired on — see TriggerEventClaim.
@@ -435,6 +436,12 @@ class TriggerCondition < ApplicationRecord
   def email_seen_messages
     seen = configuration["seen_messages"]
     seen.is_a?(Hash) ? seen.transform_values(&:to_i) : {}
+  end
+
+  # message id => ticks in a row the mailbox server failed to return it.
+  def email_failed_reads
+    failed = configuration["failed_reads"]
+    failed.is_a?(Hash) ? failed.transform_values(&:to_i) : {}
   end
 
   # Schedule configuration accessors

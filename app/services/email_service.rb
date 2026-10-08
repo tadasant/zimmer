@@ -120,7 +120,9 @@ class EmailService
       to: field(head, "To"),
       cc: field(head, "Cc"),
       date: field(head, "Date"),
-      labels: field(head, "Labels").to_s.split(",").map(&:strip).reject { |label| label.blank? || label == "None" },
+      # The LAST Labels line above the body: the server prints it after every header the sender
+      # wrote, so a Subject that smuggled in a line of its own comes earlier.
+      labels: head.scan(/^\*\*Labels:\*\*[ \t]*(.*)$/).last&.first.to_s.split(",").map(&:strip).reject { |label| label.blank? || label == "None" },
       body: body.strip,
       attachments: attachments
     )

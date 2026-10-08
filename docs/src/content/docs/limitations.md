@@ -4830,8 +4830,13 @@ the raw headers. Two things follow:
   session that answered it before.
 - The prompt names attachments but does not carry them. The session reads them with
   `download_email_attachments` if its MCP servers include the mailbox.
-- The mailbox server's search returns at most 100 messages, newest first, and has no pagination. If
-  more than 100 matching messages arrive inside one ten-minute window, the oldest are never seen.
+- The mailbox server's search returns at most 100 messages, newest first, and has no pagination. The
+  poller searches from ten minutes before its cursor, and the cursor stays still while a thread is
+  held or failing. So if more than 100 matching messages arrive between the cursor and now, the
+  oldest are never seen. That is ten minutes on a healthy poller, and longer while something holds
+  the cursor.
+- A message the mailbox server will not return five ticks running (a body past the MCP client's
+  2 MB response cap, say) is given up on: marked seen, reported once, and never fired.
 
 ### GitHub is polled, and the webhooks have no public way in
 
