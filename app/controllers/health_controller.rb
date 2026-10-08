@@ -21,6 +21,19 @@ class HealthController < ApplicationController
   # way they ask /up. It names which backing service failed and nothing else.
   allow_signed_out_access only: :deep
 
+  # The fleet-telemetry collector and the worker soak sampler run on the host and
+  # curl `http://127.0.0.1/health/export_diagnostics` with no credential (host
+  # Caddy -> kamal-proxy -> web). A 302 to /login fails the collector, and the
+  # production deploy's heartbeat smoke test with it (#1251). So a request from
+  # the host's own loopback answers signed out. Nothing else does: the edge
+  # appends the public client address to X-Forwarded-For, a tailnet peer
+  # resolves to its 100.x address, and an agent session reaches Caddy from the
+  # docker bridge. All of them still sign in.
+  #
+  # One condition rather than `only:` plus `if:`: a skip merges each of those into
+  # its own `unless`, so either alone would let the request through.
+  allow_signed_out_access if: -> { action_name == "export_diagnostics" && request_from_the_host? }
+
   def dashboard
     @health_service = HealthMonitorService.new
     @health_report = @health_service.full_health_report
@@ -269,6 +282,20 @@ class HealthController < ApplicationController
   end
 
   private
+
+  # True when the client Rails resolved is the host's loopback.
+  #
+  # A request carrying an RFC 7239 `Forwarded` header is never the host's: Rails
+  # prefers that header over X-Forwarded-For, nothing on the collector's path
+  # sets it, and a client could otherwise name 127.0.0.1 there. An address
+  # remote_ip cannot settle (a spoofed Client-IP raises) is not the host's either.
+  def request_from_the_host?
+    return false if request.headers["Forwarded"].present?
+
+    IPAddr.new(request.remote_ip).loopback?
+  rescue IPAddr::Error, ActionDispatch::RemoteIp::IpSpoofAttackError
+    false
+  end
 
   # Report every bucket of a retry, not just the two that used to be flashed.
   #
