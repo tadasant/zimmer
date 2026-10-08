@@ -2022,7 +2022,7 @@ A *degraded* resolve is the softer version of the same problem, and it gets the 
 perfectly valid today can still look unresolvable to a fire. While `AirCatalogService.degraded?` the
 heal still filters in memory — the fire has to spawn something — but records nothing and announces
 nothing, which is the same call the session-side scrub in
-`AirPrepareService#scrubbed_catalog_skills` makes before persisting a drop.
+`AirPrepareService#reconciled_catalog_selection` makes before persisting a drop.
 
 **Where an operator meets it.** Keeping the name is only worth anything if the surfaces show it, so
 each one marks an unresolvable reference rather than rendering it like a working one:

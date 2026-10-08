@@ -2142,7 +2142,7 @@ class TriggerTest < ActiveSupport::TestCase
 
   # A degraded resolve serves a last-known-good tree that can predate a rename,
   # so a name that is valid today can look unresolvable to this fire. Same call
-  # AirPrepareService#persist_scrubbed_catalog_skills makes.
+  # AirPrepareService#persist_catalog_drift! makes.
   test "a degraded catalog neither announces nor records, but still filters" do
     @trigger.update_column(:mcp_servers, [ "keeper", "maybe-gone" ])
     ServersConfig.stubs(:exists?).with("keeper").returns(true)

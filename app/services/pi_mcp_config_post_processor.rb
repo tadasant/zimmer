@@ -72,7 +72,7 @@ class PiMcpConfigPostProcessor < RuntimeConfigPostProcessor
   # A configured server the catalog no longer knows is skipped with a warning
   # rather than raised on: the catalog evolves independently of the sessions that
   # reference it, and a removed server id must degrade one tool, not brick the
-  # session's whole startup. This mirrors AirPrepareService#scrubbed_catalog_skills.
+  # session's whole startup. This mirrors AirPrepareService#reconciled_catalog_selection.
   def seed_catalog_servers!(servers)
     session.user_selected_mcp_servers.each do |name|
       next if servers.key?(name)

@@ -6244,7 +6244,45 @@ class AgentSessionJob < ApplicationJob
     degraded_block = build_degraded_mcp_block(session)
     prompt += "\n\n#{degraded_block}" if degraded_block.present?
 
+    dropped_block = build_dropped_catalog_ids_block(session)
+    prompt += "\n\n#{dropped_block}" if dropped_block.present?
+
     prompt
+  end
+
+  # Labels for the columns Session#dropped_unknown_catalog_ids is keyed by.
+  DROPPED_CATALOG_ID_LABELS = {
+    "mcp_servers" => "MCP server",
+    "catalog_skills" => "skill",
+    "catalog_hooks" => "hook",
+    "catalog_plugins" => "plugin"
+  }.freeze
+
+  # The standing notice that this session was configured with catalog artifacts
+  # the catalog has since renamed or removed, and that AirPrepareService dropped
+  # them rather than fail the session (zimmer#1257). It rides on every prompt
+  # for the same reason the degraded-server notice does: the agent cannot be
+  # expected to go looking for it, and the alternative is a task that quietly
+  # assumes a tool it no longer has.
+  #
+  # @param session [Session]
+  # @return [String, nil] nil when nothing was dropped
+  def build_dropped_catalog_ids_block(session)
+    dropped = session.dropped_unknown_catalog_ids
+    return nil if dropped.empty?
+
+    lines = dropped.map do |attribute, ids|
+      "- #{DROPPED_CATALOG_ID_LABELS.fetch(attribute, attribute)}(s): #{ids.join(', ')}"
+    end
+
+    <<~BLOCK.strip
+      <dropped-catalog-artifacts>
+      <info>This session was configured with these artifacts, but the AIR catalog has since renamed or removed them, so Zimmer dropped them to keep the session running. Their tools are NOT available.</info>
+      #{lines.join("\n")}
+
+      If a task needs one of them, look for a successor you do have (a renamed server often keeps a similar name) and say which one you used; if there is none, say so plainly rather than improvising a substitute.
+      </dropped-catalog-artifacts>
+    BLOCK
   end
 
   # The standing notice that a server this session was configured with is not

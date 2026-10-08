@@ -77,7 +77,7 @@ require "json"
 # == Degradation ==
 #
 # A selection the catalog no longer knows is dropped with a warning rather than
-# raised on, mirroring AirPrepareService#scrubbed_catalog_skills: the catalog
+# raised on, mirroring AirPrepareService#reconciled_catalog_selection: the catalog
 # evolves independently of the sessions that reference it, and a removed hook id
 # must cost one hook, not the session's whole startup.
 class PiAirBridge < RuntimeArtifactBridge
