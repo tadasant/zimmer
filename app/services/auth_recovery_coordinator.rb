@@ -247,7 +247,10 @@ class AuthRecoveryCoordinator
       )
     end
 
-    return rotate_off(current, working_directory, benched: benched) if benched && benched.email == current.email
+    # An org refusal never takes the probe/re-seed branches, whether or not the
+    # bench was written: the refused token still passes the probe, so they would
+    # hand this session the same account back.
+    return rotate_off(current, working_directory, benched: benched) if @access_disabled
 
     rotate_away_from(current, working_directory)
   end
@@ -263,9 +266,13 @@ class AuthRecoveryCoordinator
     account = email && pool.find_by(email: email)
     return nil unless account
 
-    account.disable_access! unless account.access_disabled?
-    @logger.warn("Benched an account whose organization disabled Claude subscription access — " \
-      "a human must re-enable its access and re-authenticate it", account: account.email)
+    if account.needs_reauth? && account.access_disabled?
+      @logger.info("Refused account was already benched", account: account.email)
+    else
+      account.disable_access!
+      @logger.warn("Benched an account whose organization disabled Claude subscription access — " \
+        "a human must re-enable its access and re-authenticate it", account: account.email)
+    end
     account
   rescue => e
     # Benching is what keeps the next session off this account, but failing to
@@ -324,6 +331,7 @@ class AuthRecoveryCoordinator
       end
 
       @logger.warn("No account to rotate into during auth recovery", from: current.email, reason: result[:reason])
+      release_benched_current!(benched) if benched
       return park_plan
     end
 
@@ -339,6 +347,18 @@ class AuthRecoveryCoordinator
     end
 
     Plan.new(outcome: :rotated, account: account, detail: detail)
+  end
+
+  # A benched account that could not be rotated off is still `is_current`, and
+  # the spawn path hands out the current account's token without reading its
+  # status. An ordinary needs_reauth token is dead, so that costs nothing; an
+  # org-disabled one still authenticates, and every spawn would run a turn into
+  # the same refusal. Clear the pointer so the next spawn finds no current
+  # account and ensure_active_account! promotes one once the pool recovers.
+  def release_benched_current!(benched)
+    benched.update!(is_current: false) if benched.reload.is_current?
+  rescue => e
+    @logger.warn("Could not release the benched account as current", account: benched.email, error: e.message)
   end
 
   # A session-scoped Claude process receives one access-token VALUE at spawn.

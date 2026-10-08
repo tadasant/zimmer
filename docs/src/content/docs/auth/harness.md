@@ -951,7 +951,9 @@ So `AuthRecoveryService.access_disabled?` picks this subset out. It reads the `o
 type, or the prose on an untyped entry. Before anything else is decided, the coordinator benches the
 identity the session was spawned with: `ClaudeAccount#disable_access!` writes `needs_reauth` and
 stamps `access_disabled_at`. Then it skips the probe and the re-seed and rotates, or adopts if the pool
-already moved. The session resumes on the healthy account.
+already moved. The session resumes on the healthy account. If nothing healthy is left, the benched
+account also stops being current, because the spawn path hands out the current account's token
+without reading its status, and this token still authenticates.
 
 `needs_reauth` takes the account out of `.available` and `.serviceable_for`, and alerts a human through
 the `account_needs_reauth` event. `access_disabled_at` keeps it out. The needs_reauth sweep restores any
