@@ -26,8 +26,8 @@
 # The defaults below are policy, not physics — but where you change them depends
 # on the kind, and the split is deliberate:
 #
-#   - Seven of the ten kinds (`slack`, `whatsapp`, `github_issue`, `github_label`,
-#     `schedule`, `ao_event`, `system_event`) are restatements of trigger condition
+#   - Eight of the eleven kinds (`slack`, `whatsapp`, `email`, `github_issue`,
+#     `github_label`, `schedule`, `ao_event`, `system_event`) are restatements of trigger condition
 #     types. Their
 #     selector lives on the Trigger row (Trigger#scheduling_class), so one noisy
 #     `slack` trigger can be spot without demoting the eleven others that carry a
@@ -50,6 +50,7 @@ module SessionGenesis
   WEB_UI = "web_ui"
   SLACK = "slack"
   WHATSAPP = "whatsapp"
+  EMAIL = "email"
   GITHUB_ISSUE = "github_issue"
   GITHUB_LABEL = "github_label"
   SCHEDULE = "schedule"
@@ -83,6 +84,14 @@ module SessionGenesis
       default_class: PRIORITY,
       description: "A WhatsApp trigger fired on new messages in a chat Zimmer is listening to. " \
                    "People are talking in that chat right now."
+    ),
+    Kind.new(
+      key: EMAIL,
+      label: "Email trigger",
+      default_class: SPOT,
+      description: "An email trigger fired on new mail in a watched mailbox. Anyone can send " \
+                   "mail, and nobody expects an answer to it within the minute, so it waits for " \
+                   "quota headroom like the other automated feeds."
     ),
     Kind.new(
       key: GITHUB_ISSUE,
@@ -153,13 +162,14 @@ module SessionGenesis
     "system_event" => "system_event",
     "github_label" => "github_label",
     "github_issue" => "github_issue",
-    "whatsapp" => "whatsapp"
+    "whatsapp" => "whatsapp",
+    "email" => "email"
   }.freeze
 
   # Which genesis wins when one trigger carries several condition types. The
   # human-facing kinds come first, so a mixed trigger is never silently demoted
   # to spot on the strength of a condition that did not fire.
-  CONDITION_TYPE_PRECEDENCE = %w[slack whatsapp system_event github_label github_issue ao_event schedule].freeze
+  CONDITION_TYPE_PRECEDENCE = %w[slack whatsapp system_event email github_label github_issue ao_event schedule].freeze
 
   # The kinds a trigger can produce. Their class is chosen per trigger, so there
   # is no per-kind setting for them.

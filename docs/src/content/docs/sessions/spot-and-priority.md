@@ -95,6 +95,7 @@ the row. It is a column on `sessions`, assigned once at creation.
 | `web_ui` | A human typed it into the Zimmer web app: the new-session form, the dashboard quick prompt, the chat bubble, or the **Invoke** button on a trigger. | priority | `/inference` |
 | `slack` | A Slack trigger fired on a DM or a channel message. | priority | the trigger |
 | `whatsapp` | A `whatsapp` trigger fired on new messages in a chat Zimmer is listening to. | priority | the trigger |
+| `email` | An `email` trigger fired on new mail in the polled mailbox. | spot | the trigger |
 | `github_issue` | A `github_issue` trigger fired — the feed the issue-work gate reads. | spot | the trigger |
 | `github_label` | A `github_label` trigger fired — the `ready to merge` feed the PR merge gate reads. | spot | the trigger |
 | `schedule` | A cron-scheduled trigger fired. | spot | the trigger |
@@ -102,7 +103,7 @@ the row. It is a column on `sessions`, assigned once at creation.
 | `api` | Created over `POST /api/v1/sessions` or MCP `start_session` **with no parent session**, or fired by hand over `POST /api/v1/triggers/:id/invoke` / `action_trigger`'s `invoke`. | spot | `/inference` |
 | `unknown` | Origin could not be established — chiefly rows created before genesis was recorded. | priority | `/inference` |
 
-Five of the eight kinds restate a trigger condition type, so their class lives on the **trigger**, not
+Eight of the eleven kinds restate a trigger condition type, so their class lives on the **trigger**, not
 in a global per-kind setting: one noisy Slack trigger can be spot without demoting the eleven other
 Slack triggers that have a human waiting on the answer. The three that no trigger produces keep a
 per-kind setting on `/inference`.
@@ -168,8 +169,8 @@ reached future sessions only, and the backlog sat exactly where it was with noth
 
 Three clauses bound it, and each one is there to stop a click promoting work nobody asked to promote:
 
-- **This trigger's sessions only** — matched on `metadata.trigger_id`, never the genesis. Five of the
-  eight kinds restate a condition type, so a genesis-wide sweep would drag in the work of every other
+- **This trigger's sessions only** — matched on `metadata.trigger_id`, never the genesis. Eight of the
+  eleven kinds restate a condition type, so a genesis-wide sweep would drag in the work of every other
   trigger that shares the kind. That is `promote_genesis`'s blast radius, and it is why
   `promote_genesis` is the wrong lever for a trigger.
 - **Still `waiting` only.** A session that has already started is past the gate this setting governs.

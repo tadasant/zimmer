@@ -50,6 +50,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
                        when "github_label" then { "repos" => [ "tadasant/zimmer" ], "target" => "pull_request", "labels" => [ "ready to merge" ] }
                        when "github_issue" then { "repos" => [ "tadasant/zimmer" ] }
                        when "whatsapp" then { "chat_id" => "120363012345678901@g.us", "mode" => "listen" }
+                       when "email" then { "query" => "in:inbox" }
                        end
       )
       assert condition.valid?, "Expected condition_type '#{type}' to be valid, got errors: #{condition.errors.full_messages}"

@@ -75,6 +75,11 @@
       "class": "WhatsappTriggerPollerJob",
       "description": "Poll the WhatsApp bridge for new messages in watched chats and create sessions"
     },
+    "email_trigger_poller": {
+      "cron": "* * * * *",
+      "class": "EmailTriggerPollerJob",
+      "description": "Poll the mailbox for new mail and create a session per new thread"
+    },
     "slack_outage_marker": {
       "cron": "* * * * *",
       "class": "SlackOutageMarkerJob",
@@ -347,6 +352,11 @@
       "class": "WhatsappTriggerPollerJob",
       "description": "Poll the WhatsApp bridge for new messages in watched chats and create sessions"
     },
+    "email_trigger_poller": {
+      "cron": "* * * * *",
+      "class": "EmailTriggerPollerJob",
+      "description": "Poll the mailbox for new mail and create a session per new thread"
+    },
     "slack_outage_marker": {
       "cron": "* * * * *",
       "class": "SlackOutageMarkerJob",
@@ -603,6 +613,11 @@
       "cron": "* * * * *",
       "class": "WhatsappTriggerPollerJob",
       "description": "Poll the WhatsApp bridge for new messages in watched chats and create sessions"
+    },
+    "email_trigger_poller": {
+      "cron": "* * * * *",
+      "class": "EmailTriggerPollerJob",
+      "description": "Poll the mailbox for new mail and create a session per new thread"
     },
     "slack_outage_marker": {
       "cron": "* * * * *",

@@ -310,7 +310,7 @@ class TriggersController < ApplicationController
       catalog_plugins: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
-        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [] ]
+        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, :query, :include_automated, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [] ]
       ]
     ).tap do |p|
       # An empty number field means "no cap" (unbounded), not 0. Only rewrite the
