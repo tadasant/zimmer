@@ -355,7 +355,7 @@ exactly four sanctioned reasons to send it:
 
 1. The agent lacked the authorization scope or tools to finish, with no parent session to report
    back to and no root it could spawn that has the scope. When there *is* a parent, the prompt names the route: `action_session` with
-   [`message_parent`](/extend/mcp-server/#message_parent-the-one-action-that-exists-only-here),
+   [`message_parent`](/extend/mcp-server/#message_parent-the-action-with-no-target),
    which resolves the parent server-side and carries a `wrong_scope` / `missing_tools` reason. The
    session reports and archives instead of parking. Before either ending, the agent has to name the
    root or tool it looked for and did not find, and — when it holds session-spawning tools — spawn
@@ -376,6 +376,12 @@ On top of those, one rule bounds the whole queue: **exactly one session per huma
 stays unarchived.** Usually that is the router, while it is still orchestrating the sessions below
 it; if the router archived itself and handed the work to a child, it is that child. One request
 should leave one session in the queue, not a trail.
+
+Reaching `needs_input` on purpose takes one call when the session has armed a wake of its own. A
+session holding a `wake_me_up_later` backstop or a state-change watcher goes back to sleep in
+`waiting` when its turn ends, even a turn that answered a human, so the prompt tells it to call
+`action_session` with `rest_in_needs_input` as the last thing in a turn that hands back to a human.
+See [Handing back with a wake armed](/sessions/lifecycle/#handing-back-with-a-wake-armed).
 
 Anything else — including "the user will want to read this" — goes in the final message, or in
 Slack `#updates` if it is a read-only FYI and the session has a Slack server, and the session

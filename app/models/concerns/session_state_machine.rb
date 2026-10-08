@@ -2313,12 +2313,13 @@ module SessionStateMachine
   # during the turn, #execute_pending_sleep drops it and the session rests in
   # `needs_input`, where the operator can see it (#1172).
   #
-  # A session that genuinely does need the human says so by cancelling its wake:
-  # with nothing armed there is no re-sleep, and the turn ends in `needs_input`
-  # exactly as before. That lever is `action_trigger` on the unscoped `zimmer`
-  # server (the same one /triggers gives a human); a session holding only
-  # `zimmer-self-session` has no cancel and reaches the human with
-  # `send_push_notification` instead, then is collected by its own backstop.
+  # A session that genuinely does need the human says so with `action_session`
+  # `rest_in_needs_input` on the self-session server (Sessions::RestInNeedsInput):
+  # it drops this re-sleep intent, so the turn ends in `needs_input` with the
+  # wakes still armed — or cancelled too, with `cancel_wakes`. The alternative a
+  # session holding only `zimmer-self-session` otherwise reaches for is a short
+  # dummy wake whose firing destroys its backstop (session 20141), which strands
+  # it in `waiting` whenever the turn is interrupted before the dummy fires.
   #
   # A wake that can no longer fire is consumed rather than preserved. Preserving
   # one would leave an `enabled`, unfired row that reads as an armed wake on

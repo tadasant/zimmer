@@ -691,12 +691,12 @@ and they are the same three that make the system-recovery re-sleep safe:
   `execute_pending_sleep` re-ask `armed_one_time_wake?` when the turn ends. A backstop that fired or
   was retired during the answered turn drops the intent and the session rests in `needs_input`
   ([#1172](https://github.com/tadasant/zimmer/issues/1172)).
-- **A session that does need the human cancels its wake.** With nothing armed there is no re-sleep
-  and the turn ends in `needs_input` exactly as before. That is the same lever `/triggers` gives a
-  human who wants to take a sleeping session over — and for an agent it is `action_trigger` on the
-  unscoped `zimmer` server. A session holding only `zimmer-self-session` has no cancel: it reaches
-  the human with `send_push_notification` and is collected by its own backstop. See
-  [Limitations](/limitations/).
+- **A session that does need the human says so.** It calls `action_session` with
+  `rest_in_needs_input` on the `zimmer-self-session` server as the last thing in its turn. That
+  drops the wake-backed re-sleep intent, so the turn ends in `needs_input`, on the action queue,
+  with its wakes still armed: whichever comes first, the human's reply or a wake, resumes it.
+  `"cancel_wakes": true` cancels every one-time wake as well, for a wait that no longer has a
+  reason. See [Handing back with a wake armed](#handing-back-with-a-wake-armed).
 
 The queued door reaches the same rest. A follow-up that arrives while the session is `running` is
 queued and takes the next turn on the handoff `EnqueuedMessageProcessorService` performs without a
@@ -712,6 +712,36 @@ wake in the same turn — the shape `open-pr` and `wait-for-ci` prescribe — so
 consistent rather than removing a property Zimmer reliably had. The answer itself is not hidden:
 it is in the transcript, which the session page streams live, and the session stays on the homepage
 under `waiting` with the wake that explains why.
+
+### Handing back with a wake armed
+
+The re-sleep is right for a router asked a question mid-wait. It is wrong for a session whose
+answer is *"I need a decision from you"*, and so is every other wake-backed sleep — the
+`scheduled_wake` intent a `wake_me_up_later` writes on a running session, and the
+`system_recovery_resleep` intent a recovery resume writes. Each of them puts a session that is
+asking the human something back in `waiting`, off the homepage action queue, until its wake fires.
+
+`action_session` `rest_in_needs_input` (`Sessions::RestInNeedsInput`) is the lever. It is on the
+self-session surface only, because it is a statement about the turn the caller is in:
+
+- It drops the pending sleep intent when that intent is one of
+  `PENDING_SLEEP_REASONS_REQUIRING_WAKE`, so `pause` leaves the session in `needs_input` and the
+  ordinary `needs_input` push and fan-out go out.
+- Its wakes stay armed unless the caller passes `"cancel_wakes": true`. A session in `needs_input`
+  with a wake armed is resumed by whichever arrives first — `Trigger#follow_up_session!` delivers to
+  a `needs_input` session — which is the same rest a watcher-only session has always taken. With
+  `cancel_wakes`, every `enabled` trigger made only of unfired one-time wakes (schedules and
+  session-scoped `ao_event` watchers) aimed at the session is destroyed.
+- It does not override an unconditional intent — a spot-queue park, a deliberate sleep, a platform
+  dormancy. The result says the session will still sleep, and why.
+- A wake armed after it in the same turn writes a new intent and the session sleeps again, so the
+  tool tells the caller to call it last.
+- It is refused on a `waiting` session, which is not in a turn and has nothing to come to rest.
+
+The workaround it replaces is a short dummy wake armed so that its firing destroys the real
+backstop (sibling-destroy). Session 20141 did that on 2026-10-08 after a recovery re-sleep would
+have hidden its hand-back for 1h45m; a turn interrupted before the dummy fires is left asleep on
+the backstop anyway.
 
 Preserving is deliberately the eager side of that trade, and the cost is worth stating honestly. The
 wake carries the prompt the session wrote for itself, so a follow-up that *redirected* the session

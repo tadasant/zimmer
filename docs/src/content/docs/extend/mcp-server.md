@@ -103,10 +103,12 @@ the connection.
 carries `get_session`, `get_session_provenance`, `get_configs`, `send_push_notification`,
 `wake_me_up_later`, `wake_me_up_when_session_changes_state`, a **restricted `action_session`** —
 the same tool name, but its `action` enum is narrowed to `update_notes`, `update_title`, `set_heartbeat`,
-`pause_into_spot_queue`, `message_parent`, and `archive` — and a **self-scoped `get_costs`**, narrowed
-the same way to the calling session's own spend. All but one of `action_session`'s actions are
-narrowings of the full surface; [`message_parent`](#message_parent-the-one-action-that-exists-only-here)
-is on this surface and on no other.
+`pause_into_spot_queue`, `rest_in_needs_input`, `message_parent`, and `archive` — and a
+**self-scoped `get_costs`**, narrowed the same way to the calling session's own spend. All but two
+of `action_session`'s actions are narrowings of the full surface;
+[`message_parent`](#message_parent-the-action-with-no-target) and
+[`rest_in_needs_input`](/sessions/lifecycle/#handing-back-with-a-wake-armed) are on this surface and
+on no other.
 A session can manage itself; it cannot restart, fork, or re-configure anything. In particular the
 capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_effort`, `change_skills`,
 `change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`,
@@ -639,11 +641,11 @@ and at change time. `start_session` names the same four lists (`mcp_servers`, `s
 `hooks`), so a hook that is noise for the task is dropped at launch rather than corrected by a
 follow-up `change_hooks` — which, for a clone-only session, would race the job start.
 
-### `message_parent`: the one action that exists only here
+### `message_parent`: the action with no target
 
-Every other action on the `self_session` `action_session` is a subset of the full one. `message_parent`
-is the exception, and it is the exception because it *cannot* be defined anywhere else: it takes no
-target. The caller names itself, and Zimmer reads `parent_session_id` to find who to deliver to.
+Every other action on the `self_session` `action_session` is a subset of the full one, apart from
+`rest_in_needs_input`, which is a statement about the caller's own turn. `message_parent` is on this
+surface alone because it *cannot* be defined anywhere else: it takes no target. The caller names itself, and Zimmer reads `parent_session_id` to find who to deliver to.
 
 That is the whole safety property. A "message any session" action on the server injected into every
 session would be a real privilege grant; "report to whoever started me" is not, because the edge it
