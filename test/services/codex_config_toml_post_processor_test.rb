@@ -292,6 +292,40 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       "a .env that names only the URL still leaves Zimmer's session tag in place"
   end
 
+  test "post_process! writes the session's approval URL into a strad entry's http_headers" do
+    stub_secrets({})
+
+    write_config(
+      "gmail-tadas" => { "url" => "https://strad.tadasant.com/gmail-tadas/mcp" },
+      "hosted" => { "url" => "https://mcp.example.com/mcp" }
+    )
+
+    build_processor.post_process!
+
+    config = read_config
+    assert_equal ElicitationEndpoint.session_url(@session.id),
+      config.dig("mcp_servers", "gmail-tadas", "http_headers", "X-Elicitation-Url")
+    assert_nil config.dig("mcp_servers", "hosted", "http_headers", "X-Elicitation-Url"),
+      "the approval URL is a capability; a non-strad server must not get it"
+  end
+
+  test "post_process! drops a catalog env_http_headers rule for X-Elicitation-Url" do
+    stub_secrets("ELICITATION_REQUEST_URL" => "https://zimmer.example.com/api/v1/elicitations")
+
+    write_config(
+      "gmail-tadas" => {
+        "url" => "https://strad.tadasant.com/gmail-tadas/mcp",
+        "env_http_headers" => { "x-elicitation-url" => "ELICITATION_REQUEST_URL" }
+      }
+    )
+
+    build_processor.post_process!
+
+    entry = read_config.dig("mcp_servers", "gmail-tadas")
+    assert_nil entry["env_http_headers"], "a forwarding rule would replace the session's URL with a session-less one"
+    assert_equal({ "X-Elicitation-Url" => ElicitationEndpoint.session_url(@session.id) }, entry["http_headers"])
+  end
+
   test "post_process! inlines SecretsLoader-backed env_http_headers into http_headers and retains non-secret forwarding" do
     stub_secrets("ACME_TOKEN" => "tok-acme-xyz")
 

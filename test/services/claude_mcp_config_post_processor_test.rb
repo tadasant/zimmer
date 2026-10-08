@@ -202,6 +202,76 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   end
 
   # ---------------------------------------------------------------------------
+  # The elicitation address → strad's X-Elicitation-Url header
+  # ---------------------------------------------------------------------------
+  # strad refuses a confirmation-gated send unless the request names this
+  # session's approval URL. The URL is a capability, so only strad gets it.
+
+  STRAD_URL = "https://strad.tadasant.com/gmail-tadas/mcp"
+
+  test "post_process! writes the session's approval URL into a strad entry's headers" do
+    write_config(
+      "gmail-tadas" => { "type" => "http", "url" => STRAD_URL, "headers" => { "Authorization" => "Bearer strad-key" } }
+    )
+
+    build_processor.post_process!
+
+    headers = read_config.dig("mcpServers", "gmail-tadas", "headers")
+    assert_equal ElicitationEndpoint.session_url(@session.id), headers["X-Elicitation-Url"]
+    assert_equal @session, ElicitationEndpoint.session_for_token(headers["X-Elicitation-Url"].split("/").last)
+    assert_equal "Bearer strad-key", headers["Authorization"], "injection merges into the header table, never replaces it"
+  end
+
+  test "post_process! sends the approval URL to no HTTP server but strad" do
+    write_config(
+      "acme-http" => { "type" => "http", "url" => "https://acme.example.com/mcp" },
+      "lookalike" => { "type" => "http", "url" => "https://strad.tadasant.com.evil.example/mcp" },
+      "subdomain" => { "type" => "http", "url" => "https://evil.strad.tadasant.com/mcp" },
+      "plaintext" => { "type" => "http", "url" => "http://strad.tadasant.com/mcp" },
+      "stdio" => { "command" => "node", "args" => [ "server.js" ] }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcpServers"]
+    %w[acme-http lookalike subdomain plaintext stdio].each do |name|
+      assert_nil servers.dig(name, "headers", "X-Elicitation-Url"), "#{name} must not receive the approval URL"
+    end
+  end
+
+  test "post_process! replaces a catalog-supplied X-Elicitation-Url under any casing" do
+    write_config(
+      "gmail-tadas" => {
+        "type" => "http",
+        "url" => STRAD_URL,
+        "headers" => { "x-elicitation-url" => "${ELICITATION_REQUEST_URL}" }
+      }
+    )
+
+    build_processor.post_process!
+
+    headers = read_config.dig("mcpServers", "gmail-tadas", "headers")
+    assert_equal({ "X-Elicitation-Url" => ElicitationEndpoint.session_url(@session.id) }, headers)
+  end
+
+  test "inject_elicitation_header! writes nothing without a session" do
+    processor = ClaudeMcpConfigPostProcessor.new(session: nil, working_directory: @working_dir, file_system: @mock_fs)
+    servers = { "gmail-tadas" => { "type" => "http", "url" => STRAD_URL, "headers" => {} } }
+
+    processor.send(:inject_elicitation_header!, servers)
+
+    assert_equal({}, servers.dig("gmail-tadas", "headers"))
+  end
+
+  test "the strad header carries a URL under strad's allow-listed production prefix" do
+    Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new("production"))
+    ENV["ZIMMER_PROD_BASE_URL"] = "https://zimmer.tadasant.com"
+
+    assert ElicitationEndpoint.session_url(@session.id)
+      .start_with?("https://zimmer.tadasant.com/api/v1/elicitations/session/#{@session.id}-")
+  end
+
+  # ---------------------------------------------------------------------------
   # Injection: the subagent server (roots with default_subagent_roots)
   # ---------------------------------------------------------------------------
 

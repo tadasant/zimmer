@@ -72,12 +72,14 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   # forwarding rule, which inline_forwarded_env_http_headers! later resolves into
   # http_headers. For a retargeted Zimmer entry that rule still names the
   # catalog's (production) key, so it must go or it would clobber the retargeted
-  # value.
+  # value. The same goes for a catalog `X-Elicitation-Url` rule, which would
+  # replace the session's own approval URL. Header names are case-insensitive,
+  # so the match is too.
   def drop_forwarded_credential_header!(entry, header)
     forwarded = entry["env_http_headers"]
     return unless forwarded.is_a?(Hash)
 
-    forwarded.delete(header)
+    forwarded.delete_if { |name, _| name.to_s.casecmp?(header) }
     entry.delete("env_http_headers") if forwarded.empty?
   end
 
