@@ -54,6 +54,46 @@ module ParameterStore
       assert_empty @client.resolve(@namespace)
     end
 
+    # strad's Secrets Console labels everything it creates `managed-by=strad`,
+    # including what it writes into Zimmer's own namespace.
+    test "resolves a strad-labelled secret written into Zimmer's namespace" do
+      @fake.seed_console_secret("ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID", "client-id.apps.googleusercontent.com")
+      id = Namespace.parameter_id(Namespace.parameter_path("ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID"))
+      assert_equal "strad", @fake.parameters.fetch(id).labels["managed-by"]
+
+      assert_equal({ "ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID" => "client-id.apps.googleusercontent.com" },
+        @client.resolve(@namespace))
+    end
+
+    test "resolves a strad-labelled plain parameter written into Zimmer's namespace" do
+      @fake.seed_plain("MCP_REGION", "us-east1", managed_by: "strad")
+
+      assert_equal({ "MCP_REGION" => "us-east1" }, @client.resolve(@namespace))
+    end
+
+    test "resolves zimmer- and strad-labelled parameters side by side" do
+      @fake.seed_secret("FROM_ZIMMER", "zimmer-value")
+      @fake.seed_console_secret("FROM_STRAD", "strad-value")
+
+      assert_equal({ "FROM_ZIMMER" => "zimmer-value", "FROM_STRAD" => "strad-value" },
+        @client.resolve(@namespace))
+    end
+
+    # The label is not the namespace fence: a strad-labelled parameter for some
+    # other tree in the same project is rendered and dropped on its path.
+    test "ignores a strad-labelled parameter whose envelope path is outside the namespace" do
+      @fake.seed_plain("OTHER", "x", path: "/strad/production/secrets/static/OTHER", managed_by: "strad")
+      @fake.seed_console_secret("ALSO_OTHER", "y", path: "/zimmer/somewhere-else/secrets/static/ALSO_OTHER")
+
+      assert_empty @client.resolve(@namespace)
+    end
+
+    test "ignores a parameter in Zimmer's namespace labelled by some other manager" do
+      @fake.seed_plain("NOT_OURS", "x", managed_by: "terraform")
+
+      assert_empty @client.resolve(@namespace)
+    end
+
     test "a parameter whose id collides with another path is not returned for it" do
       # `parameter_id` lowercases and folds punctuation, so these two paths share
       # one resource id. The envelope's own path is what tells them apart.

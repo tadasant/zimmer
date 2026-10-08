@@ -106,6 +106,25 @@ module ParameterStore
       assert @fake.parameters.key?(id), "the foreign parameter must still be there"
     end
 
+    test "delete removes a pair strad's Secrets Console wrote into Zimmer's namespace" do
+      @fake.seed_console_secret("OPENROUTER_API_KEY", "sk-live-value")
+      id = Namespace.parameter_id(Namespace.parameter_path("OPENROUTER_API_KEY"))
+
+      @writer.delete("OPENROUTER_API_KEY")
+
+      assert_not @fake.parameters.key?(id)
+      assert_not @fake.secrets.key?(id)
+    end
+
+    test "delete refuses a parameter labelled by some other manager" do
+      @fake.seed_plain("OPENROUTER_API_KEY", "x", managed_by: "terraform")
+      id = Namespace.parameter_id(Namespace.parameter_path("OPENROUTER_API_KEY"))
+
+      error = assert_raises(StoreError) { @writer.delete("OPENROUTER_API_KEY") }
+      assert_match "managed-by", error.message
+      assert @fake.parameters.key?(id), "the foreign parameter must still be there"
+    end
+
     test "delete refuses a secret Zimmer does not manage" do
       id = Namespace.parameter_id(Namespace.parameter_path("OPENROUTER_API_KEY"))
       @fake.secrets[id] = [ "somebody-elses-value" ]

@@ -297,7 +297,12 @@ Four things about it matter:
 - **`encoding`** says how the bytes behind the pointer are stored, and the
   resolver honours it. See below.
 
-Only parameters labelled `managed-by=zimmer` are read.
+Only parameters labelled `managed-by=zimmer` or `managed-by=strad` are read.
+Zimmer stamps `zimmer` on what it writes. strad's Secrets Console stamps `strad`
+on everything it creates, including values it writes into Zimmer's namespace. The
+label only keeps a hand-made or foreign parameter from being read at all. The
+namespace fence is the envelope's `path`, so a `strad`-labelled parameter for any
+other tree in the project is still ignored. A delete accepts either label too.
 
 ### The `encoding` field
 
@@ -945,7 +950,7 @@ asks about fourteen, not twelve — it adds `parameterVersions.render` and
 | `secretmanager.versions.add` | `add_secret_version` — writing the value, and the *only* call a rotation makes, because the envelope points at `versions/latest` |
 | `secretmanager.secrets.getIamPolicy` | `grant_accessor` — reading the policy so the binding is merged, not replaced |
 | `secretmanager.secrets.setIamPolicy` | `grant_accessor` — **the step that fails silently if skipped** — granting the parameter's own principal `roles/secretmanager.secretAccessor` |
-| `secretmanager.secrets.get` | `refuse_unmanaged!`, on delete — checking the `managed-by` label before destroying anything |
+| `secretmanager.secrets.get` | `refuse_unmanaged!`, on delete — checking the `managed-by` label (`zimmer` or `strad`) before destroying anything |
 | `secretmanager.secrets.delete` | `delete` — removing the secret |
 | `parametermanager.parameters.create` | `create_parameter` — the parameter that indexes the secret |
 | `parametermanager.parameters.get` | `create_parameter`, reading `policyMember.iamPolicyUidPrincipal` off an existing one; and `refuse_unmanaged!` on delete |
@@ -1160,7 +1165,7 @@ The rest live in `tadasant-internal`'s `zimmer/` root and need a human:
 | `400 SECRET_REFERENCE_ERROR` on `:render` | The parameter's own principal lacks `secretmanager.secretAccessor` on the secret — step 3 of the seeding flow was skipped. The store banner will still be green; it probes the resolver, not the parameter. |
 | `403` on `:render`, lists succeed | The resolver holds `parameterViewer` but not `parameterAccessor`. The banner reports this as **cannot read secret values**, naming `parameterVersions.render` — holding `secretmanager.versions.access` without it resolves nothing. |
 | Banner says "could not confirm what this credential may do" | `cloudresourcemanager.googleapis.com` is not enabled on the project. |
-| Every variable reads `Unresolved`, no error | The namespace is empty, or the parameters lack the `managed-by=zimmer` label, or their envelope `path` falls outside the namespaces the resolver reads (`/zimmer/{env}/secrets/static/`, plus `/zimmer/{env}/mcp/static/` until the migration finishes). |
+| Every variable reads `Unresolved`, no error | The namespace is empty, or the parameters carry neither the `managed-by=zimmer` nor the `managed-by=strad` label, or their envelope `path` falls outside the namespaces the resolver reads (`/zimmer/{env}/secrets/static/`, plus `/zimmer/{env}/mcp/static/` until the migration finishes). |
 | One variable reads `Unresolved`, and the banner lists it under **Held but not served** | Its envelope declares a value `encoding` this Zimmer does not implement, so the resolver refuses to serve bytes it cannot vouch for. Upgrade Zimmer, or re-seed the value through a writer that stores `base64url`. |
 | A session authenticates with what looks like a valid credential and the upstream rejects it | On a Zimmer that honours `encoding`, this is not the envelope. On one that does not, a console-seeded secret resolves as its base64url text and every surface still reports success — the failure [zimmer#999](https://github.com/tadasant/zimmer/issues/999) describes. |
 
