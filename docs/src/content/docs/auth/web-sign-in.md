@@ -201,7 +201,7 @@ removing `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID`, which takes the whole wall down.
 
 | Surface | With the wall up |
 | --- | --- |
-| Every page and form of the web UI, `/settings`, `/inference`, `/health` and its buttons | Sign-in required. A page load is redirected to `/login` and back afterwards. A form post, Turbo fetch or JSON request gets a bare `401` |
+| Every page and form of the web UI, `/settings`, `/inference`, `/health` and its buttons (except `/health/export_diagnostics`, below) | Sign-in required. A page load is redirected to `/login` and back afterwards. A form post, Turbo fetch or JSON request gets a bare `401` |
 | `/supervisor` (Administrate) | Sign-in required |
 | `/jobs` (GoodJob) | Sign-in required |
 | `/cable` (Turbo Streams) | The connection is refused without a valid sign-in cookie |
@@ -212,6 +212,7 @@ removing `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID`, which takes the whole wall down.
 | `/.well-known/oauth-*`, `POST /oauth/register`, `/oauth/token`, `/oauth/revoke` | **Open.** Machine endpoints for MCP clients, authenticated by PKCE or a token the client holds |
 | `/webhooks/slack`, `/webhooks/github` | **Unchanged.** Request signatures |
 | `/up`, `/up/deep` | **Unchanged.** Open, as the deploy gates need |
+| `GET /health/export_diagnostics` | **Unchanged.** Open. The fleet-telemetry collector on the box polls it over loopback for GoodJob liveness, with no credential. On the public domain the edge's own gate sits in front of it |
 | `/.well-known/oauth-*`, `/oauth/register`, `/oauth/token`, `/oauth/revoke` (the MCP authorization server's machine endpoints) | **Never walled.** They answer MCP clients, not browsers |
 | `/oauth/authorize` (the MCP authorization server's consent page) | Sign-in required. A signed-out browser goes through Google and the code, then comes back to the full authorize URL, query string intact |
 | A route that does not exist | `404`, as before |
@@ -224,7 +225,7 @@ is neither walled nor under one of those fails the build, so a new API base has 
 list, with its credential, before it ships.
 
 The machine paths are also exempt by path (`WebSignInRequired::MACHINE_PATHS`: `/mcp`,
-`/mcp/external_app`, `/api`, `/webhooks`, `/up`, `/up/deep`, `/.well-known/oauth-`, and
+`/mcp/external_app`, `/api`, `/webhooks`, `/up`, `/up/deep`, `/health/export_diagnostics`, `/.well-known/oauth-`, and
 `/oauth/register|token|revoke`, each with or without a format suffix such as `.json`). That is a second line of defence: if a machine endpoint ever ended up
 on a controller that includes the wall, it would still not answer with a redirect to `/login`. The
 audit fails if a walled browser page sits under one of those paths.

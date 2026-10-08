@@ -11,7 +11,7 @@ require "mocha/minitest"
 #                    REQUEST: with the gate on and no cookie, every route answers
 #                    a redirect to /login or a 401, and never reaches its action.
 #   signed-out       SIGNED_OUT_REACHABLE, exactly: the login flow, the 404 page,
-#                    /up/deep.
+#                    /up/deep, /health/export_diagnostics.
 #   machine          Api::BaseController, Webhooks::BaseController and
 #                    OauthServer::BaseController (REST, /mcp, the webhooks, the
 #                    OAuth endpoints for /mcp). An API key, a signature, or PKCE,
@@ -31,6 +31,7 @@ class WebSignInRouteAuditTest < ActionDispatch::IntegrationTest
     web_second_factors#confirm_setup
     errors#not_found
     health#deep
+    health#export_diagnostics
   ].to_set.freeze
 
   # OauthServer::BaseController: the OAuth discovery, registration, token and
@@ -97,7 +98,7 @@ class WebSignInRouteAuditTest < ActionDispatch::IntegrationTest
 
   test "the path-based machine exemption never covers a browser page" do
     browser_pages = app_routes.select { |r| r[:controller_class]&.include?(WebSignInRequired) }
-      .reject { |r| r[:controller] == "health" && r[:action] == "deep" }
+      .reject { |r| r[:controller] == "health" && %w[deep export_diagnostics].include?(r[:action]) }
       .select { |r| r[:sample_path].match?(WebSignInRequired::MACHINE_PATHS) }
       .map { |r| "#{r[:verb]} #{r[:path]} -> #{r[:controller]}##{r[:action]}" }
 

@@ -8,6 +8,7 @@ require "mocha/minitest"
 # under /api/v1/health require an API key, and that is asserted here too, because
 # the two surfaces are easy to confuse.
 class HealthControllerWebAuthTest < ActionDispatch::IntegrationTest
+  include WebAuthTestHelpers
   # Every mutating POST on /health, with a params payload that reaches the action rather
   # than tripping a validation first. `every POST /health route is in this test's list`
   # fails if a route is added to the controller and not here.
@@ -96,6 +97,32 @@ class HealthControllerWebAuthTest < ActionDispatch::IntegrationTest
 
     get deep_health_check_path
     assert_includes [ 200, 503 ], response.status
+  end
+
+  # The fleet-telemetry collector on the box polls this with a bare
+  # `curl -fsS http://127.0.0.1/health/export_diagnostics`: no cookie, Accept */*.
+  # A 302 to /login there parses as HTML and goes stale on the GoodJob heartbeat.
+  test "with the web sign-in wall up, export_diagnostics still answers the collector's curl" do
+    enable_web_auth
+
+    get export_diagnostics_health_path, headers: { "Accept" => "*/*", "User-Agent" => "curl/8.5.0" }
+
+    assert_response :success
+    assert_equal "application/json", response.media_type
+    assert response.parsed_body.key?("health_report")
+  end
+
+  test "with the web sign-in wall up, the rest of /health stays walled" do
+    enable_web_auth
+
+    get health_dashboard_path
+    assert_redirected_to "/login"
+
+    get refresh_health_path, headers: { "Accept" => "application/json" }
+    assert_response :unauthorized
+
+    post cleanup_processes_health_path
+    assert_response :unauthorized
   end
 
   # Only the web dashboard is open. The REST twin keeps its own credential.
