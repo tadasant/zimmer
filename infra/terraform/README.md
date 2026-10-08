@@ -44,7 +44,7 @@ Only these are Terraform's:
 | Variable | Purpose |
 |----------|---------|
 | `TF_VAR_do_token` | DigitalOcean API token |
-| `TF_VAR_tailscale_auth_key` | Ephemeral, pre-authorized Tailscale auth key |
+| `TF_VAR_tailscale_auth_key` | Ephemeral, pre-authorized Tailscale auth key. The staging deploy mints a single-use one per run from the `TS_OAUTH_*` OAuth client; `TAILSCALE_AUTH_KEY` (90-day max) is only the fallback |
 | `TF_VAR_deploy_ssh_pubkey` | Public half of the Kamal deploy keypair, authorized for root by cloud-init |
 | `TF_VAR_ssh_host_ed25519_key` | Optional pinned SSH host **private** key (stable host identity across rebuilds); its public half is `TF_VAR_ssh_host_ed25519_key_pub` |
 
