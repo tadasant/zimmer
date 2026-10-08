@@ -139,7 +139,7 @@ flowchart LR
         CFD -->|"http://localhost:8080"| KP
         CADDY --> KP
         KP --> WEB
-        WRK -->|"https://zimmer.example.com/mcp<br/>pinned to host-gateway"| CADDY
+        WRK -->|"https://zimmer.example.com/mcp<br/>pinned to tailnet address"| CADDY
     end
     T["Tailnet peer"] -->|"tailnet IP"| CADDY
 ```
@@ -210,11 +210,17 @@ pins all three cases.
 Agent sessions call Zimmer at `https://<domain>/mcp`. Once public DNS points the domain at Cloudflare,
 that call would leave the box and meet Cloudflare Access, which a session cannot pass. Set
 `ZIMMER_PIN_DOMAIN_TO_HOST=<domain>` in the environment `kamal deploy` runs in, and `config/deploy.yml`
-adds `--add-host <domain>:host-gateway` to both the web and the worker containers. The name then
-resolves to the host, where Caddy listens on `:443` on every interface and serves the domain's own
-certificate, so TLS still validates. Unset, nothing is added. Staging sets it on every deploy and then
-proves it from inside the worker: the name resolves to the gateway, and `https://<domain>/up` answers
-200 through it.
+adds `--add-host <domain>:<deploy-host-address>` to both the web and the worker containers. The address
+comes from the one populated deploy-host variable (`PRODUCTION_HOST` or `STAGING_HOST`), and can be
+set explicitly with `ZIMMER_PIN_DOMAIN_TO_ADDRESS`. It must be an IP address. The name then resolves
+to the host's tailnet address, where Caddy listens on `:443` and serves the domain's own certificate,
+so TLS still validates. Unset, nothing is added. Staging sets it on every deploy and then proves it
+from inside the worker: the name resolves to the staging host, and `https://<domain>/up` answers 200
+through it.
+
+The target is deliberately not Docker's `host-gateway` token. Docker resolves that token to the
+default `docker0` gateway, while Kamal attaches app containers to a separate `kamal` bridge. On a
+host with no containers on `docker0`, that interface is down and the pinned connection is refused.
 
 ### Turning it on
 

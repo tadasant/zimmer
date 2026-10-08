@@ -36,7 +36,8 @@ module KamalConfigHelpers
     "PRODUCTION_HOST" => "198.51.100.10",
     "STAGING_HOST" => "198.51.100.11",
     "PRODUCTION_DB_HOST" => "managed-db.example.internal",
-    "ZIMMER_PIN_DOMAIN_TO_HOST" => nil
+    "ZIMMER_PIN_DOMAIN_TO_HOST" => nil,
+    "ZIMMER_PIN_DOMAIN_TO_ADDRESS" => nil
   }.freeze
 
   # `nested_docker` is passed through to ZIMMER_NESTED_DOCKER; nil leaves it unset, so
