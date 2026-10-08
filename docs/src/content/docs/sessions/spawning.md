@@ -454,6 +454,7 @@ every follow-up turn, so anything it appends rides along on every turn:
 | The goal suffix | `session.goal` is set — a goal ID resolves to its description, a free-text sentence passes through. A new unknown ID is refused where the goal is set; one a row already held before that check, or an ID since retired, still passes through verbatim |
 | `<session-notes>` | `session_notes` is non-blank |
 | `<unavailable-mcp-servers>` | a server this session was configured with failed to connect |
+| `<dropped-catalog-artifacts>` | `air prepare` dropped an MCP server, skill, hook or plugin this session named because the catalog no longer knows it (`custom_metadata["dropped_unknown_catalog_ids"]`), and the session does not name it again. See [Zimmer integration](/air/zimmer-integration/) |
 
 **Provenance is not appended.** The session hierarchy and the human-message record are served by the
 `get_session_provenance` MCP tool, on demand, rather than injected — and that tool's description is

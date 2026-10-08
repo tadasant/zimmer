@@ -466,12 +466,12 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_includes captured_cmd[1..], "zimmer-run-tests"
   end
 
-  test "prepare! does NOT strip skills when the catalog failed to load (SkillsConfig empty)" do
-    # If the catalog load failed, SkillsConfig.all rescues to [] and every id would
-    # look stale — stripping the whole list would be destructive. Guard: leave the
-    # requested set intact and let `air prepare` resolve the catalog itself.
+  test "prepare! does NOT strip anything when the catalog failed to load (every facade empty)" do
+    # If the catalog load failed, every facade's .all rescues to [] and every id
+    # would look stale — stripping the whole list would be destructive. Guard:
+    # leave the requested set intact and let `air prepare` resolve the catalog itself.
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
-    SkillsConfig.stubs(:all).returns([])
+    [ SkillsConfig, ServersConfig, HooksConfig, PluginsConfig ].each { |config| config.stubs(:all).returns([]) }
     ErrorReporter.expects(:report_message).never
 
     captured_cmd = nil
@@ -565,6 +565,49 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
     @session.reload
     assert_equal [ "playwright-custom" ], @session.mcp_servers
+    assert_equal({ "mcp_servers" => [ "gmail-tadas412-readonly" ] }, @session.dropped_unknown_catalog_ids)
+  end
+
+  test "prepare! drops a stale hook even when the catalog has no hooks left at all" do
+    # One empty type is not a failed load: a catalog whose only hook was removed
+    # leaves HooksConfig empty while every session naming it would still make
+    # `air prepare` exit 1.
+    @session.update_column(:catalog_hooks, [ "removed-hook" ])
+    HooksConfig.stubs(:all).returns([])
+    HooksConfig.stubs(:exists?).returns(false)
+
+    captured_cmd = nil
+    stub_air_subprocess(proc { |*args, **opts|
+      captured_cmd = args
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.new(session: @session, working_directory: @working_dir, file_system: @mock_fs).prepare!
+    end
+
+    refute_includes captured_cmd[1..], "removed-hook"
+    assert_equal [], @session.reload.catalog_hooks
+  end
+
+  test "prepare! marks an mcp_servers list emptied by drift as deliberate and forgets the dropped status" do
+    # Without the marker McpServerBackfill reads the empty column as a failed
+    # resolve and refills it with the root's defaults on the next turn.
+    @session.update_columns(
+      mcp_servers: [ "gmail-tadas412-readonly" ],
+      custom_metadata: { "mcp_servers_status" => { "gmail-tadas412-readonly" => { "status" => "connected" } } }
+    )
+
+    stub_air_subprocess(proc { |*args, **opts|
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.new(session: @session, working_directory: @working_dir, file_system: @mock_fs).prepare!
+    end
+
+    @session.reload
+    assert_equal [], @session.mcp_servers
+    assert @session.mcp_servers_explicitly_empty?,
+      "an emptied list must not be backfilled with servers the session never chose"
+    assert_not @session.custom_metadata.fetch("mcp_servers_status", {}).key?("gmail-tadas412-readonly"),
+      "a dropped server must not be re-reported as lost on every later regeneration"
     assert_equal({ "mcp_servers" => [ "gmail-tadas412-readonly" ] }, @session.dropped_unknown_catalog_ids)
   end
 

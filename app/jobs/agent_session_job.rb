@@ -6250,14 +6250,6 @@ class AgentSessionJob < ApplicationJob
     prompt
   end
 
-  # Labels for the columns Session#dropped_unknown_catalog_ids is keyed by.
-  DROPPED_CATALOG_ID_LABELS = {
-    "mcp_servers" => "MCP server",
-    "catalog_skills" => "skill",
-    "catalog_hooks" => "hook",
-    "catalog_plugins" => "plugin"
-  }.freeze
-
   # The standing notice that this session was configured with catalog artifacts
   # the catalog has since renamed or removed, and that AirPrepareService dropped
   # them rather than fail the session (zimmer#1257). It rides on every prompt
@@ -6265,15 +6257,18 @@ class AgentSessionJob < ApplicationJob
   # expected to go looking for it, and the alternative is a task that quietly
   # assumes a tool it no longer has.
   #
+  # An id the session names again — re-added by a user, or restored to the
+  # catalog and re-selected — is no longer missing, so it is left out.
+  #
   # @param session [Session]
-  # @return [String, nil] nil when nothing was dropped
+  # @return [String, nil] nil when nothing is still missing
   def build_dropped_catalog_ids_block(session)
     dropped = session.dropped_unknown_catalog_ids
-    return nil if dropped.empty?
-
-    lines = dropped.map do |attribute, ids|
-      "- #{DROPPED_CATALOG_ID_LABELS.fetch(attribute, attribute)}(s): #{ids.join(', ')}"
+    lines = session.class.catalog_artifact_references.filter_map do |reference|
+      missing = Array(dropped[reference.attribute.to_s]) - Array(session.public_send(reference.attribute))
+      "- #{reference.alert_noun}(s): #{missing.join(', ')}" if missing.any?
     end
+    return nil if lines.empty?
 
     <<~BLOCK.strip
       <dropped-catalog-artifacts>

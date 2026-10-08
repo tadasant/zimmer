@@ -1838,6 +1838,18 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_includes prompt, "- MCP server(s): gmail-tadas412-readonly"
   end
 
+  test "build_prompt_with_goal leaves out a dropped id the session names again" do
+    @session.update_columns(
+      mcp_servers: [ "context7" ],
+      custom_metadata: { Session::DROPPED_UNKNOWN_CATALOG_IDS_KEY => { "mcp_servers" => [ "context7", "gone-server" ] } }
+    )
+
+    prompt = AgentSessionJob.new.send(:build_prompt_with_goal, "Do the thing", @session)
+
+    assert_includes prompt, "- MCP server(s): gone-server\n"
+    refute_includes prompt, "context7"
+  end
+
   test "build_prompt_with_goal leaves the prompt alone when nothing was dropped" do
     @session.update_column(:custom_metadata, {})
 

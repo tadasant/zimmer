@@ -714,7 +714,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
 
     result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
 
-    assert result.success?, "catalog drift must not fail the unarchive: #{result.error}"
+    assert result.success?, result.error
     assert_includes air_cmd, "context7"
     refute_includes air_cmd, "gmail-tadas412-readonly",
       "an id the catalog no longer knows must never reach `air prepare`"
