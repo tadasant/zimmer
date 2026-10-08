@@ -79,9 +79,9 @@ class ElicitationEndpoint
   PROBE_REQUEST_ID = "zimmer-reachability-probe"
   PROBE_TIMEOUT_SECONDS = 5
   # Seconds to wait before each retry. One slow response — a read timeout while
-  # Postgres is saturated — is not a broken gate, and paged #alerts twice (#1249)
-  # on a tick whose successor succeeded. Three attempts with these pauses between
-  # them is at most 3 x (5s open + 5s read) + 7s = 37s, well inside the 5-minute cron.
+  # Postgres is saturated — is not a broken gate (#1249). Three attempts with these
+  # pauses between them stay under a minute — 3 x (5s connect + 5s TLS + 5s read)
+  # + 7s = 52s — well inside the 5-minute cron.
   PROBE_RETRY_BACKOFF_SECONDS = [ 2, 5 ].freeze
 
   Result = Data.define(:reachable, :detail, :url)
