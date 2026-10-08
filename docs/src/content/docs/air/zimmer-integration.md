@@ -365,6 +365,11 @@ the same non-fatal degradation an unknown *root* already gets. The pruned list i
 and mid-run clone recreation re-runs `air prepare`, so an in-memory-only scrub would re-discover the
 same stale id on every turn.
 
+A **fork** (including the status-summary fork) gets the same treatment one step earlier. It is a new
+row, so `Session` validation judges every id it copies, and a stale one would fail `create!`.
+`ForkSessionService` copies only each column's `resolvable_<attr>` subset, carries the source's
+`dropped_unknown_catalog_ids` record over, and adds to it anything it dropped itself.
+
 This is the drift path only. A fresh `start_session` naming an unknown id is a caller error and is
 still rejected at validation time, before any session exists to prepare.
 

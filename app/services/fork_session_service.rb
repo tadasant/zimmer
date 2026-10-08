@@ -712,16 +712,24 @@ class ForkSessionService
           new_metadata[Session::EXPLICIT_EMPTY_MCP_SERVERS_KEY] = true
         end
 
+        selection, dropped = copyable_catalog_selection
+        # Drift emptied the list rather than the source declining servers, but
+        # the fork must not be backfilled with defaults the source never had.
+        if source_session.mcp_servers.present? && selection[:mcp_servers].empty?
+          new_metadata[Session::EXPLICIT_EMPTY_MCP_SERVERS_KEY] = true
+        end
+
         # Create the forked session
         forked_session = Session.create!(
           agent_runtime: source_session.agent_runtime,
           git_root: source_session.git_root,
           branch: source_session.branch,
           subdirectory: source_session.subdirectory,
-          mcp_servers: source_session.mcp_servers,
-          catalog_skills: source_session.catalog_skills,
-          catalog_hooks: source_session.catalog_hooks,
-          catalog_plugins: source_session.catalog_plugins,
+          mcp_servers: selection[:mcp_servers],
+          catalog_skills: selection[:catalog_skills],
+          catalog_hooks: selection[:catalog_hooks],
+          catalog_plugins: selection[:catalog_plugins],
+          custom_metadata: dropped.empty? ? {} : { Session::DROPPED_UNKNOWN_CATALOG_IDS_KEY => dropped },
           config: source_session.config,
           goal: source_session.goal,
           goal_inherited: true,
@@ -753,6 +761,37 @@ class ForkSessionService
   rescue => e
     @logger.error("Failed to create forked session record", error: e.message)
     nil
+  end
+
+  # The source's artifact selection, minus every id the catalog no longer knows
+  # (zimmer#1257), plus the record of what was dropped — the source's own record
+  # carried over, and anything newly dropped here added to it.
+  #
+  # The fork is a new row, so Session's catalog validation judges every id it
+  # copies, and a source created before the catalog renamed or removed one of
+  # them would fail `create!` outright. That is drift, not a caller error, so it
+  # gets the same answer AirPrepareService#reconciled_catalog_selection gives the
+  # source itself: drop it at WARN and tell the agent. The filter is each
+  # column's `resolvable_<attr>` reader from CatalogArtifactReferences, which
+  # passes the list through untouched when the catalog failed to load.
+  #
+  # @return [Array(Hash{Symbol => Array<String>}, Hash{String => Array<String>})]
+  def copyable_catalog_selection
+    dropped = source_session.dropped_unknown_catalog_ids
+    selection = source_session.class.catalog_artifact_references.to_h do |reference|
+      requested = Array(source_session.public_send(reference.attribute)).reject(&:blank?)
+      resolvable = source_session.public_send(reference.resolvable_method)
+      unknown = requested - resolvable
+      if unknown.any?
+        @logger.warn(
+          "Not copying #{reference.alert_noun}(s) the catalog no longer knows into the fork",
+          attribute: reference.attribute.to_s, dropped: unknown
+        )
+        dropped = dropped.merge(reference.attribute.to_s => (Array(dropped[reference.attribute.to_s]) | unknown))
+      end
+      [ reference.attribute, resolvable ]
+    end
+    [ selection, dropped ]
   end
 
   # A fork's title is the source's under a prefix — and it has to survive
