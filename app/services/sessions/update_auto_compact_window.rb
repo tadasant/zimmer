@@ -11,8 +11,8 @@ module Sessions
   # keeps the window it was started with.
   #
   # The rules:
-  # - The value must be a non-negative integer, as an Integer or a string of
-  #   digits. Blanks, decimals and words are refused.
+  # - The value must be a positive integer, as an Integer or a string of digits.
+  #   Blanks, decimals, negatives and words are refused.
   # - It must be between 1 and Session::MAX_AUTO_COMPACT_WINDOW, the bounds the
   #   Session validates at creation.
   # - The window the session already has is a no-op: no write, no log.
