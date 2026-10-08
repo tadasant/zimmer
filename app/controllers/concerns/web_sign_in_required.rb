@@ -33,6 +33,7 @@ module WebSignInRequired
       | /api(?:/|\z)
       | /webhooks(?:/|\z)
       | /up(?:/deep)?(?:\.\w+)?/?\z
+      | /health/export_diagnostics(?:\.\w+)?/?\z
       | /\.well-known/oauth-
       | /oauth/(?:register|token|revoke)(?:\.\w+)?/?\z
     )
@@ -53,8 +54,8 @@ module WebSignInRequired
   end
 
   class_methods do
-    # For the few actions a signed-out browser must reach: the login flow itself,
-    # the 404 page, and /up/deep.
+    # For the few actions a signed-out client must reach: the login flow itself,
+    # the 404 page, /up/deep, and /health/export_diagnostics.
     def allow_signed_out_access(**options)
       skip_before_action :require_web_sign_in, **options
     end

@@ -19,7 +19,12 @@ class HealthController < ApplicationController
 
   # The deploy pipelines ask /up/deep from outside any browser session, the same
   # way they ask /up. It names which backing service failed and nothing else.
-  allow_signed_out_access only: :deep
+  #
+  # The fleet-telemetry collector on the box curls /health/export_diagnostics
+  # over loopback for GoodJob liveness, with no cookie and no credential. It
+  # answered anonymously before the wall existed and still does; on the public
+  # domain the edge's own gate (Cloudflare Access) sits in front of it.
+  allow_signed_out_access only: %i[deep export_diagnostics]
 
   def dashboard
     @health_service = HealthMonitorService.new

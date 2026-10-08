@@ -134,12 +134,13 @@ class WebSignInBehindProxyTest < ActionDispatch::IntegrationTest
   test "the MCP OAuth server's machine paths, /mcp and the API are exempt by path" do
     exempt = %w[
       /mcp /mcp.json /mcp/external_app /api /api/v1/sessions /webhooks /webhooks/slack /up /up.json /up/deep
+      /health/export_diagnostics /health/export_diagnostics.json
       /oauth/token.json
       /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/mcp
       /.well-known/oauth-authorization-server /.well-known/oauth-authorization-server/mcp
       /oauth/register /oauth/token /oauth/revoke
     ]
-    walled = %w[/ /settings /oauth/authorize /oauth/authorizeX /mcpx /mcp_oauth/callback /apix /webhooksx /oauth/register/extra /login]
+    walled = %w[/ /settings /health /health/refresh /health/export_diagnosticsX /oauth/authorize /oauth/authorizeX /mcpx /mcp_oauth/callback /apix /webhooksx /oauth/register/extra /login]
 
     exempt.each { |path| assert_match WebSignInRequired::MACHINE_PATHS, path }
     walled.each { |path| refute_match WebSignInRequired::MACHINE_PATHS, path }
