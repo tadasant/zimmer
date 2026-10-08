@@ -60,9 +60,10 @@ class SlackOutageMarker
   # remove, and nothing a retry would change.
   GONE_CODES = %w[message_not_found channel_not_found not_in_channel is_archived thread_locked].freeze
 
-  # Slack's own "try again" answers, which arrive as an HTTP 200 body and so as a plain ApiError
-  # rather than a TransientError.
-  RETRYABLE_CODES = %w[internal_error fatal_error service_unavailable request_timeout ratelimited].freeze
+  # Slack's own "try again" answers. SlackService already raises the server-side ones as a
+  # TransientError once its in-process retries are spent; `ratelimited` in an HTTP 200 body is
+  # still a plain ApiError, which is why this list exists.
+  RETRYABLE_CODES = (SlackService::SERVER_SIDE_ERROR_CODES + %w[ratelimited]).freeze
 
   CHANNEL_KEY = "slack_channel_id"
   TS_KEY = "slack_message_ts"

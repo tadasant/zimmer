@@ -150,7 +150,9 @@ class SlackService
     def post_message(channel:, text:, blocks: nil)
       raise ArgumentError, "channel is required to post a message" if channel.blank?
 
-      with_error_handling do
+      # Not retried in process on a server-side error: Slack documents fatal_error and
+      # internal_error as possibly partly applied, and a retried post can land twice.
+      with_error_handling(retry_server_errors: false) do
         params = { channel: channel, text: text }
         params[:blocks] = blocks if blocks.present?
 
@@ -402,7 +404,9 @@ class SlackService
       SecretsLoader.get("SLACK_BOT_TOKEN") || ENV["SLACK_BOT_TOKEN"]
     end
 
-    def with_error_handling
+    # retry_server_errors: false hands a server-side error straight back as a
+    # TransientError, for a call that is not safe to repeat.
+    def with_error_handling(retry_server_errors: true)
       retries = 0
 
       begin
@@ -432,7 +436,7 @@ class SlackService
         # blip, and get the same budget and the same TransientError hand-back.
         if SERVER_SIDE_ERROR_CODES.include?(code)
           retries += 1
-          if retries <= MAX_RETRIES
+          if retry_server_errors && retries <= MAX_RETRIES
             delay = backoff_delay(retries)
             Rails.logger.warn("[SlackService] Slack server error #{code} (attempt #{retries}/#{MAX_RETRIES}). Retrying in #{delay}s...")
             sleep(delay)
