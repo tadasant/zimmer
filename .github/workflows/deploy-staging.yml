@@ -634,7 +634,7 @@ jobs:
           echo "::error::Health check did not pass in time"
           exit 1
 
-      # ZIMMER_PIN_DOMAIN_TO_HOST (Kamal deploy step) writes `<domain> -> host-gateway` into
+      # ZIMMER_PIN_DOMAIN_TO_HOST (Kamal deploy step) writes `<domain> -> STAGING_HOST` into
       # the containers' /etc/hosts. Prove it from where agent sessions actually run -- the
       # worker -- by resolving the name and fetching /up through it. The resolution and the
       # 200 are hard requirements. Certificate validity is only a warning here: a droplet
@@ -649,12 +649,10 @@ jobs:
           w=$(ssh root@"${STAGING_HOST}" \
             'docker ps --filter "name=zimmer-worker" --format "{{.Names}}" | head -1')
           [ -n "$w" ] || { echo "::error::no zimmer-worker container to check the pin from"; exit 1; }
-          gw=$(ssh root@"${STAGING_HOST}" \
-            "docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}'")
           got=$(ssh root@"${STAGING_HOST}" "docker exec $w getent hosts ${DOMAIN}" | awk '{print $1}' | head -1)
-          echo "worker=$w resolves ${DOMAIN} -> ${got:-nothing} (host-gateway is ${gw})"
-          if [ "$got" != "$gw" ]; then
-            echo "::error::${DOMAIN} does not resolve to the host gateway inside the worker; the pin did not apply"
+          echo "worker=$w resolves ${DOMAIN} -> ${got:-nothing} (staging host is ${STAGING_HOST})"
+          if [ "$got" != "$STAGING_HOST" ]; then
+            echo "::error::${DOMAIN} does not resolve to the staging host inside the worker; the pin did not apply"
             exit 1
           fi
           code=$(ssh root@"${STAGING_HOST}" \

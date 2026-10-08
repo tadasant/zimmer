@@ -71,17 +71,32 @@ builder:
 # new entry below reach BOTH destinations instead of only the one it was added to.
 #
 # ZIMMER_PIN_DOMAIN_TO_HOST (optional, off when unset) pins the app's own public
-# hostname to THIS host inside the web and worker containers: Docker writes
-# `<domain> -> host-gateway` into each container's /etc/hosts. Agent sessions run in
+# hostname to THIS host inside the web and worker containers. Agent sessions run in
 # the worker and call Zimmer at https://<domain>/mcp, and the deployment's public DNS
 # may not point at this box -- behind the optional Cloudflare edge it points at
 # Cloudflare, so that call would leave the box and meet Cloudflare Access. Pinned, it
-# goes to the host Caddy on :443 (bound on every interface, so host-gateway reaches
-# it), which serves the domain's own certificate, so TLS still validates. See
+# goes to the host Caddy on :443 through the deployment's tailnet address, which serves
+# the domain's own certificate, so TLS still validates. Do not use Docker's
+# `host-gateway` token here: it expands to docker0's gateway even though Kamal attaches
+# app containers to its own bridge, and docker0 may be down. See
 # docs/operate/deploying.md#optional-cloudflare-edge.
 <% pinned_domain = ENV.fetch("ZIMMER_PIN_DOMAIN_TO_HOST", "").strip %>
 <% unless pinned_domain.empty? || pinned_domain.match?(/\A[a-z0-9]([a-z0-9.-]*[a-z0-9])?\z/i) %>
 <% raise ArgumentError, "ZIMMER_PIN_DOMAIN_TO_HOST must be a bare hostname, got #{pinned_domain.inspect}" %>
+<% end %>
+<% pinned_address = ENV.fetch("ZIMMER_PIN_DOMAIN_TO_ADDRESS", "").strip %>
+<% unless pinned_domain.empty? %>
+<% require "ipaddr" %>
+<% deploy_addresses = %w[PRODUCTION_HOST STAGING_HOST].filter_map { |name| value = ENV[name].to_s.strip; value unless value.empty? }.uniq %>
+<% pinned_address = deploy_addresses.one? ? deploy_addresses.first : pinned_address if pinned_address.empty? %>
+<% if pinned_address.empty? %>
+<% raise ArgumentError, "ZIMMER_PIN_DOMAIN_TO_HOST requires one deploy host address or ZIMMER_PIN_DOMAIN_TO_ADDRESS" %>
+<% end %>
+<% begin %>
+<% IPAddr.new(pinned_address) %>
+<% rescue IPAddr::InvalidAddressError %>
+<% raise ArgumentError, "ZIMMER_PIN_DOMAIN_TO_ADDRESS must be an IP address, got #{pinned_address.inspect}" %>
+<% end %>
 <% end %>
 servers:
   web:
@@ -90,7 +105,7 @@ servers:
       # claude) are reaped instead of piling up as zombies.
       init: true
 <% unless pinned_domain.empty? %>
-      add-host: "<%= pinned_domain %>:host-gateway"
+      add-host: "<%= pinned_domain %>:<%= pinned_address %>"
 <% end %>
       # Durable named volumes shared by web + worker so both see the same clones,
       # runtime credentials, and gh auth. They survive Kamal container swaps (the
@@ -124,7 +139,7 @@ servers:
       init: true
       volume: *durable_volumes
 <% unless pinned_domain.empty? %>
-      add-host: "<%= pinned_domain %>:host-gateway"
+      add-host: "<%= pinned_domain %>:<%= pinned_address %>"
 <% end %>
 
 env:
