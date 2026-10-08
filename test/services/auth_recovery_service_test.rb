@@ -1,5 +1,6 @@
 require "test_helper"
 require "automated_prompts"
+require "mocha/minitest"
 
 class AuthRecoveryServiceTest < ActiveSupport::TestCase
   # Minimal fake account — the service only reads #email for logging.
@@ -11,15 +12,17 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
   # stay about what AuthRecoveryService owns — the attempt budget, the log line,
   # the re-spawn, and the mapping from plan to return value.
   class FakeCoordinator
-    attr_reader :calls
+    attr_reader :calls, :access_disabled_calls
 
     def initialize(plan)
       @plan = plan
       @calls = []
+      @access_disabled_calls = []
     end
 
-    def resolve!(working_directory)
+    def resolve!(working_directory, access_disabled: false)
       @calls << working_directory
+      @access_disabled_calls << access_disabled
       @plan
     end
   end
@@ -239,6 +242,38 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
       "The exact entry that failed production sessions 19240, 20141, 22951, and 22955 must route to auth recovery"
   end
 
+  ORG_DISABLED_TEXT = "Your organization has disabled Claude subscription access for Claude Code · " \
+    "Use an Anthropic API key instead, or ask your admin to enable access"
+
+  # The prose half of the same signature, for an entry the runtime leaves untyped —
+  # the shape "Not logged in" is recorded in. Both the bare text and the
+  # code-prefixed line production logged must classify.
+  test "detects the org-disabled prose on an entry with no error type" do
+    [ ORG_DISABLED_TEXT, "oauth_org_not_allowed: #{ORG_DISABLED_TEXT}" ].each do |text|
+      setup_transcript_with_auth_error(text)
+
+      assert create_service.auth_error_detected?("/tmp/test-clone"), "Should detect: #{text}"
+    end
+  end
+
+  test "access_disabled? recognises the org-level refusal by type and by untyped prose" do
+    assert AuthRecoveryService.access_disabled?("oauth_org_not_allowed", ORG_DISABLED_TEXT)
+    assert AuthRecoveryService.access_disabled?("oauth_org_not_allowed", "unrecognisable")
+    assert AuthRecoveryService.access_disabled?("", ORG_DISABLED_TEXT)
+    assert AuthRecoveryService.access_disabled?(nil, "oauth_org_not_allowed: #{ORG_DISABLED_TEXT}")
+  end
+
+  # Only the org refusal benches an account. An expired token is the credential's
+  # fault and a refresh or re-login fixes it, and a typed entry is judged by its
+  # type rather than by what its prose happens to mention.
+  test "access_disabled? leaves credential failures and other typed entries alone" do
+    assert_not AuthRecoveryService.access_disabled?("authentication_failed",
+      "Failed to authenticate: OAuth session expired and could not be refreshed")
+    assert_not AuthRecoveryService.access_disabled?("", "Not logged in · Please run /login")
+    assert_not AuthRecoveryService.access_disabled?("oauth_error", ORG_DISABLED_TEXT)
+    assert_not AuthRecoveryService.access_disabled?("api_error", ORG_DISABLED_TEXT)
+  end
+
   # ...and so is the prose, for the entries the runtime records with an empty type.
   test "detects 'Failed to authenticate' prose on an entry with no error type" do
     setup_transcript_with_auth_error("Failed to authenticate: OAuth session expired and could not be refreshed")
@@ -311,6 +346,92 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
     assert_not_nil @session.metadata["last_auth_recovery_at"]
     assert @session.metadata["auth_error_last_checked_line"].to_i > 0,
       "Should advance the auth line marker so the same entry isn't re-detected"
+  end
+
+  def setup_transcript_with_org_disabled_error
+    setup_transcript_directory
+    @mock_file_system.write(@transcript_file, <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Continue"}]}}
+      #{api_error_json(ORG_DISABLED_TEXT, error_type: "oauth_org_not_allowed")}
+    JSONL
+  end
+
+  # The production failure end to end, from the service's side: the exact entry
+  # sessions 19240, 20141, 22951 and 22955 died on reaches the coordinator flagged
+  # as an org-level refusal, and the session resumes on the rotated account.
+  test "an oauth_org_not_allowed turn asks the coordinator to bench the account, then resumes" do
+    setup_transcript_with_org_disabled_error
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 4242, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    coordinator = FakeCoordinator.new(plan(:rotated,
+      detail: "benched bob@example.com (its organization disabled Claude subscription access; " \
+        "a human must re-enable it) and rotated from bob@example.com to rotated@example.com"))
+    service = create_service(coordinator: coordinator)
+    service.define_singleton_method(:sleep) { |_| }
+
+    assert_equal :success, service.attempt_recovery("/tmp/test-clone")
+    assert_equal [ true ], coordinator.access_disabled_calls
+    assert_equal 1, @mock_cli_adapter.resumed_sessions.length
+    assert_includes @session.logs.pluck(:content).join("\n"),
+      "Account's organization disabled Claude subscription access — the runtime rejected the active account, " \
+        "so Zimmer benched bob@example.com"
+  end
+
+  test "a credential auth failure does not ask the coordinator to bench anything" do
+    setup_transcript_with_auth_error
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 4242, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    coordinator = FakeCoordinator.new(plan(:rotated))
+    service = create_service(coordinator: coordinator)
+    service.define_singleton_method(:sleep) { |_| }
+
+    service.attempt_recovery("/tmp/test-clone")
+
+    assert_equal [ false ], coordinator.access_disabled_calls
+  end
+
+  # A re-spawn that dies on startup re-enters #execute_recovery without a new
+  # transcript entry. Carrying the flag into it would bench the account the first
+  # attempt just rotated onto.
+  test "a retried re-spawn after an org refusal does not bench a second account" do
+    setup_transcript_with_org_disabled_error
+    pids = [ 4242, 4343 ]
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: pids.shift, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(pid) { pid == 4343 }
+
+    coordinator = FakeCoordinator.new(plan(:rotated))
+    service = create_service(coordinator: coordinator)
+    service.define_singleton_method(:sleep) { |_| }
+
+    service.attempt_recovery("/tmp/test-clone")
+
+    assert_equal [ true, false ], coordinator.access_disabled_calls
+  end
+
+  # ERROR is reserved for the case a human must act on with nothing left to fall
+  # back to: the refused account is benched and no healthy account remains.
+  test "logs ERROR only when an org refusal leaves no healthy account" do
+    setup_transcript_with_org_disabled_error
+    service = create_service(coordinator: FakeCoordinator.new(plan(:unusable, email: nil, detail: "none")))
+    service.define_singleton_method(:sleep) { |_| }
+    logger = service.instance_variable_get(:@logger)
+    logger.expects(:error).with(regexp_matches(/no valid account available after benching/))
+    logger.expects(:warn).never
+
+    assert_equal :unrecoverable, service.attempt_recovery("/tmp/test-clone")
+  end
+
+  test "a credential auth failure with no healthy account parks at WARN, not ERROR" do
+    setup_transcript_with_auth_error
+    service = create_service(coordinator: FakeCoordinator.new(plan(:unusable, email: nil, detail: "none")))
+    service.define_singleton_method(:sleep) { |_| }
+    logger = service.instance_variable_get(:@logger)
+    logger.expects(:error).never
+    logger.expects(:warn).with("Auth recovery unrecoverable: no valid account available")
+
+    assert_equal :unrecoverable, service.attempt_recovery("/tmp/test-clone")
   end
 
   test "resumes with the SYSTEM_RECOVERY prompt and the orchestrator system prompt" do

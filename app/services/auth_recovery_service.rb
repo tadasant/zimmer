@@ -144,12 +144,39 @@ class AuthRecoveryService
   # ApiErrorRetryService#terminal_api_error is the backstop for the next time.
   AUTH_RECOVERABLE_ERROR_PATTERN = Regexp.union(
     /not logged in/i,
+    /oauth_org_not_allowed/i,
+    /disabled claude subscription access/i,
     /please run\s*\/login/i,
     /failed to authenticate/i,
     /authentication[ _]failed/i,
     /(?:oauth|refresh|access|session)[ _](?:session|token)\b.{0,40}\b(?:expired|invalid|revoked)/i,
     /invalid_grant/i
   ).freeze
+
+  # The subset of auth failures that are about the ACCOUNT, not its credential:
+  # the runtime accepted the token and refused the organization behind it.
+  # Refreshing or re-seeding cannot fix that, and neither can waiting, so the
+  # account is benched (ClaudeAccount#disable_access!) before the session
+  # rotates — otherwise rotation hands it straight to the next session.
+  ACCESS_DISABLED_ERROR_TYPES = %w[oauth_org_not_allowed].freeze
+  ACCESS_DISABLED_ERROR_PATTERN = Regexp.union(
+    /oauth_org_not_allowed/i,
+    /disabled claude subscription access/i
+  ).freeze
+
+  # Whether an auth failure (see .auth_error?) means the account itself has been
+  # refused. Same precedence as .auth_error?: the error type decides when there
+  # is one, and the prose only speaks for an untyped entry.
+  #
+  # @param error_type [String, nil] the entry's `error` field
+  # @param message_text [String, nil] the entry's rendered text content
+  def self.access_disabled?(error_type, message_text)
+    type = error_type.to_s.strip.downcase
+    return true if ACCESS_DISABLED_ERROR_TYPES.include?(type)
+    return false if type.present?
+
+    message_text.to_s.match?(ACCESS_DISABLED_ERROR_PATTERN)
+  end
 
   # Whether a transcript API-error entry is an authentication failure this service
   # can act on.
@@ -268,8 +295,9 @@ class AuthRecoveryService
     message_text = extract_message_text(entry)
 
     if self.class.auth_error?(error_type, message_text)
+      @access_disabled = self.class.access_disabled?(error_type, message_text)
       @logger.info("Recoverable auth error detected as terminal conversational entry",
-        line_number: line_number, error_type: error_type.presence)
+        line_number: line_number, error_type: error_type.presence, access_disabled: @access_disabled)
       return true
     end
 
@@ -312,27 +340,32 @@ class AuthRecoveryService
       return :aborted if check_session_status(resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY) == :aborted
     end
 
-    plan = coordinator.resolve!(working_directory)
+    # Consumed by the first resolve. A re-entry from a failed re-spawn
+    # (#next_recovery_attempt) is not a new refusal, and carrying the flag into
+    # it would bench the account this recovery just rotated onto.
+    access_disabled = @access_disabled
+    @access_disabled = false
+    plan = coordinator.resolve!(working_directory, access_disabled: access_disabled)
 
     case plan.outcome
     when :quota_exhausted
       add_log(
-        "Not logged in, and every account in the pool is over its quota — nothing to rotate into. " \
+        "#{failure_headline(access_disabled)}, and every account in the pool is over its quota — nothing to rotate into. " \
           "Parking until the quota window resets rather than retrying into the same wall.",
         level: "warning"
       )
       log_buffer.flush
-      @logger.warn("Auth recovery: pool drained by quota")
+      log_park(access_disabled, "Auth recovery: pool drained by quota")
       advance_checked_line(working_directory)
       return :pool_quota_exhausted
     when :unusable
       add_log(
-        "Not logged in and no valid account available to recover — failing cleanly " \
+        "#{failure_headline(access_disabled)} and no valid account available to recover — failing cleanly " \
           "(re-authenticate an account to restore service). No retry attempted.",
         level: "warning"
       )
       log_buffer.flush
-      @logger.warn("Auth recovery unrecoverable: no valid account available")
+      log_park(access_disabled, "Auth recovery unrecoverable: no valid account available")
       # Advance the marker so a later manual resume doesn't immediately
       # re-detect this same entry and loop.
       advance_checked_line(working_directory)
@@ -342,7 +375,7 @@ class AuthRecoveryService
     charge_budget = plan.consumes_budget? || free_adoptions_spent?
     retry_attempt = charge_budget ? current_count + 1 : current_count
 
-    add_log(recovery_message(plan, retry_attempt, charge_budget), level: "warning")
+    add_log(recovery_message(plan, retry_attempt, charge_budget, access_disabled), level: "warning")
     log_buffer.flush
     @logger.info("Auth recovery: identity resolved, retrying",
       outcome: plan.outcome, retry_attempt: retry_attempt, account: plan.account&.email)
@@ -360,21 +393,39 @@ class AuthRecoveryService
   # The user-facing line. Naming which of the three branches fired is the whole
   # point of the fix — "refreshed on-disk identity to X" read identically whether
   # X was a new account or the same dead one.
-  def recovery_message(plan, retry_attempt, charge_budget)
+  def recovery_message(plan, retry_attempt, charge_budget, access_disabled = false)
     budget = charge_budget ? "retrying #{retry_attempt}/#{MAX_RECOVERY_ATTEMPTS}" : "retrying (no attempt charged)"
+    headline = failure_headline(access_disabled)
 
     case plan.outcome
     when :adopted
-      "Not logged in — the account pool already rotated to #{plan.account.email} while this session was " \
+      "#{headline} — the account pool already rotated to #{plan.account.email} while this session was " \
         "running. Adopted it and #{budget}."
     when :reseeded
-      "Not logged in — #{plan.detail}. #{budget.capitalize}."
+      "#{headline} — #{plan.detail}. #{budget.capitalize}."
     when :rotated
-      "Not logged in — the runtime rejected the active account, so Zimmer #{plan.detail} rather than " \
+      "#{headline} — the runtime rejected the active account, so Zimmer #{plan.detail} rather than " \
         "re-injecting credentials that just failed. #{budget.capitalize}."
     else
-      "Not logged in — another session's account rotation is still in flight. Waiting for it rather than " \
+      "#{headline} — another session's account rotation is still in flight. Waiting for it rather than " \
         "starting a second one, #{budget}."
+    end
+  end
+
+  def failure_headline(access_disabled)
+    access_disabled ? "Account's organization disabled Claude subscription access" : "Not logged in"
+  end
+
+  # A park after benching an account is the one auth park logged at ERROR: the
+  # benched account stays out of the pool until a human re-enables it, and
+  # nothing healthy was left to rotate onto. Benching an account and rotating off
+  # it is the handled path and logs nothing above WARN, as does every park that
+  # benched nothing.
+  def log_park(access_disabled, message)
+    if access_disabled
+      @logger.error("#{message} after benching an account its organization disabled")
+    else
+      @logger.warn(message)
     end
   end
 

@@ -901,7 +901,8 @@ It recognizes the failure two ways, and the order matters:
    the transcript entry's `error` field. This is the machine-readable half of the signature and the
    half that does not move when the prose does.
 2. **The prose.** `AUTH_RECOVERABLE_ERROR_PATTERN` — `not logged in`, `please run /login`, `failed to
-   authenticate`, `oauth/refresh/access token … expired|invalid|revoked`, `invalid_grant` — for the
+   authenticate`, `oauth/refresh/access token … expired|invalid|revoked`, `invalid_grant`,
+   `oauth_org_not_allowed`, `disabled Claude subscription access` — for the
    entries the runtime records with an *empty* error type, which is how
    `"Not logged in · Please run /login"` is recorded.
 
@@ -930,6 +931,37 @@ only trace was in the transcript. The account pool had already done its job: the
 the identity that session was holding had been rejected with `invalid_grant` seven minutes earlier
 and the account marked `needs_reauth`. What failed was recognizing the *runtime's* report of it.
 :::
+
+### An organization refusal benches the account
+
+Most auth failures are about the credential: the token expired, was revoked, or the child is holding
+an old copy. `oauth_org_not_allowed` is about the account. Claude Code accepted the token and refused
+the organization behind it:
+
+```
+Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access
+```
+
+A refresh does not fix that, re-seeding does not, and waiting does not. The token still passes the
+Messages API probe, so the ordinary re-seed branch would hand the same account straight back. And an
+auth rotation leaves the outgoing account `active`, so the next session would get it and fail the same
+way.
+
+So `AuthRecoveryService.access_disabled?` picks this subset out. It reads the `oauth_org_not_allowed`
+type, or the prose on an untyped entry. Before anything else is decided, the coordinator benches the
+identity the session was spawned with: `ClaudeAccount#disable_access!` writes `needs_reauth` and
+stamps `access_disabled_at`. Then it skips the probe and the re-seed and rotates, or adopts if the pool
+already moved. The session resumes on the healthy account.
+
+`needs_reauth` takes the account out of `.available` and `.serviceable_for`, and alerts a human through
+the `account_needs_reauth` event. `access_disabled_at` keeps it out. The needs_reauth sweep restores any
+account whose refresh still works, and an org-disabled account's refresh still works, so
+`needs_reauth_recovery_candidates` and `recover_needs_reauth` both skip a benched account. The bench is
+lifted by a save that writes `active` through callbacks: a human login on `/inference`, or an operator
+changing the status in `/supervisor`. The sweep's `update_columns` restore cannot lift it.
+
+Benching and rotating off the account logs at WARN. The park logs at ERROR only when nothing healthy is
+left to rotate onto.
 
 ### A turn that dies on an API error can never look finished
 

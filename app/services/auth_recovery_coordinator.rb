@@ -173,8 +173,14 @@ class AuthRecoveryCoordinator
   # Resolve this session's dead on-disk identity against the pool.
   #
   # @param working_directory [String, nil]
+  # @param access_disabled [Boolean] the runtime refused the account itself, not
+  #   its credential (AuthRecoveryService.access_disabled?). The identity the
+  #   process was spawned with is benched before anything else is decided, and
+  #   the probe/re-seed branches are skipped: a token Anthropic still honours is
+  #   exactly what an org-disabled account has, so the probe would re-seed it.
   # @return [Plan]
-  def resolve!(working_directory)
+  def resolve!(working_directory, access_disabled: false)
+    @access_disabled = access_disabled
     # Wrapped in an array so "the block returned nil" and "the lock was never
     # acquired" stay distinguishable — with_pool_lock signals the latter with nil.
     held = ClaudeAccount.with_pool_lock(runtime, wait: @lock_wait) { [ decide(working_directory) ] }
@@ -227,6 +233,7 @@ class AuthRecoveryCoordinator
   # Runs with the pool lock held.
   def decide(working_directory)
     current = auth_provider.current_account
+    benched = bench_refused_identity!(current) if @access_disabled
 
     # Nothing is current: there is no identity to diagnose, only one to establish.
     # inject_for_session! promotes a usable account out of the pool if it can.
@@ -240,7 +247,31 @@ class AuthRecoveryCoordinator
       )
     end
 
+    return rotate_off(current, working_directory, benched: benched) if benched && benched.email == current.email
+
     rotate_away_from(current, working_directory)
+  end
+
+  # Take the account the runtime refused out of the pool (ClaudeAccount#disable_access!).
+  # That is the identity this session's process was spawned with, which is the
+  # pool's current account unless the pool has since moved; with no recorded
+  # identity, current is the best evidence there is.
+  #
+  # @return [ClaudeAccount, nil] the benched account
+  def bench_refused_identity!(current)
+    email = session&.metadata&.dig(IDENTITY_KEY).presence || current&.email
+    account = email && pool.find_by(email: email)
+    return nil unless account
+
+    account.disable_access! unless account.access_disabled?
+    @logger.warn("Benched an account whose organization disabled Claude subscription access — " \
+      "a human must re-enable its access and re-authenticate it", account: account.email)
+    account
+  rescue => e
+    # Benching is what keeps the next session off this account, but failing to
+    # write it must not also cost this session its rotation.
+    @logger.warn("Could not bench the refused account", account: email, error: e.message)
+    nil
   end
 
   # The pool already holds a different identity than the one this session's
@@ -271,6 +302,12 @@ class AuthRecoveryCoordinator
       return plan if plan
     end
 
+    rotate_off(current, working_directory)
+  end
+
+  # Rotate the pool off `current`. `benched:` names the account when it was
+  # benched for an org-level refusal, so the plan says why it is being left.
+  def rotate_off(current, working_directory, benched: nil)
     result = auth_provider.rotate_for_quota!(
       triggered_by: session ? "session:#{session.id}" : nil,
       reason: "auth_recovery",
@@ -295,11 +332,13 @@ class AuthRecoveryCoordinator
     @logger.warn("Rotated away from the identity the runtime rejected",
       from: current.email, to: account.email)
 
-    Plan.new(
-      outcome: :rotated,
-      account: account,
-      detail: "rotated from #{current.email} to #{account.email}"
-    )
+    detail = "rotated from #{current.email} to #{account.email}"
+    if benched
+      detail = "benched #{current.email} (its organization disabled Claude subscription access; " \
+        "a human must re-enable it) and #{detail}"
+    end
+
+    Plan.new(outcome: :rotated, account: account, detail: detail)
   end
 
   # A session-scoped Claude process receives one access-token VALUE at spawn.

@@ -349,6 +349,91 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
     assert plan.account.reload.is_current?
   end
 
+  # ===========================================================================
+  # An org-level refusal (oauth_org_not_allowed): bench, then rotate
+  # ===========================================================================
+
+  # Production 2026-10-08: sessions 19240, 20141, 22951 and 22955 each died on
+  # "Your organization has disabled Claude subscription access for Claude Code"
+  # from the same account. The account's token still passes the Messages API
+  # probe, so the ordinary path would re-seed it; and an auth rotation leaves the
+  # outgoing account active, so the next session would be handed it again.
+  test "an org-level refusal benches the spawned identity and rotates to a healthy account" do
+    # No recorded token fingerprint: on the ordinary path this child would be
+    # re-seeded onto the same account, because its token passes the probe.
+    spawned_as!(@primary.email)
+
+    plan = coordinator.resolve!("/tmp/test-clone", access_disabled: true)
+
+    assert_equal :rotated, plan.outcome
+    assert_not_equal @primary.email, plan.account.email
+    assert plan.account.reload.is_current?
+    assert_match(/benched #{Regexp.escape(@primary.email)} \(its organization disabled Claude subscription access/, plan.detail)
+
+    @primary.reload
+    assert @primary.needs_reauth?
+    assert @primary.access_disabled?
+    assert_not_includes ClaudeAccount.serviceable_for("claude_code").map(&:id), @primary.id
+    assert_not_includes ClaudeAccount.available.map(&:id), @primary.id
+  end
+
+  test "a benched account is not handed to the next session that rotates" do
+    spawned_with_scoped_token!(@primary)
+    coordinator.resolve!("/tmp/test-clone", access_disabled: true)
+
+    # Every remaining account fails in turn; none of the rotations may land on
+    # the benched one.
+    landed = []
+    3.times do
+      current = ClaudeAccount.current_account
+      break unless current
+
+      result = AccountRotationService.new.rotate!(reason: "quota_exceeded", expected_current_email: current.email)
+      break unless result[:success]
+
+      landed << result[:account].email
+    end
+
+    assert landed.any?
+    assert_not_includes landed, @primary.email
+  end
+
+  # The pool already moved off the refused account. That account is still the one
+  # to bench, and the session adopts the current one rather than rotating again.
+  test "an org-level refusal after the pool moved benches the spawned identity and adopts" do
+    @secondary.mark_current!
+    spawned_as!(@primary.email)
+
+    plan = coordinator.resolve!("/tmp/test-clone", access_disabled: true)
+
+    assert_equal :adopted, plan.outcome
+    assert_equal @secondary.email, plan.account.email
+    assert @primary.reload.access_disabled?
+    assert_equal "active", @secondary.reload.status
+  end
+
+  test "an org-level refusal with nothing healthy left parks as unusable" do
+    ClaudeAccount.for_runtime("claude_code").where.not(id: @primary.id)
+      .update_all(status: ClaudeAccount.statuses[:needs_reauth])
+    spawned_with_scoped_token!(@primary)
+
+    plan = coordinator.resolve!("/tmp/test-clone", access_disabled: true)
+
+    assert_equal :unusable, plan.outcome
+    assert @primary.reload.access_disabled?
+  end
+
+  # The flag is per-call: a later ordinary auth failure must take the ordinary
+  # path and bench nothing.
+  test "an ordinary auth failure benches nothing" do
+    spawned_with_scoped_token!(@primary)
+
+    coordinator.resolve!("/tmp/test-clone")
+
+    assert_not @primary.reload.access_disabled?
+    assert_equal "active", @primary.status
+  end
+
   # The regression that cost four sessions a ten-hour park. A single blanked
   # credential logged every session on the worker out; each rotated away from the
   # account it held; every rotation stamped `quota_exceeded` on the account it

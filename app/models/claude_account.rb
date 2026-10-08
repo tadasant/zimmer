@@ -210,6 +210,12 @@ class ClaudeAccount < ApplicationRecord
   # until something probes it. See #credential_state.
   before_save :reset_credential_verdict_on_new_token
 
+  # A benched account (#disable_access!) is re-validated by a human: a login, or
+  # an operator flipping the status in /supervisor. Either one writes `active`
+  # through a callback-running save, and that is what retires the bench. The
+  # needs_reauth recovery sweep restores with `update_columns`, so it cannot.
+  before_save :clear_access_disabled_on_reactivation
+
   # How long a single account's needs_reauth event stays suppressed after one is
   # emitted. Not a nicety: plenty of machinery writes `active` back onto a
   # needs_reauth row with no human involved — the auto-heal sweep on /inference, a
@@ -537,6 +543,25 @@ class ClaudeAccount < ApplicationRecord
     return status if snapshot.nil?
 
     snapshot.windows_clear? ? "active" : status
+  end
+
+  # Bench this account because the runtime refused it for a reason about the
+  # ACCOUNT rather than its credential — Claude Code's `oauth_org_not_allowed`,
+  # "Your organization has disabled Claude subscription access for Claude Code".
+  #
+  # needs_reauth takes it out of every pool read (`.available`,
+  # `.serviceable_for`) and alerts a human through #notify_status_transition.
+  # `access_disabled_at` keeps it there: the needs_reauth recovery sweep restores
+  # any account whose refresh token still works, and an org-disabled account's
+  # refresh token still works — so without the marker it would be back in the
+  # pool within five minutes, handed to the next session, and fail it the same
+  # way. See ClaudeAuthProvider#needs_reauth_recovery_candidates.
+  def disable_access!
+    update!(status: :needs_reauth, access_disabled_at: Time.current)
+  end
+
+  def access_disabled?
+    access_disabled_at.present?
   end
 
   def mark_quota_exceeded!
@@ -1279,6 +1304,11 @@ class ClaudeAccount < ApplicationRecord
     values.each { |attribute, value| write_attribute(attribute, value) }
     clear_attribute_changes(values.keys)
     true
+  end
+
+  # See the before_save that calls this.
+  def clear_access_disabled_on_reactivation
+    self.access_disabled_at = nil if will_save_change_to_status? && active?
   end
 
   # See the before_save that calls this.
