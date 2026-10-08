@@ -386,6 +386,18 @@ class SlackServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "post_message hands a server-side error straight back instead of risking a double post" do
+    mock_client = mock("slack_client")
+    mock_client.expects(:chat_postMessage).once.raises(Slack::Web::Api::Errors::FatalError.new("fatal_error"))
+    SlackService.stubs(:client).returns(mock_client)
+    SlackService.expects(:sleep).never
+
+    error = assert_raises(SlackService::TransientError) do
+      SlackService.post_message(channel: "C123", text: "hello")
+    end
+    assert_equal "fatal_error", error.code
+  end
+
   test "a non-transient Slack error code raises ApiError at once, without retrying or sleeping" do
     test_client = Object.new
     test_client.instance_variable_set(:@call_count, 0)
