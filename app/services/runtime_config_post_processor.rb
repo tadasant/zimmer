@@ -414,6 +414,10 @@ class RuntimeConfigPostProcessor
   # header name, for the reason #inject_elicitation_env! gives — the address of
   # Zimmer's own endpoint is Zimmer's to know. Unlike the env version, a clone's
   # `.env` does not override it: strad refuses every address but this instance's.
+  #
+  # The host is read before #resolve_secrets!, so a strad entry whose `url` is a
+  # `${VAR}` interpolation does not parse and gets no header. Catalog strad URLs
+  # are literals.
   def inject_elicitation_header!(servers)
     return if session&.id.blank?
 

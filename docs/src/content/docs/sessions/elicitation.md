@@ -239,38 +239,6 @@ One variable is deliberately *not* set: `ELICITATION_ENABLED`, because whether a
 given action is that server's decision. The reported failure was the address, not the enablement,
 and forcing it on would newly block sessions on approvals across every server at once.
 
-### A remote server: strad's `X-Elicitation-Url` header
-
-A remote (HTTP) MCP server has no environment Zimmer can write, so the variables above never reach
-it. [strad](https://github.com/tadasant/strad) reads the address per request instead, from an
-`X-Elicitation-Url` header. On a strad slug with `confirmations: true`, a confirmation-gated tool
-(Gmail `send_email`) refuses unless that header names a URL under strad's allow-listed prefix,
-`https://zimmer.tadasant.com/api/v1/elicitations/session/`. With it, strad POSTs the approval request
-there and polls it, the same round trip a stdio server makes.
-
-`RuntimeConfigPostProcessor#inject_elicitation_header!` writes the header, set to the session's own
-token URL, into every HTTP entry whose URL is `https://strad.tadasant.com/…`: `headers` in `.mcp.json`
-for Claude Code and Pi, `http_headers` in `.codex/config.toml` for Codex. A catalog
-`"${ELICITATION_REQUEST_URL}"` header cannot do the same job, because `${VAR}` resolves from Zimmer's
-own secrets and environment, which name no session.
-
-- **Strad only.** The host match is exact and the scheme must be `https`. The URL lets whoever holds
-  it raise approval prompts in this session, so no other HTTP server gets it, including
-  `strad.tadasant.com.example` and `x.strad.tadasant.com`.
-- **Zimmer's value wins** over a catalog copy of the header under any casing, and on Codex over an
-  `env_http_headers` forwarding rule for it. A clone's `.env` does not override it, because strad
-  refuses every address but this instance's.
-- **No session, no header.** A session-less prepare writes nothing.
-
-To confirm a session sends it, look for this line in the session's log at `air prepare` time:
-
-```
-[ClaudeMcpConfigPostProcessor] Wrote X-Elicitation-Url=https://zimmer.tadasant.com/api/v1/elicitations/session/<id>-… into the headers of 1 strad MCP server(s): <name>
-```
-
-The class name is the runtime's processor (`CodexConfigTomlPostProcessor`, `PiMcpConfigPostProcessor`).
-The token's MAC is elided in the log because it is the credential.
-
 The poll URL used to be on that list, on the reasoning that the create response carries
 `_meta["com.pulsemcp/poll-url"]` and so the poll URL follows the request URL automatically. It does
 — but only for a client that has already chosen the HTTP tier, and the client tests `requestUrl &&
@@ -313,3 +281,36 @@ would turn a poll into a sequential-id enumeration.
 Also: the API uses `action_type`, not `action`, because `action` collides with a Rails reserved
 param. Clients have to know that.
 :::
+
+## A remote server: strad's `X-Elicitation-Url` header
+
+A remote (HTTP) MCP server has no environment Zimmer can write, so the variables above never reach
+it. [strad](https://github.com/tadasant/strad) reads the address per request instead, from an
+`X-Elicitation-Url` header. On a strad slug with `confirmations: true`, a confirmation-gated tool
+(Gmail `send_email`) refuses unless that header names a URL under strad's allow-listed prefix,
+`https://zimmer.tadasant.com/api/v1/elicitations/session/`. With it, strad POSTs the approval request
+there and polls it, the same round trip a stdio server makes.
+
+`RuntimeConfigPostProcessor#inject_elicitation_header!` writes the header, set to the session's own
+token URL, into every HTTP entry whose URL is `https://strad.tadasant.com/…`: `headers` in `.mcp.json`
+for Claude Code and Pi, `http_headers` in `.codex/config.toml` for Codex. A catalog
+`"${ELICITATION_REQUEST_URL}"` header cannot do the same job, because `${VAR}` resolves from Zimmer's
+own secrets and environment, which name no session.
+
+- **Strad only.** The host match is exact and the scheme must be `https`. The URL lets whoever holds
+  it raise approval prompts in this session, so no other HTTP server gets it, including
+  `strad.tadasant.com.example` and `x.strad.tadasant.com`.
+- **Zimmer's value wins** over a catalog copy of the header under any casing, and on Codex over an
+  `env_http_headers` forwarding rule for it. A clone's `.env` does not override it, because strad
+  refuses every address but this instance's.
+- **No session, no header.** A session-less prepare writes nothing.
+- **A literal URL only.** The host is read before `${VAR}` resolution, so a catalog entry whose `url` is interpolated (`https://${STRAD_HOST}/…`) does not parse and gets no header.
+
+To confirm a session sends it, look for this `info` line in Zimmer's application log, written when the session's MCP config is prepared:
+
+```
+[ClaudeMcpConfigPostProcessor] Wrote X-Elicitation-Url=https://zimmer.tadasant.com/api/v1/elicitations/session/<id>-… into the headers of 1 strad MCP server(s): <name>
+```
+
+The class name is the runtime's processor (`CodexConfigTomlPostProcessor`, `PiMcpConfigPostProcessor`).
+The token's MAC is elided in the log because it is the credential.
