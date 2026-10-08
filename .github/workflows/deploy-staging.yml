@@ -187,6 +187,9 @@ jobs:
         env:
           TF_VAR_do_token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
           TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          # The non-expiring OAuth client the droplet's auth key is minted from, below.
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
           TF_VAR_deploy_ssh_pubkey: ${{ secrets.KAMAL_SSH_PUBKEY }}
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
@@ -203,6 +206,39 @@ jobs:
           set -euo pipefail
           terraform init -input=false -backend-config=backend.staging.hcl
           cp staging.tfvars.example staging.tfvars
+          # The droplet's tailnet auth key, minted fresh from the OAuth client: single-use,
+          # ephemeral, tagged tag:zimmer-staging, valid for an hour. A pre-minted key in
+          # TAILSCALE_AUTH_KEY caps out at 90 days and expires silently -- the box it is
+          # then baked into boots with no tailnet and the deploy dies at "never came online
+          # on the tailnet". Only a CREATED droplet consumes it (user_data is under
+          # ignore_changes), so on a normal deploy the minted key just lapses unused.
+          # TAILSCALE_AUTH_KEY remains the fallback for a fork with no OAuth client. Inline
+          # rather than a script: this step runs against the checked-out deploy REF, which
+          # may predate any script added for it. A configured client that cannot mint FAILS
+          # the step -- better than booting a droplet nothing can reach.
+          if [ -n "${TS_OAUTH_CLIENT_ID:-}" ] && [ -n "${TS_OAUTH_SECRET:-}" ]; then
+            ts_token=$(curl -fsS https://api.tailscale.com/api/v2/oauth/token \
+              -d "client_id=${TS_OAUTH_CLIENT_ID}" -d "client_secret=${TS_OAUTH_SECRET}" \
+              | jq -r '.access_token // empty')
+            echo "::add-mask::$ts_token"
+            minted=$(jq -n '{capabilities: {devices: {create: {reusable: false, ephemeral: true,
+                         preauthorized: true, tags: ["tag:zimmer-staging"]}}},
+                       expirySeconds: 3600, description: "zimmer-staging cloud-init"}' \
+              | curl -fsS -X POST -H "Authorization: Bearer ${ts_token}" -H "Content-Type: application/json" \
+                  --data-binary @- https://api.tailscale.com/api/v2/tailnet/-/keys \
+              | jq -r '.key // empty')
+            if [ -z "$minted" ]; then
+              echo "::error::Could not mint a tag:zimmer-staging auth key from TS_OAUTH_CLIENT_ID (needs the auth_keys scope and ownership of tag:zimmer-staging)."
+              exit 1
+            fi
+            echo "::add-mask::$minted"
+            export TF_VAR_tailscale_auth_key="$minted"
+            echo "✅ tailscale_auth_key: minted a single-use tag:zimmer-staging key from TS_OAUTH_CLIENT_ID"
+          else
+            echo "::warning::TS_OAUTH_CLIENT_ID/TS_OAUTH_SECRET are unset, so the droplet joins with the pre-minted"
+            echo "::warning::TAILSCALE_AUTH_KEY -- which Tailscale expires after at most 90 days. If this run creates"
+            echo "::warning::the droplet and that key has lapsed, zimmer-staging will never come online on the tailnet."
+          fi
           # Report who this apply would authorize for root, on EVERY deploy. The list is
           # now an Actions variable: invisible state that nothing else in the run would
           # surface, and that takes effect only at droplet CREATION (cloud-init) -- so an

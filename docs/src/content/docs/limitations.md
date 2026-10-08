@@ -506,11 +506,14 @@ than a discovery, but it is still a log nobody reads on a green deploy.
 
 The firewall now permits **zero public TCP**. On a `recreate_droplet` rebuild, if `tailscale up` fails
 — an expired or exhausted auth key is the likely way, and the key is frozen into `user_data` at first
-boot — then there is no tailnet, so no Tailscale SSH; `:2222` is unreachable from outside the tailnet;
+boot (the staging deploy now mints a fresh key per run from `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`, so
+this bites only when that client is unset and the 90-day `TAILSCALE_AUTH_KEY` fallback has lapsed, as
+it did on 2026-10-08) — then there is no tailnet, so no Tailscale SSH; `:2222` is unreachable from outside the tailnet;
 there is no public `:22`; and Kamal cannot reach the box either. `runcmd` has no `set -e`, so the boot
 completes "successfully" regardless.
 
-Before setting `recreate_droplet: true`, confirm (a) `TAILSCALE_AUTH_KEY` is valid and not exhausted,
+Before setting `recreate_droplet: true`, confirm (a) the deploy's Terraform step logs that it minted a
+key (or, without the OAuth client, that `TAILSCALE_AUTH_KEY` is valid and not exhausted),
 and (b) you can actually log into the DigitalOcean web console for the droplet.
 
 That console door has a catch. cloud-init deletes root's password (`usermod -p '*'`) — it must, or
