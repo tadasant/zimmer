@@ -294,6 +294,18 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     refute forked.mcp_servers_explicitly_empty?
   end
 
+  test "a fork drops a stale hook even when the catalog has no hooks left at all" do
+    @source_session.update_column(:catalog_hooks, [ "removed-hook" ])
+    HooksConfig.stubs(:all).returns([])
+    HooksConfig.stubs(:exists?).returns(false)
+
+    result = ForkSessionService.call(source_session: @source_session.reload, message_index: 1, file_system: @mock_fs)
+
+    assert result.success?, result.error
+    assert_equal [], result.forked_session.catalog_hooks
+    assert_equal({ "catalog_hooks" => [ "removed-hook" ] }, result.forked_session.dropped_unknown_catalog_ids)
+  end
+
   test "a fork whose every MCP server was dropped as drift stays empty" do
     @source_session.update_column(:mcp_servers, [ "gmail-tadas412-readonly" ])
 

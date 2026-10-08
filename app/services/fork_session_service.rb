@@ -715,7 +715,7 @@ class ForkSessionService
         selection, dropped = copyable_catalog_selection
         # Drift emptied the list rather than the source declining servers, but
         # the fork must not be backfilled with defaults the source never had.
-        if source_session.mcp_servers.present? && selection[:mcp_servers].empty?
+        if Array(source_session.mcp_servers).any?(&:present?) && selection[:mcp_servers].empty?
           new_metadata[Session::EXPLICIT_EMPTY_MCP_SERVERS_KEY] = true
         end
 
@@ -771,16 +771,21 @@ class ForkSessionService
   # copies, and a source created before the catalog renamed or removed one of
   # them would fail `create!` outright. That is drift, not a caller error, so it
   # gets the same answer AirPrepareService#reconciled_catalog_selection gives the
-  # source itself: drop it at WARN and tell the agent. The filter is each
-  # column's `resolvable_<attr>` reader from CatalogArtifactReferences, which
-  # passes the list through untouched when the catalog failed to load.
+  # source itself: drop it at WARN and tell the agent.
+  #
+  # Nothing is filtered when the catalog failed to load as a whole (every facade
+  # empty), judged across the catalog rather than per type for the reason
+  # AirPrepareService#reconciled_catalog_selection gives: one type can
+  # legitimately be empty, and its stale ids would still fail validation.
   #
   # @return [Array(Hash{Symbol => Array<String>}, Hash{String => Array<String>})]
   def copyable_catalog_selection
+    references = source_session.class.catalog_artifact_references
+    catalog_unloaded = references.all? { |reference| reference.config.all.empty? }
     dropped = source_session.dropped_unknown_catalog_ids
-    selection = source_session.class.catalog_artifact_references.to_h do |reference|
+    selection = references.to_h do |reference|
       requested = Array(source_session.public_send(reference.attribute)).reject(&:blank?)
-      resolvable = source_session.public_send(reference.resolvable_method)
+      resolvable = catalog_unloaded ? requested : requested.select { |id| reference.config.exists?(id) }
       unknown = requested - resolvable
       if unknown.any?
         @logger.warn(
