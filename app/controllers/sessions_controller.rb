@@ -2248,54 +2248,23 @@ class SessionsController < ApplicationController
   end
 
   # PATCH /sessions/:id/update_auto_compact_window
-  # Update the Claude Code auto-compact window (context window, in tokens) for a
-  # session via the web UI. Mirrors update_model: the value is a top-level column
-  # (not stored in config) consumed as CLAUDE_CODE_AUTO_COMPACT_WINDOW at process
-  # spawn time, so a change takes effect on the next turn / restart — not on the
-  # currently running process. The view communicates this to the user.
+  # Presentation ONLY — the write and its rules (an integer within
+  # 1..Session::MAX_AUTO_COMPACT_WINDOW, applied from the next turn or restart)
+  # are Sessions::UpdateAutoCompactWindow, shared with the
+  # `change_auto_compact_window` MCP action.
   def update_auto_compact_window
     @session = find_session
 
-    raw = params[:auto_compact_window]
-
-    # Require an explicit integer within the same bounds enforced at creation
-    # (Session#auto_compact_window numericality validation). Reject blanks and
-    # non-integer strings before touching the record so the JSON error is clear.
-    unless raw.to_s.match?(/\A\d+\z/)
-      render json: { error: "auto_compact_window must be a positive integer" }, status: :unprocessable_entity
-      return
+    with_db_retry do
+      Sessions::UpdateAutoCompactWindow.call(session: @session, auto_compact_window: params[:auto_compact_window], actor: :web)
     end
+    return if performed? # with_db_retry rendered its own give-up response
 
-    new_window = raw.to_i
-
-    if new_window <= 0 || new_window > Session::MAX_AUTO_COMPACT_WINDOW
-      render json: { error: "auto_compact_window must be between 1 and #{Session::MAX_AUTO_COMPACT_WINDOW}" }, status: :unprocessable_entity
-      return
-    end
-
-    result = with_db_retry do
-      old_window = @session.auto_compact_window
-
-      if @session.update(auto_compact_window: new_window)
-        if old_window != new_window
-          @session.logs.create!(
-            content: "Context window updated (#{old_window} → #{new_window}); applies on next turn or restart",
-            level: "info"
-          )
-        end
-        true
-      else
-        false
-      end
-    end
-
-    return if performed?
-
-    if result
-      render json: { success: true, auto_compact_window: @session.auto_compact_window }
-    else
-      render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
-    end
+    render json: { success: true, auto_compact_window: @session.auto_compact_window }
+  rescue Sessions::UpdateAutoCompactWindow::Error => e
+    render json: { error: e.message }, status: :unprocessable_entity
+  rescue ActiveRecord::RecordInvalid => e
+    render json: { error: e.record.errors.full_messages.join(", ") }, status: :unprocessable_entity
   end
 
   # PATCH /sessions/:id/update_scheduling_class
