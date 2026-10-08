@@ -63,9 +63,26 @@ module ParameterStore
     # states the same rule in `src/secrets/parameters/wire.ts` in tadasant/strad.
     VALUE_ENCODING = "base64url"
 
-    # Only parameters carrying this label are considered. It keeps a hand-created
-    # or foreign parameter in the same project from being read as Zimmer config.
+    # The `managed-by` label Zimmer stamps on every parameter and secret it writes.
     MANAGED_BY = "zimmer"
+
+    # The `managed-by` labels Zimmer treats as its own. strad's Secrets Console —
+    # the recommended human write surface — labels everything it creates
+    # `managed-by=strad`, including what it writes into Zimmer's namespace, so a
+    # reader keyed on {MANAGED_BY} alone would drop every value written there.
+    #
+    # The label only keeps a hand-created or foreign parameter from being read at
+    # all. It is not the namespace fence: every read still requires the
+    # envelope's own `path` to fall inside a namespace it was asked for (see
+    # {#rendered_envelope}), so a strad-labelled parameter belonging to any other
+    # tree is rendered and dropped.
+    ACCEPTED_MANAGED_BY = [ MANAGED_BY, "strad" ].freeze
+
+    # @return [Boolean] whether a GCP resource body carries one of
+    #   {ACCEPTED_MANAGED_BY}.
+    def self.managed?(resource)
+      ACCEPTED_MANAGED_BY.include?(resource.dig("labels", "managed-by"))
+    end
 
     # Read at most this many parameters' versions concurrently. Resolving a
     # namespace is one list plus a render per parameter, so an unbounded fan-out
@@ -231,7 +248,7 @@ module ParameterStore
         body = get("#{@pm_api_base}/v1/#{pm_parent}/parameters?#{query.to_query}")
 
         Array(body["parameters"]).each do |parameter|
-          next unless parameter.dig("labels", "managed-by") == MANAGED_BY
+          next unless self.class.managed?(parameter)
 
           id = parameter["name"].to_s.split("/").last
           ids << id if id.present?

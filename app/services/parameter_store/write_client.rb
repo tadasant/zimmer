@@ -37,9 +37,10 @@ module ParameterStore
     SM_API_BASE = GcpClient::SM_API_BASE
     CRM_API_BASE = GcpClient::CRM_API_BASE
 
-    # Only parameters and secrets carrying this label are Zimmer's. {#delete}
-    # refuses to touch a resource without it, so a mis-folded id can never
-    # destroy a parameter some other system owns in the same project.
+    # The label every parameter and secret this client creates carries. {#delete}
+    # refuses to touch a resource without it or another of
+    # {GcpClient::ACCEPTED_MANAGED_BY}, so a mis-folded id can never destroy a
+    # parameter some other system owns in the same project.
     MANAGED_BY = GcpClient::MANAGED_BY
 
     ACCESSOR_ROLE = "roles/secretmanager.secretAccessor"
@@ -123,8 +124,9 @@ module ParameterStore
     def delete(variable, env: Rails.env, path: nil)
       # `path:` decides the id on its own, so `variable` would otherwise be
       # decorative and `delete("A", path: path_of("B"))` would remove B. The
-      # label fence below cannot catch that — every Zimmer pair carries the same
-      # label — so the two have to be checked against each other here.
+      # label fence below cannot catch that — every pair in Zimmer's namespace
+      # carries an accepted label — so the two have to be checked against each
+      # other here.
       if path.present? && Namespace.variable_of(path) != variable
         raise ArgumentError, "path #{path} does not name #{variable}"
       end
@@ -148,7 +150,13 @@ module ParameterStore
     # read applies the envelope-path fence for that reason (GcpClient#resolve);
     # a delete cannot, because the writer holds no `:render`. The label is the
     # fence it can apply, and it is the same one GcpClient#managed_parameter_ids
-    # uses to decide what counts as Zimmer's.
+    # uses to decide what counts as Zimmer's: {GcpClient.managed?}, which also
+    # accepts a pair strad's Secrets Console wrote. The id itself is folded from a
+    # path inside Zimmer's namespace, so a strad-labelled pair there is a value
+    # written into Zimmer's tree. The one exception is a strad path that folds
+    # onto a Zimmer id (`/zimmer-production/secrets-static/X` and
+    # `/zimmer/production/secrets/static/X` share one); the label cannot tell
+    # those apart, and strad writes no such path.
     #
     # Anything present and unlabelled belongs to something else in this project
     # and is left alone, loudly. Anything absent is fine: a delete of a
@@ -160,10 +168,11 @@ module ParameterStore
       ].each do |kind, url|
         body = call("GET", url, nil, allow: [ 404 ])
         next if body.empty?
-        next if body.dig("labels", "managed-by") == MANAGED_BY
+        next if GcpClient.managed?(body)
 
         raise StoreError.new(
-          "refusing to delete #{kind} #{id}: it is not labelled managed-by=#{MANAGED_BY}", 409
+          "refusing to delete #{kind} #{id}: it is not labelled " \
+          "managed-by=#{GcpClient::ACCEPTED_MANAGED_BY.join('|')}", 409
         )
       end
     end

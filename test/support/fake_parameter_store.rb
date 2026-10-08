@@ -52,43 +52,46 @@ class FakeParameterStore
   #   Secret Manager bytes. nil omits the field, which means the literal bytes.
   #   `:null` writes the field as JSON `null`, which a writer emitting the key
   #   unconditionally produces and which means the same thing.
-  def seed_secret(variable, value, env: Rails.env, path: nil, encoding: nil)
+  # `managed_by:` is the `managed-by` label stamped on both halves of the pair.
+  def seed_secret(variable, value, env: Rails.env, path: nil, encoding: nil,
+    managed_by: ParameterStore::GcpClient::MANAGED_BY)
     path ||= ParameterStore::Namespace.parameter_path(variable, env)
     id = ParameterStore::Namespace.parameter_id(path)
 
     @secrets[id] = [ value ]
-    @secret_labels[id] = { "managed-by" => ParameterStore::GcpClient::MANAGED_BY }
+    @secret_labels[id] = { "managed-by" => managed_by }
     @secret_policies[id] = [ self.class.principal_for(id) ]
     envelope = {
       "path" => path, "secret" => true,
       "value" => %(__REF__("//secretmanager.googleapis.com/projects/#{@project_id}/secrets/#{id}/versions/latest"))
     }
     envelope["encoding"] = encoding == :null ? nil : encoding unless encoding.nil?
-    put_parameter(id, { secret: "true" }, envelope)
+    put_parameter(id, { secret: "true" }, envelope, managed_by: managed_by)
     path
   end
 
   # A secret written the way strad's Secrets Console writes one: the Secret
-  # Manager bytes are base64url TEXT of the real value, and the envelope declares
-  # it. That is the shape every secret the console writes has — see
-  # `src/secrets/parameters/wire.ts` in tadasant/strad, which states the rule
-  # both trees implement.
+  # Manager bytes are base64url TEXT of the real value, the envelope declares
+  # it, and both halves are labelled `managed-by=strad`. That is the shape every
+  # secret the console writes has — see `src/secrets/parameters/wire.ts` and
+  # `src/secrets/parameters/gcp.ts` in tadasant/strad.
   def seed_console_secret(variable, value, env: Rails.env, path: nil)
     seed_secret(variable, Base64.urlsafe_encode64(value.to_s, padding: false),
-      env: env, path: path, encoding: ParameterStore::GcpClient::VALUE_ENCODING)
+      env: env, path: path, encoding: ParameterStore::GcpClient::VALUE_ENCODING, managed_by: "strad")
   end
 
   # A non-secret parameter: the value sits in the envelope itself.
-  def seed_plain(variable, value, env: Rails.env, path: nil)
+  def seed_plain(variable, value, env: Rails.env, path: nil, managed_by: ParameterStore::GcpClient::MANAGED_BY)
     path ||= ParameterStore::Namespace.parameter_path(variable, env)
     id = ParameterStore::Namespace.parameter_id(path)
-    put_parameter(id, { secret: "false" }, { "path" => path, "secret" => false, "value" => value })
+    put_parameter(id, { secret: "false" }, { "path" => path, "secret" => false, "value" => value },
+      managed_by: managed_by)
     path
   end
 
   # A parameter in the project that Zimmer did not write.
   def seed_unmanaged(id, envelope)
-    put_parameter(id, {}, envelope, managed: false)
+    put_parameter(id, {}, envelope, managed_by: nil)
   end
 
   def held_permissions=(permissions)
@@ -159,9 +162,9 @@ class FakeParameterStore
     end.new
   end
 
-  def put_parameter(id, labels, envelope, managed: true)
+  def put_parameter(id, labels, envelope, managed_by: ParameterStore::GcpClient::MANAGED_BY)
     labels = labels.transform_keys(&:to_s)
-    labels["managed-by"] = ParameterStore::GcpClient::MANAGED_BY if managed
+    labels["managed-by"] = managed_by if managed_by
     parameter = (@parameters[id] ||= Parameter.new(labels: labels, versions: []))
     parameter.labels = labels
     parameter.versions << { id: "v#{parameter.versions.size + 1}", data: JSON.generate(envelope) }
