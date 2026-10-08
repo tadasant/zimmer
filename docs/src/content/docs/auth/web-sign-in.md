@@ -212,6 +212,7 @@ removing `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID`, which takes the whole wall down.
 | `/.well-known/oauth-*`, `POST /oauth/register`, `/oauth/token`, `/oauth/revoke` | **Open.** Machine endpoints for MCP clients, authenticated by PKCE or a token the client holds |
 | `/webhooks/slack`, `/webhooks/github` | **Unchanged.** Request signatures |
 | `/up`, `/up/deep` | **Unchanged.** Open, as the deploy gates need |
+| `GET /health/export_diagnostics` | **Open to the host's own loopback only**, for the on-host fleet-telemetry collector. Everyone else signs in. See [the limitation](/limitations/#healthexport_diagnostics-trusts-the-requests-origin-not-a-credential) |
 | `/.well-known/oauth-*`, `/oauth/register`, `/oauth/token`, `/oauth/revoke` (the MCP authorization server's machine endpoints) | **Never walled.** They answer MCP clients, not browsers |
 | `/oauth/authorize` (the MCP authorization server's consent page) | Sign-in required. A signed-out browser goes through Google and the code, then comes back to the full authorize URL, query string intact |
 | A route that does not exist | `404`, as before |

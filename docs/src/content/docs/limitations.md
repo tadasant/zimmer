@@ -1018,6 +1018,22 @@ Halting the demand-side queues stays loud and self-healing whoever fires it: ent
 exit each emit their own page, and the TTL auto-exits. The one thing to know is that halting
 `pollers` also stops `SystemHealthMonitorJob`, so *backlog* alerting is quiet for the duration.
 
+### `/health/export_diagnostics` trusts the request's origin, not a credential
+
+🟡 With web sign-in on, `GET /health/export_diagnostics` still answers without a cookie when the
+request's `remote_ip` is the host's loopback and it carries no `Forwarded` header. The
+fleet-telemetry collector runs on the host as a systemd unit, holds no Zimmer credential, and the
+production deploy fails if it cannot parse this endpoint (#1251). The public edge cannot pass as
+the host, because the Cloudflare edge appends the client's public address, which is the one Rails
+resolves. Agent sessions cannot either, because Caddy writes their docker-bridge address.
+
+An address is still weaker than a credential in one place. kamal-proxy publishes `:8080` on every
+interface, so a tailnet peer that connects there directly, skipping Caddy, controls
+`X-Forwarded-For` and can claim `127.0.0.1`. Tailscale ACLs decide who that is, the same exposure
+[the client-address reasoning](/operate/deploying/#2-the-tunnels-origin-is-httplocalhost8080-kamal-proxy-not-caddy)
+already names. Closing it means the deploy handing the collector a credential and the collector
+reading an API-key route.
+
 ### Web sign-in trades re-checks for long sessions
 
 🟡 [Web sign-in](/auth/web-sign-in/) is tuned so its owner rarely sees the login page, and that has

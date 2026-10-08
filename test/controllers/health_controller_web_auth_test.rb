@@ -8,6 +8,8 @@ require "mocha/minitest"
 # under /api/v1/health require an API key, and that is asserted here too, because
 # the two surfaces are easy to confuse.
 class HealthControllerWebAuthTest < ActionDispatch::IntegrationTest
+  include WebAuthTestHelpers
+
   # Every mutating POST on /health, with a params payload that reaches the action rather
   # than tripping a validation first. `every POST /health route is in this test's list`
   # fails if a route is added to the controller and not here.
@@ -96,6 +98,84 @@ class HealthControllerWebAuthTest < ActionDispatch::IntegrationTest
 
     get deep_health_check_path
     assert_includes [ 200, 503 ], response.status
+  end
+
+  # The header shapes each path produces, as ClientIpBehindCloudflareTest records them:
+  # the host's own curl goes through host Caddy (which writes X-Forwarded-For as the
+  # peer it saw) and kamal-proxy (which appends its docker peer); the Cloudflare edge
+  # appends the public client; a tailnet peer reaches Caddy from its 100.x address.
+  KAMAL_PROXY_CONTAINER = "172.18.0.5"
+  FROM_THE_HOST = { "REMOTE_ADDR" => KAMAL_PROXY_CONTAINER, "HTTP_X_FORWARDED_FOR" => "127.0.0.1, 172.18.0.1" }.freeze
+  FROM_THE_EDGE = { "REMOTE_ADDR" => KAMAL_PROXY_CONTAINER, "HTTP_X_FORWARDED_FOR" => "127.0.0.1, 198.51.100.23, 172.18.0.1" }.freeze
+  FROM_THE_TAILNET = { "REMOTE_ADDR" => KAMAL_PROXY_CONTAINER, "HTTP_X_FORWARDED_FOR" => "100.101.102.103, 172.18.0.1" }.freeze
+  # What curl sends with no -H: the collector's request.
+  CURL = { "Accept" => "*/*", "User-Agent" => "curl/8.5.0" }.freeze
+
+  # The fleet-telemetry collector: `curl -fsS http://127.0.0.1/health/export_diagnostics`,
+  # no Accept header, no credential, and it parses the body as JSON (#1251).
+  test "with the gate on, the host's own curl still gets the diagnostics as JSON" do
+    enable_web_auth
+
+    get "/health/export_diagnostics", headers: CURL, env: FROM_THE_HOST
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert body.dig("health_report", "system_health", "worker_stats").is_a?(Hash),
+      "the collector reads health_report.system_health.worker_stats"
+  end
+
+  test "with the gate on, a request from the public edge is sent to sign in, forged loopback and all" do
+    enable_web_auth
+
+    get "/health/export_diagnostics", headers: CURL, env: FROM_THE_EDGE
+
+    assert_redirected_to "/login"
+  end
+
+  test "with the gate on, a tailnet peer is sent to sign in" do
+    enable_web_auth
+
+    get "/health/export_diagnostics", headers: CURL, env: FROM_THE_TAILNET
+
+    assert_redirected_to "/login"
+  end
+
+  test "with the gate on, a Forwarded header naming loopback does not pass as the host" do
+    enable_web_auth
+
+    get "/health/export_diagnostics", headers: CURL.merge("Forwarded" => "for=127.0.0.1"), env: FROM_THE_TAILNET
+    assert_redirected_to "/login"
+
+    get "/health/export_diagnostics", headers: CURL.merge("Forwarded" => "for=127.0.0.1"), env: FROM_THE_EDGE
+    assert_redirected_to "/login"
+  end
+
+  test "with the gate on, an agent session on the docker bridge is sent to sign in" do
+    enable_web_auth
+
+    # Caddy writes the peer it saw: the worker container's bridge address.
+    get "/health/export_diagnostics", headers: CURL,
+      env: { "REMOTE_ADDR" => KAMAL_PROXY_CONTAINER, "HTTP_X_FORWARDED_FOR" => "172.18.0.7, 172.18.0.1" }
+
+    assert_redirected_to "/login"
+  end
+
+  test "with the gate on, the host's IPv6 loopback is the host" do
+    enable_web_auth
+
+    get "/health/export_diagnostics", headers: CURL, env: { "REMOTE_ADDR" => KAMAL_PROXY_CONTAINER, "HTTP_X_FORWARDED_FOR" => "::1, 172.18.0.1" }
+
+    assert_response :success
+  end
+
+  test "the host exemption covers export_diagnostics and nothing else on /health" do
+    enable_web_auth
+
+    get health_dashboard_path, env: FROM_THE_HOST
+    assert_redirected_to "/login"
+
+    get refresh_health_path, env: FROM_THE_HOST
+    assert_redirected_to "/login"
   end
 
   # Only the web dashboard is open. The REST twin keeps its own credential.
