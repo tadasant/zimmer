@@ -53,13 +53,24 @@ class SlackService
   # rejected outright rather than queued. So a long in-process wait does not
   # "ride out" anything — it silently skips minutes of polling for every trigger.
   #
-  # The rule both rescue branches follow: absorb a blip here, hand anything
+  # The rule every retrying rescue branch follows: absorb a blip here, hand anything
   # longer back as a TransientError so the caller can yield its slot and come
   # back later. A flat 1-second cadence also hammers an endpoint that is already
   # failing, which is why the network branch doubles its wait each attempt.
   MAX_RETRIES = 3
   RETRY_BASE_DELAY = 1 # seconds, doubled per attempt: 1, 2, 4
   RETRY_MAX_DELAY = 8  # seconds, ceiling on any single in-process sleep
+
+  # Slack error codes that mean Slack's own servers failed, not that the request
+  # was wrong. Slack sends them as HTTP 200 with ok: false, so the client raises
+  # them as SlackError like any other code; with_error_handling retries them like
+  # a network error instead (#1255). Every other code is a permanent ApiError.
+  SERVER_SIDE_ERROR_CODES = %w[
+    fatal_error
+    internal_error
+    service_unavailable
+    request_timeout
+  ].freeze
 
   class << self
     # Get a configured Slack client instance
@@ -414,7 +425,21 @@ class SlackService
         # rather than a backoff figure we invented, so the caller can tell the two apart.
         raise RateLimitedError.new("Slack rate limit exceeded: #{e.message}", retry_after: e.retry_after)
       rescue Slack::Web::Api::Errors::SlackError => e
-        # SlackError inherits from Faraday::Error, so catch it before Faraday::Error
+        # SlackError inherits from Faraday::Error, so catch it before Faraday::Error.
+        code = slack_error_code(e)
+        # Slack's own server-side failures arrive as HTTP 200 with ok: false, so they
+        # land here rather than in the Faraday branch — but they are the same kind of
+        # blip, and get the same budget and the same TransientError hand-back.
+        if SERVER_SIDE_ERROR_CODES.include?(code)
+          retries += 1
+          if retries <= MAX_RETRIES
+            delay = backoff_delay(retries)
+            Rails.logger.warn("[SlackService] Slack server error #{code} (attempt #{retries}/#{MAX_RETRIES}). Retrying in #{delay}s...")
+            sleep(delay)
+            retry
+          end
+          raise TransientError.new("Slack server error: #{code}", code: code)
+        end
         # Don't retry API errors (invalid channel, permission denied, etc.)
         raise ApiError.new("Slack API error: #{e.message}", code: e.message)
       rescue Faraday::Error => e
@@ -430,6 +455,14 @@ class SlackService
         end
         raise TransientError, "Network error communicating with Slack: #{e.message}"
       end
+    end
+
+    # The Slack error code an exception carries. slack-ruby-client raises with the
+    # code itself as the message (ok: false, error: "fatal_error" becomes
+    # FatalError.new("fatal_error")); a multi-error response joins its codes with
+    # commas, which matches no single code and so stays a plain ApiError.
+    def slack_error_code(error)
+      error.message.to_s.strip
     end
 
     # Exponential backoff for in-process retries: RETRY_BASE_DELAY doubled per

@@ -323,6 +323,89 @@ class SlackServiceTest < ActiveSupport::TestCase
     assert_equal 1, test_client.call_count # No retries for API errors
   end
 
+  # #1255: Slack's server-side failures come back as HTTP 200 with ok: false, so
+  # the client raises them as SlackError subclasses, not Faraday errors. They are
+  # a blip like a timeout, not a bad request, so they retry and then hand back a
+  # TransientError the poller defers on instead of paging.
+  test "a Slack server-side error retries with backoff and then raises TransientError" do
+    test_client = Object.new
+    test_client.instance_variable_set(:@call_count, 0)
+    def test_client.conversations_list(**)
+      @call_count += 1
+      raise Slack::Web::Api::Errors::FatalError.new("fatal_error")
+    end
+    def test_client.call_count
+      @call_count
+    end
+
+    SlackService.stubs(:client).returns(test_client)
+    sleep_delays = []
+    SlackService.stubs(:sleep).with { |delay| sleep_delays << delay; true }
+
+    error = assert_raises(SlackService::TransientError) do
+      SlackService.list_member_channels
+    end
+    assert_equal "fatal_error", error.code
+    assert_includes error.message, "fatal_error"
+    assert_equal 4, test_client.call_count # 1 initial + MAX_RETRIES (3)
+    assert_equal [ 1, 2, 4 ], sleep_delays
+  end
+
+  test "a Slack server-side error that clears within the budget succeeds" do
+    test_client = Object.new
+    test_client.instance_variable_set(:@call_count, 0)
+    def test_client.conversations_list(**)
+      @call_count += 1
+      raise Slack::Web::Api::Errors::InternalError.new("internal_error") if @call_count == 1
+
+      OpenStruct.new(channels: [ OpenStruct.new(id: "C1", is_member: true) ], response_metadata: nil)
+    end
+    def test_client.call_count
+      @call_count
+    end
+
+    SlackService.stubs(:client).returns(test_client)
+    SlackService.stubs(:sleep)
+
+    assert_equal [ "C1" ], SlackService.list_member_channels.map(&:id)
+    assert_equal 2, test_client.call_count
+  end
+
+  test "every Slack server-side error code is transient, matched on the code string" do
+    SlackService.stubs(:sleep)
+
+    SlackService::SERVER_SIDE_ERROR_CODES.each do |code|
+      mock_client = mock("slack_client")
+      # A bare SlackError carrying the code, not the generated subclass: the match
+      # is on the code Slack sent, whichever class the client maps it to.
+      mock_client.stubs(:conversations_info).raises(Slack::Web::Api::Errors::SlackError.new(code))
+      SlackService.stubs(:client).returns(mock_client)
+
+      error = assert_raises(SlackService::TransientError, code) { SlackService.get_channel("C123") }
+      assert_equal code, error.code
+    end
+  end
+
+  test "a non-transient Slack error code raises ApiError at once, without retrying or sleeping" do
+    test_client = Object.new
+    test_client.instance_variable_set(:@call_count, 0)
+    def test_client.conversations_info(channel:)
+      @call_count += 1
+      raise Slack::Web::Api::Errors::ChannelNotFound.new("channel_not_found")
+    end
+    def test_client.call_count
+      @call_count
+    end
+
+    SlackService.stubs(:client).returns(test_client)
+    SlackService.expects(:sleep).never
+
+    error = assert_raises(SlackService::ApiError) { SlackService.get_channel("C123") }
+    assert_not_kind_of SlackService::TransientError, error
+    assert_equal "channel_not_found", error.code
+    assert_equal 1, test_client.call_count
+  end
+
   test "network retries back off exponentially instead of a flat cadence" do
     mock_response = OpenStruct.new(channel: OpenStruct.new(id: "C123"))
 
