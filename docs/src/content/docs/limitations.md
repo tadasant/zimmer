@@ -2447,6 +2447,15 @@ Fixed in [#55](https://github.com/tadasant/zimmer/issues/55) and
 [#397](https://github.com/tadasant/zimmer/issues/397). What survives is the edge of what Zimmer
 can verify from its own side, which no issue closes.
 
+### Only strad gets a remote approval address, and its host is in code
+
+A remote MCP server learns where to send an approval request only from the `X-Elicitation-Url`
+header, and Zimmer writes that header for one host: `strad.tadasant.com`, a constant in
+`RuntimeConfigPostProcessor` ([details](/sessions/elicitation/#a-remote-server-strads-x-elicitation-url-header)).
+Another remote server that wants confirmations needs a code change, not a catalog edit. A staging or
+local Zimmer sends strad its own base URL, which strad's production allowlist refuses, so a
+confirmation-gated send through strad works only from production.
+
 ### On Codex, a clone's `.env` reaches the agent but not its stdio MCP servers
 
 Codex rebuilds every MCP server's environment from `HOME`/`LANG`/`PATH`/`PWD`/`SHELL` plus what the

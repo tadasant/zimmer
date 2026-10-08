@@ -15,7 +15,8 @@
 #      local-dev or staging session orchestrates itself, not production, and stamp
 #      each with `session_id` so its tools know which session is calling them.
 #   4. Write the elicitation address (ELICITATION_REQUEST_URL / _SESSION_ID) into
-#      every stdio server's own `env` table.
+#      every stdio server's own `env` table, and into the `X-Elicitation-Url`
+#      header of every HTTP entry pointing at strad.
 #   5. Resolve ${VAR} interpolations from SecretsLoader.
 #   6. Pin every npx server's npm cache inside the clone (NPM_CONFIG_CACHE), so no
 #      server resolves against the host-shared `~/.npm/_npx`.
@@ -49,6 +50,11 @@
 # Subclasses append the names of any auto-injected servers to
 # #injected_mcp_servers so callers can record them in session metadata.
 class RuntimeConfigPostProcessor
+  # The header strad reads a caller's approval URL from, and the one host it is
+  # sent to (see #inject_elicitation_header!).
+  ELICITATION_URL_HEADER = "X-Elicitation-Url"
+  ELICITATION_HEADER_HOST = "strad.tadasant.com"
+
   attr_reader :session, :working_directory, :file_system, :injected_mcp_servers
 
   # @param session [Session] the session being prepared
@@ -83,6 +89,7 @@ class RuntimeConfigPostProcessor
     retarget_zimmer_servers_to_current_env!(servers)
     stamp_session_id_on_zimmer_servers!(servers)
     inject_elicitation_env!(servers)
+    inject_elicitation_header!(servers)
     resolve_secrets!(servers)
     pin_npx_caches_to_clone!(servers)
     apply_startup_timeouts!(servers)
@@ -125,6 +132,7 @@ class RuntimeConfigPostProcessor
     # the two paths stay identical: a stdio server that ever reaches here must not
     # be the one server on the instance that silently loses its approval address.
     inject_elicitation_env!(servers)
+    inject_elicitation_header!(servers)
     resolve_secrets!(servers)
     # Also a no-op today, and for the same reason: nothing reachable here is an npx
     # entry. It runs anyway so the two paths stay identical, on the same argument as
@@ -382,6 +390,69 @@ class RuntimeConfigPostProcessor
     # process; this is the other half.
     Rails.logger.info "[#{self.class.name}] Wrote #{ElicitationEndpoint::VARIABLES.join(' + ')} " \
       "into the env of #{written.size} stdio MCP server(s): #{written.join(', ')}"
+  end
+
+  # The HTTP twin of #inject_elicitation_env!: tell strad where this session's
+  # approvals go, as the `X-Elicitation-Url` header on every request it gets.
+  #
+  # A stdio server learns the address from its environment. A remote server has
+  # no environment Zimmer can write, so strad reads it per request instead, and
+  # its confirmation-gated tools (a Gmail `send_email` on a slug with
+  # `confirmations: true`) refuse — fail-closed — when the header is missing or
+  # names anything outside its allow-listed prefix, which is this instance's
+  # `/api/v1/elicitations/session/`. A catalog `"${ELICITATION_REQUEST_URL}"`
+  # header cannot do this job: #resolve_secrets! fills `${VAR}` from Zimmer's own
+  # secrets and ENV, which carry no session, so the value has to be written here,
+  # per session.
+  #
+  # Strad only, matched on the exact host over https. The URL is a capability:
+  # whoever holds it can raise approval prompts in this session, so it goes to
+  # the one server Zimmer trusts with it and to no other HTTP server, however
+  # similar its name.
+  #
+  # Precedence: Zimmer's value replaces any catalog copy, under any casing of the
+  # header name, for the reason #inject_elicitation_env! gives — the address of
+  # Zimmer's own endpoint is Zimmer's to know. Unlike the env version, a clone's
+  # `.env` does not override it: strad refuses every address but this instance's.
+  #
+  # The host is read before #resolve_secrets!, so a strad entry whose `url` is a
+  # `${VAR}` interpolation does not parse and gets no header. Catalog strad URLs
+  # are literals.
+  def inject_elicitation_header!(servers)
+    return if session&.id.blank?
+
+    url = ElicitationEndpoint.session_url(session.id)
+
+    written = servers.filter_map do |name, entry|
+      next unless entry.is_a?(Hash)
+      next unless elicitation_header_host?(entry["url"])
+
+      headers = (entry[http_headers_key] ||= {})
+      next unless headers.is_a?(Hash)
+
+      headers.delete_if { |header, _| header.to_s.casecmp?(ELICITATION_URL_HEADER) }
+      drop_forwarded_credential_header!(entry, ELICITATION_URL_HEADER)
+      headers[ELICITATION_URL_HEADER] = url
+      name
+    end
+
+    return if written.empty?
+
+    Rails.logger.info "[#{self.class.name}] Wrote #{ELICITATION_URL_HEADER}=#{ElicitationEndpoint.loggable_url(url)} " \
+      "into the headers of #{written.size} strad MCP server(s): #{written.join(', ')}"
+  rescue StandardError => e
+    # Same trade as #elicitation_env: a send that strad refuses is a degraded
+    # gate, a session that fails to prepare is a dead one.
+    Rails.logger.warn "[#{self.class.name}] Skipping #{ELICITATION_URL_HEADER} injection: #{e.class}: #{e.message}"
+  end
+
+  def elicitation_header_host?(url)
+    return false if url.blank?
+
+    uri = URI.parse(url.to_s)
+    uri.scheme == "https" && uri.host.to_s.casecmp?(ELICITATION_HEADER_HOST)
+  rescue URI::InvalidURIError
+    false
   end
 
   # Tell every Zimmer MCP entry in this config which session it belongs to.
