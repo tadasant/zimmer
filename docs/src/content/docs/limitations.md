@@ -506,7 +506,7 @@ than a discovery, but it is still a log nobody reads on a green deploy.
 
 The firewall now permits **zero public TCP**. On a `recreate_droplet` rebuild, if `tailscale up` fails
 — an expired or exhausted auth key is the likely way, and the key is frozen into `user_data` at first
-boot (the staging deploy now mints a fresh key per run from `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`, so
+boot (the staging deploy mints a fresh key per run from `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`, so
 this bites only when that client is unset and the 90-day `TAILSCALE_AUTH_KEY` fallback has lapsed, as
 it did on 2026-10-08) — then there is no tailnet, so no Tailscale SSH; `:2222` is unreachable from outside the tailnet;
 there is no public `:22`; and Kamal cannot reach the box either. `runcmd` has no `set -e`, so the boot
