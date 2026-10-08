@@ -12,7 +12,7 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     schema = definition[:inputSchema]
 
     assert_equal "action_session", definition[:name]
-    assert_equal %w[update_notes update_title set_heartbeat pause_into_spot_queue message_parent archive], schema[:properties][:action][:enum]
+    assert_equal %w[update_notes update_title set_heartbeat pause_into_spot_queue rest_in_needs_input message_parent archive], schema[:properties][:action][:enum]
     assert_equal %w[session_id action], schema[:required]
     assert_match(/self-management/, definition[:description])
   end

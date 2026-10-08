@@ -56,7 +56,7 @@ of an edge leaves a row that asserts nothing.
 
 A parent reaches a child with `follow_up`, which is a general capability: it names any session and
 reaches it. The reverse — a child reaching the session that started it — is
-[`message_parent`](/extend/mcp-server/#message_parent-the-one-action-that-exists-only-here), and it
+[`message_parent`](/extend/mcp-server/#message_parent-the-action-with-no-target), and it
 is deliberately not general. The caller names no target; Zimmer reads `parent_session_id`.
 
 That is what makes it safe to put on the `self_session` MCP surface injected into every session,

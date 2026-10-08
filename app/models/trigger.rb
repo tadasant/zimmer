@@ -1561,6 +1561,9 @@ class Trigger < ApplicationRecord
     # auto-continue, resuming work a human deliberately stopped. Clearing last
     # means a failed sleep leaves the session exactly as it was found.
     clear_stale_user_pause!(session)
+    # Arming a wake is the session deciding to wait again, so an earlier
+    # hand-back to a human no longer describes it (Session::HANDED_BACK_TO_HUMAN).
+    session.remove_metadata!(Session::HANDED_BACK_TO_HUMAN) if session.handed_back_to_human?
   rescue => e
     Rails.logger.error(
       "[Trigger#sleep_target_session_if_applicable] Failed to auto-sleep session #{last_session_id} " \
