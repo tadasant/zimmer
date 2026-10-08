@@ -1822,7 +1822,7 @@ repaired from Zimmer's stored bytes before the resume.
 | Quota exhausted → rotate accounts, then park | `/hit your\b.*\blimit\b.*\bresets\b/i` | `api_error_retry_service.rb` |
 | Unparseable tool call → retry with backoff | `/tool call could not be parsed/i`, `/tool call was malformed/i` | `api_error_retry_service.rb` |
 | Safeguards rejection → fail with the CLI's remedies, no retry | `/safeguards flagged this message/i`, `%r{flagged.{0,200}anthropic\.com/legal/aup}im` | `api_error_retry_service.rb` |
-| Auth lost → adopt/rotate/wait, respawn, then park | the `error` types `authentication_failed` / `oauth_error`, plus a prose net | `auth_recovery_service.rb` |
+| Auth lost → adopt/rotate/wait, respawn, then park | the `error` types `authentication_failed` / `oauth_error` / `oauth_org_not_allowed`, plus a prose net | `auth_recovery_service.rb` |
 | Context overflow → compact and retry | a pattern list | `context_length_retry_service.rb` |
 | Corrupted npx cache → delete it | `ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT` | `npx_cache_heal_service.rb` |
 | Held runtime session id → resume it, or mint a new one | `/session id\b.*\balready in use/i` | `claude_retry_strategy.rb` |

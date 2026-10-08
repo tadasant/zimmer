@@ -222,6 +222,23 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
       "The structured error type must classify the failure even when the message text is unrecognizable"
   end
 
+  # Claude Code 2.1.293 emits this structured type when the selected OAuth
+  # identity belongs to an organization that disabled subscription access. The
+  # account is unusable for Claude Code, but another account in the pool may be
+  # healthy, so this must enter the auth recovery/rotation path rather than fail
+  # the session as an unclassified terminal API error.
+  test "detects oauth_org_not_allowed as a recoverable account auth error" do
+    setup_transcript_directory
+    @mock_file_system.write(@transcript_file, <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Continue"}]}}
+      #{api_error_json("Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access", error_type: "oauth_org_not_allowed")}
+    JSONL
+
+    service = create_service
+    assert service.auth_error_detected?("/tmp/test-clone"),
+      "The exact entry that failed production sessions 19240, 20141, 22951, and 22955 must route to auth recovery"
+  end
+
   # ...and so is the prose, for the entries the runtime records with an empty type.
   test "detects 'Failed to authenticate' prose on an entry with no error type" do
     setup_transcript_with_auth_error("Failed to authenticate: OAuth session expired and could not be refreshed")

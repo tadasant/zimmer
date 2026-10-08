@@ -121,7 +121,13 @@ class AuthRecoveryService
   #
   # whose text matched none of the prose below, so no classifier claimed it, and
   # the turn — a human's unanswered message — was parked as if it had completed.
-  AUTH_ERROR_TYPES = %w[authentication_failed oauth_error].freeze
+  # `oauth_org_not_allowed` is emitted when an otherwise-valid OAuth identity
+  # belongs to an organization that has disabled Claude subscription access.
+  # That is still an account-scoped authentication rejection: rotating away
+  # from the rejected identity is the same recovery needed for an expired or
+  # revoked OAuth token. Production sessions 19240, 20141, 22951, and 22955
+  # exposed this Claude Code wording on 2026-10-08.
+  AUTH_ERROR_TYPES = %w[authentication_failed oauth_error oauth_org_not_allowed].freeze
   CONVERSATIONAL_ENTRY_TYPES = %w[user assistant].freeze
 
   # Prose fallback, for entries the runtime records with an EMPTY error type —

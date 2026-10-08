@@ -896,7 +896,8 @@ answer. Recovery is bounded by `MAX_RECOVERY_ATTEMPTS` attempts within `CONSECUT
 
 It recognizes the failure two ways, and the order matters:
 
-1. **The error type.** `AUTH_ERROR_TYPES` — `authentication_failed`, `oauth_error` — matched against
+1. **The error type.** `AUTH_ERROR_TYPES` — `authentication_failed`, `oauth_error`,
+   `oauth_org_not_allowed` — matched against
    the transcript entry's `error` field. This is the machine-readable half of the signature and the
    half that does not move when the prose does.
 2. **The prose.** `AUTH_RECOVERABLE_ERROR_PATTERN` — `not logged in`, `please run /login`, `failed to
