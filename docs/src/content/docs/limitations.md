@@ -5894,6 +5894,13 @@ so the round trip is covered. Three things still are not:
    The migration therefore cannot finish on its own for console-written values.
 3. **The fake still does not model `:render`'s validation**, so the blind spot above is unchanged
    for anything that reaches `:render` with structural bytes.
+4. **Rotating a console-written value from Zimmer breaks it.** `WriteClient#upsert` adds a
+   literal-bytes Secret Manager version and writes an envelope only when the parameter has none, so
+   the console's `"encoding":"base64url"` envelope stays in place over bytes that are not base64url.
+   The resolver then refuses the value (or, for bytes that happen to be valid base64url, decodes
+   them to the wrong value), and `ManagedSecret#write`'s read-back verify reports the write as
+   failed. Rotate a value through the same surface that created it: if it was written in the
+   Secrets Console, rotate it there.
 
 ## A store value that is not valid UTF-8 is refused
 
