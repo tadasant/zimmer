@@ -727,8 +727,13 @@ reply to the next. A session per thread keeps each sender in a session of its ow
 Each thread's spawn commits together with its place in the seen-set. A fire that raises is retried
 next tick, and a fire that succeeded is never repeated. The cursor (`last_message_ts`) moves only
 when every thread was settled. A thread that raised, was held by `skip_if_pending_session`, or was
-past the ten fires one tick allows keeps the cursor still, and the next tick reads it again. A
-burst-suppressed fire is dropped, as on Slack. A condition the poller has never seen is baselined:
+past the ten fires one tick allows keeps the cursor still, and the next tick reads it again. A held
+fire still commits what the trigger recorded about the missed fire, so a reused session that never
+takes its follow-ups pages as it does for any trigger. A burst-suppressed fire is dropped, as on
+Slack. A message the server will not return five ticks running is given up on, marked seen and
+reported once, so one unreadable mail cannot hold the cursor for good. The seen-set keeps an id for
+the look-back window plus five minutes, which covers clock skew between Zimmer and Google, so a mail
+is never forgotten while a search could still return it. A condition the poller has never seen is baselined:
 what is already in the window goes into the seen-set, so turning a trigger on never answers old mail.
 Changing a condition's `query` or `include_automated` drops its cursor and baselines the new
 search, so mail that already matched it is not answered as new.
@@ -742,7 +747,8 @@ answer within the minute. Set the trigger's scheduling class to priority if they
 Everything in a message is what its sender wrote: the body, the subject, the `From:` line, even the
 `To:` line. `From:` is spoofable, and the mailbox server does not expose the SPF, DKIM or DMARC
 results. So a trigger with an `email` condition **must** fence the three variables the sender fills.
-A template that writes `{{text}}`, `{{author}}` or `{{title}}` bare is refused at save. Write
+A template that writes `{{text}}`, `{{author}}` or `{{title}}` bare is refused at save, and the
+poller refuses to fire one that got past the save (a condition attached through `/supervisor`). Write
 `{{text|untrusted}}`, `{{author|untrusted}}` and `{{title|untrusted}}`. `{{message_id}}` and
 `{{thread_id}}` are Gmail ids, rendered only as letters and digits, and `{{link}}` is the Gmail link
 the server builds from the id. Those three may be bare.

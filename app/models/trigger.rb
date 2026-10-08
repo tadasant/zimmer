@@ -659,6 +659,11 @@ class Trigger < ApplicationRecord
     USER_INPUT_VARIABLES.select { |var| named.include?(var) }
   end
 
+  # The variables an email's sender fills (EMAIL_SENDER_VARIABLES) that this template writes bare.
+  def unfenced_email_sender_variables
+    EMAIL_SENDER_VARIABLES & bare_placeholder_names
+  end
+
   # Whether this trigger's template identifies the GitHub item on its own.
   def references_github_context?
     GITHUB_IDENTITY_VARIABLES.intersect?(template_placeholder_names)
@@ -1429,7 +1434,7 @@ class Trigger < ApplicationRecord
     return if workflow_backed?
     return unless trigger_conditions.any? { |condition| condition.condition_type == "email" && !condition.marked_for_destruction? }
 
-    bare = EMAIL_SENDER_VARIABLES & bare_placeholder_names
+    bare = unfenced_email_sender_variables
     return if bare.empty?
 
     errors.add(:prompt_template, "must fence what an email's sender wrote: write #{bare.map { |name| "{{#{name}|untrusted}}" }.join(', ')} " \
