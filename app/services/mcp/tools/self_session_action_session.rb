@@ -9,18 +9,23 @@ module Mcp
     class SelfSessionActionSession < ActionSession
       tool_name "action_session"
 
-      # `message_parent` is on this surface and NOT on the full one, which is the
-      # only action of which that is true. It is not a self-management action
-      # that happens to be safe here — it is only definable here: it takes no
-      # target, because the target is whatever `parent_session_id` says, and a
-      # caller that could name the target would be holding a general
-      # session-to-session messaging primitive instead. The full surface already
+      # `message_parent` is on this surface and NOT on the full one. It is not a
+      # self-management action that happens to be safe here — it is only
+      # definable here: it takes no target, because the target is whatever
+      # `parent_session_id` says, and a caller that could name the target would
+      # be holding a general session-to-session messaging primitive instead. The full surface already
       # has that, spelled `follow_up`.
-      ACTIONS = %w[update_notes update_title set_heartbeat pause_into_spot_queue message_parent archive].freeze
+      #
+      # `rest_in_needs_input` is the other self-only action. It is a statement
+      # about the turn the caller is in — "this one ends with a human" — and only
+      # the session in that turn can make it truthfully.
+      ACTIONS = %w[update_notes update_title set_heartbeat pause_into_spot_queue rest_in_needs_input message_parent archive].freeze
 
-      SELF_ACTION_DESC = 'Action to perform: "update_notes", "update_title", "set_heartbeat", "pause_into_spot_queue", "message_parent", "archive"'
+      SELF_ACTION_DESC = 'Action to perform: "update_notes", "update_title", "set_heartbeat", "pause_into_spot_queue", "rest_in_needs_input", "message_parent", "archive"'
 
       SELF_QUEUE_PROMPT_DESC = 'Optional for "pause_into_spot_queue": what you want to be resumed with when the queue reaches you, in place of the default nudge. Write it to your future self — you will read it cold, with no memory of this turn beyond the transcript.'
+
+      SELF_CANCEL_WAKES_DESC = 'Optional for "rest_in_needs_input". Leave it unset to keep your wakes armed, so a wake can still resume you if it fires before the human answers. Set it to true to cancel every one-time wake armed on yourself — `wake_me_up_later` backstops and `wake_me_up_when_session_changes_state` watchers — when the wait they were for no longer has a reason.'
 
       SELF_FORCE_DESC = 'Optional for "archive". Archiving discards any message still queued for this session — nothing delivers a queued message once the session is in the trash — so an archive over a non-empty queue is refused by default, and the error names what would be lost. Leave this alone in almost every case: a message sitting in the queue arrived while you were working and you have not seen it, so the right move is to NOT archive, end your turn, and let it be delivered as your next turn — archiving after that succeeds because the queue is empty. Set it to true ONLY when you have read the message in the error and are deliberately throwing it away.'
       SELF_ACTING_SESSION_ID_DESC = 'Optional for "archive": your own session ID, recorded as provenance on the archived session\'s timeline. Set it when you archive yourself, so the line reads as a self-archive rather than as an undeclared caller — that distinction is what lets a human later tell a session that finished its work from one that was archived out from under it by something else.'
@@ -40,6 +45,7 @@ module Mcp
         - **update_notes**: Update the notes on a session (requires "session_notes")
         - **update_title**: Update the title of a session (requires "title")
         - **set_heartbeat**: Toggle this session's own heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When the heartbeat is enabled and this session sits in needs_input, a recurring nudge prompts it to keep working toward its goal. If you are genuinely blocked or done, set "enabled" to false to stop the nudges.
+        - **rest_in_needs_input**: Make the turn you are in end in `needs_input` — on the human's homepage action queue — instead of going back to sleep on a wake you have armed. Reach for it whenever your final message asks a human for something: a decision, an approval, an answer, a merge. Without it, a turn in which you arm a wake ends asleep in `waiting`, and while a `wake_me_up_later` backstop is armed so does every later turn — including one that answered a human's follow-up — so the human does not see you until the wake fires, possibly hours later. The hand-back lasts until you arm a new wake: a later follow-up, or a recovery after an interrupted turn, does not put you back to sleep on the old one. Your wakes stay armed by default, so whichever comes first, the human's reply or a wake, resumes you ("I need you, and wake me if the child finishes first"). Pass "cancel_wakes": true to also cancel every one-time wake armed on yourself, when the wait no longer has a reason. Do NOT arm a short dummy wake to destroy a backstop; this is the supported way. Call it LAST in the turn — a wake armed after it puts you back to sleep — then end the turn. It does not override a spot-queue park or another sleep you asked for without a wake.
         - **message_parent**: Send a message to the session that started this one (requires "message" and "reason"; optional "force_immediate", "unarchive_parent"). You name no target — Zimmer resolves your parent itself, and there is no way to message any other session from here. Reach for it when you were handed a goal you cannot accomplish because of what you ARE rather than what you did: the work belongs to a different agent root ("wrong_scope"), or you were not given an MCP server, credential, or privilege it needs ("missing_tools"). Your parent is the session that chose your scope and your tools, so it is the one that can fix either — tell it what went wrong and what would unblock it, rather than filing an issue or parking in needs_input for a human. A running parent takes the report on its queue and reads it when its turn ends; a parent asleep or waiting takes it now. An archived or failed parent is refused, with the error naming what to do instead.
         - **pause_into_spot_queue**: Put yourself to sleep in the spot queue instead of at a wall-clock time. Use it in place of `wake_me_up_later` whenever the honest answer to "when should I come back" is "whenever there is quota headroom for me" rather than a time you would be inventing — waiting on nothing in particular, or on work that is not yours and has no deadline. You go dormant in "waiting" with NO wake-up trigger, and Zimmer resumes you when a Claude Code account is under both quota targets and a session slot is free, highest precedence first. It also cancels any one-time wake you had armed, and makes this session "spot" if it was "priority" — a priority session cannot sit in the queue. This is NOT the tool for waiting on a specific event or a deadline: `wake_me_up_later` and `wake_me_up_when_session_changes_state` are, and a session parked here is behind however much of the queue outranks it. End your turn after calling it.
         - **archive**: Archive a session (marks as completed). Refused when a message is still queued for the session — archiving discards it, and nothing delivers a queued message once the session is in the trash. The refusal is almost always right: a message that arrived while you were working is one you have not seen, so end your turn instead and it is delivered as your next turn, after which archiving succeeds. Set "force" to true only when you have read the message and are deliberately throwing it away.
@@ -49,6 +55,7 @@ module Mcp
         - Set a meaningful session title
         - Turn off this session's heartbeat when blocked or finished (set_heartbeat with enabled=false)
         - Park yourself in the spot queue when there is nothing to wait FOR, only quota to wait ON
+        - Hand back to a human while a wake is armed, so you rest in `needs_input` where they will see you (rest_in_needs_input)
         - Tell the session that started you that it handed you work you cannot do — the wrong agent root, or a missing MCP server or credential (message_parent)
         - Archive the session when work is complete
 
@@ -79,6 +86,7 @@ module Mcp
           enabled: { type: "boolean", description: ENABLED_DESC },
           interval_seconds: { type: "number", description: INTERVAL_SECONDS_DESC },
           prompt: { type: "string", description: SELF_QUEUE_PROMPT_DESC },
+          cancel_wakes: { type: "boolean", description: SELF_CANCEL_WAKES_DESC },
           # Carried on this narrowed schema deliberately. A session archiving
           # itself is the caller that meets the queued-message refusal most, and
           # without `force` here it would be the one caller with no way past it.
@@ -106,6 +114,7 @@ module Mcp
       # anybody asked for.
       def dispatch(action, args)
         return message_parent(args) if action == "message_parent"
+        return rest_in_needs_input(find_session(args["session_id"]), args) if action == "rest_in_needs_input"
 
         super
       end
@@ -134,6 +143,44 @@ module Mcp
         raise ToolError, result.error unless result.success?
 
         message_parent_result(child, result)
+      end
+
+      # End the caller's turn in `needs_input` rather than asleep on its own
+      # wakes. See Sessions::RestInNeedsInput for what is and is not overridden.
+      def rest_in_needs_input(session, args)
+        result = Sessions::RestInNeedsInput.call(session: session, cancel_wakes: boolean(args["cancel_wakes"]))
+        session.reload
+
+        cancelled = result.cancelled_trigger_ids
+        rest = if result.unconditional_sleep_reason
+          "`waiting`, NOT needs_input — a sleep that does not depend on a wake is still set " \
+            "(#{result.unconditional_sleep_reason}), and this action does not override it"
+        elsif session.running?
+          "`needs_input` when this turn ends"
+        else
+          "`needs_input`"
+        end
+
+        lines = [
+          "## Resting In Needs Input",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Comes to rest in:** #{rest}"
+        ]
+        lines << "- **Dropped:** the #{result.dropped_sleep_reason} re-sleep this turn was going to end in" if result.dropped_sleep_reason
+        lines << "- **Cancelled:** wake trigger(s) #{cancelled.join(', ')}" if cancelled.any?
+        lines << if result.wakes_still_armed
+          "- **Wakes:** still armed — the human's reply or the first wake to fire, whichever comes first, resumes this session"
+        else
+          "- **Wakes:** none armed — only a message resumes this session"
+        end
+        lines << ""
+        lines << "End your turn now with the message you want the human to read. Arming a wake after this " \
+                 "call puts the session back to sleep. A wake that already fired before this call is not " \
+                 "undone: its prompt is queued and arrives as your next turn."
+        lines.join("\n")
+      rescue Sessions::RestInNeedsInput::Error => e
+        raise ToolError, e.message
       end
 
       # The one place this surface DOES enforce its aim, and the exception is
