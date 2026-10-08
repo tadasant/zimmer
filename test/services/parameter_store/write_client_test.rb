@@ -125,6 +125,16 @@ module ParameterStore
       assert @fake.parameters.key?(id), "the foreign parameter must still be there"
     end
 
+    test "delete refuses a pair whose secret half is labelled by some other manager" do
+      @fake.seed_console_secret("OPENROUTER_API_KEY", "sk-live-value")
+      id = Namespace.parameter_id(Namespace.parameter_path("OPENROUTER_API_KEY"))
+      @fake.secret_labels[id] = { "managed-by" => "terraform" }
+
+      assert_raises(StoreError) { @writer.delete("OPENROUTER_API_KEY") }
+      assert @fake.parameters.key?(id), "nothing may be removed when either half is foreign"
+      assert @fake.secrets.key?(id)
+    end
+
     test "delete refuses a secret Zimmer does not manage" do
       id = Namespace.parameter_id(Namespace.parameter_path("OPENROUTER_API_KEY"))
       @fake.secrets[id] = [ "somebody-elses-value" ]
@@ -196,7 +206,8 @@ module ParameterStore
     test "delete refuses a path that does not name the variable it was given" do
       # `path:` alone decides the id, so without this the variable is decorative
       # and delete("A", path: path_of("B")) would remove B. The managed-by label
-      # fence cannot catch it — every Zimmer pair carries the same label.
+      # fence cannot catch it — every pair in Zimmer's namespace carries an
+      # accepted label.
       other = Namespace.legacy_parameter_path("SOMETHING_ELSE")
       @fake.seed_secret("SOMETHING_ELSE", "x", path: other)
       other_id = Namespace.parameter_id(other)
