@@ -4803,6 +4803,41 @@ linked device removed, number banned) shows up only as the WhatsApp liveness hea
 Re-linking needs a person with the phone: call the bridge's `whatsapp_pair` and enter the code under
 *Linked devices*.
 
+### Email: who sent it is a claim, and automated mail is recognised by approximation
+
+The [`email` trigger](/sessions/triggers/#email) reads mail through a Gmail-tool MCP server, and that
+server prints only Subject, From, To, Cc, Date, labels, body and attachment names. It does not expose
+the raw headers. Two things follow:
+
+- **No sender verification.** `From:` is spoofable, and the SPF, DKIM and DMARC results are not
+  visible to Zimmer. Gmail sends mail that fails them to spam, and spam never fires, but anything
+  that passes is still only a claim about who sent it. The template must fence the mail as untrusted
+  (it is refused otherwise), and a session must not act on a mail's instructions because of who it
+  says it is from.
+- **`Auto-Submitted`, `List-*` and `Precedence: bulk` are not read.** Gmail's own categories stand in
+  for them (promotions, social, forums, updates), plus a sender pattern (`mailer-daemon@`,
+  `no-reply@`, …) and an auto-reply subject pattern. An out-of-office reply with an unusual subject
+  from an ordinary address gets through, so a session that answers mail should not answer an
+  auto-reply. The other way round, a real person's mail that Gmail files under Updates is skipped
+  without a trace, unless the condition sets `include_automated`.
+
+### Email: one mailbox, one session per thread, and attachments by name only
+
+- Every `email` condition reads the one mailbox `EMAIL_MCP_URL` names. Two mailboxes need two
+  deployments, or a change to make the URL per condition.
+- A reply that arrives later in a thread starts a new session, unless the trigger sets
+  `reuse_session`, and then every thread shares one session. Nothing routes a thread back to the
+  session that answered it before.
+- The prompt names attachments but does not carry them. The session reads them with
+  `download_email_attachments` if its MCP servers include the mailbox.
+- The mailbox server's search returns at most 100 messages, newest first, and has no pagination. The
+  poller searches from ten minutes before its cursor, and the cursor stays still while a thread is
+  held or failing. So if more than 100 matching messages arrive between the cursor and now, the
+  oldest are never seen. That is ten minutes on a healthy poller, and longer while something holds
+  the cursor.
+- A message the mailbox server will not return five ticks running (a body past the MCP client's
+  2 MB response cap, say) is given up on: marked seen, reported once, and never fired.
+
 ### GitHub is polled, and the webhooks have no public way in
 
 GitHub PR status and comments are polled every 30 seconds per open PR. A 30-second latency floor and
