@@ -1432,7 +1432,17 @@ for the whole instance, and every cron tick that lands meanwhile is rejected rat
 `SlackTriggerPollerJob` does not wait out a Slack outage on its slot. `SlackService` absorbs a short
 blip in process (`MAX_RETRIES = 3`, backing off 1s, 2s, 4s; a 429's `retry_after` is honored verbatim
 when Slack gives one, but only ridden out in process when it is 8s or under), and raises
-`SlackService::TransientError` for anything longer. The job answers that by calling `retry_job` with
+`SlackService::TransientError` for anything longer. A blip here means a network failure, a 429, or
+one of Slack's own server-side error codes (`fatal_error`, `internal_error`, `service_unavailable`,
+`request_timeout`), which Slack sends as HTTP 200 with `ok: false`. Every other Slack error code
+(`channel_not_found`, `missing_scope`, …) is a plain `ApiError`, raised at once and never retried.
+`chat.postMessage` is the exception to the in-process retry: Slack documents `fatal_error` and
+`internal_error` as possibly partly applied, so a server-side error there comes straight back as a
+`TransientError` rather than risking a double post. A `TransientError` that escapes a condition
+aborts the whole sweep rather than just that condition, on the reasoning that Slack failing for one
+condition is about to fail for the rest, so a server-side error that keeps recurring for a single
+condition holds every condition's polling back until the deferral chain gives up and pages.
+The job answers a `TransientError` by calling `retry_job` with
 an exponential wait (30s, 60s, 120s, 240s, 480s — or Slack's `retry_after` if longer, capped at 10
 minutes) and returning, freeing the thread.
 
