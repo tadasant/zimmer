@@ -421,6 +421,47 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
 
     assert_equal :unusable, plan.outcome
     assert @primary.reload.access_disabled?
+    assert_not @primary.is_current?,
+      "The spawn path reads the current account's token without its status, and this token still authenticates"
+  end
+
+  test "an org-level refusal still rotates when the bench cannot be written" do
+    spawned_as!(@primary.email)
+    ClaudeAccount.any_instance.stubs(:disable_access!).raises(ActiveRecord::RecordInvalid)
+
+    plan = coordinator.resolve!("/tmp/test-clone", access_disabled: true)
+
+    assert_equal :rotated, plan.outcome
+    assert_not_equal @primary.email, plan.account.email,
+      "The refused token passes the probe, so the re-seed branch would hand the same account back"
+  end
+
+  test "an org-level refusal with no recorded identity benches the current account" do
+    plan = coordinator.resolve!("/tmp/test-clone", access_disabled: true)
+
+    assert_equal :rotated, plan.outcome
+    assert @primary.reload.access_disabled?
+  end
+
+  test "an org-level refusal with nothing current benches the spawned identity and adopts a healthy one" do
+    spawned_as!(@primary.email)
+    ClaudeAccount.for_runtime("claude_code").update_all(is_current: false)
+
+    plan = coordinator.resolve!("/tmp/test-clone", access_disabled: true)
+
+    assert @primary.reload.access_disabled?
+    assert_equal :adopted, plan.outcome
+    assert_not_equal @primary.email, plan.account.email
+  end
+
+  test "a second session refused on an already-benched account does not re-bench it" do
+    spawned_as!(@primary.email)
+    @primary.disable_access!
+    ClaudeAccount.any_instance.expects(:disable_access!).never
+
+    plan = coordinator.resolve!("/tmp/test-clone", access_disabled: true)
+
+    assert_equal :rotated, plan.outcome
   end
 
   # The flag is per-call: a later ordinary auth failure must take the ordinary

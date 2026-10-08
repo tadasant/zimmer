@@ -1947,8 +1947,8 @@ off. So the bench lasts until a human logs the account in again on `/inference`,
 puts the account back in the pool, and the next session that lands on it benches it again.
 
 Benching happens only inside an auth recovery. A session whose recovery budget is already spent when
-the refusal arrives parks without benching, and the next session to land on the account does the
-benching.
+the refusal arrives parks without benching, and so does a status-summary fork, which is refused
+before recovery runs. The next session to land on the account does the benching.
 
 ### An Anthropic outage makes the account probes inconclusive, and they promote anyway
 

@@ -165,8 +165,10 @@ class AuthRecoveryService
   ).freeze
 
   # Whether an auth failure (see .auth_error?) means the account itself has been
-  # refused. Same precedence as .auth_error?: the error type decides when there
-  # is one, and the prose only speaks for an untyped entry.
+  # refused. Narrower than .auth_error? on purpose: a typed entry counts only
+  # when its type is in ACCESS_DISABLED_ERROR_TYPES, and the prose speaks only
+  # for an untyped entry. Benching takes an account out of the pool until a
+  # human acts, so it needs the stronger evidence.
   #
   # @param error_type [String, nil] the entry's `error` field
   # @param message_text [String, nil] the entry's rendered text content
