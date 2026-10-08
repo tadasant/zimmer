@@ -3205,6 +3205,18 @@ catalog was fine all along.
 
 Replaced the web-side refresh thread tracked in [#98](https://github.com/tadasant/zimmer/issues/98).
 
+### A renamed artifact is dropped from a session, not followed to its new name
+
+When the catalog renames or removes an MCP server, skill, hook or plugin that a session already
+names, the session's next `air prepare` drops the stale id rather than fail
+([zimmer#1257](https://github.com/tadasant/zimmer/issues/1257)). It does not know the successor:
+`gmail-tadas412-readonly` → `gmail-tadas412-ro` leaves the session with no Gmail server at all, and the
+agent is told so in a `<dropped-catalog-artifacts>` prompt block. There is no alias map. A rename that
+should carry live sessions with it needs a backfill that repoints the stored ids, as
+`db/migrate/20260801120000_backfill_renamed_open_pr_skill_id.rb` did for `pr` → `open-pr`. The
+dropped ids stay in `custom_metadata["dropped_unknown_catalog_ids"]`, and the notice rides every later
+prompt until someone removes that key.
+
 ### The AIR CLI version is pinned in two places, and the catalog config in two files
 
 `Dockerfile.base` bakes `@pulsemcp/air-cli@0.13.0` (plus four adapters, plus a `.air-version-<v>`

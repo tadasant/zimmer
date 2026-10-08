@@ -2139,6 +2139,27 @@ class Session < ApplicationRecord
     degraded_mcp_servers.filter_map { |server| server["name"].presence }
   end
 
+  # `custom_metadata` key under which AirPrepareService#reconciled_catalog_selection
+  # records the catalog ids it dropped from this session because the AIR catalog
+  # no longer knows them (an artifact renamed or removed after the session was
+  # created — zimmer#1257).
+  DROPPED_UNKNOWN_CATALOG_IDS_KEY = "dropped_unknown_catalog_ids"
+
+  # Catalog ids dropped from this session's selection because the catalog stopped
+  # knowing them, keyed by column (`"mcp_servers"`, `"catalog_skills"`,
+  # `"catalog_hooks"`, `"catalog_plugins"`). The columns themselves no longer
+  # name them — this is the only record of what the session was configured with,
+  # and what AgentSessionJob tells the agent it is running without.
+  #
+  # @return [Hash{String => Array<String>}]
+  def dropped_unknown_catalog_ids
+    recorded = custom_metadata&.dig(DROPPED_UNKNOWN_CATALOG_IDS_KEY)
+    return {} unless recorded.is_a?(Hash)
+
+    recorded.transform_values { |ids| Array(ids).select { |id| id.is_a?(String) && id.present? } }
+      .reject { |_attribute, ids| ids.empty? }
+  end
+
   # Names of the ${VAR} references `air prepare` could not resolve, from the
   # failure metadata AgentSessionJob persists on an air_secret_unresolvable fail.
   # @return [Array<String>]

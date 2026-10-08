@@ -1763,6 +1763,89 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "instead of collapsing to the self-session baseline"
   end
 
+  # zimmer#1257: the follow-up path re-runs `air prepare` for every turn, so a
+  # session naming an MCP server the catalog has since removed failed every
+  # follow-up with AirPrepareError. Runs the REAL AirPrepareService#prepare! down
+  # to the subprocess: the stale id must be dropped before `air prepare`, the
+  # turn must still spawn, and its prompt must tell the agent what it lost.
+  test "follow-up drops an MCP server id the catalog has since removed and tells the agent" do
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone"
+      }
+    )
+    @session.update_column(:mcp_servers, [ "context7", "gmail-tadas412-readonly" ])
+
+    AirPrepareService.stubs(:ensure_air_installed!)
+    AirPrepareService.any_instance.stubs(:write_env_file!)
+    AirPrepareService.any_instance.stubs(:catch_up_catalog_cache!)
+    ClaudeMcpConfigPostProcessor.any_instance.stubs(:post_process!)
+    ClaudeMcpConfigPostProcessor.any_instance.stubs(:injected_mcp_servers).returns([])
+    air_cmd = nil
+    AirPrepareService.any_instance.stubs(:run_air_prepare_command!).with { |cmd, _env| air_cmd = cmd; true }
+
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    new_clone_path = "/tmp/recreated-clone"
+    mock_fs.mkdir_p(new_clone_path)
+    mock_fs.write("#{new_clone_path}/claude_stderr.log", "")
+    mock_process_manager.wait_hook = ->(pid, flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+
+    GitCloneService.stub(:create_clone, ->(*args) {
+      { clone_path: new_clone_path, working_directory: new_clone_path }
+    }) do
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; end
+        mock_poller
+      }) do
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.perform(@session.id, "Check my inbox")
+        end
+      end
+    end
+
+    assert_not_nil air_cmd, "the follow-up must have reached `air prepare`"
+    assert_includes air_cmd, "context7"
+    refute_includes air_cmd, "gmail-tadas412-readonly"
+
+    @session.reload
+    assert_not @session.failed?, "catalog drift must not fail the session"
+    assert_equal [ "context7" ], @session.mcp_servers
+    assert_equal({ "mcp_servers" => [ "gmail-tadas412-readonly" ] }, @session.dropped_unknown_catalog_ids)
+
+    prompt = mock_cli_adapter.executed_commands.last&.dig(:prompt)
+    assert_not_nil prompt, "the turn must still spawn"
+    assert_includes prompt, "Check my inbox"
+    assert_includes prompt, "<dropped-catalog-artifacts>"
+    assert_includes prompt, "- MCP server(s): gmail-tadas412-readonly"
+  end
+
+  test "build_prompt_with_goal leaves the prompt alone when nothing was dropped" do
+    @session.update_column(:custom_metadata, {})
+
+    prompt = AgentSessionJob.new.send(:build_prompt_with_goal, "Do the thing", @session)
+
+    refute_includes prompt, "dropped-catalog-artifacts"
+  end
+
   # zimmer#465: mcp_servers_status was written from exactly one place — the
   # transcript poll loop, once it got as far as McpStatusPersisting. A turn that
   # never got there (a process that died before its transcript appeared, or simply
