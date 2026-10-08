@@ -4,6 +4,35 @@ require "test_helper"
 require "mocha/minitest"
 
 class ClaudeAccountTest < ActiveSupport::TestCase
+  test "disable_access! benches the account in needs_reauth and marks it" do
+    account = claude_accounts(:secondary)
+
+    account.disable_access!
+
+    assert account.reload.needs_reauth?
+    assert account.access_disabled?
+  end
+
+  # A human login (or an operator flipping the status in /supervisor) is the
+  # re-validation; it writes `active` through a callback-running save.
+  test "a save back to active clears the bench" do
+    account = claude_accounts(:secondary)
+    account.disable_access!
+
+    account.update!(status: :active)
+
+    assert_not account.reload.access_disabled?
+  end
+
+  test "a save that leaves the account in needs_reauth keeps the bench" do
+    account = claude_accounts(:secondary)
+    account.disable_access!
+
+    account.update!(priority: 9)
+
+    assert account.reload.access_disabled?
+  end
+
   test "validates email presence" do
     account = ClaudeAccount.new(email: nil)
     assert_not account.valid?

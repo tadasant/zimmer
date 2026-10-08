@@ -138,4 +138,18 @@ class ClaudeAuthProviderTest < ActiveSupport::TestCase
     refute @provider.recover_needs_reauth(account)
     assert account.reload.needs_reauth?
   end
+
+  # An org-disabled account's refresh token still works, so the sweep would put
+  # it straight back in the pool. Benched accounts wait for a human instead.
+  test "a benched account is not a needs_reauth recovery candidate and is not recovered" do
+    account = claude_accounts(:secondary)
+    account.disable_access!
+    account.stubs(:can_refresh_token?).returns(true)
+    account.expects(:refresh_token!).never
+
+    assert_not_includes @provider.needs_reauth_recovery_candidates.map(&:id), account.id
+    refute @provider.recover_needs_reauth(account)
+    assert account.reload.needs_reauth?
+    assert account.access_disabled?
+  end
 end
