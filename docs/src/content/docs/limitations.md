@@ -4119,7 +4119,7 @@ minted into each session's injected MCP config) rather than anything in the grap
 
 ### A child's report to its parent is only as attributable as the caller that sent it
 
-`message_parent` ([MCP](/extend/mcp-server/#message_parent-the-one-action-that-exists-only-here),
+`message_parent` ([MCP](/extend/mcp-server/#message_parent-the-action-with-no-target),
 [REST](/extend/rest-api/#reporting-back-to-the-parent-that-started-you)) resolves its *target*
 server-side — the caller names no session, Zimmer reads `parent_session_id` — so the report cannot be
 pointed at an arbitrary session the way a self-declared uncle edge can. What is still self-declared is
@@ -7536,26 +7536,6 @@ catches a wait the fleet has silently stopped waiting on.
 A held wake is also visible at `/triggers` as an ordinary enabled wake for the length of the turn.
 There is no "held" badge — the row is gone again once the turn comes to rest, and adding a UI state
 for a window measured in minutes was not worth the surface.
-
-## A session that answers a follow-up and then needs the human has no cancel on the default server
-
-A session resumed by a follow-up while it holds a wall-clock wake of its own [goes back to sleep on
-that wake](/sessions/lifecycle/#and-it-goes-back-to-sleep-afterwards) once it has answered, so a
-sleeping router asked a question does not sit in the action queue for the rest of its wait
-([#1212](https://github.com/tadasant/zimmer/issues/1212)). The lever for the other case — the
-answer turns out to be *"I need a decision from you"* — is to cancel the wake, so that the turn
-ends in `needs_input` with nothing armed.
-
-That lever is `action_trigger` on the unscoped `zimmer` MCP server, and it is not on
-`zimmer-self-session`, the server every session is given. A session holding only the self-session
-server cannot cancel its own wake. Its options are to say so and be collected by its own backstop
-— at most one wake interval later, at which point it can stop arming wakes and rest in
-`needs_input` — or to reach the human directly with `send_push_notification`, which the
-self-session server does carry. The debounced `needs_input` push does not fire for it, because it
-is no longer in `needs_input` when the debounce expires.
-
-Adding a cancel to the self-session server is the obvious fix and is not done; the wait it shortens
-is bounded by the backstop the session itself chose.
 
 ## A recovered follow-up keeps its text and loses its attachments
 
