@@ -2667,6 +2667,31 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     job.perform_now
   end
 
+  # #1255, end to end: a Slack fatal_error on conversations.list happens outside
+  # every per-unit rescue in the bot_mention path. Once SlackService has spent its
+  # retries it must reach the poller as a TransientError and defer the poll, not
+  # land in the per-condition rescue that logs ERROR and reports.
+  test "a Slack fatal_error from list_member_channels defers the poll instead of reporting" do
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:bot_user_id).returns("U_BOT_123")
+    SlackService.stubs(:sleep)
+
+    # Only the all-channels bot_mention trigger is enabled, so the sweep's first
+    # Slack call is the conversations.list that failed in production.
+    condition = trigger_conditions(:bot_mention_all_channels_condition)
+    Trigger.where.not(id: condition.trigger_id).update_all(status: "disabled")
+
+    slack_client = mock("slack_client")
+    slack_client.stubs(:conversations_list).raises(Slack::Web::Api::Errors::FatalError.new("fatal_error"))
+    SlackService.stubs(:client).returns(slack_client)
+
+    job = SlackTriggerPollerJob.new
+    ErrorReporter.expects(:report_exception).never
+    job.expects(:retry_job).with(wait: 30)
+
+    job.perform_now
+  end
+
   test "a non-transient condition error still reports and does not defer" do
     SlackService.stubs(:configured?).returns(true)
 
