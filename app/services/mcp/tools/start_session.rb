@@ -137,7 +137,7 @@ On a connection restricted to specific agent roots this parameter is rejected ou
       description <<~DESC
         Start a new agent session in the Zimmer.
 
-        **Not sure which agent root, servers or goal a request needs? Use `quick_router` instead** — it takes the request in plain language and Zimmer works the rest out. This tool is for callers that already know the configuration.
+        **Calling from outside Zimmer (e.g. an assistant acting for a person) and not sure which agent root, servers or goal a request needs? Use `quick_router` instead** — it takes the request in plain language and Zimmer works the rest out. This tool is for callers that know the configuration, which includes every router and agent session inside Zimmer.
 
         **IMPORTANT:** Before starting a session, call get_configs to discover available agent roots, MCP servers, goals, and their defaults.
 
