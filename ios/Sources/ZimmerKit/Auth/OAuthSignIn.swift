@@ -105,8 +105,8 @@ public struct OAuthSignIn: Sendable {
     }
 
     static func formRequest(baseURL: URL, fields: [String: String]) -> HTTPRequest {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
+        // RFC 3986 unreserved, ASCII only.
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         let body = fields.keys.sorted().map { key in
             "\(key)=\(fields[key]!.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")"
         }.joined(separator: "&")

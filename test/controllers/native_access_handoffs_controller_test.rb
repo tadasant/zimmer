@@ -20,6 +20,7 @@ class NativeAccessHandoffsControllerTest < ActionDispatch::IntegrationTest
     jwks = { "keys" => [ @jwk.export ] }
     @fetches = 0
     NativeAccessAssertion.jwks_fetcher = ->(team) { @fetches += 1; @fetched_team = team; jwks }
+    NativeAccessAssertion.reset_forced_refetch!
     Rails.cache.clear
   end
 
@@ -127,6 +128,21 @@ class NativeAccessHandoffsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :found
     assert_equal 2, @fetches
+  end
+
+  test "an unknown key forces at most one re-fetch a minute, so the route cannot be used to hammer the JWKS" do
+    Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
+    stranger = OpenSSL::PKey::RSA.generate(2048)
+    handoff(assertion)
+    3.times { |i| handoff(assertion(key: stranger, kid: "nope-#{i}")) }
+
+    assert_response :forbidden
+    assert_equal 2, @fetches, "one initial fetch, one forced re-fetch, then the cache answers"
+
+    travel 61.seconds do
+      handoff(assertion(key: stranger, kid: "nope-later"))
+    end
+    assert_equal 3, @fetches
   end
 
   test "the team domain defaults to Tadas's Access team" do

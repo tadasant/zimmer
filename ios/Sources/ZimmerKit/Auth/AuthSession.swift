@@ -41,6 +41,9 @@ public actor AuthSession {
     private let now: @Sendable () -> Date
     private var current: StoredSignIn?
     private var refreshing: Task<OAuthTokens, Error>?
+    /// Bumped by every sign-in and sign-out, so a refresh that finishes after either
+    /// knows its answer belongs to a sign-in that no longer exists.
+    private var generation = 0
 
     public init(
         store: TokenStore,
@@ -62,6 +65,8 @@ public actor AuthSession {
     public func complete(_ flow: OAuthSignIn, callback: URL) async throws {
         let code = try flow.code(fromCallback: callback)
         let tokens = try await exchange(flow.tokenRequest(code: code))
+        generation += 1
+        refreshing = nil
         current = StoredSignIn(origins: flow.origins, tokens: tokens)
         store.save(current)
     }
@@ -82,15 +87,20 @@ public actor AuthSession {
             throw ZimmerError.unauthorized
         }
         let task = Task { try await self.exchange(OAuthSignIn.refreshRequest(baseURL: signIn.origins.api, refreshToken: refreshToken)) }
+        let started = generation
         refreshing = task
-        defer { refreshing = nil }
+        defer { if generation == started { refreshing = nil } }
         do {
             let tokens = try await task.value
+            // Signed out, signed in again, or another AuthSession sharing the store moved
+            // on while this was in flight: the answer is for a sign-in that is gone, and
+            // writing it would bring that sign-in back.
+            guard generation == started, store.load() == signIn else { throw ZimmerError.unauthorized }
             current = StoredSignIn(origins: signIn.origins, tokens: tokens)
             store.save(current)
             return tokens
         } catch ZimmerError.unauthorized {
-            signOutLocally()
+            if generation == started, store.load() == signIn { signOutLocally() }
             throw ZimmerError.unauthorized
         }
     }
@@ -106,6 +116,9 @@ public actor AuthSession {
     }
 
     public func signOutLocally() {
+        generation += 1
+        refreshing?.cancel()
+        refreshing = nil
         current = nil
         store.save(nil)
     }

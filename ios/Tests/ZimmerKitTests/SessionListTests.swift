@@ -51,4 +51,9 @@ final class SessionListTests: XCTestCase {
         XCTAssertEqual(BuildEnvironment(label: "Staging"), .staging)
         XCTAssertNil(BuildEnvironment.production.badge)
     }
+
+    func testPathComponentsEscapeEverythingButUnreservedASCII() {
+        XCTAssertEqual(ZimmerPathComponent("café/1?x").description, "caf%C3%A9%2F1%3Fx")
+        XCTAssertEqual(ZimmerPathComponent("my-slug_1.2~").description, "my-slug_1.2~")
+    }
 }

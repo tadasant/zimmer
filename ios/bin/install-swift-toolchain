@@ -24,12 +24,17 @@ install_toolchain() {
   local url="https://download.swift.org/swift-${VERSION}-release/ubuntu2404/swift-${VERSION}-RELEASE/swift-${VERSION}-RELEASE-ubuntu24.04.tar.gz"
   log "Installing Swift ${VERSION} into ${TARGET} (about 1 GB, once per machine)…"
   mkdir -p "$TARGET"
-  # Download beside the target and move into place, so an interrupted download never leaves
-  # a half-extracted toolchain that later runs would trust.
+  # Download and extract beside the target, then move the finished tree into place, so an
+  # interrupted run never leaves a half-extracted toolchain that later runs would trust.
   local archive="$TARGET/.swift-${VERSION}.tar.gz"
+  local staging="$TARGET/.extract-$$"
+  rm -rf "$staging"
+  mkdir -p "$staging"
   curl -fsSL -o "$archive" "$url"
-  tar -xzf "$archive" -C "$TARGET"
-  rm -f "$archive"
+  tar -xzf "$archive" -C "$staging"
+  rm -rf "$TOOLCHAIN"
+  mv "$staging/$(basename "$TOOLCHAIN")" "$TOOLCHAIN"
+  rm -rf "$staging" "$archive"
 }
 
 # The Ubuntu 24.04 toolchain runs on Debian too, except that Debian ships

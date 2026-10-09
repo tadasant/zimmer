@@ -664,7 +664,7 @@ jobs:
         # The same script `bin/ci` calls on Linux — it picks up whichever Swift is on PATH,
         # which here is Xcode's. So this asserts nothing new about the logic and everything
         # about the *toolchain*: a difference from the Linux run is itself the finding. It
-        # also builds `ZimmerPlayback` for macOS, the only place outside the app target that
+        # also builds `ZimmerPlatform` for macOS, the only place outside the app target that
         # a compiler is pointed at the AVFoundation half.
         run: ios/bin/ci-swift
 

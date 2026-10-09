@@ -65,7 +65,9 @@ final class OAuthSignInTests: XCTestCase {
     }
 
     func testAnExpiringTokenIsRefreshedOnceEvenWhenAskedForTwiceAtOnce() async throws {
-        let transport = ScriptedTransport([{ _ in Fixtures.tokens(access: "zmr_oat_fresh", refresh: "zmr_ort_fresh") }])
+        // The fresh token is itself inside the refresh window (30s < 60s), so two callers
+        // that ran one after the other would refresh twice. One request proves they shared.
+        let transport = SlowTransport(response: Fixtures.tokens(access: "zmr_oat_fresh", refresh: "zmr_ort_fresh", expiresIn: 30))
         let store = Fixtures.signedIn(expiresAt: Date().addingTimeInterval(10))
         let auth = AuthSession(store: store, transport: transport)
 
@@ -74,9 +76,36 @@ final class OAuthSignInTests: XCTestCase {
         let tokens = try await [first, second]
 
         XCTAssertEqual(tokens, ["zmr_oat_fresh", "zmr_oat_fresh"])
-        XCTAssertEqual(transport.sent.count, 1)
-        XCTAssertEqual(Fixtures.form(transport.sent[0])["refresh_token"], "zmr_ort_old")
+        XCTAssertEqual(transport.requestCount, 1)
         XCTAssertEqual(store.load()?.tokens.refreshToken, "zmr_ort_fresh")
+    }
+
+    func testARefreshThatFinishesAfterSignOutDoesNotSignBackIn() async throws {
+        let transport = SlowTransport(response: Fixtures.tokens(access: "zmr_oat_late"))
+        let store = Fixtures.signedIn(expiresAt: Date())
+        let auth = AuthSession(store: store, transport: transport)
+
+        async let late = auth.accessToken()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await auth.signOutLocally()
+        _ = try? await late
+
+        XCTAssertNil(store.load(), "the late refresh must not write tokens back")
+        let signedIn = await auth.isSignedIn
+        XCTAssertFalse(signedIn)
+    }
+
+    func testARefreshFromAStaleSessionDoesNotOverwriteANewerSignIn() async throws {
+        let store = Fixtures.signedIn(expiresAt: Date())
+        let stale = AuthSession(store: store, transport: SlowTransport(response: Fixtures.tokens(access: "zmr_oat_old_deployment")))
+
+        async let late = stale.accessToken()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let newer = StoredSignIn(origins: Fixtures.split, tokens: OAuthTokens(accessToken: "zmr_oat_new", refreshToken: "zmr_ort_new", expiresAt: .distantFuture))
+        store.save(newer)
+        _ = try? await late
+
+        XCTAssertEqual(store.load(), newer)
     }
 
     func testARevokedGrantSignsTheAppOut() async throws {

@@ -14,6 +14,6 @@ Rails.application.config.filter_parameters += [
   :cf_access_token
 ]
 
-# The handoff's redirect carries the same JWT in its query string, and Rails logs
-# every redirect's full location.
+# The handoff's redirect carries the same JWT in its fragment, and Rails logs
+# every redirect's full location, fragment included.
 Rails.application.config.filter_redirect += [ %r{/access/callback} ]

@@ -89,12 +89,6 @@ class Api::BaseController < ActionController::API
     end
   end
 
-  # The signed-in human behind a native-app request, or nil for an API key —
-  # which names a key, not a person.
-  def native_app_user_email
-    @native_app_grant&.user_email
-  end
-
   def native_app_token_presented?
     native_app_tokens_accepted && native_app_bearer_token.present?
   end
