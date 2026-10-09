@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "ostruct"
 
 # The `assistant` capture boundary: words an OAuth client delivers into a
 # session are recorded as the human's own when, and only when, the grant it
@@ -102,6 +103,46 @@ class AssistantHumanMessageCaptureTest < ActionDispatch::IntegrationTest
     grant.change_privilege!(OauthServer::RELAY_ONLY, reason: "ui_downgrade")
     idle_session.update!(status: :needs_input)
     assert_no_difference("HumanMessage.count") { follow_up(token, "second") }
+  end
+
+  test "the direct follow_up is recorded before its job is queued, so the turn already sees it" do
+    grant = grant_for(OauthServer::ACT_AS_HUMAN)
+    seen_at_enqueue = nil
+    AgentSessionJob.stubs(:enqueue_with_prompt).with do |session_id, _prompt|
+      seen_at_enqueue = HumanMessage.where(session_id: session_id).count
+      true
+    end.returns(stub(job_id: "job-2"))
+
+    follow_up(token_for(grant))
+
+    assert_equal 1, seen_at_enqueue
+  end
+
+  test "a follow_up that cannot be delivered records nothing" do
+    grant = grant_for(OauthServer::ACT_AS_HUMAN)
+    idle_session.update_columns(status: "failed")
+
+    headers = { "Content-Type" => "application/json", "Accept" => "application/json", "Authorization" => "Bearer #{token_for(grant)}" }
+    assert_no_difference("HumanMessage.count") do
+      post "/mcp", params: { jsonrpc: "2.0", id: 1, method: "tools/call",
+                             params: { name: "action_session", arguments: { "session_id" => idle_session.id, "action" => "follow_up", "prompt" => "x" } } }.to_json,
+        headers: headers
+    end
+    assert JSON.parse(response.body).dig("result", "isError")
+  end
+
+  test "force_immediate and a follow_up queued behind a running turn are recorded" do
+    grant = grant_for(OauthServer::ACT_AS_HUMAN)
+    token = token_for(grant)
+    session = sessions(:running)
+    Sessions::InterruptService.any_instance.stubs(:call).returns(OpenStruct.new(success?: true))
+
+    mcp_call("action_session", { "session_id" => session.id, "action" => "follow_up", "prompt" => "now", "force_immediate" => true }, token: token)
+    Sessions::LiveTurn.stubs(:underway?).returns(true)
+    mcp_call("action_session", { "session_id" => session.id, "action" => "follow_up", "prompt" => "after this turn" }, token: token)
+
+    assert_equal [ [ "oauth.follow_up", "now" ], [ "oauth.follow_up_queued", "after this turn" ] ],
+      session.human_messages.chronological.map { |m| [ m.entry_point, m.content ] }
   end
 
   test "queueing, send_now and editing a queued message are each recorded" do

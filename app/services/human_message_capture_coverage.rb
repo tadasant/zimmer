@@ -130,8 +130,7 @@ class HumanMessageCaptureCoverage
   # Whether any live grant holding OauthServer::ACT_AS_HUMAN_SCOPE was approved
   # by an email the roster knows — the deployment-wide question for `assistant`.
   def self.assistant_grant_resolves?
-    OauthServer::Grant.active.where("scope LIKE ?", "%#{OauthServer::ACT_AS_HUMAN_SCOPE}%")
-      .pluck(:user_email).any? { |email| User.for_email(email).present? }
+    OauthServer::Grant.active.select(&:acts_as_human?).any? { |grant| User.for_email(grant.user_email).present? }
   end
 
   attr_reader :hierarchy

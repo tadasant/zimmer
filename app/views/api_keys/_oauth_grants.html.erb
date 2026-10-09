@@ -65,7 +65,7 @@
                 <% if grant.scope_changed_at %>
                   <div>
                     <dt class="inline">Level set</dt>
-                    <dd class="inline"><%= grant.scope_changed_at.utc.strftime("%Y-%m-%d %H:%M UTC") %> — <%= { "consent" => "chosen at approval", "ui_downgrade" => "lowered on this page", "ui_upgrade" => "raised on this page", "backfill" => "set when connection levels were introduced" }.fetch(grant.scope_change_reason.to_s, grant.scope_change_reason) %></dd>
+                    <dd class="inline"><%= grant.scope_changed_at.utc.strftime("%Y-%m-%d %H:%M UTC") %> — <%= { "consent" => "chosen at approval", "ui_downgrade" => "lowered on this page", "ui_upgrade" => "raised on this page", "backfill" => "raised by the one-time backfill of existing connections" }.fetch(grant.scope_change_reason.to_s, grant.scope_change_reason) %></dd>
                   </div>
                 <% end %>
                 <% if grant.revoked? %>

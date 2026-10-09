@@ -429,7 +429,7 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A Slack message from a human whose ID is **not** mapped | ❌ | nobody to attribute it to — and when *no* row maps any Slack ID the record says so rather than reading as an absence (see [Absence is only an answer when capture could have fired](#absence-is-only-an-answer-when-capture-could-have-fired)) |
 | A message from the [browser extension](/extend/browser-extension/) | ✅ `browser_extension.quick_router` | the `quick_router` key it presents is minted, so no agent session's environment carries it, and it opens nothing but that one endpoint — its only holder is the admin's browser |
 | `follow_up` / `send_now` / enqueue issued by **another agent** over MCP or REST | ❌ | the API key is shared by the whole fleet — it establishes a caller, not a person |
-| `follow_up`, `send_now`, an enqueue or its edit, a `start_session` prompt, or a [`quick_router`](/extend/mcp-server/#quick_router-the-door-for-clients-that-do-not-know-zimmer) prompt, from an OAuth connection that **acts on its approver's behalf** | ✅ `oauth.follow_up` / `oauth.send_now` / `oauth.enqueued_message` / `oauth.enqueued_message_edited` / `oauth.start_session` / `oauth.quick_router` | the approver chose this level for the connection (see [below](#the-assistant-channel)). Only the caller's words are recorded: `quick_router`'s page context is not |
+| `follow_up`, `send_now`, an enqueue or its edit, a `start_session` prompt, or a [`quick_router`](/extend/mcp-server/#quick_router-the-door-for-clients-that-do-not-know-zimmer) prompt, from an OAuth connection that **acts on its approver's behalf** | ✅ `oauth.follow_up` / `oauth.follow_up_queued` / `oauth.send_now` / `oauth.enqueued_message` / `oauth.enqueued_message_edited` / `oauth.start_session` / `oauth.quick_router` | the approver chose this level for the connection (see [below](#the-assistant-channel)). Only the caller's words are recorded: `quick_router`'s page context is not |
 | The same calls from a **relay only** OAuth connection, or `quick_router` on an API key | ❌ | the calling model wrote the words, and the grant names who approved the client, not who wrote them |
 | A router-written spawn prompt | ❌ | a router holding a human's words is still a machine when it composes the prompt |
 | A scheduled or **self-scheduled** wake-up | ❌ | machine-authored by construction |
@@ -470,10 +470,16 @@ A person can speak to Zimmer through an assistant, such as the Claude app connec
 Whether that counts as the person's message depends on the connection's level, which they chose
 when approving it and can change on **Settings → API keys**:
 
-- **Relay only:** nothing is recorded. This is how every connection behaved before levels existed.
+- **Relay only:** nothing is recorded.
 - **Acts on my behalf** (scope `zimmer:act-as-human`): the message is recorded on channel
   `assistant`. The author is the roster row whose `email` matches the email that approved the grant
   (`User.for_email`). An approver with no roster row is attributed to nobody, so nothing is recorded.
+
+The words recorded are the ones that reach the session as a turn: a `follow_up`
+(`oauth.follow_up`, or `oauth.follow_up_queued` when the session was mid-turn), `send_now`, a queued
+message and its edit, and a `start_session` or `quick_router` prompt. Text that is not a turn records
+nothing even on an elevated connection: the `prompt` a session is parked into the spot queue with is
+a wake-up, and an elicitation answer goes to the MCP server that asked, not to the session.
 
 Each record names its connection. `provenance` holds `oauth_grant_id`, `oauth_client_id`,
 `oauth_client_name`, `grant_scope` and `grant_user_email` as they were when the message arrived. The

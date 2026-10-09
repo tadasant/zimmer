@@ -1093,6 +1093,15 @@ until you lower or revoke it. The provenance names the connection, so a reader c
 `assistant` message differently from one typed into the web UI, but nothing does that weighing for
 them. Lowering the connection to relay only on Settings → API keys takes effect on its next call.
 
+**An elevated connection whose approver is not on the roster records nothing, and says nothing.** The
+author is the roster row matching the approving email. With no such row, the connection's messages
+record nothing. A session it started is genesis `api`, so its empty record still reads as an
+affirmative absence rather than as a gap. Add the email to that person's row at `/supervisor/users`.
+
+**Any signed-in browser can raise any connection.** The level buttons on Settings → API keys do not
+check that the person clicking is the one who approved the connection. In a single circle of trust
+that is one person, but a second person signed in could make someone else's connection speak as them.
+
 **An agent session on the host can make itself an elevated connection.** Approving a connection, or
 raising one, is a browser action behind web sign-in. A session's shell can forge that sign-in (see
 [the web UI does not keep agent sessions out](#the-web-ui-does-not-keep-agent-sessions-out)), and so

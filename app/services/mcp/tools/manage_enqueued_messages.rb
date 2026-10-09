@@ -287,6 +287,9 @@ module Mcp
           status: "pending"
         )
 
+        # Before the interrupt, as SessionsController does for the browser: the
+        # turn it starts must already see these words as the human's.
+        context.capture_assistant_message(session, content, "oauth.send_now")
         result = Sessions::InterruptService.new(
           session: session,
           enqueued_message: message,
@@ -299,7 +302,6 @@ module Mcp
         end
 
         record_uncle_edge(session, args, "mcp:manage_enqueued_messages.send_now")
-        context.capture_assistant_message(session, content, "oauth.send_now")
         session.reload
         [
           "## Message Sent Immediately",

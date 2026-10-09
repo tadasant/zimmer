@@ -46,13 +46,15 @@
       <% end %>
     <% end %>
 
+    <%# Never pre-selected, not even on a re-render: on GET, `params` is the client's
+        query string, and a client must not be able to arrive with "Acts on my behalf" ticked. %>
     <fieldset class="space-y-3 text-sm" id="oauth-privilege">
       <legend class="font-medium text-gray-900">What may this connection do with your name?</legend>
       <% if @privilege_error %>
         <p class="rounded border border-red-300 bg-red-50 p-2 text-red-800"><%= @privilege_error %></p>
       <% end %>
       <label class="flex gap-3 rounded-md border border-gray-200 p-3 hover:bg-gray-50">
-        <%= radio_button_tag "privilege", OauthServer::RELAY_ONLY, params[:privilege] == OauthServer::RELAY_ONLY, class: "mt-0.5 shrink-0" %>
+        <%= radio_button_tag "privilege", OauthServer::RELAY_ONLY, false, class: "mt-0.5 shrink-0" %>
         <span>
           <span class="font-medium text-gray-900">Relay only</span>
           <span class="block text-gray-600">
@@ -62,7 +64,7 @@
         </span>
       </label>
       <label class="flex gap-3 rounded-md border border-gray-200 p-3 hover:bg-gray-50">
-        <%= radio_button_tag "privilege", OauthServer::ACT_AS_HUMAN, params[:privilege] == OauthServer::ACT_AS_HUMAN, class: "mt-0.5 shrink-0" %>
+        <%= radio_button_tag "privilege", OauthServer::ACT_AS_HUMAN, false, class: "mt-0.5 shrink-0" %>
         <span>
           <span class="font-medium text-gray-900">Acts on my behalf</span>
           <span class="block text-gray-600">
