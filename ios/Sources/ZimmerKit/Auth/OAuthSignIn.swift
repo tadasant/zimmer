@@ -11,6 +11,9 @@ import Foundation
 /// refresh token. No Google credential and no API key ever reaches the phone, and the grant
 /// is revoked from Settings → API keys like any other connection.
 ///
+/// The authorize step runs on the deployment's web origin, which is the issuer; the token
+/// and revoke calls go to its app origin (`ServerOrigins`), the same one the API calls use.
+///
 /// This type is the protocol half and does no I/O of its own beyond `HTTPTransport`; the
 /// sheet is the app's (`ASWebAuthenticationSession`).
 public struct OAuthSignIn: Sendable {
@@ -19,24 +22,24 @@ public struct OAuthSignIn: Sendable {
     public static let redirectURI = "com.tadasant.zimmer:/oauth/callback"
     public static let scope = "mcp"
 
-    public let baseURL: URL
+    public let origins: ServerOrigins
     public let pkce: PKCEPair
     public let state: String
 
-    public init(baseURL: URL, pkce: PKCEPair = .generate(), state: String = PKCEPair.randomState()) {
-        self.baseURL = baseURL
+    public init(origins: ServerOrigins, pkce: PKCEPair = .generate(), state: String = PKCEPair.randomState()) {
+        self.origins = origins
         self.pkce = pkce
         self.state = state
     }
 
-    /// The RFC 8707 resource every Zimmer token is bound to.
+    /// The RFC 8707 resource every Zimmer token is bound to: `/mcp` on the issuer.
     public var resource: String {
-        baseURL.appendingPathComponent("mcp").absoluteString
+        origins.web.appendingPathComponent("mcp").absoluteString
     }
 
     /// The URL to open in the sign-in sheet.
     public var authorizeURL: URL {
-        var components = URLComponents(url: baseURL.appendingPathComponent("oauth/authorize"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: origins.web.appendingPathComponent("oauth/authorize"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: Self.clientID),
@@ -66,7 +69,7 @@ public struct OAuthSignIn: Sendable {
         if let error = query["error"] {
             throw ZimmerError.signIn(error == "access_denied" ? "Sign-in was declined." : (query["error_description"] ?? error))
         }
-        if let issuer = query["iss"], Self.origin(of: URL(string: issuer)) != Self.origin(of: baseURL) {
+        if let issuer = query["iss"], Self.origin(of: URL(string: issuer)) != Self.origin(of: origins.web) {
             throw ZimmerError.signIn("Sign-in came back from a different server.")
         }
         guard let code = query["code"], !code.isEmpty else {
@@ -77,7 +80,7 @@ public struct OAuthSignIn: Sendable {
 
     /// The token request for the code.
     public func tokenRequest(code: String) -> HTTPRequest {
-        Self.formRequest(baseURL: baseURL, fields: [
+        Self.formRequest(baseURL: origins.api, fields: [
             "grant_type": "authorization_code",
             "client_id": Self.clientID,
             "code": code,

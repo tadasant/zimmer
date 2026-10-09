@@ -14,10 +14,13 @@ public enum ZimmerError: Error, Equatable, Sendable {
     case http(status: Int, message: String?)
     /// The body did not decode as what the endpoint promises.
     case decoding(String)
-    /// An access proxy in front of Zimmer refused the request before Zimmer saw it
-    /// (`EdgeRefusal`). Not a sign-in problem with Zimmer, so signing in again does not
-    /// help; the deployment's edge has to admit this phone.
+    /// The access proxy in front of Zimmer refused the request before Zimmer saw it
+    /// (`EdgeRefusal`), and a fresh edge login did not fix it. Not a problem with the
+    /// Zimmer sign-in, which is kept.
     case edgeRefused
+    /// The edge's tunnel answered 404 for a path that is not on the app host's allow-list.
+    /// A bug in the edge or in the app, never something to retry.
+    case edgeNotRouted(String)
     /// The request never got an answer.
     case transport(String)
     /// The sign-in did not finish: refused, cancelled, or a mismatched callback.
@@ -33,8 +36,10 @@ public enum ZimmerError: Error, Equatable, Sendable {
         case .notConfigured: return "No Zimmer server is set."
         case .unauthorized: return "Your sign-in has ended. Sign in again."
         case .edgeRefused:
-            return "This server's network edge refused the phone before Zimmer saw the request. "
-                + "It has to admit this device first; signing in again will not help."
+            return "The network edge in front of Zimmer refused this phone. "
+                + "Sign in to the edge again from Settings; your Zimmer sign-in is kept."
+        case let .edgeNotRouted(path):
+            return "The app host does not serve \(path). This is a bug in the app or its edge."
         case let .http(status, message): return message ?? "Zimmer answered \(status)."
         case .decoding: return "Zimmer sent something this version of the app cannot read."
         case .transport: return "Couldn't reach Zimmer."

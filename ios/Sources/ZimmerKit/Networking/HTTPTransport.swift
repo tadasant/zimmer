@@ -41,10 +41,18 @@ public struct HTTPResponse: Hashable, Sendable {
 }
 
 /// The production transport.
+///
+/// It never follows a redirect to a Cloudflare Access login page: a machine call refused
+/// by the edge must come back as that refusal (`EdgeRefusal`), not as the login page's
+/// HTML with a 200 at the end of the redirect chain.
 public struct URLSessionTransport: HTTPTransport {
     private let session: URLSession
 
-    public init(session: URLSession = .shared) {
+    public init() {
+        self.session = URLSession(configuration: .default, delegate: AccessRedirectGuard(), delegateQueue: nil)
+    }
+
+    public init(session: URLSession) {
         self.session = session
     }
 
@@ -67,5 +75,23 @@ public struct URLSessionTransport: HTTPTransport {
             }
         }
         return HTTPResponse(statusCode: http.statusCode, headers: headers, body: data)
+    }
+}
+
+/// Stops a redirect to `*.cloudflareaccess.com`, so the 302 itself is what the caller sees.
+final class AccessRedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        completionHandler(Self.shouldFollow(request.url) ? request : nil)
+    }
+
+    static func shouldFollow(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        return !EdgeRefusal.isAccessLogin(url)
     }
 }

@@ -7,13 +7,13 @@ public protocol TokenStore: Sendable {
     func save(_ signIn: StoredSignIn?)
 }
 
-/// A sign-in, as persisted: the server it is for and the tokens it holds.
+/// A sign-in, as persisted: the deployment it is for and the tokens it holds.
 public struct StoredSignIn: Codable, Hashable, Sendable {
-    public var baseURL: URL
+    public var origins: ServerOrigins
     public var tokens: OAuthTokens
 
-    public init(baseURL: URL, tokens: OAuthTokens) {
-        self.baseURL = baseURL
+    public init(origins: ServerOrigins, tokens: OAuthTokens) {
+        self.origins = origins
         self.tokens = tokens
     }
 }
@@ -62,7 +62,7 @@ public actor AuthSession {
     public func complete(_ flow: OAuthSignIn, callback: URL) async throws {
         let code = try flow.code(fromCallback: callback)
         let tokens = try await exchange(flow.tokenRequest(code: code))
-        current = StoredSignIn(baseURL: flow.baseURL, tokens: tokens)
+        current = StoredSignIn(origins: flow.origins, tokens: tokens)
         store.save(current)
     }
 
@@ -81,12 +81,12 @@ public actor AuthSession {
             signOutLocally()
             throw ZimmerError.unauthorized
         }
-        let task = Task { try await self.exchange(OAuthSignIn.refreshRequest(baseURL: signIn.baseURL, refreshToken: refreshToken)) }
+        let task = Task { try await self.exchange(OAuthSignIn.refreshRequest(baseURL: signIn.origins.api, refreshToken: refreshToken)) }
         refreshing = task
         defer { refreshing = nil }
         do {
             let tokens = try await task.value
-            current = StoredSignIn(baseURL: signIn.baseURL, tokens: tokens)
+            current = StoredSignIn(origins: signIn.origins, tokens: tokens)
             store.save(current)
             return tokens
         } catch ZimmerError.unauthorized {
@@ -98,8 +98,8 @@ public actor AuthSession {
     /// Revoke the grant on the server (best effort) and forget it here.
     public func signOut() async {
         if let signIn = current, let token = signIn.tokens.refreshToken {
-            var request = OAuthSignIn.revokeRequest(baseURL: signIn.baseURL, token: token)
-            await edge.decorate(&request)
+            var request = OAuthSignIn.revokeRequest(baseURL: signIn.origins.api, token: token)
+            await request.apply(edge)
             _ = try? await transport.send(request)
         }
         signOutLocally()
@@ -114,7 +114,7 @@ public actor AuthSession {
         var attempt = 0
         while true {
             var decorated = request
-            await edge.decorate(&decorated)
+            await decorated.apply(edge)
             let response: HTTPResponse
             do {
                 response = try await transport.send(decorated)
@@ -125,6 +125,7 @@ public actor AuthSession {
                 if attempt == 0, await edge.reauthenticate() { attempt += 1; continue }
                 throw ZimmerError.edgeRefused
             }
+            if EdgeRefusal.isEdgeNotRouted(response) { throw ZimmerError.edgeNotRouted(request.url.path) }
             switch response.statusCode {
             case 200..<300:
                 return try OAuthTokens.decode(response.body, now: now())

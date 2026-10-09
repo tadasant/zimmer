@@ -173,6 +173,9 @@ Rails.application.routes.draw do
     as: :oauth_server_authorization_server_metadata
   match ".well-known/oauth-protected-resource(/mcp)", to: "oauth_server/metadata#preflight", via: :options
   match ".well-known/oauth-authorization-server(/mcp)", to: "oauth_server/metadata#preflight", via: :options
+  # The iOS app's edge sign-in: hands the app the Cloudflare Access assertion its
+  # sign-in sheet earned on the app hostname. See NativeAccessHandoffsController.
+  get "native/access-handoff", to: "native_access_handoffs#show", as: :native_access_handoff
   get "oauth/authorize", to: "oauth_server/authorizations#new", as: :oauth_server_authorize
   post "oauth/authorize", to: "oauth_server/authorizations#create"
   post "oauth/register", to: "oauth_server/registrations#create", as: :oauth_server_register

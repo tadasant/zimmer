@@ -34,6 +34,11 @@ issued to any other OAuth client, or presented anywhere else, gets the same 401 
 same expiry, revocation and audience checks as `/mcp` apply, and revoking the connection on
 **Settings → API keys** refuses the phone on its next request. `X-API-Key` is unchanged beside it.
 
+On a deployment that serves the app from its own hostname behind an access proxy, the app also sends
+`cf-access-token`, the edge's credential, which Rails ignores. It gets that credential from
+`GET /native/access-handoff`, which sits outside `/api/v1`. See
+[the iOS app](/extend/ios-app/#signing-in).
+
 ## Quick start
 
 Every snippet below assumes these two:

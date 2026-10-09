@@ -33,7 +33,9 @@
 #   APP_STORE_CONNECT_API_KEY_P8 (the .p8's contents), APPLE_TEAM_ID
 # and, in both modes:
 #   ZIMMER_BUILD_NUMBER            CFBundleVersion, default 1
-#   ZIMMER_IOS_API_BASE_URL        the server the build defaults to, https only; empty in check
+#   ZIMMER_IOS_WEB_BASE_URL        where the build signs in (the OAuth issuer), https origin
+#   ZIMMER_IOS_API_BASE_URL        where its machine calls go (the app host), https origin
+#                                 Either alone means one origin for both; upload needs one.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -65,6 +67,7 @@ fi
 
 build_number="${ZIMMER_BUILD_NUMBER:-1}"
 base_url="${ZIMMER_IOS_API_BASE_URL:-}"
+web_url="${ZIMMER_IOS_WEB_BASE_URL:-}"
 signing="${ZIMMER_SIGNING:-export}"
 
 # CFBundleVersion is one to three period-separated integers, and App Store Connect refuses
@@ -72,6 +75,8 @@ signing="${ZIMMER_SIGNING:-export}"
 [[ "$build_number" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || fail "ZIMMER_BUILD_NUMBER '$build_number' is not a CFBundleVersion"
 [ -z "$base_url" ] || [[ "$base_url" =~ ^https://[^/[:space:]]+/?$ ]] ||
   fail "ZIMMER_IOS_API_BASE_URL must be an https origin (it is refused by the app otherwise)"
+[ -z "$web_url" ] || [[ "$web_url" =~ ^https://[^/[:space:]]+/?$ ]] ||
+  fail "ZIMMER_IOS_WEB_BASE_URL must be an https origin (it is refused by the app otherwise)"
 [[ "$signing" == export || "$signing" == archive ]] || fail "ZIMMER_SIGNING must be 'export' or 'archive'"
 
 work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/zimmer-testflight-$$"
@@ -89,7 +94,7 @@ if [ "$mode" = upload ]; then
   for name in APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_P8 APPLE_TEAM_ID; do
     [ -n "${!name:-}" ] || fail "$name is not set — see ios/README.md, 'Distribution'"
   done
-  [ -n "$base_url" ] || fail "ZIMMER_IOS_API_BASE_URL is not set; a TestFlight build would ask for a server on first run"
+  [ -n "$base_url$web_url" ] || fail "neither ZIMMER_IOS_WEB_BASE_URL nor ZIMMER_IOS_API_BASE_URL is set; a TestFlight build would ask for a server on first run"
 
   key_path="$work/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
   (umask 077 && printf '%s\n' "$APP_STORE_CONNECT_API_KEY_P8" >"$key_path")
@@ -116,6 +121,7 @@ archive="$work/Zimmer.xcarchive"
 build_settings=(
   CURRENT_PROJECT_VERSION="$build_number"
   ZIMMER_DEFAULT_API_BASE_URL="$base_url"
+  ZIMMER_DEFAULT_WEB_BASE_URL="$web_url"
 )
 
 # The entitlements guard is asked of the build settings, before anything is built: an
@@ -186,7 +192,8 @@ expect CFBundleVersion "$build_number"
 present CFBundleShortVersionString
 expect ITSAppUsesNonExemptEncryption false
 expect CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName AppIcon
-expect ZimmerDefaultBaseURL "$base_url"
+expect ZimmerDefaultAPIBaseURL "$base_url"
+expect ZimmerDefaultWebBaseURL "$web_url"
 [ -f "$app/Assets.car" ] || fail "no compiled asset catalog — the app icon is missing"
 [ -f "$app/PrivacyInfo.xcprivacy" ] || fail "no privacy manifest in the app bundle"
 if grep -aq '\$(' "$plist"; then fail "Info.plist carries a malformed \$(...) build setting"; fi

@@ -14,7 +14,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var sessions: [SessionSummary] = []
     @Published private(set) var isLoading = false
     @Published var error: ZimmerError?
-    @Published private(set) var signedInServer: URL?
+    @Published private(set) var signedInOrigins: ServerOrigins?
+    /// When the edge's credential expires, on a deployment that has one.
+    @Published private(set) var edgeExpiry: Date?
 
     let environment: AppEnvironment
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
@@ -23,13 +25,22 @@ final class AppModel: ObservableObject {
         self.environment = environment
     }
 
-    var buildTarget: BuildTarget { environment.configuration.buildTarget(signedInTo: signedInServer) }
+    private var connection: AppEnvironment.Connection { environment.connection }
+
+    var buildTarget: BuildTarget { environment.configuration.buildTarget(signedInTo: signedInOrigins) }
+    var hasEdge: Bool { connection.edge != nil }
 
     func start() async {
-        let signIn = await environment.auth.signIn
-        signedInServer = signIn?.baseURL
+        let signIn = await connection.auth.signIn
+        signedInOrigins = signIn?.origins
         isSignedIn = signIn != nil
-        if signIn != nil { await refresh() }
+        guard signIn != nil else { return }
+        // Renew the edge's credential ahead of its expiry rather than on a refused call.
+        if let edge = connection.edge, await edge.needsLogin() {
+            await signInToEdge()
+        }
+        await refreshEdgeExpiry()
+        await refresh()
     }
 
     func refresh() async {
@@ -37,13 +48,14 @@ final class AppModel: ObservableObject {
         defer { isLoading = false }
         let requested = filter
         do {
-            let rows = try await environment.api.sessions(requested)
+            let rows = try await connection.api.sessions(requested)
             guard requested == filter else { return }
             sessions = rows
             error = nil
         } catch {
             handle(error)
         }
+        await refreshEdgeExpiry()
     }
 
     func select(_ filter: SessionFilter) async {
@@ -53,22 +65,30 @@ final class AppModel: ObservableObject {
         await refresh()
     }
 
-    /// Run the sign-in sheet against `server`, then finish the OAuth exchange.
-    func signIn(server raw: String, using webAuth: WebAuthenticationSession) async {
-        guard let server = ServerURL.parse(raw) else {
+    /// Sign in to a deployment: the edge first when machine calls go to a separate app
+    /// host (its credential has to ride on the token call), then Zimmer's own OAuth.
+    func signIn(web rawWeb: String, api rawAPI: String) async {
+        guard let web = ServerURL.parse(rawWeb) else {
             error = .signIn("Enter the https address of your Zimmer, like https://zimmer.example.com.")
             return
         }
-        let flow = OAuthSignIn(baseURL: server)
+        let trimmedAPI = rawAPI.trimmingCharacters(in: .whitespaces)
+        let api = trimmedAPI.isEmpty ? nil : ServerURL.parse(trimmedAPI)
+        if !trimmedAPI.isEmpty && api == nil {
+            error = .signIn("The app host must be an https address too, or left empty.")
+            return
+        }
+        let origins = ServerOrigins(web: web, api: api)
+        let connection = environment.connect(to: origins)
         do {
-            let callback = try await webAuth.authenticate(
-                using: flow.authorizeURL,
-                callbackURLScheme: OAuthSignIn.callbackScheme,
-                preferredBrowserSession: .shared
-            )
-            try await environment.auth.complete(flow, callback: callback)
-            environment.configuration.rememberServer(server)
-            log.info("signed in to \(server.host ?? "?", privacy: .public)")
+            if let edge = connection.edge, await edge.needsLogin() {
+                try await edge.login()
+            }
+            let flow = OAuthSignIn(origins: origins)
+            let callback = try await WebAuthPresenter.shared.present(flow.authorizeURL)
+            try await connection.auth.complete(flow, callback: callback)
+            environment.configuration.remember(origins)
+            log.info("signed in to \(origins.web.host ?? "?", privacy: .public) via \(origins.api.host ?? "?", privacy: .public)")
             error = nil
             await start()
         } catch let authError as ASWebAuthenticationSessionError where authError.code == .canceledLogin {
@@ -78,11 +98,33 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Run the edge's handoff again — proactively near expiry, or after a refusal.
+    func signInToEdge() async {
+        guard let edge = connection.edge else { return }
+        do {
+            try await edge.login()
+            if error == .edgeRefused { error = nil }
+        } catch let authError as ASWebAuthenticationSessionError where authError.code == .canceledLogin {
+            log.info("edge sign-in sheet cancelled")
+        } catch {
+            handle(error)
+        }
+        await refreshEdgeExpiry()
+    }
+
     func signOut() async {
-        await environment.auth.signOut()
+        await connection.auth.signOut()
+        await connection.edge?.forget()
         sessions = []
-        signedInServer = nil
+        signedInOrigins = nil
+        edgeExpiry = nil
         isSignedIn = false
+    }
+
+    private func refreshEdgeExpiry() async {
+        guard let edge = connection.edge else { edgeExpiry = nil; return }
+        let token = await edge.headers()["cf-access-token"]
+        edgeExpiry = token.flatMap(CloudflareAccessCredential.expiry(of:))
     }
 
     private func handle(_ error: Error) {

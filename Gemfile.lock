@@ -447,6 +447,7 @@ DEPENDENCIES
   debug
   good_job
   importmap-rails
+  jwt (~> 3.2)
   kamal
   kaminari
   mcp

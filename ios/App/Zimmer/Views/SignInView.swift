@@ -1,16 +1,16 @@
-import AuthenticationServices
 import SwiftUI
 import ZimmerKit
 
 /// Sign in through Zimmer's own web sign-in, in the system sheet.
 ///
 /// The sheet shows the same Google and second-factor steps the browser does, then Zimmer's
-/// consent screen for "Zimmer for iOS". Nothing is typed into the app but the server's
-/// address, and only when the build does not already know it.
+/// consent screen for "Zimmer for iOS". On a deployment whose machine calls go to a
+/// separate app host behind an access proxy, the edge's own login runs first. Nothing is
+/// typed into the app but the addresses, and only when the build does not already know them.
 struct SignInView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
     @State private var server = ""
+    @State private var appHost = ""
     @State private var isSigningIn = false
 
     var body: some View {
@@ -37,12 +37,30 @@ struct SignInView: View {
                     .padding(12)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
                     .accessibilityIdentifier("signin.server")
+                DisclosureGroup("App host") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextField("Same as the server", text: $appHost)
+                            .textContentType(.URL)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .padding(12)
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                            .accessibilityIdentifier("signin.apphost")
+                        Text("Only for a deployment that serves the app from its own hostname.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 6)
+                }
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
             }
 
             Button {
                 Task {
                     isSigningIn = true
-                    await model.signIn(server: server, using: webAuthenticationSession)
+                    await model.signIn(web: server, api: appHost)
                     isSigningIn = false
                 }
             } label: {
@@ -67,7 +85,9 @@ struct SignInView: View {
         }
         .padding(24)
         .onAppear {
-            if server.isEmpty { server = model.environment.configuration.serverURL?.absoluteString ?? "" }
+            guard server.isEmpty, let origins = model.environment.configuration.origins else { return }
+            server = origins.web.absoluteString
+            appHost = origins.isSplit ? origins.api.absoluteString : ""
         }
     }
 }

@@ -88,6 +88,10 @@ gem "kaminari"
 # Using web-push gem (pushpad fork) which supports OpenSSL 3.0+
 gem "web-push", "~> 3.1"
 
+# RS256 verification of the Cloudflare Access assertion the iOS app's edge
+# handoff returns (NativeAccessAssertion). Already in the bundle through web-push.
+gem "jwt", "~> 3.2"
+
 # Slack API client for Triggers feature
 gem "slack-ruby-client"
 
