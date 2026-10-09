@@ -176,8 +176,11 @@ module OutcomeAnalyses
         Analyze the transcript of Zimmer session ##{@session.id} and save the result.
 
         **Target session:** ##{@session.id}#{@session.title.present? ? " — #{@session.title}" : ""}
-        Read it with the `get_session` MCP tool (`include_transcript: true`). It is archived, so
-        the transcript is complete and will not change under you.
+        Read it with the `get_session` MCP tool (`include_transcript: true`). The transcript comes
+        back in bounded slices: each response says which events it returned and the
+        `transcript_from` / `transcript_to` values that fetch the rest, so page through it (or start
+        with `transcript_conversation_only: true` for just what was said). It is archived, so the
+        transcript is complete and will not change under you.
 
         #{skill_line}
 
