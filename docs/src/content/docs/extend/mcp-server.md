@@ -965,12 +965,10 @@ waiting-reason lines, and the `auth_outage_*` / `spot_hold_*` / `spot_pause_*` m
 
 ### The transcript arrives in slices, under a cap that always applies
 
-`get_session`'s `include_transcript: true` used to inline the whole transcript. An ordinary session's
-came to ~56k tokens, past a client's 45k-token tool-result limit, so the call failed outright, and
-there was no way to ask for less. The file-path hint the tool returns instead is no help to a caller
-on the far side of MCP, which cannot reach that disk.
-
-The transcript is now always returned as a bounded slice (`Mcp::TranscriptSlice`):
+An ordinary session's whole transcript runs to ~56k tokens, past a client's 45k-token tool-result
+limit, which refuses the result outright. The file-path hint `get_session` returns when the
+transcript is not requested is no help to a caller on the far side of MCP, which cannot reach that
+disk. So `get_session` always returns the transcript as a bounded slice (`Mcp::TranscriptSlice`):
 
 | Parameter | What it does |
 | --- | --- |
@@ -980,11 +978,13 @@ The transcript is now always returned as a bounded slice (`Mcp::TranscriptSlice`
 | `transcript_conversation_only: true` | Human and assistant text only, each tool call collapsed to one line; tool output, thinking and bookkeeping are left out. Works the same for every runtime, because it renders the normalized events. |
 | `transcript_format: "text"` | Readable text with each event prefixed `[#index]`, instead of raw JSONL. |
 
-Pass at most one of head, tail, or a range. Passing any `transcript_*` slice parameter implies
-`include_transcript: true`.
+Pass at most one of head, tail, or a range. Passing any `transcript_*` parameter implies
+`include_transcript: true`. A session with no transcript yet gets a section saying so, not an error.
 
 An **event** is one stored JSONL line. Its 0-based index stays the same as the transcript grows,
-because the chunk store is append-only, and that stable index is what lets a caller page through it. Every
+because the chunk store is append-only, and that stable index is what lets a caller page through it.
+A rewrite (a recovery merge, a carryover re-attachment) is the exception, and the
+[limitations](/limitations/) page says so. Every
 section states the total event count, the range requested, and the range returned. When the cap cuts
 the range short, the section says so twice: in a `Truncated:` line and in an in-place
 `[… events #a–#b not shown …]` marker, both naming the `transcript_from` / `transcript_to` values that
@@ -993,15 +993,15 @@ fetch the rest. A tail, and the default with no selector, spends the cap from th
 single event bigger than the whole cap is cut mid-event, with its own marker, so a page always makes
 progress.
 
-**The default cap is a deliberate break with the old contract.** `include_transcript: true` with no
-other parameter now returns the newest ~40,000 characters rather than everything. The old contract
-could not be met for any transcript a client would refuse, and a result the runtime refuses is worse
-than a short one that says how to get the rest.
+**The default cap is deliberate.** `include_transcript: true` with no other parameter returns the
+newest ~40,000 characters rather than everything. Returning everything cannot work for any
+transcript a client would refuse, and a result the runtime refuses is worse than a short one that
+says how to get the rest.
 
 The slice is read near the storage layer. `Session#each_transcript_line` picks chunks by their
 `line_count` and loads one chunk's content at a time, from whichever end the walk starts, and stops
-when the budget runs out. A tail of a 34 MB transcript reads one 256 KiB chunk, not the whole
-document. Rows the chunk backfill has not reached fall back to splitting the legacy column.
+when the budget runs out. A tail of a 34 MB transcript reads one or two 256 KiB chunks, not the
+whole document. Rows the chunk backfill has not reached fall back to splitting the legacy column.
 
 `get_transcript_archive` takes no session and returns no transcript content, just a download URL for
 a zip of every transcript, so it has nothing to slice. Its description points a caller who wants one

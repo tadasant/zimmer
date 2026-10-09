@@ -185,10 +185,12 @@ module ChunkedTranscript
   # This is the read a bounded transcript slice wants, and it reads only the
   # chunks the range touches: one index-only query for every chunk's
   # `line_count` (no `content`), then one chunk's content at a time, in the
-  # order the caller is walking. A caller that stops early — `TranscriptSlice`
+  # order the caller is walking. A caller that stops early — `Mcp::TranscriptSlice`
   # stops when its character budget runs out — never loads the rest, so the
   # last 50 events of a 32 MB transcript cost one or two 256 KiB chunks rather
-  # than the whole document. Line indices are what the chunk counts sum to, so
+  # than the whole document. A rewrite (`replace_transcript_chunks`) landing
+  # between the count query and a content read can make the lines read disagree
+  # with the indices counted; a deleted chunk is skipped rather than raised on. Line indices are what the chunk counts sum to, so
   # they agree with `transcript_line_count` and with the timeline's
   # `_transcript_index`; an append never renumbers an existing line.
   #

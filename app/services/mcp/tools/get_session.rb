@@ -75,7 +75,7 @@ module Mcp
 
         **Transcript access:** By default (include_transcript=false), the response includes the transcript file path instead of the content — useful only to a caller on the Zimmer host itself. Any other caller reads the transcript through this tool, in slices:
         - **The unit is an event** — one stored JSONL line — with a 0-based index that stays stable as the transcript grows. Every transcript section states the total event count, the range requested, the range returned, and the exact `transcript_from` / `transcript_to` values that fetch anything it left out, so you can page.
-        - **Pick a window** with at most one of: `transcript_tail: N` (the last N events), `transcript_head: N` (the first N), or `transcript_from` / `transcript_to` (an index range; `transcript_to` is exclusive). Passing any of the `transcript_*` slice parameters implies `include_transcript: true`.
+        - **Pick a window** with at most one of: `transcript_tail: N` (the last N events), `transcript_head: N` (the first N), or `transcript_from` / `transcript_to` (an index range; `transcript_to` is exclusive). Passing any `transcript_*` parameter implies `include_transcript: true`. A session with no transcript yet returns a section saying it has no events.
         - **A character cap always applies.** `transcript_max_chars` (#{TextBudget.delimited(TranscriptSlice::MIN_MAX_CHARS)}–#{TextBudget.delimited(TranscriptSlice::MAX_MAX_CHARS)}, ≈4 characters a token) defaults to #{TextBudget.delimited(TranscriptSlice::DEFAULT_MAX_CHARS)} even when you pass no slice parameters, so `include_transcript: true` alone returns the NEWEST events that fit, not the whole transcript. A tail (and the default) spends the cap from the newest end; a head or a range spends it from the start. The cap stops at an event boundary and says so in a `Truncated:` line and an in-place `[… events #a–#b not shown …]` marker naming the range to fetch next. A single event larger than the whole cap is cut mid-event, with its own marker.
         - **Conversation only:** `transcript_conversation_only: true` renders just the human and assistant text, each tool call collapsed to one line (`[tool call: Bash] {"command":…}`), with tool output, thinking and bookkeeping omitted. The cheapest way to read what was said; it works the same for every agent runtime.
         - Good first calls: `transcript_conversation_only: true, transcript_tail: 20` for "what is it doing now"; `transcript_conversation_only: true, transcript_head: 5` for "what was it asked".
@@ -106,7 +106,7 @@ module Mcp
           transcript_format: {
             type: "string",
             enum: [ "text", "json" ],
-            description: 'Render each event as readable text ("text" and "json" render identically) instead of raw JSONL, each prefixed with its [#index]. Default: raw JSONL. Ignored when transcript_conversation_only is true.'
+            description: 'Render each event as readable text ("text" and "json" render identically) instead of raw JSONL, each prefixed with its [#index]. Default: raw JSONL. Ignored when transcript_conversation_only is true. Implies include_transcript.'
           },
           transcript_tail: {
             type: "integer",
@@ -132,7 +132,7 @@ module Mcp
             type: "integer",
             minimum: TranscriptSlice::MIN_MAX_CHARS,
             maximum: TranscriptSlice::MAX_MAX_CHARS,
-            description: "Character cap on the transcript section (≈4 characters a token). Default: #{TextBudget.delimited(TranscriptSlice::DEFAULT_MAX_CHARS)}. Values outside #{TextBudget.delimited(TranscriptSlice::MIN_MAX_CHARS)}–#{TextBudget.delimited(TranscriptSlice::MAX_MAX_CHARS)} are clamped. Implies include_transcript."
+            description: "Character cap on the events returned (≈4 characters a token); the section's navigation lines add ~1-2k on top. Default: #{TextBudget.delimited(TranscriptSlice::DEFAULT_MAX_CHARS)}. Values outside #{TextBudget.delimited(TranscriptSlice::MIN_MAX_CHARS)}–#{TextBudget.delimited(TranscriptSlice::MAX_MAX_CHARS)} are clamped. Implies include_transcript."
           },
           transcript_conversation_only: {
             type: "boolean",
@@ -176,14 +176,14 @@ module Mcp
       # is asking for the transcript, so each implies include_transcript.
       TRANSCRIPT_SLICE_PARAMS = %w[
         transcript_tail transcript_head transcript_from transcript_to
-        transcript_max_chars transcript_conversation_only
+        transcript_max_chars transcript_format
       ].freeze
 
       def call(args)
         session = find_session(args["id"])
 
-        include_transcript = truthy?(args["include_transcript"]) ||
-          TRANSCRIPT_SLICE_PARAMS.any? { |key| args.key?(key) && !args[key].nil? && args[key] != false }
+        include_transcript = truthy?(args["include_transcript"]) || truthy?(args["transcript_conversation_only"]) ||
+          TRANSCRIPT_SLICE_PARAMS.any? { |key| !args[key].nil? }
         verbose = truthy?(args["verbose"])
         # Build (and so validate) the slice before rendering anything, so a bad
         # parameter fails fast instead of after the whole dump was assembled.
@@ -795,9 +795,9 @@ module Mcp
         [ walk.call(blob, []), cut_paths ]
       end
 
-      # nil when there is nothing to show in raw form, which renders no section —
-      # the raw path has always been silent about a missing transcript. A rendered
-      # format raises instead, as GET /api/v1/sessions/:id/transcript does.
+      # A session with no transcript yet still gets the section, saying it has no
+      # events, rather than failing the whole call — the rest of the dump is what a
+      # caller polling a freshly spawned session came for.
       #
       # "text" and "json" render identically: on the REST route the format only
       # picks the HTTP content type, which has no analogue over MCP.
@@ -808,7 +808,7 @@ module Mcp
           else "raw"
           end
 
-        slice = TranscriptSlice.new(
+        TranscriptSlice.new(
           session,
           format: format,
           head: args["transcript_head"],
@@ -817,10 +817,6 @@ module Mcp
           to: args["transcript_to"],
           max_chars: args["transcript_max_chars"]
         )
-        return slice if session.transcript_present?
-        raise ToolError, "No transcript available for this session" unless format == "raw"
-
-        nil
       rescue TranscriptSlice::InvalidRequest => e
         raise ToolError, e.message
       end

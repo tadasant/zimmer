@@ -219,11 +219,21 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_includes output, "I've completed the task for you."
   end
 
-  test "transcript_format raises when there is no transcript" do
-    error = assert_raises(Mcp::ToolError) do
-      @tool.call("id" => sessions(:running).id, "include_transcript" => true, "transcript_format" => "json")
+  # A freshly spawned session has no transcript yet, and the call a router makes
+  # on it is for the status. The section says there is nothing, rather than the
+  # whole call failing.
+  test "a session with no transcript still returns its details and an empty transcript section" do
+    %w[raw text conversation].each do |mode|
+      args = { "id" => sessions(:running).id, "include_transcript" => true }
+      args["transcript_format"] = "json" if mode == "text"
+      args["transcript_conversation_only"] = true if mode == "conversation"
+
+      output = @tool.call(args)
+
+      assert_includes output, "- **Status:** running", mode
+      assert_includes output, "- **Events:** 0 in total.", mode
+      assert_includes output, "- **Returned:** nothing — the requested range is empty (the transcript has no events).", mode
     end
-    assert_match(/No transcript available/, error.message)
   end
 
   # --- bounded transcript slices -------------------------------------------
@@ -402,6 +412,71 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_includes section, "- **Events:** 3 in total."
     assert_includes section, "- **Returned:** nothing — the requested range is empty."
     refute_includes section, "```"
+  end
+
+  test "a tail whose newest event is over the cap cuts that event and points at the rest" do
+    # #0 the question, #1 an answer far larger than the cap
+    session = session_with_transcript(slice_transcript(1, answer_pad: 2_000).lines.first(2).join)
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_tail" => 2, "transcript_max_chars" => 1_000))
+
+    assert_includes section, "- **Returned:** event #1 as raw JSONL"
+    assert_includes section, "- **Cut mid-event:** event #1 alone is larger than the cap"
+    assert_includes section, "event #0 of the requested range was not returned. Fetch them with `transcript_from: 0, transcript_to: 1`"
+    assert_match(/```\n\[… event #0 not shown \(character cap reached\)\..*\n\{"type":"assistant".*\[… event #1 cut: showing 800 of/m, section)
+  end
+
+  test "transcript_to alone reads from the start up to it" do
+    content = slice_transcript(2)
+    session = session_with_transcript(content)
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_to" => 2))
+
+    assert_includes section, "- **Requested:** events #0–#1 (transcript_to: 2)."
+    assert_equal content.lines[0...2].join, section[/```\n(.*)```/m, 1]
+  end
+
+  test "a fractional count is refused rather than rounded" do
+    session = session_with_transcript(slice_transcript(1))
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("id" => session.id, "transcript_head" => 1.5) }
+    assert_match(/transcript_head must be an integer, got 1.5/, error.message)
+    assert_includes transcript_section(@tool.call("id" => session.id, "transcript_head" => 2.0)), "- **Returned:** events #0–#1"
+  end
+
+  test "transcript_conversation_only false does not turn the transcript on" do
+    output = @tool.call("id" => sessions(:archived).id, "transcript_conversation_only" => "false")
+
+    refute_includes output, "### Transcript\n"
+    assert_includes output, "### Transcript File"
+  end
+
+  test "transcript_format alone implies include_transcript" do
+    output = @tool.call("id" => sessions(:archived).id, "transcript_format" => "text")
+
+    assert_includes output, "[#1] --- Assistant ---"
+  end
+
+  test "conversation only reads a Codex rollout through its normalizer" do
+    session = sessions(:archived)
+    session.update!(agent_runtime: "codex", transcript: [
+      { "type" => "session_meta", "timestamp" => "2025-11-12T12:00:00Z", "payload" => { "id" => "codex-1" } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:01Z",
+        "payload" => { "type" => "message", "role" => "user", "content" => [ { "type" => "input_text", "text" => "fix the build" } ] } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:02Z",
+        "payload" => { "type" => "function_call", "call_id" => "c1", "name" => "shell", "arguments" => JSON.generate({ "command" => [ "make" ] }) } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:03Z",
+        "payload" => { "type" => "function_call_output", "call_id" => "c1", "output" => "CODEX-TOOL-OUTPUT" } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:04Z",
+        "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "build fixed" } ] } }
+    ].map { |event| JSON.generate(event) }.join("\n") + "\n")
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_conversation_only" => true))
+
+    assert_includes section, "[#1] User: fix the build"
+    assert_includes section, "[#2] [tool call: shell] {\"command\":[\"make\"]}"
+    assert_includes section, "[#4] Assistant: build fixed"
+    refute_includes section, "CODEX-TOOL-OUTPUT"
   end
 
   test "the file hint tells a caller without disk access how to read a slice" do

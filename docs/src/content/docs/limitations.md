@@ -3013,6 +3013,25 @@ Both count only analyses younger than three hours (`PumpBatch::STALE_AFTER`). Th
 one stuck in `needs_input` from holding a slot forever. It also means a legitimately slow analysis
 (one held that long in the spot queue, say) stops counting, and a fourth can start beside it.
 
+### `get_session`'s transcript slices have three edges
+
+A slice ([The transcript arrives in slices](/extend/mcp-server/#the-transcript-arrives-in-slices-under-a-cap-that-always-applies))
+addresses events by their stored line index. Three edges remain:
+
+- **An index is stable only until a rewrite.** Appends never renumber a line, but a recovery merge,
+  a carryover re-attachment or a fork's truncation replaces the chunk set, and a
+  `transcript_from` / `transcript_to` saved before it can then name different events. Nothing in the
+  response tells a caller that a rewrite happened between two pages.
+- **One event bigger than 400,000 characters can never be read whole.** It is cut mid-event with a
+  marker, and there is no offset *into* an event, so the rest of it is unreachable over MCP.
+- **Conversation-only mode can label machine context as `User`.** It renders the runtime
+  normalizer's `UserMessage` events, so anything a runtime sends as a user-role message — Codex's
+  injected environment context, for one — reads as `User:`, exactly as it does on the session
+  timeline.
+
+The REST routes (`GET /api/v1/sessions/:id?include_transcript=true`, `.../transcript`) are not
+sliced and still return the whole transcript.
+
 ## AIR catalog
 
 ### A dangling reference fails the entire test suite
