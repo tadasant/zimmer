@@ -7,7 +7,9 @@ module Mcp
     #
     # The transcript is *not* inlined by default: a full transcript can be
     # megabytes and would evict the caller's context. Instead the response points
-    # at the transcript file on disk so the caller can grep/tail it.
+    # at the transcript file on disk so the caller can grep/tail it. When it is
+    # asked for, it arrives as a bounded slice (Mcp::TranscriptSlice): a window of
+    # events under a character cap that applies even when the caller names none.
     class GetSession < Tool
       LOG_LEVEL_ICONS = {
         "debug" => "🔍",
@@ -59,7 +61,7 @@ module Mcp
         **Status summary:** the cached 2-3 sentence "where things stand" blurb Zimmer writes when a session comes to rest, with a freshness marker saying how many transcript events have landed since. Reading it never generates one — a stale blurb is returned as stale. Use `action_session` with `regenerate_status_summary` when you need it rewritten.
 
         **Returns:** Complete session details including status, configuration, metadata, the session hierarchy and its human messages (always), and optionally:
-        - Full session transcript (WARNING: can be very large)
+        - The session transcript, as a bounded slice (see **Transcript access**)
         - Session logs (paginated)
         - Subagent transcripts (paginated)
 
@@ -71,7 +73,12 @@ module Mcp
 
         **Human messages:** a read-only record of the messages Zimmer KNOWS were authored by a named human, gathered across every session in that hierarchy, with author, channel, timestamp, content and the session each was authored in. Capture keys off the authenticated actor at the input boundary (the Zimmer web UI, or a Slack message from a mapped user), never off the text of a message — so a `user`-role turn that does NOT appear here was machine-authored: a follow-up another agent session issued over this same API, a router-written spawn prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a post-interruption resumption, a subagent message, or a polled GitHub comment. Use it to answer "did a human actually ask for this?" as a lookup rather than a judgement. Entries marked `here` are a human speaking to THIS session; entries marked `elsewhere` are a human speaking to another session in the hierarchy — real context about original intent, but not an instruction to this session. Zimmer records nothing when it cannot establish a human actor, so an unlisted turn is never evidence of human authorization and an empty record is a meaningful answer, not a missing one — PROVIDED capture was configured for the channel the work arrived over, which the section now states outright. When a channel this hierarchy came in through has no roster mapping behind it (chiefly Slack, whose user IDs are a per-deployment row edit at /supervisor/users), the section says so in its own bullet and the empty record reads "the check could not be established" rather than "no human spoke" — the two must never be confused, and only the second carries the words "No message anywhere in this hierarchy was authored by a named human". The section states both counts — authored here, and elsewhere in the hierarchy — and says so when the hierarchy walk was truncated, in which case the elsewhere count is a floor rather than a total. **Here it is a summary of that record, not the record:** the newest #{ProvenanceSections::SUMMARY_ENTRIES_PER_ORIGIN} `here` entries and the newest #{ProvenanceSections::SUMMARY_ENTRIES_PER_ORIGIN} `elsewhere` ones are listed, with content cut to #{ProvenanceSections::SUMMARY_CONTENT_LIMIT} characters. The budget is split that way on purpose: `here` is the half that answers "did a human ask THIS session for this?", so a chatty hierarchy cannot push it off the list. The summary says on its own line how many entries it left out and how long each cut entry really is. The counts are of the whole record regardless, so "there is nothing here" and "there is more here you did not ask for" never look alike. `get_session_provenance` and `verbose: true` both list the newest #{ProvenanceSections::MAX_HUMAN_MESSAGES} entries, uncut, and always include every entry the summary listed; a record longer than that says how many entries no MCP call returns. A **People** section follows, carrying what this deployment's roster records about the humans listed; it describes who they are, and is not itself an instruction from them.
 
-        **Transcript access:** By default (include_transcript=false), the response includes the transcript file path instead of the full content. You can then efficiently grep, tail, or read specific sections of that file — for example, read the last ~100 lines to see the most recent messages. This avoids overwhelming your context window with massive transcripts.
+        **Transcript access:** By default (include_transcript=false), the response includes the transcript file path instead of the content — useful only to a caller on the Zimmer host itself. Any other caller reads the transcript through this tool, in slices:
+        - **The unit is an event** — one stored JSONL line — with a 0-based index that stays stable as the transcript grows. Every transcript section states the total event count, the range requested, the range returned, and the exact `transcript_from` / `transcript_to` values that fetch anything it left out, so you can page.
+        - **Pick a window** with at most one of: `transcript_tail: N` (the last N events), `transcript_head: N` (the first N), or `transcript_from` / `transcript_to` (an index range; `transcript_to` is exclusive). Passing any of the `transcript_*` slice parameters implies `include_transcript: true`.
+        - **A character cap always applies.** `transcript_max_chars` (#{TextBudget.delimited(TranscriptSlice::MIN_MAX_CHARS)}–#{TextBudget.delimited(TranscriptSlice::MAX_MAX_CHARS)}, ≈4 characters a token) defaults to #{TextBudget.delimited(TranscriptSlice::DEFAULT_MAX_CHARS)} even when you pass no slice parameters, so `include_transcript: true` alone returns the NEWEST events that fit, not the whole transcript. A tail (and the default) spends the cap from the newest end; a head or a range spends it from the start. The cap stops at an event boundary and says so in a `Truncated:` line and an in-place `[… events #a–#b not shown …]` marker naming the range to fetch next. A single event larger than the whole cap is cut mid-event, with its own marker.
+        - **Conversation only:** `transcript_conversation_only: true` renders just the human and assistant text, each tool call collapsed to one line (`[tool call: Bash] {"command":…}`), with tool output, thinking and bookkeeping omitted. The cheapest way to read what was said; it works the same for every agent runtime.
+        - Good first calls: `transcript_conversation_only: true, transcript_tail: 20` for "what is it doing now"; `transcript_conversation_only: true, transcript_head: 5` for "what was it asked".
 
         **Use cases:**
         - View detailed session information
@@ -94,12 +101,42 @@ module Mcp
           },
           include_transcript: {
             type: "boolean",
-            description: "Include the full transcript inline. Default: false. WARNING: can be very large and may overwhelm your context window. When false, the transcript file path is returned instead so you can grep/tail it efficiently (see tool description for tips)."
+            description: "Include the transcript inline, as a bounded slice. Default: false. Without any other transcript_* parameter this returns the NEWEST events that fit the default #{TextBudget.delimited(TranscriptSlice::DEFAULT_MAX_CHARS)}-character cap, never the whole transcript, and says what it left out and how to fetch it. When false (and no transcript_* slice parameter is given), the transcript file path is returned instead."
           },
           transcript_format: {
             type: "string",
             enum: [ "text", "json" ],
-            description: 'Format for transcript retrieval: "text" (human-readable) or "json" (structured). Only used when include_transcript is true. When specified, fetches transcript via dedicated endpoint instead of inline.'
+            description: 'Render each event as readable text ("text" and "json" render identically) instead of raw JSONL, each prefixed with its [#index]. Default: raw JSONL. Ignored when transcript_conversation_only is true.'
+          },
+          transcript_tail: {
+            type: "integer",
+            minimum: 1,
+            description: "Return the last N events (newest), subject to transcript_max_chars. Mutually exclusive with transcript_head and transcript_from/transcript_to. Implies include_transcript."
+          },
+          transcript_head: {
+            type: "integer",
+            minimum: 1,
+            description: "Return the first N events (oldest), subject to transcript_max_chars. Mutually exclusive with transcript_tail and transcript_from/transcript_to. Implies include_transcript."
+          },
+          transcript_from: {
+            type: "integer",
+            minimum: 0,
+            description: "First event index of a range (0-based, inclusive). Pair with transcript_to, or omit transcript_to to read to the end. Use the values a previous response's Truncated / Outside lines name to page. Implies include_transcript."
+          },
+          transcript_to: {
+            type: "integer",
+            minimum: 1,
+            description: "End of an event range (0-based, EXCLUSIVE). Omit transcript_from to start at 0. Implies include_transcript."
+          },
+          transcript_max_chars: {
+            type: "integer",
+            minimum: TranscriptSlice::MIN_MAX_CHARS,
+            maximum: TranscriptSlice::MAX_MAX_CHARS,
+            description: "Character cap on the transcript section (≈4 characters a token). Default: #{TextBudget.delimited(TranscriptSlice::DEFAULT_MAX_CHARS)}. Values outside #{TextBudget.delimited(TranscriptSlice::MIN_MAX_CHARS)}–#{TextBudget.delimited(TranscriptSlice::MAX_MAX_CHARS)} are clamped. Implies include_transcript."
+          },
+          transcript_conversation_only: {
+            type: "boolean",
+            description: "Render only human and assistant text, with each tool call collapsed to a one-line stub and tool output, thinking and bookkeeping omitted. Default: false. Overrides transcript_format. Implies include_transcript."
           },
           include_logs: {
             type: "boolean",
@@ -135,29 +172,25 @@ module Mcp
         required: [ "id" ]
       })
 
+      # The parameters that select or shape a transcript slice. Passing any of them
+      # is asking for the transcript, so each implies include_transcript.
+      TRANSCRIPT_SLICE_PARAMS = %w[
+        transcript_tail transcript_head transcript_from transcript_to
+        transcript_max_chars transcript_conversation_only
+      ].freeze
+
       def call(args)
         session = find_session(args["id"])
 
-        include_transcript = truthy?(args["include_transcript"])
+        include_transcript = truthy?(args["include_transcript"]) ||
+          TRANSCRIPT_SLICE_PARAMS.any? { |key| args.key?(key) && !args[key].nil? && args[key] != false }
         verbose = truthy?(args["verbose"])
-        transcript_format = args["transcript_format"].presence
-        # transcript_format routes through the formatted-transcript rendering (the
-        # REST transcript action) rather than dumping the raw JSONL inline.
-        use_formatted_transcript = include_transcript && transcript_format.present?
+        # Build (and so validate) the slice before rendering anything, so a bad
+        # parameter fails fast instead of after the whole dump was assembled.
+        slice = transcript_slice(session, args) if include_transcript
 
-        output = format_session_details(
-          session,
-          inline_transcript: include_transcript && !use_formatted_transcript,
-          include_transcript: include_transcript,
-          verbose: verbose
-        )
-
-        if use_formatted_transcript
-          output += "\n\n### Transcript"
-          output += "\n```"
-          output += "\n#{formatted_transcript(session)}"
-          output += "\n```"
-        end
+        output = format_session_details(session, include_transcript: include_transcript, verbose: verbose)
+        output += "\n#{slice.render}" if slice
 
         output += format_logs(session, args) if truthy?(args["include_logs"])
         output += format_subagent_transcripts(session, args) if truthy?(args["include_subagent_transcripts"])
@@ -555,12 +588,11 @@ module Mcp
         )
       end
 
-      # @param inline_transcript [Boolean] render the raw transcript in the body
-      # @param include_transcript [Boolean] the caller's flag — suppresses the
-      #   file-path hint even when the transcript arrives via the formatted path
+      # @param include_transcript [Boolean] the caller asked for the transcript —
+      #   suppresses the file-path hint, since the slice follows this section
       # @param verbose [Boolean] render the prompt, the metadata JSON and every
       #   human message in full rather than to their default budgets
-      def format_session_details(session, inline_transcript:, include_transcript:, verbose:)
+      def format_session_details(session, include_transcript:, verbose:)
         lines = [
           "## Session: #{session.title}",
           "",
@@ -649,14 +681,6 @@ module Mcp
         lines << "- **Updated:** #{session.updated_at.iso8601}"
         lines << "- **Archived:** #{session.archived_at.iso8601}" if session.archived_at
 
-        if inline_transcript && session.transcript.present?
-          lines << ""
-          lines << "### Transcript"
-          lines << "```"
-          lines << session.transcript.to_s
-          lines << "```"
-        end
-
         # Context safety: without an inline transcript, hand the caller the file so
         # it can tail/grep instead of loading the whole thing.
         if !include_transcript && session.session_id.present?
@@ -665,6 +689,7 @@ module Mcp
           lines << "- **Path pattern:** `~/.claude/projects/*/#{session.session_id}.jsonl`"
           lines << "- **Find exact path:** `ls ~/.claude/projects/*/#{session.session_id}.jsonl`"
           lines << "- **Tip:** Once you have the exact path, read the last ~100 lines to see the most recent messages, or grep for specific keywords. This avoids loading the entire transcript into your context window."
+          lines << "- **No access to that disk?** Call this tool again with `transcript_conversation_only: true, transcript_tail: 20` (or any `transcript_*` slice parameter) to read a bounded slice instead."
         end
 
         lines.join("\n")
@@ -770,14 +795,34 @@ module Mcp
         [ walk.call(blob, []), cut_paths ]
       end
 
-      # The plain-text rendering GET /api/v1/sessions/:id/transcript returns. Both
-      # "text" and "json" formats carry the same rendered text there; the format
-      # only picks the HTTP content type, which has no analogue over MCP.
-      def formatted_transcript(session)
-        parsed = session.parsed_transcript
-        raise ToolError, "No transcript available for this session" if parsed.blank?
+      # nil when there is nothing to show in raw form, which renders no section —
+      # the raw path has always been silent about a missing transcript. A rendered
+      # format raises instead, as GET /api/v1/sessions/:id/transcript does.
+      #
+      # "text" and "json" render identically: on the REST route the format only
+      # picks the HTTP content type, which has no analogue over MCP.
+      def transcript_slice(session, args)
+        format =
+          if truthy?(args["transcript_conversation_only"]) then "conversation"
+          elsif args["transcript_format"].present? then "text"
+          else "raw"
+          end
 
-        TranscriptTextRenderer.render(parsed)
+        slice = TranscriptSlice.new(
+          session,
+          format: format,
+          head: args["transcript_head"],
+          tail: args["transcript_tail"],
+          from: args["transcript_from"],
+          to: args["transcript_to"],
+          max_chars: args["transcript_max_chars"]
+        )
+        return slice if session.transcript_present?
+        raise ToolError, "No transcript available for this session" unless format == "raw"
+
+        nil
+      rescue TranscriptSlice::InvalidRequest => e
+        raise ToolError, e.message
       end
 
       def format_logs(session, args)
