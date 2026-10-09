@@ -179,6 +179,52 @@ module ChunkedTranscript
     Digest::SHA256.hexdigest(normalized) == read_attribute(:transcript_digest)
   end
 
+  # Yields +[index, line]+ for every stored line whose 0-based index is in
+  # +from...to+, ascending, or descending with +reverse: true+.
+  #
+  # This is the read a bounded transcript slice wants, and it reads only the
+  # chunks the range touches: one index-only query for every chunk's
+  # `line_count` (no `content`), then one chunk's content at a time, in the
+  # order the caller is walking. A caller that stops early — `Mcp::TranscriptSlice`
+  # stops when its character budget runs out — never loads the rest, so the
+  # last 50 events of a 32 MB transcript cost one or two 256 KiB chunks rather
+  # than the whole document. A rewrite (`replace_transcript_chunks`) landing
+  # between the count query and a content read can make the lines read disagree
+  # with the indices counted; a deleted chunk is skipped rather than raised on. Line indices are what the chunk counts sum to, so
+  # they agree with `transcript_line_count` and with the timeline's
+  # `_transcript_index`; an append never renumbers an existing line.
+  #
+  # Falls back to splitting the whole value when the row cannot answer from
+  # chunks: a legacy row the backfill has not reached, or a value already in
+  # memory (staged or memoised), which is cheaper to slice than to re-query.
+  def each_transcript_line(from, to, reverse: false, &block)
+    return enum_for(__method__, from, to, reverse: reverse) unless block
+
+    from = [ from.to_i, 0 ].max
+    if defined?(@staged_transcript) || defined?(@chunked_transcript_text) || !chunked_transcript?
+      lines = transcript_document_lines
+      yield_line_range(lines, 0, from, [ to.to_i, lines.size ].min, reverse, &block)
+      return
+    end
+
+    first = 0
+    spans = SessionTranscriptChunk.where(session_id: id).order(:seq).pluck(:seq, :line_count).map do |seq, count|
+      span = [ seq, first, first + count ]
+      first += count
+      span
+    end
+    to = [ to.to_i, first ].min
+    spans.select! { |_seq, lo, hi| hi > from && lo < to }
+    spans.reverse! if reverse
+
+    spans.each do |seq, lo, _hi|
+      content = SessionTranscriptChunk.where(session_id: id, seq: seq).pick(:content)
+      next if content.nil?
+
+      yield_line_range(content.lines, lo, from, to, reverse, &block)
+    end
+  end
+
   def reload(*)
     forget_transcript_cache
     super
@@ -244,6 +290,29 @@ module ChunkedTranscript
     return nil unless has_attribute?(:transcript)
 
     read_attribute(:transcript)
+  end
+
+  # The whole stored value as lines, for the paths `each_transcript_line` cannot
+  # answer from chunks. A legacy Array is one event per element, encoded the way
+  # `normalize_transcript` would store it.
+  def transcript_document_lines
+    value = transcript
+    return [] if value.blank?
+    return value.map { |event| JSON.generate(event) } if value.is_a?(Array)
+
+    value.to_s.lines
+  end
+
+  # Yields the lines of +lines+ (which start at document index +offset+) whose
+  # document index falls in +from...to+.
+  def yield_line_range(lines, offset, from, to, reverse)
+    lo = [ from - offset, 0 ].max
+    hi = [ to - offset, lines.size ].min
+    return if lo >= hi
+
+    indices = (lo...hi).to_a
+    indices.reverse! if reverse
+    indices.each { |i| yield [ offset + i, lines[i] ] }
   end
 
   def transcript_chunk_contents
