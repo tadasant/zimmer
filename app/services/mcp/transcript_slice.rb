@@ -6,21 +6,28 @@ module Mcp
   #
   # WHY THIS EXISTS
   #
-  # `include_transcript: true` used to inline the whole transcript. A caller on the
-  # far side of MCP has no other way to read it (the file-path hint points at a disk
-  # it cannot reach), and an ordinary session's transcript ran to ~56k tokens, past
-  # the client's tool-result limit, so the call failed outright and there was no
-  # parameter to ask for less. This class is that parameter: a window of events
-  # (head, tail, or an index range), a character cap that ALWAYS applies — a
-  # default one when the caller names none — and an optional conversation-only
-  # rendering that drops tool traffic down to one-line stubs.
+  # A caller on the far side of MCP has no route to a transcript but this one (the
+  # file-path hint points at a disk it cannot reach), and an ordinary session's
+  # whole transcript runs to ~56k tokens — past a client's tool-result limit, which
+  # refuses the result outright. So the transcript is only ever returned as a
+  # window of events (head, tail, or an index range) under a character cap that
+  # ALWAYS applies — a default one when the caller names none — with an optional
+  # conversation-only rendering that drops tool traffic down to one-line stubs.
   #
   # THE UNIT IS ONE STORED JSONL LINE, CALLED AN "EVENT"
   #
   # Indices are 0-based line numbers in the stored transcript. The store is
   # append-only, so an index keeps meaning the same event as the session grows,
   # which is what lets a caller page: every response states the total, the indices
-  # it returned, and the exact parameters that fetch what it did not.
+  # it returned, and the exact parameters that fetch what it did not. The one
+  # exception is a rewrite (`ChunkedTranscript#replace_transcript_chunks`: a
+  # carryover re-attachment, a recovery merge, a fork's truncation), after which
+  # an index saved earlier can name a different event.
+  #
+  # The walk parses only what it renders, and stops when the budget is spent —
+  # except that events with nothing to show in the conversation rendering cost
+  # nothing, so a conversation-only tail of a session that is almost all tool
+  # traffic can parse most of the transcript before its budget fills.
   #
   # NOTHING IS CUT SILENTLY
   #
@@ -217,14 +224,14 @@ module Mcp
     end
 
     def gap_marker(gap_lo, gap_hi)
-      "[… events #{range_label(gap_lo, gap_hi)} not shown (character cap reached). " \
+      "[… #{range_label(gap_lo, gap_hi)} not shown (character cap reached). " \
         "Fetch them with #{range_params(gap_lo, gap_hi)} …]"
     end
 
     def summary_lines(lo, hi, pieces, covered_lo, covered_hi, backward, cut_event)
       lines = [
         "- **Events:** #{TextBudget.delimited(total)} in total. Indices are 0-based, one per stored JSONL line, " \
-        "and stable as the transcript grows."
+        "and stable as the transcript grows (unless Zimmer rewrites it in a recovery merge or carryover)."
       ]
 
       if lo >= hi
@@ -232,14 +239,14 @@ module Mcp
         return lines
       end
 
-      lines << "- **Requested:** events #{range_label(lo, hi)} (#{selection_label})."
+      lines << "- **Requested:** #{range_label(lo, hi)} (#{selection_label})."
       lines << "- **Returned:** #{returned_label(pieces, covered_lo, covered_hi)} as #{FORMAT_LABELS.fetch(@format)}."
       lines << cap_line
 
       cut_lo, cut_hi = backward ? [ lo, covered_lo ] : [ covered_hi, hi ]
       if cut_lo < cut_hi
         lines << "- **Truncated:** yes — the #{TextBudget.delimited(@max_chars)}-character cap was reached; " \
-                 "events #{range_label(cut_lo, cut_hi)} of the requested range were not returned. " \
+                 "#{range_label(cut_lo, cut_hi)} of the requested range #{cut_hi - cut_lo == 1 ? "was" : "were"} not returned. " \
                  "Fetch them with #{range_params(cut_lo, cut_hi)}, or raise `transcript_max_chars`."
       end
       if cut_event
@@ -249,8 +256,8 @@ module Mcp
       lines << "- **Not truncated:** every event in the requested range is returned." if cut_lo >= cut_hi && cut_event.nil?
 
       outside = []
-      outside << "earlier: events #{range_label(0, lo)} (#{range_params(0, lo)})" if lo.positive?
-      outside << "later: events #{range_label(hi, total)} (#{range_params(hi, total)})" if hi < total
+      outside << "earlier: #{range_label(0, lo)} (#{range_params(0, lo)})" if lo.positive?
+      outside << "later: #{range_label(hi, total)} (#{range_params(hi, total)})" if hi < total
       lines << "- **Outside the requested range:** #{outside.join('; ')}." if outside.any?
 
       lines
@@ -267,7 +274,7 @@ module Mcp
     def returned_label(pieces, covered_lo, covered_hi)
       return "no events" if covered_lo >= covered_hi
 
-      label = "events #{range_label(covered_lo, covered_hi)}"
+      label = range_label(covered_lo, covered_hi)
       hidden = (covered_hi - covered_lo) - pieces.size
       label += " (#{TextBudget.delimited(hidden)} of them #{hidden == 1 ? 'has' : 'have'} nothing to show in this format and #{hidden == 1 ? 'is' : 'are'} omitted)" if hidden.positive?
       label
@@ -284,9 +291,9 @@ module Mcp
       end
     end
 
-    # Inclusive, human-readable: "120–169", or "120" for one event.
+    # Inclusive, human-readable: "events #120–#169", or "event #120" for one.
     def range_label(lo, hi)
-      hi - lo == 1 ? "##{lo}" : "##{lo}–##{hi - 1}"
+      hi - lo == 1 ? "event ##{lo}" : "events ##{lo}–##{hi - 1}"
     end
 
     def range_params(lo, hi)
@@ -320,7 +327,9 @@ module Mcp
     end
 
     def integer_param(name, value)
-      Integer(value.is_a?(Float) && value == value.floor ? value.to_i : value)
+      raise InvalidRequest, "#{name} must be an integer, got #{value.inspect}" if value.is_a?(Float) && value != value.floor
+
+      Integer(value)
     rescue ArgumentError, TypeError
       raise InvalidRequest, "#{name} must be an integer, got #{value.inspect}"
     end

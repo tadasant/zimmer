@@ -14,10 +14,10 @@
 #      `content ILIKE` per chunk, so a boundary inside a JSON event would make a
 #      phrase silently unfindable; a boundary between events cannot, because a
 #      phrase spanning two events is not a phrase anybody typed.
-#   2. **`line_count` sums to the document's line count.** Nothing reads the sum today
-#      — `sessions.transcript_line_count` is computed from the whole value on write —
-#      but the per-chunk number is what makes this table incrementally readable at
-#      all: a reader that wants the last N events, or the events between two offsets,
+#   2. **`line_count` sums to the document's line count.** `sessions.transcript_line_count`
+#      is computed from the whole value on write, and the per-chunk number is what
+#      makes this table incrementally readable at all (`Session#each_transcript_line`
+#      reads it to serve the MCP transcript slices): a reader that wants the last N events, or the events between two offsets,
 #      can pick the chunks it needs from these counts without touching the rest. That
 #      is the shape #477 and the timeline's paging want. `Session.transcript_line_count`
 #      counts newlines and adds one for an unterminated final line; because only the
