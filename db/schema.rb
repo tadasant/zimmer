@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_08_060000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_09_220000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -575,6 +575,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_060000) do
     t.string "revocation_reason"
     t.datetime "revoked_at"
     t.string "scope"
+    t.string "scope_change_reason"
+    t.datetime "scope_changed_at"
     t.datetime "updated_at", null: false
     t.string "user_email", null: false
     t.index ["oauth_server_client_id"], name: "index_oauth_server_grants_on_oauth_server_client_id"

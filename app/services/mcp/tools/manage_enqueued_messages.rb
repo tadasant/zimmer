@@ -163,6 +163,7 @@ module Mcp
 
         session.logs.create!(content: "Enqueued message added at position #{message.position}", level: "info")
         record_uncle_edge(session, args, "mcp:manage_enqueued_messages.create")
+        context.capture_assistant_message(session, content, "oauth.enqueued_message")
 
         [
           "## Message Queued",
@@ -191,6 +192,7 @@ module Mcp
         raise ToolError, "Validation failed: #{message.errors.full_messages.join(', ')}" unless message.update(attrs)
 
         session.logs.create!(content: "Enqueued message at position #{message.position} updated", level: "info")
+        context.capture_assistant_message(session, attrs[:content], "oauth.enqueued_message_edited") if attrs.key?(:content)
 
         [
           "## Message Updated",
@@ -297,6 +299,7 @@ module Mcp
         end
 
         record_uncle_edge(session, args, "mcp:manage_enqueued_messages.send_now")
+        context.capture_assistant_message(session, content, "oauth.send_now")
         session.reload
         [
           "## Message Sent Immediately",

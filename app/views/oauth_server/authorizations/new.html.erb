@@ -39,13 +39,44 @@
     </p>
   <% end %>
 
-  <%= form_with url: oauth_server_authorize_path, method: :post, local: true, data: { turbo: false }, class: "mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end" do %>
+  <%= form_with url: oauth_server_authorize_path, method: :post, local: true, data: { turbo: false }, class: "mt-6 space-y-5" do %>
     <% %w[client_id redirect_uri response_type code_challenge code_challenge_method state resource].each do |field| %>
       <% if params[field].present? %>
         <%= hidden_field_tag field, params[field], id: nil %>
       <% end %>
     <% end %>
-    <%= button_tag "Deny", name: "decision", value: "deny", class: "rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50" %>
-    <%= button_tag "Approve", name: "decision", value: "approve", class: "rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700" %>
+
+    <fieldset class="space-y-3 text-sm" id="oauth-privilege">
+      <legend class="font-medium text-gray-900">What may this connection do with your name?</legend>
+      <% if @privilege_error %>
+        <p class="rounded border border-red-300 bg-red-50 p-2 text-red-800"><%= @privilege_error %></p>
+      <% end %>
+      <label class="flex gap-3 rounded-md border border-gray-200 p-3 hover:bg-gray-50">
+        <%= radio_button_tag "privilege", OauthServer::RELAY_ONLY, params[:privilege] == OauthServer::RELAY_ONLY, class: "mt-0.5 shrink-0" %>
+        <span>
+          <span class="font-medium text-gray-900">Relay only</span>
+          <span class="block text-gray-600">
+            Messages it sends to sessions are recorded as the assistant's, not yours. A merge gate will not treat them
+            as your approval.
+          </span>
+        </span>
+      </label>
+      <label class="flex gap-3 rounded-md border border-gray-200 p-3 hover:bg-gray-50">
+        <%= radio_button_tag "privilege", OauthServer::ACT_AS_HUMAN, params[:privilege] == OauthServer::ACT_AS_HUMAN, class: "mt-0.5 shrink-0" %>
+        <span>
+          <span class="font-medium text-gray-900">Acts on my behalf</span>
+          <span class="block text-gray-600">
+            Messages it sends to sessions are recorded as written by you (<%= @email %>), naming this connection. A merge
+            gate may treat them as your approval. Choose this only for an assistant you talk to directly: anything that
+            steers it can speak as you.
+          </span>
+        </span>
+      </label>
+    </fieldset>
+
+    <div class="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+      <%= button_tag "Deny", name: "decision", value: "deny", class: "rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50" %>
+      <%= button_tag "Approve", name: "decision", value: "approve", class: "rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700" %>
+    </div>
   <% end %>
 </div>
