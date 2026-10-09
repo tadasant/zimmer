@@ -15,7 +15,7 @@ module Mcp
   # allowed_agent_roots restricts which agent roots start_session may spawn and
   # which sessions the cross-session wake tool may watch.
   class Context
-    attr_reader :tool_groups, :allowed_agent_roots, :base_url, :caller_fingerprint, :self_session_id
+    attr_reader :tool_groups, :allowed_agent_roots, :base_url, :caller_fingerprint, :self_session_id, :oauth_grant_id
 
     # The SDK wraps whatever is handed to `MCP::Server.new(server_context:)` in an
     # MCP::ServerContext (which carries progress/cancellation plumbing and
@@ -51,13 +51,19 @@ module Mcp
     #   archiving ITSELF from the refusal that stops one session killing another's in-flight turn
     #   (Sessions::LiveTurn, #400). So a connection stamped with another session's id inherits that
     #   session's exemption — which is why ForkSessionService prepares a fork's config for the fork.
+    # @param oauth_grant_id [Integer, nil] the OauthServer::Grant this request authenticated with, nil
+    #   for an API key. A grant is what a remote MCP client such as a Claude.ai connector holds after a
+    #   human approved it, so it says the caller is that human's assistant rather than one of the
+    #   fleet's agents. It names who approved the CLIENT, not who wrote a given argument, so it is
+    #   never grounds for recording a HumanMessage. It grants nothing and scopes nothing.
     def initialize(tool_groups: nil, allowed_agent_roots: nil, base_url: nil, caller_fingerprint: nil,
-                   session_id: nil)
+                   session_id: nil, oauth_grant_id: nil)
       @tool_groups = Registry.parse_groups(tool_groups)
       @allowed_agent_roots = parse_list(allowed_agent_roots).presence
       @base_url = base_url.presence || SelfSessionInjector.new.self_target[:base_url]
       @caller_fingerprint = caller_fingerprint.presence || HealthActionCooldown::ANONYMOUS
       @self_session_id = normalize_session_id(session_id)
+      @oauth_grant_id = oauth_grant_id
     end
 
     def tools
@@ -67,6 +73,11 @@ module Mcp
     # Agent roots this connection may spawn sessions for, nil when unrestricted.
     def restricted?
       !@allowed_agent_roots.nil?
+    end
+
+    # Whether this request authenticated with an OAuth access token rather than an API key.
+    def oauth?
+      !@oauth_grant_id.nil?
     end
 
     def session_url(session)
