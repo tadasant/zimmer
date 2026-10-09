@@ -77,7 +77,8 @@ router as priority, because a person is waiting on that client. See
 ## Relay only, or acts on my behalf
 
 Every connection has one of two levels, and the person approving it picks one on the consent
-screen. Neither is selected for them, and approving without picking one issues no code.
+screen. Neither is selected for them (not even when the authorization URL asks for one), and
+approving without picking one issues no code.
 
 | Level | Scope the grant holds | What a message it sends is recorded as |
 | --- | --- | --- |
@@ -248,8 +249,8 @@ REST or MCP sibling, for the same reason the key controls don't.
 
 Connections approved before levels existed were raised to **acts on my behalf** by a one-time
 [post-deploy task](/operate/deploying/#one-time-post-deploy-tasks)
-(`LetExistingOauthGrantsActOnTheirApproversBehalf`). Each one shows *"set when connection levels were
-introduced"* until its level is changed.
+(`LetExistingOauthGrantsActOnTheirApproversBehalf`). Each one shows *"raised by the one-time backfill
+of existing connections"* until its level is changed.
 
 Every grant, refusal and revocation is logged under `[oauth_server]`, naming the grant and the person,
 never a token. A revocation is logged at WARN, so it ships to obs.

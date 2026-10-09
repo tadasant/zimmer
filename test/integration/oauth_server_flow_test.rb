@@ -800,6 +800,14 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert_select "input[type=radio][name=privilege][checked]", count: 0
   end
 
+  test "a client cannot pre-select a privilege level through the authorization URL" do
+    _, challenge = pkce
+    get "/oauth/authorize", params: authorize_params(register["client_id"], challenge, privilege: "act_as_human")
+    assert_response :success
+
+    assert_select "input[type=radio][name=privilege][checked]", count: 0
+  end
+
   test "approving without choosing a privilege level issues no code and asks again" do
     client_id = register["client_id"]
     _, challenge = pkce
