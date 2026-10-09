@@ -134,7 +134,7 @@ module SessionGenesis
       key: API,
       label: "API / agent spawn",
       default_class: SPOT,
-      description: "Created over the REST API or MCP start_session with no parent session to " \
+      description: "Created over the REST API, MCP start_session or MCP quick_router with no parent session to " \
                    "inherit from, or a trigger fired by hand over the API or MCP — so nothing " \
                    "connects it to a human. An agent spawn that DOES carry a parent inherits " \
                    "that parent's genesis instead of landing here."

@@ -13,8 +13,29 @@ module Mcp
     class GetConfigs < Tool
       tool_name "get_configs"
 
+      SECTIONS = %w[mcp_servers agent_roots models goals].freeze
+      NAMES_MAX = 50
+      QUERY_MAX_LENGTH = 200
+
       description <<~DESC
-        Fetches all static configuration data in a single call.
+        Lists the configuration `start_session` takes: MCP servers, agent roots, runtime models, and goals.
+
+        **Just want something done or answered? Call `quick_router` instead.** It takes a plain-language
+        request and Zimmer picks the root, servers and goal itself. This tool is for hand-composing
+        `start_session`.
+
+        **The full listing is large** (every agent root with its defaults, every catalog server), so
+        narrow it when you can. Every argument is optional, and with none you get everything:
+        - `sections`: any of `mcp_servers`, `agent_roots`, `models`, `goals`. Only these are returned.
+        - `query`: words matched case-insensitively against each server's, root's and goal's name,
+          title and description; an item must contain every word. "whatsapp" answers "is there a
+          WhatsApp server?" in one small call. Runtime models are not filtered by it.
+        - `names`: exact server names, agent root names, or goal ids. Use it to fetch full detail for
+          the few candidates a compact or query call turned up.
+        - `compact`: one line per item (name and title) instead of descriptions and defaults, and no
+          usage notes. Good for a first look at what exists.
+
+        A filtered listing says it is filtered and still states the true totals.
 
         Returns:
         - **MCP servers**: Servers that can be attached right now (name, title, description), plus a
@@ -23,38 +44,206 @@ module Mcp
         - **Runtime models**: Selectable models grouped by agent runtime, including default, auth requirements, and the reasoning-effort levels (and default level) each model takes
         - **Goals**: Available session completion criteria (id, name, description)
 
-        **Use this tool** to get all configuration options before calling start_session.
+        Read the full (non-compact) entry for an agent root before calling start_session with it.
       DESC
 
       input_schema({
         type: "object",
-        properties: {},
+        properties: {
+          sections: {
+            type: "array",
+            items: { type: "string", enum: SECTIONS },
+            description: "Return only these sections. Omit for all four."
+          },
+          query: {
+            type: "string",
+            description: "Case-insensitive words to match against name, title and description of servers, " \
+                         "agent roots and goals. Every word must appear. Runtime models are not filtered."
+          },
+          names: {
+            type: "array",
+            items: { type: "string" },
+            description: "Exact server names, agent root names or goal ids to return in full. " \
+                         "Items in a returned section that are not named are left out."
+          },
+          compact: {
+            type: "boolean",
+            description: "One line per item (name and title), no descriptions, defaults or usage notes."
+          }
+        },
         required: []
       })
 
-      def call(_args)
+      def call(args)
+        @filter = Filter.parse(args)
         lines = catalog_health_lines
+        lines.concat(@filter.banner_lines)
 
+        rendered = []
+        rendered << mcp_server_section_lines if @filter.section?("mcp_servers")
+        rendered << agent_root_section_lines if @filter.section?("agent_roots")
+        rendered << model_section_lines if @filter.section?("models")
+        rendered << goal_section_lines if @filter.section?("goals")
+        rendered.each_with_index do |section, index|
+          lines << "---" << "" if index.positive?
+          lines.concat(section)
+        end
+
+        lines.concat(usage_note_lines) unless @filter.compact?
+
+        lines.join("\n")
+      end
+
+      # What a call asked for, and how each list item is tested against it. With
+      # no arguments every predicate is true and #active? is false, which is what
+      # keeps the unfiltered listing exactly as it was.
+      class Filter
+        attr_reader :sections, :terms, :names
+
+        def self.parse(args)
+          sections = args["sections"]
+          unless sections.nil?
+            raise ToolError, "The \"sections\" parameter must be an array." unless sections.is_a?(Array)
+
+            sections = sections.map { |s| s.to_s.strip }.reject(&:empty?).uniq
+            unknown = sections - SECTIONS
+            raise ToolError, "Unknown section(s): #{unknown.join(', ')}. Valid sections: #{SECTIONS.join(', ')}" if unknown.any?
+          end
+
+          query = args["query"].to_s.strip
+          raise ToolError, "query is too long (maximum #{QUERY_MAX_LENGTH} characters)" if query.length > QUERY_MAX_LENGTH
+
+          names = args["names"]
+          unless names.nil?
+            raise ToolError, "The \"names\" parameter must be an array." unless names.is_a?(Array)
+
+            names = names.map { |n| n.to_s.strip }.reject(&:empty?).uniq
+            raise ToolError, "Too many names (maximum #{NAMES_MAX})" if names.size > NAMES_MAX
+          end
+
+          new(sections: sections.presence, query: query, names: names.presence, compact: args["compact"] == true)
+        end
+
+        def initialize(sections:, query:, names:, compact:)
+          @sections = sections
+          @query = query
+          @terms = query.downcase.split
+          @names = names&.map(&:downcase)
+          @compact = compact
+        end
+
+        def section?(section)
+          @sections.nil? || @sections.include?(section)
+        end
+
+        def compact?
+          @compact
+        end
+
+        # Whether anything narrows the items within a section.
+        def narrowing?
+          @terms.any? || !@names.nil?
+        end
+
+        def active?
+          narrowing? || !@sections.nil? || @compact
+        end
+
+        # @param name [String] the item's identifier — what `names` matches exactly
+        # @param texts [Array<String, nil>] everything `query` searches, the name included
+        def match?(name, *texts)
+          return false if @names && !@names.include?(name.to_s.downcase)
+          return true if @terms.empty?
+
+          haystack = [ name, *texts ].compact.join("\n").downcase
+          @terms.all? { |term| haystack.include?(term) }
+        end
+
+        def banner_lines
+          return [] unless active?
+
+          parts = []
+          parts << "sections: #{@sections.join(', ')}" if @sections
+          parts << "query: \"#{@query}\"" if @terms.any?
+          parts << "names: #{@names.join(', ')}" if @names
+          parts << "compact" if @compact
+          [ "*Filtered listing (#{parts.join('; ')}). Counts below are the true totals; call `get_configs` " \
+            "with no arguments for everything.*", "" ]
+        end
+      end
+
+            private
+
+      def mcp_server_section_lines
+        lines = [ "## MCP Servers", "" ]
         available, unavailable = partitioned_servers
-        lines << "## MCP Servers" << ""
         if available.empty? && unavailable.empty?
-          lines << "*No MCP servers available.*" << ""
+          return lines << "*No MCP servers available.*" << ""
+        end
+
+        shown_available = available.select { |status| server_match?(status) }
+        shown_unavailable = unavailable.select { |status| server_match?(status) }
+
+        if @filter.narrowing?
+          lines.concat(filtered_server_header_lines(shown_available, available, unavailable))
+          lines.concat(server_entry_lines(shown_available))
         else
           lines.concat(available_server_lines(available, unavailable.size))
-          lines.concat(unavailable_server_lines(unavailable))
         end
+        lines.concat(unavailable_server_lines(shown_unavailable, of: unavailable.size))
+      end
 
-        roots = allowed_roots
-        lines << "---" << "" << "## Agent Roots" << ""
-        if roots.empty?
-          lines << "*No agent roots configured.*"
+      def server_match?(status)
+        @filter.match?(status.server_name, status.title, status.server.description)
+      end
+
+      # A narrowed listing still says how big the whole catalog is, so "no match"
+      # cannot be read as "no servers".
+      def filtered_server_header_lines(shown, available, unavailable)
+        total = available.size + unavailable.size
+        if shown.empty?
+          [ "*No usable server matches the filter (#{available.size} usable of #{total} in the catalog).*", "" ]
         else
-          lines << "Found #{roots.size} preconfigured #{roots.size == 1 ? 'repository' : 'repositories'}:" << ""
-          roots.each { |root| lines.concat(format_root(root)) }
+          [ "Showing #{shown.size} of #{available.size} usable server#{'s' unless available.size == 1} " \
+            "(#{total} in the catalog), filtered:", "" ]
+        end
+      end
+
+      def agent_root_section_lines
+        roots = allowed_roots
+        lines = [ "## Agent Roots", "" ]
+        return lines << "*No agent roots configured.*" if roots.empty?
+
+        noun = roots.size == 1 ? "repository" : "repositories"
+        shown = roots.select do |root|
+          @filter.match?(root.name, root.display_name, root.description, root.url)
+        end
+        if !@filter.narrowing?
+          lines << "Found #{roots.size} preconfigured #{noun}:" << ""
+        elsif shown.empty?
+          return lines << "*No agent root matches the filter (#{roots.size} preconfigured #{noun}).*" << ""
+        else
+          lines << "Showing #{shown.size} of #{roots.size} preconfigured #{noun}, filtered:" << ""
         end
 
-        lines << "---" << "" << "## Runtime Models" << ""
+        if @filter.compact?
+          shown.each { |root| lines << "- `#{root.name}` — #{root.display_name}" }
+          lines << ""
+        else
+          shown.each { |root| lines.concat(format_root(root)) }
+        end
+        lines
+      end
+
+      def model_section_lines
+        lines = [ "## Runtime Models", "" ]
         ModelCatalog.runtimes.each do |runtime|
+          if @filter.compact?
+            lines << "- `#{runtime}` (#{RuntimeRegistry.label_for(runtime)}): default " \
+                     "`#{ModelCatalog.default_for(runtime)}`; models #{format_models(runtime)}"
+            next
+          end
+
           lines << "### #{RuntimeRegistry.label_for(runtime)}"
           lines << "- **Runtime:** `#{runtime}`"
           lines << "- **Default Model:** `#{ModelCatalog.default_for(runtime)}`"
@@ -62,25 +251,48 @@ module Mcp
           lines.concat(effort_lines(runtime))
           lines << ""
         end
+        lines << "" if @filter.compact?
+        lines
+      end
 
+      def goal_section_lines
         goals = GoalsConfig.all
-        lines << "---" << "" << "## Goals" << ""
-        if goals.empty?
-          lines << "*No goals defined.*"
-        else
+        lines = [ "## Goals", "" ]
+        return lines << "*No goals defined.*" if goals.empty?
+
+        shown = goals.select do |goal|
+          data = goal.to_h.with_indifferent_access
+          @filter.match?(data[:id], data[:name], data[:description])
+        end
+        if !@filter.narrowing?
           lines << "Found #{goals.size} goal#{'s' unless goals.size == 1}:" << ""
-          goals.each do |goal|
-            data = goal.to_h.with_indifferent_access
-            lines << "### #{data[:name]}"
-            lines << "- **ID:** `#{data[:id]}`"
-            lines << "- **Description:** #{data[:description]}"
-            # What GoalCheck reads back for this goal — the same list GET /configs carries.
-            lines << "- **Checks:** #{data[:checks].map { |check| "`#{check}`" }.join(', ')}" if data[:checks].present?
-            lines << ""
-          end
+        elsif shown.empty?
+          return lines << "*No goal matches the filter (#{goals.size} defined).*" << ""
+        else
+          lines << "Showing #{shown.size} of #{goals.size} goal#{'s' unless goals.size == 1}, filtered:" << ""
         end
 
-        lines << "---" << "" << "### Usage Notes" << ""
+        shown.each do |goal|
+          data = goal.to_h.with_indifferent_access
+          if @filter.compact?
+            lines << "- `#{data[:id]}` — #{data[:name]}"
+            next
+          end
+
+          lines << "### #{data[:name]}"
+          lines << "- **ID:** `#{data[:id]}`"
+          lines << "- **Description:** #{data[:description]}"
+          # What GoalCheck reads back for this goal — the same list GET /configs carries.
+          lines << "- **Checks:** #{data[:checks].map { |check| "`#{check}`" }.join(', ')}" if data[:checks].present?
+          lines << ""
+        end
+        lines << "" if @filter.compact?
+        lines
+      end
+
+
+      def usage_note_lines
+        lines = [ "---", "", "### Usage Notes", "" ]
         # The trap the per-root `Default …` lines above cannot show on their own:
         # they read as "what this root comes with", which is true only until the
         # caller names a list of its own. https://github.com/tadasant/zimmer/pull/310
@@ -123,11 +335,8 @@ module Mcp
                  "was not given). That report arrives as your next prompt, or on your queue if you are mid-turn, " \
                  "and you are the only one who receives it: re-delegate to the right root, or re-spawn with the " \
                  "server it named. Getting the lists above right is what avoids it"
-
-        lines.join("\n")
+        lines
       end
-
-      private
 
       # Every catalog server, split by whether a session could actually attach
       # it. The split is ConnectorStatusProbe's — the same computation the
@@ -156,8 +365,17 @@ module Mcp
           header += " (of #{total} in the catalog; #{other}, listed below)"
         end
 
-        lines = [ "#{header}:", "" ]
-        available.each do |status|
+        [ "#{header}:", "" ] + server_entry_lines(available)
+      end
+
+      def server_entry_lines(statuses)
+        lines = []
+        if @filter.compact?
+          statuses.each { |status| lines << "- `#{status.server_name}` — #{status.title}" }
+          return lines.empty? ? lines : lines << ""
+        end
+
+        statuses.each do |status|
           lines << "### #{status.title}"
           lines << "- **Name:** `#{status.server_name}`"
           # Only for a server whose short id a second composed catalog also
@@ -177,11 +395,12 @@ module Mcp
       # see a server has no way to tell it apart from one that was never
       # configured, and goes off to register a duplicate. Naming them — without
       # re-describing them — answers "it exists, it is broken, leave it alone".
-      def unavailable_server_lines(unavailable)
+      def unavailable_server_lines(unavailable, of:)
         return [] if unavailable.empty?
 
         one = unavailable.one?
         lines = [ "### Unavailable", "" ]
+        lines << "Showing #{unavailable.size} of #{of}, filtered." if unavailable.size != of
         lines << "#{unavailable.size} catalog #{one ? 'server' : 'servers'} cannot be attached right " \
                  "now. #{one ? 'It exists' : 'They exist'} — do not register a replacement — but do " \
                  "not pass #{one ? 'it' : 'them'} to `start_session`. Each line says why, and the " \
@@ -240,13 +459,13 @@ module Mcp
 
       def format_root(root)
         data = root.to_h.with_indifferent_access
-        lines = [ "### #{data[:title]}" ]
+        lines = [ "### #{data[:display_name]}" ]
         lines << "- **Name:** `#{data[:name]}`"
         lines << "- **Catalog:** `#{root.scope}`" if root.contested?
-        lines << "- **Git Root:** `#{data[:git_root]}`"
+        lines << "- **Git Root:** `#{data[:url]}`"
         lines << "- **Description:** #{data[:description]}"
         lines << "- **Default Branch:** `#{data[:default_branch]}`" if data[:default_branch].present?
-        lines << "- **Default Subdirectory:** `#{data[:default_subdirectory]}`" if data[:default_subdirectory].present?
+        lines << "- **Default Subdirectory:** `#{data[:subdirectory]}`" if data[:subdirectory].present?
         # A root's defaults are copied wholesale into start_session, so an
         # unavailable one is the same trap as an unavailable option — reached by
         # a different route. Marked rather than removed: what the root declares

@@ -326,4 +326,117 @@ class Mcp::Tools::GetConfigsTest < ActiveSupport::TestCase
     refute_includes result, secret
     refute_includes result, "ghp_supersecrettoken"
   end
+
+  # --- filters ---------------------------------------------------------------
+  #
+  # The unfiltered listing runs past 200k characters on a real deployment, which
+  # a voice client cannot load at all. Every filter is optional, and with none
+  # the listing is unchanged — the other tests in this file are that proof.
+
+  FILTER_ROOTS = {
+    "zimmer" => {
+      "display_name" => "Zimmer", "description" => "The app.", "url" => "https://github.com/tadasant/zimmer",
+      "default_mcp_servers" => %w[context7]
+    },
+    "whatsapp-bot" => {
+      "display_name" => "WhatsApp Bot", "description" => "Answers chats.", "url" => "https://github.com/tadasant/bot"
+    }
+  }.freeze
+
+  test "renders every agent root's title and git root, not blanks" do
+    result = with_mixed_catalog(roots: FILTER_ROOTS) { @tool.call({}) }
+
+    assert_includes result, "### Zimmer\n- **Name:** `zimmer`"
+    assert_includes result, "- **Git Root:** `https://github.com/tadasant/zimmer`"
+    refute_match(/^### $/, result)
+  end
+
+  test "sections returns only the sections asked for" do
+    result = with_mixed_catalog(roots: FILTER_ROOTS) { @tool.call({ "sections" => [ "goals" ] }) }
+
+    assert_includes result, "## Goals"
+    refute_includes result, "## MCP Servers"
+    refute_includes result, "## Agent Roots"
+    refute_includes result, "## Runtime Models"
+    assert_includes result, "*Filtered listing (sections: goals)."
+  end
+
+  test "an unknown section is refused with the valid ones" do
+    error = assert_raises(Mcp::ToolError) { @tool.call({ "sections" => [ "servers" ] }) }
+
+    assert_includes error.message, "Unknown section(s): servers"
+    assert_includes error.message, "mcp_servers, agent_roots, models, goals"
+  end
+
+  # The question Claude.ai could not answer in voice mode.
+  test "query answers 'is there a WhatsApp server or root' in one small call, with true totals" do
+    result = with_mixed_catalog(roots: FILTER_ROOTS) do
+      @tool.call({ "query" => "whatsapp", "sections" => %w[mcp_servers agent_roots] })
+    end
+
+    assert_includes result, "*No usable server matches the filter (2 usable of 4 in the catalog).*"
+    assert_includes result, "Showing 1 of 2 preconfigured repositories, filtered:"
+    assert_includes result, "### WhatsApp Bot"
+    refute_includes result, "### Zimmer"
+  end
+
+  test "query matches name, title and description, needs every word, and ignores case" do
+    result = with_mixed_catalog { @tool.call({ "query" => "LIBRARY lookup", "sections" => [ "mcp_servers" ] }) }
+    assert_includes result, "Showing 1 of 2 usable servers (4 in the catalog), filtered:"
+    assert_includes result, "### Context7"
+
+    result = with_mixed_catalog { @tool.call({ "query" => "library zebra", "sections" => [ "mcp_servers" ] }) }
+    assert_includes result, "*No usable server matches the filter"
+  end
+
+  test "query narrows the unavailable roster too, and says it did" do
+    result = with_mixed_catalog { @tool.call({ "query" => "staging", "sections" => [ "mcp_servers" ] }) }
+
+    assert_includes result, "Showing 1 of 2, filtered."
+    assert_includes result, "- `strad-secrets-staging-rw` — unavailable:"
+    refute_includes result, "- `strad-secrets-oauth`"
+  end
+
+  test "names returns full detail for exactly the named items" do
+    result = with_mixed_catalog(roots: FILTER_ROOTS) do
+      @tool.call({ "names" => [ "zimmer", "context7" ], "sections" => %w[mcp_servers agent_roots] })
+    end
+
+    assert_includes result, "- **Description:** Up-to-date library documentation lookup."
+    assert_includes result, "- **Default MCP Servers (omit `mcp_servers` to take all of these):** `context7`"
+    refute_includes result, "zimmer-self-session"
+    refute_includes result, "whatsapp-bot"
+    assert_includes result, "### Usage Notes", "a full entry still carries the notes start_session needs"
+  end
+
+  test "compact lists one line per item and leaves out descriptions, defaults and notes" do
+    result = with_mixed_catalog(roots: FILTER_ROOTS) { @tool.call({ "compact" => true }) }
+
+    assert_includes result, "- `context7` — Context7"
+    assert_includes result, "- `whatsapp-bot` — WhatsApp Bot"
+    assert_includes result, "- `open-reviewed-green-pr` — "
+    assert_match(/^- `claude_code` \(Claude Code\): default `opus`; models /, result)
+    refute_includes result, "**Description:**"
+    refute_includes result, "Default MCP Servers"
+    refute_includes result, "### Usage Notes"
+    # An unfiltered compact header is the same count header route-request reads.
+    assert_includes result, "Found 2 preconfigured repositories:"
+  end
+
+  test "filters respect a restricted connection: hidden roots are neither listed nor counted" do
+    tool = Mcp::Tools::GetConfigs.new(context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "zimmer"))
+    result = with_mixed_catalog(roots: FILTER_ROOTS) do
+      tool.call({ "query" => "whatsapp", "sections" => [ "agent_roots" ] })
+    end
+
+    assert_includes result, "*No agent root matches the filter (1 preconfigured repository).*"
+    refute_includes result, "whatsapp-bot"
+  end
+
+  test "the description points at quick_router and the filters" do
+    description = Mcp::Tools::GetConfigs.description
+
+    assert_includes description, "`quick_router`"
+    %w[sections query names compact].each { |arg| assert_includes description, "`#{arg}`" }
+  end
 end

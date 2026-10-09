@@ -83,7 +83,19 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     names = Mcp::Registry::ALL_TOOLS.map { |d| d.klass.constantize.tool_name }
 
     assert_equal names.uniq.size, names.size, "duplicate tool names: #{names.tally.select { |_, c| c > 1 }.keys}"
-    assert_equal 38, names.size
+    assert_equal 39, names.size
+  end
+
+  # A spawn, so it rides with start_session; a session managing itself has no
+  # business starting a router, so self_session does not carry it.
+  test "quick_router is on the sessions surfaces and the default one, before start_session, not on self_session" do
+    [ [ "sessions" ], Mcp::Registry.parse_groups(nil) ].each do |groups|
+      names = Mcp::Registry.tools_for(groups).map(&:tool_name)
+      assert_includes names, "quick_router"
+      assert_operator names.index("quick_router"), :<, names.index("start_session")
+    end
+    assert_not_includes Mcp::Registry.tools_for([ "self_session" ]).map(&:tool_name), "quick_router"
+    assert_not_includes Mcp::Registry.tools_for([ "sessions_readonly" ]).map(&:tool_name), "quick_router"
   end
 
   # Every analysis is a full spot session and analyze_all fans one call out into

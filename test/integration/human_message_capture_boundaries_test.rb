@@ -267,6 +267,17 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  # The Quick Router flow, but the words are whatever the calling model wrote.
+  # The OAuth half of this boundary is in OauthServerFlowTest.
+  test "quick_router over MCP with an API key records nothing" do
+    assert_no_difference("HumanMessage.count") do
+      mcp_call("quick_router", { "prompt" => "Tadas wants the deploy runbook owner" })
+    end
+    assert_response :success
+    assert_equal Mcp::Tools::QuickRouter::SOURCE, Session.order(:id).last.metadata["source"],
+                 "the router session must still be created — only the human-message record is withheld"
+  end
+
   test "a follow_up through the REST API records nothing" do
     session = idle_session
 
