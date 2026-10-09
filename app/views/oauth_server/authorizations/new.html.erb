@@ -1,8 +1,14 @@
 <div class="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
   <h1 class="text-xl font-semibold">Connect <%= @client.client_name.presence || "an unnamed client" %> to Zimmer?</h1>
   <p class="mt-2 text-sm text-gray-600">
-    It will be able to call every tool on Zimmer's MCP endpoint as you: read and start sessions,
-    send them messages, archive them, and manage triggers. It stays connected until you revoke it
+    <% if @client.first_party? %>
+      It will be able to use Zimmer's API as you: read and start sessions, send them messages,
+      archive them, and send push notifications to this phone.
+    <% else %>
+      It will be able to call every tool on Zimmer's MCP endpoint as you: read and start sessions,
+      send them messages, archive them, and manage triggers.
+    <% end %>
+    It stays connected until you revoke it
     on <%= link_to "Settings → API keys", api_keys_path, class: "underline" %>.
   </p>
 
@@ -11,7 +17,9 @@
       <dt class="font-medium text-gray-500">Client</dt>
       <dd class="mt-0.5 break-words">
         <%= @client.client_name.presence || "(no name given)" %>
-        <% if @client_metadata_host %>
+        <% if @client.first_party? %>
+          <span class="text-gray-500">— Zimmer's own app, built in</span>
+        <% elsif @client_metadata_host %>
           <span class="text-gray-500">— published by <code class="rounded bg-gray-100 px-1"><%= @client_metadata_host %></code></span>
         <% else %>
           <span class="text-gray-500">— self-registered; the name is the client's own claim</span>
@@ -28,7 +36,7 @@
     </div>
     <div>
       <dt class="font-medium text-gray-500">Sends you back to</dt>
-      <dd class="mt-0.5 break-all font-mono text-xs"><%= URI.parse(@redirect_uri).host %></dd>
+      <dd class="mt-0.5 break-all font-mono text-xs"><%= URI.parse(@redirect_uri).host || "#{URI.parse(@redirect_uri).scheme}:" %></dd>
     </div>
   </dl>
 

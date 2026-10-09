@@ -23,6 +23,17 @@ next request on. Every request that presents no key, an unknown key or a revoked
 `POST /api/v1/quick_router` and every other endpoint on this page refuses it with the same 401.
 :::
 
+## The iOS app's bearer token
+
+[Zimmer's iOS app](/extend/ios-app/) holds no API key. It signs in through
+[the OAuth authorization server](/auth/mcp-authorization-server/#the-built-in-ios-app-client) as the
+built-in `zimmer-ios` client and sends `Authorization: Bearer <access token>`. The REST API takes
+that token only on controllers that declare `accepts_native_app_tokens`, and only when the token's
+grant belongs to the built-in client. Today that is `/api/v1/sessions` and everything under it. A token
+issued to any other OAuth client, or presented anywhere else, gets the same 401 as a bad key. The
+same expiry, revocation and audience checks as `/mcp` apply, and revoking the connection on
+**Settings → API keys** refuses the phone on its next request. `X-API-Key` is unchanged beside it.
+
 ## Quick start
 
 Every snippet below assumes these two:

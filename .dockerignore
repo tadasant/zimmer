@@ -72,3 +72,7 @@
 # The browser extension is loaded unpacked into a browser from a checkout; the
 # Rails image never serves it. See docs/extend/browser-extension.md.
 /browser-extension
+
+# The iOS app is built by Xcode on a GitHub-hosted Mac and shipped through TestFlight;
+# the Rails image never serves it. See ios/README.md.
+/ios

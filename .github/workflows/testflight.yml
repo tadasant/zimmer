@@ -1,0 +1,119 @@
+name: TestFlight
+
+# Sign the iOS app and upload it to TestFlight. Started by every push to `main` that can
+# change the app, and by hand (or by an agent with `gh workflow run testflight.yml --ref
+# main`). Never by a pull request.
+#
+# THIS IS THE ONE WORKFLOW IN THIS PUBLIC REPO THAT HOLDS AN APPLE CREDENTIAL, so four things
+# fence it and all four have to stay (the same four as Motet's, tadasant/motet):
+#
+#   1. `push` to `main` and `workflow_dispatch` are the only triggers. A fork cannot push to
+#      this repository's `main` or dispatch a workflow here, and no pull_request event —
+#      from a fork or from a branch — ever starts it. Never add `pull_request` or
+#      `pull_request_target`.
+#   2. The job refuses any ref but `main`, and any repository but this one.
+#   3. The Apple key lives in the `testflight` ENVIRONMENT, not in repository secrets, and
+#      that environment's deployment-branch policy admits `main` only. So a branch that
+#      edits this file to drop (2) still cannot read the key: GitHub withholds environment
+#      secrets from a job on a ref the policy does not admit.
+#   4. It runs on a GitHub-hosted, ephemeral macOS runner — never on the self-hosted pool,
+#      where a key written to disk would outlive the job on a shared machine.
+#
+# The credential is an App Store Connect API key and nothing else: no GCP identity, no
+# registry login, no cloud topology. Deploy workflows otherwise live in the private
+# infrastructure repo; this one lives here because a hosted macOS runner is free on a public
+# repo and billed at a multiplier on a private one. ios/README.md records it.
+#
+# UNTIL THE `testflight` ENVIRONMENT HAS ITS SECRETS, THE RUN SKIPS AND STAYS GREEN. The
+# environment, its main-only branch policy and the App Store Connect key are placed by a
+# human (ios/README.md, "What a human does, once"). Before that, the first step below sees
+# no key, says so in a notice, and the upload step does not run — a merge to `main` must
+# never go red for a credential nobody has created yet.
+
+on:
+  # Every merge to `main` that can change the app ships a build. The app is built from
+  # ios/ alone: the Xcode project's only package reference is `..` (ios/) and Package.swift
+  # has no remote dependency. The README and the SwiftPM tests are excluded because they are not in the app, and
+  # App/ZimmerUITests for the same reason one step along: it is a target of its own, it
+  # is not in the `Zimmer` scheme this workflow archives, and it ships in no build.
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - "!ios/README.md"
+      - "!ios/Tests/**"
+      - "!ios/App/ZimmerUITests/**"
+      - ".github/workflows/testflight.yml"
+  workflow_dispatch:
+    inputs:
+      signing:
+        description: "Where signing happens. 'export' (cloud signing at export) is the default; 'archive' is the fallback if export-time signing is refused."
+        type: choice
+        options: [export, archive]
+        default: export
+
+permissions:
+  contents: read
+
+# One upload at a time: two concurrent runs would race for build numbers and profiles.
+# `cancel-in-progress: false` never kills a run that has started — it may be mid-upload,
+# and a build Apple has received but not processed is left half-done. GitHub keeps at most
+# ONE pending run per group and cancels the older pending one when a newer run arrives, so a
+# burst of merges uploads the build in flight plus the newest commit, not one per merge.
+# That is the right coalescing here: every run builds `main` at its own head, so the newest
+# commit contains everything the cancelled one would have shipped. Keyed by ref so that a
+# dispatch from a branch — which the job below refuses — cannot cancel a pending `main` run.
+# Push and dispatch runs on `main` do share it, so a pending `signing=archive` dispatch is
+# replaced by the next push; a replaced run shows as "cancelled", which is not a failure.
+concurrency:
+  group: testflight-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    if: ${{ github.ref == 'refs/heads/main' && github.repository == 'tadasant/zimmer' }}
+    runs-on: macos-latest
+    environment: testflight
+    timeout-minutes: 90
+
+    steps:
+      # Pinned by SHA, not tag, in a workflow that holds a key: a moved tag would run
+      # code inside this job. actions/checkout v4.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Report the toolchain
+        run: |
+          xcodebuild -version
+          ls /Applications | grep -i '^Xcode' || true
+
+      - name: Check the testflight environment is set up
+        id: configured
+        env:
+          APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "${APP_STORE_CONNECT_API_KEY_P8}" ] || [ -z "${APPLE_TEAM_ID}" ]; then
+            echo "::notice title=TestFlight upload skipped::The testflight environment has no App Store Connect key or APPLE_TEAM_ID yet. See ios/README.md, 'What a human does, once'."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Archive, sign, upload, and wait for processing
+        if: ${{ steps.configured.outputs.ready == 'true' }}
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          ZIMMER_IOS_API_BASE_URL: ${{ vars.ZIMMER_IOS_API_BASE_URL }}
+          # Unique per upload, including a re-run of the same run; increasing in the order runs
+          # are created, since run_number is one counter shared by push and dispatch runs. A
+          # Re-run of an OLD run rebuilds that run's commit under a lower number, so re-upload
+          # with a dispatch instead.
+          ZIMMER_BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
+          # A push carries no inputs, so it takes the dispatch default.
+          ZIMMER_SIGNING: ${{ inputs.signing || 'export' }}
+        run: ios/bin/testflight upload
