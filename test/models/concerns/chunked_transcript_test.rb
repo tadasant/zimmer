@@ -505,4 +505,48 @@ class ChunkedTranscriptTest < ActiveSupport::TestCase
 
     assert_equal [ @session.id ], result.matched_ids
   end
+  # --- each_transcript_line -------------------------------------------------
+
+  # ~1 KiB a line, so 600 lines span three chunks.
+  def wide_jsonl(count)
+    (0...count).map { |i| JSON.generate({ "type" => "assistant", "n" => i, "pad" => "x" * 1_000 }) }.join("\n") + "\n"
+  end
+
+  test "each_transcript_line yields a range, either way round, with stable indices" do
+    content = wide_jsonl(600)
+    @session.update!(transcript: content)
+    session = Session.find(@session.id)
+    assert_operator chunks_of(session).size, :>=, 3
+    lines = content.lines
+
+    forward = session.each_transcript_line(250, 260).to_a
+    assert_equal (250...260).to_a, forward.map(&:first)
+    assert_equal lines[250...260], forward.map(&:last)
+
+    backward = session.each_transcript_line(590, 10_000, reverse: true).to_a
+    assert_equal (590...600).to_a.reverse, backward.map(&:first)
+    assert_equal lines[590...600].reverse, backward.map(&:last)
+
+    assert_equal [], session.each_transcript_line(600, 700).to_a
+  end
+
+  test "each_transcript_line loads only the chunks it walks into" do
+    @session.update!(transcript: wide_jsonl(600))
+    session = Session.find(@session.id)
+
+    statements = chunk_selects_during do
+      session.each_transcript_line(0, 600, reverse: true) { |index, _line| break if index < 595 }
+    end
+
+    content_reads = statements.count { |sql| sql.include?('"session_transcript_chunks"."content"') }
+    assert_equal 1, content_reads, "expected one chunk's content, got:\n#{statements.join("\n")}"
+  end
+
+  test "each_transcript_line falls back to the legacy column" do
+    Session.where(id: @session.id).update_all(transcript: jsonl(5), transcript_byte_size: 0, transcript_line_count: 0)
+    session = Session.find(@session.id)
+
+    assert_equal [ 3, 4 ], session.each_transcript_line(3, 10).map(&:first)
+    assert_includes session.each_transcript_line(4, 5).first.last, '"n":4'
+  end
 end

@@ -219,11 +219,270 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_includes output, "I've completed the task for you."
   end
 
-  test "transcript_format raises when there is no transcript" do
-    error = assert_raises(Mcp::ToolError) do
-      @tool.call("id" => sessions(:running).id, "include_transcript" => true, "transcript_format" => "json")
+  # A freshly spawned session has no transcript yet, and the call a router makes
+  # on it is for the status. The section says there is nothing, rather than the
+  # whole call failing.
+  test "a session with no transcript still returns its details and an empty transcript section" do
+    %w[raw text conversation].each do |mode|
+      args = { "id" => sessions(:running).id, "include_transcript" => true }
+      args["transcript_format"] = "json" if mode == "text"
+      args["transcript_conversation_only"] = true if mode == "conversation"
+
+      output = @tool.call(args)
+
+      assert_includes output, "- **Status:** running", mode
+      assert_includes output, "- **Events:** 0 in total.", mode
+      assert_includes output, "- **Returned:** nothing — the requested range is empty (the transcript has no events).", mode
     end
-    assert_match(/No transcript available/, error.message)
+  end
+
+  # --- bounded transcript slices -------------------------------------------
+
+  # Three events per turn: a question, an answer carrying a Bash tool call, and
+  # the tool's output. ~1,300 characters a turn of raw JSONL.
+  def slice_transcript(turns, answer_pad: 0)
+    (0...turns).flat_map do |t|
+      [
+        { "type" => "user", "message" => { "role" => "user", "content" => "question #{t}" } },
+        { "type" => "assistant", "message" => { "role" => "assistant", "content" => [
+          { "type" => "text", "text" => "answer #{t}#{' padding' * answer_pad}" },
+          { "type" => "tool_use", "id" => "tu_#{t}", "name" => "Bash", "input" => { "command" => "ls #{'/deep' * 60}" } }
+        ] } },
+        { "type" => "user", "message" => { "role" => "user", "content" => [
+          { "type" => "tool_result", "tool_use_id" => "tu_#{t}", "content" => "TOOL-OUTPUT-#{t} #{'x' * 900}" }
+        ] } }
+      ]
+    end.map { |event| JSON.generate(event) }.join("\n") + "\n"
+  end
+
+  def session_with_transcript(content)
+    sessions(:archived).tap { |session| session.update!(transcript: content) }
+  end
+
+  def transcript_section(output)
+    output[output.index("### Transcript\n")..]
+  end
+
+  test "include_transcript alone returns the newest events under the default cap, and says how to page" do
+    content = slice_transcript(100) # 300 events, ~130k characters
+    session = session_with_transcript(content)
+
+    output = @tool.call("id" => session.id, "include_transcript" => true)
+    section = transcript_section(output)
+
+    assert_operator section.length, :<, Mcp::TranscriptSlice::DEFAULT_MAX_CHARS + 2_000
+    assert_includes section, "- **Events:** 300 in total."
+    assert_includes section, "no selector given, so the newest events that fit the cap"
+    assert_includes section, "- **Character cap:** 40,000 (≈10,000 tokens) — the default"
+    assert_includes section, content.lines.last.chomp
+    refute_includes section, content.lines.first.chomp
+
+    first_returned = section[/- \*\*Returned:\*\* events #(\d+)–#299/, 1].to_i
+    assert_operator first_returned, :>, 0
+    assert_includes section, "- **Truncated:** yes — the 40,000-character cap was reached; events #0–##{first_returned - 1}"
+    assert_includes section, "`transcript_from: 0, transcript_to: #{first_returned}`"
+    assert_includes section, "[… events #0–##{first_returned - 1} not shown (character cap reached)."
+    refute_includes output, "### Transcript File"
+  end
+
+  test "transcript_tail returns the last N events and points at the earlier ones" do
+    content = slice_transcript(10)
+    session = session_with_transcript(content)
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_tail" => 3))
+
+    assert_includes section, "- **Returned:** events #27–#29 as raw JSONL"
+    assert_includes section, "- **Not truncated:** every event in the requested range is returned."
+    assert_includes section, "earlier: events #0–#26 (`transcript_from: 0, transcript_to: 27`)"
+    assert_includes section, content.lines[27..].join
+    refute_includes section, content.lines[26].chomp
+  end
+
+  test "transcript_head returns the first N events and points at the later ones" do
+    content = slice_transcript(10)
+    session = session_with_transcript(content)
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_head" => 2))
+
+    assert_includes section, "- **Returned:** events #0–#1"
+    assert_includes section, "later: events #2–#29 (`transcript_from: 2, transcript_to: 30`)"
+    assert_includes section, content.lines[0..1].join
+    refute_includes section, content.lines[2].chomp
+  end
+
+  test "a transcript_from / transcript_to range returns exactly that window" do
+    content = slice_transcript(10)
+    session = session_with_transcript(content)
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_from" => 10, "transcript_to" => 13))
+
+    assert_includes section, "- **Requested:** events #10–#12 (transcript_from: 10, transcript_to: 13)."
+    assert_equal content.lines[10...13].join, section[/```\n(.*)```/m, 1]
+  end
+
+  test "paging forward with the Truncated line's parameters walks the whole range without gaps" do
+    content = slice_transcript(20)
+    session = session_with_transcript(content)
+    seen = []
+    from = 0
+
+    12.times do
+      section = transcript_section(@tool.call("id" => session.id, "transcript_from" => from, "transcript_max_chars" => 5_000))
+      seen.concat(section[/```\n(.*)```/m, 1].lines.reject { |l| l.start_with?("[… events") })
+      from = section[/- \*\*Truncated:\*\*.*`transcript_from: (\d+), transcript_to: 60`/, 1]&.to_i
+      break if from.nil?
+    end
+
+    assert_nil from, "expected the range to be exhausted within twelve pages"
+    assert_equal content.lines, seen
+  end
+
+  test "transcript_max_chars cuts a head at an event boundary and marks the cut" do
+    session = session_with_transcript(slice_transcript(10))
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_head" => 30, "transcript_max_chars" => 2_000))
+    returned_to = section[/- \*\*Returned:\*\* events #0–#(\d+)/, 1].to_i
+
+    assert_operator returned_to, :<, 29
+    assert_includes section, "- **Character cap:** 2,000 (≈500 tokens)."
+    assert_includes section, "events ##{returned_to + 1}–#29 of the requested range were not returned"
+    assert_match(/\[… events ##{returned_to + 1}–#29 not shown \(character cap reached\)\. Fetch them with `transcript_from: #{returned_to + 1}, transcript_to: 30` …\]\n```\z/, section)
+  end
+
+  test "an event larger than the whole cap is cut mid-event rather than skipped" do
+    session = session_with_transcript(slice_transcript(1, answer_pad: 2_000))
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_from" => 1, "transcript_to" => 2, "transcript_max_chars" => 1_000))
+
+    assert_includes section, "- **Cut mid-event:** event #1 alone is larger than the cap"
+    assert_match(/\[… event #1 cut: showing 800 of [\d,]+ characters\./, section)
+    assert_operator section.length, :<, 3_000
+  end
+
+  test "transcript_conversation_only keeps human and assistant text and collapses tool traffic" do
+    session = session_with_transcript(slice_transcript(3))
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_conversation_only" => true))
+
+    assert_includes section, "[#0] User: question 0"
+    assert_includes section, "[#1] Assistant: answer 0"
+    assert_match(%r{\[#1\] \[tool call: Bash\] \{"command":"ls /deep/deep.*\.\.\.$}, section)
+    assert_includes section, "[#7] Assistant: answer 2"
+    refute_includes section, "TOOL-OUTPUT"
+    assert_includes section, "(3 of them have nothing to show in this format and are omitted)"
+    section.lines.grep(/^\[#\d+\] \[tool call/).each { |line| assert_operator line.length, :<, 160, line }
+  end
+
+  test "transcript_format text prefixes each event with its index" do
+    session = session_with_transcript(slice_transcript(2))
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_format" => "text", "transcript_tail" => 3))
+
+    assert_includes section, "[#3] --- User ---\nquestion 1"
+    assert_includes section, "[#4] --- Assistant ---"
+    assert_includes section, "plain text, each event prefixed with its [#index]"
+  end
+
+  test "transcript_max_chars outside the allowed range is clamped and says so" do
+    session = session_with_transcript(slice_transcript(2))
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_max_chars" => 10))
+
+    assert_includes section, "- **Character cap:** 1,000 (≈250 tokens) — clamped from the requested 10."
+  end
+
+  test "conflicting or inverted slice parameters are refused" do
+    session = session_with_transcript(slice_transcript(2))
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("id" => session.id, "transcript_head" => 1, "transcript_tail" => 1) }
+    assert_match(/at most one of transcript_head, transcript_tail/, error.message)
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("id" => session.id, "transcript_from" => 5, "transcript_to" => 5) }
+    assert_match(/transcript_to \(5\) must be greater than transcript_from \(5\)/, error.message)
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("id" => session.id, "transcript_tail" => 0) }
+    assert_match(/transcript_tail must be at least 1/, error.message)
+  end
+
+  test "a range past the end of the transcript returns nothing and says so" do
+    session = session_with_transcript(slice_transcript(1))
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_from" => 50))
+
+    assert_includes section, "- **Events:** 3 in total."
+    assert_includes section, "- **Returned:** nothing — the requested range is empty."
+    refute_includes section, "```"
+  end
+
+  test "a tail whose newest event is over the cap cuts that event and points at the rest" do
+    # #0 the question, #1 an answer far larger than the cap
+    session = session_with_transcript(slice_transcript(1, answer_pad: 2_000).lines.first(2).join)
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_tail" => 2, "transcript_max_chars" => 1_000))
+
+    assert_includes section, "- **Returned:** event #1 as raw JSONL"
+    assert_includes section, "- **Cut mid-event:** event #1 alone is larger than the cap"
+    assert_includes section, "event #0 of the requested range was not returned. Fetch them with `transcript_from: 0, transcript_to: 1`"
+    assert_match(/```\n\[… event #0 not shown \(character cap reached\)\..*\n\{"type":"assistant".*\[… event #1 cut: showing 800 of/m, section)
+  end
+
+  test "transcript_to alone reads from the start up to it" do
+    content = slice_transcript(2)
+    session = session_with_transcript(content)
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_to" => 2))
+
+    assert_includes section, "- **Requested:** events #0–#1 (transcript_to: 2)."
+    assert_equal content.lines[0...2].join, section[/```\n(.*)```/m, 1]
+  end
+
+  test "a fractional count is refused rather than rounded" do
+    session = session_with_transcript(slice_transcript(1))
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("id" => session.id, "transcript_head" => 1.5) }
+    assert_match(/transcript_head must be an integer, got 1.5/, error.message)
+    assert_includes transcript_section(@tool.call("id" => session.id, "transcript_head" => 2.0)), "- **Returned:** events #0–#1"
+  end
+
+  test "transcript_conversation_only false does not turn the transcript on" do
+    output = @tool.call("id" => sessions(:archived).id, "transcript_conversation_only" => "false")
+
+    refute_includes output, "### Transcript\n"
+    assert_includes output, "### Transcript File"
+  end
+
+  test "transcript_format alone implies include_transcript" do
+    output = @tool.call("id" => sessions(:archived).id, "transcript_format" => "text")
+
+    assert_includes output, "[#1] --- Assistant ---"
+  end
+
+  test "conversation only reads a Codex rollout through its normalizer" do
+    session = sessions(:archived)
+    session.update!(agent_runtime: "codex", transcript: [
+      { "type" => "session_meta", "timestamp" => "2025-11-12T12:00:00Z", "payload" => { "id" => "codex-1" } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:01Z",
+        "payload" => { "type" => "message", "role" => "user", "content" => [ { "type" => "input_text", "text" => "fix the build" } ] } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:02Z",
+        "payload" => { "type" => "function_call", "call_id" => "c1", "name" => "shell", "arguments" => JSON.generate({ "command" => [ "make" ] }) } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:03Z",
+        "payload" => { "type" => "function_call_output", "call_id" => "c1", "output" => "CODEX-TOOL-OUTPUT" } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:04Z",
+        "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "build fixed" } ] } }
+    ].map { |event| JSON.generate(event) }.join("\n") + "\n")
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_conversation_only" => true))
+
+    assert_includes section, "[#1] User: fix the build"
+    assert_includes section, "[#2] [tool call: shell] {\"command\":[\"make\"]}"
+    assert_includes section, "[#4] Assistant: build fixed"
+    refute_includes section, "CODEX-TOOL-OUTPUT"
+  end
+
+  test "the file hint tells a caller without disk access how to read a slice" do
+    output = @tool.call("id" => sessions(:archived).id)
+
+    assert_includes output, "transcript_conversation_only: true, transcript_tail: 20"
   end
 
   test "include_logs paginates the session logs" do
