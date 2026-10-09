@@ -22,3 +22,23 @@ public enum ServerURL {
         return components.url
     }
 }
+
+/// The two origins a deployment can split Zimmer across.
+///
+/// `web` is where a person signs in: `/oauth/authorize` runs there, and it is the OAuth
+/// issuer, so the `resource` and `iss` the app checks are built from it. `api` is where
+/// every machine call goes — `/oauth/token`, `/oauth/revoke` and `/api/v1` — which on a
+/// deployment with an app hostname behind its own access proxy is a different host. On a
+/// deployment without one they are the same origin.
+public struct ServerOrigins: Codable, Hashable, Sendable {
+    public var web: URL
+    public var api: URL
+
+    public init(web: URL, api: URL? = nil) {
+        self.web = web
+        self.api = api ?? web
+    }
+
+    /// Whether machine calls go to a separate app host, which is when the edge login runs.
+    public var isSplit: Bool { web != api }
+}

@@ -1,6 +1,6 @@
 ---
 title: The iOS app
-description: Zimmer on an iPhone — the session list, signing in through Zimmer's own OAuth server, how it is built and shipped to TestFlight, and what has not been proven on a device yet.
+description: Zimmer on an iPhone — the session list, signing in through Zimmer's own OAuth server and through the edge's access proxy, how it is built and shipped to TestFlight, and what has not been proven on a device yet.
 sidebar:
   order: 7
 ---
@@ -12,13 +12,10 @@ logic is tested on Linux, every check a script under `ios/bin/`, and a TestFligh
 merge. [`ios/README.md`](https://github.com/tadasant/zimmer/blob/main/ios/README.md) is the
 engineering design doc. This page covers what the app does and how it reaches Zimmer.
 
-:::caution[Not yet usable against a deployment behind an access proxy]
-Tadas's production Zimmer sits behind Cloudflare Access. Access answers the app's token exchange
-and API calls with its own 401 before Rails sees them, so a phone cannot use it yet. The app
-treats that refusal as its own error ("this server's network edge refused the phone") rather than as
-a sign-out. Its networking has one place, `EdgeCredential`, for whatever credential the edge
-decides a phone must carry. Choosing that design belongs to the deployment's infrastructure, not to
-this repo. See [Known limitations](/limitations/#the-ios-app-cannot-reach-a-deployment-behind-cloudflare-access-yet).
+:::caution[Not yet proven on a phone]
+The app host and its Access application are being added in the private companion repo. Until that
+is applied and this route is deployed, nothing has run the two sign-ins end to end on a device. See
+[Known limitations](/limitations/#the-ios-apps-two-sign-ins-have-not-run-end-to-end).
 :::
 
 ## What it does
@@ -29,9 +26,42 @@ this repo. See [Known limitations](/limitations/#the-ios-app-cannot-reach-a-depl
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
+## Two origins
+
+A deployment can serve the app from two origins:
+
+- **The web origin** (`zimmer.tadasant.com` for Tadas's) is where you sign in. `/oauth/authorize`
+  runs there, and it is the OAuth issuer.
+- **The app origin** (`zimmer-app.tadasant.com`) is where every machine call goes: `POST
+  /oauth/token`, `/oauth/revoke`, `/api/v1/*`, and the edge handoff below. It is a separate hostname
+  through the same tunnel to the same Rails, guarded by its own Cloudflare Access application that
+  admits only the deployment's Google policy. There is no service token and no bypass.
+
+A deployment without an app host uses one origin for both, and there is no edge sign-in.
+
 ## Signing in
 
-The app is a public OAuth client of [Zimmer's authorization server](/auth/mcp-authorization-server/),
+On a deployment with an app host, the app signs in twice, and the two credentials stay independent.
+
+**The edge first.** The system sign-in sheet opens
+`https://<app origin>/native/access-handoff?state=<random>`. Access runs its own Google login and
+forwards the request with the `Cf-Access-Jwt-Assertion` it minted. Rails checks that assertion
+(`NativeAccessAssertion`):
+
+- an RS256 signature from a key in the team's JWKS at `/cdn-cgi/access/certs`, cached for an hour;
+- `iss` equal to the team domain (`ZIMMER_NATIVE_ACCESS_TEAM_DOMAIN`, default `tadasant.cloudflareaccess.com`);
+- not expired;
+- an `aud` that includes `ZIMMER_NATIVE_ACCESS_AUD`, when that is set.
+
+Rails then redirects to the hard-coded `com.tadasant.zimmer:/access/callback?state=…&cf_access_token=…`.
+Anything invalid gets a 403, and a malformed `state` gets a 400. The route has no web sign-in wall and
+no CSRF check: it hands back only what Access minted for this requester, and every API call still needs
+Zimmer's own token. The app checks `state`, keeps the JWT in the Keychain, and sends it as
+`cf-access-token` on every machine call, never in `Authorization`. The JWT lives about 30 days. The app
+runs the handoff again when less than a day is left, or when Access refuses a call: a redirect to
+`*.cloudflareaccess.com`, which the app never follows, or a 401/403 page with `cf-access-aud`.
+
+**Then Zimmer**, as a public OAuth client of [Zimmer's authorization server](/auth/mcp-authorization-server/),
 under the built-in `zimmer-ios` client:
 
 1. You type your Zimmer's https address, unless the build already carries one.
@@ -40,7 +70,7 @@ under the built-in `zimmer-ios` client:
    the deployment's domain, then the second factor. Zimmer then shows a consent screen for
    "Zimmer for iOS".
 3. Approving sends the sheet to `com.tadasant.zimmer:/oauth/callback` with a 60-second code. The app
-   redeems it at `/oauth/token` with the verifier only it holds.
+   redeems it at `/oauth/token` on the app origin with the verifier only it holds.
 4. The access and refresh tokens go into the Keychain (`AfterFirstUnlockThisDeviceOnly`). The app
    refreshes the access token before it expires and calls
    [the REST API](/extend/rest-api/#the-ios-apps-bearer-token) with it.
@@ -74,4 +104,5 @@ that environment has its key, the run says so in a notice and skips the upload, 
 [`ios/README.md`](https://github.com/tadasant/zimmer/blob/main/ios/README.md#what-a-human-does-once)
 has the full list: register the App ID `com.tadasant.zimmer`, create the App Store Connect record,
 create or reuse the Admin API key, and create the `testflight` environment with its secrets and the
-`APPLE_TEAM_ID` and `ZIMMER_IOS_API_BASE_URL` variables.
+`APPLE_TEAM_ID`, `ZIMMER_IOS_WEB_BASE_URL` and `ZIMMER_IOS_API_BASE_URL` variables. On the server,
+set `ZIMMER_NATIVE_ACCESS_AUD` to the app host's Access audience tag.

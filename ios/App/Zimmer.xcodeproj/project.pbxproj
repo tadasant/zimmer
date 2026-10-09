@@ -13,8 +13,8 @@
 // THREE CONFIGURATIONS. `Staging` is `Debug` plus `ZIMMER_BUILD_ENVIRONMENT = staging`, so
 // a build can be pointed at a staging deployment and *say so* — the label is not a
 // hostname, which is what lets it live in a public repository when
-// `ZIMMER_DEFAULT_API_BASE_URL` cannot. Both are empty or inherited here and passed on the
-// command line by `ios/bin/build-app`, `ios/bin/ui-test` and `ios/bin/testflight`.
+// `ZIMMER_DEFAULT_WEB_BASE_URL` / `ZIMMER_DEFAULT_API_BASE_URL` cannot. All are empty or
+// inherited here and passed on the command line by `ios/bin/build-app`, `ios/bin/ui-test` and `ios/bin/testflight`.
 //
 // TWO TARGETS. `ZimmerUITests` drives the app on a booted simulator against its debug
 // fixture. It is deliberately NOT in the `Zimmer` scheme's testables: `ios/bin/testflight`
@@ -304,6 +304,7 @@
 				// so rather than claiming to be the production app.
 				ZIMMER_BUILD_ENVIRONMENT = development;
 				ZIMMER_DEFAULT_API_BASE_URL = "";
+				ZIMMER_DEFAULT_WEB_BASE_URL = "";
 				PRODUCT_BUNDLE_IDENTIFIER = com.tadasant.zimmer;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -333,6 +334,7 @@
 				// builds Release and passes nothing here.
 				ZIMMER_BUILD_ENVIRONMENT = "";
 				ZIMMER_DEFAULT_API_BASE_URL = "";
+				ZIMMER_DEFAULT_WEB_BASE_URL = "";
 				PRODUCT_BUNDLE_IDENTIFIER = com.tadasant.zimmer;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -384,6 +386,7 @@
 				// everywhere else in this public repository.
 				ZIMMER_BUILD_ENVIRONMENT = staging;
 				ZIMMER_DEFAULT_API_BASE_URL = "";
+				ZIMMER_DEFAULT_WEB_BASE_URL = "";
 				PRODUCT_BUNDLE_IDENTIFIER = com.tadasant.zimmer;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

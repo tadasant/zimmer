@@ -11,10 +11,13 @@
     export-compliance question before a tester can install it.
   * `NSAppTransportSecurity` is deliberately absent: Zimmer is reached over HTTPS, and an
     exception here would be a way to point the app at a plaintext host by accident.
-  * `ZimmerDefaultBaseURL` — the server a distribution build is pointed at, filled from the
-    `ZIMMER_DEFAULT_API_BASE_URL` build setting. Empty in this repo and in every CI build;
-    the TestFlight workflow passes it from a GitHub environment variable, so no hostname is
-    written here. The sign-in screen still lets a person type another.
+  * `ZimmerDefaultWebBaseURL` / `ZimmerDefaultAPIBaseURL` — the deployment a distribution
+    build is pointed at, from the `ZIMMER_DEFAULT_WEB_BASE_URL` / `ZIMMER_DEFAULT_API_BASE_URL`
+    build settings: where a person signs in (the OAuth issuer), and where machine calls go
+    (an app host behind its own access proxy, where there is one). Either alone means one
+    origin for both. Empty in this repo and in every CI build; the TestFlight workflow passes
+    them from GitHub environment variables, so no hostname is written here. The sign-in
+    screen still lets a person type others.
   * `ZimmerBuildEnvironment` — which deployment this build was made for (`production`,
     `staging`, `development`), from `ZIMMER_BUILD_ENVIRONMENT`. A label, never a hostname;
     empty or unrecognised reads as production.
@@ -43,7 +46,9 @@
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<key>ZimmerDefaultBaseURL</key>
+	<key>ZimmerDefaultWebBaseURL</key>
+	<string>$(ZIMMER_DEFAULT_WEB_BASE_URL)</string>
+	<key>ZimmerDefaultAPIBaseURL</key>
 	<string>$(ZIMMER_DEFAULT_API_BASE_URL)</string>
 	<key>ZimmerBuildEnvironment</key>
 	<string>$(ZIMMER_BUILD_ENVIRONMENT)</string>

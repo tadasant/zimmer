@@ -7769,22 +7769,21 @@ and what a real iPhone camera hands back. Those are inferred from the markup, no
 changes either, the tests here stay green and the phone stops working — the only detector is
 somebody holding one.
 
-## The iOS app cannot reach a deployment behind Cloudflare Access yet
+## The iOS app's two sign-ins have not run end to end
 
-Tadas's production Zimmer is behind Cloudflare Access. The Access application in front of `/api`,
-and the one in front of the OAuth and MCP machine endpoints, admit only service tokens and a named
-IP range. A phone on cellular data has neither. Access answers its `POST /oauth/token`, and every
-`/api/v1` call, with its own 401 page before Rails sees the request. `/oauth/authorize` sits behind
-Access's Google login, so the sign-in sheet reaches Zimmer's consent screen and then the code
-exchange fails.
+On Tadas's deployment the app signs in to the Cloudflare Access edge on the app host
+(`/native/access-handoff`), then to Zimmer's OAuth on the web host. Both halves are tested against
+stubs: the Rails route against JWTs signed by a test key and a stubbed JWKS, and the app against a
+scripted transport. Nothing has run them together against the real Access team, because the app host,
+its Access application and `ZIMMER_NATIVE_ACCESS_AUD` are set up in the private companion repo and had
+not been applied when the route was written. Until someone signs in on a phone, three things are
+inferred rather than observed: that Access forwards `Cf-Access-Jwt-Assertion` on the handoff, that
+its JWKS has the shape `JWT::JWK::Set` reads, and that the sheet's Google session carries from one
+sign-in into the other.
 
-The app does not paper over it: it recognises the Access refusal (`cf-access-aud`, or a non-JSON
-401 from `server: cloudflare`) and shows it as its own error, without signing you out. Its
-networking has one seam, `EdgeCredential`, that decorates every request and is asked to renew on an
-edge refusal. Today it does nothing. **No shared secret goes in its place.** A service token
-compiled into a public app is a published service token. What the edge should accept from a phone
-(an Access login the app completes itself, a device posture, the tailnet) is the deployment's
-infrastructure decision, made in the private companion repo.
+The route trusts the JWKS it fetches from the team domain over HTTPS. A team domain misconfigured to a
+host someone else controls would let that host mint handoffs. The default is Tadas's team, and the
+value is read only from the secret chain.
 
 ## The iOS app has never been signed, installed on a device, or opened in Xcode
 

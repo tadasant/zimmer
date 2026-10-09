@@ -51,7 +51,7 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     /// renewed: the edge's (an access proxy's refusal) and Zimmer's own (a 401 on a token
     /// the clock thought was still good, e.g. after the grant was refreshed elsewhere).
     func perform(method: String, path: String, query: [String: String], body: Data?) async throws -> HTTPResponse {
-        guard let baseURL = await auth.signIn?.baseURL else { throw ZimmerError.unauthorized }
+        guard let baseURL = await auth.signIn?.origins.api else { throw ZimmerError.unauthorized }
         guard let url = HTTPEndpoint(method: method, path: path, query: query).url(relativeTo: baseURL) else {
             throw ZimmerError.notConfigured
         }
@@ -61,7 +61,7 @@ public struct ZimmerHTTPClient: ZimmerAPI {
             var request = HTTPRequest(url: url, method: method, headers: ["Accept": "application/json"], body: body)
             if body != nil { request.headers["Content-Type"] = "application/json" }
             request.headers["Authorization"] = "Bearer \(try await auth.accessToken())"
-            await edge.decorate(&request)
+            await request.apply(edge)
 
             let response: HTTPResponse
             do {
@@ -74,6 +74,7 @@ public struct ZimmerHTTPClient: ZimmerAPI {
                 if !retriedEdge, await edge.reauthenticate() { retriedEdge = true; continue }
                 throw ZimmerError.edgeRefused
             }
+            if EdgeRefusal.isEdgeNotRouted(response) { throw ZimmerError.edgeNotRouted(path) }
             if response.statusCode == 401 {
                 if !retriedToken { retriedToken = true; try await auth.refresh(); continue }
                 await auth.signOutLocally()

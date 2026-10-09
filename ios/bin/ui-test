@@ -161,13 +161,13 @@ xcodebuild build-for-testing \
 plist="$derived/Build/Products/$configuration-iphonesimulator/Zimmer.app/Info.plist"
 [ -f "$plist" ] || fail "no built Info.plist at $plist"
 built_env="$(plutil -extract ZimmerBuildEnvironment raw -o - "$plist" 2>/dev/null || echo "")"
-built_url="$(plutil -extract ZimmerDefaultBaseURL raw -o - "$plist" 2>/dev/null || echo "")"
-printf '    built Info.plist: ZimmerBuildEnvironment=%s ZimmerDefaultBaseURL=%s\n' \
+built_url="$(plutil -extract ZimmerDefaultAPIBaseURL raw -o - "$plist" 2>/dev/null || echo "")"
+printf '    built Info.plist: ZimmerBuildEnvironment=%s ZimmerDefaultAPIBaseURL=%s\n' \
   "${built_env:-<empty>}" "${built_url:-<empty>}"
 [ "$built_env" = "$expect_env" ] \
   || fail "built ZimmerBuildEnvironment is '$built_env', expected '$expect_env'"
 [ "$built_url" = "$base_url" ] \
-  || fail "built ZimmerDefaultBaseURL is '$built_url', expected '${base_url:-<empty>}'"
+  || fail "built ZimmerDefaultAPIBaseURL is '$built_url', expected '${base_url:-<empty>}'"
 # Deliberately no host and no URL. This file is uploaded as a workflow artifact, an
 # artifact on a public repository is downloadable by anyone, and `::add-mask::` does
 # nothing to file contents. What the check needed the host for has already happened above;

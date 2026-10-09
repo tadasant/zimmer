@@ -78,11 +78,28 @@ final class ZimmerHTTPClientTests: XCTestCase {
 
     func testEdgeRefusalDetection() {
         XCTAssertTrue(EdgeRefusal.isEdgeRefusal(Fixtures.accessRefusal))
-        XCTAssertTrue(EdgeRefusal.isEdgeRefusal(HTTPResponse(statusCode: 403, headers: ["Server": "cloudflare", "Content-Type": "text/html"])))
+        XCTAssertTrue(EdgeRefusal.isEdgeRefusal(Fixtures.accessRedirect))
+        XCTAssertTrue(EdgeRefusal.isEdgeRefusal(HTTPResponse(statusCode: 403, headers: ["CF-Access-AUD": "x", "Content-Type": "text/html"])))
+        XCTAssertFalse(EdgeRefusal.isEdgeRefusal(HTTPResponse(statusCode: 403, headers: ["Server": "cloudflare", "Content-Type": "text/html"])),
+                       "server: cloudflare is on every response through the edge")
+        XCTAssertFalse(EdgeRefusal.isEdgeRefusal(HTTPResponse(statusCode: 302, headers: ["location": "https://zimmer-app.example.test/x"])))
         XCTAssertFalse(EdgeRefusal.isEdgeRefusal(Fixtures.json(401, ["error": "Unauthorized"])))
         XCTAssertFalse(EdgeRefusal.isEdgeRefusal(Fixtures.json(401, ["error": "Unauthorized"], headers: ["server": "cloudflare", "content-type": "application/json"])),
                        "Zimmer's own JSON 401, proxied through Cloudflare, is still Zimmer's")
         XCTAssertFalse(EdgeRefusal.isEdgeRefusal(HTTPResponse(statusCode: 500, headers: ["cf-access-aud": "x"])))
+    }
+
+    func testATunnel404IsReportedAsAnAllowListBugNotRetried() async throws {
+        let transport = ScriptedTransport([{ _ in HTTPResponse(statusCode: 404, headers: ["content-type": "text/plain; charset=utf-8"], body: Data("Not Found".utf8)) }])
+        let client = ZimmerHTTPClient(auth: AuthSession(store: Fixtures.signedIn(), transport: transport), transport: transport)
+
+        do {
+            _ = try await client.sessions(.active)
+            XCTFail("expected edgeNotRouted")
+        } catch {
+            XCTAssertEqual(error as? ZimmerError, .edgeNotRouted("/api/v1/sessions"))
+        }
+        XCTAssertFalse(EdgeRefusal.isEdgeNotRouted(Fixtures.json(404, ["error": "Not Found"], headers: ["content-type": "application/json", "x-request-id": "r"])))
     }
 
     func testAnErrorEnvelopeMessageReachesTheCaller() async throws {

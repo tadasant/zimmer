@@ -18,6 +18,8 @@
 #   ios/bin/build-app                                  # Debug, no default server
 #   ios/bin/build-app --configuration Staging \
 #                     --api-base-url https://example    # the staging variant
+#   ios/bin/build-app --web-base-url https://zimmer.example \
+#                     --api-base-url https://zimmer-app.example   # sign-in and app hosts apart
 #
 # NO HOSTNAME IS WRITTEN IN THIS REPOSITORY, and `--api-base-url` is how it stays that way:
 # the server a build defaults to is passed in, exactly as `ios/bin/testflight` passes it
@@ -29,11 +31,13 @@ cd "$(dirname "$0")/.."
 
 configuration=Debug
 base_url="${ZIMMER_IOS_API_BASE_URL:-}"
+web_url="${ZIMMER_IOS_WEB_BASE_URL:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --configuration) configuration="${2:?--configuration needs a value}"; shift 2 ;;
     --api-base-url) base_url="${2:?--api-base-url needs a value}"; shift 2 ;;
+    --web-base-url) web_url="${2:?--web-base-url needs a value}"; shift 2 ;;
     -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
@@ -48,10 +52,12 @@ esac
 # a mistyped variable must not be able to point a build at a plaintext host. An empty value
 # is fine and means "this build ships no default server", which is what every build in this
 # repository does unless told otherwise.
-if [ -n "$base_url" ] && [ "${base_url#https://}" = "$base_url" ]; then
-  printf '\n\033[1;31m==> FAILED: --api-base-url must be https://\033[0m\n' >&2
-  exit 2
-fi
+for url in "$base_url" "$web_url"; do
+  if [ -n "$url" ] && [ "${url#https://}" = "$url" ]; then
+    printf '\n\033[1;31m==> FAILED: --api-base-url and --web-base-url must be https://\033[0m\n' >&2
+    exit 2
+  fi
+done
 
 if ! command -v xcodebuild >/dev/null 2>&1; then
   if [ -n "${CI:-}" ]; then
@@ -79,5 +85,6 @@ xcodebuild build \
   -sdk iphonesimulator \
   -destination 'generic/platform=iOS Simulator' \
   ZIMMER_DEFAULT_API_BASE_URL="$base_url" \
+  ZIMMER_DEFAULT_WEB_BASE_URL="$web_url" \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO

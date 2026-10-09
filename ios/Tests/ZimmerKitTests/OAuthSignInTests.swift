@@ -5,7 +5,9 @@ final class OAuthSignInTests: XCTestCase {
     private let pkce = PKCEPair(verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
                                 challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
 
-    private func flow() -> OAuthSignIn { OAuthSignIn(baseURL: Fixtures.base, pkce: pkce, state: "st") }
+    private func flow(_ origins: ServerOrigins = ServerOrigins(web: Fixtures.base)) -> OAuthSignIn {
+        OAuthSignIn(origins: origins, pkce: pkce, state: "st")
+    }
 
     func testTheAuthorizeURLAsksForTheBuiltInClientWithPKCEAndTheMcpResource() throws {
         let url = flow().authorizeURL
@@ -57,7 +59,7 @@ final class OAuthSignInTests: XCTestCase {
         XCTAssertEqual(form["client_id"], "zimmer-ios")
         XCTAssertEqual(form["redirect_uri"], "com.tadasant.zimmer:/oauth/callback")
         XCTAssertEqual(store.load()?.tokens.accessToken, "zmr_oat_new")
-        XCTAssertEqual(store.load()?.baseURL, Fixtures.base)
+        XCTAssertEqual(store.load()?.origins.web, Fixtures.base)
         let token = try await auth.accessToken()
         XCTAssertEqual(token, "zmr_oat_new")
     }
@@ -117,5 +119,25 @@ final class OAuthSignInTests: XCTestCase {
         XCTAssertEqual(transport.sent.first?.url.path, "/oauth/revoke")
         XCTAssertEqual(Fixtures.form(transport.sent[0])["token"], "zmr_ort_old")
         XCTAssertNil(store.load())
+    }
+
+    func testOnASplitDeploymentAuthorizeIsOnTheWebHostAndTheTokenCallOnTheAppHostWithTheEdgeHeader() async throws {
+        let transport = ScriptedTransport([{ _ in Fixtures.tokens() }])
+        let edge = CloudflareAccessCredential(
+            apiBaseURL: Fixtures.appHost,
+            store: InMemoryEdgeTokenStore("edge-jwt"),
+            presenter: { _ in throw ZimmerError.signIn("no sheet in this test") }
+        )
+        let auth = AuthSession(store: InMemoryTokenStore(), transport: transport, edge: edge)
+        let split = flow(Fixtures.split)
+
+        XCTAssertEqual(split.authorizeURL.host, "zimmer.example.test")
+        XCTAssertEqual(split.resource, "https://zimmer.example.test/mcp", "the issuer's resource, not the app host's")
+        try await auth.complete(split, callback: URL(string: "com.tadasant.zimmer:/oauth/callback?code=c1&state=st&iss=https://zimmer.example.test")!)
+
+        let sent = try XCTUnwrap(transport.sent.first)
+        XCTAssertEqual(sent.url.host, "zimmer-app.example.test")
+        XCTAssertEqual(sent.headers["cf-access-token"], "edge-jwt")
+        XCTAssertNil(sent.headers["Authorization"])
     }
 }

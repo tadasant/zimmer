@@ -8,5 +8,12 @@ Rails.application.config.filter_parameters += [
   # An OAuth authorization code, on the X and MCP callbacks, and the redirect URL
   # carrying one that an operator pastes back. Matched exactly: a bare :code would
   # also hide status_code, error_code and the like.
-  /\Acode\z/, /\Acode_verifier\z/, :redirect_response
+  /\Acode\z/, /\Acode_verifier\z/, :redirect_response,
+  # The Cloudflare Access JWT the iOS app's edge handoff returns (already caught
+  # by :token; named so a change to that rule cannot expose it).
+  :cf_access_token
 ]
+
+# The handoff's redirect carries the same JWT in its query string, and Rails logs
+# every redirect's full location.
+Rails.application.config.filter_redirect += [ %r{/access/callback} ]

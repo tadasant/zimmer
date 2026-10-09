@@ -79,10 +79,11 @@ keeps `DEBUG` so the UI-test fixture exists. **One bundle id for all of them**
 (`com.tadasant.zimmer`); a staging build installed beside production would need a second App ID
 and App Store Connect record, and was not built, as in Motet.
 
-**No hostname is written anywhere in this repository.** The server a build defaults to is the
-`ZIMMER_DEFAULT_API_BASE_URL` build setting (→ `ZimmerDefaultBaseURL` in `Info.plist`), passed
-by `--api-base-url` or by `testflight.yml` from the `ZIMMER_IOS_API_BASE_URL` environment
-variable, https only. The sign-in screen lets a person type another. The label is separate:
+**No hostname is written anywhere in this repository.** The deployment a build defaults to is the
+`ZIMMER_DEFAULT_WEB_BASE_URL` / `ZIMMER_DEFAULT_API_BASE_URL` build settings
+(→ `ZimmerDefaultWebBaseURL` / `ZimmerDefaultAPIBaseURL` in `Info.plist`), passed
+by `--api-base-url` / `--web-base-url` or by `testflight.yml` from the `ZIMMER_IOS_API_BASE_URL`
+and `ZIMMER_IOS_WEB_BASE_URL` environment variables, https only; either alone serves both. The sign-in screen lets a person type another. The label is separate:
 `ZimmerBuildEnvironment`, shown as a strip on non-production builds and as
 `env=… host=… source=…` in Settings, which the UI test asserts.
 
@@ -106,24 +107,38 @@ Tokens: `AuthSession` (an actor) keeps them in the Keychain via `KeychainTokenSt
 rotates refresh tokens and revokes a grant on replay), and signs out locally on `invalid_grant`.
 Signing out revokes the refresh token at `/oauth/revoke`.
 
-## Reaching a server behind an access proxy
+## Two origins, and the edge sign-in
 
-A deployment can put an access proxy in front of Rails, and Tadas's does: Cloudflare Access
-refuses a phone's `/oauth/token` and `/api/v1` calls with its own 401 page before Rails sees them.
-What the edge should accept from a phone is that deployment's decision, made outside this repo,
-and it is open. So the app commits to nothing and leaves exactly one seam:
+A deployment can serve the app from two origins (`ServerOrigins`): **web**, where a person signs
+in (`/oauth/authorize`, the OAuth issuer), and **api**, where every machine call goes
+(`/oauth/token`, `/oauth/revoke`, `/api/v1`). Tadas's puts the api origin on its own hostname
+(`zimmer-app.…`) behind a Cloudflare Access application that admits only the `@tadasant.com`
+Google policy — no service token, no bypass. The contract, from the edge design in the private
+companion repo:
 
-- `EdgeCredential.decorate(_:)` runs on **every** request — the OAuth calls and the API calls —
-  and can add headers or cookies.
-- `EdgeCredential.reauthenticate()` is called once when the edge refuses a request; returning
-  true retries it.
-- `EdgeRefusal.isEdgeRefusal` tells the edge's refusal (`cf-access-aud`/`cf-access-domain`, or a
-  non-JSON 401/403 from `server: cloudflare`) from Zimmer's own JSON 401, and the app shows
-  `ZimmerError.edgeRefused` as its own state, without signing out.
+1. **Edge login** (`CloudflareAccessCredential`). The sheet opens
+   `https://<api>/native/access-handoff?state=<random>`; Access runs its Google login; Rails
+   checks the forwarded `Cf-Access-Jwt-Assertion` (`NativeAccessAssertion`: RS256 against the
+   team JWKS, `iss`, `exp`, `aud` when configured) and redirects to the hard-coded
+   `com.tadasant.zimmer:/access/callback?state=…&cf_access_token=…`. The app checks `state` and
+   keeps the JWT in the Keychain (`KeychainEdgeTokenStore`).
+2. **Zimmer OAuth** is unchanged and runs on the web origin.
+3. **Every machine call** goes to the api origin with `cf-access-token: <JWT>`. API calls also
+   carry `Authorization: Bearer <Zimmer token>`; the two never mix — `HTTPRequest.apply(_:)`
+   drops any `Authorization` an edge credential offers.
+4. **Refresh**: the JWT's `exp` (~30 days) is read without checking the signature; the handoff
+   runs again when under 24 hours remain, or when the edge refuses a call. Re-running it *is* the
+   refresh.
+5. **Telling refusals apart** (`EdgeRefusal`): Access redirects to `*.cloudflareaccess.com` (the
+   transport never follows that — `AccessRedirectGuard`), sends `www-authenticate:
+   Cloudflare-Access …`, or a 401/403 HTML page with `cf-access-aud`. Rails answers a JSON 401
+   with `x-request-id`. A 404 `text/plain` without `x-request-id` is the tunnel saying the path
+   is not on the app host's allow-list — `ZimmerError.edgeNotRouted`, a bug, never retried.
+   `server: cloudflare` is on every response, so it is never evidence.
 
-`AppEnvironment` wires `NoEdgeCredential`. **Never put a shared secret there** — a Cloudflare
-service token compiled into a public app is a published service token. A conforming type must
-hold a credential this one phone obtained for itself.
+When web and api are one origin there is no edge credential (`NoEdgeCredential`). **Never put a
+shared secret in either** — a service token compiled into a public app is a published service
+token.
 
 ## Distribution
 
@@ -157,13 +172,16 @@ Each unblocks the next:
 4. Reuse the Admin Team API key Motet uses, or create one (Users and Access → Integrations).
 5. In `tadasant/zimmer`, create the `testflight` environment with a deployment-branch policy of
    `main` only. Secrets: `APP_STORE_CONNECT_API_KEY_ID`, `APP_STORE_CONNECT_API_ISSUER_ID`,
-   `APP_STORE_CONNECT_API_KEY_P8`. Variables: `APPLE_TEAM_ID`, `ZIMMER_IOS_API_BASE_URL`.
-6. After the first build processes, add internal testers in TestFlight.
+   `APP_STORE_CONNECT_API_KEY_P8`. Variables: `APPLE_TEAM_ID`, `ZIMMER_IOS_WEB_BASE_URL` (the
+   sign-in host) and `ZIMMER_IOS_API_BASE_URL` (the app host).
+6. On the server, set `ZIMMER_NATIVE_ACCESS_AUD` to the app host's Access audience tag (Terraform's
+   `native_app_access_aud`).
+7. After the first build processes, add internal testers in TestFlight.
 
 ## What is not verified
 
-- **On-device use against Tadas's production Zimmer** — blocked at the Cloudflare Access edge
-  (above).
+- **The two sign-ins end to end against Tadas's deployment** — waiting on the app host and its
+  Access application (private companion repo) being applied, and on this route being deployed.
 - **Anything signed**: no TestFlight build exists until the steps above are done.
 - **On a device**: Keychain behaviour, the sign-in sheet against a real Google login and second
   factor. The UI test drives an in-memory fixture, because an agent cannot complete a Google

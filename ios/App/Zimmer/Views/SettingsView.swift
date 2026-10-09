@@ -9,8 +9,24 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Signed in to") {
-                    Text(model.signedInServer?.host ?? "—")
+                    Text(model.signedInOrigins?.web.host ?? "—")
                         .accessibilityIdentifier("settings.server")
+                    if let origins = model.signedInOrigins, origins.isSplit {
+                        LabeledContent("App host", value: origins.api.host ?? "—")
+                    }
+                }
+                if model.hasEdge {
+                    Section {
+                        LabeledContent("Expires") {
+                            if let expiry = model.edgeExpiry { Text(expiry, style: .relative) } else { Text("Not signed in") }
+                        }
+                        Button("Sign in to the edge again") { Task { await model.signInToEdge() } }
+                            .accessibilityIdentifier("settings.edge.signin")
+                    } header: {
+                        Text("Edge sign-in")
+                    } footer: {
+                        Text("The app host sits behind an access proxy with its own sign-in. It renews itself a day before it expires.")
+                    }
                 }
                 Section("This build") {
                     LabeledContent("Version", value: Self.version)

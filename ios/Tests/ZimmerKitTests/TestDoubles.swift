@@ -25,6 +25,8 @@ final class ScriptedTransport: HTTPTransport, @unchecked Sendable {
 
 enum Fixtures {
     static let base = URL(string: "https://zimmer.example.test")!
+    static let appHost = URL(string: "https://zimmer-app.example.test")!
+    static let split = ServerOrigins(web: base, api: appHost)
 
     static func json(_ status: Int, _ object: Any, headers: [String: String] = ["content-type": "application/json"]) -> HTTPResponse {
         HTTPResponse(statusCode: status, headers: headers, body: try! JSONSerialization.data(withJSONObject: object))
@@ -34,8 +36,8 @@ enum Fixtures {
         json(200, ["access_token": access, "refresh_token": refresh, "expires_in": expiresIn, "token_type": "Bearer"])
     }
 
-    static func signedIn(expiresAt: Date = Date().addingTimeInterval(3600)) -> InMemoryTokenStore {
-        InMemoryTokenStore(StoredSignIn(baseURL: base, tokens: OAuthTokens(accessToken: "zmr_oat_old", refreshToken: "zmr_ort_old", expiresAt: expiresAt)))
+    static func signedIn(expiresAt: Date = Date().addingTimeInterval(3600), origins: ServerOrigins = ServerOrigins(web: base)) -> InMemoryTokenStore {
+        InMemoryTokenStore(StoredSignIn(origins: origins, tokens: OAuthTokens(accessToken: "zmr_oat_old", refreshToken: "zmr_ort_old", expiresAt: expiresAt)))
     }
 
     /// Cloudflare Access's refusal: an HTML page, not Zimmer's JSON envelope.
@@ -44,6 +46,26 @@ enum Fixtures {
         headers: ["server": "cloudflare", "content-type": "text/html", "cf-access-aud": "abc123"],
         body: Data("<html>Error ・ Cloudflare Access</html>".utf8)
     )
+
+    /// Access's other shape: a redirect to its login page, which the transport does not follow.
+    static let accessRedirect = HTTPResponse(
+        statusCode: 302,
+        headers: [
+            "server": "cloudflare",
+            "location": "https://tadasant.cloudflareaccess.com/cdn-cgi/access/login/zimmer-app.example.test?kid=x",
+            "www-authenticate": "Cloudflare-Access resource_metadata=\"https://zimmer-app.example.test/.well-known/x\"",
+        ]
+    )
+
+    /// A JWT-shaped string with the given `exp` (unsigned; the app never checks signatures).
+    static func jwt(exp: Date) -> String {
+        func b64(_ object: [String: Any]) -> String {
+            try! JSONSerialization.data(withJSONObject: object).base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        return "\(b64(["alg": "RS256"])).\(b64(["exp": Int(exp.timeIntervalSince1970), "iss": "https://tadasant.cloudflareaccess.com"])).sig"
+    }
 
     static func form(_ request: HTTPRequest) -> [String: String] {
         let body = String(decoding: request.body ?? Data(), as: UTF8.self)
@@ -64,9 +86,9 @@ final class RecordingEdge: EdgeCredential, @unchecked Sendable {
 
     init(canRenew: Bool) { self.canRenew = canRenew }
 
-    func decorate(_ request: inout HTTPRequest) async {
+    func headers() async -> [String: String] {
         let count = lock.withLock { renewals }
-        request.headers["cf-access-token"] = "phone-token-\(count)"
+        return ["cf-access-token": "phone-token-\(count)", "Authorization": "must-not-win"]
     }
 
     func reauthenticate() async -> Bool {
