@@ -326,6 +326,31 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert_includes response.headers["WWW-Authenticate"], 'error="invalid_token"'
   end
 
+  # Claude.ai's way into the Quick Router. The grant names who approved the
+  # client, not who wrote the prompt, so nothing is recorded as a human message;
+  # it does tell Zimmer a person is waiting, so the router is priority.
+  test "quick_router over an OAuth token starts a priority router session and records no human message" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    _client_id, tokens = connect
+
+    assert_difference("Session.count", 1) do
+      assert_no_difference("HumanMessage.count") do
+        post "/mcp", params: { jsonrpc: "2.0", id: 1, method: "tools/call",
+                               params: { name: "quick_router", arguments: { prompt: "Is there a WhatsApp server?" } } }.to_json,
+          headers: { "Content-Type" => "application/json", "Accept" => "application/json",
+                     "Authorization" => "Bearer #{tokens['access_token']}" }
+      end
+    end
+    assert_response :success
+    refute JSON.parse(response.body)["result"]["isError"]
+
+    session = Session.order(:id).last
+    grant = OauthServer::Grant.order(:id).last
+    assert_equal "oauth", session.metadata["mcp_auth"]
+    assert_equal grant.id, session.metadata["oauth_grant_id"]
+    assert_equal SessionGenesis::PRIORITY, session[:scheduling_class]
+  end
+
   test "with CSRF protection on, approving from the consent page works and a forged post does not" do
     ActionController::Base.allow_forgery_protection = true
     client_id = register["client_id"]

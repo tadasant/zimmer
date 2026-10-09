@@ -84,6 +84,13 @@ module Mcp
       Definition.new(klass: "Mcp::Tools::GetUserView", group: "sessions", write: false),
 
       # Sessions — writes
+      # Ahead of start_session, because a client lists tools in this order and an assistant that
+      # does not know Zimmer should meet the plain-language door before the
+      # hand-composed one. In `sessions` beside start_session, since it is a spawn;
+      # not in self_session, where a session managing itself has no business
+      # starting a router. A restricted connection is refused unless its allowlist
+      # already names the router root — see the tool.
+      Definition.new(klass: "Mcp::Tools::QuickRouter", group: "sessions", write: true),
       Definition.new(klass: "Mcp::Tools::StartSession", group: "sessions", write: true),
       Definition.new(
         klass: "Mcp::Tools::ActionSession",

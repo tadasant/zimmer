@@ -136,10 +136,15 @@ class McpController < Api::BaseController
   end
 
   def instructions
-    "Zimmer's native MCP server. Tools operate on this Zimmer instance's sessions, " \
+    text = "Zimmer's native MCP server. Tools operate on this Zimmer instance's sessions, " \
       "notifications, triggers, system health, the agent gates' decision ledger, the work backlog, " \
       "and the Settings page's global defaults. " \
       "Enabled tool groups: #{mcp_context.tool_groups.join(', ')}."
+    return text unless mcp_context.tools.any? { |tool| tool.tool_name == Mcp::Tools::QuickRouter.tool_name }
+
+    # Said first, because a client that does not know Zimmer reads this before
+    # any tool description and otherwise starts with get_configs.
+    "#{Mcp::Tools::QuickRouter::SERVER_INSTRUCTIONS} #{text}"
   end
 
   # Scoping is read from the query string, never from `params` — Rails merges a
@@ -159,7 +164,11 @@ class McpController < Api::BaseController
         # making the agent restate an id it cannot see. Read from the query string
         # for the same reason as the two above: a JSON body must not be able to
         # set it.
-        session_id: query["session_id"]
+        session_id: query["session_id"],
+        # Which credential authenticated: an OAuth grant is a remote client a human
+        # approved (Claude.ai), an API key is the fleet's. quick_router reads it to
+        # pick a default scheduling class; nothing reads it as a scope.
+        oauth_grant_id: @oauth_grant&.id
       )
     end
   end

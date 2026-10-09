@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 38 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 39 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -81,7 +81,7 @@ session gets exactly the surface it should have and no more.
 
 | URL | Tools |
 | --- | --- |
-| `/mcp` | The default surface — 26 tools; the opt-in groups are not among them |
+| `/mcp` | The default surface — 27 tools; the opt-in groups are not among them |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 8 tools a session needs to run itself |
 | `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
@@ -174,7 +174,12 @@ With `allowed_agent_roots` set, the connection is locked to those [agent roots](
   not a fence. → [Limitations](/limitations/#a-restricted-connection-cannot-spawn-from-a-session-outside-its-roots-but-can-still-resume-one)
 - `wake_me_up_when_session_changes_state` refuses to watch a session outside the allowed roots. (A
   session waking *itself* is never restricted.)
-- `get_configs` hides the roots you may not use, so the model never sees them.
+- `quick_router` is refused unless the router's root (`zimmer-orchestrator`, or its `zimmer-router`
+  alias) is on the list. The router can start work on any root, so on a fenced connection it would be
+  a way around the fence; a connection that lists the router root could already spawn it with
+  `start_session`, so allowing it there adds nothing.
+- `get_configs` hides the roots you may not use, so the model never sees them. Its filters work
+  inside that view: a hidden root is neither matched nor counted.
 
   It hides unusable MCP servers the same way, on every connection: a server whose `${VAR}` does not
   resolve or whose OAuth credential is missing or dead is left out of the server list and named in a
@@ -210,11 +215,11 @@ production.
 
 ## The tool surface
 
-38 tools, nine domains — 26 of them on the unscoped surface.
+39 tools, nine domains — 27 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
-| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_models`, `reorder_user_view`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis` |
+| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `quick_router`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_models`, `reorder_user_view`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
@@ -702,6 +707,61 @@ its aim rather than only its actions.
 
 The same capability is `POST /api/v1/sessions/:id/message_parent` — see
 [the REST API](/extend/rest-api/#reporting-back-to-the-parent-that-started-you).
+
+### `quick_router`: the door for clients that do not know Zimmer
+
+`quick_router` takes a request in plain language and starts a Quick Router session — the same one
+the [chat bubble](/sessions/spot-and-priority/#the-quick-routers-spot-opt-in) and the
+[browser extension](/extend/browser-extension/) start. The router reads the request, picks the agent
+root, MCP servers and goal, and starts whatever follows. A client such as Claude.ai, which connects
+over [OAuth](/auth/mcp-authorization-server/) and knows nothing of Zimmer's roots, can get anything
+done with one call instead of reading `get_configs` and composing `start_session` by hand.
+
+Its description says so, and so does the server's `instructions` on any connection that carries
+it: they lead with it, and `start_session` and `get_configs` point back to it.
+
+| Argument | |
+| --- | --- |
+| `prompt` | Required. The request. |
+| `context`, `context_url` | Optional. What the person is looking at. Wrapped in the same data block the chat bubble uses for the page, so the router reads it as data, not instructions. |
+| `scheduling_class` | Optional, `priority` or `spot`. |
+
+It returns the session's id and URL at once. The caller follows up with `get_session` (the
+**Status summary** is the short answer once the session reaches `needs_input` or `archived`) and
+`action_session` `follow_up`.
+
+Three things differ from the browser surfaces, because of who can be on the other end of `/mcp`:
+
+- **No human message is recorded.** The chat bubble records the prompt because a person typed it.
+  Here the calling model wrote it — one of the fleet's agents on an API key, or a person's assistant
+  paraphrasing them on an OAuth grant. A grant names who approved the *client*, not who wrote these
+  words. See [What is captured, and what is not](/sessions/hierarchy-and-human-messages/#what-is-captured-and-what-is-not).
+- **The scheduling class depends on the credential.** An explicit `scheduling_class` wins. Otherwise
+  an OAuth caller gets `priority`, since a person is waiting on that assistant, and an API-key caller
+  gets what any agent spawn gets: the calling session's lineage when the connection names one
+  (`?session_id=`), the `api` genesis's default (spot) when it does not.
+- **A connection that names a session parents the router under it**, the way the chat bubble
+  parents under the page it is opened on.
+
+It is in `sessions`, beside `start_session`, and not in `self_session`.
+
+### `get_configs` takes filters
+
+With no arguments `get_configs` returns every MCP server, every agent root with its defaults, the
+runtime models and the goals. On a real deployment that is over 200,000 characters, which overflows
+agent tool-result caps and is far past what a voice client can load. Every argument is optional:
+
+| Argument | Effect |
+| --- | --- |
+| `sections` | Any of `mcp_servers`, `agent_roots`, `models`, `goals`. Only those are returned. |
+| `query` | Words matched case-insensitively against each server's, root's and goal's name, title and description (and a root's git URL). An item has to contain every word. Runtime models are not filtered. |
+| `names` | Exact server names, root names or goal ids. Returns full detail for just those. |
+| `compact` | One line per item, name and title, with no descriptions, defaults or usage notes. |
+
+"Is there a WhatsApp server?" is `{"query": "whatsapp", "sections": ["mcp_servers"]}`. A filtered
+listing opens with a line saying it is filtered, and the counts stay true totals ("Showing 1 of 17
+usable servers"), so an empty match never reads as an empty catalog. An unfiltered `compact` listing
+keeps the `Found N preconfigured repositories:` header.
 
 ### `start_session` names its repository with `agent_root` or `git_root`
 

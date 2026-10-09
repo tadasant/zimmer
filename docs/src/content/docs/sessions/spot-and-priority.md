@@ -61,6 +61,10 @@ Every Quick Router surface carries a **Run as spot** checkbox, unchecked by defa
 | The dashboard's full-screen prompt overlay (phones) | Inside the **Advanced** accordion above the **Submit** button |
 | The mobile joystick's **Quick Router** petal | Opens the chat-bubble panel, so it inherits that one |
 
+The MCP [`quick_router`](/extend/mcp-server/#quick_router-the-door-for-clients-that-do-not-know-zimmer)
+tool is not a `web_ui` surface and has no checkbox. It takes `scheduling_class` as an argument and,
+without one, starts an OAuth caller (Claude.ai) as priority and an API-key caller as any agent spawn.
+
 On every surface the checkbox sits in a collapsed `<details>` beside the **Harness** and **Model**
 pickers, so the default experience is still one box you type into and submit. See [Choosing a
 harness and a model on the Quick

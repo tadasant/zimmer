@@ -69,6 +69,17 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert body["result"]["capabilities"].key?("tools")
   end
 
+  # A client that does not know Zimmer reads the instructions before any tool,
+  # so the plain-language door is named there — and only where it exists.
+  test "the instructions lead with quick_router when the connection carries it" do
+    body = rpc("initialize", initialize_params("2025-03-26"))
+    assert body["result"]["instructions"].start_with?(Mcp::Tools::QuickRouter::SERVER_INSTRUCTIONS)
+
+    body = rpc("initialize", initialize_params("2025-03-26"), path: "/mcp?tool_groups=self_session")
+    refute_includes body["result"]["instructions"], "quick_router"
+    assert body["result"]["instructions"].start_with?("Zimmer's native MCP server.")
+  end
+
   test "initialize answers an unknown requested version with a supported one" do
     body = rpc("initialize", initialize_params("1999-01-01"))
     assert_includes MCP::Configuration::SUPPORTED_STABLE_PROTOCOL_VERSIONS, body["result"]["protocolVersion"]
