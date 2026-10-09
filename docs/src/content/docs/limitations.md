@@ -7769,6 +7769,33 @@ and what a real iPhone camera hands back. Those are inferred from the markup, no
 changes either, the tests here stay green and the phone stops working — the only detector is
 somebody holding one.
 
+## The iOS app cannot reach a deployment behind Cloudflare Access yet
+
+Tadas's production Zimmer is behind Cloudflare Access. The Access application in front of `/api`,
+and the one in front of the OAuth and MCP machine endpoints, admit only service tokens and a named
+IP range. A phone on cellular data has neither. Access answers its `POST /oauth/token`, and every
+`/api/v1` call, with its own 401 page before Rails sees the request. `/oauth/authorize` sits behind
+Access's Google login, so the sign-in sheet reaches Zimmer's consent screen and then the code
+exchange fails.
+
+The app does not paper over it: it recognises the Access refusal (`cf-access-aud`, or a non-JSON
+401 from `server: cloudflare`) and shows it as its own error, without signing you out. Its
+networking has one seam, `EdgeCredential`, that decorates every request and is asked to renew on an
+edge refusal. Today it does nothing. **No shared secret goes in its place.** A service token
+compiled into a public app is a published service token. What the edge should accept from a phone
+(an Access login the app completes itself, a device posture, the tailnet) is the deployment's
+infrastructure decision, made in the private companion repo.
+
+## The iOS app has never been signed, installed on a device, or opened in Xcode
+
+Everything in [the iOS app](/extend/ios-app/) is proven the way Motet's was before its first upload:
+the Swift package is tested on Linux and macOS, and the app is built, archived unsigned and driven on
+a simulator in CI. No TestFlight build exists until a human creates the App ID, the App Store Connect
+record and the `testflight` environment. Until then, Keychain behaviour on a device, the sign-in sheet
+against a real Google login, and cloud signing at export are inferred, not observed. The Xcode
+project is hand-written (folder-synchronised groups, no per-file entries) and has only ever been
+read by `xcodebuild` on CI.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

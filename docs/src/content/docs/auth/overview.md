@@ -127,6 +127,10 @@ one of two things, and both are rows in `api_keys`:
   removing an entry and redeploying retires it, as it always did.
 - **A minted key**, created on the API keys page. It is shown once, in the response that created it.
 
+Zimmer's iOS app is the one REST client without a key. It sends an OAuth access token issued to the
+built-in `zimmer-ios` client, which the controllers it drives accept (see
+[the REST API](/extend/rest-api/#the-ios-apps-bearer-token)).
+
 The table holds a SHA-256 digest of each key and never the key. Every request re-reads `API_KEYS`
 and re-finds the row. Nothing is cached across requests, so a revoke takes effect on the next
 request in every Puma worker.

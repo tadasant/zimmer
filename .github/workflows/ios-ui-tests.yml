@@ -1,0 +1,158 @@
+name: iOS UI tests
+
+# Run the app on a simulator, on demand, against whichever server it is told to.
+#
+# THE ENTRY POINT AN AGENT CAN START. Everything else that touches the iOS app is bound to
+# a pull request or to a push: `ci.yml`'s `ios` job runs this same script on every change
+# under `ios/**`, and `testflight.yml` uploads on a merge. Neither of those helps somebody
+# on a Linux box who wants to point a build at a *different* server and watch it run —
+# which is what this is for, and why its trigger is `workflow_dispatch`:
+#
+#   gh workflow run ios-ui-tests.yml --ref main \
+#     -f configuration=Staging -f api_base_url_variable=ZIMMER_IOS_STAGING_API_BASE_URL
+#
+# WHAT IT PROVES, AND WHAT IT CANNOT. It drives the app's Debug-only fixture
+# (`-ZimmerFixture`, an in-memory Zimmer) and photographs the key screens. It signs into
+# nothing: an agent cannot complete a Google sign-in, so no automated run reaches a real
+# server. Pointing a build at staging therefore proves the build *resolves* the staging
+# server, not that it can talk to it.
+#
+# THE GUARD, and why it is not the one `ci.yml` uses. This repository is public and the
+# guard on every job there —
+# `github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository`
+# — is about fork PULL REQUESTS reaching a runner. There are none here: `workflow_dispatch`
+# is the only trigger, and only somebody with write access to this repository can dispatch,
+# so that expression would be false forever and the job would never run. What this needs
+# instead is the second half of the same idea, and it is the job's `if:` below: refuse any
+# repository but this one, so a fork that copies this file runs nothing. NEVER add
+# `pull_request` or `pull_request_target` here — a fork PR would then execute fork code,
+# and the `ci.yml` fork guard would have to come with it.
+#
+# NO CREDENTIAL. A simulator build needs no identity, no certificate, no provisioning
+# profile and no App Store Connect key, so unlike `testflight.yml` this holds nothing and
+# needs no environment. It also names no host: the server is read from a repository or
+# environment VARIABLE whose name is given as an input, so this public file never contains
+# one.
+#
+# THE COST. It runs on a GitHub-hosted macOS runner, which GitHub bills at roughly ten
+# times the Linux multiplier — free on a public repository, which this is, and not free on
+# a private one. A run is about 10 to 15 minutes: a simulator boot, one Xcode build, and a
+# two-test suite. It is expected to run rarely — by hand, when somebody wants a build
+# pointed somewhere new. The every-change coverage is the `ios` job in `ci.yml`, which runs
+# the same script on a runner it was already paying for.
+
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: "Build configuration. Staging carries ZIMMER_BUILD_ENVIRONMENT=staging; Debug carries development."
+        type: choice
+        options: [Staging, Debug]
+        default: Staging
+      api_base_url_variable:
+        description: >-
+          The NAME of a repository or environment variable holding the https base URL to
+          build against. A name rather than a URL, so no deployment's host is ever typed
+          into a public repository's Actions UI or its logs. Leave empty to build with no
+          default server.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# One run at a time. Two concurrent runs would each want a simulator and the same
+# artifact name; `cancel-in-progress: true` because a newer dispatch supersedes an older
+# one and neither uploads anything anybody is waiting on mid-run.
+concurrency:
+  group: ios-ui-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ui-test:
+    if: ${{ github.repository == 'tadasant/zimmer' }}
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the toolchain
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Resolve the server from the named variable
+        id: server
+        env:
+          # The whole variables context, as JSON. Looked up by name below rather than
+          # interpolated directly, because the input names a variable and a GitHub
+          # expression has no `vars[input]` indirection.
+          ALL_VARS: ${{ toJSON(vars) }}
+          WANTED: ${{ inputs.api_base_url_variable }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WANTED}" ]; then
+            echo "url=" >> "$GITHUB_OUTPUT"
+            echo "Building with no default server."
+            exit 0
+          fi
+          url="$(printf '%s' "$ALL_VARS" | jq -r --arg key "$WANTED" '.[$key] // ""')"
+          if [ -z "$url" ]; then
+            echo "::error::No repository or environment variable named ${WANTED}. Set one, or leave the input empty."
+            exit 1
+          fi
+          case "$url" in
+            https://*) ;;
+            *) echo "::error::${WANTED} must hold an https:// URL."; exit 1 ;;
+          esac
+          # Masked in BOTH spellings, and that is the whole of it rather than belt and
+          # braces: `::add-mask::` is exact-substring replacement, and `ios/bin/ui-test`
+          # derives the bare host from the URL to compare against what the app reports. A
+          # failed assertion prints that bare host, which the full-URL mask would not have
+          # touched. This repository is public and a workflow log is public with it.
+          host="${url#https://}"; host="${host%%[:/]*}"
+          echo "::add-mask::$url"
+          echo "::add-mask::$host"
+          # Heredoc rather than `k=v`: a newline in the variable's value would otherwise
+          # let it inject step outputs of its own.
+          delimiter="EOF_$(openssl rand -hex 8)"
+          {
+            printf 'url<<%s\n' "$delimiter"
+            printf '%s\n' "$url"
+            printf '%s\n' "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved ${WANTED}."
+
+      - name: Run the app on a simulator
+        # The same line `ci.yml`'s `ios` job runs. A check that exists only in a workflow
+        # cannot be run by hand and will rot, so the workflow's whole body is a call to a
+        # script anybody with a Mac runs unchanged.
+        #
+        # Both inputs arrive through `env:` rather than through `${{ }}` inside the
+        # command, so nothing a dispatcher typed is ever pasted into a shell line.
+        env:
+          ZIMMER_UI_TEST_CONFIGURATION: ${{ inputs.configuration }}
+          ZIMMER_IOS_API_BASE_URL: ${{ steps.server.outputs.url }}
+        run: |
+          set -euo pipefail
+          ios/bin/ui-test \
+            --configuration "$ZIMMER_UI_TEST_CONFIGURATION" \
+            --artifacts "$RUNNER_TEMP/ui-test"
+
+      # ONLY when no real server was named, and that is a disclosure rule rather than a
+      # size one. A workflow artifact on a public repository is downloadable by any GitHub
+      # user, and `::add-mask::` does nothing to file contents — while the run's video and
+      # screenshot show the app's own build-target line, and the result bundle carries the
+      # built `Info.plist`. So a run pointed at a real deployment keeps its evidence in the
+      # log (masked) and uploads nothing; `ci.yml`'s run, which builds against a
+      # reserved-by-RFC-2606 name that can never resolve, uploads everything.
+      - name: Keep what the run produced
+        if: ${{ always() && inputs.api_base_url_variable == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ui-test-${{ inputs.configuration }}
+          path: ${{ runner.temp }}/ui-test
+          retention-days: 14
+          if-no-files-found: warn

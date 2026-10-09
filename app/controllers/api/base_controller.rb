@@ -8,8 +8,21 @@
 #
 # Usage:
 #   curl -H "X-API-Key: your_api_key" https://example.com/api/v1/sessions
+#
+# A controller that declares `accepts_native_app_tokens` also takes
+# `Authorization: Bearer <access token>` from Zimmer's own iOS app — an OAuth
+# access token whose grant belongs to the built-in first-party client
+# (OauthServer::NativeApp). It is opt-in per controller, so the phone's
+# credential opens the surfaces the app drives and nothing else; a token any
+# other OAuth client holds is refused here exactly as a bad key is.
 class Api::BaseController < ActionController::API
   include ControllerDatabaseRetry
+
+  class_attribute :native_app_tokens_accepted, instance_writer: false, default: false
+
+  def self.accepts_native_app_tokens
+    self.native_app_tokens_accepted = true
+  end
 
   before_action :authenticate_api_key
 
@@ -63,6 +76,8 @@ class Api::BaseController < ActionController::API
   # refusal that names a known key — revoked, or taken out of API_KEYS — is WARN,
   # so it ships to obs: that is a leaked or forgotten credential still being tried.
   def authenticate_api_key
+    return authenticate_native_app_token if native_app_token_presented?
+
     authentication = ApiKey.authenticate(api_key_from_request, grant: api_key_grant)
 
     if authentication.authenticated?
@@ -71,6 +86,42 @@ class Api::BaseController < ActionController::API
     else
       log_api_key_refusal(authentication)
       render_api_error("Unauthorized", "Invalid or missing API key", status: :unauthorized)
+    end
+  end
+
+  # The signed-in human behind a native-app request, or nil for an API key —
+  # which names a key, not a person.
+  def native_app_user_email
+    @native_app_grant&.user_email
+  end
+
+  def native_app_token_presented?
+    native_app_tokens_accepted && native_app_bearer_token.present?
+  end
+
+  def native_app_bearer_token
+    token = request.headers["Authorization"].to_s[/\ABearer\s+(.+)\z/i, 1]&.strip
+    token if token&.start_with?(OauthServer::ACCESS_TOKEN_PREFIX)
+  end
+
+  # The same token check `/mcp` makes (expiry, revocation, audience), plus one
+  # more: the grant must belong to the first-party app. Every refusal is the
+  # same 401 a bad key gets; the log line says which it was.
+  def authenticate_native_app_token
+    config = OauthServer::Config.current
+    lookup = if config.configured?
+      OauthServer::Token.authenticate_access(native_app_bearer_token, resource: config.resource)
+    else
+      OauthServer::Token::Lookup.new(token: nil, refusal: :server_not_configured)
+    end
+    refusal = lookup.ok? && !lookup.grant.client.first_party? ? :not_the_native_app : lookup.refusal
+
+    if refusal.nil?
+      @native_app_grant = lookup.grant
+      Rails.logger.info("[native_app] #{request.request_method} #{request.path} authenticated as grant #{@native_app_grant.id} (#{@native_app_grant.user_email})")
+    else
+      Rails.logger.info("[native_app] #{request.request_method} #{request.path} refused from #{request.remote_ip}: access token #{refusal}")
+      render_api_error("Unauthorized", "Invalid or expired access token", status: :unauthorized)
     end
   end
 
