@@ -70,6 +70,11 @@ already reaches every tool. Issuing a narrower token would mean inventing a perm
 the key, the web UI and the agents' shells don't have. Keeping it to `/mcp` is a narrowing that
 costs nothing: an MCP client only speaks MCP.
 
+A token changes what a tool *defaults to* in one place: `quick_router` starts an OAuth caller's
+router as priority, because a person is waiting on that client. It never makes a call count as a
+human's message — the grant names who approved the client, not who wrote the arguments. See
+[`quick_router`](/extend/mcp-server/#quick_router-the-door-for-clients-that-do-not-know-zimmer).
+
 There is one scope, `mcp`. A requested `scope` is not refused; it is ignored, and the response
 always says `mcp`.
 

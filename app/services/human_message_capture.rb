@@ -40,6 +40,12 @@
 # whole fleet and establishes no human author, so those paths deliberately
 # record nothing.
 #
+# That includes the MCP `quick_router` tool, which drives the same flow as the
+# chat bubble. On an OAuth grant (a Claude.ai connector) the request does carry
+# the email of the human who approved the client — but the arguments were
+# written by the client's model, so they are a composed prompt, not that human's
+# words, and recording them would put words in a person's mouth.
+#
 # Every method is best-effort: a capture failure must never break the delivery
 # of the message it was describing. A missing record is a safe outcome.
 class HumanMessageCapture

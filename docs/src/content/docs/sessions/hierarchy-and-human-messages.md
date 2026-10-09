@@ -429,6 +429,7 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A Slack message from a human whose ID is **not** mapped | ❌ | nobody to attribute it to — and when *no* row maps any Slack ID the record says so rather than reading as an absence (see [Absence is only an answer when capture could have fired](#absence-is-only-an-answer-when-capture-could-have-fired)) |
 | A message from the [browser extension](/extend/browser-extension/) | ✅ `browser_extension.quick_router` | the `quick_router` key it presents is minted, so no agent session's environment carries it, and it opens nothing but that one endpoint — its only holder is the admin's browser |
 | `follow_up` / `send_now` / enqueue issued by **another agent** over MCP or REST | ❌ | the API key is shared by the whole fleet — it establishes a caller, not a person |
+| A request through the MCP [`quick_router`](/extend/mcp-server/#quick_router-the-door-for-clients-that-do-not-know-zimmer) tool, on an API key **or** an OAuth grant | ❌ | the calling model wrote the prompt. An OAuth grant (Claude.ai) names who approved the client, not who wrote these words |
 | A router-written spawn prompt | ❌ | a router holding a human's words is still a machine when it composes the prompt |
 | A scheduled or **self-scheduled** wake-up | ❌ | machine-authored by construction |
 | A heartbeat nudge, an `[AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]` resumption | ❌ | same |
