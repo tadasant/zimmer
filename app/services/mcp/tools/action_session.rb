@@ -391,7 +391,7 @@ module Mcp
         # transaction instead: it enqueues the job that will build the very next
         # prompt, and a job that starts before the edge is visible would render a
         # hierarchy missing exactly the human context the edge exists to carry.
-        if boolean(args["force_immediate"])
+        result = if boolean(args["force_immediate"])
           force_immediate_follow_up(session, prompt, goal).tap do
             record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
           end
@@ -406,6 +406,11 @@ module Mcp
         else
           direct_follow_up(session, prompt, goal, args)
         end
+
+        # After delivery, for the same reason as the uncle edge: every branch
+        # raises on failure, so a message that did not land records nothing.
+        context.capture_assistant_message(session, prompt, "oauth.follow_up")
+        result
       end
 
       # An idle session takes the prompt directly. This still records an uncle

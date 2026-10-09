@@ -402,7 +402,9 @@ the auto-injected self-session server is the only surface every session carries.
 
 Note the corollary for anything calling `action_session` with `follow_up`: a follow-up issued over this API is
 machine-authored and records nothing, which is deliberate — pass `parent_session_id` to
-`start_session` so the session you spawn can see the human context you were given.
+`start_session` so the session you spawn can see the human context you were given. The one exception
+is an OAuth connection its approver let [act on their behalf](/auth/mcp-authorization-server/#relay-only-or-acts-on-my-behalf):
+what it sends is recorded as theirs, on the `assistant` channel.
 
 For a session that already exists, `acting_session_id` is the equivalent. Set it on `follow_up`, or
 on `manage_enqueued_messages` `create` / `send_now` / `interrupt`, to your own session id: Zimmer
@@ -736,10 +738,13 @@ It returns the session's id and URL at once. The caller follows up with `get_ses
 
 Three things differ from the browser surfaces, because of who can be on the other end of `/mcp`:
 
-- **No human message is recorded.** The chat bubble records the prompt because a person typed it.
-  Here the calling model wrote it — one of the fleet's agents on an API key, or a person's assistant
-  paraphrasing them on an OAuth grant. A grant names who approved the *client*, not who wrote these
-  words. See [What is captured, and what is not](/sessions/hierarchy-and-human-messages/#what-is-captured-and-what-is-not).
+- **A human message is recorded only on a connection that acts on its approver's behalf.** The chat
+  bubble records the prompt because a person typed it. Here the calling model wrote it: one of the
+  fleet's agents on an API key, or a person's assistant on an OAuth grant. A relay-only grant names
+  who approved the *client*, not who wrote these words, so nothing is recorded. A grant its approver
+  set to [act on their behalf](/auth/mcp-authorization-server/#relay-only-or-acts-on-my-behalf) records
+  the `prompt` (not the page `context`) as theirs, on the `assistant` channel. See
+  [What is captured, and what is not](/sessions/hierarchy-and-human-messages/#what-is-captured-and-what-is-not).
 - **The scheduling class depends on the credential.** An explicit `scheduling_class` wins. Otherwise
   an OAuth caller gets `priority`, since a person is waiting on that assistant, and an API-key caller
   gets what any agent spawn gets: the calling session's lineage when the connection names one

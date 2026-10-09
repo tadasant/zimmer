@@ -93,19 +93,22 @@ class HumanMessageCaptureCoverageTest < ActiveSupport::TestCase
   # `configured?` reports an unrecognised channel as a GAP rather than as
   # instrumented, which is the safe direction — but a channel that lands there is
   # still a bug, and this is what keeps it out of production. Every channel
-  # CHANNEL_BY_GENESIS maps to must be one HumanMessage itself recognises and must
-  # have its own arm, so the generic fallbacks stay unreachable.
-  test "every mapped channel is a real channel with its own configured? arm" do
-    channels = HumanMessageCaptureCoverage::CHANNEL_BY_GENESIS.values
+  # CHANNEL_BY_GENESIS maps to must be one HumanMessage itself recognises, and
+  # every channel HumanMessage recognises must have its own arm, so the generic
+  # fallbacks stay unreachable. `assistant` is the one channel with no genesis of
+  # its own (see the class comment), so it is the only one allowed to be unmapped.
+  test "every channel is a real channel with its own configured? arm" do
+    mapped = HumanMessageCaptureCoverage::CHANNEL_BY_GENESIS.values
 
-    assert_equal HumanMessage::CHANNELS.sort, channels.sort
+    assert_empty mapped - HumanMessage::CHANNELS
+    assert_equal [ HumanMessage::ASSISTANT ], HumanMessage::CHANNELS - mapped
     HumanMessageCaptureCoverage::CHANNEL_BY_GENESIS.each_key do |genesis|
       assert_includes SessionGenesis::KEYS, genesis
     end
 
     generic_reason = HumanMessageCaptureCoverage.reason("no-such-channel")
     generic_remedy = HumanMessageCaptureCoverage.remedy("no-such-channel")
-    channels.each do |channel|
+    HumanMessage::CHANNELS.each do |channel|
       assert_not_equal generic_reason, HumanMessageCaptureCoverage.reason(channel)
       assert_not_equal generic_remedy, HumanMessageCaptureCoverage.remedy(channel)
     end

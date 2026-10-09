@@ -73,11 +73,12 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
   end
 
   # Consent and approve; returns [code, verifier].
-  def approve(client_id, overrides = {})
+  def approve(client_id, overrides = {}, privilege: "relay_only", **more_overrides)
+    overrides = overrides.merge(more_overrides)
     verifier, challenge = pkce
     get "/oauth/authorize", params: authorize_params(client_id, challenge, overrides)
     assert_response :success
-    post "/oauth/authorize", params: authorize_params(client_id, challenge, overrides).merge(decision: "approve")
+    post "/oauth/authorize", params: authorize_params(client_id, challenge, overrides).merge(decision: "approve", privilege: privilege)
     assert_response :found
     target, query = redirect_params
     assert_equal REDIRECT, target
@@ -95,8 +96,8 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     JSON.parse(response.body)
   end
 
-  def connect(client_id = register["client_id"])
-    code, verifier = approve(client_id)
+  def connect(client_id = register["client_id"], privilege: "relay_only")
+    code, verifier = approve(client_id, privilege: privilege)
     [ client_id, exchange(client_id, code, verifier) ]
   end
 
@@ -283,7 +284,7 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     # which Rails' CSRF origin check refuses.
     assert_equal "same-origin", response.headers["Referrer-Policy"]
 
-    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve")
+    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve", privilege: "relay_only")
     assert_response :found
     _, query = redirect_params
     assert_equal "xyz", query["state"]
@@ -326,9 +327,10 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert_includes response.headers["WWW-Authenticate"], 'error="invalid_token"'
   end
 
-  # Claude.ai's way into the Quick Router. The grant names who approved the
-  # client, not who wrote the prompt, so nothing is recorded as a human message;
-  # it does tell Zimmer a person is waiting, so the router is priority.
+  # Claude.ai's way into the Quick Router. On a relay-only grant the grant names
+  # who approved the client, not who wrote the prompt, so nothing is recorded as
+  # a human message (an elevated grant's case is AssistantHumanMessageCaptureTest);
+  # either way it tells Zimmer a person is waiting, so the router is priority.
   test "quick_router over an OAuth token starts a priority router session and records no human message" do
     AgentSessionJob.stubs(:enqueue_new_session)
     _client_id, tokens = connect
@@ -360,11 +362,11 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     token = response.body[/name="authenticity_token" value="([^"]+)"/, 1]
     assert token
 
-    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve"),
+    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve", privilege: "relay_only"),
       headers: { "Origin" => ISSUER }
     assert_response :unprocessable_entity
 
-    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve", authenticity_token: CGI.unescapeHTML(token)),
+    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve", privilege: "relay_only", authenticity_token: CGI.unescapeHTML(token)),
       headers: { "Origin" => ISSUER }
     assert_response :found
   ensure
@@ -506,7 +508,7 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_includes response.body, "tadas@tadasant.com"
 
-    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve")
+    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve", privilege: "relay_only")
     _, query = redirect_params
     tokens = exchange(client_id, query["code"], verifier)
     assert_response :success, "the token endpoint is a machine path, outside the wall"
@@ -548,7 +550,7 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     enable_web_auth
     _, challenge = pkce
 
-    post "/oauth/authorize", params: authorize_params(register["client_id"], challenge).merge(decision: "approve")
+    post "/oauth/authorize", params: authorize_params(register["client_id"], challenge).merge(decision: "approve", privilege: "relay_only")
     assert_response :unauthorized
     assert_equal 0, OauthServer::AuthorizationCode.count
   end
@@ -578,7 +580,7 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
     assert_includes response.body, "@tadasant.com"
 
-    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve")
+    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve", privilege: "relay_only")
     assert_response :forbidden
     assert_equal 0, OauthServer::AuthorizationCode.count
   end
@@ -782,5 +784,106 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
 
     rpc("tools/list", token: tokens["access_token"])
     assert_response :unauthorized
+  end
+
+  # --- privilege: relay only vs acts on my behalf ---
+
+  test "the consent screen offers both privilege levels and selects neither" do
+    _, challenge = pkce
+    get "/oauth/authorize", params: authorize_params(register["client_id"], challenge)
+    assert_response :success
+
+    assert_includes response.body, "Relay only"
+    assert_includes response.body, "Acts on my behalf"
+    assert_select "input[type=radio][name=privilege][value=relay_only]"
+    assert_select "input[type=radio][name=privilege][value=act_as_human]"
+    assert_select "input[type=radio][name=privilege][checked]", count: 0
+  end
+
+  test "approving without choosing a privilege level issues no code and asks again" do
+    client_id = register["client_id"]
+    _, challenge = pkce
+
+    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve")
+    assert_response :unprocessable_entity
+    assert_includes response.body, "Choose what this connection may do"
+    assert_equal 0, OauthServer::AuthorizationCode.count
+
+    post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve", privilege: "everything")
+    assert_response :unprocessable_entity
+    assert_equal 0, OauthServer::AuthorizationCode.count
+  end
+
+  test "acts on my behalf: the grant and the token response carry the act-as-human scope" do
+    _, tokens = connect(privilege: "act_as_human")
+    grant = OauthServer::Grant.last
+
+    assert_equal "mcp zimmer:act-as-human", tokens["scope"]
+    assert_predicate grant, :acts_as_human?
+    assert_equal "consent", grant.scope_change_reason
+    assert_not_nil grant.scope_changed_at
+
+    rpc("tools/list", token: tokens["access_token"])
+    assert_response :success
+  end
+
+  test "relay only: the grant carries just mcp, whatever scope the client asked for" do
+    client_id = register["client_id"]
+    code, verifier = approve(client_id, { scope: "mcp zimmer:act-as-human" }, privilege: "relay_only")
+    tokens = exchange(client_id, code, verifier)
+
+    assert_equal "mcp", tokens["scope"]
+    assert_not_predicate OauthServer::Grant.last, :acts_as_human?
+  end
+
+  test "a refresh reports the scope the grant holds now, after a downgrade" do
+    client_id, tokens = connect(privilege: "act_as_human")
+    grant = OauthServer::Grant.last
+
+    post "/settings/api_keys/oauth_grants/#{grant.id}/privilege", params: { privilege: "relay_only" }
+    assert_redirected_to "/settings/api_keys#oauth-connections"
+    assert_not_predicate grant.reload, :acts_as_human?
+    assert_equal "ui_downgrade", grant.scope_change_reason
+
+    assert_equal "mcp", refresh(client_id, tokens["refresh_token"])["scope"]
+  end
+
+  test "discovery advertises both scopes" do
+    get "/.well-known/oauth-authorization-server"
+    assert_equal %w[mcp zimmer:act-as-human], JSON.parse(response.body)["scopes_supported"]
+
+    get "/.well-known/oauth-protected-resource/mcp"
+    assert_equal %w[mcp zimmer:act-as-human], JSON.parse(response.body)["scopes_supported"]
+  end
+
+  test "the API keys page shows each connection's level and changes it both ways" do
+    connect(privilege: "relay_only")
+    grant = OauthServer::Grant.last
+
+    get "/settings/api_keys"
+    assert_includes response.body, "Relay only"
+    assert_includes response.body, "Let it act on my behalf"
+
+    post "/settings/api_keys/oauth_grants/#{grant.id}/privilege", params: { privilege: "act_as_human" }
+    assert_redirected_to "/settings/api_keys#oauth-connections"
+    assert_predicate grant.reload, :acts_as_human?
+    assert_equal "ui_upgrade", grant.scope_change_reason
+
+    get "/settings/api_keys"
+    assert_includes response.body, "Acts on your behalf"
+    assert_includes response.body, "Make relay only"
+
+    post "/settings/api_keys/oauth_grants/#{grant.id}/privilege", params: { privilege: "bogus" }
+    assert_predicate grant.reload, :acts_as_human?, "an unknown level changes nothing"
+  end
+
+  test "a revoked connection's level cannot be raised" do
+    connect(privilege: "relay_only")
+    grant = OauthServer::Grant.last
+    grant.revoke!("test")
+
+    post "/settings/api_keys/oauth_grants/#{grant.id}/privilege", params: { privilege: "act_as_human" }
+    assert_redirected_to "/settings/api_keys#oauth-connections"
+    assert_equal "mcp", grant.reload.scope
   end
 end

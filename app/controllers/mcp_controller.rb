@@ -177,8 +177,10 @@ class McpController < Api::BaseController
         session_id: query["session_id"],
         # Which credential authenticated: an OAuth grant is a remote client a human
         # approved (Claude.ai), an API key is the fleet's. quick_router reads it to
-        # pick a default scheduling class; nothing reads it as a scope.
-        oauth_grant_id: @oauth_grant&.id
+        # pick a default scheduling class, and the tools that deliver words into a
+        # session read its scope to decide whether those words are the human's
+        # (Mcp::Context#capture_assistant_message). Nothing reads it as a scope on reach.
+        oauth_grant: @oauth_grant
       )
     end
   end

@@ -1077,10 +1077,28 @@ costs:
 with [web sign-in](/auth/web-sign-in/) off there is no person to name, so every authorization request
 ends on "Sign in to Zimmer first".
 
-**A token reaches every tool on `/mcp`.** There is one scope. A Claude.ai connector you approve can
-do anything an `api` key can do on `/mcp`, including archiving sessions and halting queues through
-the `health` group. Narrowing it is up to the URL you paste (`?tool_groups=`), and the client can
-change that URL.
+**A token reaches every tool on `/mcp`.** Both [levels](/auth/mcp-authorization-server/#relay-only-or-acts-on-my-behalf)
+reach the same tools; the second scope changes what a message means, not what it can do. A Claude.ai
+connector you approve can do anything an `api` key can do on `/mcp`, including archiving sessions
+and halting queues through the `health` group. Narrowing it is up to the URL you paste
+(`?tool_groups=`), and the client can change that URL.
+
+**Whatever steers an elevated assistant can speak as you.** On a connection that acts on your behalf,
+every `follow_up`, queued message, `start_session` or `quick_router` prompt its client sends is
+recorded as your own message, and a merge gate may read it as your approval. The assistant's model
+writes those words. A web page, an email, a PR body, or a session's status summary it reads aloud can
+steer it into sending "merge it", and Zimmer records that as yours. There is no confirmation step, no
+read-back, no cap on volume, and no way to dispute a recorded message. The connection stays elevated
+until you lower or revoke it. The provenance names the connection, so a reader can weigh an
+`assistant` message differently from one typed into the web UI, but nothing does that weighing for
+them. Lowering the connection to relay only on Settings → API keys takes effect on its next call.
+
+**An agent session on the host can make itself an elevated connection.** Approving a connection, or
+raising one, is a browser action behind web sign-in. A session's shell can forge that sign-in (see
+[the web UI does not keep agent sessions out](#the-web-ui-does-not-keep-agent-sessions-out)), and so
+can approve a client with **acts on my behalf** and then send messages recorded as yours. The same
+hole already lets it post a follow-up the web UI records as yours, so this adds another route
+through it rather than a new hole.
 
 **Registration is open.** Anyone who can reach the host can register a client at `/oauth/register`,
 with no rate limit. A registration without a consent is pruned after seven days. A metadata document

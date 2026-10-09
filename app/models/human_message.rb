@@ -5,8 +5,10 @@
 #
 # The defining property is provenance, not content. A HumanMessage exists only
 # when the authenticated actor at an input boundary was established — the Zimmer
-# web UI (a single human has browser access) or a Slack user ID that maps to a
-# User in the seeded roster. Everything else that arrives as a `user`-role turn —
+# web UI (a single human has browser access), a Slack user ID that maps to a
+# User in the seeded roster, or an OAuth connection its approver chose to let
+# act on their behalf (OauthServer::ACT_AS_HUMAN_SCOPE), whose approver's email
+# maps to one. Everything else that arrives as a `user`-role turn —
 # an agent's `follow_up` through the MCP/REST API, a router-composed spawn
 # prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a
 # post-interruption resumption, a subagent message, a polled GitHub comment —
@@ -20,10 +22,16 @@
 class HumanMessage < ApplicationRecord
   # How the human's words reached Zimmer. This is the provenance a reader needs
   # in order to weigh a record — `web_ui` is Tadas typing into the browser;
-  # `slack` is a message resolved to a human through the Slack user ID map.
+  # `slack` is a message resolved to a human through the Slack user ID map;
+  # `assistant` is a message an OAuth client acting on the human's behalf
+  # delivered, which the human may have spoken to that assistant rather than
+  # typed — and which anything that steered the assistant could also have
+  # written. The provenance names the grant and the client, so a reader can
+  # weigh it differently from the other two.
   WEB_UI = "web_ui"
   SLACK = "slack"
-  CHANNELS = [ WEB_UI, SLACK ].freeze
+  ASSISTANT = "assistant"
+  CHANNELS = [ WEB_UI, SLACK, ASSISTANT ].freeze
 
   MAX_CONTENT_LENGTH = Session::PROMPT_MAX_LENGTH
 
@@ -95,12 +103,24 @@ class HumanMessage < ApplicationRecord
     provenance["slack_channel"]
   end
 
+  # The OAuth grant an `assistant` message came through, and the client's name
+  # as it was when the message was recorded.
+  def oauth_grant_id
+    provenance["oauth_grant_id"]
+  end
+
+  def oauth_client_name
+    provenance["oauth_client_name"]
+  end
+
   # Where this message reached Zimmer, in words a reader can weigh.
   def channel_label
     case channel
     when WEB_UI then "Zimmer web UI"
     when SLACK
       slack_channel_name.present? ? "Slack (#{slack_channel_name})" : "Slack"
+    when ASSISTANT
+      "#{oauth_client_name.presence || 'an assistant'} (OAuth grant ##{oauth_grant_id}, acting on their behalf)"
     else channel
     end
   end

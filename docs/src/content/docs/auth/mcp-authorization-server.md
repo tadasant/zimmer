@@ -71,12 +71,36 @@ the key, the web UI and the agents' shells don't have. Keeping it to `/mcp` is a
 costs nothing: an MCP client only speaks MCP.
 
 A token changes what a tool *defaults to* in one place: `quick_router` starts an OAuth caller's
-router as priority, because a person is waiting on that client. It never makes a call count as a
-human's message — the grant names who approved the client, not who wrote the arguments. See
+router as priority, because a person is waiting on that client. See
 [`quick_router`](/extend/mcp-server/#quick_router-the-door-for-clients-that-do-not-know-zimmer).
 
-There is one scope, `mcp`. A requested `scope` is not refused; it is ignored, and the response
-always says `mcp`.
+## Relay only, or acts on my behalf
+
+Every connection has one of two levels, and the person approving it picks one on the consent
+screen. Neither is selected for them, and approving without picking one issues no code.
+
+| Level | Scope the grant holds | What a message it sends is recorded as |
+| --- | --- | --- |
+| **Relay only** | `mcp` | the assistant's. Nothing lands in the session's [human messages](/sessions/hierarchy-and-human-messages/), so a merge gate does not read it as the person's approval |
+| **Acts on my behalf** | `mcp zimmer:act-as-human` | the person who approved the connection, on the `assistant` channel, naming the grant and the client |
+
+The level changes what a message *means*, not what the connection can reach: both levels open the
+same tools. It is for an assistant the person talks to directly, such as the Claude app by voice,
+where their decision ("merge 407") reaches Zimmer as a `follow_up` the assistant writes. With
+**acts on my behalf**, that follow-up is the person's own message. See
+[what is captured](/sessions/hierarchy-and-human-messages/#what-is-captured-and-what-is-not) for the
+exact calls.
+
+The choice is the person's, not the client's. A `scope` on the authorization request is ignored, as
+[RFC 6749 §3.3](https://www.rfc-editor.org/rfc/rfc6749#section-3.3) allows. The token response's
+`scope` reports what the grant holds: `mcp`, or `mcp zimmer:act-as-human`. Both scopes are in
+`scopes_supported` in the discovery documents. The level is read from the grant on every request,
+so changing it on the settings page applies from the connection's next call without a new token.
+
+The trust this buys is the person's choice, not something Zimmer checks about the words. An
+assistant's model writes the arguments of every call, so whatever steers that model can write a
+message that is then recorded as the person's. See
+[Limitations](/limitations/#connecting-to-mcp-over-oauth).
 
 ## Who can approve
 
@@ -214,9 +238,18 @@ only a plugin key.
 ## Seeing and revoking connections
 
 **Settings → API keys** lists every connection under **MCP connections**. Each one shows the client,
-who approved it, when it was last used, and a **Revoke** button. Revoking refuses the access token
-from the next request on and ends the refresh token, so the client has to be approved again. Like the
-rest of that page, it has no REST or MCP sibling, for the same reason the key controls don't.
+who approved it, when it was last used, its level (**Acts on your behalf** or **Relay only**) with
+when and how that level was set, and a **Revoke** button. A **Make relay only** or **Let it act on my
+behalf** button changes the level. Raising it asks for confirmation first. The change is recorded on
+the grant (`scope_changed_at`, `scope_change_reason`: `consent`, `ui_upgrade`, `ui_downgrade` or
+`backfill`) and logged at WARN. Revoking refuses the access token from the next request on and ends
+the refresh token, so the client has to be approved again. Like the rest of that page, it has no
+REST or MCP sibling, for the same reason the key controls don't.
+
+Connections approved before levels existed were raised to **acts on my behalf** by a one-time
+[post-deploy task](/operate/deploying/#one-time-post-deploy-tasks)
+(`LetExistingOauthGrantsActOnTheirApproversBehalf`). Each one shows *"set when connection levels were
+introduced"* until its level is changed.
 
 Every grant, refusal and revocation is logged under `[oauth_server]`, naming the grant and the person,
 never a token. A revocation is logged at WARN, so it ships to obs.

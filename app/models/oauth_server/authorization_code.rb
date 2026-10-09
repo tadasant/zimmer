@@ -15,7 +15,10 @@ module OauthServer
     RETENTION = 1.day
 
     # @return [Array(AuthorizationCode, String)] the row and the only plaintext copy of the code
-    def self.issue!(client:, redirect_uri:, code_challenge:, resource:, user_email:)
+    #
+    # `scope` is what the human chose on the consent screen (OauthServer.scope_for),
+    # never what the client asked for.
+    def self.issue!(client:, redirect_uri:, code_challenge:, resource:, user_email:, scope: OauthServer::SCOPE)
       where(expires_at: ...RETENTION.ago).delete_all
       code = SecureRandom.urlsafe_base64(32)
       row = create!(
@@ -24,7 +27,7 @@ module OauthServer
         redirect_uri: redirect_uri,
         code_challenge: code_challenge,
         resource: resource,
-        scope: OauthServer::SCOPE,
+        scope: scope,
         user_email: user_email,
         expires_at: TTL.from_now
       )

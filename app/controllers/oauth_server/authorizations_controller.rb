@@ -40,10 +40,13 @@ module OauthServer
 
     def new
       prepare!
-      @client_metadata_host = @client.publisher_host
-      @loopback_redirect = OauthServer::ClientMetadata.loopback_redirect?(@redirect_uri)
+      prepare_consent_page
     end
 
+    # Approving takes a privilege level, and there is no default: whether this
+    # client's messages are recorded as the human's own words is a choice the
+    # human makes here, on purpose, every time a client is connected. An approval
+    # without one re-renders the page rather than guessing either way.
     def create
       prepare!
 
@@ -52,11 +55,18 @@ module OauthServer
         return redirect_to_client(error: "access_denied", error_description: "the request was denied")
       end
 
+      privilege = params[:privilege].to_s
+      unless OauthServer::PRIVILEGES.include?(privilege)
+        prepare_consent_page
+        @privilege_error = "Choose what this connection may do before approving it."
+        return render :new, status: :unprocessable_entity
+      end
+
       _row, code = OauthServer::AuthorizationCode.issue!(
         client: @client, redirect_uri: @redirect_uri, code_challenge: @code_challenge,
-        resource: oauth_config.resource, user_email: @email
+        resource: oauth_config.resource, user_email: @email, scope: OauthServer.scope_for(privilege)
       )
-      Rails.logger.info("[oauth_server] #{@email} approved #{@client.client_id.inspect}; code issued for #{@redirect_uri}")
+      Rails.logger.info("[oauth_server] #{@email} approved #{@client.client_id.inspect} as #{privilege}; code issued for #{@redirect_uri}")
       redirect_to_client(code: code)
     end
 
@@ -90,6 +100,11 @@ module OauthServer
 
       @code_challenge = params[:code_challenge]
       @resource = oauth_config.resource
+    end
+
+    def prepare_consent_page
+      @client_metadata_host = @client.publisher_host
+      @loopback_redirect = OauthServer::ClientMetadata.loopback_redirect?(@redirect_uri)
     end
 
     # The signed-in human the wall let through. With the wall off: nobody,

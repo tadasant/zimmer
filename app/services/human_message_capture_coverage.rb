@@ -45,6 +45,13 @@
 # Widening this to every kind would replace an affirmative absence with "cannot
 # say" on nearly every hierarchy in the fleet, which destroys the signal the
 # record exists to carry.
+#
+# The third channel, `assistant`, has no genesis of its own. A session an OAuth
+# client starts is `api` like any other parentless API spawn, and an `api`
+# session's empty record stays an affirmative answer: a grant acting on its
+# approver's behalf records what it sends, and a relay-only grant records
+# nothing by design — the human chose that. The channel still has its own arms
+# below, so a gap is never reported for it by the generic fallback.
 class HumanMessageCaptureCoverage
   # Session genesis => the HumanMessage channel its input boundary writes.
   CHANNEL_BY_GENESIS = {
@@ -64,6 +71,7 @@ class HumanMessageCaptureCoverage
       case channel
       when HumanMessage::WEB_UI then "the Zimmer web UI"
       when HumanMessage::SLACK then "Slack"
+      when HumanMessage::ASSISTANT then "an assistant acting on a human's behalf"
       else channel
       end
     end
@@ -82,6 +90,7 @@ class HumanMessageCaptureCoverage
       case channel
       when HumanMessage::WEB_UI then User.admin.present?
       when HumanMessage::SLACK then User.with_slack_mapping.exists?
+      when HumanMessage::ASSISTANT then assistant_grant_resolves?
       else false
       end
     end
@@ -94,6 +103,9 @@ class HumanMessageCaptureCoverage
       when HumanMessage::SLACK
         "No row in this deployment's roster maps any Slack user ID, so every Slack message resolved to nobody and " \
         "recorded nothing — whoever sent it."
+      when HumanMessage::ASSISTANT
+        "No live OAuth connection both acts on its approver's behalf and was approved by an email in this " \
+        "deployment's roster, so nothing an assistant relayed was recorded as a human's."
       else
         "Zimmer has no configuration check for this channel, so it cannot say whether a message on it would have " \
         "been recorded."
@@ -106,10 +118,20 @@ class HumanMessageCaptureCoverage
         "Add a row with that key at /supervisor/users, or point #{User::ADMIN_ENV_KEY} at a key that exists."
       when HumanMessage::SLACK
         "Fill in the human's Slack user ID at /supervisor/users. It is a row edit, not a deploy."
+      when HumanMessage::ASSISTANT
+        "Let the connection act on your behalf on Settings → API keys, and make sure its approver's email is " \
+        "on their row at /supervisor/users."
       else
         "Give this channel a check in HumanMessageCaptureCoverage.configured?."
       end
     end
+  end
+
+  # Whether any live grant holding OauthServer::ACT_AS_HUMAN_SCOPE was approved
+  # by an email the roster knows — the deployment-wide question for `assistant`.
+  def self.assistant_grant_resolves?
+    OauthServer::Grant.active.where("scope LIKE ?", "%#{OauthServer::ACT_AS_HUMAN_SCOPE}%")
+      .pluck(:user_email).any? { |email| User.for_email(email).present? }
   end
 
   attr_reader :hierarchy

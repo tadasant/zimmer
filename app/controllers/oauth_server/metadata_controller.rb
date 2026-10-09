@@ -15,7 +15,7 @@ module OauthServer
         resource: oauth_config.resource,
         resource_name: "Zimmer",
         authorization_servers: [ oauth_config.issuer ],
-        scopes_supported: [ OauthServer::SCOPE ],
+        scopes_supported: OauthServer::SCOPES_SUPPORTED,
         bearer_methods_supported: [ "header" ],
         resource_documentation: DOCUMENTATION_URL
       }
@@ -36,7 +36,7 @@ module OauthServer
         code_challenge_methods_supported: [ "S256" ],
         token_endpoint_auth_methods_supported: [ "none" ],
         revocation_endpoint_auth_methods_supported: [ "none" ],
-        scopes_supported: [ OauthServer::SCOPE ],
+        scopes_supported: OauthServer::SCOPES_SUPPORTED,
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
         service_documentation: DOCUMENTATION_URL
