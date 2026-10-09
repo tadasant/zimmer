@@ -140,11 +140,21 @@ class McpController < Api::BaseController
       "notifications, triggers, system health, the agent gates' decision ledger, the work backlog, " \
       "and the Settings page's global defaults. " \
       "Enabled tool groups: #{mcp_context.tool_groups.join(', ')}."
-    return text unless mcp_context.tools.any? { |tool| tool.tool_name == Mcp::Tools::QuickRouter.tool_name }
+    return text unless quick_router_nudge?
 
-    # Said first, because a client that does not know Zimmer reads this before
-    # any tool description and otherwise starts with get_configs.
     "#{Mcp::Tools::QuickRouter::SERVER_INSTRUCTIONS} #{text}"
+  end
+
+  # Said first, because a client that does not know Zimmer reads this before any
+  # tool description and otherwise starts with get_configs. Only on a connection
+  # that names no calling session and has no root fence: that is a client from
+  # outside the fleet (Claude.ai, a human's own MCP client). A session's injected
+  # entry always names it, and a router told to prefer quick_router would hand its
+  # work to a second router instead of starting it. A fenced connection would be
+  # refused by the tool unless it allows the router root, so it is not pointed there.
+  def quick_router_nudge?
+    mcp_context.self_session_id.nil? && !mcp_context.restricted? &&
+      mcp_context.tools.any? { |tool| tool.tool_name == Mcp::Tools::QuickRouter.tool_name }
   end
 
   # Scoping is read from the query string, never from `params` — Rails merges a

@@ -717,13 +717,17 @@ root, MCP servers and goal, and starts whatever follows. A client such as Claude
 over [OAuth](/auth/mcp-authorization-server/) and knows nothing of Zimmer's roots, can get anything
 done with one call instead of reading `get_configs` and composing `start_session` by hand.
 
-Its description says so, and so does the server's `instructions` on any connection that carries
-it: they lead with it, and `start_session` and `get_configs` point back to it.
+Its description says so, and `start_session` and `get_configs` point back to it. The server's
+`instructions` lead with it only on a connection that names no calling session and has no
+`allowed_agent_roots` — a client from outside the fleet. A session's own entries always name the
+session, and a router told to prefer `quick_router` would hand its work to a second router. For the
+same reason the tool refuses a call from a Quick Router session: a router routes with `start_session`.
 
 | Argument | |
 | --- | --- |
 | `prompt` | Required. The request. |
-| `context`, `context_url` | Optional. What the person is looking at. Wrapped in the same data block the chat bubble uses for the page, so the router reads it as data, not instructions. |
+| `context`, `context_url` | Optional. What the person is looking at. Wrapped in the same data block the chat bubble uses for the page, so the router reads it as data, not instructions. `context_url` is used only with `context`. |
+| `idempotency_key` | Optional. A retry with the same key returns the first call's session instead of starting a second router, as on `start_session`. |
 | `scheduling_class` | Optional, `priority` or `spot`. |
 
 It returns the session's id and URL at once. The caller follows up with `get_session` (the
@@ -755,7 +759,7 @@ agent tool-result caps and is far past what a voice client can load. Every argum
 | --- | --- |
 | `sections` | Any of `mcp_servers`, `agent_roots`, `models`, `goals`. Only those are returned. |
 | `query` | Words matched case-insensitively against each server's, root's and goal's name, title and description (and a root's git URL). An item has to contain every word. Runtime models are not filtered. |
-| `names` | Exact server names, root names or goal ids. Returns full detail for just those. |
+| `names` | Server names, root names or goal ids — whole names, case-insensitive. Returns full detail for just those. |
 | `compact` | One line per item, name and title, with no descriptions, defaults or usage notes. |
 
 "Is there a WhatsApp server?" is `{"query": "whatsapp", "sections": ["mcp_servers"]}`. A filtered

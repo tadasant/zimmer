@@ -60,7 +60,11 @@ module Mcp
         Hand-composing `start_session` means calling `get_configs`, choosing an agent root, its MCP servers
         and a goal yourself, and getting a list wrong silently drops a server the work needed. If you are
         an assistant acting for a person and are not sure how Zimmer works, use this and let Zimmer figure
-        it out.
+        it out. (An agent session running inside Zimmer is past that point: a router routes with
+        `start_session`, and a Quick Router session calling this is refused.)
+
+        If the call may be retried after a timeout, pass an `idempotency_key`: a repeat with the same key
+        returns the session the first call made instead of starting a second router.
 
         Returns the new session's id and URL straight away; the work runs in the background. To follow it:
         - `get_session` with that id. When its status is `needs_input` or `archived` the router has replied,
@@ -87,7 +91,12 @@ module Mcp
           },
           context_url: {
             type: "string",
-            description: "Optional. The URL that `context` came from."
+            description: "Optional. The URL that `context` came from. Only used together with `context`."
+          },
+          idempotency_key: {
+            type: "string",
+            description: "Optional. Unique to this request. Retrying with the same key returns the session the " \
+                         "first call created rather than starting another router."
           },
           scheduling_class: {
             type: "string",
@@ -104,6 +113,10 @@ module Mcp
       def call(args)
         enforce_any_allowed_root!(AgentRootsConfig::ROUTER_ROOT_NAMES)
 
+        idempotency_key = args["idempotency_key"].to_s.strip.presence
+        replayed = Sessions::IdempotentCreate.existing(idempotency_key)
+        return format_result(replayed, reused: true) if replayed
+
         prompt = require_arg(args, "prompt").to_s.strip
         raise ToolError, "Missing required parameter: prompt" if prompt.empty?
         if prompt.length > Session::PROMPT_MAX_LENGTH
@@ -118,6 +131,7 @@ module Mcp
         end
 
         parent = calling_session
+        refuse_router_caller!(parent)
         session = Session.create_from_agent_root!(
           agent_root_name: AgentRootsConfig.router_root_name,
           prompt: augmented_prompt,
@@ -133,6 +147,7 @@ module Mcp
             mcp_auth: context.oauth? ? "oauth" : "api_key",
             oauth_grant_id: context.oauth_grant_id
           }.compact_blank,
+          idempotency_key: idempotency_key,
           skip_enqueue: true
         )
 
@@ -141,6 +156,13 @@ module Mcp
         format_result(session)
       rescue AgentRootsConfig::AgentRootNotFoundError => e
         raise ToolError, "Router agent root not configured: #{e.message}"
+      rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => e
+        # A concurrent retry with the same key won the insert. Its call queued
+        # the job; this one hands back that session and queues nothing.
+        winner = idempotency_key && race_lost?(e) && Sessions::IdempotentCreate.existing(idempotency_key)
+        raise unless winner
+
+        format_result(winner, reused: true)
       end
 
       private
@@ -156,6 +178,22 @@ module Mcp
         Session.find_by(id: context.self_session_id)
       end
 
+      # A Quick Router session that calls quick_router hands its request to a
+      # second router, which can do the same — one request, a chain of routers.
+      # A router routes with start_session.
+      def refuse_router_caller!(parent)
+        return unless parent && AgentRootsConfig::ROUTER_ROOT_NAMES.include?(parent.metadata&.dig("agent_root_key"))
+
+        raise ToolError, "This session is itself a Quick Router session (##{parent.id}). Route the request with " \
+                         "`start_session` instead of starting another router."
+      end
+
+      def race_lost?(error)
+        return error.record.errors.of_kind?(:idempotency_key, :taken) if error.is_a?(ActiveRecord::RecordInvalid)
+
+        !Sessions::IdempotentCreate.other_index?(error)
+      end
+
       def scheduling_class(args)
         requested = args["scheduling_class"].to_s.strip
         return requested if SessionGenesis::CLASSES.include?(requested)
@@ -164,9 +202,9 @@ module Mcp
         SessionGenesis::PRIORITY if context.oauth?
       end
 
-      def format_result(session)
+      def format_result(session, reused: false)
         [
-          "## Quick Router session started",
+          reused ? "## Existing Quick Router session returned (idempotency_key matched)" : "## Quick Router session started",
           "",
           "- **ID:** #{session.id}",
           "- **URL:** #{session_url(session)}",

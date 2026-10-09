@@ -397,6 +397,28 @@ class Mcp::Tools::GetConfigsTest < ActiveSupport::TestCase
     refute_includes result, "- `strad-secrets-oauth`"
   end
 
+  test "when only unavailable servers match, the header says they are listed below" do
+    result = with_mixed_catalog { @tool.call({ "query" => "staging", "sections" => [ "mcp_servers" ] }) }
+
+    assert_includes result, "*No usable server matches the filter (2 usable of 4 in the catalog; " \
+                            "1 unavailable match is listed below).*"
+  end
+
+  test "names match whole names case-insensitively and the banner echoes them as given" do
+    result = with_mixed_catalog { @tool.call({ "names" => [ "Context7" ], "sections" => [ "mcp_servers" ] }) }
+
+    assert_includes result, "names: Context7"
+    assert_includes result, "### Context7"
+    refute_includes result, "### Zimmer Self Session"
+    assert_includes with_mixed_catalog { @tool.call({ "names" => [ "context" ], "sections" => [ "mcp_servers" ] }) },
+                    "*No usable server matches the filter"
+  end
+
+  test "wrongly typed query and compact are refused rather than ignored" do
+    assert_raises(Mcp::ToolError) { @tool.call({ "compact" => "true" }) }
+    assert_raises(Mcp::ToolError) { @tool.call({ "query" => [ "whatsapp" ] }) }
+  end
+
   test "names returns full detail for exactly the named items" do
     result = with_mixed_catalog(roots: FILTER_ROOTS) do
       @tool.call({ "names" => [ "zimmer", "context7" ], "sections" => %w[mcp_servers agent_roots] })

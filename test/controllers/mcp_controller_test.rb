@@ -80,6 +80,16 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert body["result"]["instructions"].start_with?("Zimmer's native MCP server.")
   end
 
+  # A session's own entries name the session; a router told to prefer
+  # quick_router would hand its work to another router. A fenced connection
+  # would be refused by the tool.
+  test "the quick_router nudge is not given to a session's own connection or a fenced one" do
+    [ "/mcp?tool_groups=sessions&session_id=42", "/mcp?allowed_agent_roots=zimmer" ].each do |path|
+      body = rpc("initialize", initialize_params("2025-03-26"), path: path)
+      assert body["result"]["instructions"].start_with?("Zimmer's native MCP server."), path
+    end
+  end
+
   test "initialize answers an unknown requested version with a supported one" do
     body = rpc("initialize", initialize_params("1999-01-01"))
     assert_includes MCP::Configuration::SUPPORTED_STABLE_PROTOCOL_VERSIONS, body["result"]["protocolVersion"]

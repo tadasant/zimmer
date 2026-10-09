@@ -115,6 +115,32 @@ class Mcp::Tools::QuickRouterTest < ActiveSupport::TestCase
     end
   end
 
+  test "an idempotency_key replays the first call's session instead of starting another router" do
+    first = nil
+    assert_difference "Session.count", 1 do
+      first = tool.call("prompt" => "do it", "idempotency_key" => "claude-ai-turn-1")
+      tool.call("prompt" => "do it", "idempotency_key" => "claude-ai-turn-1")
+    end
+    session = Session.order(:id).last
+    assert_equal "claude-ai-turn-1", session.idempotency_key
+    assert_includes first, "- **ID:** #{session.id}"
+
+    replay = tool.call("prompt" => "do it", "idempotency_key" => "claude-ai-turn-1")
+    assert_includes replay, "Existing Quick Router session returned"
+    assert_includes replay, "- **ID:** #{session.id}"
+  end
+
+  # One request, a chain of routers: a router routes with start_session.
+  test "a Quick Router session calling it is refused" do
+    tool.call("prompt" => "outer")
+    router = Session.order(:id).last
+
+    assert_no_difference "Session.count" do
+      error = assert_raises(Mcp::ToolError) { tool(session_id: router.id).call("prompt" => "inner") }
+      assert_includes error.message, "Route the request with `start_session`"
+    end
+  end
+
   test "says so when the catalog has no router root" do
     Session.stubs(:create_from_agent_root!).raises(AgentRootsConfig::AgentRootNotFoundError, "zimmer-orchestrator")
 

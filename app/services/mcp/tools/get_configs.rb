@@ -30,7 +30,7 @@ module Mcp
         - `query`: words matched case-insensitively against each server's, root's and goal's name,
           title and description; an item must contain every word. "whatsapp" answers "is there a
           WhatsApp server?" in one small call. Runtime models are not filtered by it.
-        - `names`: exact server names, agent root names, or goal ids. Use it to fetch full detail for
+        - `names`: server names, agent root names, or goal ids (whole names, case-insensitive). Use it to fetch full detail for
           the few candidates a compact or query call turned up.
         - `compact`: one line per item (name and title) instead of descriptions and defaults, and no
           usage notes. Good for a first look at what exists.
@@ -63,7 +63,7 @@ module Mcp
           names: {
             type: "array",
             items: { type: "string" },
-            description: "Exact server names, agent root names or goal ids to return in full. " \
+            description: "Server names, agent root names or goal ids (whole names, case-insensitive) to return in full. " \
                          "Items in a returned section that are not named are left out."
           },
           compact: {
@@ -110,7 +110,10 @@ module Mcp
             raise ToolError, "Unknown section(s): #{unknown.join(', ')}. Valid sections: #{SECTIONS.join(', ')}" if unknown.any?
           end
 
-          query = args["query"].to_s.strip
+          query = args["query"]
+          raise ToolError, "The \"query\" parameter must be a string." unless query.nil? || query.is_a?(String)
+
+          query = query.to_s.strip
           raise ToolError, "query is too long (maximum #{QUERY_MAX_LENGTH} characters)" if query.length > QUERY_MAX_LENGTH
 
           names = args["names"]
@@ -121,14 +124,18 @@ module Mcp
             raise ToolError, "Too many names (maximum #{NAMES_MAX})" if names.size > NAMES_MAX
           end
 
-          new(sections: sections.presence, query: query, names: names.presence, compact: args["compact"] == true)
+          compact = args["compact"]
+          raise ToolError, "The \"compact\" parameter must be a boolean." unless [ nil, true, false ].include?(compact)
+
+          new(sections: sections.presence, query: query, names: names.presence, compact: compact == true)
         end
 
         def initialize(sections:, query:, names:, compact:)
           @sections = sections
           @query = query
           @terms = query.downcase.split
-          @names = names&.map(&:downcase)
+          @names = names
+          @name_keys = names&.map(&:downcase)
           @compact = compact
         end
 
@@ -152,7 +159,7 @@ module Mcp
         # @param name [String] the item's identifier — what `names` matches exactly
         # @param texts [Array<String, nil>] everything `query` searches, the name included
         def match?(name, *texts)
-          return false if @names && !@names.include?(name.to_s.downcase)
+          return false if @name_keys && !@name_keys.include?(name.to_s.downcase)
           return true if @terms.empty?
 
           haystack = [ name, *texts ].compact.join("\n").downcase
@@ -172,7 +179,7 @@ module Mcp
         end
       end
 
-            private
+      private
 
       def mcp_server_section_lines
         lines = [ "## MCP Servers", "" ]
@@ -202,7 +209,9 @@ module Mcp
       def filtered_server_header_lines(shown, available, unavailable)
         total = available.size + unavailable.size
         if shown.empty?
-          [ "*No usable server matches the filter (#{available.size} usable of #{total} in the catalog).*", "" ]
+          unusable = unavailable.count { |status| server_match?(status) }
+          note = unusable.positive? ? "; #{unusable} unavailable #{unusable == 1 ? 'match is' : 'matches are'} listed below" : ""
+          [ "*No usable server matches the filter (#{available.size} usable of #{total} in the catalog#{note}).*", "" ]
         else
           [ "Showing #{shown.size} of #{available.size} usable server#{'s' unless available.size == 1} " \
             "(#{total} in the catalog), filtered:", "" ]
@@ -227,7 +236,7 @@ module Mcp
         end
 
         if @filter.compact?
-          shown.each { |root| lines << "- `#{root.name}` — #{root.display_name}" }
+          shown.each { |root| lines << "- `#{root.name}` — #{root.display_name.presence || root.name}" }
           lines << ""
         else
           shown.each { |root| lines.concat(format_root(root)) }
@@ -289,7 +298,6 @@ module Mcp
         lines << "" if @filter.compact?
         lines
       end
-
 
       def usage_note_lines
         lines = [ "---", "", "### Usage Notes", "" ]
@@ -459,7 +467,7 @@ module Mcp
 
       def format_root(root)
         data = root.to_h.with_indifferent_access
-        lines = [ "### #{data[:display_name]}" ]
+        lines = [ "### #{data[:display_name].presence || data[:name]}" ]
         lines << "- **Name:** `#{data[:name]}`"
         lines << "- **Catalog:** `#{root.scope}`" if root.contested?
         lines << "- **Git Root:** `#{data[:url]}`"

@@ -2453,7 +2453,7 @@ class Session < ApplicationRecord
   #   transaction and consumes an event on this signal has to account for that; no
   #   caller does today.
   # @return [Session] the created and enqueued session
-  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, config: nil, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil, &on_created)
+  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, config: nil, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil, idempotency_key: nil, &on_created)
     # An explicit override is normalized through RuntimeRegistry here, so an
     # unknown runtime fails loudly at the registry (KeyError) rather than tripping
     # the agent_runtime inclusion validation with a vaguer error.
@@ -2509,7 +2509,10 @@ class Session < ApplicationRecord
       custom_metadata: custom_metadata,
       # Empty is the same as absent here: ResolveSpawnDefaults reads
       # `config["model"]` and fills the whole chain in when it is missing.
-      config: config.presence
+      config: config.presence,
+      # Lets a caller that may retry a lost response name the attempt — see
+      # Sessions::IdempotentCreate. nil for every surface that does not.
+      idempotency_key: idempotency_key.presence
     )
 
     # Repository fields, runtime → model, the artifact lists and the
