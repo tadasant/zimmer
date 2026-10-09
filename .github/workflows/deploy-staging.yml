@@ -486,6 +486,9 @@ jobs:
           # The Host allow-list's extras and break-glass (AllowedHosts). A repository
           # variable, so `*` turns the check off on the next deploy without a PR.
           ZIMMER_ALLOWED_HOSTS: ${{ vars.ZIMMER_ALLOWED_HOSTS }}
+          # The iOS app's edge handoff refuses everything until this names the staging
+          # native app's Access audience tag. A repository variable, not a secret.
+          ZIMMER_NATIVE_ACCESS_AUD: ${{ vars.ZIMMER_NATIVE_ACCESS_AUD }}
           KAMAL_REGISTRY_USERNAME: ${{ github.actor }}
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
           STAGING_SECRET_BASE: ${{ secrets.STAGING_SECRET_BASE }}

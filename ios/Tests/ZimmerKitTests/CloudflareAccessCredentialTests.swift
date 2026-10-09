@@ -14,7 +14,7 @@ final class CloudflareAccessCredentialTests: XCTestCase {
         { url in
             opened.append(url)
             let state = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "state" }?.value ?? ""
-            return URL(string: "com.tadasant.zimmer:/access/callback?state=\(state)&cf_access_token=\(token)")!
+            return URL(string: "com.tadasant.zimmer:/access/callback?state=\(state)#cf_access_token=\(token)")!
         }
     }
 
@@ -35,13 +35,39 @@ final class CloudflareAccessCredentialTests: XCTestCase {
         XCTAssertEqual(headers, ["cf-access-token": goodJWT])
     }
 
-    func testACallbackForAnotherStateIsRefused() throws {
-        let callback = URL(string: "com.tadasant.zimmer:/access/callback?state=other&cf_access_token=\(goodJWT)")!
-        XCTAssertThrowsError(try CloudflareAccessCredential.token(fromCallback: callback, state: "mine"))
-        let wrongPath = URL(string: "com.tadasant.zimmer:/oauth/callback?state=mine&cf_access_token=\(goodJWT)")!
+    func testTheTokenIsReadFromTheFragmentAndTheStateFromTheQuery() throws {
+        // The exact shape NativeAccessHandoffsController redirects to.
+        let callback = URL(string: "com.tadasant.zimmer:/access/callback?state=mine#cf_access_token=\(goodJWT)")!
+        XCTAssertEqual(try CloudflareAccessCredential.token(fromCallback: callback, state: "mine"), goodJWT)
+
+        let otherState = URL(string: "com.tadasant.zimmer:/access/callback?state=other#cf_access_token=\(goodJWT)")!
+        XCTAssertThrowsError(try CloudflareAccessCredential.token(fromCallback: otherState, state: "mine"))
+        let tokenInQuery = URL(string: "com.tadasant.zimmer:/access/callback?state=mine&cf_access_token=\(goodJWT)")!
+        XCTAssertThrowsError(try CloudflareAccessCredential.token(fromCallback: tokenInQuery, state: "mine"),
+                             "the contract puts the token in the fragment; a query token is not accepted")
+        let wrongPath = URL(string: "com.tadasant.zimmer:/oauth/callback?state=mine#cf_access_token=\(goodJWT)")!
         XCTAssertThrowsError(try CloudflareAccessCredential.token(fromCallback: wrongPath, state: "mine"))
         let noToken = URL(string: "com.tadasant.zimmer:/access/callback?state=mine")!
         XCTAssertThrowsError(try CloudflareAccessCredential.token(fromCallback: noToken, state: "mine"))
+    }
+
+    func testNoURLTheAppBuildsHasADoubleSlashInItsPath() {
+        // The app host's tunnel answers 404 to any path containing `//`.
+        let origins = [URL(string: "https://zimmer-app.example.test")!, URL(string: "https://zimmer-app.example.test/")!]
+        for base in origins {
+            let flow = OAuthSignIn(origins: ServerOrigins(web: base, api: base))
+            let urls = [
+                CloudflareAccessCredential.handoffURL(apiBaseURL: base, state: "s"),
+                flow.authorizeURL,
+                flow.tokenRequest(code: "c").url,
+                OAuthSignIn.refreshRequest(baseURL: base, refreshToken: "r").url,
+                OAuthSignIn.revokeRequest(baseURL: base, token: "t").url,
+                HTTPEndpoint(method: "GET", path: "/api/v1/sessions").url(relativeTo: base)!,
+            ]
+            for url in urls {
+                XCTAssertFalse(url.path.contains("//"), "\(url.absoluteString) has a // in its path")
+            }
+        }
     }
 
     func testRefreshIsDueWithinTwentyFourHoursOfExpiry() async {

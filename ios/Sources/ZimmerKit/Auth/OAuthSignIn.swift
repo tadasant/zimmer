@@ -34,12 +34,12 @@ public struct OAuthSignIn: Sendable {
 
     /// The RFC 8707 resource every Zimmer token is bound to: `/mcp` on the issuer.
     public var resource: String {
-        origins.web.appendingPathComponent("mcp").absoluteString
+        ServerURL.join(origins.web, "mcp").absoluteString
     }
 
     /// The URL to open in the sign-in sheet.
     public var authorizeURL: URL {
-        var components = URLComponents(url: origins.web.appendingPathComponent("oauth/authorize"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: ServerURL.join(origins.web, "oauth/authorize"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: Self.clientID),
@@ -100,7 +100,7 @@ public struct OAuthSignIn: Sendable {
 
     public static func revokeRequest(baseURL: URL, token: String) -> HTTPRequest {
         var request = formRequest(baseURL: baseURL, fields: ["client_id": clientID, "token": token])
-        request.url = baseURL.appendingPathComponent("oauth/revoke")
+        request.url = ServerURL.join(baseURL, "oauth/revoke")
         return request
     }
 
@@ -111,7 +111,7 @@ public struct OAuthSignIn: Sendable {
             "\(key)=\(fields[key]!.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")"
         }.joined(separator: "&")
         return HTTPRequest(
-            url: baseURL.appendingPathComponent("oauth/token"),
+            url: ServerURL.join(baseURL, "oauth/token"),
             method: "POST",
             headers: ["Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"],
             body: Data(body.utf8)

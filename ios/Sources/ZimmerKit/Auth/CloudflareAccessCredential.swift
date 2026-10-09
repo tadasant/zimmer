@@ -19,9 +19,11 @@ public final class InMemoryEdgeTokenStore: EdgeTokenStore, @unchecked Sendable {
 /// The app host sits behind an Access application that admits only the deployment's
 /// Google policy. The phone earns a JWT by opening `GET /native/access-handoff` on that
 /// host in the system sign-in sheet: Access runs its Google login, Rails checks the
-/// assertion Access forwarded and redirects to `com.tadasant.zimmer:/access/callback`
-/// with it (`NativeAccessHandoffsController`). The app checks `state`, keeps the JWT in
-/// the Keychain, and sends it as `cf-access-token` on every machine call.
+/// assertion Access forwarded and redirects to
+/// `com.tadasant.zimmer:/access/callback?state=…#cf_access_token=…`
+/// (`NativeAccessHandoffsController`) — the JWT in the fragment, which no server or log
+/// ever sees. The app checks `state` from the query, keeps the JWT in the Keychain, and
+/// sends it as `cf-access-token` on every machine call.
 ///
 /// The JWT lives about 30 days. Re-running the handoff *is* the refresh: proactively when
 /// fewer than 24 hours are left (`refreshIfNeeded`), and reactively when the edge refuses a
@@ -92,20 +94,24 @@ public actor CloudflareAccessCredential: EdgeCredential {
     }
 
     public static func handoffURL(apiBaseURL: URL, state: String) -> URL {
-        var components = URLComponents(url: apiBaseURL.appendingPathComponent("native/access-handoff"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: ServerURL.join(apiBaseURL, "native/access-handoff"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "state", value: state)]
         return components.url!
     }
 
     public static func token(fromCallback url: URL, state: String) throws -> String {
         guard url.scheme == callbackScheme, url.path == callbackPath,
-              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         else { throw ZimmerError.signIn("The edge sign-in came back to the wrong place.") }
-        let query = Dictionary(items.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
+        let query = Dictionary((components.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
         guard query["state"] == state else {
             throw ZimmerError.signIn("The edge sign-in came back for a different request. Try again.")
         }
-        guard let token = query["cf_access_token"], !token.isEmpty, expiry(of: token) != nil else {
+        // The token is in the fragment, form-encoded: `#cf_access_token=<jwt>`.
+        var fragment = URLComponents()
+        fragment.percentEncodedQuery = components.percentEncodedFragment
+        let fields = Dictionary((fragment.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
+        guard let token = fields["cf_access_token"], !token.isEmpty, expiry(of: token) != nil else {
             throw ZimmerError.signIn("The edge sign-in came back without a usable token.")
         }
         return token

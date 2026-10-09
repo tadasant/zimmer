@@ -51,13 +51,20 @@ forwards the request with the `Cf-Access-Jwt-Assertion` it minted. Rails checks 
 - an RS256 signature from a key in the team's JWKS at `/cdn-cgi/access/certs`, cached for an hour;
 - `iss` equal to the team domain (`ZIMMER_NATIVE_ACCESS_TEAM_DOMAIN`, default `tadasant.cloudflareaccess.com`);
 - not expired;
-- an `aud` that includes `ZIMMER_NATIVE_ACCESS_AUD`, when that is set.
+- an `aud` that includes `ZIMMER_NATIVE_ACCESS_AUD`, the native app's Access audience tag. This is
+  required. With the variable unset, every handoff is refused, because a JWT minted for any other
+  Access application of the team would otherwise pass.
 
-Rails then redirects to the hard-coded `com.tadasant.zimmer:/access/callback?state=…&cf_access_token=…`.
-Anything invalid gets a 403, and a malformed `state` gets a 400. The route has no web sign-in wall and
+Rails then redirects to the hard-coded `com.tadasant.zimmer:/access/callback?state=…#cf_access_token=…`.
+The JWT is in the fragment, which no server or request log ever sees. Anything invalid gets a 403,
+and a malformed `state` gets a 400. The route has no web sign-in wall and
 no CSRF check: it hands back only what Access minted for this requester, and every API call still needs
-Zimmer's own token. The app checks `state`, keeps the JWT in the Keychain, and sends it as
-`cf-access-token` on every machine call, never in `Authorization`. The JWT lives about 30 days. The app
+Zimmer's own token. The app checks `state` from the query, reads the JWT from the fragment, keeps it in the Keychain,
+and sends it as `cf-access-token` on every machine call, never in `Authorization`. The edge passes
+`Authorization` through untouched. Every `/api/v1` controller the app calls declares
+`accepts_native_app_tokens`, and `test/config/native_app_api_coverage_test.rb` reads the app's
+Swift sources and fails if one does not. Paths are joined so that none contains `//`, which the app
+host's tunnel answers with a 404. The JWT lives about 30 days. The app
 runs the handoff again when less than a day is left, or when Access refuses a call: a redirect to
 `*.cloudflareaccess.com`, which the app never follows, or a 401/403 page with `cf-access-aud`.
 
@@ -105,4 +112,6 @@ that environment has its key, the run says so in a notice and skips the upload, 
 has the full list: register the App ID `com.tadasant.zimmer`, create the App Store Connect record,
 create or reuse the Admin API key, and create the `testflight` environment with its secrets and the
 `APPLE_TEAM_ID`, `ZIMMER_IOS_WEB_BASE_URL` and `ZIMMER_IOS_API_BASE_URL` variables. On the server,
-set `ZIMMER_NATIVE_ACCESS_AUD` to the app host's Access audience tag.
+set `ZIMMER_NATIVE_ACCESS_AUD` to the app host's Access audience tag. Both Kamal configs read it from
+the deploy's environment: `deploy-staging.yml` forwards the `ZIMMER_NATIVE_ACCESS_AUD` repository
+variable, and production's deploy workflow has to forward it the same way.
