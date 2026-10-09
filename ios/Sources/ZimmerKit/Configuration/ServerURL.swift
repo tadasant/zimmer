@@ -23,6 +23,22 @@ public enum ServerURL {
     }
 }
 
+extension ServerURL {
+    /// `base` + `path`, with exactly one slash between every segment.
+    ///
+    /// The one way the app joins a path onto an origin. An app host's tunnel answers 404 to
+    /// any path containing `//`, so a base with a trailing slash, or a path with a leading
+    /// one, must never produce one.
+    public static func join(_ base: URL, _ path: String) -> URL {
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        let segments = (components.percentEncodedPath + "/" + path).split(separator: "/", omittingEmptySubsequences: true)
+        components.percentEncodedPath = "/" + segments.joined(separator: "/")
+        components.query = nil
+        components.fragment = nil
+        return components.url!
+    }
+}
+
 /// The two origins a deployment can split Zimmer across.
 ///
 /// `web` is where a person signs in: `/oauth/authorize` runs there, and it is the OAuth

@@ -16,16 +16,13 @@ public struct HTTPEndpoint: Hashable, Sendable {
     }
 
     /// Resolve against a base URL. Returns nil only if the base is not a valid URL.
+    ///
+    /// `path` already carries escaped components, so it is joined textually — through
+    /// `ServerURL.join`, which also guarantees no `//` — rather than through
+    /// `appendingPathComponent`, which would escape the escapes.
     public func url(relativeTo base: URL) -> URL? {
-        // `path` already carries escaped components, so it is appended textually rather
-        // than through `appendingPathComponent`, which would escape the escapes.
-        guard var components = URLComponents(
-            url: base.appendingPathComponent("/"), resolvingAgainstBaseURL: false
-        ) else { return nil }
-        let basePath = components.path.hasSuffix("/")
-            ? String(components.path.dropLast())
-            : components.path
-        components.percentEncodedPath = basePath + path
+        guard var components = URLComponents(url: ServerURL.join(base, path), resolvingAgainstBaseURL: false)
+        else { return nil }
         if !query.isEmpty {
             components.queryItems = query.keys.sorted().map {
                 URLQueryItem(name: $0, value: query[$0])

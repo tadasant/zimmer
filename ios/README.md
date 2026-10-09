@@ -120,8 +120,10 @@ companion repo:
    `https://<api>/native/access-handoff?state=<random>`; Access runs its Google login; Rails
    checks the forwarded `Cf-Access-Jwt-Assertion` (`NativeAccessAssertion`: RS256 against the
    team JWKS, `iss`, `exp`, `aud` when configured) and redirects to the hard-coded
-   `com.tadasant.zimmer:/access/callback?state=…&cf_access_token=…`. The app checks `state` and
-   keeps the JWT in the Keychain (`KeychainEdgeTokenStore`).
+   `com.tadasant.zimmer:/access/callback?state=…#cf_access_token=…` — the JWT in the fragment,
+   which no server or log sees. `aud` must include `ZIMMER_NATIVE_ACCESS_AUD`; with it unset the
+   route refuses everything. The app checks `state` from the query, reads the JWT from the
+   fragment, and keeps it in the Keychain (`KeychainEdgeTokenStore`).
 2. **Zimmer OAuth** is unchanged and runs on the web origin.
 3. **Every machine call** goes to the api origin with `cf-access-token: <JWT>`. API calls also
    carry `Authorization: Bearer <Zimmer token>`; the two never mix — `HTTPRequest.apply(_:)`
@@ -135,6 +137,11 @@ companion repo:
    with `x-request-id`. A 404 `text/plain` without `x-request-id` is the tunnel saying the path
    is not on the app host's allow-list — `ZimmerError.edgeNotRouted`, a bug, never retried.
    `server: cloudflare` is on every response, so it is never evidence.
+
+Every `/api/v1` controller the app calls must declare `accepts_native_app_tokens`;
+`test/config/native_app_api_coverage_test.rb` reads every `"/api/v1/…"` literal under
+`ios/Sources` and fails if a controller behind one does not. Every path is joined through
+`ServerURL.join`, so none contains `//` — the app host's tunnel answers that with a 404.
 
 When web and api are one origin there is no edge credential (`NoEdgeCredential`). **Never put a
 shared secret in either** — a service token compiled into a public app is a published service

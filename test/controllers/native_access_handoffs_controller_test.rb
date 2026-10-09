@@ -14,7 +14,7 @@ class NativeAccessHandoffsControllerTest < ActionDispatch::IntegrationTest
   setup do
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV[NativeAccessAssertion::TEAM_DOMAIN_KEY] = TEAM
-    ENV.delete(NativeAccessAssertion::AUD_KEY)
+    ENV[NativeAccessAssertion::AUD_KEY] = AUD
     @key = OpenSSL::PKey::RSA.generate(2048)
     @jwk = JWT::JWK.new(@key, kid: "k1")
     jwks = { "keys" => [ @jwk.export ] }
@@ -39,17 +39,15 @@ class NativeAccessHandoffsControllerTest < ActionDispatch::IntegrationTest
     get "/native/access-handoff", params: { state: state }, headers: headers
   end
 
-  test "a valid assertion redirects to the app's hard-coded callback with the state and the token" do
+  test "a valid assertion redirects to the app's hard-coded callback: state in the query, token in the fragment" do
     token = assertion
     handoff(token)
 
     assert_response :found
+    assert_equal "com.tadasant.zimmer:/access/callback?state=#{STATE}#cf_access_token=#{token}", response.location
     uri = URI.parse(response.location)
-    assert_equal "com.tadasant.zimmer", uri.scheme
-    assert_equal "/access/callback", uri.path
-    query = URI.decode_www_form(uri.query).to_h
-    assert_equal STATE, query["state"]
-    assert_equal token, query["cf_access_token"]
+    assert_equal({ "state" => STATE }, URI.decode_www_form(uri.query).to_h)
+    assert_equal token, URI.decode_www_form(uri.fragment).to_h["cf_access_token"]
     assert_includes response.headers["Cache-Control"], "no-store"
     assert_equal TEAM, @fetched_team
   end
@@ -92,13 +90,18 @@ class NativeAccessHandoffsControllerTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
   end
 
-  test "with an audience configured, an assertion for another Access application is a 403" do
-    ENV[NativeAccessAssertion::AUD_KEY] = AUD
+  test "an assertion for another Access application of the team is a 403" do
     handoff(assertion(claims: { "aud" => [ "another-app" ] }))
-    assert_response :forbidden
 
+    assert_response :forbidden
+  end
+
+  test "with no audience configured, every assertion is refused" do
+    ENV.delete(NativeAccessAssertion::AUD_KEY)
     handoff(assertion)
-    assert_response :found
+
+    assert_response :forbidden
+    assert_equal 0, @fetches, "nothing is fetched for a handoff that cannot pass"
   end
 
   test "a bad state is a 400, checked before the assertion" do

@@ -15,11 +15,13 @@ require "net/http"
 #
 # It checks what a relying party checks: an RS256 signature from a key in the
 # team's published JWKS, `iss` equal to the team domain, an unexpired `exp`,
-# and — when ZIMMER_NATIVE_ACCESS_AUD is set — an `aud` that includes the Access
-# application's audience tag (Terraform's `native_app_access_aud` output).
+# and an `aud` that includes the native app's Access application audience tag
+# (Terraform's `native_app_access_aud` output). The audience is required: with
+# ZIMMER_NATIVE_ACCESS_AUD unset every assertion is refused, because without it
+# a JWT minted for any other Access application of the team would pass.
 #
 #   ZIMMER_NATIVE_ACCESS_TEAM_DOMAIN  default tadasant.cloudflareaccess.com
-#   ZIMMER_NATIVE_ACCESS_AUD          optional; unset accepts any audience of the team
+#   ZIMMER_NATIVE_ACCESS_AUD          required; not a secret
 #
 # Both are read through SecretProviders.chain on every call. The JWKS is cached
 # for an hour and re-fetched once when a token names a key the cache lacks, which
@@ -61,8 +63,11 @@ class NativeAccessAssertion
   def verify(token)
     return Result.new(claims: nil, refusal: :missing) if token.blank?
 
+    audience = read(AUD_KEY)
+    return Result.new(claims: nil, refusal: :audience_not_configured) if audience.nil?
+
     team = team_domain
-    claims, _header = JWT.decode(token, nil, true, decode_options(team))
+    claims, _header = JWT.decode(token, nil, true, decode_options(team, audience))
     Result.new(claims: claims, refusal: nil)
   rescue JWT::ExpiredSignature
     Result.new(claims: nil, refusal: :expired)
@@ -83,9 +88,8 @@ class NativeAccessAssertion
 
   private
 
-  def decode_options(team)
-    audience = read(AUD_KEY)
-    options = {
+  def decode_options(team, audience)
+    {
       algorithms: [ "RS256" ],
       jwks: jwks_loader(team),
       iss: "https://#{team}",
@@ -93,10 +97,10 @@ class NativeAccessAssertion
       verify_expiration: true,
       # `iat` and `nbf` from Access are its own clock; a few seconds of skew must
       # not refuse a phone that just signed in.
-      leeway: 30
+      leeway: 30,
+      aud: audience,
+      verify_aud: true
     }
-    options.merge!(aud: audience, verify_aud: true) if audience
-    options
   end
 
   # jwt's loader contract: called with `kid_not_found: true` when the cached set

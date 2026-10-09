@@ -9,7 +9,9 @@
 # runs its Google login and forwards the request with `Cf-Access-Jwt-Assertion`.
 # This action checks that assertion (NativeAccessAssertion) and redirects to the
 # app's private-use scheme with it, where the app checks `state` and keeps the JWT
-# for its `cf-access-token` header.
+# for its `cf-access-token` header. The JWT rides in the URL fragment, not the
+# query: a fragment is never sent to a server or written to a request log, so the
+# credential cannot leak through any hop that follows the redirect.
 #
 # Deliberately on ActionController::Base, not ApplicationController: no web
 # sign-in wall and no CSRF. It hands back only the assertion Cloudflare minted for
@@ -39,7 +41,7 @@ class NativeAccessHandoffsController < ActionController::Base
     end
 
     Rails.logger.info("[native_access] handoff for #{result.claims['email'].inspect}")
-    query = URI.encode_www_form(state: state, cf_access_token: assertion)
-    redirect_to "#{CALLBACK_URI}?#{query}", allow_other_host: true, status: :found
+    fragment = URI.encode_www_form(cf_access_token: assertion)
+    redirect_to "#{CALLBACK_URI}?#{URI.encode_www_form(state: state)}##{fragment}", allow_other_host: true, status: :found
   end
 end
