@@ -24,13 +24,15 @@ require "net/http"
 #   ZIMMER_NATIVE_ACCESS_AUD          required; not a secret
 #
 # Both are read through SecretProviders.chain on every call. The JWKS is cached
-# for an hour and re-fetched once when a token names a key the cache lacks, which
-# is how a key rotation is picked up.
+# for an hour and re-fetched when a token names a key the cache lacks, which is
+# how a key rotation is picked up — at most once a minute per process, because
+# the route is unauthenticated and any caller can name a key that does not exist.
 class NativeAccessAssertion
   TEAM_DOMAIN_KEY = "ZIMMER_NATIVE_ACCESS_TEAM_DOMAIN"
   AUD_KEY = "ZIMMER_NATIVE_ACCESS_AUD"
   DEFAULT_TEAM_DOMAIN = "tadasant.cloudflareaccess.com"
   JWKS_CACHE_TTL = 1.hour
+  FORCED_REFETCH_INTERVAL = 1.minute
   FETCH_TIMEOUT = 5
 
   Result = Data.define(:claims, :refusal) do
@@ -47,6 +49,25 @@ class NativeAccessAssertion
 
     def verify(token)
       new.verify(token)
+    end
+
+    # Whether an unknown `kid` may force a fresh fetch now. Process-local on
+    # purpose: it bounds the outbound fetches one Puma worker can be made to do,
+    # with no shared state to fail open when a cache is down.
+    def forced_refetch_allowed?(team, now: Time.current)
+      @forced_refetch_mutex ||= Mutex.new
+      @forced_refetch_mutex.synchronize do
+        @last_forced_refetch ||= {}
+        last = @last_forced_refetch[team]
+        next false if last && now - last < FORCED_REFETCH_INTERVAL
+
+        @last_forced_refetch[team] = now
+        true
+      end
+    end
+
+    def reset_forced_refetch!
+      @last_forced_refetch = {}
     end
 
     def fetch_jwks(team_domain)
@@ -108,7 +129,7 @@ class NativeAccessAssertion
   def jwks_loader(team)
     cache_key = "native_access:jwks:#{team}"
     lambda do |options|
-      Rails.cache.delete(cache_key) if options[:kid_not_found]
+      Rails.cache.delete(cache_key) if options[:kid_not_found] && self.class.forced_refetch_allowed?(team)
       doc = Rails.cache.fetch(cache_key, expires_in: JWKS_CACHE_TTL) { self.class.jwks_fetcher.call(team) }
       JWT::JWK::Set.new(doc)
     end

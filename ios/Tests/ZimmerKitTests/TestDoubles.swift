@@ -99,3 +99,24 @@ final class RecordingEdge: EdgeCredential, @unchecked Sendable {
 
     var renewalCount: Int { lock.withLock { renewals } }
 }
+
+/// A transport that takes a while to answer, so concurrent callers genuinely overlap.
+final class SlowTransport: HTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private let delay: UInt64
+    private let response: HTTPResponse
+
+    init(response: HTTPResponse, delayMilliseconds: UInt64 = 200) {
+        self.response = response
+        self.delay = delayMilliseconds * 1_000_000
+    }
+
+    func send(_ request: HTTPRequest) async throws -> HTTPResponse {
+        lock.withLock { count += 1 }
+        try await Task.sleep(nanoseconds: delay)
+        return response
+    }
+
+    var requestCount: Int { lock.withLock { count } }
+}

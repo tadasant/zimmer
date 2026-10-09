@@ -14,10 +14,12 @@ class NativeAppApiCoverageTest < ActiveSupport::TestCase
   SOURCES = Rails.root.join("ios/Sources")
   METHODS = %w[GET POST PATCH PUT DELETE].freeze
 
+  # Swift `\(…)` interpolations are filled in with "1", including one nested call
+  # deep: `\(ZimmerPathComponent(id))`.
   def app_paths
     Dir.glob(SOURCES.join("**/*.swift")).flat_map do |file|
       File.read(file).scan(%r{"(/api/v1/[^"]*)"}).flatten
-    end.uniq.map { |path| path.gsub(/\\\([^)]*\)/, "1") }
+    end.uniq.map { |path| path.gsub(/\\\((?:[^()]|\([^()]*\))*\)/, "1") }
   end
 
   def controllers_for(path)

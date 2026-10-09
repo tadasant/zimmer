@@ -85,10 +85,11 @@ struct SessionRow: View {
                     Text(session.status.label)
                         .foregroundStyle(StatusDot.color(for: session.status))
                     Text("·")
-                    Text("#\(session.id)")
+                    // Verbatim: a session id is an identifier, not a quantity to group.
+                    Text(verbatim: "#\(session.id)")
                     if let date = session.updatedAt ?? session.createdAt {
                         Text("·")
-                        Text(date, style: .relative)
+                        Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
                     }
                 }
                 .font(.caption)

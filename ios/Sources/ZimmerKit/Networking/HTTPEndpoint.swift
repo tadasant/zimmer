@@ -52,8 +52,8 @@ public struct ZimmerPathComponent: CustomStringConvertible, Sendable {
 extension CharacterSet {
     /// RFC 3986 `pchar` minus the sub-delims that would still be ambiguous in a path.
     fileprivate static let zimmerPathComponent: CharacterSet = {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        return allowed
+        // ASCII only: `alphanumerics` admits every Unicode letter, which would send a
+        // slug like `café` out unescaped.
+        CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
     }()
 }

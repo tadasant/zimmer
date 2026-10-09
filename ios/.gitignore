@@ -5,3 +5,4 @@ DerivedData/
 .ui-test/
 xcuserdata/
 *.xcuserstate
+__pycache__/

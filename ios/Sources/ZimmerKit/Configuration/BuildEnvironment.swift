@@ -4,8 +4,8 @@ import Foundation
 ///
 /// This repo is public and names no deployment's host — not production's and not
 /// staging's. The server a build defaults to arrives at build time in
-/// `ZIMMER_DEFAULT_API_BASE_URL` and lands in `Info.plist`'s `ZimmerDefaultBaseURL`
-/// (`CredentialStore`); this is the *other* half, `ZIMMER_BUILD_ENVIRONMENT` /
+/// `ZIMMER_DEFAULT_WEB_BASE_URL` / `ZIMMER_DEFAULT_API_BASE_URL` and lands in `Info.plist`'s
+/// `ZimmerDefaultWebBaseURL` / `ZimmerDefaultAPIBaseURL` (`AppConfiguration`); this is the *other* half, `ZIMMER_BUILD_ENVIRONMENT` /
 /// `ZimmerBuildEnvironment`, and it carries no topology at all.
 ///
 /// It exists because "point the build somewhere else" and "know which somewhere it was
@@ -15,7 +15,7 @@ import Foundation
 /// say which server the app in front of them was talking to. A label that is not a
 /// hostname is publishable, assertable, and enough.
 ///
-/// The host itself is still reported — by `CredentialStore.serverURL`, on the device that
+/// The host itself is still reported — by `AppConfiguration.buildTarget`, on the device that
 /// holds it — so a diagnostics line on a real phone names both. What never enters this
 /// repository is a *default* for either.
 public enum BuildEnvironment: String, Hashable, Sendable, CaseIterable {

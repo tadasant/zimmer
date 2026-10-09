@@ -2,8 +2,8 @@
   <h1 class="text-xl font-semibold">Connect <%= @client.client_name.presence || "an unnamed client" %> to Zimmer?</h1>
   <p class="mt-2 text-sm text-gray-600">
     <% if @client.first_party? %>
-      It will be able to use Zimmer's API as you: read and start sessions, send them messages,
-      archive them, and send push notifications to this phone.
+      It will be able to use Zimmer as you, through its API and every tool on its MCP endpoint:
+      read and start sessions, send them messages, archive them, and manage triggers.
     <% else %>
       It will be able to call every tool on Zimmer's MCP endpoint as you: read and start sessions,
       send them messages, archive them, and manage triggers.
