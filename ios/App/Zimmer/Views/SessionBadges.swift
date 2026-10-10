@@ -87,11 +87,13 @@ struct PullRequestChip: View {
         }
     }
 
+    /// `SessionsHelper#ci_status_bg_class`'s map, over `Github::PrStatusEvaluator`'s words.
     static func ciColor(_ ci: String) -> Color {
         switch ci {
-        case "success": return .green
-        case "failure": return .red
-        default: return .yellow
+        case "pass": return .green
+        case "fail": return .red
+        case "pending": return .yellow
+        default: return .gray
         }
     }
 }

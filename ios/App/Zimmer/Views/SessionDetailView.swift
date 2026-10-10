@@ -93,6 +93,21 @@ final class SessionDetailModel: ObservableObject {
         }
     }
 
+    /// Promote or demote. A promotion that tried to start the session and could not says why,
+    /// rather than claiming it worked.
+    func reschedule(priority: Bool) async {
+        do {
+            let change = try await api.setSchedulingClass(id, priority: priority)
+            detail?.session = change.session
+            let done = priority ? "Promoted to priority." : "Demoted to spot, top of the queue."
+            notice = change.startMessage.map { "\(done) \($0)" } ?? done
+            error = nil
+            if change.startOutcome == "refused" { Haptics.failure() } else { Haptics.success() }
+        } catch {
+            fail(error)
+        }
+    }
+
     /// An action the server answers with a sentence rather than the session.
     func run(_ action: (SessionActionsAPI) async throws -> String) async {
         do {
@@ -142,8 +157,8 @@ struct SessionDetailView: View {
                             }
                         }
                     }
-                    if let summary = detail.statusSummary?.summary {
-                        SummaryCard(text: summary) {
+                    if let status = detail.statusSummary, status.summary != nil || status.generating == true || status.error != nil {
+                        SummaryCard(status: status) {
                             Task { await model.run { try await $0.regenerateStatusSummary(model.id) } }
                         }
                     }
@@ -177,18 +192,17 @@ struct SessionDetailView: View {
                 }
             }
         } message: {
-            Text("The clone is kept for 7 days, and the session can be restored until then.")
+            Text("It moves to the trash. You can restore it from Archived.")
         }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Title", text: $newTitle)
                 .accessibilityIdentifier("rename.field")
             Button("Cancel", role: .cancel) {}
             Button("Save") {
-                let title = newTitle
+                let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                 Task { await model.apply("Renamed") { try await $0.rename(model.id, title: title) } }
             }
-        } message: {
-            Text("Leave it empty to go back to \"Session \(model.id)\".")
+            .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .sheet(item: $editing) { field in
             TextEditSheet(
@@ -393,13 +407,13 @@ struct SessionDetailView: View {
                 }
                 if session.isPriority {
                     Button {
-                        Task { await model.apply("Demoted to spot, top of the queue") { try await $0.setSchedulingClass(session.id, priority: false) } }
+                        Task { await model.reschedule(priority: false) }
                     } label: {
                         Label("Demote to spot", systemImage: "arrow.down.circle")
                     }
                 } else {
                     Button {
-                        Task { await model.apply("Promoted to priority") { try await $0.setSchedulingClass(session.id, priority: true) } }
+                        Task { await model.reschedule(priority: true) }
                     } label: {
                         Label("Promote to priority", systemImage: "arrow.up.circle")
                     }
@@ -410,7 +424,7 @@ struct SessionDetailView: View {
                 } label: {
                     Label((session.heartbeatEnabled ?? false) ? "Turn Heartbeat Off" : "Turn Heartbeat On", systemImage: "heart")
                 }
-                if model.detail?.statusSummary == nil {
+                if model.detail?.statusSummary?.summary == nil {
                     Button {
                         Task { await model.run { try await $0.regenerateStatusSummary(session.id) } }
                     } label: {
@@ -516,7 +530,7 @@ struct SessionDetailView: View {
 }
 
 private struct SummaryCard: View {
-    let text: String
+    let status: StatusSummary
     let regenerate: () -> Void
 
     var body: some View {
@@ -524,11 +538,22 @@ private struct SummaryCard: View {
             HStack {
                 Text("Where things stand").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
-                Button("Regenerate", action: regenerate)
-                    .font(.caption)
-                    .accessibilityIdentifier("detail.summary.regenerate")
+                if status.generating == true {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Regenerate", action: regenerate)
+                        .font(.caption)
+                        .accessibilityIdentifier("detail.summary.regenerate")
+                }
             }
-            Text(text)
+            if let text = status.summary {
+                Text(text)
+            } else if status.generating == true {
+                Text("Writing a status summary…").foregroundStyle(.secondary)
+            }
+            if let error = status.error, status.generating != true {
+                Text("The last attempt failed: \(error)").font(.caption).foregroundStyle(.orange)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()

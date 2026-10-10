@@ -1,8 +1,8 @@
 import XCTest
 
 /// What the web UI's board and session page let a person do, done from the phone against
-/// the `-ZimmerFixture` in-memory Zimmer: star, snooze and restore from the list; notes,
-/// restart, pause and effort from a session's menu; and search.
+/// the `-ZimmerFixture` in-memory Zimmer: star, pause, snooze and restore from the list;
+/// notes, restart and effort from a session's menu; and search.
 @MainActor
 final class SessionParityUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -11,7 +11,7 @@ final class SessionParityUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func test_star_snooze_and_restore_from_the_list() throws {
+    func test_star_pause_snooze_and_restore_from_the_list() throws {
         let app = launch()
         tapFilter(app, "active")
 
@@ -28,6 +28,15 @@ final class SessionParityUITests: XCTestCase {
         XCTAssertTrue(star.waitForExistence(timeout: timeout))
         XCTAssertEqual(star.label, "Remove from Favorites")
         app.navigationBars.buttons["Sessions"].tap()
+
+        // Press and hold a running session to pause it.
+        let running = row(app, 1042)
+        XCTAssertTrue(running.waitForExistence(timeout: timeout))
+        running.press(forDuration: 1.2)
+        let pause = app.buttons["Pause Session"].firstMatch
+        XCTAssertTrue(pause.waitForExistence(timeout: timeout))
+        pause.tap()
+        XCTAssertTrue(waitForLabelContaining(running, "Needs input"), "a paused session comes to rest waiting on you")
 
         // Swipe left to snooze: it leaves the board, and the board's filter finds it.
         let sweep = row(app, 1031)
@@ -58,7 +67,7 @@ final class SessionParityUITests: XCTestCase {
         XCTAssertTrue(waitForDisappearance(trashed), "a restored session leaves the trash")
     }
 
-    func test_notes_restart_pause_and_effort_from_the_session_menu() throws {
+    func test_notes_restart_and_effort_from_the_session_menu() throws {
         let app = launch()
         let merge = row(app, 1038)
         XCTAssertTrue(merge.waitForExistence(timeout: timeout))
@@ -74,15 +83,14 @@ final class SessionParityUITests: XCTestCase {
         openMenu(app, "Edit Notes")
         let editor = app.textViews["edit.text"]
         XCTAssertTrue(editor.waitForExistence(timeout: timeout))
+        editor.tap()
         editor.typeText("Ask about the feature flag.")
         app.buttons["edit.save"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.notes"].waitForExistence(timeout: timeout))
 
-        // Restart a session waiting on you, then pause it.
+        // Restart a session waiting on you: the turn is handed over, so it reads Waiting.
         openMenu(app, "Restart Session")
-        XCTAssertTrue(waitForLabel(app.staticTexts["detail.status"], "Running"))
-        openMenu(app, "Pause Session")
-        XCTAssertTrue(waitForLabel(app.staticTexts["detail.status"], "Needs input"))
+        XCTAssertTrue(waitForLabel(app.staticTexts["detail.status"], "Waiting"))
 
         // Effort, from the levels the session's model accepts.
         openMenu(app, "Effort: high")

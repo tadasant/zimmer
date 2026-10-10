@@ -31,7 +31,7 @@ final class SessionParityTests: XCTestCase {
             "custom_metadata": [
                 "github_pull_request_urls": ["https://github.com/tadasant/zimmer/pull/1261", "javascript:alert(1)"],
                 "github_pull_request_statuses": ["https://github.com/tadasant/zimmer/pull/1261": "merged"],
-                "github_pull_request_ci_statuses": [:],
+                "github_pull_request_ci_statuses": ["https://github.com/tadasant/zimmer/pull/1261": "pass"],
             ],
         ]
         let row = try ZimmerJSON.decoder.decode(SessionSummary.self, from: JSONSerialization.data(withJSONObject: json))
@@ -47,6 +47,7 @@ final class SessionParityTests: XCTestCase {
         XCTAssertEqual(row.agentRoot, "zimmer")
         XCTAssertEqual(row.pullRequests.map(\.label), ["#1261"], "only https links become buttons")
         XCTAssertEqual(row.pullRequests.first?.state, "merged")
+        XCTAssertEqual(row.pullRequests.first?.ci, "pass", "the evaluator's own words: pass, fail, pending, skipping, cancel")
     }
 
     func testFreeFormObjectsThatChangeShapeBlankAFieldNotTheList() throws {
@@ -72,12 +73,12 @@ final class SessionParityTests: XCTestCase {
         let (api, transport) = client([
             { _ in Fixtures.json(200, ["sessions": []]) },
             { _ in Fixtures.json(200, ["sessions": []]) },
-            { _ in Fixtures.json(200, ["sessions": []]) },
+            { _ in Fixtures.json(200, ["sessions": [], "content_scan": ["complete": false, "timed_out": true, "next_cursor": "abc"]]) },
         ])
 
         _ = try await api.sessions(.needsInput, board: .onBoard)
         _ = try await api.sessions(.active, board: .all)
-        _ = try await api.search("deploy key", contents: true, filter: .failed, board: .offBoard)
+        let partial = try await api.search("deploy key", contents: true, filter: .failed, board: .offBoard)
 
         let queries = transport.sent.map { request in
             Dictionary(uniqueKeysWithValues: (URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
@@ -86,6 +87,7 @@ final class SessionParityTests: XCTestCase {
         XCTAssertEqual(queries[1], ["per_page": "100"], "Both sends no visibility, which the server reads as unfiltered")
         XCTAssertEqual(transport.sent[2].url.path, "/api/v1/sessions/search")
         XCTAssertEqual(queries[2], ["q": "deploy key", "search_contents": "true", "status": "failed", "per_page": "100", "visibility": "off_board"])
+        XCTAssertFalse(partial.complete, "a scan that stopped early is not a \"no match\"")
     }
 
     func testEachSessionActionHitsItsRoute() async throws {
@@ -126,10 +128,14 @@ final class SessionParityTests: XCTestCase {
 
     func testPromoteDemoteAndHeartbeatSendTheRankedViewsWrites() async throws {
         let ok: ScriptedTransport.Handler = { _ in Fixtures.json(200, ["session": ["id": 5, "status": "waiting", "priority_class": "spot", "heartbeat_enabled": true]]) }
-        let (api, transport) = client([ok, ok, ok])
+        let refusedStart: ScriptedTransport.Handler = { _ in Fixtures.json(200, [
+            "session": ["id": 5, "status": "waiting", "priority_class": "priority"],
+            "start": ["outcome": "refused", "message": "Session 5 is asleep on a wake."],
+        ]) }
+        let (api, transport) = client([refusedStart, ok, ok])
 
-        _ = try await api.setSchedulingClass(5, priority: true)
-        let demoted = try await api.setSchedulingClass(5, priority: false)
+        let promoted = try await api.setSchedulingClass(5, priority: true)
+        let demoted = try await api.setSchedulingClass(5, priority: false).session
         _ = try await api.setHeartbeat(5, enabled: false)
 
         XCTAssertEqual(transport.sent.map { "\($0.method) \($0.url.path)" }, [
@@ -139,6 +145,8 @@ final class SessionParityTests: XCTestCase {
         XCTAssertEqual(try body(transport.sent[1]) as? [String: String], ["scheduling_class": "spot", "place": "top_of_spot"],
                        "a demoted session goes to the head of the spot queue, as the Ranked view's button puts it")
         XCTAssertEqual(try body(transport.sent[2])["enabled"] as? Bool, false)
+        XCTAssertEqual(promoted.startOutcome, "refused", "a start the promotion could not make is reported, not swallowed")
+        XCTAssertEqual(promoted.startMessage, "Session 5 is asleep on a wake.")
         XCTAssertFalse(demoted.isPriority)
         XCTAssertEqual(demoted.heartbeatEnabled, true)
     }
@@ -219,19 +227,20 @@ final class SessionParityTests: XCTestCase {
         XCTAssertEqual(restored.status, .needsInput)
         let starred = try await fake.toggleFavorite(1035)
         XCTAssertTrue(starred.isFavorite)
-        let renamed = try await fake.rename(1035, title: "  ")
-        XCTAssertEqual(renamed.displayTitle, "Session 1035", "a blank title falls back as the web UI does")
+        await XCTAssertThrowsAsync(try await fake.rename(1035, title: "  "), "the server refuses a blank title")
+        let restarted = try await fake.restart(1035)
+        XCTAssertEqual(restarted.status, .waiting, "a restart hands the turn over; it has not started yet")
         let sentNow = try await fake.sendNow(1042, prompt: "Stop.")
         XCTAssertFalse(sentNow.queued, "Send now delivers even mid-turn")
     }
 
     func testSearchMatchesTitlesAndOnlyWhenAskedTranscripts() async throws {
         let fake = FakeZimmerAPI()
-        let byTitle = try await fake.search("postgres", contents: false, filter: .active, board: .all).map(\.id)
+        let byTitle = try await fake.search("postgres", contents: false, filter: .active, board: .all).sessions.map(\.id)
         XCTAssertEqual(byTitle, [1035])
-        let notInTitles = try await fake.search("ci is green", contents: false, filter: .active, board: .all)
+        let notInTitles = try await fake.search("ci is green", contents: false, filter: .active, board: .all).sessions
         XCTAssertEqual(notInTitles, [])
-        let inTranscripts = try await fake.search("every check is green", contents: true, filter: .active, board: .all).map(\.id)
+        let inTranscripts = try await fake.search("every check is green", contents: true, filter: .active, board: .all).sessions.map(\.id)
         XCTAssertEqual(inTranscripts, [1038])
     }
 }
