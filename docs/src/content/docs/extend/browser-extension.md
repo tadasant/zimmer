@@ -34,7 +34,8 @@ Cloudflare Access checks every request before Zimmer sees it, the extension's in
 sends the browser's own cookies, so it passes Access when this browser is signed in at that URL: open
 Zimmer in a tab once and sign in. When the Access sign-in lapses, Access refuses the message itself.
 The composer then tells you to sign in at the Zimmer URL. It does not blame the key, because Zimmer
-never saw the request.
+never saw the request. If the browser is signed in with an account the Access policy does not admit,
+Access answers 403, and the composer tells you to sign in with the right account.
 
 Nothing needs provisioning on the Zimmer side. The key is minted on a page that already exists,
 the endpoint ships with the deploy, and there is no environment variable to set.
@@ -57,9 +58,9 @@ existed may not pick it up on reload; bind it there. Chrome shortcuts are one ke
 are no chords, which is why pinning is a second shortcut and not <kbd>Z</kbd> then <kbd>X</kbd>.
 
 If Zimmer refuses the message or cannot be reached, the composer stays open with the reason and your
-text intact. A refusal names who refused it. Zimmer's own 401 is about the key: it is not a Quick
-Router key, or it has been revoked. A refusal from the access proxy in front of Zimmer is about this
-browser's sign-in there. Silently losing feedback would be worse than a second's toast, so nothing here is
+text intact. A refusal names who refused it. Zimmer's own 401 is about the key: it is the wrong
+kind, revoked, or not a key Zimmer knows. Zimmer answers all three the same way on purpose. A
+refusal from the access proxy in front of Zimmer is about this browser's sign-in there. Silently losing feedback would be worse than a second's toast, so nothing here is
 fire-and-forget.
 
 ## What is sent
@@ -90,7 +91,7 @@ All of it lands in the session's prompt, the database, and the agent's transcrip
 you are on** — an authenticated view, a private repo, an inbox — because the extension captures
 whatever is rendered. There is no origin allowlist: the extension is started only by your click on
 the icon or your shortcut, on that tab, that once (`activeTab`), and holds no standing permission on any site. That
-is the deliberate call for a single-user, tailnet-scoped instance; a denylist would be the first
+is the deliberate call for a single-user instance; a denylist would be the first
 thing to add for anything wider.
 
 ## What the key can do
