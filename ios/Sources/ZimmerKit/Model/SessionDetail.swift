@@ -6,16 +6,19 @@ public struct StatusSummary: Hashable, Sendable, Codable {
     public var summary: String?
     public var generatedAt: Date?
     public var generating: Bool?
+    /// Why the last generation failed, when it did.
+    public var error: String?
 
     enum CodingKeys: String, CodingKey {
-        case summary, generating
+        case summary, generating, error
         case generatedAt = "generated_at"
     }
 
-    public init(summary: String?, generatedAt: Date? = nil, generating: Bool? = nil) {
+    public init(summary: String?, generatedAt: Date? = nil, generating: Bool? = nil, error: String? = nil) {
         self.summary = summary
         self.generatedAt = generatedAt
         self.generating = generating
+        self.error = error
     }
 }
 
@@ -37,7 +40,6 @@ public struct SessionDetail: Hashable, Sendable {
         }
     }
 
-    public var canArchive: Bool { session.status != .archived }
 }
 
 struct SessionShowResponse: Decodable {

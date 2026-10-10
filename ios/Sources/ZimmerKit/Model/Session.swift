@@ -244,7 +244,8 @@ public struct PullRequestLink: Hashable, Sendable, Identifiable {
     public var url: URL
     /// `open`, `merged`, `closed`, or nil before the poller has looked.
     public var state: String?
-    /// The CI rollup on an open PR: `success`, `pending`, `failure`.
+    /// The CI rollup on an open PR, as `Github::PrStatusEvaluator` writes it: `pass`, `fail`,
+    /// `pending`, `skipping` or `cancel`.
     public var ci: String?
 
     public var id: URL { url }

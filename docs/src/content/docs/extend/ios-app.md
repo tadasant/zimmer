@@ -31,7 +31,8 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   Rows carry the status pill, a star for a favourite, the latest PR, a notes marker, and when a
   snooze ends.
 - **Searches** titles and metadata from the search box, or transcripts too with the
-  *Transcripts* scope (the web UI's "Search transcript contents"; the first page of one bounded scan).
+  *Transcripts* scope (the web UI's "Search transcript contents"; the first page of one bounded
+  scan, and the list says so when the scan stopped before reading every session).
 - **Acts on a row.** Swipe right to star or unstar. Swipe left to trash (or restore, in Archived)
   and to snooze (*Later today*, *Tomorrow*, *In 3 days*, *This weekend*, *Next week*, the web UI's
   presets, worked out in the phone's time zone) or hide. Press and hold for the rest: pause,
@@ -42,9 +43,11 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   tool calls folded away until asked for (`GET /api/v1/sessions/:id/conversation`).
 - **The session menu** (the ⋯ button) is the web UI's mobile *Session actions* sheet, in its order:
   Quick Router, Edit Notes, View PR, Snooze until… / Hide / Put back on the board, Refresh
-  Transcript, Pause Session, Restart Session. Then what the web UI's metadata block edits: Rename,
-  Modify Goal, Effort (the levels the session's model accepts, or the model default), and Open in
-  browser. The star and the trash (or restore) are in the toolbar.
+  Transcript, Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
+  edit: Rename, Modify Goal, Effort (the levels the session's model accepts, or the model
+  default), Promote to priority / Demote to spot (to the head of the spot queue), the heartbeat on
+  or off, Generate Status Summary when there is none, and Open in browser. A promotion that could
+  not start the session says why. The star and the trash (or restore) are in the toolbar.
 - **Sends a follow-up** from a box at the bottom, with quick replies for the common answers. A
   follow-up to a session mid-turn is queued, and the app says so; touch and hold the button to
   *Send Now* instead, which ends the turn in flight (`force_immediate`, the web UI's Send Now).

@@ -16,6 +16,8 @@ final class AppModel: ObservableObject {
     /// The search box. Empty means the plain list.
     @Published var searchText = ""
     @Published var searchScope: SearchScope = .titles
+    /// True when the last transcript search stopped before reading every candidate.
+    @Published private(set) var searchIncomplete = false
     /// A one-line confirmation of the last row action ("Snoozed until …").
     @Published var notice: String?
     @Published private(set) var sessions: [SessionSummary] = []
@@ -115,14 +117,15 @@ final class AppModel: ObservableObject {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let scope = searchScope
         do {
-            let rows: [SessionSummary]
+            let result: SessionSearchResult
             if query.isEmpty {
-                rows = try await connection.api.sessions(requested, board: board)
+                result = SessionSearchResult(sessions: try await connection.api.sessions(requested, board: board))
             } else {
-                rows = try await connection.api.search(query, contents: scope == .transcripts, filter: requested, board: board)
+                result = try await connection.api.search(query, contents: scope == .transcripts, filter: requested, board: board)
             }
             guard requested == filter, board == self.board, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-            sessions = rows
+            sessions = result.sessions
+            searchIncomplete = !result.complete
             error = nil
         } catch {
             handle(error)

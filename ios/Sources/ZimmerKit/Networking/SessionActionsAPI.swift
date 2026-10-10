@@ -12,7 +12,7 @@ public protocol SessionActionsAPI: Sendable {
     func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> [SessionSummary]
     /// Sessions matching `query` (the web UI's search box) within the same filters; with
     /// `contents`, transcripts are searched too — one bounded scan, its first page.
-    func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> [SessionSummary]
+    func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult
     /// Deliver now, ending the turn in flight — the web UI's "Send Now".
     func sendNow(_ id: Int, prompt: String) async throws -> FollowUpResult
     /// Restore from the trash.
@@ -22,7 +22,7 @@ public protocol SessionActionsAPI: Sendable {
     func toggleFavorite(_ id: Int) async throws -> SessionSummary
     func setVisibility(_ id: Int, _ change: VisibilityChange) async throws -> SessionSummary
     func updateNotes(_ id: Int, notes: String) async throws -> SessionSummary
-    /// Rename. A blank title clears it, and the web UI's fallback ("Session 123") shows.
+    /// Rename. The server refuses a blank title.
     func rename(_ id: Int, title: String) async throws -> SessionSummary
     /// Set or clear (blank) the session's goal.
     func updateGoal(_ id: Int, goal: String) async throws -> SessionSummary
@@ -30,7 +30,7 @@ public protocol SessionActionsAPI: Sendable {
     func updateEffort(_ id: Int, effort: String?) async throws -> SessionSummary
     /// The Ranked view's Promote to priority (which starts a waiting session) and Demote to
     /// spot (which lands it at the head of the spot queue).
-    func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SessionSummary
+    func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SchedulingChange
     /// Turn the session's heartbeat on or off, at the interval it already has.
     func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary
     /// Ask for a fresh "where things stand"; it is written in the background.
@@ -132,12 +132,12 @@ extension ZimmerHTTPClient {
         return SessionOrdering.sorted(response.sessions)
     }
 
-    public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> [SessionSummary] {
+    public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
         var params = filter.query.merging(board.query) { a, _ in a }
         params["q"] = query
         if contents { params["search_contents"] = "true" }
-        let response: SessionListResponse = try await get("/api/v1/sessions/search", query: params)
-        return SessionOrdering.sorted(response.sessions)
+        let response: SearchResponse = try await get("/api/v1/sessions/search", query: params)
+        return SessionSearchResult(sessions: SessionOrdering.sorted(response.sessions), complete: response.content_scan?.complete ?? true)
     }
 
     public func sendNow(_ id: Int, prompt: String) async throws -> FollowUpResult {
@@ -147,19 +147,23 @@ extension ZimmerHTTPClient {
     }
 
     public func unarchive(_ id: Int) async throws -> SessionSummary {
-        try await sessionAction("/api/v1/sessions/\(ZimmerPathComponent(String(id)))/unarchive")
+        let segment = ZimmerPathComponent(String(id))
+        return try await sessionAction("/api/v1/sessions/\(segment)/unarchive")
     }
 
     public func restart(_ id: Int) async throws -> SessionSummary {
-        try await sessionAction("/api/v1/sessions/\(ZimmerPathComponent(String(id)))/restart")
+        let segment = ZimmerPathComponent(String(id))
+        return try await sessionAction("/api/v1/sessions/\(segment)/restart")
     }
 
     public func pause(_ id: Int) async throws -> SessionSummary {
-        try await sessionAction("/api/v1/sessions/\(ZimmerPathComponent(String(id)))/pause")
+        let segment = ZimmerPathComponent(String(id))
+        return try await sessionAction("/api/v1/sessions/\(segment)/pause")
     }
 
     public func toggleFavorite(_ id: Int) async throws -> SessionSummary {
-        try await sessionAction("/api/v1/sessions/\(ZimmerPathComponent(String(id)))/toggle_favorite")
+        let segment = ZimmerPathComponent(String(id))
+        return try await sessionAction("/api/v1/sessions/\(segment)/toggle_favorite")
     }
 
     public func setVisibility(_ id: Int, _ change: VisibilityChange) async throws -> SessionSummary {
@@ -192,11 +196,11 @@ extension ZimmerHTTPClient {
         return response.session
     }
 
-    public func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SessionSummary {
+    public func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SchedulingChange {
         let segment = ZimmerPathComponent(String(id))
         let body = priority ? ["scheduling_class": "priority"] : ["scheduling_class": "spot", "place": "top_of_spot"]
-        let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)", json: body)
-        return response.session
+        let response: SchedulingResponse = try await patch("/api/v1/sessions/\(segment)", json: body)
+        return SchedulingChange(session: response.session, startOutcome: response.start?.outcome, startMessage: response.start?.message)
     }
 
     public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {
@@ -235,6 +239,47 @@ extension ZimmerHTTPClient {
             throw ZimmerError.decoding("\(path): \(error)")
         }
     }
+}
+
+/// What a search found. A transcript search is one bounded scan; `complete` is false when it
+/// stopped before reading every candidate, so "nothing matched" is not yet the answer.
+public struct SessionSearchResult: Hashable, Sendable {
+    public var sessions: [SessionSummary]
+    public var complete: Bool
+
+    public init(sessions: [SessionSummary], complete: Bool = true) {
+        self.sessions = sessions
+        self.complete = complete
+    }
+}
+
+/// A promotion or demotion, and — when promoting tried to start a waiting session — what the
+/// server says came of that (`started`, or `refused` with the reason, e.g. asleep on a wake).
+public struct SchedulingChange: Hashable, Sendable {
+    public var session: SessionSummary
+    public var startOutcome: String?
+    public var startMessage: String?
+
+    public init(session: SessionSummary, startOutcome: String? = nil, startMessage: String? = nil) {
+        self.session = session
+        self.startOutcome = startOutcome
+        self.startMessage = startMessage
+    }
+}
+
+struct SearchResponse: Decodable {
+    struct ContentScan: Decodable { let complete: Bool? }
+    let sessions: [SessionSummary]
+    let content_scan: ContentScan?
+}
+
+struct SchedulingResponse: Decodable {
+    struct Start: Decodable {
+        let outcome: String?
+        let message: String?
+    }
+    let session: SessionSummary
+    let start: Start?
 }
 
 /// Any response whose `session` key is the API's one session shape.

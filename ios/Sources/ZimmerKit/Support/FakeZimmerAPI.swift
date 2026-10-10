@@ -117,7 +117,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
                            priorityClass: "priority",
                            effort: EffortSummary(level: "high", source: "default", default: "high", levels: ["low", "medium", "high", "xhigh", "max"]),
                            model: "opus", agentRoot: "zimmer",
-                           pullRequests: [PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1261")!, state: "open", ci: "success")]),
+                           pullRequests: [PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1261")!, state: "open", ci: "pass")]),
             SessionSummary(id: 1035, title: "Which Postgres version should staging run?", status: .needsInput,
                            agentRuntime: "codex", createdAt: ago(300), updatedAt: ago(41)),
             SessionSummary(id: 1031, title: "Nightly dependency sweep", status: .waiting,
@@ -168,13 +168,14 @@ extension FakeZimmerAPI {
         try await sessions(filter).filter(board.admits)
     }
 
-    public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> [SessionSummary] {
+    public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
         let needle = query.lowercased()
-        return try await sessions(filter, board: board).filter { session in
+        let matches = try await sessions(filter, board: board).filter { session in
             if session.displayTitle.lowercased().contains(needle) { return true }
             guard contents else { return false }
             return (conversations[session.id] ?? []).contains { $0.content.lowercased().contains(needle) }
         }
+        return SessionSearchResult(sessions: matches)
     }
 
     public func sendNow(_ id: Int, prompt: String) async throws -> FollowUpResult {
@@ -200,8 +201,9 @@ extension FakeZimmerAPI {
     }
 
     public func restart(_ id: Int) async throws -> SessionSummary {
+        // The server resumes into `waiting`: the turn is handed over, not yet started.
         try change(id, refusal: "Session cannot be restarted from current status", when: { ![SessionStatus.failed, .needsInput].contains($0.status) }) {
-            $0.status = .running
+            $0.status = .waiting
         }
     }
 
@@ -234,7 +236,10 @@ extension FakeZimmerAPI {
     }
 
     public func rename(_ id: Int, title: String) async throws -> SessionSummary {
-        try change(id) { $0.title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : title }
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ZimmerError.http(status: 422, message: "Title cannot be empty")
+        }
+        return try change(id) { $0.title = title }
     }
 
     public func updateGoal(_ id: Int, goal: String) async throws -> SessionSummary {
@@ -253,12 +258,16 @@ extension FakeZimmerAPI {
         }
     }
 
-    public func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SessionSummary {
-        try change(id) { session in
+    public func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SchedulingChange {
+        let current = try find(id)
+        let starts = priority && current.status == .waiting && !current.isPriority
+        let session = try change(id) { session in
             session.priorityClass = priority ? "priority" : "spot"
             // Promoting a waiting session starts it, as the server's PATCH does.
-            if priority && session.status == .waiting { session.status = .running }
+            if starts { session.status = .running }
         }
+        return SchedulingChange(session: session, startOutcome: starts ? "started" : nil,
+                                startMessage: starts ? "Session \(id)'s next turn is due now: resumed from the spot queue." : nil)
     }
 
     public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {

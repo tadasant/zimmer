@@ -14,6 +14,31 @@ struct SessionListView: View {
     @State private var appliedSearch = SearchKey(text: "", scope: .titles)
 
     var body: some View {
+        searchableList
+            .toolbar { toolbarContent }
+            .confirmationDialog(
+                "Snooze until…", isPresented: isSnoozing,
+                titleVisibility: .visible, presenting: snoozing
+            ) { session in
+                SnoozeButtons(session: session)
+            } message: { _ in
+                Text("Visual only — it does not pause, start or stop the session.")
+            }
+            .confirmationDialog(
+                "Move to trash?", isPresented: isTrashing,
+                titleVisibility: .visible, presenting: trashing
+            ) { session in
+                Button("Trash", role: .destructive) {
+                    Task { await model.perform("Moved to trash", on: session.id) { try await $0.archive(session.id) } }
+                }
+            } message: { _ in
+                Text("It moves to the trash. You can restore it from Archived.")
+            }
+            .sheet(isPresented: $showingSettings) { SettingsView() }
+            .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
+    }
+
+    private var list: some View {
         List {
             Section {
                 FilterBar()
@@ -35,50 +60,43 @@ struct SessionListView: View {
                 ForEach(model.sessions) { session in
                     SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing)
                 }
+            } footer: {
+                if model.searchIncomplete && !model.searchText.isEmpty {
+                    Text("The transcript search stopped before reading every session. Narrow the search, or pick a status, to cover the rest.")
+                        .accessibilityIdentifier("search.incomplete")
+                }
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Sessions")
-        .searchable(text: $model.searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions...")
-        .searchScopes($model.searchScope) {
-            ForEach(SearchScope.allCases, id: \.self) { scope in Text(scope.label).tag(scope) }
-        }
-        // Debounced: a refresh per keystroke would be a request per keystroke.
-        .task(id: SearchKey(text: model.searchText, scope: model.searchScope)) {
-            let key = SearchKey(text: model.searchText, scope: model.searchScope)
-            guard key != appliedSearch else { return }
-            try? await Task.sleep(for: .milliseconds(350))
-            guard !Task.isCancelled else { return }
-            appliedSearch = key
-            await model.refresh()
-        }
-        .refreshable { await model.refresh() }
-        .overlay {
-            if model.isLoading && model.sessions.isEmpty { ProgressView() }
-        }
-        .overlay(alignment: .bottom) { Toast(text: $model.notice) }
-        .toolbar { toolbarContent }
-        .confirmationDialog(
-            "Snooze until…", isPresented: isSnoozing,
-            titleVisibility: .visible, presenting: snoozing
-        ) { session in
-            SnoozeButtons(session: session)
-        } message: { _ in
-            Text("Visual only — it does not pause, start or stop the session.")
-        }
-        .confirmationDialog(
-            "Move to trash?", isPresented: isTrashing,
-            titleVisibility: .visible, presenting: trashing
-        ) { session in
-            Button("Trash", role: .destructive) {
-                Task { await model.perform("Moved to trash", on: session.id) { try await $0.archive(session.id) } }
+    }
+
+    private var searchableList: some View {
+        list
+            .searchable(text: $model.searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions...")
+            .searchScopes($model.searchScope) { scopeTabs }
+            // Debounced: a refresh per keystroke would be a request per keystroke.
+            .task(id: SearchKey(text: model.searchText, scope: model.searchScope)) { await search() }
+            .refreshable { await model.refresh() }
+            .overlay {
+                if model.isLoading && model.sessions.isEmpty { ProgressView() }
             }
-            .accessibilityIdentifier("trash.confirm")
-        } message: { _ in
-            Text("The clone is kept for 7 days, and the session can be restored until then.")
-        }
-        .sheet(isPresented: $showingSettings) { SettingsView() }
-        .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
+            .overlay(alignment: .bottom) { Toast(text: $model.notice) }
+    }
+
+    private func search() async {
+        let key = SearchKey(text: model.searchText, scope: model.searchScope)
+        guard key != appliedSearch else { return }
+        try? await Task.sleep(for: .milliseconds(350))
+        guard !Task.isCancelled else { return }
+        appliedSearch = key
+        await model.refresh()
+    }
+
+    @ViewBuilder
+    private var scopeTabs: some View {
+        Text(SearchScope.titles.label).tag(SearchScope.titles)
+        Text(SearchScope.transcripts.label).tag(SearchScope.transcripts)
     }
 
     @ToolbarContentBuilder
@@ -146,9 +164,12 @@ private struct SwipeableSessionRow: View {
                 }
                 .tint(.green)
             } else {
-                Button(role: .destructive) { trashing = session } label: {
+                // Not `role: .destructive`: that animates the row away on the tap, before
+                // the confirmation has been answered.
+                Button { trashing = session } label: {
                     Label("Trash", systemImage: "trash")
                 }
+                .tint(.red)
             }
             if session.boardVisibility == .visible {
                 Button { snoozing = session } label: {
@@ -368,6 +389,7 @@ struct Toast: View {
                 .padding(.bottom, 12)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .accessibilityIdentifier(identifier)
+                .allowsHitTesting(false)
                 .task(id: text) {
                     try? await Task.sleep(for: .seconds(2.5))
                     guard !Task.isCancelled else { return }
