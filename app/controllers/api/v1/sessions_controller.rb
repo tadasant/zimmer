@@ -933,8 +933,6 @@ class Api::V1::SessionsController < Api::BaseController
     render_api_error("Update failed", e.record.errors.full_messages, status: :unprocessable_entity)
   end
 
-  # GET /api/v1/sessions/:id/transcript
-  # Get a formatted plain-text transcript for a session.
   # GET /api/v1/sessions/:id/conversation
   # The user and assistant messages of the transcript, oldest first, as data
   # rather than as rendered text: { messages: [{ role, content, timestamp,
@@ -957,6 +955,8 @@ class Api::V1::SessionsController < Api::BaseController
     }
   end
 
+  # GET /api/v1/sessions/:id/transcript
+  # Get a formatted plain-text transcript for a session.
   def transcript
     parsed = @session.parsed_transcript
     if parsed.blank?
@@ -1202,6 +1202,17 @@ class Api::V1::SessionsController < Api::BaseController
 
   private
 
+  # A follow-up typed in the iOS app is a human's own words — its grant names the
+  # person who approved the phone — so it is recorded as one, the way the browser
+  # extension's Quick Router is. An API key names a key, never a person, so a
+  # key-authenticated follow-up records nothing. Best-effort: HumanMessageCapture
+  # never raises into the delivery it describes.
+  def record_native_app_follow_up(prompt)
+    return unless native_app_request?
+
+    HumanMessageCapture.record_web_ui_message(session: @session, content: prompt, entry_point: "ios_app.follow_up")
+  end
+
   # Archive +session+ through Sessions::ArchiveGuard.guarded_archive!, refusing
   # a live turn under the same lock and after the queue check.
   #
@@ -1216,17 +1227,6 @@ class Api::V1::SessionsController < Api::BaseController
   #
   # @return [Boolean] whether it archived
   # @raise [Sessions::ArchiveGuard::Refused, LiveTurnRefused]
-  # A follow-up typed in the iOS app is a human's own words — its grant names the
-  # person who approved the phone — so it is recorded as one, the way the browser
-  # extension's Quick Router is. An API key names a key, never a person, so a
-  # key-authenticated follow-up records nothing. Best-effort: HumanMessageCapture
-  # never raises into the delivery it describes.
-  def record_native_app_follow_up(prompt)
-    return unless native_app_request?
-
-    HumanMessageCapture.record_web_ui_message(session: @session, content: prompt, entry_point: "ios_app.follow_up")
-  end
-
   def guarded_rest_archive!(session, force:, actor:)
     live_turn = Sessions::LiveTurn.in_flight?(session)
     archived = Sessions::ArchiveGuard.guarded_archive!(session, force: force, actor: actor) do

@@ -62,6 +62,12 @@ final class AppModel: ObservableObject {
         #endif
     }
 
+    /// An error raised on another screen that the whole app has to act on: a sign-in
+    /// that ended returns to the sign-in screen. Others stay on the screen that hit them.
+    func noteError(_ error: ZimmerError) {
+        if error == .unauthorized { handle(error) }
+    }
+
     /// A session left the list's filter (archived) or joined it (started).
     func sessionChanged() async {
         await refresh()
@@ -72,8 +78,8 @@ final class AppModel: ObservableObject {
         do {
             let id = try await connection.api.startQuickRouter(prompt)
             showingQuickRouter = false
-            await refresh()
             path.append(id)
+            await refresh()
             return true
         } catch {
             handle(error)
