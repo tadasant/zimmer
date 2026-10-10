@@ -33,6 +33,10 @@
 #         at /oauth/authorize behind the web sign-in wall and chose, there or on
 #         the connections page, to let it act on their behalf. A grant without
 #         that scope is "relay only" and records nothing.
+#   * Api::V1::SessionsController#follow_up and Api::V1::QuickRouterController
+#     on the iOS app's bearer token (`accepts_native_app_tokens`)
+#       → the same record_assistant_message, through the app's grant, with the
+#         same fences.
 #
 # Sessions carry an `auth_identity_email` in metadata that often matches a
 # User#email, and it is tempting to attribute from it. It is NOT wired here:
