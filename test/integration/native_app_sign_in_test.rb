@@ -42,7 +42,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
   # Returns the token response for a fresh sign-in.
   def sign_in
     verifier, challenge = pkce
-    post "/oauth/authorize", params: authorize_params(challenge).merge(decision: "approve")
+    post "/oauth/authorize", params: authorize_params(challenge).merge(decision: "approve", privilege: OauthServer::RELAY_ONLY)
     assert_response :found
     code = URI.decode_www_form(URI.parse(response.location).query).to_h.fetch("code")
     post "/oauth/token", params: { grant_type: "authorization_code", client_id: CLIENT_ID, code: code,
@@ -68,7 +68,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
 
   test "approving redirects to the private-use scheme with the code, state and issuer" do
     _verifier, challenge = pkce
-    post "/oauth/authorize", params: authorize_params(challenge).merge(decision: "approve")
+    post "/oauth/authorize", params: authorize_params(challenge).merge(decision: "approve", privilege: OauthServer::RELAY_ONLY)
 
     assert_response :found
     uri = URI.parse(response.location)
@@ -117,7 +117,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     other = JSON.parse(response.body)["client_id"]
     verifier, challenge = pkce
     post "/oauth/authorize", params: authorize_params(challenge, client_id: other,
-      redirect_uri: "https://claude.ai/api/mcp/auth_callback").merge(decision: "approve")
+      redirect_uri: "https://claude.ai/api/mcp/auth_callback").merge(decision: "approve", privilege: OauthServer::RELAY_ONLY)
     code = URI.decode_www_form(URI.parse(response.location).query).to_h.fetch("code")
     post "/oauth/token", params: { grant_type: "authorization_code", client_id: other, code: code,
       code_verifier: verifier, redirect_uri: "https://claude.ai/api/mcp/auth_callback" }
