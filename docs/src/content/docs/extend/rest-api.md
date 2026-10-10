@@ -794,8 +794,10 @@ comes from the extension's service worker — and no CORS, because an extension'
 it holds a permission for is exempt from it.
 
 **Zimmer's iOS app uses it too**, with its [bearer token](#the-ios-apps-bearer-token) instead of a
-key. The session is started the same way, with `metadata.source` set to `ios_app`, and the prompt is
-recorded the same way as the app's follow-ups (`ios_app.quick_router`). The rate limit applies to both.
+key. The session is started the same way, with `metadata.source` set to `ios_app`. It has `api`
+genesis at priority, as MCP's `quick_router` does for an OAuth caller, because it arrives over an
+OAuth grant rather than from a browser. The prompt is recorded the same way as the app's follow-ups
+(`ios_app.quick_router`). The rate limit applies to both.
 
 ```bash
 curl -X POST https://zimmer.example.com/api/v1/quick_router \
