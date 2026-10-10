@@ -5,7 +5,8 @@
 # for a development build, `production` for TestFlight and the App Store — a
 # token is only valid against its own environment), and the OAuth grant the app
 # registered it under, so a phone that signs out or is revoked stops receiving
-# pushes. A token Apple reports as dead is disabled, not deleted, so the row says
+# pushes — and a phone whose grant is deleted outright loses its row with it, rather
+# than being left with no grant, which would read as an API-key registration. A token Apple reports as dead is disabled, not deleted, so the row says
 # why it went quiet.
 class CreateApnsDevices < ActiveRecord::Migration[8.1]
   def change
@@ -14,7 +15,7 @@ class CreateApnsDevices < ActiveRecord::Migration[8.1]
       t.string :environment, null: false
       t.string :device_name
       t.string :app_version
-      t.references :oauth_server_grant, foreign_key: { on_delete: :nullify }, null: true
+      t.references :oauth_server_grant, foreign_key: { on_delete: :cascade }, null: true
       t.datetime :last_registered_at, null: false
       t.datetime :last_delivered_at
       t.datetime :disabled_at

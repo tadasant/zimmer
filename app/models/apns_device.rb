@@ -21,7 +21,8 @@ class ApnsDevice < ApplicationRecord
   # them longer, so the bound is generous rather than exact.
   TOKEN_FORMAT = /\A[0-9a-f]{64,200}\z/
 
-  belongs_to :grant, class_name: "OauthServer::Grant", foreign_key: :oauth_server_grant_id, optional: true
+  belongs_to :grant, class_name: "OauthServer::Grant", foreign_key: :oauth_server_grant_id, optional: true,
+    inverse_of: :apns_devices
 
   validates :token, format: { with: TOKEN_FORMAT, message: "must be the device token in lowercase hex" }, uniqueness: true
   validates :environment, inclusion: { in: ENVIRONMENTS }

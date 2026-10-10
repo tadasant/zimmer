@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class ApnsServiceTest < ActiveSupport::TestCase
   # A transport that records requests and answers from a script.
@@ -99,6 +100,23 @@ class ApnsServiceTest < ActiveSupport::TestCase
       refute_equal first_token, ApnsService.provider_token(@config), "the cached token was dropped"
     end
     assert_empty ApnsDevice.where.not(disabled_at: nil)
+  end
+
+  test "a wrong key refuses every phone, but the provider token is reset only once per batch" do
+    transport = FakeTransport.new([ 403, { reason: "InvalidProviderToken" }.to_json ], [ 403, { reason: "InvalidProviderToken" }.to_json ])
+    ApnsService.expects(:reset_provider_tokens!).once
+
+    result = ApnsService.new(config: @config, transport: transport).send_to_all(**@payload)
+
+    assert_equal 2, result[:failed]
+  end
+
+  test "custom messages are never collapsed into one another" do
+    transport = FakeTransport.new
+    ApnsService.new(config: @config, transport: transport)
+      .send_to_all(title: "t", body: "b", data: { session_id: 1, notification_type: "custom_message" })
+
+    assert transport.requests.none? { |r| r[:headers].key?("apns-collapse-id") }
   end
 
   test "the provider token is reused inside its lifetime and replaced after" do

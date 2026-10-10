@@ -141,8 +141,11 @@ requested="$(/usr/libexec/PlistBuddy -c 'Print' "$push_file" 2>/dev/null)" || fa
 case "$requested" in
   *[Cc][Aa][Rr][Pp][Ll][Aa][Yy]*) fail "$push_file asks for CarPlay, which is not granted" ;;
 esac
-keys="$(printf '%s\n' "$requested" | awk -F' = ' 'NF == 2 { gsub(/^ +/, "", $1); print $1 }' | sort -u | tr '\n' ' ')"
-[ "$keys" = "aps-environment " ] || fail "$push_file asks for '$keys' — only aps-environment is admitted"
+# The key set from a JSON rendering, not from splitting text: a value containing " = "
+# must not be able to hide a second key.
+keys="$(plutil -convert json -o - "$push_file" | python3 -c 'import json, sys; print(" ".join(sorted(json.load(sys.stdin))))')" ||
+  fail "$push_file could not be read as JSON"
+[ "$keys" = "aps-environment" ] || fail "$push_file asks for '$keys' — only aps-environment is admitted"
 printf '    ok  %-44s %s\n' "$PUSH_ENTITLEMENTS" "aps-environment only"
 
 # The entitlements guard is asked of the build settings, before anything is built: an

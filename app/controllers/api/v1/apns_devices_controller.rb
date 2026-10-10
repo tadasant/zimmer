@@ -18,8 +18,8 @@ class Api::V1::ApnsDevicesController < Api::BaseController
     device = ApnsDevice.register!(
       token: params.require(:token),
       environment: params.require(:environment),
-      device_name: params[:device_name],
-      app_version: params[:app_version],
+      device_name: params[:device_name].presence&.to_s,
+      app_version: params[:app_version].presence&.to_s,
       grant: @native_app_grant
     )
     render json: { apns_device: device_json(device) }, status: :created
