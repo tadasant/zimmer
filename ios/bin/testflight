@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+#
+# Archive the iOS app for a device, and optionally sign it and upload it to TestFlight.
+#
+#   ios/bin/testflight check    # unsigned Release archive + assertions. No credential.
+#   ios/bin/testflight upload   # the same, then sign, upload, and wait for processing.
+#
+# `check` is what the `ios` CI job runs on every change under ios/**, so the half of the
+# pipeline that needs no Apple account is proven on every PR — the Release configuration,
+# the device SDK, the icon, the Info.plist keys App Store Connect reads. `upload` is what
+# `.github/workflows/testflight.yml` runs, and it is the same archive with signing and an
+# upload after it rather than a second build path.
+#
+# A script rather than YAML for the reason `ios/bin/build-app` is one: a check that exists
+# only in a workflow cannot be run by hand.
+#
+# SIGNING HAPPENS AT EXPORT, IN APPLE'S CLOUD. The archive is unsigned; `-exportArchive`
+# with `-allowProvisioningUpdates` and an App Store Connect API key (Admin role) signs it
+# with the team's cloud-managed distribution certificate and creates the App Store
+# provisioning profile itself. So there is no .p12, no profile and no keychain to import
+# on the runner — one key is the whole credential. `ZIMMER_SIGNING=archive` is the fallback
+# if export-time signing is ever refused: it signs during the archive instead, which also
+# works from the key alone but mints a development certificate per run.
+#
+# NO ENTITLEMENTS FILE IS SIGNED IN YET, and the guard below refuses any that is. The
+# CarPlay entitlement is granted by Apple's manual review, and an ungranted entitlement fails
+# a build to *sign* rather than merely lack the feature. Each entitlements file the app
+# grows is admitted here by name, with the keys it may ask for, only once the capability
+# behind it exists on the App ID.
+#
+# `upload` reads, and never prints:
+#   APP_STORE_CONNECT_API_KEY_ID, APP_STORE_CONNECT_API_ISSUER_ID,
+#   APP_STORE_CONNECT_API_KEY_P8 (the .p8's contents), APPLE_TEAM_ID
+# and, in both modes:
+#   ZIMMER_BUILD_NUMBER            CFBundleVersion, default 1
+#   ZIMMER_IOS_WEB_BASE_URL        where the build signs in (the OAuth issuer), https origin
+#   ZIMMER_IOS_API_BASE_URL        where its machine calls go (the app host), https origin
+#                                 Either alone means one origin for both; upload needs one.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+readonly BUNDLE_ID="com.tadasant.zimmer"
+mode="${1:-}"
+
+case "$mode" in
+  check | upload) ;;
+  *)
+    printf 'usage: ios/bin/testflight check|upload\n' >&2
+    exit 2
+    ;;
+esac
+
+fail() {
+  printf '\n\033[1;31m==> FAILED: %s\033[0m\n\n' "$1" >&2
+  exit 1
+}
+
+if ! command -v xcodebuild >/dev/null 2>&1; then
+  if [ -n "${CI:-}" ]; then
+    fail "no Xcode in CI — refusing to report green on an app nothing archived"
+  fi
+  printf '\n\033[1;33m==> SKIPPED: the iOS archive (no Xcode)\033[0m\n'
+  printf '    Needs a Mac. CI archives it on a GitHub-hosted macOS runner; see ios/README.md.\n\n'
+  exit 0
+fi
+
+build_number="${ZIMMER_BUILD_NUMBER:-1}"
+base_url="${ZIMMER_IOS_API_BASE_URL:-}"
+web_url="${ZIMMER_IOS_WEB_BASE_URL:-}"
+signing="${ZIMMER_SIGNING:-export}"
+
+# CFBundleVersion is one to three period-separated integers, and App Store Connect refuses
+# a repeat for the same marketing version. The workflow passes run_number.run_attempt.
+[[ "$build_number" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || fail "ZIMMER_BUILD_NUMBER '$build_number' is not a CFBundleVersion"
+[ -z "$base_url" ] || [[ "$base_url" =~ ^https://[^/[:space:]]+/?$ ]] ||
+  fail "ZIMMER_IOS_API_BASE_URL must be an https origin (it is refused by the app otherwise)"
+[ -z "$web_url" ] || [[ "$web_url" =~ ^https://[^/[:space:]]+/?$ ]] ||
+  fail "ZIMMER_IOS_WEB_BASE_URL must be an https origin (it is refused by the app otherwise)"
+[[ "$signing" == export || "$signing" == archive ]] || fail "ZIMMER_SIGNING must be 'export' or 'archive'"
+
+work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/zimmer-testflight-$$"
+mkdir -p "$work"
+key_path=""
+cleanup() {
+  # The key first and unconditionally: a hosted runner is ephemeral, a laptop is not.
+  if [ -n "$key_path" ]; then rm -f "$key_path"; fi
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+auth_args=()
+if [ "$mode" = upload ]; then
+  for name in APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_P8 APPLE_TEAM_ID; do
+    [ -n "${!name:-}" ] || fail "$name is not set — see ios/README.md, 'Distribution'"
+  done
+  [ -n "$base_url$web_url" ] || fail "neither ZIMMER_IOS_WEB_BASE_URL nor ZIMMER_IOS_API_BASE_URL is set; a TestFlight build would ask for a server on first run"
+
+  key_path="$work/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+  (umask 077 && printf '%s\n' "$APP_STORE_CONNECT_API_KEY_P8" >"$key_path")
+  export APP_STORE_CONNECT_API_KEY_PATH="$key_path"
+  auth_args=(
+    -allowProvisioningUpdates
+    -authenticationKeyPath "$key_path"
+    -authenticationKeyID "$APP_STORE_CONNECT_API_KEY_ID"
+    -authenticationKeyIssuerID "$APP_STORE_CONNECT_API_ISSUER_ID"
+  )
+
+  printf '==> checking the key and the app record before archiving\n'
+  python3 tools/app_store_connect.py preflight --bundle-id "$BUNDLE_ID"
+fi
+
+printf '    using %s\n' "$(xcodebuild -version | head -1)"
+printf '==> archiving build %s (signing: %s)\n' "$build_number" "$([ "$mode" = check ] && echo none || echo "$signing")"
+
+archive="$work/Zimmer.xcarchive"
+
+# One list of build settings for the guard and the archive, so what is inspected is what is
+# built. Never empty, because macOS's bash is 3.2, where "${empty[@]}" under `set -u` is an
+# unbound-variable error.
+build_settings=(
+  CURRENT_PROJECT_VERSION="$build_number"
+  ZIMMER_DEFAULT_API_BASE_URL="$base_url"
+  ZIMMER_DEFAULT_WEB_BASE_URL="$web_url"
+)
+
+# The entitlements guard is asked of the build settings, before anything is built: an
+# unsigned archive carries no entitlements to inspect, and the signed binary only exists
+# inside the upload. Captured rather than piped into `grep -q`, which under pipefail can
+# report a match as a miss when the writer dies of SIGPIPE.
+settings="$(xcodebuild -showBuildSettings -project App/Zimmer.xcodeproj -scheme Zimmer -configuration Release "${build_settings[@]}" 2>/dev/null)"
+# `sort -u`, because -showBuildSettings prints a block per target in the scheme and a
+# setting passed on the command line is resolved in every one of them. Without it the
+# answer is the same path repeated once per target, which matches neither "" nor the one
+# permitted file — so the guard failed a correct build (run 34776726410). Deduplicating
+# keeps the check it is actually making: *which* files are signed in, not how many blocks
+# named them. Two genuinely different values remain two lines, and still fail.
+entitlements="$(printf '%s\n' "$settings" \
+  | awk '$1 == "CODE_SIGN_ENTITLEMENTS" { $1 = ""; $2 = ""; print }' | tr -d ' ' | sort -u)"
+case "$entitlements" in
+  "")
+    printf '    ok  %-44s none\n' "CODE_SIGN_ENTITLEMENTS"
+    ;;
+  *)
+    fail "CODE_SIGN_ENTITLEMENTS is '$entitlements' — no entitlements file is admitted yet"
+    ;;
+esac
+
+# Options before build settings.
+if [ "$mode" = upload ] && [ "$signing" = archive ]; then
+  xcodebuild archive \
+    -project App/Zimmer.xcodeproj -scheme Zimmer -configuration Release \
+    -destination 'generic/platform=iOS' -archivePath "$archive" \
+    "${auth_args[@]}" \
+    "${build_settings[@]}" \
+    CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Automatic \
+    DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
+else
+  xcodebuild archive \
+    -project App/Zimmer.xcodeproj -scheme Zimmer -configuration Release \
+    -destination 'generic/platform=iOS' -archivePath "$archive" \
+    "${build_settings[@]}" \
+    CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+fi
+
+# What App Store Connect would otherwise tell us at the end of an upload, asked of the
+# archive instead. Every one of these compiles cleanly when wrong.
+app="$archive/Products/Applications/Zimmer.app"
+plist="$app/Info.plist"
+[ -f "$plist" ] || fail "the archive has no Zimmer.app — did the scheme's archive action change?"
+
+# A key that is absent fails, rather than reading as an empty string that happens to match.
+value() {
+  /usr/libexec/PlistBuddy -c "Print :$1" "$plist" 2>/dev/null || fail "Info.plist has no $1"
+}
+expect() {
+  local actual
+  actual="$(value "$1")"
+  [ "$actual" = "$2" ] || fail "Info.plist $1 is '$actual', expected '$2'"
+  printf '    ok  %-44s %s\n' "$1" "matches"
+}
+present() {
+  [ -n "$(value "$1")" ] || fail "Info.plist has an empty $1"
+  printf '    ok  %-44s present\n' "$1"
+}
+
+printf '==> inspecting the archived app\n'
+expect CFBundleIdentifier "$BUNDLE_ID"
+expect CFBundleExecutable Zimmer
+expect CFBundlePackageType APPL
+expect CFBundleVersion "$build_number"
+present CFBundleShortVersionString
+expect ITSAppUsesNonExemptEncryption false
+expect CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName AppIcon
+expect ZimmerDefaultAPIBaseURL "$base_url"
+expect ZimmerDefaultWebBaseURL "$web_url"
+[ -f "$app/Assets.car" ] || fail "no compiled asset catalog — the app icon is missing"
+[ -f "$app/PrivacyInfo.xcprivacy" ] || fail "no privacy manifest in the app bundle"
+if grep -aq '\$(' "$plist"; then fail "Info.plist carries a malformed \$(...) build setting"; fi
+
+version="$(value CFBundleShortVersionString)"
+
+if [ "$mode" = check ]; then
+  printf '\n\033[1;32m==> archive %s (%s) is uploadable in shape\033[0m\n' "$version" "$build_number"
+  printf '    Signing and the upload are not exercised here; they need the Apple key.\n\n'
+  exit 0
+fi
+
+export_options="$work/ExportOptions.plist"
+cat >"$export_options" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>upload</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>teamID</key>
+	<string>${APPLE_TEAM_ID}</string>
+	<key>uploadSymbols</key>
+	<true/>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>
+PLIST
+
+printf '==> signing and uploading %s (%s) to App Store Connect\n' "$version" "$build_number"
+xcodebuild -exportArchive \
+  -archivePath "$archive" \
+  -exportPath "$work/export" \
+  -exportOptionsPlist "$export_options" \
+  "${auth_args[@]}"
+
+printf '==> waiting for App Store Connect to process %s (%s)\n' "$version" "$build_number"
+python3 tools/app_store_connect.py wait --bundle-id "$BUNDLE_ID" --version "$version" --build "$build_number"

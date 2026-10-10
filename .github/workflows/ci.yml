@@ -558,6 +558,166 @@ jobs:
           printf '  %s\n' "${files[@]}"
           shellcheck --severity=info --color=always "${files[@]}"
 
+  ios-changes:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Read-only, and stated rather than inherited: this job asks the API a question and
+    # writes nothing anywhere.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ios: ${{ steps.filter.outputs.ios }}
+    steps:
+      - name: Look for changes under ios/
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # `.files[]?` rather than `.files[]`: the compare endpoint omits `files` entirely
+          # on a diff over 300 files, and iterating null would abort the job.
+          if [ -n "${PR_NUMBER:-}" ]; then
+            endpoint="repos/${REPO}/pulls/${PR_NUMBER}/files"; filter='.[].filename'
+          elif [ -n "${BEFORE:-}" ] && [ "${BEFORE}" != "0000000000000000000000000000000000000000" ]; then
+            endpoint="repos/${REPO}/compare/${BEFORE}...${SHA}"; filter='.files[]?.filename'
+          else
+            endpoint=""
+          fi
+
+          # Every way of NOT getting an answer lands here, and the answer it gives is
+          # "build". This job exists to save free minutes, so an unnecessary macOS run
+          # costs nothing that matters — while a job that fails, or that guesses `false`,
+          # either reddens the branch for a reason unrelated to the code or silently skips
+          # the only compiler this app has. Fail towards building.
+          #
+          # An EMPTY result counts as not getting an answer too, which is the case the `?`
+          # above would otherwise swallow in silence: `compare` drops `files` on a diff over
+          # 300, so the biggest pushes — the ones most likely to touch `ios/**` — are exactly
+          # the ones that would come back looking like they changed nothing at all.
+          if [ -z "$endpoint" ] || ! files=$(gh api --paginate "$endpoint" --jq "$filter") \
+             || [ -z "$files" ]; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+            echo "Could not determine the changed files; building the iOS app rather than guessing."
+            exit 0
+          fi
+
+          printf '%s\n' "$files" | sed 's/^/  /'
+          if printf '%s\n' "$files" | grep -qE '^(ios/|\.github/workflows/(ci|testflight|ios-ui-tests)\.yml$)'; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ios=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The iOS app, compiled by Xcode for the simulator. Mirrors tadasant/motet's `ios` job.
+  #
+  # It does NOT run on the self-hosted pool: there is no Mac in it, and `xcodebuild` needs
+  # one. GitHub's hosted macOS runners are free on a
+  # public repo, which is what makes an unproven-until-now app buildable in CI with nobody
+  # having to own a Mac.
+  #
+  # NOTHING HERE SIGNS ANYTHING, and that is the property to preserve. A simulator build
+  # and an unsigned device archive need no identity, no certificate, no provisioning profile
+  # and no App Store Connect key, so this job holds no credential and needs no human in the
+  # loop — which is the only reason it can run on every PR. Signing and the TestFlight upload
+  # live in `testflight.yml`, behind a `main`-only environment; do not add them here, and do
+  # not add `CODE_SIGN_ENTITLEMENTS`: an entitlement Apple has not granted (CarPlay) makes a
+  # build fail to sign rather than merely lack the feature.
+  ios:
+    if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
+    needs: ios-changes
+    runs-on: macos-latest
+    # Raised from 45 when the simulator run joined the job: it is a second full app build
+    # plus a boot and a two-test run on top of the three steps that were already here.
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the toolchain
+        # Which Xcode a hosted runner ships changes without notice, and a Swift-version
+        # difference is the first thing to suspect when this job disagrees with a laptop.
+        run: |
+          xcodebuild -version
+          swift --version
+          ls /Applications | grep -i '^Xcode' || true
+
+      - name: Build the app for the simulator
+        # A script, not an inlined command, for the reason `bin/build-images` is a script:
+        # a check that exists only in YAML cannot be run by hand and will rot. Anyone with
+        # a Mac runs exactly this.
+        run: ios/bin/build-app
+
+      - name: Archive the app for a device, unsigned, and check it is uploadable in shape
+        # The credential-free half of `testflight.yml`, run by the same script: the Release
+        # configuration, the device SDK, the app icon and the Info.plist keys App Store
+        # Connect reads. Without it the first place any of those is checked is an upload,
+        # which needs the Apple key and a human to notice it failed.
+        run: ios/bin/testflight check
+
+      - name: Run the ZimmerKit tests against Apple's toolchain
+        # The same script `bin/ci` calls on Linux — it picks up whichever Swift is on PATH,
+        # which here is Xcode's. So this asserts nothing new about the logic and everything
+        # about the *toolchain*: a difference from the Linux run is itself the finding. It
+        # also builds `ZimmerPlatform` for macOS, the only place outside the app target that
+        # a compiler is pointed at the AVFoundation half.
+        run: ios/bin/ci-swift
+
+      - name: Run the app on a simulator and photograph it
+        # THE ONLY STEP THAT RUNS THE APP. It drives the Debug-only fixture (an in-memory
+        # Zimmer: an agent cannot complete a Google sign-in) through the session list and its
+        # filters, checks the build reports the environment and server it was built with,
+        # and records a video and screenshots of the key screens.
+        #
+        # `Staging` with a base URL is deliberate: one run proves the staging build variant
+        # resolves the server it was given as well as the screens. The host is a
+        # reserved-by-RFC-2606 name that can never resolve — the fixture makes no request —
+        # because this repository names no deployment, not even in a workflow file.
+        run: >
+          ios/bin/ui-test
+          --configuration Staging
+          --api-base-url https://ui-test.invalid
+          --artifacts "$RUNNER_TEMP/ui-test"
+
+      - name: Keep what the run produced
+        # `always()`: a red run is the one whose video, screenshot and result bundle
+        # somebody needs, and nobody here has a Mac to reproduce it on.
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ui-test
+          path: ${{ runner.temp }}/ui-test
+          retention-days: 14
+          if-no-files-found: warn
+
+  # ZimmerKit — the iOS app's Foundation-only logic — built and tested on Linux, the way
+  # Motet's `bin/ci` does it. It proves the package stays free of Apple-only imports, so its
+  # rules are testable without a Mac, and it is the cheap half: the macOS `ios` job runs the
+  # same tests against Xcode's toolchain. Gated on `ios-changes` like `ios`.
+  ios_swift_linux:
+    if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
+    needs: ios-changes
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a Swift toolchain (once per runner)
+        id: swift
+        run: |
+          set -euo pipefail
+          runner_num=$(echo "${RUNNER_NAME:-}" | grep -oE '[0-9]+$' || echo "0")
+          shim="$(ios/bin/install-swift-toolchain "$HOME/.zimmer-ios/runner-${runner_num}/swift")"
+          echo "shim=${shim}/swift" >> "$GITHUB_OUTPUT"
+      - name: Build and test ZimmerKit
+        env:
+          ZIMMER_SWIFT_SHIM: ${{ steps.swift.outputs.shim }}
+        run: ios/bin/ci-swift
+
   # Single aggregate gate for branch protection. Set THIS job's name — `all-checks-pass`
   # — as the one required status check under Settings → Branches → main, instead of
   # enumerating every job above. It `needs:` every required job and re-derives a pass/fail
@@ -592,6 +752,11 @@ jobs:
       - image_includes_extensions
       - retention_logic
       - shellcheck
+      # The iOS jobs skip on a change that does not touch ios/**; a skip is a non-answer,
+      # not a pass, which is the property described above.
+      - ios-changes
+      - ios
+      - ios_swift_linux
     steps:
       - name: Verify no required check failed or was cancelled
         run: |

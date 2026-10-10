@@ -12,6 +12,9 @@ class Api::V1::SessionsController < Api::BaseController
   include SessionSearchable
   include ApiSessionSerialization
 
+  # Zimmer's iOS app lists, reads, follows up and archives sessions here.
+  accepts_native_app_tokens
+
   # A `place`/`precedence` pair the server cannot act on. Raised rather than
   # rendered-and-returned because the resolver's nil already means "the caller
   # named no placement": a write path that answered a rendered 422 with a second

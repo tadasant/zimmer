@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#
+# Install a Swift toolchain into a directory the caller owns, and print the `bin` path to
+# put on PATH. Idempotent: an existing, working install is reused.
+#
+# WHY THIS EXISTS. The `ios_swift_linux` CI job runs ZimmerKit's test suite, and the shared
+# self-hosted runners have no Swift. A toolchain is ~1 GB, so it is installed **once per
+# runner** into a per-runner path — the same shape `ci.yml` uses for gems — and every later
+# run reuses it. Nothing here touches a shared tool cache.
+#
+# On a Mac this script is never needed: `swift` comes with Xcode, and `ci-swift` finds it.
+#
+#   usage: ios/bin/install-swift-toolchain [install-dir]   # prints <dir>/shim
+set -euo pipefail
+
+VERSION="${ZIMMER_SWIFT_VERSION:-6.2}"
+TARGET="${1:-$HOME/.zimmer-ios/swift}"
+TOOLCHAIN="$TARGET/swift-${VERSION}-RELEASE-ubuntu24.04"
+SHIM="$TARGET/shim"
+
+log() { printf '%s\n' "$*" >&2; }
+
+install_toolchain() {
+  local url="https://download.swift.org/swift-${VERSION}-release/ubuntu2404/swift-${VERSION}-RELEASE/swift-${VERSION}-RELEASE-ubuntu24.04.tar.gz"
+  log "Installing Swift ${VERSION} into ${TARGET} (about 1 GB, once per machine)…"
+  mkdir -p "$TARGET"
+  # Download and extract beside the target, then move the finished tree into place, so an
+  # interrupted run never leaves a half-extracted toolchain that later runs would trust.
+  local archive="$TARGET/.swift-${VERSION}.tar.gz"
+  local staging="$TARGET/.extract-$$"
+  rm -rf "$staging"
+  mkdir -p "$staging"
+  curl -fsSL -o "$archive" "$url"
+  tar -xzf "$archive" -C "$staging"
+  rm -rf "$TOOLCHAIN"
+  mv "$staging/$(basename "$TOOLCHAIN")" "$TOOLCHAIN"
+  rm -rf "$staging" "$archive"
+}
+
+# The Ubuntu 24.04 toolchain runs on Debian too, except that Debian ships
+# `libncursesw.so.6` and no `libncurses.so.6`. One symlink in a directory we own fixes it
+# without needing root, which the CI runner does not have either.
+install_shim() {
+  mkdir -p "$SHIM/lib"
+  for name in libncurses libncursesw libtinfo; do
+    if [ ! -e "$SHIM/lib/${name}.so.6" ]; then
+      for candidate in "/usr/lib/x86_64-linux-gnu/${name}.so.6" \
+                       "/usr/lib/x86_64-linux-gnu/${name}w.so.6" \
+                       "/lib/x86_64-linux-gnu/${name}.so.6"; do
+        [ -e "$candidate" ] && ln -sf "$candidate" "$SHIM/lib/${name}.so.6" && break
+      done
+    fi
+  done
+
+  # A wrapper rather than an exported variable: `swift build` re-execs its own helper
+  # binaries, and they need the same library path. Setting it here means children inherit.
+  cat > "$SHIM/swift" <<WRAPPER
+#!/usr/bin/env bash
+export LD_LIBRARY_PATH="${SHIM}/lib:\${LD_LIBRARY_PATH:-}"
+exec "${TOOLCHAIN}/usr/bin/swift" "\$@"
+WRAPPER
+  chmod +x "$SHIM/swift"
+}
+
+if [ ! -x "$TOOLCHAIN/usr/bin/swift" ]; then
+  install_toolchain
+fi
+install_shim
+
+if ! "$SHIM/swift" --version >/dev/null 2>&1; then
+  log "error: the Swift toolchain in ${TOOLCHAIN} will not run on this machine."
+  log "       Run '${SHIM}/swift --version' to see why."
+  exit 1
+fi
+
+log "Swift ready: $("$SHIM/swift" --version | head -1)"
+printf '%s\n' "$SHIM"

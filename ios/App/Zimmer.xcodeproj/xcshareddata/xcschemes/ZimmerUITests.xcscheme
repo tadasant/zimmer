@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The app driven on a booted simulator.
+
+  Its own scheme rather than a testable added to `Zimmer`, and that is load-bearing:
+  `ios/bin/testflight` runs `xcodebuild -showBuildSettings -scheme Zimmer` to decide which
+  entitlements file is signed into a distribution build, and that guard reasons about the
+  blocks it gets back — one per target in the scheme. Putting a second target into `Zimmer`
+  would change what it reads for a reason that has nothing to do with signing.
+
+  It defaults to `Debug`; `ios/bin/ui-test` passes `-configuration Staging` to prove the
+  staging variant resolves the server it was built with.
+-->
+<Scheme LastUpgradeVersion = "1600" version = "1.7">
+   <BuildAction parallelizeBuildables = "YES" buildImplicitDependencies = "YES">
+      <BuildActionEntries>
+         <BuildActionEntry buildForTesting = "YES" buildForRunning = "YES" buildForProfiling = "NO" buildForArchiving = "NO" buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AA0000000000000000000020"
+               BuildableName = "Zimmer.app"
+               BlueprintName = "Zimmer"
+               ReferencedContainer = "container:Zimmer.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry buildForTesting = "YES" buildForRunning = "NO" buildForProfiling = "NO" buildForArchiving = "NO" buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AA0000000000000000000060"
+               BuildableName = "ZimmerUITests.xctest"
+               BlueprintName = "ZimmerUITests"
+               ReferencedContainer = "container:Zimmer.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction buildConfiguration = "Debug" selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv = "YES">
+      <Testables>
+         <TestableReference skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AA0000000000000000000060"
+               BuildableName = "ZimmerUITests.xctest"
+               BlueprintName = "ZimmerUITests"
+               ReferencedContainer = "container:Zimmer.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+      </Testables>
+   </TestAction>
+   <LaunchAction buildConfiguration = "Debug" selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB" launchStyle = "0" useCustomWorkingDirectory = "NO" ignoresPersistentStateOnLaunch = "NO" debugDocumentVersioning = "YES" debugServiceExtension = "internal" allowLocationSimulation = "YES">
+      <BuildableProductRunnable runnableDebuggingMode = "0">
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "AA0000000000000000000020"
+            BuildableName = "Zimmer.app"
+            BlueprintName = "Zimmer"
+            ReferencedContainer = "container:Zimmer.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </LaunchAction>
+   <AnalyzeAction buildConfiguration = "Debug">
+   </AnalyzeAction>
+   <ArchiveAction buildConfiguration = "Debug" revealArchiveInOrganizer = "YES">
+   </ArchiveAction>
+</Scheme>

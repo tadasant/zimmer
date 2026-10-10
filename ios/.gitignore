@@ -1,0 +1,8 @@
+# SwiftPM and Xcode build output, and what ios/bin/ui-test writes by default.
+.build/
+.swiftpm/
+DerivedData/
+.ui-test/
+xcuserdata/
+*.xcuserstate
+__pycache__/

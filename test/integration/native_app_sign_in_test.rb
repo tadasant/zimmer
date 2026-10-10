@@ -1,0 +1,160 @@
+# frozen_string_literal: true
+
+require "test_helper"
+require "mocha/minitest"
+
+# Zimmer's iOS app signing in through the authorization server, the way
+# `ios/Sources/ZimmerKit/Auth/OAuthSignIn.swift` drives it: authorize with PKCE
+# under the built-in `zimmer-ios` client, come back on the app's private-use
+# scheme, redeem the code, then call the REST API with the access token.
+class NativeAppSignInTest < ActionDispatch::IntegrationTest
+  include WebAuthTestHelpers
+
+  ISSUER = "http://www.example.com"
+  RESOURCE = "#{ISSUER}/mcp".freeze
+  CLIENT_ID = OauthServer::NativeApp::CLIENT_ID
+  REDIRECT = OauthServer::NativeApp::REDIRECT_URI
+  ENV_KEYS = %w[API_KEYS OAUTH_SERVER_ISSUER OAUTH_SERVER_ALLOWED_DOMAINS ZIMMER_DEV_WEB_USER_EMAIL].freeze
+
+  setup do
+    @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
+    ENV["API_KEYS"] = "test_api_key_native_app"
+    ENV["OAUTH_SERVER_ISSUER"] = ISSUER
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
+    WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "tadas@tadasant.com"
+  end
+
+  teardown do
+    @saved_env.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+  end
+
+  def pkce
+    verifier = SecureRandom.urlsafe_base64(48)
+    [ verifier, Base64.urlsafe_encode64(Digest::SHA256.digest(verifier), padding: false) ]
+  end
+
+  def authorize_params(challenge, client_id: CLIENT_ID, redirect_uri: REDIRECT)
+    { response_type: "code", client_id: client_id, redirect_uri: redirect_uri, code_challenge: challenge,
+      code_challenge_method: "S256", state: "s1", resource: RESOURCE, scope: "mcp" }
+  end
+
+  # Returns the token response for a fresh sign-in.
+  def sign_in
+    verifier, challenge = pkce
+    post "/oauth/authorize", params: authorize_params(challenge).merge(decision: "approve")
+    assert_response :found
+    code = URI.decode_www_form(URI.parse(response.location).query).to_h.fetch("code")
+    post "/oauth/token", params: { grant_type: "authorization_code", client_id: CLIENT_ID, code: code,
+      code_verifier: verifier, redirect_uri: REDIRECT, resource: RESOURCE }
+    assert_response :success
+    JSON.parse(response.body)
+  end
+
+  def bearer(token) = { "Authorization" => "Bearer #{token}" }
+
+  test "the consent screen names the built-in app and the scheme it returns to" do
+    _verifier, challenge = pkce
+    get "/oauth/authorize", params: authorize_params(challenge)
+
+    assert_response :success
+    assert_includes response.body, "Zimmer for iOS"
+    assert_includes response.body, "own app, built in"
+    assert_includes response.body, "com.tadasant.zimmer:"
+    client = OauthServer::Client.find_by!(client_id: CLIENT_ID)
+    assert client.first_party?
+    assert_equal [ REDIRECT ], client.redirect_uris
+  end
+
+  test "approving redirects to the private-use scheme with the code, state and issuer" do
+    _verifier, challenge = pkce
+    post "/oauth/authorize", params: authorize_params(challenge).merge(decision: "approve")
+
+    assert_response :found
+    uri = URI.parse(response.location)
+    assert_equal "com.tadasant.zimmer", uri.scheme
+    assert_equal "/oauth/callback", uri.path
+    query = URI.decode_www_form(uri.query).to_h
+    assert_equal "s1", query["state"]
+    assert_equal ISSUER, query["iss"]
+    assert query["code"].present?
+  end
+
+  test "a redirect_uri other than the built-in one is refused on a page, never redirected to" do
+    _verifier, challenge = pkce
+    get "/oauth/authorize", params: authorize_params(challenge, redirect_uri: "com.evil.app:/oauth/callback")
+
+    assert_response :bad_request
+    assert_nil response.location
+  end
+
+  test "the app's access token opens the sessions API and refreshes" do
+    tokens = sign_in
+    session = build_zimmer_session(status: :needs_input, title: "Needs a decision")
+
+    get "/api/v1/sessions", params: { status: "needs_input" }, headers: bearer(tokens["access_token"])
+    assert_response :success
+    assert_includes JSON.parse(response.body)["sessions"].map { |s| s["id"] }, session.id
+
+    post "/oauth/token", params: { grant_type: "refresh_token", client_id: CLIENT_ID, refresh_token: tokens["refresh_token"] }
+    assert_response :success
+    refreshed = JSON.parse(response.body)
+    get "/api/v1/sessions/#{session.id}", headers: bearer(refreshed["access_token"])
+    assert_response :success
+  end
+
+  test "the app's token does not open a controller that has not opted in" do
+    tokens = sign_in
+
+    get "/api/v1/configs", headers: bearer(tokens["access_token"])
+
+    assert_response :unauthorized
+  end
+
+  test "a token issued to any other OAuth client is refused by the REST API" do
+    post "/oauth/register", params: { client_name: "Other", redirect_uris: [ "https://claude.ai/api/mcp/auth_callback" ],
+      token_endpoint_auth_method: "none" }.to_json, headers: { "Content-Type" => "application/json" }
+    other = JSON.parse(response.body)["client_id"]
+    verifier, challenge = pkce
+    post "/oauth/authorize", params: authorize_params(challenge, client_id: other,
+      redirect_uri: "https://claude.ai/api/mcp/auth_callback").merge(decision: "approve")
+    code = URI.decode_www_form(URI.parse(response.location).query).to_h.fetch("code")
+    post "/oauth/token", params: { grant_type: "authorization_code", client_id: other, code: code,
+      code_verifier: verifier, redirect_uri: "https://claude.ai/api/mcp/auth_callback" }
+    token = JSON.parse(response.body).fetch("access_token")
+
+    get "/api/v1/sessions", headers: bearer(token)
+
+    assert_response :unauthorized
+  end
+
+  test "a revoked grant's token is refused on the next request" do
+    tokens = sign_in
+    OauthServer::Client.find_by!(client_id: CLIENT_ID).grants.each { |g| g.revoke!("signed out") }
+
+    get "/api/v1/sessions", headers: bearer(tokens["access_token"])
+
+    assert_response :unauthorized
+  end
+
+  test "the API key path is unchanged beside it" do
+    get "/api/v1/sessions", headers: { "X-API-Key" => "test_api_key_native_app" }
+
+    assert_response :success
+  end
+
+  test "the unused-registration pruner leaves the built-in client alone" do
+    client = OauthServer::NativeApp.client
+    client.update_columns(created_at: 30.days.ago, metadata_expires_at: 30.days.ago)
+
+    OauthServer::Client.prune_unused_registrations
+
+    assert OauthServer::Client.exists?(client.id)
+  end
+
+  private
+
+  def build_zimmer_session(**attrs)
+    Session.create!({ git_root: "https://github.com/tadasant/zimmer.git", branch: "main", prompt: "p" }.merge(attrs))
+  end
+end
