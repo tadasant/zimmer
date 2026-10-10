@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "ostruct"
 
 # Zimmer's iOS app signing in through the authorization server, the way
 # `ios/Sources/ZimmerKit/Auth/OAuthSignIn.swift` drives it: authorize with PKCE
