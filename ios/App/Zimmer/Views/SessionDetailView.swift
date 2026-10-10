@@ -7,6 +7,8 @@ import ZimmerKit
 final class SessionDetailModel: ObservableObject {
     let id: Int
     private let api: ZimmerAPI
+    /// Hands an error the whole app cares about (a sign-in that ended) to `AppModel`.
+    var report: (ZimmerError) -> Void = { _ in }
 
     @Published private(set) var detail: SessionDetail?
     @Published private(set) var conversation: Conversation?
@@ -26,14 +28,17 @@ final class SessionDetailModel: ObservableObject {
         defer { isLoading = false }
         do {
             detail = try await api.session(id)
+            conversation = try await api.conversation(id)
             error = nil
         } catch {
-            self.error = error as? ZimmerError ?? .transport(error)
-            return
+            fail(error)
         }
-        // A session with no transcript yet answers 404 here; that is an empty
-        // conversation, not a broken screen.
-        conversation = (try? await api.conversation(id)) ?? Conversation(messages: [])
+    }
+
+    private func fail(_ error: Error) {
+        let zimmerError = error as? ZimmerError ?? .transport(error)
+        self.error = zimmerError
+        report(zimmerError)
     }
 
     func send() async {
@@ -48,7 +53,7 @@ final class SessionDetailModel: ObservableObject {
             error = nil
             await load()
         } catch {
-            self.error = error as? ZimmerError ?? .transport(error)
+            fail(error)
         }
     }
 
@@ -57,7 +62,7 @@ final class SessionDetailModel: ObservableObject {
             _ = try await api.archive(id)
             return true
         } catch {
-            self.error = error as? ZimmerError ?? .transport(error)
+            fail(error)
             return false
         }
     }
@@ -125,7 +130,10 @@ struct SessionDetailView: View {
             if model.detail?.acceptsFollowUp ?? false { composer }
         }
         .refreshable { await model.load() }
-        .task { await model.load() }
+        .task {
+            model.report = { [weak app] error in app?.noteError(error) }
+            await model.load()
+        }
     }
 
     private func header(_ detail: SessionDetail) -> some View {

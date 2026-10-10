@@ -18,15 +18,17 @@ final class SessionActionsUITests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: timeout))
         row.tap()
 
-        // Where it stands, and what the agent last said.
+        // Where it stands, and what the agent last said. The conversation loads after the
+        // summary, so it is waited for rather than checked at once.
         XCTAssertTrue(app.descendants(matching: .any)["detail.summary"].waitForExistence(timeout: timeout))
         XCTAssertTrue(app.staticTexts["detail.title"].label.contains("PR #1261"))
-        XCTAssertTrue(app.descendants(matching: .any)["detail.message.2"].exists, "the agent's question is shown")
+        XCTAssertTrue(app.descendants(matching: .any)["detail.message.2"].waitForExistence(timeout: timeout), "the agent's question is shown")
         XCTAssertFalse(app.descendants(matching: .any)["detail.message.1"].exists, "tool calls are folded away by default")
         attachScreenshot(app, named: "detail")
 
         // Answer it: the follow-up lands in the conversation and the session runs again.
-        let field = app.textFields["followup.field"]
+        // A multi-line TextField is a text view to XCUITest, so it is found by identifier.
+        let field = app.descendants(matching: .any)["followup.field"]
         XCTAssertTrue(field.waitForExistence(timeout: timeout))
         field.tap()
         field.typeText("Yes, merge it.")
@@ -36,16 +38,29 @@ final class SessionActionsUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["detail.status"].label, "Running")
         attachScreenshot(app, named: "detail-after-follow-up")
 
-        // Archive it: back on the list, and it is gone from Active.
+        // It is running now, so archiving it is refused — as the server refuses a session
+        // mid-turn — and the refusal is shown rather than swallowed. The dialog's button
+        // is "Archive"; the toolbar's is labelled "Archive session".
         app.buttons["detail.archive"].tap()
-        // The dialog's button; the toolbar's is labelled "Archive session".
+        let refusedConfirm = app.buttons["Archive"].firstMatch
+        XCTAssertTrue(refusedConfirm.waitForExistence(timeout: timeout))
+        refusedConfirm.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["error.banner"].waitForExistence(timeout: timeout))
+
+        // Archive one that is waiting on a person: back on the list, and it is gone.
+        app.navigationBars.buttons["Sessions"].tap()
+        let other = app.descendants(matching: .any)["session.row.1035"]
+        XCTAssertTrue(other.waitForExistence(timeout: timeout))
+        other.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["detail.summary"].waitForExistence(timeout: timeout))
+        app.buttons["detail.archive"].tap()
         let confirm = app.buttons["Archive"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
         XCTAssertTrue(app.buttons["filter.active"].waitForExistence(timeout: timeout))
         app.buttons["filter.active"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["session.row.1042"].waitForExistence(timeout: timeout))
-        XCTAssertFalse(app.descendants(matching: .any)["session.row.1038"].exists, "the archived session left Active")
+        XCTAssertFalse(app.descendants(matching: .any)["session.row.1035"].exists, "the archived session left Active")
     }
 
     func test_the_quick_router_starts_a_session_from_a_sentence_and_opens_it() throws {
@@ -54,7 +69,7 @@ final class SessionActionsUITests: XCTestCase {
         let open = app.buttons["quickrouter.open"]
         XCTAssertTrue(open.waitForExistence(timeout: timeout))
         open.tap()
-        let field = app.textFields["quickrouter.field"]
+        let field = app.descendants(matching: .any)["quickrouter.field"]
         XCTAssertTrue(field.waitForExistence(timeout: timeout))
         field.tap()
         field.typeText("Rotate the staging deploy key")

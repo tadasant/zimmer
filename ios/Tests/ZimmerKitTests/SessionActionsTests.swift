@@ -113,6 +113,13 @@ final class SessionActionsTests: XCTestCase {
             XCTFail("archiving twice should be refused")
         } catch {}
 
+        do {
+            _ = try await fake.archive(1038)
+            XCTFail("a session mid-turn cannot be archived, as on the server")
+        } catch {
+            XCTAssertEqual((error as? ZimmerError).map { if case .http(422, _) = $0 { return true } else { return false } }, true)
+        }
+
         let id = try await fake.startQuickRouter("Rotate the staging deploy key")
         let active = try await fake.sessions(.active)
         XCTAssertEqual(active.first { $0.id == id }?.status, .waiting)

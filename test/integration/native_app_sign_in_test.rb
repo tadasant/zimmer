@@ -200,6 +200,18 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert_empty from_key.human_messages
   end
 
+  test "a follow-up the app sends mid-turn is queued and still recorded as the human's words" do
+    tokens = sign_in
+    session = build_zimmer_session(status: :running)
+    Sessions::LiveTurn.stubs(:underway?).returns(true)
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Also deploy it." }, headers: bearer(tokens["access_token"])
+
+    assert_response :accepted
+    assert_equal "pending", JSON.parse(response.body).dig("enqueued_message", "status")
+    assert_equal "ios_app.follow_up", session.human_messages.sole.provenance["entry_point"]
+  end
+
   test "the app archives a session with its token" do
     tokens = sign_in
     session = build_zimmer_session(status: :needs_input)

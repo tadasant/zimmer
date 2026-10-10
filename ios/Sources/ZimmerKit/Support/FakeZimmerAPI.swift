@@ -4,9 +4,11 @@ import Foundation
 /// (`-ZimmerFixture`), which is what the UI test and the screenshots drive. An agent cannot
 /// complete a Google sign-in, so nothing automated reaches a real server; this is the
 /// stand-in, and it behaves like the server where the app depends on it — filters by
-/// status, hides archived sessions unless asked, orders by urgency, delivers a follow-up
-/// to a waiting session and queues one behind a running turn, refuses to archive what is
-/// already archived, and starts Quick Router sessions.
+/// status, hides archived sessions unless asked, orders by urgency, queues a follow-up
+/// behind a running turn, refuses to archive a session mid-turn or already archived, and
+/// starts Quick Router sessions. One simplification: the real server also queues for a
+/// `waiting` session whose turn is handed over but not yet started; the fake delivers to
+/// every `waiting` session.
 public actor FakeZimmerAPI: ZimmerAPI {
     public private(set) var all: [SessionSummary]
     private var summaries: [Int: StatusSummary]
@@ -66,6 +68,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
         var session = try find(id)
         guard session.status != .archived else {
             throw ZimmerError.http(status: 422, message: "Session cannot be trashed from current status: archived")
+        }
+        guard session.status != .running else {
+            throw ZimmerError.http(status: 422, message: "Session \(id) has a turn in flight. Archive it once the turn ends.")
         }
         session.status = .archived
         session.archivedAt = Date()
