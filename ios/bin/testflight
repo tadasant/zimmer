@@ -22,17 +22,19 @@
 # if export-time signing is ever refused: it signs during the archive instead, which also
 # works from the key alone but mints a development certificate per run.
 #
-# NO ENTITLEMENTS FILE IS SIGNED IN YET, and the guard below refuses any that is. The
-# CarPlay entitlement is granted by Apple's manual review, and an ungranted entitlement fails
-# a build to *sign* rather than merely lack the feature. Each entitlements file the app
-# grows is admitted here by name, with the keys it may ask for, only once the capability
-# behind it exists on the App ID.
+# ONE ENTITLEMENTS FILE MAY BE SIGNED IN, and only when asked: App/Zimmer/Push.entitlements,
+# when ZIMMER_IOS_PUSH_ENABLED=1 (set once Push Notifications is ticked on the App ID — an
+# entitlement the App ID lacks fails a build to *sign*, not merely to push). The guard below
+# refuses any other file, and refuses that one if it asks for anything but aps-environment —
+# CarPlay above all, which Apple grants by manual review. Each entitlements file the app
+# grows is admitted here by name, with the keys it may ask for.
 #
 # `upload` reads, and never prints:
 #   APP_STORE_CONNECT_API_KEY_ID, APP_STORE_CONNECT_API_ISSUER_ID,
 #   APP_STORE_CONNECT_API_KEY_P8 (the .p8's contents), APPLE_TEAM_ID
 # and, in both modes:
 #   ZIMMER_BUILD_NUMBER            CFBundleVersion, default 1
+#   ZIMMER_IOS_PUSH_ENABLED        1 to sign in App/Zimmer/Push.entitlements; anything else, none
 #   ZIMMER_IOS_WEB_BASE_URL        where the build signs in (the OAuth issuer), https origin
 #   ZIMMER_IOS_API_BASE_URL        where its machine calls go (the app host), https origin
 #                                 Either alone means one origin for both; upload needs one.
@@ -68,6 +70,8 @@ fi
 build_number="${ZIMMER_BUILD_NUMBER:-1}"
 base_url="${ZIMMER_IOS_API_BASE_URL:-}"
 web_url="${ZIMMER_IOS_WEB_BASE_URL:-}"
+push_enabled="${ZIMMER_IOS_PUSH_ENABLED:-}"
+readonly PUSH_ENTITLEMENTS="Zimmer/Push.entitlements"
 signing="${ZIMMER_SIGNING:-export}"
 
 # CFBundleVersion is one to three period-separated integers, and App Store Connect refuses
@@ -123,6 +127,23 @@ build_settings=(
   ZIMMER_DEFAULT_API_BASE_URL="$base_url"
   ZIMMER_DEFAULT_WEB_BASE_URL="$web_url"
 )
+if [ "$push_enabled" = 1 ]; then
+  build_settings+=(CODE_SIGN_ENTITLEMENTS="$PUSH_ENTITLEMENTS")
+fi
+
+# The push entitlements file must ask for aps-environment and nothing else, whether or not
+# this build signs it in — so every PR's `check` proves the file is safe to switch on.
+# Asked of the PARSED plist (PlistBuddy drops comments), never of its bytes: the file's own
+# comment names CarPlay.
+push_file="App/$PUSH_ENTITLEMENTS"
+[ -f "$push_file" ] || fail "$push_file is missing"
+requested="$(/usr/libexec/PlistBuddy -c 'Print' "$push_file" 2>/dev/null)" || fail "$push_file is not a readable plist"
+case "$requested" in
+  *[Cc][Aa][Rr][Pp][Ll][Aa][Yy]*) fail "$push_file asks for CarPlay, which is not granted" ;;
+esac
+keys="$(printf '%s\n' "$requested" | awk -F' = ' 'NF == 2 { gsub(/^ +/, "", $1); print $1 }' | sort -u | tr '\n' ' ')"
+[ "$keys" = "aps-environment " ] || fail "$push_file asks for '$keys' — only aps-environment is admitted"
+printf '    ok  %-44s %s\n' "$PUSH_ENTITLEMENTS" "aps-environment only"
 
 # The entitlements guard is asked of the build settings, before anything is built: an
 # unsigned archive carries no entitlements to inspect, and the signed binary only exists
@@ -141,8 +162,12 @@ case "$entitlements" in
   "")
     printf '    ok  %-44s none\n' "CODE_SIGN_ENTITLEMENTS"
     ;;
+  "$PUSH_ENTITLEMENTS")
+    [ "$push_enabled" = 1 ] || fail "$PUSH_ENTITLEMENTS is signed in without ZIMMER_IOS_PUSH_ENABLED=1"
+    printf '    ok  %-44s %s\n' "CODE_SIGN_ENTITLEMENTS" "push only"
+    ;;
   *)
-    fail "CODE_SIGN_ENTITLEMENTS is '$entitlements' — no entitlements file is admitted yet"
+    fail "CODE_SIGN_ENTITLEMENTS is '$entitlements' — only $PUSH_ENTITLEMENTS may be signed in"
     ;;
 esac
 

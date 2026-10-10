@@ -1021,6 +1021,11 @@ the status off `failed`, including `POST /triggers/:id/toggle`, clears them.
 `PATCH /notifications/mark_all_read` · `DELETE /notifications/:id/dismiss` (422 if unread) ·
 `DELETE /notifications/dismiss_all_read` · `POST /notifications/push` (`session_id` + `message`).
 
+`POST /apns_devices` (`token` hex, `environment` `sandbox`|`production`, `device_name`, `app_version`)
+→ 201 `{apns_device}` · `DELETE /apns_devices/:token` → 204. How [the iOS app](/extend/ios-app/#push-notifications)
+registers a phone for push. It is an upsert on the token, and one made with the app's bearer token is
+tied to its grant. Both take the app's token or an API key.
+
 ## Health
 
 `GET /health` → `{health_report, timestamp, rails_env, ruby_version}` ·

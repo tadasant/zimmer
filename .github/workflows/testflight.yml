@@ -112,6 +112,9 @@ jobs:
           # app host behind its own Access application). Either alone serves both.
           ZIMMER_IOS_WEB_BASE_URL: ${{ vars.ZIMMER_IOS_WEB_BASE_URL }}
           ZIMMER_IOS_API_BASE_URL: ${{ vars.ZIMMER_IOS_API_BASE_URL }}
+          # `1` once Push Notifications is ticked on the App ID; until then the build signs
+          # no entitlements at all, and a push-free build is still a working build.
+          ZIMMER_IOS_PUSH_ENABLED: ${{ vars.ZIMMER_IOS_PUSH_ENABLED }}
           # Unique per upload, including a re-run of the same run; increasing in the order runs
           # are created, since run_number is one counter shared by push and dispatch runs. A
           # Re-run of an OLD run rebuilds that run's commit under a lower number, so re-upload
