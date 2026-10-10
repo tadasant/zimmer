@@ -18,7 +18,9 @@ Chrome, Manifest V3, no build step. The docs page is
    key, and save. Saving asks Chrome for permission to talk to that one origin; grant it.
 
 The browser has to be able to reach Zimmer. On a tailnet-scoped instance that means the browser
-is on the tailnet.
+is on the tailnet. Behind Cloudflare Access, it means this browser is signed in at the Zimmer URL:
+the extension sends the browser's cookies, and when the Access sign-in has lapsed the composer says
+so instead of blaming the key.
 
 ## Use
 

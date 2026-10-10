@@ -97,6 +97,12 @@ on a real page both ways (straight to the composer, and through the crosshair to
 reads the session back. It needs a running server and a
 Quick Router key: `BASE_URL=http://localhost:3000 QUICK_ROUTER_KEY=zmr_… node test/e2e/browser_extension_test.js`.
 
+`browser_extension_access_edge_test.js` is its companion for a deployment behind Cloudflare Access,
+and it needs no server or key: `node test/e2e/browser_extension_access_edge_test.js`. A stand-in
+edge refuses requests that carry no sign-in cookie with Access's own HTML 401 (or a redirect to its
+login page). The test proves three things. A signed-in browser gets through. A signed-out one is told
+to sign in rather than that its key is wrong. Zimmer's own JSON 401 still points at the key.
+
 ## The migrations are replayed, in their own job
 
 `test-unit` and `test-system` build the database with `bin/rails db:test:prepare`, which *loads*
