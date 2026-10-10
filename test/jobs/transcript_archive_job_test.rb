@@ -768,6 +768,57 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     assert_equal 1, JSON.parse(File.read(@metadata_path))["deferred_count"]
   end
 
+  test "a tick whose only change is a removal drops that session and keeps the rest" do
+    TranscriptArchiveJob.perform_now
+    sessions = Session.where.not(transcript: nil).order(:id).to_a
+    removed = sessions.last
+    removed.update_column(:transcript, nil)
+
+    TranscriptArchiveJob.perform_now
+
+    metadata = JSON.parse(File.read(@metadata_path))
+    assert_equal (sessions - [ removed ]).map { |s| s.id.to_s }.sort, metadata["sessions"].keys.sort
+    Zip::File.open(@archive_path) do |zip|
+      assert_nil zip.find_entry("sessions/#{removed.id}.json")
+      (sessions - [ removed ]).each { |s| assert_not_nil zip.find_entry("sessions/#{s.id}.json") }
+      manifest = JSON.parse(zip.find_entry("manifest.json").get_input_stream.read)
+      assert_equal metadata["sessions"].keys.sort, manifest["session_ids"]
+    end
+  end
+
+  # A corrupt sidecar makes every session read as changed, and a capped run stamps only a
+  # slice. The entries the archive already holds are still good, so they must survive
+  # the drain rather than being pruned down to that slice.
+  test "a lost sidecar does not shrink the served archive while the backlog drains" do
+    TranscriptArchiveJob.perform_now
+    ids = Session.where.not(transcript: nil).pluck(:id)
+    File.write(@metadata_path, "not json")
+
+    Rails.logger.stubs(:error)
+    Rails.logger.stubs(:warn)
+    TranscriptArchiveJob.any_instance.stubs(:max_sessions_per_run).returns(1)
+    TranscriptArchiveJob.perform_now
+
+    Zip::File.open(@archive_path) do |zip|
+      ids.each { |id| assert_not_nil zip.find_entry("sessions/#{id}.json"), "session #{id} was pruned" }
+    end
+  end
+
+  # `write_buffer`, unlike `commit`, does not unlink the Tempfile rubyzip stages each new
+  # entry in, so the build has to — on success and when the build raises.
+  test "unlinks the staging tempfile of every new entry" do
+    Zip::StreamableStream.any_instance.expects(:clean_up).at_least(2) # a session entry and manifest.json
+    TranscriptArchiveJob.perform_now
+  end
+
+  test "unlinks staging tempfiles when the build raises" do
+    Zip::StreamableStream.any_instance.expects(:clean_up).at_least(1)
+    Zip::File.any_instance.stubs(:write_buffer).raises(Errno::ENOSPC)
+
+    assert_raises(Errno::ENOSPC) { TranscriptArchiveJob.perform_now }
+    assert_empty Dir.glob(@archive_dir.join("latest_*.zip.tmp*")), "the build's temp must not survive the failure"
+  end
+
   # The fixed cost of a run is rewriting the archive, so it has to be paid once: no
   # copy of latest.zip, no commit (which rewrites every entry), and no
   # inflate-and-re-deflate of the unchanged corpus when a session is removed.
