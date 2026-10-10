@@ -166,36 +166,7 @@ struct SessionDetailView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle(Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                if let session = model.detail?.session {
-                    Button {
-                        Task { await model.apply(session.isFavorite ? "Removed from favorites" : "Added to favorites") { try await $0.toggleFavorite(session.id) } }
-                    } label: {
-                        Image(systemName: session.isFavorite ? "star.fill" : "star")
-                            .foregroundStyle(session.isFavorite ? Color.yellow : Color.accentColor)
-                    }
-                    .accessibilityLabel(session.isFavorite ? "Remove from Favorites" : "Add to Favorites")
-                    .accessibilityIdentifier("detail.favorite")
-                    actionsMenu(session)
-                    if session.status == .archived {
-                        Button {
-                            Task { await model.apply("Restored from trash") { try await $0.unarchive(session.id) } }
-                        } label: {
-                            Image(systemName: "arrow.uturn.backward")
-                        }
-                        .accessibilityLabel("Restore from Trash")
-                        .accessibilityIdentifier("detail.restore")
-                    } else {
-                        Button(role: .destructive) { confirmingArchive = true } label: {
-                            Image(systemName: "trash")
-                        }
-                        .accessibilityLabel("Move to trash")
-                        .accessibilityIdentifier("detail.archive")
-                    }
-                }
-            }
-        }
+        .toolbar { toolbarContent }
         .confirmationDialog("Move to trash?", isPresented: $confirmingArchive, titleVisibility: .visible) {
             Button("Trash", role: .destructive) {
                 Task {
@@ -246,6 +217,38 @@ struct SessionDetailView: View {
         .onDisappear {
             // What changed here (a star, a snooze, a restore) shows on the list behind.
             Task { await app.sessionChanged() }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            if let session = model.detail?.session {
+                Button {
+                    Task { await model.apply(session.isFavorite ? "Removed from favorites" : "Added to favorites") { try await $0.toggleFavorite(session.id) } }
+                } label: {
+                    Image(systemName: session.isFavorite ? "star.fill" : "star")
+                        .foregroundStyle(session.isFavorite ? Color.yellow : Color.accentColor)
+                }
+                .accessibilityLabel(session.isFavorite ? "Remove from Favorites" : "Add to Favorites")
+                .accessibilityIdentifier("detail.favorite")
+                actionsMenu(session)
+                if session.status == .archived {
+                    Button {
+                        Task { await model.apply("Restored from trash") { try await $0.unarchive(session.id) } }
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                    }
+                    .accessibilityLabel("Restore from Trash")
+                    .accessibilityIdentifier("detail.restore")
+                } else {
+                    Button(role: .destructive) { confirmingArchive = true } label: {
+                        Image(systemName: "trash")
+                    }
+                    .accessibilityLabel("Move to trash")
+                    .accessibilityIdentifier("detail.archive")
+                }
+            }
         }
     }
 

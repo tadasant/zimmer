@@ -33,46 +33,7 @@ struct SessionListView: View {
                     EmptyListRow(filter: model.filter, searching: !model.searchText.isEmpty)
                 }
                 ForEach(model.sessions) { session in
-                    NavigationLink(value: session.id) {
-                        SessionRow(session: session)
-                    }
-                    .accessibilityIdentifier("session.row.\(session.id)")
-                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                        Button {
-                            Task { await model.perform(session.isFavorite ? "Removed from favorites" : "Added to favorites", on: session.id) { try await $0.toggleFavorite(session.id) } }
-                        } label: {
-                            Label(session.isFavorite ? "Unfavorite" : "Favorite", systemImage: session.isFavorite ? "star.slash" : "star.fill")
-                        }
-                        .tint(.yellow)
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        if session.status == .archived {
-                            Button {
-                                Task { await model.perform("Restored from trash", on: session.id) { try await $0.unarchive(session.id) } }
-                            } label: {
-                                Label("Restore", systemImage: "arrow.uturn.backward")
-                            }
-                            .tint(.green)
-                        } else {
-                            Button(role: .destructive) { trashing = session } label: {
-                                Label("Trash", systemImage: "trash")
-                            }
-                        }
-                        if session.boardVisibility == .visible {
-                            Button { snoozing = session } label: {
-                                Label("Snooze", systemImage: "moon.zzz")
-                            }
-                            .tint(.indigo)
-                        } else {
-                            Button {
-                                Task { await model.perform("Back on the board", on: session.id) { try await $0.setVisibility(session.id, .visible) } }
-                            } label: {
-                                Label("Put back", systemImage: "eye")
-                            }
-                            .tint(.indigo)
-                        }
-                    }
-                    .contextMenu { SessionContextMenu(session: session, trashing: $trashing) }
+                    SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing)
                 }
             }
         }
@@ -96,29 +57,9 @@ struct SessionListView: View {
             if model.isLoading && model.sessions.isEmpty { ProgressView() }
         }
         .overlay(alignment: .bottom) { Toast(text: $model.notice) }
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button { showingSettings = true } label: { Image(systemName: "gearshape") }
-                    .accessibilityLabel("Settings")
-                    .accessibilityIdentifier("settings.open")
-            }
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Menu {
-                    Picker("Board visibility", selection: Binding(get: { model.board }, set: { board in Task { await model.select(board) } })) {
-                        ForEach(BoardFilter.allCases) { board in Text(board.label).tag(board) }
-                    }
-                } label: {
-                    Image(systemName: model.board == .onBoard ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
-                }
-                .accessibilityLabel("Board visibility")
-                .accessibilityIdentifier("board.menu")
-                Button { model.showingQuickRouter = true } label: { Image(systemName: "square.and.pencil") }
-                    .accessibilityLabel("New session")
-                    .accessibilityIdentifier("quickrouter.open")
-            }
-        }
+        .toolbar { toolbarContent }
         .confirmationDialog(
-            "Snooze until…", isPresented: Binding(get: { snoozing != nil }, set: { if !$0 { snoozing = nil } }),
+            "Snooze until…", isPresented: isSnoozing,
             titleVisibility: .visible, presenting: snoozing
         ) { session in
             SnoozeButtons(session: session)
@@ -126,7 +67,7 @@ struct SessionListView: View {
             Text("Visual only — it does not pause, start or stop the session.")
         }
         .confirmationDialog(
-            "Move to trash?", isPresented: Binding(get: { trashing != nil }, set: { if !$0 { trashing = nil } }),
+            "Move to trash?", isPresented: isTrashing,
             titleVisibility: .visible, presenting: trashing
         ) { session in
             Button("Trash", role: .destructive) {
@@ -138,6 +79,92 @@ struct SessionListView: View {
         }
         .sheet(isPresented: $showingSettings) { SettingsView() }
         .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button { showingSettings = true } label: { Image(systemName: "gearshape") }
+                .accessibilityLabel("Settings")
+                .accessibilityIdentifier("settings.open")
+        }
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Menu {
+                Picker("Board visibility", selection: boardSelection) {
+                    ForEach(BoardFilter.allCases) { board in Text(board.label).tag(board) }
+                }
+            } label: {
+                Image(systemName: model.board == .onBoard ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+            }
+            .accessibilityLabel("Board visibility")
+            .accessibilityIdentifier("board.menu")
+            Button { model.showingQuickRouter = true } label: { Image(systemName: "square.and.pencil") }
+                .accessibilityLabel("New session")
+                .accessibilityIdentifier("quickrouter.open")
+        }
+    }
+
+    private var isSnoozing: Binding<Bool> {
+        Binding(get: { snoozing != nil }, set: { if !$0 { snoozing = nil } })
+    }
+
+    private var isTrashing: Binding<Bool> {
+        Binding(get: { trashing != nil }, set: { if !$0 { trashing = nil } })
+    }
+
+    private var boardSelection: Binding<BoardFilter> {
+        Binding(get: { model.board }, set: { board in Task { await model.select(board) } })
+    }
+}
+
+/// One row with the web UI card's quick actions on its swipes and its long press.
+private struct SwipeableSessionRow: View {
+    @EnvironmentObject private var model: AppModel
+    let session: SessionSummary
+    @Binding var snoozing: SessionSummary?
+    @Binding var trashing: SessionSummary?
+
+    var body: some View {
+        NavigationLink(value: session.id) {
+            SessionRow(session: session)
+        }
+        .accessibilityIdentifier("session.row.\(session.id)")
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                Task { await model.perform(session.isFavorite ? "Removed from favorites" : "Added to favorites", on: session.id) { try await $0.toggleFavorite(session.id) } }
+            } label: {
+                Label(session.isFavorite ? "Unfavorite" : "Favorite", systemImage: session.isFavorite ? "star.slash" : "star.fill")
+            }
+            .tint(.yellow)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if session.status == .archived {
+                Button {
+                    Task { await model.perform("Restored from trash", on: session.id) { try await $0.unarchive(session.id) } }
+                } label: {
+                    Label("Restore", systemImage: "arrow.uturn.backward")
+                }
+                .tint(.green)
+            } else {
+                Button(role: .destructive) { trashing = session } label: {
+                    Label("Trash", systemImage: "trash")
+                }
+            }
+            if session.boardVisibility == .visible {
+                Button { snoozing = session } label: {
+                    Label("Snooze", systemImage: "moon.zzz")
+                }
+                .tint(.indigo)
+            } else {
+                Button {
+                    Task { await model.perform("Back on the board", on: session.id) { try await $0.setVisibility(session.id, .visible) } }
+                } label: {
+                    Label("Put back", systemImage: "eye")
+                }
+                .tint(.indigo)
+            }
+        }
+        .contextMenu { SessionContextMenu(session: session, trashing: $trashing) }
     }
 }
 
