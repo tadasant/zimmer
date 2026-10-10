@@ -40,9 +40,9 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
   end
 
   # Returns the token response for a fresh sign-in.
-  def sign_in
+  def sign_in(privilege: OauthServer::RELAY_ONLY)
     verifier, challenge = pkce
-    post "/oauth/authorize", params: authorize_params(challenge).merge(decision: "approve", privilege: OauthServer::RELAY_ONLY)
+    post "/oauth/authorize", params: authorize_params(challenge).merge(decision: "approve", privilege: privilege)
     assert_response :found
     code = URI.decode_www_form(URI.parse(response.location).query).to_h.fetch("code")
     post "/oauth/token", params: { grant_type: "authorization_code", client_id: CLIENT_ID, code: code,
@@ -86,6 +86,14 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
 
     assert_response :bad_request
     assert_nil response.location
+  end
+
+  test "the connection level chosen at consent does not change what the REST API allows" do
+    session = build_zimmer_session(status: :needs_input)
+    [ OauthServer::RELAY_ONLY, OauthServer::ACT_AS_HUMAN ].each do |privilege|
+      get "/api/v1/sessions/#{session.id}", headers: bearer(sign_in(privilege: privilege)["access_token"])
+      assert_response :success, privilege
+    end
   end
 
   test "the app's access token opens the sessions API and refreshes" do
