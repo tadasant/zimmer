@@ -699,7 +699,148 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
         assert_not_nil zip.find_entry("sessions/#{id}.json"),
           "manifest must not count an entry the zip does not contain"
       end
+      assert_nil zip.find_entry("sessions/#{doomed_id}.json"),
+        "the zip must not keep an entry the metadata no longer tracks"
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # #1264 — nothing bounded a run's wall time. SingletonSweep refuses every tick
+  # while a copy runs, so one run that outlived the maintenance lane's 90-minute
+  # ceiling stopped the schedule and paged #alerts for hours.
+  # ---------------------------------------------------------------------------
+
+  test "a run past its deadline stops between sessions and records the rest as deferred" do
+    expected = Session.where.not(transcript: nil).count
+    assert_operator expected, :>, 2, "need enough fixtures for the deadline to cut a run short"
+
+    TranscriptArchiveJob.any_instance.stubs(:run_deadline).returns(0.seconds)
+    Rails.logger.stubs(:warn)
+    Rails.logger.expects(:warn).with(regexp_matches(/stopped after 1 of #{expected} sessions .* deferred to the next tick/))
+
+    TranscriptArchiveJob.perform_now
+
+    metadata = JSON.parse(File.read(@metadata_path))
+    assert_equal 1, metadata["sessions"].size, "a run always archives at least one session"
+    assert_equal expected - 1, metadata["deferred_count"]
+    assert_equal false, metadata["complete"]
+
+    Zip::File.open(@archive_path) do |zip|
+      archived_id = metadata["sessions"].keys.first
+      assert_not_nil zip.find_entry("sessions/#{archived_id}.json")
+      manifest = JSON.parse(zip.find_entry("manifest.json").get_input_stream.read)
+      assert_equal [ archived_id ], manifest["session_ids"]
+    end
+  end
+
+  test "deadline-capped runs converge on the whole corpus, one session per tick" do
+    expected = Session.where.not(transcript: nil).pluck(:id).map(&:to_s).sort
+    TranscriptArchiveJob.any_instance.stubs(:run_deadline).returns(0.seconds)
+    Rails.logger.stubs(:warn)
+
+    expected.size.times { TranscriptArchiveJob.perform_now }
+
+    metadata = JSON.parse(File.read(@metadata_path))
+    assert_equal expected, metadata["sessions"].keys.sort
+    assert_equal 0, metadata["deferred_count"]
+    assert metadata["complete"]
+
+    Zip::File.open(@archive_path) do |zip|
+      expected.each { |id| assert_not_nil zip.find_entry("sessions/#{id}.json") }
+    end
+  end
+
+  test "a session archived before the deadline keeps its entry while a changed one waits" do
+    TranscriptArchiveJob.perform_now
+    first, second = Session.where.not(transcript: nil).order(:id).first(2)
+    [ first, second ].each { |s| s.update_columns(title: "renamed #{s.id}", updated_at: 1.hour.from_now) }
+
+    TranscriptArchiveJob.any_instance.stubs(:run_deadline).returns(0.seconds)
+    Rails.logger.stubs(:warn)
+    TranscriptArchiveJob.perform_now
+
+    Zip::File.open(@archive_path) do |zip|
+      read = ->(s) { JSON.parse(zip.find_entry("sessions/#{s.id}.json").get_input_stream.read) }
+      assert_equal "renamed #{first.id}", read.(first)["title"]
+      assert_not_equal "renamed #{second.id}", read.(second)["title"],
+        "the deferred session's previous entry is carried forward"
+    end
+    assert_equal 1, JSON.parse(File.read(@metadata_path))["deferred_count"]
+  end
+
+  test "a tick whose only change is a removal drops that session and keeps the rest" do
+    TranscriptArchiveJob.perform_now
+    sessions = Session.where.not(transcript: nil).order(:id).to_a
+    removed = sessions.last
+    removed.update_column(:transcript, nil)
+
+    TranscriptArchiveJob.perform_now
+
+    metadata = JSON.parse(File.read(@metadata_path))
+    assert_equal (sessions - [ removed ]).map { |s| s.id.to_s }.sort, metadata["sessions"].keys.sort
+    Zip::File.open(@archive_path) do |zip|
+      assert_nil zip.find_entry("sessions/#{removed.id}.json")
+      (sessions - [ removed ]).each { |s| assert_not_nil zip.find_entry("sessions/#{s.id}.json") }
+      manifest = JSON.parse(zip.find_entry("manifest.json").get_input_stream.read)
+      assert_equal metadata["sessions"].keys.sort, manifest["session_ids"]
+    end
+  end
+
+  # A corrupt sidecar makes every session read as changed, and a capped run stamps only a
+  # slice. The entries the archive already holds are still good, so they must survive
+  # the drain rather than being pruned down to that slice.
+  test "a lost sidecar does not shrink the served archive while the backlog drains" do
+    TranscriptArchiveJob.perform_now
+    ids = Session.where.not(transcript: nil).pluck(:id)
+    File.write(@metadata_path, "not json")
+
+    Rails.logger.stubs(:error)
+    Rails.logger.stubs(:warn)
+    TranscriptArchiveJob.any_instance.stubs(:max_sessions_per_run).returns(1)
+    TranscriptArchiveJob.perform_now
+
+    Zip::File.open(@archive_path) do |zip|
+      ids.each { |id| assert_not_nil zip.find_entry("sessions/#{id}.json"), "session #{id} was pruned" }
+    end
+  end
+
+  # `write_buffer`, unlike `commit`, does not unlink the Tempfile rubyzip stages each new
+  # entry in, so the build has to — on success and when the build raises.
+  test "unlinks the staging tempfile of every new entry" do
+    Zip::StreamableStream.any_instance.expects(:clean_up).at_least(2) # a session entry and manifest.json
+    TranscriptArchiveJob.perform_now
+  end
+
+  test "unlinks staging tempfiles when the build raises" do
+    Zip::StreamableStream.any_instance.expects(:clean_up).at_least(1)
+    Zip::File.any_instance.stubs(:write_buffer).raises(Errno::ENOSPC)
+
+    assert_raises(Errno::ENOSPC) { TranscriptArchiveJob.perform_now }
+    assert_empty Dir.glob(@archive_dir.join("latest_*.zip.tmp*")), "the build's temp must not survive the failure"
+  end
+
+  # The fixed cost of a run is rewriting the archive, so it has to be paid once: no
+  # copy of latest.zip, no commit (which rewrites every entry), and no
+  # inflate-and-re-deflate of the unchanged corpus when a session is removed.
+  test "a run with a change and a removal rewrites the archive once, copying unchanged entries raw" do
+    TranscriptArchiveJob.perform_now
+    sessions = Session.where.not(transcript: nil).order(:id).to_a
+    assert_operator sessions.size, :>, 2
+    changed, removed = sessions.first, sessions.last
+    changed.update_column(:updated_at, 1.hour.from_now)
+    removed.update_column(:transcript, nil)
+
+    FileUtils.expects(:cp).never
+    Zip::File.any_instance.expects(:commit).never
+    # Inflating an archived entry is how the corpus would get re-deflated; a raw copy never does.
+    Zip::Inflater.expects(:new).never
+
+    TranscriptArchiveJob.perform_now
+
+    # `new`, not `open`: the block form closes, and close calls the commit expected never.
+    zip = Zip::File.new(@archive_path)
+    assert_nil zip.find_entry("sessions/#{removed.id}.json")
+    (sessions - [ removed ]).each { |s| assert_not_nil zip.find_entry("sessions/#{s.id}.json") }
   end
 
   # ---------------------------------------------------------------------------

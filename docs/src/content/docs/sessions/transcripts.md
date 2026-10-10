@@ -852,6 +852,20 @@ them is what used to run the worker out of memory
 therefore drains over several ticks instead of being retried whole. Steady state is a handful of
 changed sessions per tick, where neither bound is reached.
 
+A run is bounded in time as well as memory. Between sessions it checks a `RUN_DEADLINE` of ten
+minutes, one cron interval, and once that has passed it stops, writes the archive with what it did,
+and defers the rest the same way the cap does. It always archives at least one session, so the
+frontier keeps moving. The deadline exists because `SingletonSweep` refuses every tick while a run
+is in progress, so a run with no bound stops the schedule: on 2026-10-09 one held the slot for over
+two hours, past the maintenance lane's 90-minute ceiling, and `transcript_archive` paged as a stale
+cron ([#1264](https://github.com/tadasant/zimmer/issues/1264)).
+
+Each run writes the archive once. The old `latest.zip` is opened read-only, the changed sessions,
+removals and manifest are applied in memory, and the result is streamed into the temp file, with
+unchanged entries copied still compressed. The job does not copy `latest.zip` first and does not
+commit through rubyzip, which would rewrite the whole file again. A removed session costs nothing
+extra: its entries are simply not copied.
+
 That makes the job's peak a function of the largest single transcript rather than of the corpus. Not
 one copy of it: reassembling a transcript from its chunks holds the chunk contents and the joined
 string at once, and serializing it builds a third copy before the write. Budget about three times the
