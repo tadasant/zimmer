@@ -7788,6 +7788,19 @@ and what a real iPhone camera hands back. Those are inferred from the markup, no
 changes either, the tests here stay green and the phone stops working — the only detector is
 somebody holding one.
 
+## The transcript archive's deadline cannot stop a run that is stuck
+
+`TranscriptArchiveJob` stops between sessions once its ten-minute `RUN_DEADLINE` has passed
+([#1264](https://github.com/tadasant/zimmer/issues/1264)). The check runs only between sessions, so
+it bounds a run that is slow, not one that is stuck. Three things are outside it: the session in
+flight, the final write of the archive (one sequential copy of `latest.zip`, which grows with the
+corpus), and any call that blocks forever, such as a wedged disk read or a lock that never comes
+back. If a run does hang there, it still holds the `SingletonSweep` slot until the worker container
+is replaced. Every deploy replaces it, but nothing in the app can. CronFreshness still pages when
+that happens, which is the intended signal. Killing a thread from inside the job is not a safe
+alternative, because an interrupted write is exactly what the temp sweep and the atomic rename are
+there to survive, not something to cause on purpose.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
