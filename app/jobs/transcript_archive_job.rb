@@ -121,13 +121,13 @@ class TranscriptArchiveJob < ApplicationJob
   # `latest_<hex>.zip.tmp20260910-82-anpqpv`. Of the 219 orphans measured on production
   # on 2026-09-11, 118 were the first form and 101 the second, so a pattern that ends
   # at `.zip.tmp` leaves about half the leak on disk (#1160). #build_archive writes
-  # through `write_buffer` and does not commit, so it produces only the first form; the
-  # pattern still reaches the second because orphans of that shape sit on disk.
+  # through `write_buffer` and never commits, so a kill of this job leaves only the
+  # first form; the pattern reaches the second for any commit temp left on the volume.
   #
   # Those two are what a kill leaves in THIS directory. rubyzip also stages every
   # entry written through `get_output_stream` in its own `Tempfile` under `Dir.tmpdir`
-  # until the archive is written, so a killed run leaves up to MAX_SESSIONS_PER_RUN of those in the
-  # container's /tmp as well. That is the overlay layer, recreated on every deploy,
+  # until the archive is written, so a killed run leaves up to MAX_SESSIONS_PER_RUN of
+  # those in the container's /tmp as well. That is the overlay layer, recreated on every deploy,
   # not the durable volume this sweep covers — it is out of this sweep's reach by
   # design, not by oversight.
   #
@@ -435,12 +435,10 @@ class TranscriptArchiveJob < ApplicationJob
   # sessions, the pruned ones, the manifest — is applied to rubyzip's in-memory central
   # directory, and `write_buffer` then streams the result into the temp file once.
   # Unchanged entries go across with `copy_raw_entry`, still compressed. That is the
-  # whole of the fixed cost of a run, and it is paid once. Copying `latest.zip` to the temp
-  # and then committing would pay it two or three times — the copy, a `Zip::File#commit`
-  # that rewrites every entry, and another commit for manifest.json — and rebuilding
-  # through `get_output_stream` when a session is removed would inflate and re-deflate
-  # every unchanged entry in the corpus. On a multi-gigabyte archive that is what took a
-  # run to 50 minutes and then past the lane ceiling (#1264).
+  # whole of the fixed cost of a run, and it is paid once. No `FileUtils.cp` of the
+  # archive and no `Zip::File#commit`, each of which is another full copy of it, and no
+  # `get_output_stream` for an unchanged entry, which would inflate and re-deflate it. On
+  # a multi-gigabyte archive those costs are what outlived the lane ceiling (#1264).
   #
   # `latest.zip` is only read until the rename, so a run that dies anywhere before it
   # leaves the live archive exactly as it was.
@@ -453,7 +451,9 @@ class TranscriptArchiveJob < ApplicationJob
 
     zip = nil
     begin
-      zip = Zip::File.new(archive_path, create: !File.exist?(archive_path))
+      # `size?`, not `exist?`: rubyzip refuses to open a zero-byte file, and treating one as
+      # absent rebuilds it rather than failing every tick.
+      zip = Zip::File.new(archive_path, create: !File.size?(archive_path))
 
       attempted = archive_changed_sessions(zip, changed_ids, all_sessions_metadata, subagent_maxima: subagent_maxima)
       cut_short = changed_ids.size - attempted
@@ -466,10 +466,13 @@ class TranscriptArchiveJob < ApplicationJob
                           "at the #{run_deadline.inspect} run deadline; #{cut_short} deferred to the next tick"
       end
 
-      prune_untracked_entries(zip, all_sessions_metadata)
+      vanished_ids = changed_ids.first(attempted).map(&:to_s).reject { |id| all_sessions_metadata.key?(id) }
+      prune_session_entries(zip, removed_session_ids.to_set | vanished_ids)
       write_manifest(zip, all_sessions_metadata)
 
-      File.open(temp_path, "wb") { |file| zip.write_buffer(file) }
+      # In stream mode rubyzip writes through a dup of the handle and leaves it open; the
+      # block closes ours, and `.close` closes the dup.
+      File.open(temp_path, "wb") { |file| zip.write_buffer(file).close }
 
       # Atomic rename
       FileUtils.mv(temp_path, archive_path)
@@ -515,7 +518,7 @@ class TranscriptArchiveJob < ApplicationJob
   # row — so treat it as precedent for the API, not for the reason.
   #
   # A row that vanished between the change scan and here is dropped from the metadata as
-  # well as skipped, and `prune_untracked_entries` then drops its old entry from the zip,
+  # well as skipped, and `prune_session_entries` then drops its old entry from the zip,
   # so the sidecar and manifest never count an entry the zip does not contain.
   #
   # Returns how many ids it reached. The ones it did not are untouched — no new stamp, and
@@ -545,17 +548,18 @@ class TranscriptArchiveJob < ApplicationJob
     end
   end
 
-  # Drops every session entry the metadata no longer tracks: removed sessions, and rows
-  # that vanished mid-run. Run over the in-memory central directory, so it costs one walk
-  # of the entry list and no I/O; the entries it drops are simply not copied by
-  # `write_buffer`. It keys on the metadata rather than on `removed_session_ids`, so the
-  # zip and the sidecar always agree: after a lost sidecar, entries for sessions the
-  # capped run did not reach are dropped too, and come back as the backlog drains.
-  def prune_untracked_entries(zip, all_sessions_metadata)
-    doomed = zip.entries.select do |entry|
-      session_id = extract_session_id_from_path(entry.name)
-      session_id && !all_sessions_metadata.key?(session_id)
-    end
+  # Drops every entry belonging to the given session ids: removed sessions, and rows that
+  # vanished mid-run. Run over the in-memory central directory, so it costs one walk of the
+  # entry list and no I/O; the entries it drops are simply not copied by `write_buffer`.
+  #
+  # Keyed on what is known to be gone, not on "absent from the metadata". After a lost or
+  # corrupt sidecar every session reads as changed and a capped run stamps only a slice of
+  # them; pruning everything unstamped would cut the served archive down to that slice for
+  # the whole drain, when the entries it already holds are still good.
+  def prune_session_entries(zip, session_ids)
+    return if session_ids.empty?
+
+    doomed = zip.entries.select { |entry| session_ids.include?(extract_session_id_from_path(entry.name)) }
     doomed.each { |entry| zip.remove(entry) }
   end
 
