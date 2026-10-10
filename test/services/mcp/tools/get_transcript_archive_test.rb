@@ -92,4 +92,14 @@ class Mcp::Tools::GetTranscriptArchiveTest < ActiveSupport::TestCase
     assert_includes description, "quick_search_sessions"
     assert_includes description, "search_contents"
   end
+  # The archive carries no transcript content and takes no session, so it has
+  # nothing to slice. What it owes a remote caller who reached for it to read one
+  # session is the route that works.
+  test "points a caller reading one session at get_session's bounded slices" do
+    description = Mcp::Tools::GetTranscriptArchive.description
+
+    assert_match(/Not the way to read one session's transcript/, description)
+    assert_includes description, "`get_session` with a `transcript_*` slice parameter"
+    assert_includes description, "transcript_conversation_only: true, transcript_tail: 20"
+  end
 end

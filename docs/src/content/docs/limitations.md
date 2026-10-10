@@ -3013,6 +3013,25 @@ Both count only analyses younger than three hours (`PumpBatch::STALE_AFTER`). Th
 one stuck in `needs_input` from holding a slot forever. It also means a legitimately slow analysis
 (one held that long in the spot queue, say) stops counting, and a fourth can start beside it.
 
+### `get_session`'s transcript slices have three edges
+
+A slice ([The transcript arrives in slices](/extend/mcp-server/#the-transcript-arrives-in-slices-under-a-cap-that-always-applies))
+addresses events by their stored line index. Three edges remain:
+
+- **An index is stable only until a rewrite.** Appends never renumber a line, but a recovery merge,
+  a carryover re-attachment or a fork's truncation replaces the chunk set, and a
+  `transcript_from` / `transcript_to` saved before it can then name different events. Nothing in the
+  response tells a caller that a rewrite happened between two pages.
+- **One event bigger than 400,000 characters can never be read whole.** It is cut mid-event with a
+  marker, and there is no offset *into* an event, so the rest of it is unreachable over MCP.
+- **Conversation-only mode can label machine context as `User`.** It renders the runtime
+  normalizer's `UserMessage` events, so anything a runtime sends as a user-role message — Codex's
+  injected environment context, for one — reads as `User:`, exactly as it does on the session
+  timeline.
+
+The REST routes (`GET /api/v1/sessions/:id?include_transcript=true`, `.../transcript`) are not
+sliced and still return the whole transcript.
+
 ## AIR catalog
 
 ### A dangling reference fails the entire test suite
@@ -7794,6 +7813,19 @@ record and the `testflight` environment. Until then, Keychain behaviour on a dev
 against a real Google login, and cloud signing at export are inferred, not observed. The Xcode
 project is hand-written (folder-synchronised groups, no per-file entries) and has only ever been
 read by `xcodebuild` on CI.
+
+## The transcript archive's deadline cannot stop a run that is stuck
+
+`TranscriptArchiveJob` stops between sessions once its ten-minute `RUN_DEADLINE` has passed
+([#1264](https://github.com/tadasant/zimmer/issues/1264)). The check runs only between sessions, so
+it bounds a run that is slow, not one that is stuck. Three things are outside it: the session in
+flight, the final write of the archive (one sequential copy of `latest.zip`, which grows with the
+corpus), and any call that blocks forever, such as a wedged disk read or a lock that never comes
+back. If a run does hang there, it still holds the `SingletonSweep` slot until the worker container
+is replaced. Every deploy replaces it, but nothing in the app can. CronFreshness still pages when
+that happens, which is the intended signal. Killing a thread from inside the job is not a safe
+alternative, because an interrupted write is exactly what the temp sweep and the atomic rename are
+there to survive, not something to cause on purpose.
 
 ## Open questions
 

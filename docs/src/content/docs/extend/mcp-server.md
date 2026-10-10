@@ -963,6 +963,51 @@ is the strongest word this block has and it must not be read as covering session
 Everything a scheduler reads is short and is never cut: status, scheduling class, precedence, the
 waiting-reason lines, and the `auth_outage_*` / `spot_hold_*` / `spot_pause_*` metadata keys.
 
+### The transcript arrives in slices, under a cap that always applies
+
+An ordinary session's whole transcript runs to ~56k tokens, past a client's 45k-token tool-result
+limit, which refuses the result outright. The file-path hint `get_session` returns when the
+transcript is not requested is no help to a caller on the far side of MCP, which cannot reach that
+disk. So `get_session` always returns the transcript as a bounded slice (`Mcp::TranscriptSlice`):
+
+| Parameter | What it does |
+| --- | --- |
+| `transcript_tail: N` / `transcript_head: N` | The last / first N events. |
+| `transcript_from` / `transcript_to` | An index range; `transcript_to` is exclusive. |
+| `transcript_max_chars` | The character cap, 1,000–400,000 (≈4 characters a token). **Defaults to 40,000** when not given. |
+| `transcript_conversation_only: true` | Human and assistant text only, each tool call collapsed to one line; tool output, thinking and bookkeeping are left out. Works the same for every runtime, because it renders the normalized events. |
+| `transcript_format: "text"` | Readable text with each event prefixed `[#index]`, instead of raw JSONL. |
+
+Pass at most one of head, tail, or a range. Passing any `transcript_*` parameter implies
+`include_transcript: true`. A session with no transcript yet gets a section saying so, not an error.
+
+An **event** is one stored JSONL line. Its 0-based index stays the same as the transcript grows,
+because the chunk store is append-only, and that stable index is what lets a caller page through it.
+A rewrite (a recovery merge, a carryover re-attachment) is the exception, and the
+[limitations](/limitations/) page says so. Every
+section states the total event count, the range requested, and the range returned. When the cap cuts
+the range short, the section says so twice: in a `Truncated:` line and in an in-place
+`[… events #a–#b not shown …]` marker, both naming the `transcript_from` / `transcript_to` values that
+fetch the rest. A tail, and the default with no selector, spends the cap from the newest end, because
+"what is it doing now" is the usual question. A head or a range spends it from the oldest end. A
+single event bigger than the whole cap is cut mid-event, with its own marker, so a page always makes
+progress.
+
+**The default cap is deliberate.** `include_transcript: true` with no other parameter returns the
+newest ~40,000 characters rather than everything. Returning everything cannot work for any
+transcript a client would refuse, and a result the runtime refuses is worse than a short one that
+says how to get the rest.
+
+The slice is read near the storage layer. `Session#each_transcript_line` picks chunks by their
+`line_count` and loads one chunk's content at a time, from whichever end the walk starts, and stops
+when the budget runs out. A tail of a 34 MB transcript reads one or two 256 KiB chunks, not the
+whole document. Rows the chunk backfill has not reached fall back to splitting the legacy column.
+
+`get_transcript_archive` takes no session and returns no transcript content, just a download URL for
+a zip of every transcript, so it has nothing to slice. Its description points a caller who wants one
+session's transcript at `get_session`. The REST routes (`GET /api/v1/sessions/:id?include_transcript=true`
+and `GET /api/v1/sessions/:id/transcript`) still return the whole transcript.
+
 ## Protocol
 
 The SDK's `StreamableHTTPTransport`, run **stateless** with JSON responses: every POST carries one
