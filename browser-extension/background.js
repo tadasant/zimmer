@@ -74,11 +74,21 @@ async function submit(payload) {
     response = await fetch(`${baseUrl}/api/v1/quick_router`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      // A deployment behind an access proxy (Cloudflare Access) admits the
+      // request on the browser's own sign-in cookie for that origin. Zimmer
+      // never redirects this endpoint, so a redirect is reported rather than
+      // followed: following one would POST to a login page and read its 200
+      // as a sent message.
+      credentials: "include",
+      redirect: "manual"
     });
   } catch (error) {
-    return { ok: false, error: `Could not reach ${baseUrl} (${error?.message || error}). On the tailnet?` };
+    return { ok: false, error: `Could not reach ${baseUrl} (${error?.message || error}). Is the URL right, and can this browser reach it?` };
   }
+
+  const refusal = accessProxyRefusal(response, baseUrl);
+  if (refusal) return { ok: false, error: refusal };
 
   let body = {};
   try {
@@ -89,8 +99,13 @@ async function submit(payload) {
 
   if (!response.ok) {
     const detail = body.message || `HTTP ${response.status}`;
-    const hint = response.status === 401 ? " Check the key in the extension's options — it must be a Quick Router key." : "";
+    // Only Zimmer's own 401 is about the key; it answers in JSON with a message.
+    const hint = response.status === 401 && body.message ? " Check the key in the extension's options. It must be a Quick Router key that has not been revoked." : "";
     return { ok: false, error: `Zimmer refused it: ${detail}.${hint}` };
+  }
+
+  if (!body.session_id && !body.session_url) {
+    return { ok: false, error: `${baseUrl} answered, but not as Zimmer: no session came back. Is the URL right?` };
   }
 
   // Linked on the URL this browser just reached, not the one Zimmer reports:
@@ -98,4 +113,27 @@ async function submit(payload) {
   // resolve, while `baseUrl` demonstrably works from here.
   const sessionUrl = body.session_id ? `${baseUrl}/sessions/${body.session_id}` : body.session_url;
   return { ok: true, sessionId: body.session_id, sessionUrl };
+}
+
+// What to tell the human when something in front of Zimmer answered instead of
+// Zimmer, or null when Zimmer answered. Cloudflare Access marks its own
+// refusals with `cf-access-domain`: a 401 when the browser has no valid sign-in
+// there, a 403 when it has one that the policy does not admit. A redirect —
+// `redirect: "manual"` makes it an opaque response with status 0 — is Access
+// sending the request to its login page, or an http URL being sent to https.
+function accessProxyRefusal(response, baseUrl) {
+  if (response.type === "opaqueredirect") {
+    if (baseUrl.startsWith("http:")) {
+      return `${baseUrl} redirected the request instead of answering it. Try the https:// URL in the extension's options.`;
+    }
+    return `${baseUrl} redirected the request instead of answering it, most likely to an access proxy's sign-in page. Open ${baseUrl} in a tab, sign in, then send again.`;
+  }
+  if (!response.headers.has("cf-access-domain")) return null;
+  if (response.status === 401) {
+    return `The access proxy in front of Zimmer stopped it before Zimmer saw it. This browser is not signed in there: open ${baseUrl} in a tab, sign in, then send again.`;
+  }
+  if (response.status === 403) {
+    return `The access proxy in front of Zimmer refused the account this browser is signed in with. Open ${baseUrl} in a tab and sign in with the account the deployment admits.`;
+  }
+  return null;
 }
