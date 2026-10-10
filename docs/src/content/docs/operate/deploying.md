@@ -283,6 +283,18 @@ refused Host is logged at ERROR as `[ActionDispatch::HostAuthorization::DefaultR
 `assume_ssl` and `force_ssl` are unaffected. Host authorization runs before the SSL middleware, so a
 forged Host gets a `403`, not an https redirect to itself.
 
+The iOS app's host (`zimmer-app.tadasant.com`) needs no entry here. The edge rewrites its Host to the
+main domain before the request reaches Rails.
+
+### The iOS app's edge audience
+
+`GET /native/access-handoff` refuses every Cloudflare Access assertion until `ZIMMER_NATIVE_ACCESS_AUD`
+names the native app's Access audience tag, the edge Terraform's `native_app_access_aud` output. See
+[the iOS app](/extend/ios-app/#signing-in). Both Kamal configs read it from the environment
+`kamal deploy` runs in, the way `ZIMMER_ALLOWED_HOSTS` is read. On staging, `Deploy staging` passes
+the `ZIMMER_NATIVE_ACCESS_AUD` repository variable through. The production deploy lives in the
+private companion repo and has to pass it the same way. It is not a secret.
+
 ## Background jobs and durable state
 
 `config/environments/production.rb` sets `good_job.execution_mode = :external`, which requires a

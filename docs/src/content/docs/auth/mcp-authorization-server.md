@@ -62,7 +62,9 @@ and has both.
 **Exactly what an `api` key opens on `/mcp`, and nothing outside it.** Every tool group is
 reachable, and `?tool_groups=` and `allowed_agent_roots=` on the URL narrow the connection the same
 way they do for a key. A token does not open the REST API (`/api/v1/*`) or a Zimmer plugin's
-`/mcp/external_app`. Both refuse it the way they refuse any unknown key.
+`/mcp/external_app`. Both refuse it the way they refuse any unknown key. The one exception is a
+token issued to [Zimmer's own iOS app](#the-built-in-ios-app-client), which also opens the REST
+endpoints that app drives.
 
 The reasoning: the person who approves a connection is someone the deployment already trusts with
 the whole web UI. Zimmer is [one circle of trust](/intro/philosophy/), and inside it an `api` key
@@ -143,6 +145,26 @@ document lists).
 **Extra grant types are narrowed, not refused.** Claude.ai lists the JWT-bearer grant and VS Code the
 device-code grant. Zimmer requires only that `authorization_code` (and response type `code`) be in
 the list, and registers the client for `authorization_code` and `refresh_token`.
+
+### The built-in iOS app client
+
+[Zimmer's iOS app](/extend/ios-app/) does not register. Its client is built in under the fixed
+`client_id` **`zimmer-ios`** (`OauthServer::NativeApp`), and the `oauth_server_clients` row is
+created the first time an authorization request names it. Its `registration_type` is `first_party`,
+which the pruner below never deletes.
+
+- **Its redirect URI is a private-use scheme**, `com.tadasant.zimmer:/oauth/callback` — the reverse
+  of the app's bundle id (RFC 8252 §7.1). Registered clients still may not use custom schemes,
+  because any app on a phone can claim one. This one URI is fixed in Zimmer's code rather than claimed by
+  a caller, and the code it carries is worthless without the PKCE verifier that never left the app
+  that started the flow (RFC 8252 §8.1). Any other `redirect_uri` with this `client_id` gets an
+  error page, never a redirect.
+- **The consent screen says so.** It names "Zimmer for iOS — Zimmer's own app, built in" and shows
+  the scheme it returns to.
+- **Its tokens also open the REST API**, on the controllers that declare
+  `accepts_native_app_tokens` (sessions, today). A token from any other client is still refused
+  there. Like every token this server issues, it opens all of `/mcp` too, and the consent screen
+  says so. See [the REST API](/extend/rest-api/#the-ios-apps-bearer-token).
 
 ### Dynamic Client Registration
 

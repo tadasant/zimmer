@@ -272,6 +272,10 @@ env:
     # check off -- the break-glass if a legitimate Host is ever refused with a 403.
     ZIMMER_TAILNET_HOSTNAME: zimmer
     ZIMMER_ALLOWED_HOSTS: <%= ENV.fetch("ZIMMER_ALLOWED_HOSTS", "").to_json %>
+    # The iOS app's edge handoff (NativeAccessHandoffsController) refuses every
+    # Cloudflare Access assertion until this names the native app's Access audience
+    # tag (the edge Terraform's `native_app_access_aud` output). Not a secret.
+    ZIMMER_NATIVE_ACCESS_AUD: <%= ENV.fetch("ZIMMER_NATIVE_ACCESS_AUD", "").to_json %>
     # Managed Postgres (off-droplet), reached over the private VPC. Host/port are
     # injected from `terraform output`; TLS is mandatory for Managed Postgres.
     DATABASE_HOST: <%= ENV["PRODUCTION_DB_HOST"] %>

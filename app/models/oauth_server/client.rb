@@ -11,10 +11,14 @@ module OauthServer
   #   client's redirect URIs (draft-ietf-oauth-client-id-metadata-document). The
   #   row is a cache of that document, re-fetched once `metadata_expires_at`
   #   passes. See OauthServer::ClientMetadataDocument.
+  #
+  # And one way that is not a registration at all: **`first_party`**, Zimmer's
+  # own iOS app, built in under a fixed `client_id`. See OauthServer::NativeApp.
   class Client < ApplicationRecord
     DCR = "dcr"
     CIMD = "cimd"
-    REGISTRATION_TYPES = [ DCR, CIMD ].freeze
+    FIRST_PARTY = "first_party"
+    REGISTRATION_TYPES = [ DCR, CIMD, FIRST_PARTY ].freeze
 
     DCR_CLIENT_ID_PREFIX = "zmc_"
 
@@ -42,6 +46,7 @@ module OauthServer
       def resolve!(client_id)
         client_id = client_id.to_s
         raise Error.new("invalid_client", "client_id is required") if client_id.blank?
+        return NativeApp.client if NativeApp.client_id?(client_id)
         return ClientMetadataDocument.resolve!(client_id) if ClientMetadataDocument.url_client_id?(client_id)
 
         dcr.find_by(client_id: client_id) || raise(Error.new("invalid_client", "unknown client_id"))
@@ -77,6 +82,8 @@ module OauthServer
     end
 
     def cimd? = registration_type == CIMD
+
+    def first_party? = registration_type == FIRST_PARTY
 
     def metadata_stale?(now = Time.current)
       metadata_expires_at.nil? || metadata_expires_at <= now

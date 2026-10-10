@@ -7815,6 +7815,32 @@ and what a real iPhone camera hands back. Those are inferred from the markup, no
 changes either, the tests here stay green and the phone stops working — the only detector is
 somebody holding one.
 
+## The iOS app's two sign-ins have not run end to end
+
+On Tadas's deployment the app signs in to the Cloudflare Access edge on the app host
+(`/native/access-handoff`), then to Zimmer's OAuth on the web host. Both halves are tested against
+stubs: the Rails route against JWTs signed by a test key and a stubbed JWKS, and the app against a
+scripted transport. Nothing has run them together against the real Access team, because the app host,
+its Access application and `ZIMMER_NATIVE_ACCESS_AUD` are set up in the private companion repo and had
+not been applied when the route was written. Until someone signs in on a phone, three things are
+inferred rather than observed: that Access forwards `Cf-Access-Jwt-Assertion` on the handoff, that
+its JWKS has the shape `JWT::JWK::Set` reads, and that the sheet's Google session carries from one
+sign-in into the other.
+
+The route trusts the JWKS it fetches from the team domain over HTTPS. A team domain misconfigured to a
+host someone else controls would let that host mint handoffs. The default is Tadas's team, and the
+value is read only from the secret chain.
+
+## The iOS app has never been signed, installed on a device, or opened in Xcode
+
+Everything in [the iOS app](/extend/ios-app/) is proven the way Motet's was before its first upload:
+the Swift package is tested on Linux and macOS, and the app is built, archived unsigned and driven on
+a simulator in CI. No TestFlight build exists until a human creates the App ID, the App Store Connect
+record and the `testflight` environment. Until then, Keychain behaviour on a device, the sign-in sheet
+against a real Google login, and cloud signing at export are inferred, not observed. The Xcode
+project is hand-written (folder-synchronised groups, no per-file entries) and has only ever been
+read by `xcodebuild` on CI.
+
 ## The transcript archive's deadline cannot stop a run that is stuck
 
 `TranscriptArchiveJob` stops between sessions once its ten-minute `RUN_DEADLINE` has passed

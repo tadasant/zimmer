@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The app, built for the staging deployment.
+
+  It differs from the `Zimmer` scheme in exactly one way — the `Staging` build configuration
+  — and that configuration differs from `Debug` in exactly one way that matters:
+  `ZIMMER_BUILD_ENVIRONMENT = staging`, a LABEL rather than a hostname, which is what lets
+  it exist in a public repository. The server itself is still passed on the command line
+  by `ios/bin/build-app`, given the Staging configuration and an api-base-url of its own,
+  so no deployment's host
+  is written in this file, in the project, or anywhere else here.
+
+  Archiving is deliberately Staging too: a staging archive that quietly archived Release
+  would carry the production label, which is the one direction the badge must never be
+  wrong in.
+-->
+<Scheme LastUpgradeVersion = "1600" version = "1.7">
+   <BuildAction parallelizeBuildables = "YES" buildImplicitDependencies = "YES">
+      <BuildActionEntries>
+         <BuildActionEntry buildForTesting = "YES" buildForRunning = "YES" buildForProfiling = "YES" buildForArchiving = "YES" buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AA0000000000000000000020"
+               BuildableName = "Zimmer.app"
+               BlueprintName = "Zimmer"
+               ReferencedContainer = "container:Zimmer.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction buildConfiguration = "Staging" selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv = "YES">
+      <Testables>
+      </Testables>
+   </TestAction>
+   <LaunchAction buildConfiguration = "Staging" selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB" launchStyle = "0" useCustomWorkingDirectory = "NO" ignoresPersistentStateOnLaunch = "NO" debugDocumentVersioning = "YES" debugServiceExtension = "internal" allowLocationSimulation = "YES">
+      <BuildableProductRunnable runnableDebuggingMode = "0">
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "AA0000000000000000000020"
+            BuildableName = "Zimmer.app"
+            BlueprintName = "Zimmer"
+            ReferencedContainer = "container:Zimmer.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </LaunchAction>
+   <ProfileAction buildConfiguration = "Staging" shouldUseLaunchSchemeArgsEnv = "YES" savedToolIdentifier = "" useCustomWorkingDirectory = "NO" debugDocumentVersioning = "YES">
+      <BuildableProductRunnable runnableDebuggingMode = "0">
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "AA0000000000000000000020"
+            BuildableName = "Zimmer.app"
+            BlueprintName = "Zimmer"
+            ReferencedContainer = "container:Zimmer.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </ProfileAction>
+   <AnalyzeAction buildConfiguration = "Staging">
+   </AnalyzeAction>
+   <ArchiveAction buildConfiguration = "Staging" revealArchiveInOrganizer = "YES">
+   </ArchiveAction>
+</Scheme>

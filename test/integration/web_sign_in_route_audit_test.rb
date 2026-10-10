@@ -49,7 +49,8 @@ class WebSignInRouteAuditTest < ActionDispatch::IntegrationTest
     "turbo/native/navigation" => "turbo-rails' recede/resume/refresh redirects for native apps; they render nothing",
     "active_storage/" => "Active Storage is drawn but unused: db/schema.rb has no active_storage_* tables, so there is no blob to serve and no upload to accept",
     "action_mailbox/" => "Action Mailbox is drawn but unused: no action_mailbox_* tables, and every ingress demands its own password",
-    "rails/conductor/" => "Action Mailbox's conductor refuses every request outside development"
+    "rails/conductor/" => "Action Mailbox's conductor refuses every request outside development",
+    "native_access_handoffs" => "the iOS app's edge handoff: hands back only the Cloudflare Access assertion the request already carries, after verifying it (signature, iss, exp, required aud); 403 without one, and every API call still needs Zimmer's own OAuth token"
   }.freeze
 
   test "every routed controller is walled, a machine path, or a named framework route" do

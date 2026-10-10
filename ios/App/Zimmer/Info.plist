@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hand-written (GENERATE_INFOPLIST_FILE is off), so every key here is one somebody chose.
+
+  * The bundle identity keys, as build-setting references. Nothing adds them for us, and an
+    app without `CFBundleExecutable` compiles cleanly and is refused at upload.
+    `ios/bin/testflight check` asserts each against the archived app.
+  * `ITSAppUsesNonExemptEncryption: false` — the app's only cryptography is HTTPS, the
+    Keychain and a SHA-256 for PKCE, all exempt. Without the key every build waits on an
+    export-compliance question before a tester can install it.
+  * `NSAppTransportSecurity` is deliberately absent: Zimmer is reached over HTTPS, and an
+    exception here would be a way to point the app at a plaintext host by accident.
+  * `ZimmerDefaultWebBaseURL` / `ZimmerDefaultAPIBaseURL` — the deployment a distribution
+    build is pointed at, from the `ZIMMER_DEFAULT_WEB_BASE_URL` / `ZIMMER_DEFAULT_API_BASE_URL`
+    build settings: where a person signs in (the OAuth issuer), and where machine calls go
+    (an app host behind its own access proxy, where there is one). Either alone means one
+    origin for both. Empty in this repo and in every CI build; the TestFlight workflow passes
+    them from GitHub environment variables, so no hostname is written here. The sign-in
+    screen still lets a person type others.
+  * `ZimmerBuildEnvironment` — which deployment this build was made for (`production`,
+    `staging`, `development`), from `ZIMMER_BUILD_ENVIRONMENT`. A label, never a hostname;
+    empty or unrecognised reads as production.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Zimmer</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>ZimmerDefaultWebBaseURL</key>
+	<string>$(ZIMMER_DEFAULT_WEB_BASE_URL)</string>
+	<key>ZimmerDefaultAPIBaseURL</key>
+	<string>$(ZIMMER_DEFAULT_API_BASE_URL)</string>
+	<key>ZimmerBuildEnvironment</key>
+	<string>$(ZIMMER_BUILD_ENVIRONMENT)</string>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+</dict>
+</plist>

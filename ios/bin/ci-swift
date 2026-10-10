@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+#
+# Build and test ZimmerKit — the Foundation-only half of the iOS client, and so the half that
+# can be tested anywhere. Called by the `ios` CI job on macOS and the `ios_swift_linux` job on
+# the self-hosted Linux pool.
+#
+# Finding a toolchain, in order:
+#   1. `swift` on PATH            — a Mac with Xcode, or a machine that already has one.
+#   2. a per-runner install       — what `ci.yml` sets up with install-swift-toolchain.
+#   3. nothing                    — SKIP on a laptop, FAIL in CI.
+#
+# The skip is a deliberate compromise for contributors without a Swift toolchain. In CI it is the opposite of a compromise — a green run that quietly tested nothing is
+# indistinguishable from a green run that tested everything — so when `CI` is set, a missing
+# toolchain fails the build rather than printing a warning nobody reads.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+find_swift() {
+  if command -v swift >/dev/null 2>&1; then
+    command -v swift
+    return 0
+  fi
+  local runner_num shim
+  runner_num=$(echo "${RUNNER_NAME:-}" | grep -oE '[0-9]+$' || echo "0")
+  for shim in "${ZIMMER_SWIFT_SHIM:-}" \
+              "$HOME/.zimmer-ios/runner-${runner_num}/swift/shim/swift" \
+              "$HOME/.zimmer-ios/swift/shim/swift"; do
+    if [ -n "$shim" ] && [ -x "$shim" ]; then
+      printf '%s\n' "$shim"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! SWIFT=$(find_swift); then
+  if [ -n "${CI:-}" ]; then
+    printf '\n\033[1;31m==> FAILED: no Swift toolchain in CI\033[0m\n'
+    printf '    The workflow installs one before calling this; that step must have failed\n'
+    printf '    or stopped exporting its PATH. Refusing to report green on untested code.\n\n'
+    exit 1
+  fi
+  printf '\n\033[1;33m==> SKIPPED: ZimmerKit tests (no Swift toolchain)\033[0m\n'
+  printf '    Install one with: ios/bin/install-swift-toolchain\n'
+  printf '    On a Mac, Xcode provides it. CI installs one, and fails if it is missing.\n\n'
+  exit 0
+fi
+
+printf '    using %s (%s)\n' "$SWIFT" "$("$SWIFT" --version | head -1)"
+"$SWIFT" build
+"$SWIFT" test
