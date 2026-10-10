@@ -35,9 +35,11 @@ issued to any other OAuth client, or presented anywhere else, gets the same 401 
 same expiry, revocation and audience checks as `/mcp` apply, and revoking the connection on
 **Settings → API keys** refuses the phone on its next request. `X-API-Key` is unchanged beside it.
 
-A follow-up the app sends is recorded as the signed-in human's message (`ios_app.follow_up`, see
-[human messages](/sessions/hierarchy-and-human-messages/)). A follow-up over an API key records
-nothing, as before.
+A follow-up the app sends is recorded the way any OAuth client's is
+([the assistant channel](/sessions/hierarchy-and-human-messages/#the-assistant-channel)): as the
+approver's message, on channel `assistant` with entry point `ios_app.follow_up`, and only when the
+app's connection acts on their behalf. A relay-only connection, an approver with no roster row, or a
+follow-up over an API key records nothing.
 
 On a deployment that serves the app from its own hostname behind an access proxy, the app also sends
 `cf-access-token`, the edge's credential, which Rails ignores. It gets that credential from
@@ -793,7 +795,7 @@ it holds a permission for is exempt from it.
 
 **Zimmer's iOS app uses it too**, with its [bearer token](#the-ios-apps-bearer-token) instead of a
 key. The session is started the same way, with `metadata.source` set to `ios_app`, and the prompt is
-recorded as the human's message (`ios_app.quick_router`). The rate limit applies to both.
+recorded the same way as the app's follow-ups (`ios_app.quick_router`). The rate limit applies to both.
 
 ```bash
 curl -X POST https://zimmer.example.com/api/v1/quick_router \
