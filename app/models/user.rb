@@ -109,8 +109,10 @@ class User < ApplicationRecord
       where("slack_user_ids @> ARRAY[?]::varchar[]", slack_user_id.to_s).first
     end
 
-    # The human at an email address. Not yet wired to a capture boundary — see
-    # the note in HumanMessageCapture about `auth_identity_email`.
+    # The human at an email address. The `assistant` capture boundary resolves an
+    # OAuth grant's approver through this (HumanMessageCapture
+    # .record_assistant_message). A session's `auth_identity_email` must never be
+    # passed here — see the note in HumanMessageCapture.
     def for_email(email)
       return nil if email.blank?
 

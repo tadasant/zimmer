@@ -54,16 +54,20 @@ module Mcp
     # @param oauth_grant_id [Integer, nil] the OauthServer::Grant this request authenticated with, nil
     #   for an API key. A grant is what a remote MCP client such as a Claude.ai connector holds after a
     #   human approved it, so it says the caller is that human's assistant rather than one of the
-    #   fleet's agents. It names who approved the CLIENT, not who wrote a given argument, so it is
-    #   never grounds for recording a HumanMessage. It grants nothing and scopes nothing.
+    #   fleet's agents. It grants nothing and scopes nothing. On its own it names who approved the
+    #   CLIENT, not who wrote a given argument; only a grant that also holds
+    #   OauthServer::ACT_AS_HUMAN_SCOPE — the approver's explicit choice — makes the words its client
+    #   delivers into a session a HumanMessage (see #capture_assistant_message).
+    # @param oauth_grant [OauthServer::Grant, nil] the grant itself, when the caller already loaded it
     def initialize(tool_groups: nil, allowed_agent_roots: nil, base_url: nil, caller_fingerprint: nil,
-                   session_id: nil, oauth_grant_id: nil)
+                   session_id: nil, oauth_grant_id: nil, oauth_grant: nil)
       @tool_groups = Registry.parse_groups(tool_groups)
       @allowed_agent_roots = parse_list(allowed_agent_roots).presence
       @base_url = base_url.presence || SelfSessionInjector.new.self_target[:base_url]
       @caller_fingerprint = caller_fingerprint.presence || HealthActionCooldown::ANONYMOUS
       @self_session_id = normalize_session_id(session_id)
-      @oauth_grant_id = oauth_grant_id
+      @oauth_grant_id = oauth_grant&.id || oauth_grant_id
+      @oauth_grant = oauth_grant
     end
 
     def tools
@@ -78,6 +82,26 @@ module Mcp
     # Whether this request authenticated with an OAuth access token rather than an API key.
     def oauth?
       !@oauth_grant_id.nil?
+    end
+
+    def oauth_grant
+      return nil unless oauth?
+
+      @oauth_grant ||= OauthServer::Grant.find_by(id: @oauth_grant_id)
+    end
+
+    # Record words this connection delivered into `session` as the human's, when
+    # — and only when — it is an OAuth grant its approver let act on their
+    # behalf. Every other connection records nothing, which is the safe outcome.
+    # Called by the tools that carry text into a session, after the text landed.
+    #
+    # @return [HumanMessage, nil]
+    def capture_assistant_message(session, content, entry_point)
+      return nil unless oauth?
+
+      HumanMessageCapture.record_assistant_message(
+        session: session, grant: oauth_grant, content: content, entry_point: entry_point
+      )
     end
 
     def session_url(session)

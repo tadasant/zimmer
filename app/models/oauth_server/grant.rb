@@ -25,7 +25,44 @@ module OauthServer
 
     TokenPair = Data.define(:access_token, :refresh_token, :expires_in)
 
+    # Why a grant's scope last changed, recorded in `scope_change_reason`.
+    SCOPE_CHANGE_REASONS = %w[consent ui_downgrade ui_upgrade backfill].freeze
+
+    validates :scope_change_reason, inclusion: { in: SCOPE_CHANGE_REASONS }, allow_nil: true
+
     def revoked? = revoked_at.present?
+
+    # Whether this connection acts on behalf of the human who approved it: a
+    # message its client delivers into a session is recorded as that human's.
+    # Read from the stored scope on every request, so a downgrade on the
+    # connections page applies to the very next call without touching a token.
+    def acts_as_human?
+      !revoked? && OauthServer.scope_tokens(scope).include?(OauthServer::ACT_AS_HUMAN_SCOPE)
+    end
+
+    def privilege
+      OauthServer.scope_tokens(scope).include?(OauthServer::ACT_AS_HUMAN_SCOPE) ? OauthServer::ACT_AS_HUMAN : OauthServer::RELAY_ONLY
+    end
+
+    # The client's own name for itself, or a stand-in. A self-registered client
+    # chooses this string, so renderers must still treat it as untrusted.
+    def client_label
+      client.client_name.presence || "Unnamed client"
+    end
+
+    # Move this grant to `privilege` (OauthServer::PRIVILEGES), recording why.
+    # A no-op when it is already there, so a double submit writes nothing.
+    #
+    # @return [Boolean] whether the scope changed
+    def change_privilege!(privilege, reason:)
+      target = OauthServer.scope_for(privilege)
+      return false if scope == target
+
+      update!(scope: target, scope_changed_at: Time.current, scope_change_reason: reason)
+      Rails.logger.warn("[oauth_server] grant #{id} (#{user_email}, client #{client.client_id.inspect}) " \
+        "privilege set to #{privilege} (#{reason})")
+      true
+    end
 
     def revoke!(reason)
       return if revoked?

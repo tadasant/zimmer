@@ -461,6 +461,10 @@ module Mcp
           # creates builds the next prompt, and it must see the edge. Rolling
           # back takes the edge with it, so a failed send still records nothing.
           record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
+          # Same reasoning as the edge: before the enqueue, so the prompt the job
+          # builds already sees this turn as the human's, and inside the
+          # transaction, so a failed send records nothing.
+          context.capture_assistant_message(session, prompt, "oauth.follow_up")
           job = AgentSessionJob.enqueue_with_prompt(session.id, prompt)
           session.update!(running_job_id: job.job_id)
         end
@@ -487,6 +491,9 @@ module Mcp
           )
         end
 
+        # Before the interrupt, as SessionsController does for the browser: the
+        # turn it starts must already see these words as the human's.
+        context.capture_assistant_message(session, prompt, "oauth.follow_up")
         result = Sessions::InterruptService.new(
           session: session,
           enqueued_message: enqueued_message,
@@ -523,6 +530,7 @@ module Mcp
           content: "Message queued at position #{enqueued_message.position} (session is running)",
           level: "info"
         )
+        context.capture_assistant_message(session, prompt, "oauth.follow_up_queued")
 
         follow_up_result(
           session.reload,

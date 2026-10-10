@@ -60,6 +60,32 @@ class ApiKeysController < ApplicationController
       notice: "Revoked #{grant.client.client_name.presence || 'the client'}'s connection. It is refused from the next request on."
   end
 
+  # Move an OAuth connection between "acts on my behalf" and "relay only"
+  # (OauthServer::PRIVILEGES). Browser-only, like revoking: this is the switch
+  # that decides whether a client's messages are recorded as the human's, so it
+  # sits behind the same sign-in wall as the consent screen that first set it.
+  def set_oauth_grant_privilege
+    grant = OauthServer::Grant.find(params[:id])
+    privilege = params[:privilege].to_s
+    name = grant.client_label
+
+    unless OauthServer::PRIVILEGES.include?(privilege)
+      return redirect_to api_keys_path(anchor: "oauth-connections"), alert: "Unknown privilege level."
+    end
+    if grant.revoked?
+      return redirect_to api_keys_path(anchor: "oauth-connections"), alert: "#{name}'s connection is revoked; approve it again to reconnect."
+    end
+
+    reason = privilege == OauthServer::ACT_AS_HUMAN ? "ui_upgrade" : "ui_downgrade"
+    grant.change_privilege!(privilege, reason: reason)
+    notice = if privilege == OauthServer::ACT_AS_HUMAN
+      "#{name} now acts on your behalf: messages it sends are recorded as yours."
+    else
+      "#{name} is now relay only: messages it sends are recorded as the assistant's, from its next request on."
+    end
+    redirect_to api_keys_path(anchor: "oauth-connections"), notice: notice
+  end
+
   def restore
     @api_key.restore!
     log_lifecycle("restored", @api_key)

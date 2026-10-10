@@ -7,6 +7,12 @@
       <code class="bg-gray-100 px-1 rounded">/mcp</code> and nothing else. Revoking one refuses its access token on the next
       request and ends its refresh token, so the client has to be approved again.
     </p>
+    <p class="mt-2 text-sm text-gray-500">
+      A connection that <strong>acts on your behalf</strong> has the messages it sends to sessions recorded as written by the
+      person who approved it, naming the connection, and a merge gate may treat them as that person's approval. A
+      <strong>relay only</strong> connection's messages are recorded as the assistant's. Changing the level applies from the
+      connection's next request.
+    </p>
   </div>
 
   <% if grants.empty? %>
@@ -24,6 +30,13 @@
                   <span class="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800">Revoked</span>
                 <% else %>
                   <span class="inline-flex rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">Active</span>
+                <% end %>
+                <% if grant.privilege == OauthServer::ACT_AS_HUMAN %>
+                  <span class="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900"
+                        title="Messages it sends are recorded as written by <%= grant.user_email %>">Acts on your behalf</span>
+                <% else %>
+                  <span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700"
+                        title="Messages it sends are recorded as the assistant's">Relay only</span>
                 <% end %>
                 <span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600"
                       title="<%= client.cimd? ? "Described by the metadata document at its client_id URL" : "Registered itself at /oauth/register" %>">
@@ -49,6 +62,12 @@
                   <dt class="inline">Approved</dt>
                   <dd class="inline"><%= grant.created_at.utc.strftime("%Y-%m-%d %H:%M UTC") %></dd>
                 </div>
+                <% if grant.scope_changed_at %>
+                  <div>
+                    <dt class="inline">Level set</dt>
+                    <dd class="inline"><%= grant.scope_changed_at.utc.strftime("%Y-%m-%d %H:%M UTC") %> — <%= { "consent" => "chosen at approval", "ui_downgrade" => "lowered on this page", "ui_upgrade" => "raised on this page", "backfill" => "raised by the one-time backfill of existing connections" }.fetch(grant.scope_change_reason.to_s, grant.scope_change_reason) %></dd>
+                  </div>
+                <% end %>
                 <% if grant.revoked? %>
                   <div>
                     <dt class="inline">Revoked</dt>
@@ -59,7 +78,15 @@
             </div>
 
             <% unless grant.revoked? %>
-              <div class="shrink-0">
+              <div class="shrink-0 flex flex-wrap gap-2">
+                <% if grant.privilege == OauthServer::ACT_AS_HUMAN %>
+                  <%= button_to "Make relay only", oauth_grant_privilege_path(grant), params: { privilege: OauthServer::RELAY_ONLY },
+                        class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
+                <% else %>
+                  <%= button_to "Let it act on my behalf", oauth_grant_privilege_path(grant), params: { privilege: OauthServer::ACT_AS_HUMAN },
+                        form: { data: { turbo_confirm: "Record every message #{client.client_name.presence || 'this client'} sends to a session as written by #{grant.user_email}? A merge gate may treat them as that person's approval, and anything that steers the assistant can then speak as them." } },
+                        class: "inline-flex items-center px-3 py-1.5 border border-amber-300 text-sm font-medium rounded-md text-amber-900 bg-white hover:bg-amber-50" %>
+                <% end %>
                 <%= button_to "Revoke", revoke_oauth_grant_path(grant),
                       form: { data: { turbo_confirm: "Revoke #{client.client_name.presence || 'this client'}'s connection? It is refused from the next request on, and has to be approved again to reconnect." } },
                       class: "inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50" %>
