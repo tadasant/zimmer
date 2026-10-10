@@ -93,7 +93,7 @@ The app is a public OAuth client of Zimmer's own authorization server — the bu
 client (`app/services/oauth_server/native_app.rb`). It is Motet's model (PKCE, the web sign-in
 does the identity work, a short-lived code, no OAuth client of our own at Google) on a server that
 already existed: `/oauth/authorize` sits behind Zimmer's web sign-in wall (Google + TOTP), so the
-system sheet shows the same steps a browser does, then a consent screen for "Zimmer for iOS".
+system sheet shows the same steps a browser does, then a consent screen for "Zimmer for iOS" (choose **Relay only**; the REST API never reads the connection level).
 
 The callback is the private-use scheme `com.tadasant.zimmer:/oauth/callback` (RFC 8252 §7.1)
 rather than Motet's `webcredentials` https link. That needs no Associated Domains capability and
