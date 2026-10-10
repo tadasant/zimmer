@@ -16,8 +16,11 @@ struct RootView: View {
             case .some(false):
                 SignInView()
             case .some(true):
-                NavigationStack {
+                NavigationStack(path: $model.path) {
                     SessionListView()
+                        .navigationDestination(for: Int.self) { id in
+                            SessionDetailView(id: id, api: model.api)
+                        }
                 }
             }
         }

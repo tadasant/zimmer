@@ -22,7 +22,10 @@ struct SessionListView: View {
                     EmptyListRow(filter: model.filter)
                 }
                 ForEach(model.sessions) { session in
-                    SessionRow(session: session)
+                    NavigationLink(value: session.id) {
+                        SessionRow(session: session)
+                    }
+                    .accessibilityIdentifier("session.row.\(session.id)")
                 }
             }
         }
@@ -33,13 +36,19 @@ struct SessionListView: View {
             if model.isLoading && model.sessions.isEmpty { ProgressView() }
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .topBarLeading) {
                 Button { showingSettings = true } label: { Image(systemName: "gearshape") }
                     .accessibilityLabel("Settings")
                     .accessibilityIdentifier("settings.open")
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { model.showingQuickRouter = true } label: { Image(systemName: "square.and.pencil") }
+                    .accessibilityLabel("New session")
+                    .accessibilityIdentifier("quickrouter.open")
+            }
         }
         .sheet(isPresented: $showingSettings) { SettingsView() }
+        .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
     }
 }
 
@@ -98,7 +107,6 @@ struct SessionRow: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("session.row.\(session.id)")
     }
 }
 

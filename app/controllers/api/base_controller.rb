@@ -89,6 +89,13 @@ class Api::BaseController < ActionController::API
     end
   end
 
+  # Whether this request came from Zimmer's iOS app, signed in as a human. Unlike
+  # an API key, which names a key, that grant names the person who approved the
+  # phone, so a message typed in the app is a human's own words.
+  def native_app_request?
+    @native_app_grant.present?
+  end
+
   def native_app_token_presented?
     native_app_tokens_accepted && native_app_bearer_token.present?
   end

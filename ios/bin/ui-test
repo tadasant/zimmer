@@ -230,6 +230,8 @@ if [ -d "$app" ]; then
   xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 >/dev/null 2>&1 || true
   shoot sign-in -ZimmerFixture -ZimmerFixtureSignedOut
   shoot sessions -ZimmerFixture
+  shoot session-detail -ZimmerFixture -ZimmerFixtureOpenSession 1038
+  shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
 fi
 
 # The derived data is a gigabyte of object files nobody wants in an artifact bundle; the

@@ -29,10 +29,15 @@ next request on. Every request that presents no key, an unknown key or a revoked
 [the OAuth authorization server](/auth/mcp-authorization-server/#the-built-in-ios-app-client) as the
 built-in `zimmer-ios` client and sends `Authorization: Bearer <access token>`. The REST API takes
 that token only on controllers that declare `accepts_native_app_tokens`, and only when the token's
-grant belongs to the built-in client. Today that is `/api/v1/sessions` and everything under it. A token
+grant belongs to the built-in client. Today that is `/api/v1/sessions` and everything under it, and
+`POST /api/v1/quick_router`. A token
 issued to any other OAuth client, or presented anywhere else, gets the same 401 as a bad key. The
 same expiry, revocation and audience checks as `/mcp` apply, and revoking the connection on
 **Settings → API keys** refuses the phone on its next request. `X-API-Key` is unchanged beside it.
+
+A follow-up the app sends is recorded as the signed-in human's message (`ios_app.follow_up`, see
+[human messages](/sessions/hierarchy-and-human-messages/)). A follow-up over an API key records
+nothing, as before.
 
 On a deployment that serves the app from its own hostname behind an access proxy, the app also sends
 `cf-access-token`, the edge's credential, which Rails ignores. It gets that credential from
@@ -179,6 +184,7 @@ and the model refuses to write one, answering `422`.
 | `POST` | `/sessions/:id/toggle_favorite` | favorited sessions sort to the top of the dashboard. Same flip as the web star and the `toggle_favorite` MCP action, all through `Sessions::ToggleFavorite`, which reads the star under a row lock so concurrent toggles both land |
 | `PATCH` | `/sessions/:id/visibility` | `visibility` (`visible` \| `hidden` \| `snoozed`), plus `snoozed_until` and `timezone` for a snooze. **Board visibility only** — see [Board visibility](#board-visibility). It changes what the dashboard draws and nothing else: no session is started, stopped, slept, woken or reordered. Unknown value, missing or past-dated `snoozed_until` → 422 |
 | `GET` | `/sessions/:id/transcript` | `format=text` → `text/plain`, else `{transcript_text}` |
+| `GET` | `/sessions/:id/conversation` | the transcript's user and assistant messages as data, oldest first: `{messages: [{role, content, timestamp, has_tool_use, has_tool_result}], total, truncated}`. `limit` (default 50, max 200) keeps the newest that many. Each `content` is cut at 4,000 characters. What the [iOS app](/extend/ios-app/) renders |
 
 `force_immediate: true` on `follow_up` interrupts a running session and delivers the prompt now,
 through the same race-free interrupt backend as the web UI's "Send Now" — exactly-once and
@@ -784,6 +790,10 @@ comparison in `ApiKey.authenticate`, so the key that sits in a browser's extensi
 start Quick Router sessions and read nothing back. There is no CSRF token to present — the request
 comes from the extension's service worker — and no CORS, because an extension's own fetch to a host
 it holds a permission for is exempt from it.
+
+**Zimmer's iOS app uses it too**, with its [bearer token](#the-ios-apps-bearer-token) instead of a
+key. The session is started the same way, with `metadata.source` set to `ios_app`, and the prompt is
+recorded as the human's message (`ios_app.quick_router`). The rate limit applies to both.
 
 ```bash
 curl -X POST https://zimmer.example.com/api/v1/quick_router \

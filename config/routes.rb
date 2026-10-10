@@ -254,6 +254,9 @@ Rails.application.routes.draw do
           patch :model, action: :update_model
           patch :effort, action: :update_effort
           get :transcript
+          # The conversation as a list of messages, newest last — what the iOS app
+          # renders as a session's transcript.
+          get :conversation
           patch :notes, action: :update_notes
           post :toggle_favorite
           patch :visibility, action: :update_visibility

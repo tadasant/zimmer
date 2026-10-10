@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 # The browser extension's way in (tadasant/zimmer#175): the Quick Router bubble,
-# reachable from any page on the web instead of only from Zimmer's own.
+# reachable from any page on the web instead of only from Zimmer's own. Zimmer's
+# iOS app starts router sessions here too, with its OAuth bearer token
+# (`accepts_native_app_tokens`) — the same flow, recorded as `ios_app`.
 #
 # This is deliberately the narrowest controller in the API. It does one thing —
 # create a Quick Router session from a message, the page it was typed on, and
@@ -34,6 +36,10 @@ class Api::V1::QuickRouterController < Api::BaseController
 
   SOURCE = "browser_extension"
   ENTRY_POINT = "browser_extension.quick_router"
+  NATIVE_APP_SOURCE = "ios_app"
+  NATIVE_APP_ENTRY_POINT = "ios_app.quick_router"
+
+  accepts_native_app_tokens
 
   before_action :enforce_rate_limit
 
@@ -66,7 +72,7 @@ class Api::V1::QuickRouterController < Api::BaseController
     session = Session.create_from_agent_root!(
       agent_root_name: AgentRootsConfig.router_root_name,
       prompt: augmented_prompt,
-      metadata: { source: SOURCE, original_prompt: prompt, current_url: page_url, page_title: page_title, pin: pin }.compact_blank,
+      metadata: { source: source, original_prompt: prompt, current_url: page_url, page_title: page_title, pin: pin }.compact_blank,
       # A human typed this, in a browser — the same genesis as the in-app bubble,
       # and priority for the same reason: they are waiting.
       genesis: SessionGenesis::WEB_UI,
@@ -74,7 +80,8 @@ class Api::V1::QuickRouterController < Api::BaseController
     )
 
     # The human's own words, not the page block Zimmer wrapped around them.
-    HumanMessageCapture.record_web_ui_message(session: session, content: prompt, entry_point: ENTRY_POINT)
+    HumanMessageCapture.record_web_ui_message(session: session, content: prompt,
+      entry_point: native_app_request? ? NATIVE_APP_ENTRY_POINT : ENTRY_POINT)
 
     AgentSessionJob.enqueue_new_session(session.id)
 
@@ -85,7 +92,12 @@ class Api::V1::QuickRouterController < Api::BaseController
 
   private
 
-  # Only a `quick_router` key opens this controller — see Api::BaseController.
+  def source
+    native_app_request? ? NATIVE_APP_SOURCE : SOURCE
+  end
+
+  # Only a `quick_router` key opens this controller — see Api::BaseController —
+  # besides the iOS app's bearer token.
   def api_key_grant
     ApiKey::QUICK_ROUTER_GRANT
   end

@@ -23,6 +23,12 @@ is applied and this route is deployed, nothing has run the two sign-ins end to e
 - **Lists sessions**, filtered by status. *Needs input* is the default filter and sorts above
   everything else. The other filters are *Active* (everything not archived), *Running*, *Failed*
   and *Archived*. Pull to refresh.
+- **Opens a session**: its status, the *Status summary* ("where things stand"), and the conversation,
+  newest last, with tool calls folded away until asked for (`GET /api/v1/sessions/:id/conversation`).
+- **Sends a follow-up** from a box at the bottom, with quick replies for the common answers. A
+  follow-up to a session mid-turn is queued, and the app says so. It is recorded as your message.
+- **Archives** a session, after a confirmation. It goes to the trash and can be restored from the web UI.
+- **Starts a session from a sentence** through the Quick Router (the pencil button), then opens it.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
