@@ -184,8 +184,8 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert body["truncated"]
   end
 
-  test "a follow-up from the app is recorded as the human's words; one over an API key is not" do
-    tokens = sign_in
+  test "a follow-up from an app that acts on its approver's behalf is recorded as theirs; one over an API key is not" do
+    tokens = sign_in(privilege: OauthServer::ACT_AS_HUMAN)
     AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-1"))
     from_phone = build_zimmer_session(status: :needs_input)
     from_key = build_zimmer_session(status: :needs_input)
@@ -197,12 +197,31 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
 
     message = from_phone.human_messages.sole
     assert_equal "Yes, merge it.", message.content
+    assert_equal User.for_email("tadas@tadasant.com").key, message.author
+    assert_equal HumanMessage::ASSISTANT, message.channel
     assert_equal "ios_app.follow_up", message.provenance["entry_point"]
+    assert_equal OauthServer::Grant.sole.id, message.provenance["oauth_grant_id"]
     assert_empty from_key.human_messages
   end
 
-  test "a follow-up the app sends mid-turn is queued and still recorded as the human's words" do
-    tokens = sign_in
+  test "an app connection that is relay only, or whose approver is not on the roster, records nothing" do
+    AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-1"))
+    relay_only = build_zimmer_session(status: :needs_input)
+    post "/api/v1/sessions/#{relay_only.id}/follow_up", params: { prompt: "Yes" },
+      headers: bearer(sign_in(privilege: OauthServer::RELAY_ONLY)["access_token"])
+    assert_response :success
+    assert_empty relay_only.human_messages
+
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "someone-else@tadasant.com"
+    unknown = build_zimmer_session(status: :needs_input)
+    post "/api/v1/sessions/#{unknown.id}/follow_up", params: { prompt: "Yes" },
+      headers: bearer(sign_in(privilege: OauthServer::ACT_AS_HUMAN)["access_token"])
+    assert_response :success
+    assert_empty unknown.human_messages, "never recorded as the admin on someone else's grant"
+  end
+
+  test "a follow-up the app sends mid-turn is queued and still recorded as the approver's words" do
+    tokens = sign_in(privilege: OauthServer::ACT_AS_HUMAN)
     session = build_zimmer_session(status: :running)
     Sessions::LiveTurn.stubs(:underway?).returns(true)
 
@@ -224,7 +243,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
   end
 
   test "the app starts a Quick Router session with its token, recorded as ios_app" do
-    tokens = sign_in
+    tokens = sign_in(privilege: OauthServer::ACT_AS_HUMAN)
     AgentRootsConfig.stubs(:find!).with(AgentRootsConfig.router_root_name).returns(
       OpenStruct.new(url: "https://github.com/test/repo.git", default_branch: "main",
                      subdirectory: "agent-roots/zimmer-orchestrator", default_mcp_servers: [])
@@ -236,7 +255,9 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert_response :created
     session = Session.find(JSON.parse(response.body)["session_id"])
     assert_equal "ios_app", session.metadata["source"]
-    assert_equal "ios_app.quick_router", session.human_messages.sole.provenance["entry_point"]
+    message = session.human_messages.sole
+    assert_equal "ios_app.quick_router", message.provenance["entry_point"]
+    assert_equal HumanMessage::ASSISTANT, message.channel
   end
 
   private

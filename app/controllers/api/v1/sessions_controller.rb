@@ -1202,15 +1202,16 @@ class Api::V1::SessionsController < Api::BaseController
 
   private
 
-  # A follow-up typed in the iOS app is a human's own words — its grant names the
-  # person who approved the phone — so it is recorded as one, the way the browser
-  # extension's Quick Router is. An API key names a key, never a person, so a
-  # key-authenticated follow-up records nothing. Best-effort: HumanMessageCapture
-  # never raises into the delivery it describes.
+  # A follow-up from the iOS app is recorded the way any OAuth client's delivered
+  # message is: as its approver's, and only when the grant acts on their behalf.
+  # An API key names a key, never a person, so a key-authenticated follow-up
+  # records nothing. Best-effort: HumanMessageCapture never raises into the
+  # delivery it describes.
   def record_native_app_follow_up(prompt)
     return unless native_app_request?
 
-    HumanMessageCapture.record_web_ui_message(session: @session, content: prompt, entry_point: "ios_app.follow_up")
+    HumanMessageCapture.record_assistant_message(session: @session, grant: native_app_grant, content: prompt,
+      entry_point: "ios_app.follow_up")
   end
 
   # Archive +session+ through Sessions::ArchiveGuard.guarded_archive!, refusing

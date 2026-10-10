@@ -26,7 +26,8 @@ is applied and this route is deployed, nothing has run the two sign-ins end to e
 - **Opens a session**: its status, the *Status summary* ("where things stand"), and the conversation,
   newest last, with tool calls folded away until asked for (`GET /api/v1/sessions/:id/conversation`).
 - **Sends a follow-up** from a box at the bottom, with quick replies for the common answers. A
-  follow-up to a session mid-turn is queued, and the app says so. It is recorded as your message.
+  follow-up to a session mid-turn is queued, and the app says so. It is recorded as your message if
+  the app's connection acts on your behalf (below).
 - **Archives** a session, after a confirmation. It goes to the trash and can be restored from the web UI.
 - **Starts a session from a sentence** through the Quick Router (the pencil button), then opens it.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
@@ -82,7 +83,9 @@ under the built-in `zimmer-ios` client:
    [web sign-in](/auth/web-sign-in/) does the rest, as it does in a browser: Google, restricted to
    the deployment's domain, then the second factor. Zimmer then shows a consent screen for
    "Zimmer for iOS". It asks for a [connection level](/auth/mcp-authorization-server/#relay-only-or-acts-on-my-behalf) like every
-   other OAuth connection. Choose **Relay only**: the REST API the app calls never reads the level.
+   other OAuth connection. Both levels reach the same API. **Acts on my behalf** records what you
+   send from the app (follow-ups, Quick Router prompts) as your message, the way it does for an
+   assistant; **Relay only** records nothing.
 3. Approving sends the sheet to `com.tadasant.zimmer:/oauth/callback` with a 60-second code. The app
    redeems it at `/oauth/token` on the app origin with the verifier only it holds.
 4. The access and refresh tokens go into the Keychain (`AfterFirstUnlockThisDeviceOnly`). The app

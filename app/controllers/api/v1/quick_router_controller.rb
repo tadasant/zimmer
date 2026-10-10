@@ -79,9 +79,14 @@ class Api::V1::QuickRouterController < Api::BaseController
       skip_enqueue: true
     )
 
-    # The human's own words, not the page block Zimmer wrapped around them.
-    HumanMessageCapture.record_web_ui_message(session: session, content: prompt,
-      entry_point: native_app_request? ? NATIVE_APP_ENTRY_POINT : ENTRY_POINT)
+    # The human's own words, not the page block Zimmer wrapped around them. From
+    # the iOS app they are recorded through its grant, like any OAuth client's.
+    if native_app_request?
+      HumanMessageCapture.record_assistant_message(session: session, grant: native_app_grant, content: prompt,
+        entry_point: NATIVE_APP_ENTRY_POINT)
+    else
+      HumanMessageCapture.record_web_ui_message(session: session, content: prompt, entry_point: ENTRY_POINT)
+    end
 
     AgentSessionJob.enqueue_new_session(session.id)
 
