@@ -307,6 +307,11 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
 
     device.grant.revoke!("signed out elsewhere")
     assert_not_includes ApnsDevice.deliverable, device
+
+    # Deleting the grant outright must not leave a grant-less row behind, which would
+    # read as an API-key registration and be deliverable again.
+    device.grant.destroy!
+    assert_not ApnsDevice.exists?(device.id)
   end
 
   test "the app unregisters its phone on sign-out, and a bad registration is refused" do

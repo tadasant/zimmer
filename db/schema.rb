@@ -1179,7 +1179,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_10_010000) do
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_to_id", on_delete: :nullify
   add_foreign_key "agent_posted_github_comments", "sessions", on_delete: :nullify
   add_foreign_key "api_keys", "external_apps", on_delete: :cascade
-  add_foreign_key "apns_devices", "oauth_server_grants", on_delete: :nullify
+  add_foreign_key "apns_devices", "oauth_server_grants", on_delete: :cascade
   add_foreign_key "category_feedback_events", "categories", column: "auto_category_id", on_delete: :nullify
   add_foreign_key "category_feedback_events", "categories", column: "corrected_category_id", on_delete: :nullify
   add_foreign_key "category_feedback_events", "categories", column: "replay_category_id", on_delete: :nullify

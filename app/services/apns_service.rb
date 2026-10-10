@@ -29,12 +29,18 @@ class ApnsService
   # Reasons that mean our provider token is the problem: mint a fresh one next time.
   PROVIDER_TOKEN_REASONS = %w[ExpiredProviderToken InvalidProviderToken].freeze
 
-  # The HTTP/2 client, behind a seam so the tests never reach Apple.
+  # The HTTP/2 client, behind a seam so the tests never reach Apple. One client per
+  # ApnsService, which is one per job, so a batch reuses a connection per host as
+  # Apple asks rather than opening one per phone.
   class Transport
     Response = Data.define(:status, :body)
 
+    def initialize
+      @client = HTTPX.plugin(:persistent).with(timeout: { request_timeout: REQUEST_TIMEOUT })
+    end
+
     def post(url, headers:, body:)
-      response = HTTPX.with(timeout: { request_timeout: REQUEST_TIMEOUT }).post(url, headers: headers, body: body)
+      response = @client.post(url, headers: headers, body: body)
       raise response.error if response.is_a?(HTTPX::ErrorResponse)
 
       Response.new(status: response.status, body: response.to_s)
@@ -76,6 +82,7 @@ class ApnsService
     end
 
     results = { sent: 0, failed: 0, disabled: 0 }
+    @provider_token_reset = false
     payload = build_payload(title: title, body: body, data: data)
     ApnsDevice.deliverable.find_each do |device|
       results[deliver(device, payload, collapse_id: collapse_id(data))] += 1
@@ -112,7 +119,12 @@ class ApnsService
       @logger.info("[apns] disabled #{device.token_hint}: #{reason || response.status}")
       :disabled
     else
-      self.class.reset_provider_tokens! if PROVIDER_TOKEN_REASONS.include?(reason)
+      # Once per batch: a wrong key fails every phone, and minting a token per refusal
+      # would trip Apple's TooManyProviderTokenUpdates.
+      if PROVIDER_TOKEN_REASONS.include?(reason) && !@provider_token_reset
+        self.class.reset_provider_tokens!
+        @provider_token_reset = true
+      end
       @logger.warn("[apns] #{device.token_hint} refused: #{response.status} #{reason}")
       :failed
     end
@@ -132,9 +144,13 @@ class ApnsService
     { aps: aps }.merge(data.to_h.transform_keys(&:to_s).slice("session_id", "notification_type")).to_json
   end
 
+  # A newer push of the same kind about the same session replaces the older one on
+  # the lock screen. Custom messages each say something different, so never collapse.
   def collapse_id(data)
     session_id = data[:session_id] || data["session_id"]
     type = data[:notification_type] || data["notification_type"]
-    "session-#{session_id}-#{type}".first(64) if session_id && type
+    return nil if session_id.nil? || type.nil? || type.to_s == "custom_message"
+
+    "session-#{session_id}-#{type}".first(64)
   end
 end

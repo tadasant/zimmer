@@ -12,7 +12,13 @@ import os
 final class PushCoordinator {
     static let shared = PushCoordinator()
 
-    weak var model: AppModel?
+    weak var model: AppModel? {
+        didSet {
+            // A notification tapped to launch the app can arrive before the model exists.
+            if model != nil, let pending { self.pending = nil; open(pending) }
+        }
+    }
+    private var pending: PushPayload?
     private let tokenKey = "zimmer.apnsToken"
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "push")
 
@@ -30,7 +36,7 @@ final class PushCoordinator {
     /// Ask once (iOS remembers the answer) and register if allowed. Called after sign-in.
     func enable() async {
         do {
-            let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+            let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
             guard granted else {
                 log.info("notifications declined")
                 return
@@ -79,7 +85,11 @@ final class PushCoordinator {
     /// A tapped notification opens its session.
     func open(_ payload: PushPayload) {
         guard let id = payload.sessionID else { return }
-        model?.path = [id]
+        guard let model else {
+            pending = payload
+            return
+        }
+        model.path = [id]
     }
 
     private static var appVersion: String {
