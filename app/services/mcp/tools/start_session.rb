@@ -256,6 +256,10 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         raise ActiveRecord::RecordInvalid, session unless result
         return format_session(result.session, reused: true) if result.reused?
 
+        # Before the job is queued, so the session's first turn can already find
+        # the record when it checks its provenance.
+        context.capture_assistant_message(session, session.prompt, "oauth.start_session") if session.prompt.present?
+
         if session.prompt.present?
           job = AgentSessionJob.enqueue_new_session(session.id)
           session.update(job_id: job.job_id)

@@ -17,9 +17,41 @@ module OauthServer
     "oauth_server_"
   end
 
-  # The one scope this server issues. A token opens `/mcp` — what an `api` key
-  # opens there — and nothing else, so there is nothing finer to ask for.
+  # The scope every grant carries. A token opens `/mcp` — what an `api` key opens
+  # there — and nothing else.
   SCOPE = "mcp"
+
+  # The second scope, and the only one that changes what a grant MEANS rather
+  # than what it reaches: a grant holding it "acts on behalf of" the human who
+  # approved it, so a message its client delivers into a session is recorded as
+  # that human's (HumanMessageCapture.record_assistant_message). It opens no tool
+  # an `mcp` grant does not.
+  #
+  # The human chooses it on the consent screen, not the client: RFC 6749 §3.3
+  # lets the server issue a scope other than the one requested, so a client that
+  # asks only for `mcp` — Claude.ai does — still gets this one if the human
+  # picks it, and a client that asks for it gets nothing unless they do.
+  ACT_AS_HUMAN_SCOPE = "zimmer:act-as-human"
+
+  SCOPES_SUPPORTED = [ SCOPE, ACT_AS_HUMAN_SCOPE ].freeze
+
+  # The two privilege levels the consent screen and the connections page offer,
+  # by the scope string a grant carries for each.
+  ACT_AS_HUMAN = "act_as_human"
+  RELAY_ONLY = "relay_only"
+  PRIVILEGES = [ ACT_AS_HUMAN, RELAY_ONLY ].freeze
+
+  def self.scope_for(privilege)
+    case privilege.to_s
+    when ACT_AS_HUMAN then "#{SCOPE} #{ACT_AS_HUMAN_SCOPE}"
+    when RELAY_ONLY then SCOPE
+    else raise ArgumentError, "unknown privilege #{privilege.inspect}"
+    end
+  end
+
+  def self.scope_tokens(scope)
+    scope.to_s.split
+  end
 
   ACCESS_TOKEN_PREFIX = "zmr_oat_"
   REFRESH_TOKEN_PREFIX = "zmr_ort_"

@@ -438,6 +438,7 @@ Rails.application.routes.draw do
   post "settings/api_keys/:id/revoke", to: "api_keys#revoke", as: :revoke_api_key
   post "settings/api_keys/:id/restore", to: "api_keys#restore", as: :restore_api_key
   post "settings/api_keys/oauth_grants/:id/revoke", to: "api_keys#revoke_oauth_grant", as: :revoke_oauth_grant
+  post "settings/api_keys/oauth_grants/:id/privilege", to: "api_keys#set_oauth_grant_privilege", as: :oauth_grant_privilege
   patch "settings/session_defaults", to: "app_settings#update", as: :app_settings
   # Zimmer plugins (ExternalApp): external apps whose key invokes an allowlisted set
   # of triggers and nothing else. The MCP sibling is the opt-in `external_apps`

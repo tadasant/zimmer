@@ -40,9 +40,9 @@ module OauthServer
       raise invalid_grant("#{code.user_email} is no longer in an allowed domain") unless oauth_config.email_allowed?(code.user_email)
 
       grant = OauthServer::Grant.create!(client: client, user_email: code.user_email, resource: code.resource,
-        scope: code.scope, last_used_at: Time.current)
+        scope: code.scope, scope_changed_at: Time.current, scope_change_reason: "consent", last_used_at: Time.current)
       client.touch_last_used!
-      Rails.logger.info("[oauth_server] grant #{grant.id} issued to #{client.client_id.inspect} for #{grant.user_email}")
+      Rails.logger.info("[oauth_server] grant #{grant.id} issued to #{client.client_id.inspect} for #{grant.user_email} (#{grant.privilege})")
 
       render_tokens(grant)
     end
@@ -85,7 +85,9 @@ module OauthServer
         token_type: "Bearer",
         expires_in: pair.expires_in,
         refresh_token: pair.refresh_token,
-        scope: OauthServer::SCOPE
+        # The scope the grant holds NOW, which is the human's choice rather than
+        # the client's request (RFC 6749 §5.1 requires saying so when they differ).
+        scope: grant.scope.presence || OauthServer::SCOPE
       }
     end
 

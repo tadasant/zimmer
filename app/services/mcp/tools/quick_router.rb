@@ -152,6 +152,9 @@ module Mcp
           skip_enqueue: true
         )
 
+        # The caller's prompt, not the augmented one: the page context appended
+        # to it is the client's, not words anybody said.
+        context.capture_assistant_message(session, prompt, "oauth.quick_router")
         AgentSessionJob.enqueue_new_session(session.id)
 
         format_result(session)

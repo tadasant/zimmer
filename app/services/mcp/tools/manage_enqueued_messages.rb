@@ -163,6 +163,7 @@ module Mcp
 
         session.logs.create!(content: "Enqueued message added at position #{message.position}", level: "info")
         record_uncle_edge(session, args, "mcp:manage_enqueued_messages.create")
+        context.capture_assistant_message(session, content, "oauth.enqueued_message")
 
         [
           "## Message Queued",
@@ -191,6 +192,7 @@ module Mcp
         raise ToolError, "Validation failed: #{message.errors.full_messages.join(', ')}" unless message.update(attrs)
 
         session.logs.create!(content: "Enqueued message at position #{message.position} updated", level: "info")
+        context.capture_assistant_message(session, attrs[:content], "oauth.enqueued_message_edited") if attrs.key?(:content)
 
         [
           "## Message Updated",
@@ -285,6 +287,9 @@ module Mcp
           status: "pending"
         )
 
+        # Before the interrupt, as SessionsController does for the browser: the
+        # turn it starts must already see these words as the human's.
+        context.capture_assistant_message(session, content, "oauth.send_now")
         result = Sessions::InterruptService.new(
           session: session,
           enqueued_message: message,
