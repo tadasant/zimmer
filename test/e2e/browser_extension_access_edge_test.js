@@ -8,8 +8,10 @@
 // does: `/` signs the browser in by setting `CF_Authorization` (SameSite=Lax,
 // HttpOnly — the strictest cookie Access sets), and `POST /api/v1/quick_router`
 // without that cookie gets Access's own 401, an HTML page with a
-// `cf-access-domain` header that never reaches Zimmer — or, once told to, a
-// redirect to its login page. With the cookie it answers the way Zimmer's
+// `cf-access-domain` header that never reaches Zimmer. Later steps switch it
+// to Access's other answers: a redirect to its login page, and a 403 for a
+// signed-in account the policy does not admit — and to an origin that is not
+// Zimmer at all. With the cookie it answers the way Zimmer's
 // ingest does, including Zimmer's own JSON 401 for a key it does not know.
 //
 // What it proves: a browser that has signed in to the edge sends the Quick
@@ -32,7 +34,8 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
 
   const KEY = 'zmr_quick_router_key';
   const received = [];
-  let redirectSignedOut = false;
+  // How the edge answers: 'access' (the 401), 'redirect', 'forbidden', or 'not-zimmer'.
+  let mode = 'access';
   const edge = http.createServer((req, res) => {
     const signedIn = /(?:^|;\s*)CF_Authorization=signed-in(?:;|$)/.test(req.headers.cookie || '');
     if (req.method === 'GET' && req.url === '/') {
@@ -41,7 +44,15 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
       return res.end('<!doctype html><title>Zimmer</title><p>signed in</p>');
     }
     if (req.method === 'POST' && req.url === '/api/v1/quick_router') {
-      if (!signedIn && redirectSignedOut) {
+      if (mode === 'not-zimmer') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        return res.end('<!doctype html><title>Some other site</title>');
+      }
+      if (mode === 'forbidden') {
+        res.writeHead(403, { 'Content-Type': 'text/html', 'cf-access-domain': req.headers.host });
+        return res.end('<!doctype html><title>Forbidden ・ Cloudflare Access</title>');
+      }
+      if (!signedIn && mode === 'redirect') {
         res.writeHead(302, { Location: '/cdn-cgi/access/login' });
         return res.end();
       }
@@ -139,11 +150,28 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
 
     console.log('Step 4: an edge that redirects to its login page is not taken for a success...');
     await context.clearCookies();
-    redirectSignedOut = true;
+    mode = 'redirect';
     await send('redirected to sign in');
     await host.locator('.error').waitFor({ timeout: 30000 });
     const redirected = await host.locator('.error').innerText();
-    assert(redirected.includes('sign in') && redirected.includes(BASE_URL), `the redirect reads as a sign-in, not a sent message (${redirected})`);
+    // BASE_URL is http://, so the advice is the https URL; on https it is to sign in.
+    assert(redirected.includes('redirected') && redirected.includes('https://'), `the redirect is reported, not taken for a sent message (${redirected})`);
+    await page.keyboard.press('Escape');
+
+    console.log('Step 5: a 403 from the edge is about the account, not a missing sign-in...');
+    mode = 'forbidden';
+    await send('wrong account');
+    await host.locator('.error').waitFor({ timeout: 30000 });
+    const forbidden = await host.locator('.error').innerText();
+    assert(forbidden.includes('refused the account') && !forbidden.includes('Quick Router key'), `the 403 names the account (${forbidden})`);
+    await page.keyboard.press('Escape');
+
+    console.log('Step 6: a URL that answers 200 but is not Zimmer is not a sent message...');
+    mode = 'not-zimmer';
+    await send('not zimmer');
+    await host.locator('.error').waitFor({ timeout: 30000 });
+    const notZimmer = await host.locator('.error').innerText();
+    assert(notZimmer.includes('not as Zimmer') && (await host.locator('.toast').count()) === 0, `no toast, and the composer says so (${notZimmer})`);
     assert(received.length === 1, 'nothing more reached the ingest');
   } finally {
     edge.close();
