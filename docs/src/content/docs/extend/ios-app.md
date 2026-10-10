@@ -156,6 +156,30 @@ quiet, are listed at `/supervisor/apns_devices`.
 The build signs in the `aps-environment` entitlement only when the `testflight` environment's
 `ZIMMER_IOS_PUSH_ENABLED` variable is `1`. Set it once Push Notifications is ticked on the App ID.
 
+## CarPlay
+
+Zimmer's CarPlay scene is a **voice-based conversational app**, Apple's category for apps whose
+primary way in is talking (`com.apple.developer.carplay-voice-based-conversation`, iOS 26.4+). None of
+the other categories fit: Zimmer isn't audio, navigation, messaging, or a driving task. When the
+phone connects, it says how many sessions need you and reads the first, its title and *Status
+summary*, then listens:
+
+- **"Yes"** (or "go ahead", "merge it") sends *Yes, go ahead.*
+- **"Reply …"**, or anything else, is a reply in your own words. It is read back, and sent when you say yes.
+- **"Archive"** archives, after you say yes.
+- **"Next"** skips, **"repeat"** reads it again, and **"stop"** ends the conversation.
+
+Nothing acts on a session without a spoken confirmation, so a misheard word costs a sentence, not a
+session. The screen underneath lists up to five sessions that need input. Each row is an action
+sheet (Approve, Reply by voice, Archive) for a driver who would rather tap, and a Talk button
+restarts the conversation. The voice control, list and action sheet templates are all ones the
+category allows, and the stack never goes deeper than three. The audio session is held only while
+the conversation runs. The rules live in `DrivingFlow`, which the unit tests cover.
+
+**The scene is inert until Apple grants the entitlement.** The entitlement lives in
+`App/Zimmer/CarPlay.entitlements`, which is wired into nothing, and `testflight` refuses to sign
+CarPlay in. This is the same arrangement as Motet's.
+
 ## How it is built and shipped
 
 | Check | Where it runs | What it proves |
