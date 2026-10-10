@@ -27,10 +27,14 @@ in the repo — Chrome, Manifest V3, no build step — and is loaded unpacked. (
 3. Open the extension's options (right-click its icon → **Options**), paste the Zimmer URL and the
    key, and **Save**. Saving asks Chrome for permission to talk to that one origin — grant it.
 
-The browser has to reach Zimmer. Zimmer's [security model](/auth/overview/) is a tailnet, so on the
-Tadasant deployment that means a browser on the tailnet, using the tailnet address as the URL. A
-device that is not on the tailnet cannot use the extension; a public relay would be the only way to
-change that, and there is none.
+The browser has to reach Zimmer. On a tailnet-only deployment that means a browser on the tailnet,
+using the tailnet address as the URL. On a deployment behind the [Cloudflare
+edge](/operate/deploying/#optional-cloudflare-edge), as Tadas's is, the URL is the public domain, and
+Cloudflare Access checks every request before Zimmer sees it, the extension's included. The extension
+sends the browser's own cookies, so it passes Access when this browser is signed in at that URL: open
+Zimmer in a tab once and sign in. When the Access sign-in lapses, Access refuses the message itself.
+The composer then tells you to sign in at the Zimmer URL. It does not blame the key, because Zimmer
+never saw the request.
 
 Nothing needs provisioning on the Zimmer side. The key is minted on a page that already exists,
 the endpoint ships with the deploy, and there is no environment variable to set.
@@ -53,7 +57,9 @@ existed may not pick it up on reload; bind it there. Chrome shortcuts are one ke
 are no chords, which is why pinning is a second shortcut and not <kbd>Z</kbd> then <kbd>X</kbd>.
 
 If Zimmer refuses the message or cannot be reached, the composer stays open with the reason and your
-text intact. Silently losing feedback would be worse than a second's toast, so nothing here is
+text intact. A refusal names who refused it. Zimmer's own 401 is about the key: it is not a Quick
+Router key, or it has been revoked. A refusal from the access proxy in front of Zimmer is about this
+browser's sign-in there. Silently losing feedback would be worse than a second's toast, so nothing here is
 fire-and-forget.
 
 ## What is sent
