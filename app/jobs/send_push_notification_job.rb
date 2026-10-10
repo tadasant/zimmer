@@ -38,7 +38,7 @@ class SendPushNotificationJob < ApplicationJob
   discard_on ActiveRecord::RecordNotFound
 
   # Allow injection of services for testing
-  attr_accessor :web_push_service, :inference_service, :broadcast_service
+  attr_accessor :web_push_service, :apns_service, :inference_service, :broadcast_service
 
   # Supported notification types
   NOTIFICATION_TYPES = %w[session_complete needs_input session_failed custom_message elicitation_pending].freeze
@@ -56,6 +56,7 @@ class SendPushNotificationJob < ApplicationJob
   def initialize(*args)
     super
     @web_push_service ||= WebPushService.new
+    @apns_service ||= ApnsService.new
     @inference_service ||= HeadlessInferenceService.new
     @broadcast_service ||= BroadcastService.new
   end
@@ -105,9 +106,21 @@ class SendPushNotificationJob < ApplicationJob
     else
       Rails.logger.info "[SendPushNotificationJob] Sent push notifications for session #{session_id}: #{result.inspect}"
     end
+
+    deliver_to_ios(session_id, payload)
   end
 
   private
+
+  # The same notification to Zimmer's iOS app, through APNs. Best-effort and
+  # independent of the web push above: a failure here is logged and never raised,
+  # so a retry of this job cannot re-insert the Notification or re-send web pushes.
+  def deliver_to_ios(session_id, payload)
+    result = @apns_service.send_to_all(**payload)
+    Rails.logger.info "[SendPushNotificationJob] iOS push for session #{session_id}: #{result.inspect}" unless result[:skipped]
+  rescue StandardError => e
+    Rails.logger.error "[SendPushNotificationJob] iOS push for session #{session_id} failed: #{e.class}: #{e.message}"
+  end
 
   # Determine whether a debounced needs_input job should bail out because the
   # session has transitioned out of needs_input or flapped through another
