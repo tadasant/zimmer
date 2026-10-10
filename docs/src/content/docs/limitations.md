@@ -7837,8 +7837,7 @@ The CarPlay scene is built and its conversation logic (`DrivingFlow`) is unit-te
 connects an app only when its signed build carries a granted CarPlay entitlement, and Apple has not
 granted one, so no head unit or CarPlay Simulator has shown it. Speech recognition in a moving car,
 the voice-control template's states, and whether iOS 26.4 starts the conversation the way the
-category expects are all unobserved. The scene is wired to start talking on connect only on iOS
-26.4 and later. On older systems it shows the list and waits for Talk.
+category expects are all unobserved.
 
 ## No iOS push has been sent to a real phone
 
