@@ -112,11 +112,19 @@ public actor FakeZimmerAPI: ZimmerAPI {
             SessionSummary(id: 1042, title: "Add a CarPlay scene to the iOS app", status: .running,
                            agentRuntime: "claude_code", createdAt: ago(90), updatedAt: ago(2)),
             SessionSummary(id: 1038, title: "PR #1261 is green and ready — merge it?", status: .needsInput,
-                           agentRuntime: "claude_code", createdAt: ago(240), updatedAt: ago(6)),
+                           agentRuntime: "claude_code", createdAt: ago(240), updatedAt: ago(6),
+                           goal: "Unmerged PR is open and CI is green.", favorited: true,
+                           priorityClass: "priority",
+                           effort: EffortSummary(level: "high", source: "default", default: "high", levels: ["low", "medium", "high", "xhigh", "max"]),
+                           model: "opus", agentRoot: "zimmer",
+                           pullRequests: [PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1261")!, state: "open", ci: "success")]),
             SessionSummary(id: 1035, title: "Which Postgres version should staging run?", status: .needsInput,
                            agentRuntime: "codex", createdAt: ago(300), updatedAt: ago(41)),
             SessionSummary(id: 1031, title: "Nightly dependency sweep", status: .waiting,
                            agentRuntime: "claude_code", createdAt: ago(20), updatedAt: ago(20)),
+            SessionSummary(id: 1029, title: "Draft the October changelog", status: .waiting,
+                           agentRuntime: "claude_code", createdAt: ago(900), updatedAt: ago(800),
+                           visibility: .snoozed, snoozedUntil: now.addingTimeInterval(20 * 3600)),
             SessionSummary(id: 1027, title: "Rotate the staging deploy key", status: .failed,
                            agentRuntime: "claude_code", createdAt: ago(600), updatedAt: ago(180)),
             SessionSummary(id: 1019, title: "Fix the flaky transcript poller test", status: .archived,
@@ -147,5 +155,124 @@ public actor FakeZimmerAPI: ZimmerAPI {
                 ConversationMessage(id: 1, role: .assistant, content: "Production runs Postgres 16. Should staging match it, or try 17 first?", timestamp: ago(41)),
             ],
         ]
+    }
+}
+
+// MARK: - Session actions
+//
+// In this file because an extension here can read the actor's private state. Each behaves
+// as the server does where the app depends on it: a pause needs a running session, a
+// restart a failed or needs-input one, a restore a trashed one; a blank title clears it.
+extension FakeZimmerAPI {
+    public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> [SessionSummary] {
+        try await sessions(filter).filter(board.admits)
+    }
+
+    public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> [SessionSummary] {
+        let needle = query.lowercased()
+        return try await sessions(filter, board: board).filter { session in
+            if session.displayTitle.lowercased().contains(needle) { return true }
+            guard contents else { return false }
+            return (conversations[session.id] ?? []).contains { $0.content.lowercased().contains(needle) }
+        }
+    }
+
+    public func sendNow(_ id: Int, prompt: String) async throws -> FollowUpResult {
+        var session = try find(id)
+        guard [SessionStatus.running, .waiting, .needsInput].contains(session.status) else {
+            throw ZimmerError.http(status: 422, message: "Session is \(session.status.rawValue). Follow-up prompts can only be sent to running, waiting, or needs_input sessions.")
+        }
+        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        var messages = conversations[id] ?? []
+        messages.append(ConversationMessage(id: messages.count, role: .user, content: text, timestamp: Date()))
+        conversations[id] = messages
+        session.status = .running
+        session.updatedAt = Date()
+        replace(session)
+        return FollowUpResult(queued: false, message: "Follow-up prompt sent immediately")
+    }
+
+    public func unarchive(_ id: Int) async throws -> SessionSummary {
+        try change(id, refusal: "Session is not in trash", when: { $0.status != .archived }) {
+            $0.status = .needsInput
+            $0.archivedAt = nil
+        }
+    }
+
+    public func restart(_ id: Int) async throws -> SessionSummary {
+        try change(id, refusal: "Session cannot be restarted from current status", when: { ![SessionStatus.failed, .needsInput].contains($0.status) }) {
+            $0.status = .running
+        }
+    }
+
+    public func pause(_ id: Int) async throws -> SessionSummary {
+        try change(id, refusal: "Session is not running", when: { $0.status != .running }) {
+            $0.status = .needsInput
+        }
+    }
+
+    public func toggleFavorite(_ id: Int) async throws -> SessionSummary {
+        try change(id) { $0.favorited = !$0.isFavorite }
+    }
+
+    public func setVisibility(_ id: Int, _ change: VisibilityChange) async throws -> SessionSummary {
+        if case let .snoozed(until) = change, until <= Date() {
+            throw ZimmerError.http(status: 422, message: "snoozed_until must be in the future")
+        }
+        return try self.change(id) { session in
+            switch change {
+            case .visible: session.visibility = .visible; session.snoozedUntil = nil
+            case .hidden: session.visibility = .hidden; session.snoozedUntil = nil
+            case let .snoozed(until): session.visibility = .snoozed; session.snoozedUntil = until
+            }
+            session.effectiveVisibility = session.visibility
+        }
+    }
+
+    public func updateNotes(_ id: Int, notes: String) async throws -> SessionSummary {
+        try change(id) { $0.notes = notes.isEmpty ? nil : notes }
+    }
+
+    public func rename(_ id: Int, title: String) async throws -> SessionSummary {
+        try change(id) { $0.title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : title }
+    }
+
+    public func updateGoal(_ id: Int, goal: String) async throws -> SessionSummary {
+        try change(id) { $0.goal = goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : goal }
+    }
+
+    public func updateEffort(_ id: Int, effort: String?) async throws -> SessionSummary {
+        let session = try find(id)
+        let levels = session.effort?.levels ?? []
+        if let effort, !levels.contains(effort) {
+            throw ZimmerError.http(status: 422, message: "\(effort) is not an effort level for this model")
+        }
+        return try change(id) { session in
+            let fallback = session.effort?.default
+            session.effort = EffortSummary(level: effort ?? fallback, source: effort == nil ? "default" : "explicit", default: fallback, levels: levels)
+        }
+    }
+
+    public func regenerateStatusSummary(_ id: Int) async throws -> String {
+        _ = try find(id)
+        return "Status summary regeneration queued"
+    }
+
+    public func refreshTranscript(_ id: Int) async throws -> String {
+        _ = try find(id)
+        return "Transcript refreshed (\((conversations[id] ?? []).count) messages)"
+    }
+
+    /// Apply `edit` to one session, unless `when` says the server would refuse it.
+    private func change(
+        _ id: Int, refusal: String = "", when refused: (SessionSummary) -> Bool = { _ in false },
+        _ edit: (inout SessionSummary) -> Void
+    ) throws -> SessionSummary {
+        var session = try find(id)
+        guard !refused(session) else { throw ZimmerError.http(status: 422, message: "\(refusal): \(session.status.rawValue)") }
+        edit(&session)
+        session.updatedAt = Date()
+        replace(session)
+        return session
     }
 }

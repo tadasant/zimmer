@@ -230,8 +230,16 @@ if [ -d "$app" ]; then
   xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 >/dev/null 2>&1 || true
   shoot sign-in -ZimmerFixture -ZimmerFixtureSignedOut
   shoot sessions -ZimmerFixture
+  shoot sessions-active -ZimmerFixture -ZimmerFixtureFilter active
+  shoot sessions-snoozed -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureBoard offBoard
+  shoot search -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureSearch postgres
   shoot session-detail -ZimmerFixture -ZimmerFixtureOpenSession 1038
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
+  # Dark mode, for the two screens a person reads most.
+  xcrun simctl ui "$udid" appearance dark >/dev/null 2>&1 || true
+  shoot sessions-active-dark -ZimmerFixture -ZimmerFixtureFilter active
+  shoot session-detail-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038
+  xcrun simctl ui "$udid" appearance light >/dev/null 2>&1 || true
 fi
 
 # The derived data is a gigabyte of object files nobody wants in an artifact bundle; the
