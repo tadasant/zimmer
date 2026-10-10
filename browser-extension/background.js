@@ -74,10 +74,20 @@ async function submit(payload) {
     response = await fetch(`${baseUrl}/api/v1/quick_router`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      // A deployment behind an access proxy (Cloudflare Access) admits the
+      // request on the browser's own sign-in cookie for that origin. Zimmer
+      // never redirects this endpoint, so a redirect is the proxy sending the
+      // request to its login page — surfaced, not followed.
+      credentials: "include",
+      redirect: "manual"
     });
   } catch (error) {
     return { ok: false, error: `Could not reach ${baseUrl} (${error?.message || error}). On the tailnet?` };
+  }
+
+  if (refusedByAccessProxy(response)) {
+    return { ok: false, error: `The access proxy in front of Zimmer stopped it before Zimmer saw it — this browser is not signed in there. Open ${baseUrl} in a tab, sign in, then send again.` };
   }
 
   let body = {};
@@ -89,8 +99,13 @@ async function submit(payload) {
 
   if (!response.ok) {
     const detail = body.message || `HTTP ${response.status}`;
-    const hint = response.status === 401 ? " Check the key in the extension's options — it must be a Quick Router key." : "";
+    // Only Zimmer's own 401 is about the key; it answers in JSON with a message.
+    const hint = response.status === 401 && body.message ? " Check the key in the extension's options — it must be a Quick Router key." : "";
     return { ok: false, error: `Zimmer refused it: ${detail}.${hint}` };
+  }
+
+  if (!body.session_id && !body.session_url) {
+    return { ok: false, error: `${baseUrl} answered, but not as Zimmer — no session came back. Is the URL right?` };
   }
 
   // Linked on the URL this browser just reached, not the one Zimmer reports:
@@ -98,4 +113,13 @@ async function submit(payload) {
   // resolve, while `baseUrl` demonstrably works from here.
   const sessionUrl = body.session_id ? `${baseUrl}/sessions/${body.session_id}` : body.session_url;
   return { ok: true, sessionId: body.session_id, sessionUrl };
+}
+
+// Cloudflare Access refuses a request with no valid sign-in cookie itself,
+// before it reaches Zimmer: a 401 or 403 carrying `cf-access-domain`, or — for
+// a request it would rather send to its login page — a redirect, which
+// `redirect: "manual"` turns into an opaque response with status 0.
+function refusedByAccessProxy(response) {
+  if (response.type === "opaqueredirect") return true;
+  return (response.status === 401 || response.status === 403) && response.headers.has("cf-access-domain");
 }
