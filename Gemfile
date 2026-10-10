@@ -92,6 +92,10 @@ gem "web-push", "~> 3.1"
 # handoff returns (NativeAccessAssertion). Already in the bundle through web-push.
 gem "jwt", "~> 3.2"
 
+# HTTP/2, which Apple's push service requires and Net::HTTP does not speak
+# (ApnsService). Pure Ruby, over the http-2 gem.
+gem "httpx", "~> 1.4"
+
 # Slack API client for Triggers feature
 gem "slack-ruby-client"
 
