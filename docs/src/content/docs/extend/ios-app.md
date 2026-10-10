@@ -75,7 +75,8 @@ under the built-in `zimmer-ios` client:
 2. The system sign-in sheet opens `/oauth/authorize` with a PKCE challenge. Zimmer's
    [web sign-in](/auth/web-sign-in/) does the rest, as it does in a browser: Google, restricted to
    the deployment's domain, then the second factor. Zimmer then shows a consent screen for
-   "Zimmer for iOS".
+   "Zimmer for iOS". It asks for a [connection level](/auth/mcp-authorization-server/#relay-only-or-acts-on-my-behalf) like every
+   other OAuth connection. Choose **Relay only**: the REST API the app calls never reads the level.
 3. Approving sends the sheet to `com.tadasant.zimmer:/oauth/callback` with a 60-second code. The app
    redeems it at `/oauth/token` on the app origin with the verifier only it holds.
 4. The access and refresh tokens go into the Keychain (`AfterFirstUnlockThisDeviceOnly`). The app
