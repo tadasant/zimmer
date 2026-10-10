@@ -204,6 +204,20 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert_empty from_key.human_messages
   end
 
+  test "a follow-up is recorded as whoever approved the app, never as the admin" do
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "julie@tadasant.com"
+    AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-1"))
+    session = build_zimmer_session(status: :needs_input)
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Ship it" },
+      headers: bearer(sign_in(privilege: OauthServer::ACT_AS_HUMAN)["access_token"])
+
+    assert_response :success
+    message = session.human_messages.sole
+    assert_equal "juliehazz", message.author
+    assert_equal "julie@tadasant.com", message.provenance["grant_user_email"]
+  end
+
   test "an app connection that is relay only, or whose approver is not on the roster, records nothing" do
     AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-1"))
     relay_only = build_zimmer_session(status: :needs_input)
@@ -258,6 +272,25 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     message = session.human_messages.sole
     assert_equal "ios_app.quick_router", message.provenance["entry_point"]
     assert_equal HumanMessage::ASSISTANT, message.channel
+    assert_equal User.for_email("tadas@tadasant.com").key, message.author
+    # An OAuth-delivered start, like MCP's quick_router: `api` genesis, so capture
+    # coverage never expects a web UI record for it, at priority because a person waits.
+    assert_equal SessionGenesis::API, session.genesis
+    assert_equal SessionGenesis::PRIORITY, session.scheduling_class
+  end
+
+  test "a Quick Router session from a relay-only app connection is started and records nothing" do
+    AgentRootsConfig.stubs(:find!).with(AgentRootsConfig.router_root_name).returns(
+      OpenStruct.new(url: "https://github.com/test/repo.git", default_branch: "main",
+                     subdirectory: "agent-roots/zimmer-orchestrator", default_mcp_servers: [])
+    )
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    post "/api/v1/quick_router", params: { prompt: "Rotate the staging deploy key" },
+      headers: bearer(sign_in(privilege: OauthServer::RELAY_ONLY)["access_token"])
+
+    assert_response :created
+    assert_empty Session.find(JSON.parse(response.body)["session_id"]).human_messages
   end
 
   private

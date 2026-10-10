@@ -73,9 +73,12 @@ class Api::V1::QuickRouterController < Api::BaseController
       agent_root_name: AgentRootsConfig.router_root_name,
       prompt: augmented_prompt,
       metadata: { source: source, original_prompt: prompt, current_url: page_url, page_title: page_title, pin: pin }.compact_blank,
-      # A human typed this, in a browser — the same genesis as the in-app bubble,
-      # and priority for the same reason: they are waiting.
-      genesis: SessionGenesis::WEB_UI,
+      # From the browser extension a human typed this in a browser: the same
+      # genesis as the in-app bubble. From the iOS app it arrives over an OAuth
+      # grant, which is `api` genesis like MCP's quick_router, at priority because
+      # a person is waiting either way.
+      genesis: native_app_request? ? SessionGenesis::API : SessionGenesis::WEB_UI,
+      scheduling_class: (SessionGenesis::PRIORITY if native_app_request?),
       skip_enqueue: true
     )
 
