@@ -22,6 +22,18 @@ public enum SessionFilter: String, Hashable, Sendable, CaseIterable, Identifiabl
         }
     }
 
+    /// Whether a session with this status belongs under this filter — what the server's
+    /// `status` parameter selects, for a row the app has just changed.
+    public func admits(_ status: SessionStatus) -> Bool {
+        switch self {
+        case .needsInput: return status == .needsInput
+        case .active: return status != .archived
+        case .running: return status == .running
+        case .failed: return status == .failed
+        case .archived: return status == .archived
+        }
+    }
+
     /// Query parameters for `GET /api/v1/sessions`. `active` sends no status, which the
     /// server answers with every session that is not archived.
     public var query: [String: String] {

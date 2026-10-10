@@ -39,18 +39,27 @@ final class SessionDetailModel: ObservableObject {
         let zimmerError = error as? ZimmerError ?? .transport(error)
         self.error = zimmerError
         report(zimmerError)
+        Haptics.failure()
     }
 
-    func send() async {
+    /// Send the draft: delivered now, or queued behind a turn in flight. `now` ends that
+    /// turn instead — the web UI's "Send Now".
+    func send(now: Bool = false) async {
         let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
         isSending = true
         defer { isSending = false }
         do {
-            let result = try await api.followUp(id, prompt: prompt)
+            let result: FollowUpResult
+            if now {
+                result = try await api.sendNow(id, prompt: prompt)
+            } else {
+                result = try await api.followUp(id, prompt: prompt)
+            }
             draft = ""
-            notice = result.queued ? "Queued — it goes in when the current turn ends." : "Sent."
+            notice = result.queued ? "Queued — it goes in when the current turn ends." : (now ? "Sent now." : "Sent.")
             error = nil
+            Haptics.success()
             await load()
         } catch {
             fail(error)
@@ -60,10 +69,39 @@ final class SessionDetailModel: ObservableObject {
     func archive() async -> Bool {
         do {
             _ = try await api.archive(id)
+            Haptics.success()
             return true
         } catch {
             fail(error)
             return false
+        }
+    }
+
+    /// One action from the session's menu; the server's answer replaces what is shown.
+    @discardableResult
+    func apply(_ done: String, _ action: (SessionActionsAPI) async throws -> SessionSummary) async -> Bool {
+        do {
+            let session = try await action(api)
+            detail?.session = session
+            notice = done
+            error = nil
+            Haptics.success()
+            return true
+        } catch {
+            fail(error)
+            return false
+        }
+    }
+
+    /// An action the server answers with a sentence rather than the session.
+    func run(_ action: (SessionActionsAPI) async throws -> String) async {
+        do {
+            notice = try await action(api)
+            error = nil
+            Haptics.success()
+            await load()
+        } catch {
+            fail(error)
         }
     }
 }
@@ -71,12 +109,22 @@ final class SessionDetailModel: ObservableObject {
 struct SessionDetailView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @StateObject private var model: SessionDetailModel
     @State private var confirmingArchive = false
     @State private var showingToolTraffic = false
+    @State private var editing: EditedText?
+    @State private var renaming = false
+    @State private var newTitle = ""
 
     /// Short answers a person gives most often — on a phone, typing is the expensive part.
     static let quickReplies = ["Yes, go ahead.", "Merge it.", "Not yet — hold off."]
+
+    /// The two long texts a session carries, each edited in a sheet.
+    enum EditedText: String, Identifiable {
+        case notes, goal
+        var id: String { rawValue }
+    }
 
     init(id: Int, api: ZimmerAPI) {
         _model = StateObject(wrappedValue: SessionDetailModel(id: id, api: api))
@@ -87,8 +135,23 @@ struct SessionDetailView: View {
             VStack(alignment: .leading, spacing: 16) {
                 if let detail = model.detail {
                     header(detail)
+                    if !detail.session.pullRequests.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(detail.session.pullRequests.reversed()) { PullRequestChip(pullRequest: $0) }
+                            }
+                        }
+                    }
                     if let summary = detail.statusSummary?.summary {
-                        SummaryCard(text: summary)
+                        SummaryCard(text: summary) {
+                            Task { await model.run { try await $0.regenerateStatusSummary(model.id) } }
+                        }
+                    }
+                    if let goal = detail.session.goal, !goal.isEmpty {
+                        TextCard(title: "Goal", text: goal, identifier: "detail.goal") { editing = .goal }
+                    }
+                    if detail.session.hasNotes, let notes = detail.session.notes {
+                        TextCard(title: "Notes", text: notes, identifier: "detail.notes") { editing = .notes }
                     }
                 } else if model.isLoading {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
@@ -104,17 +167,37 @@ struct SessionDetailView: View {
         .navigationTitle(Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button(role: .destructive) { confirmingArchive = true } label: {
-                    Image(systemName: "archivebox")
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if let session = model.detail?.session {
+                    Button {
+                        Task { await model.apply(session.isFavorite ? "Removed from favorites" : "Added to favorites") { try await $0.toggleFavorite(session.id) } }
+                    } label: {
+                        Image(systemName: session.isFavorite ? "star.fill" : "star")
+                            .foregroundStyle(session.isFavorite ? Color.yellow : Color.accentColor)
+                    }
+                    .accessibilityLabel(session.isFavorite ? "Remove from Favorites" : "Add to Favorites")
+                    .accessibilityIdentifier("detail.favorite")
+                    actionsMenu(session)
+                    if session.status == .archived {
+                        Button {
+                            Task { await model.apply("Restored from trash") { try await $0.unarchive(session.id) } }
+                        } label: {
+                            Image(systemName: "arrow.uturn.backward")
+                        }
+                        .accessibilityLabel("Restore from Trash")
+                        .accessibilityIdentifier("detail.restore")
+                    } else {
+                        Button(role: .destructive) { confirmingArchive = true } label: {
+                            Image(systemName: "trash")
+                        }
+                        .accessibilityLabel("Move to trash")
+                        .accessibilityIdentifier("detail.archive")
+                    }
                 }
-                .disabled(!(model.detail?.canArchive ?? false))
-                .accessibilityLabel("Archive session")
-                .accessibilityIdentifier("detail.archive")
             }
         }
-        .confirmationDialog("Archive this session?", isPresented: $confirmingArchive, titleVisibility: .visible) {
-            Button("Archive", role: .destructive) {
+        .confirmationDialog("Move to trash?", isPresented: $confirmingArchive, titleVisibility: .visible) {
+            Button("Trash", role: .destructive) {
                 Task {
                     if await model.archive() {
                         await app.sessionChanged()
@@ -122,9 +205,35 @@ struct SessionDetailView: View {
                     }
                 }
             }
-            .accessibilityIdentifier("archive.confirm")
         } message: {
-            Text("It moves to the trash and can be restored from Zimmer's web UI.")
+            Text("The clone is kept for 7 days, and the session can be restored until then.")
+        }
+        .alert("Rename session", isPresented: $renaming) {
+            TextField("Title", text: $newTitle)
+                .accessibilityIdentifier("rename.field")
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                let title = newTitle
+                Task { await model.apply("Renamed") { try await $0.rename(model.id, title: title) } }
+            }
+        } message: {
+            Text("Leave it empty to go back to \"Session \(model.id)\".")
+        }
+        .sheet(item: $editing) { field in
+            TextEditSheet(
+                title: field == .notes ? "Edit Notes" : "Modify Goal",
+                placeholder: field == .notes ? "Notes for this session" : "When is this session done?",
+                initial: (field == .notes ? model.detail?.session.notes : model.detail?.session.goal) ?? ""
+            ) { text in
+                switch field {
+                case .notes: return await model.apply("Notes saved") { try await $0.updateNotes(model.id, notes: text) }
+                case .goal: return await model.apply(text.isEmpty ? "Goal cleared" : "Goal updated") { try await $0.updateGoal(model.id, goal: text) }
+                }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            // Above the composer, which is a bottom inset.
+            Toast(text: $model.notice, identifier: "followup.notice")
         }
         .safeAreaInset(edge: .bottom) {
             if model.detail?.acceptsFollowUp ?? false { composer }
@@ -134,31 +243,175 @@ struct SessionDetailView: View {
             model.report = { [weak app] error in app?.noteError(error) }
             await model.load()
         }
+        .onDisappear {
+            // What changed here (a star, a snooze, a restore) shows on the list behind.
+            Task { await app.sessionChanged() }
+        }
     }
 
+    // MARK: - Header
+
     private func header(_ detail: SessionDetail) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                StatusDot(status: detail.session.status)
-                Text(detail.session.status.label)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(StatusDot.color(for: detail.session.status))
+                StatusBadge(status: detail.session.status)
                     .accessibilityIdentifier("detail.status")
+                if detail.session.priorityClass == "priority" {
+                    Text("Priority")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .foregroundStyle(.red)
+                        .background(Color.red.opacity(0.12), in: Capsule())
+                }
+                VisibilityLabel(session: detail.session)
+                    .font(.caption)
+                    .foregroundStyle(.indigo)
             }
             Text(detail.session.displayTitle)
                 .font(.title2.weight(.bold))
                 .accessibilityIdentifier("detail.title")
-            HStack(spacing: 6) {
-                if let runtime = detail.session.agentRuntime { Text(runtime) }
-                if let date = detail.session.updatedAt ?? detail.session.createdAt {
-                    Text("·")
-                    Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            metadataLine(detail.session)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
+
+    /// Runtime, model, effort, root and age — the web UI's metadata block, on one line.
+    private func metadataLine(_ session: SessionSummary) -> some View {
+        var parts: [String] = []
+        if let root = session.agentRoot { parts.append(root) }
+        if let runtime = session.agentRuntime { parts.append(runtime) }
+        if let model = session.model { parts.append(model) }
+        if let effort = session.effort?.level { parts.append("effort \(effort)") }
+        return HStack(spacing: 4) {
+            Text(parts.joined(separator: " · "))
+            if let date = session.updatedAt ?? session.createdAt {
+                if !parts.isEmpty { Text("·") }
+                Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
+            }
+        }
+        .lineLimit(2)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("detail.metadata")
+    }
+
+    // MARK: - Actions
+
+    /// The web UI's mobile "Session actions" sheet, as a menu, in its order; then the
+    /// settings its desktop metadata block edits.
+    private func actionsMenu(_ session: SessionSummary) -> some View {
+        Menu {
+            Section {
+                Button { app.showingQuickRouter = true } label: { Label("Quick Router", systemImage: "square.and.pencil") }
+                Button { editing = .notes } label: { Label("Edit Notes", systemImage: "note.text") }
+                if session.pullRequests.count == 1, let pr = session.pullRequests.first {
+                    Button { openURL(pr.url) } label: { Label("View PR \(pr.label)", systemImage: "arrow.triangle.pull") }
+                } else if !session.pullRequests.isEmpty {
+                    Menu {
+                        ForEach(session.pullRequests.reversed()) { pr in
+                            Button("\(pr.label) (\(pr.state?.capitalized ?? "Unknown"))") { openURL(pr.url) }
+                        }
+                    } label: {
+                        Label("View PR (\(session.pullRequests.count))", systemImage: "arrow.triangle.pull")
+                    }
+                }
+            }
+            Section {
+                if session.boardVisibility == .visible {
+                    Menu {
+                        ForEach(VisibilityChange.snoozePresets()) { preset in
+                            Button(preset.label) {
+                                let until = preset.until.formatted(date: .abbreviated, time: .shortened)
+                                Task { await model.apply("Snoozed until \(until)") { try await $0.setVisibility(session.id, .snoozed(until: preset.until)) } }
+                            }
+                        }
+                    } label: {
+                        Label("Snooze until…", systemImage: "moon.zzz")
+                    }
+                    Button {
+                        Task { await model.apply("Hidden") { try await $0.setVisibility(session.id, .hidden) } }
+                    } label: {
+                        Label("Hide", systemImage: "eye.slash")
+                    }
+                } else {
+                    Button {
+                        Task { await model.apply("Back on the board") { try await $0.setVisibility(session.id, .visible) } }
+                    } label: {
+                        Label("Put back on the board", systemImage: "eye")
+                    }
+                }
+                Button {
+                    Task { await model.run { try await $0.refreshTranscript(session.id) } }
+                } label: {
+                    Label("Refresh Transcript", systemImage: "arrow.triangle.2.circlepath")
+                }
+                if session.status == .running {
+                    Button {
+                        Task { await model.apply("Paused") { try await $0.pause(session.id) } }
+                    } label: {
+                        Label("Pause Session", systemImage: "pause.circle")
+                    }
+                }
+                if session.status == .failed || session.status == .needsInput {
+                    Button {
+                        Task { await model.apply("Restarted") { try await $0.restart(session.id) } }
+                    } label: {
+                        Label("Restart Session", systemImage: "arrow.clockwise.circle")
+                    }
+                }
+            }
+            Section {
+                Button {
+                    newTitle = session.title ?? ""
+                    renaming = true
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+                Button { editing = .goal } label: { Label("Modify Goal", systemImage: "flag") }
+                if let effort = session.effort, !effort.levels.isEmpty {
+                    let modelDefault = effort.default.map { "Model default (\($0))" } ?? "Model default"
+                    Menu {
+                        Button {
+                            Task { await model.apply("Effort: model default") { try await $0.updateEffort(session.id, effort: nil) } }
+                        } label: {
+                            effortLabel(modelDefault, selected: !effort.isExplicit)
+                        }
+                        ForEach(effort.levels, id: \.self) { level in
+                            Button {
+                                Task { await model.apply("Effort: \(level)") { try await $0.updateEffort(session.id, effort: level) } }
+                            } label: {
+                                effortLabel(level, selected: effort.isExplicit && effort.level == level)
+                            }
+                        }
+                    } label: {
+                        Label("Effort: \(effort.level ?? "default")", systemImage: "gauge.with.dots.needle.50percent")
+                    }
+                }
+                if model.detail?.statusSummary == nil {
+                    Button {
+                        Task { await model.run { try await $0.regenerateStatusSummary(session.id) } }
+                    } label: {
+                        Label("Generate Status Summary", systemImage: "text.badge.star")
+                    }
+                }
+                if let url = app.webURL(for: session.id) {
+                    Button { openURL(url) } label: { Label("Open in browser", systemImage: "safari") }
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .accessibilityLabel("Session actions")
+        .accessibilityIdentifier("detail.actions")
+    }
+
+    @ViewBuilder
+    private func effortLabel(_ text: String, selected: Bool) -> some View {
+        if selected { Label(text, systemImage: "checkmark") } else { Text(text) }
+    }
+
+    // MARK: - Conversation
 
     private func conversationSection(_ conversation: Conversation) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -182,17 +435,14 @@ struct SessionDetailView: View {
             ForEach(conversation.messages.filter { showingToolTraffic || !$0.isToolTraffic }) { message in
                 MessageBubble(message: message)
             }
-            if let notice = model.notice {
-                Label(notice, systemImage: "checkmark.circle")
-                    .font(.footnote)
-                    .foregroundStyle(.green)
-                    .accessibilityIdentifier("followup.notice")
-            }
         }
     }
 
+    // MARK: - Composer
+
     private var composer: some View {
-        VStack(spacing: 8) {
+        let running = model.detail?.session.status == .running
+        return VStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(Self.quickReplies, id: \.self) { reply in
@@ -203,7 +453,7 @@ struct SessionDetailView: View {
                 }
             }
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("Reply to the agent", text: $model.draft, axis: .vertical)
+                TextField(running ? "Queue Message" : "Send Message", text: $model.draft, axis: .vertical)
                     .lineLimit(1...5)
                     .padding(10)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
@@ -211,12 +461,30 @@ struct SessionDetailView: View {
                 Button {
                     Task { await model.send() }
                 } label: {
-                    Image(systemName: model.isSending ? "hourglass" : "arrow.up.circle.fill")
-                        .font(.system(size: 32))
+                    Image(systemName: model.isSending ? "hourglass" : (running ? "text.badge.plus" : "arrow.up.circle.fill"))
+                        .font(.system(size: running ? 26 : 32))
+                        .frame(width: 34, height: 34)
                 }
                 .disabled(model.isSending || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("Send")
+                .accessibilityLabel(running ? "Queue" : "Send")
+                .accessibilityHint(running ? "Touch and hold to send now, ending the current turn." : "")
                 .accessibilityIdentifier("followup.send")
+                .contextMenu {
+                    if running {
+                        Button {
+                            Task { await model.send(now: true) }
+                        } label: {
+                            Label("Send Now — ends the current turn", systemImage: "bolt.fill")
+                        }
+                        .accessibilityIdentifier("followup.sendnow")
+                    }
+                }
+            }
+            if running {
+                Text("A turn is running: this queues. Touch and hold to send now.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.horizontal)
@@ -227,17 +495,97 @@ struct SessionDetailView: View {
 
 private struct SummaryCard: View {
     let text: String
+    let regenerate: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Where things stand").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack {
+                Text("Where things stand").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Button("Regenerate", action: regenerate)
+                    .font(.caption)
+                    .accessibilityIdentifier("detail.summary.regenerate")
+            }
             Text(text)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail.summary")
+    }
+}
+
+/// A titled block of text with an Edit button: the goal, the notes.
+private struct TextCard: View {
+    let title: String
+    let text: String
+    let identifier: String
+    let edit: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Button("Edit", action: edit).font(.caption)
+            }
+            Text(text).textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(identifier)
+    }
+}
+
+/// A sheet with one text editor: notes and goal. `save` reports whether the server took it;
+/// the sheet stays open with the text when it did not.
+private struct TextEditSheet: View {
+    let title: String
+    let placeholder: String
+    let initial: String
+    let save: (String) async -> Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var saving = false
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            ZStack(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text(placeholder).foregroundStyle(.tertiary).padding(.top, 8).padding(.leading, 5)
+                }
+                TextEditor(text: $text)
+                    .focused($focused)
+                    .accessibilityIdentifier("edit.text")
+            }
+            .padding()
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Saving…" : "Save") {
+                        Task {
+                            saving = true
+                            let saved = await save(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                            saving = false
+                            if saved { dismiss() }
+                        }
+                    }
+                    .disabled(saving)
+                    .accessibilityIdentifier("edit.save")
+                }
+            }
+            .onAppear {
+                text = initial
+                focused = true
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 

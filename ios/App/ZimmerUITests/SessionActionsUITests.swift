@@ -38,11 +38,11 @@ final class SessionActionsUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["detail.status"].label, "Running")
         attachScreenshot(app, named: "detail-after-follow-up")
 
-        // It is running now, so archiving it is refused — as the server refuses a session
+        // It is running now, so trashing it is refused — as the server refuses a session
         // mid-turn — and the refusal is shown rather than swallowed. The dialog's button
-        // is "Archive"; the toolbar's is labelled "Archive session".
+        // is "Trash", the web UI's word; the toolbar's is labelled "Move to trash".
         app.buttons["detail.archive"].tap()
-        let refusedConfirm = app.buttons["Archive"].firstMatch
+        let refusedConfirm = app.buttons["Trash"].firstMatch
         XCTAssertTrue(refusedConfirm.waitForExistence(timeout: timeout))
         refusedConfirm.tap()
         XCTAssertTrue(app.descendants(matching: .any)["error.banner"].waitForExistence(timeout: timeout))
@@ -54,7 +54,7 @@ final class SessionActionsUITests: XCTestCase {
         other.tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.summary"].waitForExistence(timeout: timeout))
         app.buttons["detail.archive"].tap()
-        let confirm = app.buttons["Archive"].firstMatch
+        let confirm = app.buttons["Trash"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
         XCTAssertTrue(app.buttons["filter.active"].waitForExistence(timeout: timeout))
