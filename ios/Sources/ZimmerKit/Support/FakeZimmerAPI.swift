@@ -253,6 +253,18 @@ extension FakeZimmerAPI {
         }
     }
 
+    public func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SessionSummary {
+        try change(id) { session in
+            session.priorityClass = priority ? "priority" : "spot"
+            // Promoting a waiting session starts it, as the server's PATCH does.
+            if priority && session.status == .waiting { session.status = .running }
+        }
+    }
+
+    public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {
+        try change(id) { $0.heartbeatEnabled = enabled }
+    }
+
     public func regenerateStatusSummary(_ id: Int) async throws -> String {
         _ = try find(id)
         return "Status summary regeneration queued"

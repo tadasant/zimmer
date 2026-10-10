@@ -124,6 +124,25 @@ final class SessionParityTests: XCTestCase {
         XCTAssertEqual(try body(transport.sent[8]) as? [String: String], ["effort": "default"], "nil clears to the model's default")
     }
 
+    func testPromoteDemoteAndHeartbeatSendTheRankedViewsWrites() async throws {
+        let ok: ScriptedTransport.Handler = { _ in Fixtures.json(200, ["session": ["id": 5, "status": "waiting", "priority_class": "spot", "heartbeat_enabled": true]]) }
+        let (api, transport) = client([ok, ok, ok])
+
+        _ = try await api.setSchedulingClass(5, priority: true)
+        let demoted = try await api.setSchedulingClass(5, priority: false)
+        _ = try await api.setHeartbeat(5, enabled: false)
+
+        XCTAssertEqual(transport.sent.map { "\($0.method) \($0.url.path)" }, [
+            "PATCH /api/v1/sessions/5", "PATCH /api/v1/sessions/5", "PATCH /api/v1/sessions/5/heartbeat",
+        ])
+        XCTAssertEqual(try body(transport.sent[0]) as? [String: String], ["scheduling_class": "priority"])
+        XCTAssertEqual(try body(transport.sent[1]) as? [String: String], ["scheduling_class": "spot", "place": "top_of_spot"],
+                       "a demoted session goes to the head of the spot queue, as the Ranked view's button puts it")
+        XCTAssertEqual(try body(transport.sent[2])["enabled"] as? Bool, false)
+        XCTAssertFalse(demoted.isPriority)
+        XCTAssertEqual(demoted.heartbeatEnabled, true)
+    }
+
     func testSendNowIsAForcedFollowUp() async throws {
         let (api, transport) = client([{ _ in Fixtures.json(200, ["session": ["id": 1, "status": "running"], "message": "Follow-up prompt sent immediately"]) }])
 

@@ -256,7 +256,7 @@ struct SessionDetailView: View {
             HStack(spacing: 6) {
                 StatusBadge(status: detail.session.status)
                     .accessibilityIdentifier("detail.status")
-                if detail.session.priorityClass == "priority" {
+                if detail.session.isPriority {
                     Text("Priority")
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 8)
@@ -387,6 +387,25 @@ struct SessionDetailView: View {
                     } label: {
                         Label("Effort: \(effort.level ?? "default")", systemImage: "gauge.with.dots.needle.50percent")
                     }
+                }
+                if session.isPriority {
+                    Button {
+                        Task { await model.apply("Demoted to spot, top of the queue") { try await $0.setSchedulingClass(session.id, priority: false) } }
+                    } label: {
+                        Label("Demote to spot", systemImage: "arrow.down.circle")
+                    }
+                } else {
+                    Button {
+                        Task { await model.apply("Promoted to priority") { try await $0.setSchedulingClass(session.id, priority: true) } }
+                    } label: {
+                        Label("Promote to priority", systemImage: "arrow.up.circle")
+                    }
+                }
+                Button {
+                    let enabled = !(session.heartbeatEnabled ?? false)
+                    Task { await model.apply(enabled ? "Heartbeat on" : "Heartbeat off") { try await $0.setHeartbeat(session.id, enabled: enabled) } }
+                } label: {
+                    Label((session.heartbeatEnabled ?? false) ? "Turn Heartbeat Off" : "Turn Heartbeat On", systemImage: "heart")
                 }
                 if model.detail?.statusSummary == nil {
                     Button {

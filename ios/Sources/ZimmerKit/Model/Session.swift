@@ -99,6 +99,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var snoozedUntil: Date?
     /// `priority` or `spot`: the class the session actually runs under.
     public var priorityClass: String?
+    public var heartbeatEnabled: Bool?
     public var precedence: Int?
     public var effort: EffortSummary?
     public var config: SessionConfig?
@@ -116,6 +117,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         case effectiveVisibility = "effective_visibility"
         case snoozedUntil = "snoozed_until"
         case priorityClass = "priority_class"
+        case heartbeatEnabled = "heartbeat_enabled"
         case customMetadata = "custom_metadata"
     }
 
@@ -157,6 +159,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     }
 
     public var isFavorite: Bool { favorited ?? false }
+    public var isPriority: Bool { priorityClass == "priority" }
     public var model: String? { config?.model }
     public var agentRoot: String? { metadata?.agentRoot }
     public var pullRequests: [PullRequestLink] { customMetadata?.pullRequests ?? [] }

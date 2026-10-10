@@ -2,7 +2,7 @@ import Foundation
 
 /// Everything else a person does to a session from the web UI's session page and its
 /// mobile action menu: restore, restart, pause, star, hide or snooze, rename, goal, notes,
-/// effort, and the two refreshes. Plus the board's visibility filter, search, and "Send now".
+/// effort, scheduling class, heartbeat, and the two refreshes. Plus the board's visibility filter, search, and "Send now".
 ///
 /// Every route here is on `Api::V1::SessionsController`, which the app's token already
 /// reaches (`accepts_native_app_tokens`), so none of it widens what a phone can do on the
@@ -28,6 +28,11 @@ public protocol SessionActionsAPI: Sendable {
     func updateGoal(_ id: Int, goal: String) async throws -> SessionSummary
     /// Set the reasoning effort, or nil for the model's default.
     func updateEffort(_ id: Int, effort: String?) async throws -> SessionSummary
+    /// The Ranked view's Promote to priority (which starts a waiting session) and Demote to
+    /// spot (which lands it at the head of the spot queue).
+    func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SessionSummary
+    /// Turn the session's heartbeat on or off, at the interval it already has.
+    func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary
     /// Ask for a fresh "where things stand"; it is written in the background.
     func regenerateStatusSummary(_ id: Int) async throws -> String
     /// Re-read the transcript from disk (the web UI's "Refresh Transcript").
@@ -184,6 +189,19 @@ extension ZimmerHTTPClient {
     public func updateEffort(_ id: Int, effort: String?) async throws -> SessionSummary {
         let segment = ZimmerPathComponent(String(id))
         let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)/effort", json: ["effort": effort ?? "default"])
+        return response.session
+    }
+
+    public func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SessionSummary {
+        let segment = ZimmerPathComponent(String(id))
+        let body = priority ? ["scheduling_class": "priority"] : ["scheduling_class": "spot", "place": "top_of_spot"]
+        let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)", json: body)
+        return response.session
+    }
+
+    public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {
+        let segment = ZimmerPathComponent(String(id))
+        let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)/heartbeat", json: ["enabled": enabled])
         return response.session
     }
 
