@@ -89,6 +89,18 @@ class Api::BaseController < ActionController::API
     end
   end
 
+  # Whether this request came from Zimmer's iOS app, on the OAuth grant its
+  # sign-in issued.
+  def native_app_request?
+    @native_app_grant.present?
+  end
+
+  # The app's grant, or nil. A message the app delivers is recorded through it
+  # (HumanMessageCapture.record_assistant_message), with every fence any other
+  # OAuth client's message has: only a grant that acts on its approver's behalf
+  # records, and the author is that approver, never assumed.
+  attr_reader :native_app_grant
+
   def native_app_token_presented?
     native_app_tokens_accepted && native_app_bearer_token.present?
   end

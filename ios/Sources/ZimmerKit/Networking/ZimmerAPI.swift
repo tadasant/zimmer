@@ -4,6 +4,12 @@ import Foundation
 /// `FakeZimmerAPI` with no server and no sign-in.
 public protocol ZimmerAPI: Sendable {
     func sessions(_ filter: SessionFilter) async throws -> [SessionSummary]
+    func session(_ id: Int) async throws -> SessionDetail
+    func conversation(_ id: Int) async throws -> Conversation
+    func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult
+    func archive(_ id: Int) async throws -> SessionSummary
+    /// Start a Quick Router session from a plain-language request; returns its id.
+    func startQuickRouter(_ prompt: String) async throws -> Int
 }
 
 /// Zimmer's REST API (`/api/v1`), called with the signed-in grant's access token.
@@ -25,6 +31,36 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     public func sessions(_ filter: SessionFilter) async throws -> [SessionSummary] {
         let response: SessionListResponse = try await get("/api/v1/sessions", query: filter.query)
         return SessionOrdering.sorted(response.sessions)
+    }
+
+    public func session(_ id: Int) async throws -> SessionDetail {
+        let segment = ZimmerPathComponent(String(id))
+        let response: SessionShowResponse = try await get("/api/v1/sessions/\(segment)")
+        return SessionDetail(session: response.session, statusSummary: response.statusSummary)
+    }
+
+    public func conversation(_ id: Int) async throws -> Conversation {
+        let segment = ZimmerPathComponent(String(id))
+        let response: ConversationResponse = try await get("/api/v1/sessions/\(segment)/conversation", query: ["limit": "100"])
+        return response.conversation
+    }
+
+    public func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult {
+        let segment = ZimmerPathComponent(String(id))
+        let response: FollowUpResponse = try await post("/api/v1/sessions/\(segment)/follow_up", json: ["prompt": prompt])
+        let queued = response.enqueued_message != nil
+        return FollowUpResult(queued: queued, message: response.message ?? (queued ? "Queued" : "Sent"))
+    }
+
+    public func archive(_ id: Int) async throws -> SessionSummary {
+        let segment = ZimmerPathComponent(String(id))
+        let response: ArchiveResponse = try await post("/api/v1/sessions/\(segment)/archive", json: [:])
+        return response.session
+    }
+
+    public func startQuickRouter(_ prompt: String) async throws -> Int {
+        let response: QuickRouterResponse = try await post("/api/v1/quick_router", json: ["prompt": prompt])
+        return response.session_id
     }
 
     // MARK: - Plumbing

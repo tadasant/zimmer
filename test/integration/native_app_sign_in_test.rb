@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "ostruct"
 
 # Zimmer's iOS app signing in through the authorization server, the way
 # `ios/Sources/ZimmerKit/Auth/OAuthSignIn.swift` drives it: authorize with PKCE
@@ -158,6 +159,138 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     OauthServer::Client.prune_unused_registrations
 
     assert OauthServer::Client.exists?(client.id)
+  end
+
+  test "the conversation endpoint returns the transcript's messages as data, newest last" do
+    tokens = sign_in
+    session = build_zimmer_session(status: :needs_input, transcript: [
+      { type: "user", message: { role: "user", content: "Ship it?" }, timestamp: "2026-10-09T10:00:00Z" },
+      { type: "assistant", message: { role: "assistant", content: [ { type: "text", text: "PR is green. Merge?" } ] },
+        timestamp: "2026-10-09T10:01:00Z" }
+    ].map(&:to_json).join("\n"))
+
+    get "/api/v1/sessions/#{session.id}/conversation", headers: bearer(tokens["access_token"])
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal %w[user assistant], body["messages"].map { |m| m["role"] }
+    assert_equal "PR is green. Merge?", body["messages"].last["content"]
+    assert_equal 2, body["total"]
+    assert_equal false, body["truncated"]
+
+    get "/api/v1/sessions/#{session.id}/conversation", params: { limit: 1 }, headers: bearer(tokens["access_token"])
+    body = JSON.parse(response.body)
+    assert_equal [ "PR is green. Merge?" ], body["messages"].map { |m| m["content"] }
+    assert body["truncated"]
+  end
+
+  test "a follow-up from an app that acts on its approver's behalf is recorded as theirs; one over an API key is not" do
+    tokens = sign_in(privilege: OauthServer::ACT_AS_HUMAN)
+    AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-1"))
+    from_phone = build_zimmer_session(status: :needs_input)
+    from_key = build_zimmer_session(status: :needs_input)
+
+    post "/api/v1/sessions/#{from_phone.id}/follow_up", params: { prompt: "Yes, merge it." }, headers: bearer(tokens["access_token"])
+    assert_response :success
+    post "/api/v1/sessions/#{from_key.id}/follow_up", params: { prompt: "From a script" }, headers: { "X-API-Key" => "test_api_key_native_app" }
+    assert_response :success
+
+    message = from_phone.human_messages.sole
+    assert_equal "Yes, merge it.", message.content
+    assert_equal User.for_email("tadas@tadasant.com").key, message.author
+    assert_equal HumanMessage::ASSISTANT, message.channel
+    assert_equal "ios_app.follow_up", message.provenance["entry_point"]
+    assert_equal OauthServer::Grant.sole.id, message.provenance["oauth_grant_id"]
+    assert_empty from_key.human_messages
+  end
+
+  test "a follow-up is recorded as whoever approved the app, never as the admin" do
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "julie@tadasant.com"
+    AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-1"))
+    session = build_zimmer_session(status: :needs_input)
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Ship it" },
+      headers: bearer(sign_in(privilege: OauthServer::ACT_AS_HUMAN)["access_token"])
+
+    assert_response :success
+    message = session.human_messages.sole
+    assert_equal "juliehazz", message.author
+    assert_equal "julie@tadasant.com", message.provenance["grant_user_email"]
+  end
+
+  test "an app connection that is relay only, or whose approver is not on the roster, records nothing" do
+    AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-1"))
+    relay_only = build_zimmer_session(status: :needs_input)
+    post "/api/v1/sessions/#{relay_only.id}/follow_up", params: { prompt: "Yes" },
+      headers: bearer(sign_in(privilege: OauthServer::RELAY_ONLY)["access_token"])
+    assert_response :success
+    assert_empty relay_only.human_messages
+
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "someone-else@tadasant.com"
+    unknown = build_zimmer_session(status: :needs_input)
+    post "/api/v1/sessions/#{unknown.id}/follow_up", params: { prompt: "Yes" },
+      headers: bearer(sign_in(privilege: OauthServer::ACT_AS_HUMAN)["access_token"])
+    assert_response :success
+    assert_empty unknown.human_messages, "never recorded as the admin on someone else's grant"
+  end
+
+  test "a follow-up the app sends mid-turn is queued and still recorded as the approver's words" do
+    tokens = sign_in(privilege: OauthServer::ACT_AS_HUMAN)
+    session = build_zimmer_session(status: :running)
+    Sessions::LiveTurn.stubs(:underway?).returns(true)
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Also deploy it." }, headers: bearer(tokens["access_token"])
+
+    assert_response :accepted
+    assert_equal "pending", JSON.parse(response.body).dig("enqueued_message", "status")
+    assert_equal "ios_app.follow_up", session.human_messages.sole.provenance["entry_point"]
+  end
+
+  test "the app archives a session with its token" do
+    tokens = sign_in
+    session = build_zimmer_session(status: :needs_input)
+
+    post "/api/v1/sessions/#{session.id}/archive", headers: bearer(tokens["access_token"])
+
+    assert_response :success
+    assert session.reload.archived?
+  end
+
+  test "the app starts a Quick Router session with its token, recorded as ios_app" do
+    tokens = sign_in(privilege: OauthServer::ACT_AS_HUMAN)
+    AgentRootsConfig.stubs(:find!).with(AgentRootsConfig.router_root_name).returns(
+      OpenStruct.new(url: "https://github.com/test/repo.git", default_branch: "main",
+                     subdirectory: "agent-roots/zimmer-orchestrator", default_mcp_servers: [])
+    )
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    post "/api/v1/quick_router", params: { prompt: "Rotate the staging deploy key" }, headers: bearer(tokens["access_token"])
+
+    assert_response :created
+    session = Session.find(JSON.parse(response.body)["session_id"])
+    assert_equal "ios_app", session.metadata["source"]
+    message = session.human_messages.sole
+    assert_equal "ios_app.quick_router", message.provenance["entry_point"]
+    assert_equal HumanMessage::ASSISTANT, message.channel
+    assert_equal User.for_email("tadas@tadasant.com").key, message.author
+    # An OAuth-delivered start, like MCP's quick_router: `api` genesis, so capture
+    # coverage never expects a web UI record for it, at priority because a person waits.
+    assert_equal SessionGenesis::API, session.genesis
+    assert_equal SessionGenesis::PRIORITY, session.scheduling_class
+  end
+
+  test "a Quick Router session from a relay-only app connection is started and records nothing" do
+    AgentRootsConfig.stubs(:find!).with(AgentRootsConfig.router_root_name).returns(
+      OpenStruct.new(url: "https://github.com/test/repo.git", default_branch: "main",
+                     subdirectory: "agent-roots/zimmer-orchestrator", default_mcp_servers: [])
+    )
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    post "/api/v1/quick_router", params: { prompt: "Rotate the staging deploy key" },
+      headers: bearer(sign_in(privilege: OauthServer::RELAY_ONLY)["access_token"])
+
+    assert_response :created
+    assert_empty Session.find(JSON.parse(response.body)["session_id"]).human_messages
   end
 
   private

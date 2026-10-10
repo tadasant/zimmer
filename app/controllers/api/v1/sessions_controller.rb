@@ -54,7 +54,7 @@ class Api::V1::SessionsController < Api::BaseController
     failed: { title: "Cannot restart", status: :internal_server_error }
   }.freeze
 
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -426,6 +426,7 @@ class Api::V1::SessionsController < Api::BaseController
 
       if result.success?
         record_uncle_edge(@session, "api_v1:sessions.follow_up")
+        record_native_app_follow_up(prompt)
         render json: {
           session: session_json(@session.reload),
           message: "Follow-up prompt sent immediately"
@@ -466,6 +467,7 @@ class Api::V1::SessionsController < Api::BaseController
         level: "info"
       )
       record_uncle_edge(@session, "api_v1:sessions.follow_up")
+      record_native_app_follow_up(prompt)
       render json: {
         session: session_json(@session.reload),
         enqueued_message: {
@@ -519,6 +521,7 @@ class Api::V1::SessionsController < Api::BaseController
       job = AgentSessionJob.enqueue_with_prompt(@session.id, prompt)
       @session.update!(running_job_id: job.job_id)
     end
+    record_native_app_follow_up(prompt)
 
     render json: {
       session: session_json(@session.reload),
@@ -930,6 +933,28 @@ class Api::V1::SessionsController < Api::BaseController
     render_api_error("Update failed", e.record.errors.full_messages, status: :unprocessable_entity)
   end
 
+  # GET /api/v1/sessions/:id/conversation
+  # The user and assistant messages of the transcript, oldest first, as data
+  # rather than as rendered text: { messages: [{ role, content, timestamp,
+  # has_tool_use, has_tool_result }], total, truncated }. `limit` (default 50,
+  # max 200) keeps the newest that many; each content is cut at 4,000 characters.
+  CONVERSATION_DEFAULT_LIMIT = 50
+  CONVERSATION_MAX_LIMIT = 200
+  CONVERSATION_CONTENT_LIMIT = 4_000
+
+  def conversation
+    limit = params[:limit].present? ? params[:limit].to_i.clamp(1, CONVERSATION_MAX_LIMIT) : CONVERSATION_DEFAULT_LIMIT
+    messages = @session.formatted_conversation
+    render json: {
+      messages: messages.last(limit).map do |message|
+        message.slice(:role, :timestamp, :has_tool_use, :has_tool_result)
+          .merge(content: message[:content].to_s.truncate(CONVERSATION_CONTENT_LIMIT, omission: "\n…[truncated]"))
+      end,
+      total: messages.size,
+      truncated: messages.size > limit
+    }
+  end
+
   # GET /api/v1/sessions/:id/transcript
   # Get a formatted plain-text transcript for a session.
   def transcript
@@ -1176,6 +1201,18 @@ class Api::V1::SessionsController < Api::BaseController
   end
 
   private
+
+  # A follow-up from the iOS app is recorded the way any OAuth client's delivered
+  # message is: as its approver's, and only when the grant acts on their behalf.
+  # An API key names a key, never a person, so a key-authenticated follow-up
+  # records nothing. Best-effort: HumanMessageCapture never raises into the
+  # delivery it describes.
+  def record_native_app_follow_up(prompt)
+    return unless native_app_request?
+
+    HumanMessageCapture.record_assistant_message(session: @session, grant: native_app_grant, content: prompt,
+      entry_point: "ios_app.follow_up")
+  end
 
   # Archive +session+ through Sessions::ArchiveGuard.guarded_archive!, refusing
   # a live turn under the same lock and after the queue check.

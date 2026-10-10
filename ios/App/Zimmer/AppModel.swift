@@ -17,6 +17,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var signedInOrigins: ServerOrigins?
     /// When the edge's credential expires, on a deployment that has one.
     @Published private(set) var edgeExpiry: Date?
+    /// The navigation stack: session ids, so a push or a deep link can open one.
+    @Published var path: [Int] = []
+    @Published var showingQuickRouter = false
 
     let environment: AppEnvironment
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
@@ -29,6 +32,7 @@ final class AppModel: ObservableObject {
 
     var buildTarget: BuildTarget { environment.configuration.buildTarget(signedInTo: signedInOrigins) }
     var hasEdge: Bool { connection.edge != nil }
+    var api: ZimmerAPI { connection.api }
 
     func start() async {
         let signIn = await connection.auth.signIn
@@ -41,6 +45,46 @@ final class AppModel: ObservableObject {
         }
         await refreshEdgeExpiry()
         await refresh()
+        openFixtureScreen()
+    }
+
+    /// `#if DEBUG` launch arguments that open a screen `simctl` cannot tap its way to,
+    /// so `ios/bin/ui-test` can photograph it.
+    private func openFixtureScreen() {
+        #if DEBUG
+        guard environment.isFixture else { return }
+        let arguments = ProcessInfo.processInfo.arguments
+        if let flag = arguments.firstIndex(of: "-ZimmerFixtureOpenSession"),
+           arguments.indices.contains(flag + 1), let id = Int(arguments[flag + 1]) {
+            path = [id]
+        }
+        if arguments.contains("-ZimmerFixtureQuickRouter") { showingQuickRouter = true }
+        #endif
+    }
+
+    /// An error raised on another screen that the whole app has to act on: a sign-in
+    /// that ended returns to the sign-in screen. Others stay on the screen that hit them.
+    func noteError(_ error: ZimmerError) {
+        if error == .unauthorized { handle(error) }
+    }
+
+    /// A session left the list's filter (archived) or joined it (started).
+    func sessionChanged() async {
+        await refresh()
+    }
+
+    /// Start a Quick Router session and open it.
+    func startQuickRouter(_ prompt: String) async -> Bool {
+        do {
+            let id = try await connection.api.startQuickRouter(prompt)
+            showingQuickRouter = false
+            path.append(id)
+            await refresh()
+            return true
+        } catch {
+            handle(error)
+            return false
+        }
     }
 
     func refresh() async {
