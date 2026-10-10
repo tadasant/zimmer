@@ -7831,6 +7831,16 @@ The route trusts the JWKS it fetches from the team domain over HTTPS. A team dom
 host someone else controls would let that host mint handoffs. The default is Tadas's team, and the
 value is read only from the secret chain.
 
+## No iOS push has been sent to a real phone
+
+`ApnsService` is tested against a recorded transport: the request shape, the provider token, and the
+handling of a dead token and an expired provider token. Nothing has sent one to Apple, because the
+APNs key does not exist until a human creates it. The HTTP/2 client (`httpx`) has not been seen to
+negotiate HTTP/2 with `api.push.apple.com`. Sandbox versus production is decided by the build
+configuration (`DEBUG` means sandbox), not read from the signed entitlement. A Release build signed
+for development would register with the wrong environment, and its pushes would be refused as
+`BadDeviceToken`, which disables the row.
+
 ## The iOS app has never been signed, installed on a device, or opened in Xcode
 
 Everything in [the iOS app](/extend/ios-app/) is proven the way Motet's was before its first upload:
