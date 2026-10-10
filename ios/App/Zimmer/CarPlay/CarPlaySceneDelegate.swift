@@ -8,8 +8,8 @@ import os
 ///
 /// Voice first, as that category requires: on connect it reads out how many sessions need
 /// the driver and the first of them, and listens for an answer — yes, a reply, archive,
-/// next, stop (`DrivingFlow`, which holds every rule and is tested on Linux). Anything
-/// that acts on a session is confirmed out loud first. The screen underneath is a short
+/// next, stop (`DrivingFlow`, which holds every rule and is tested on Linux). Archive and
+/// replies are confirmed out loud first; "yes" sends the approval at once. The screen underneath is a short
 /// list of the sessions that need input, each row an action sheet (Approve, Reply by
 /// voice, Archive) for a driver who would rather tap; a Talk button restarts the
 /// conversation. Every template used — list, action sheet, voice control — is one the
@@ -22,6 +22,9 @@ import os
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private var interfaceController: CPInterfaceController?
     private var sessions: [SessionSummary] = []
+    /// Why the last refresh failed, spoken instead of "nothing needs you" — a driver
+    /// cannot be expected to read the screen.
+    private var refreshFailure: String?
     private var summaries: [Int: String] = [:]
     private var refreshTask: Task<Void, Never>?
     private var conversation: Task<Void, Never>?
@@ -43,7 +46,9 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         interfaceController.setRootTemplate(loading, animated: false, completion: nil)
         refreshTask = Task {
             await refresh()
-            if #available(iOS 26.4, *) { startConversation() }
+            // Voice first, as the category requires. The scene only ever connects on
+            // iOS 26.4+, where the voice-based conversational entitlement exists.
+            startConversation()
         }
     }
 
@@ -62,7 +67,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     private func refresh() async {
         let connection = AppEnvironment.shared.connection
         guard await connection.auth.isSignedIn else {
-            showMessage("Sign in to Zimmer on your phone first.")
+            refreshFailure = "Sign in to Zimmer on your phone first."
+            showMessage(refreshFailure!)
             return
         }
         do {
@@ -73,10 +79,12 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
                     summaries[session.id] = summary
                 }
             }
+            refreshFailure = nil
             showList()
         } catch {
             log.error("refresh failed: \(String(describing: error), privacy: .public)")
-            showMessage((error as? ZimmerError)?.userMessage ?? "Couldn't reach Zimmer.")
+            refreshFailure = (error as? ZimmerError)?.userMessage ?? "Couldn't reach Zimmer."
+            showMessage(refreshFailure!)
         }
     }
 
@@ -109,13 +117,21 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             message: summaries[session.id],
             actions: [
                 CPAlertAction(title: "Approve", style: .default) { [weak self] _ in
-                    self?.dismissThen { await self?.perform(.followUp(sessionID: session.id, text: VoiceCommand.approvalText)) }
+                    self?.dismissThen {
+                        if await self?.perform(.followUp(sessionID: session.id, text: VoiceCommand.approvalText)) == true {
+                            await self?.refresh()
+                        }
+                    }
                 },
                 CPAlertAction(title: "Reply by voice", style: .default) { [weak self] _ in
                     self?.dismissThen { self?.startConversation(focusing: session.id) }
                 },
                 CPAlertAction(title: "Archive", style: .destructive) { [weak self] _ in
-                    self?.dismissThen { await self?.perform(.archive(sessionID: session.id)) }
+                    self?.dismissThen {
+                        if await self?.perform(.archive(sessionID: session.id)) == true {
+                            await self?.refresh()
+                        }
+                    }
                 },
                 CPAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
                     self?.interfaceController?.dismissTemplate(animated: true, completion: nil)
@@ -151,20 +167,39 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             self.voice.begin()
             defer {
                 self.voice.end()
-                self.interfaceController?.dismissTemplate(animated: true, completion: nil)
+                // Only its own template: a newer conversation's must survive this one ending.
+                if self.interfaceController?.presentedTemplate === template {
+                    self.interfaceController?.dismissTemplate(animated: true, completion: nil)
+                }
+            }
+            if let failure = self.refreshFailure {
+                await self.voice.speak(failure)
+                return
             }
             var effects = flow.opening()
             var misses = 0
             while !Task.isCancelled {
+                var acted = false
+                var skipNextLine = false
                 for effect in effects {
-                    if case .end = effect { return }
-                    if case let .speak(line) = effect {
+                    guard !Task.isCancelled else { return }
+                    switch effect {
+                    case .end:
+                        if acted { await self.refresh() }
+                        return
+                    case let .speak(line):
+                        // The line after an action announces it; a failed action already
+                        // said why, and must not then be called done.
+                        if skipNextLine { skipNextLine = false; continue }
                         template.activateVoiceControlState(withIdentifier: VoiceState.speaking)
                         await self.voice.speak(line)
-                    } else {
-                        await self.perform(effect)
+                    case .followUp, .archive:
+                        if await self.perform(effect) { acted = true } else { skipNextLine = true }
                     }
                 }
+                // Refresh after the confirmation is spoken, not before it: a driver should
+                // not sit through several requests' silence.
+                if acted { await self.refresh() }
                 template.activateVoiceControlState(withIdentifier: VoiceState.listening)
                 guard let heard = await self.voice.listen(), let command = VoiceCommand(heard) else {
                     misses += 1
@@ -178,9 +213,9 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         }
     }
 
-    /// The effects that touch Zimmer. Speech and the end of the conversation are handled
-    /// by the loop above.
-    private func perform(_ effect: DrivingFlow.Effect) async {
+    /// The effects that touch Zimmer; true when they worked. A failure is spoken here.
+    /// Speech and the end of the conversation are handled by the loop above.
+    private func perform(_ effect: DrivingFlow.Effect) async -> Bool {
         let api = AppEnvironment.shared.connection.api
         do {
             switch effect {
@@ -189,12 +224,13 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             case let .archive(sessionID):
                 _ = try await api.archive(sessionID)
             case .speak, .end:
-                return
+                return true
             }
-            await refresh()
+            return true
         } catch {
             log.error("action failed: \(String(describing: error), privacy: .public)")
             await voice.speak((error as? ZimmerError)?.userMessage ?? "That didn't work.")
+            return false
         }
     }
 }

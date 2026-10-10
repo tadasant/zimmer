@@ -18,6 +18,23 @@ final class DrivingFlowTests: XCTestCase {
         XCTAssertEqual(VoiceCommand("Reply use Postgres 16"), .reply("use Postgres 16"))
         XCTAssertEqual(VoiceCommand("use Postgres 16 for now"), .reply("use Postgres 16 for now"))
         XCTAssertNil(VoiceCommand("   "))
+        XCTAssertEqual(VoiceCommand("Yes, go ahead."), .approve, "punctuation inside the phrase is not a reply")
+        XCTAssertEqual(VoiceCommand("Reply"), .startReply)
+    }
+
+    func testABareReplyAsksWhatToSayThenConfirms() {
+        var flow = DrivingFlow(sessions: sessions)
+        XCTAssertEqual(flow.handle(.startReply), [.speak("What should I tell it?")])
+        XCTAssertEqual(flow.handle(.reply("use 16")).count, 1)
+        XCTAssertEqual(flow.pending, .confirmReply("use 16"))
+        XCTAssertEqual(flow.handle(.approve).first, .followUp(sessionID: 2, text: "use 16"))
+    }
+
+    func testStopEndsTheConversationEvenMidConfirmation() {
+        var flow = DrivingFlow(sessions: sessions)
+        _ = flow.handle(.archive)
+        XCTAssertEqual(flow.handle(.stop).last, .end)
+        XCTAssertEqual(flow.pending, .none)
     }
 
     func testTheOpeningCountsOnlyWhatNeedsTheDriverAndReadsTheFirst() {

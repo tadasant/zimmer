@@ -12,6 +12,10 @@ import os
 final class VoiceIO: NSObject, AVSpeechSynthesizerDelegate {
     private let synthesizer = AVSpeechSynthesizer()
     private var speaking: CheckedContinuation<Void, Never>?
+    /// The utterance `speaking` waits on, so a late callback for an earlier one (after
+    /// `end()` or a stop) cannot resume the next `speak` early — which would start the
+    /// recogniser while the app is still talking.
+    private var current: AVSpeechUtterance?
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay-voice")
 
     override init() {
@@ -38,22 +42,29 @@ final class VoiceIO: NSObject, AVSpeechSynthesizerDelegate {
     func speak(_ text: String) async {
         await withCheckedContinuation { continuation in
             finishSpeaking()
+            let utterance = AVSpeechUtterance(string: text)
             speaking = continuation
-            synthesizer.speak(AVSpeechUtterance(string: text))
+            current = utterance
+            synthesizer.speak(utterance)
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.finishSpeaking() }
+        let id = ObjectIdentifier(utterance)
+        Task { @MainActor in self.finishSpeaking(id) }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.finishSpeaking() }
+        let id = ObjectIdentifier(utterance)
+        Task { @MainActor in self.finishSpeaking(id) }
     }
 
-    private func finishSpeaking() {
+    /// Resumes the waiting `speak` — only for its own utterance when one is named.
+    private func finishSpeaking(_ utterance: ObjectIdentifier? = nil) {
+        if let utterance, let current, ObjectIdentifier(current) != utterance { return }
         speaking?.resume()
         speaking = nil
+        current = nil
     }
 
     /// One dictated phrase: listens until the recogniser calls it final, the driver has
@@ -69,7 +80,11 @@ final class VoiceIO: NSObject, AVSpeechSynthesizerDelegate {
 
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000)
+            } catch {
+                break  // cancelled: stop listening now, not at the deadline
+            }
             let snapshot = session.transcript.snapshot()
             if snapshot.isFinal { break }
             if let changed = snapshot.lastChange, !snapshot.text.isEmpty, Date().timeIntervalSince(changed) > 1.5 { break }
@@ -78,7 +93,10 @@ final class VoiceIO: NSObject, AVSpeechSynthesizerDelegate {
         return text.isEmpty ? nil : text
     }
 
-    private static func authorize() async -> Bool {
+    /// `nonisolated`, like `startRecognition`: Speech calls the authorization handler on a
+    /// background queue, and a handler formed on the main actor would be checked as
+    /// main-actor code there — a Swift 6 run-time crash on the first listen.
+    nonisolated private static func authorize() async -> Bool {
         let speech = await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0 == .authorized) }
         }
@@ -86,9 +104,10 @@ final class VoiceIO: NSObject, AVSpeechSynthesizerDelegate {
         return await AVAudioApplication.requestRecordPermission()
     }
 
-    /// Built off the main actor on purpose: the tap and the recognition handler run on
-    /// audio and Speech threads, and a closure formed on the main actor would be
-    /// main-actor-isolated — which Swift 6 enforces at run time, as a crash.
+    /// `nonisolated` on purpose, though it is called from the main actor: the tap and the
+    /// recognition handler run on audio and Speech threads, and a closure formed in a
+    /// main-actor function would be main-actor-isolated — which Swift 6 enforces at run
+    /// time, as a crash. Formed here, they carry no isolation.
     nonisolated private static func startRecognition() -> RecognitionSession? {
         guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else { return nil }
         let request = SFSpeechAudioBufferRecognitionRequest()

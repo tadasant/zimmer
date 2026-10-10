@@ -5,7 +5,8 @@ import Foundation
 /// Deliberately small and forgiving: a car is loud, recognition is imperfect, and a wrong
 /// guess must never archive something. So only short, distinct words act, and anything
 /// that is not one of them is treated as the text of a reply — which the driver hears read
-/// back and confirms before it is sent.
+/// back and confirms before it is sent. Approval is the one action taken at once, because
+/// it is the common answer and it only tells the agent to carry on.
 public enum VoiceCommand: Hashable, Sendable {
     /// "Yes", "approve", "go ahead", "merge it": send the canned approval.
     case approve
@@ -19,13 +20,19 @@ public enum VoiceCommand: Hashable, Sendable {
     case stop
     /// "Reply …" or anything else: a reply in the driver's own words.
     case reply(String)
+    /// "Reply" on its own: ask what to say, and take the next phrase as the reply.
+    case startReply
 
     public static let approvalText = "Yes, go ahead."
 
     public init?(_ phrase: String) {
         let text = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
-        let lower = text.lowercased().trimmingCharacters(in: .punctuationCharacters)
+        // Recognisers add punctuation ("Yes, go ahead."): match on the words alone.
+        let lower = text.lowercased()
+            .unicodeScalars.filter { !CharacterSet.punctuationCharacters.contains($0) || $0 == "'" }
+            .map(String.init).joined()
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
         switch lower {
         case "yes", "yeah", "approve", "approved", "go ahead", "yes go ahead", "merge it", "do it", "ship it":
             self = .approve
@@ -37,6 +44,8 @@ public enum VoiceCommand: Hashable, Sendable {
             self = .repeatCurrent
         case "stop", "cancel", "that's all", "thats all", "done", "never mind", "nevermind":
             self = .stop
+        case "reply", "tell it", "answer":
+            self = .startReply
         default:
             for prefix in ["reply ", "tell it ", "say "] where lower.hasPrefix(prefix) {
                 let body = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -67,6 +76,7 @@ public struct DrivingFlow: Sendable {
         case none
         case confirmArchive
         case confirmReply(String)
+        case awaitingReply
     }
 
     public static let limit = 5
@@ -97,15 +107,30 @@ public struct DrivingFlow: Sendable {
         guard let session = current else { return [.speak("That's everything."), .end] }
 
         switch (pending, command) {
+        case (_, .stop):
+            pending = .none
+            return [.speak("Okay."), .end]
+        case (.awaitingReply, .reply(let text)):
+            pending = .confirmReply(text)
+            return [.speak("Reply: \(text). Say yes to send it.")]
+        case (.awaitingReply, _):
+            pending = .none
+            return [.speak("Okay, nothing sent. \(prompt)")]
         case (.confirmArchive, .approve):
             pending = .none
             return [.archive(sessionID: session.id), .speak("Archived.")] + advance()
         case (.confirmReply(let text), .approve):
             pending = .none
             return [.followUp(sessionID: session.id, text: text), .speak("Sent.")] + advance()
-        case (.confirmArchive, _), (.confirmReply, _):
+        case (.confirmArchive, _):
+            pending = .none
+            return [.speak("Okay, not archived. \(prompt)")]
+        case (.confirmReply, _):
             pending = .none
             return [.speak("Okay, not sent. \(prompt)")]
+        case (.none, .startReply):
+            pending = .awaitingReply
+            return [.speak("What should I tell it?")]
         case (.none, .approve):
             return [.followUp(sessionID: session.id, text: VoiceCommand.approvalText), .speak("Told it to go ahead.")] + advance()
         case (.none, .archive):
@@ -118,8 +143,6 @@ public struct DrivingFlow: Sendable {
             return advance()
         case (.none, .repeatCurrent):
             return [.speak(describe(session))]
-        case (.none, .stop):
-            return [.speak("Okay."), .end]
         }
     }
 

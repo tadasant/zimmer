@@ -165,12 +165,15 @@ phone connects, it says how many sessions need you and reads the first, its titl
 summary*, then listens:
 
 - **"Yes"** (or "go ahead", "merge it") sends *Yes, go ahead.*
-- **"Reply …"**, or anything else, is a reply in your own words. It is read back, and sent when you say yes.
+- **"Reply …"**, or anything else, is a reply in your own words. It is read back, and sent when you
+  say yes. A bare **"reply"** asks what to say.
 - **"Archive"** archives, after you say yes.
 - **"Next"** skips, **"repeat"** reads it again, and **"stop"** ends the conversation.
 
-Nothing acts on a session without a spoken confirmation, so a misheard word costs a sentence, not a
-session. The screen underneath lists up to five sessions that need input. Each row is an action
+Archive and replies wait for a spoken "yes", so a misheard word costs a sentence, not a session.
+"Yes" on its own sends the approval at once, because it is the usual answer and only tells the agent
+to carry on. If an action fails, the app says why and doesn't claim it worked. If Zimmer can't be
+reached, the app says that instead of "nothing needs you". The screen underneath lists up to five sessions that need input. Each row is an action
 sheet (Approve, Reply by voice, Archive) for a driver who would rather tap, and a Talk button
 restarts the conversation. The voice control, list and action sheet templates are all ones the
 category allows, and the stack never goes deeper than three. The audio session is held only while
