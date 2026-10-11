@@ -147,8 +147,10 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
-Every action above is a route on `/api/v1/sessions` that the app's token could already reach; none
-of them widened what the phone can do on the server.
+Every action above except answering a prompt is a route on `/api/v1/sessions` that the app's token
+could already reach. Prompts are the one exception: they are listed at
+`/api/v1/sessions/:id/elicitations` and answered at `/api/v1/elicitations/:id/respond`, both opened
+to the app's token for this (see the [REST API](/extend/rest-api/#elicitations)).
 
 ### Not in the app yet
 
