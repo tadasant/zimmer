@@ -64,6 +64,28 @@ final class OperationsTests: XCTestCase {
         ])
     }
 
+    func testEachInvokeOutcomeIsToldApart() async throws {
+        let (api, _) = client([
+            { _ in Fixtures.json(201, ["trigger": ["id": 5], "session": ["id": 1], "burst_notice": true, "message": "Burst"]) },
+            { _ in Fixtures.json(409, ["error": "No session created", "message": "A session is still pending", "session": ["id": 2]]) },
+            { _ in Fixtures.json(422, ["error": "No session created", "message": "Not reusable", "session": ["id": 3]]) },
+            { _ in Fixtures.json(422, ["error": "Invalid agent_root", "message": "Agent root 'x' not found"]) },
+            { _ in Fixtures.json(429, ["error": "Burst suppressed", "message": "Too many fires"]) },
+        ])
+
+        let burst = try await api.invokeTrigger(5)
+        let pending = try await api.invokeTrigger(5)
+        let notReusable = try await api.invokeTrigger(5)
+
+        XCTAssertEqual(burst.outcome, .burstNotice)
+        XCTAssertFalse(burst.started, "the session asked for was not made")
+        XCTAssertEqual(pending.outcome, .pendingSession)
+        XCTAssertEqual(pending.sessionID, 2, "the pending session can be opened")
+        XCTAssertEqual(notReusable.sessionID, 3)
+        await XCTAssertThrowsAsync(try await api.invokeTrigger(5), "a 422 with no session is a refusal")
+        await XCTAssertThrowsAsync(try await api.invokeTrigger(5), "a suppressed burst is an error")
+    }
+
     func testCostsReadTheTotalsTheDaysAndTheTopRows() async throws {
         let (api, transport) = client([{ _ in Fixtures.json(200, [
             "window": ["from": "2026-10-04T00:00:00Z", "to": "2026-10-11T00:00:00Z"],
@@ -114,8 +136,9 @@ final class OperationsTests: XCTestCase {
         try await fake.dismissNotification(91)
         let unread = try await fake.unreadNotificationCount()
         XCTAssertEqual(unread, 1)
-        await XCTAssertThrowsAsync(try await fake.invokeTrigger(6), "a disabled trigger is not invoked")
+        let disabled = try await fake.invokeTrigger(6)
+        XCTAssertNotNil(disabled.sessionID, "a disabled trigger can still be fired by hand, as on the server")
         let invoked = try await fake.invokeTrigger(5)
-        XCTAssertNotNil(invoked.sessionID)
+        XCTAssertTrue(invoked.started)
     }
 }

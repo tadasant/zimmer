@@ -99,11 +99,12 @@ struct InboxView: View {
             try await action(app.api)
             notice = done
             Haptics.success()
+            await load()
         } catch {
+            // Not followed by a reload, which would clear the refusal before anyone read it.
             self.error = error as? ZimmerError ?? .transport(error)
             Haptics.failure()
         }
-        await load()
     }
 }
 
@@ -132,7 +133,6 @@ private struct InboxRow: View {
                         Text("·")
                         Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
                     }
-                    if notification.stale == true { Text("· out of date") }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -151,6 +151,8 @@ struct TriggersView: View {
     @State private var error: ZimmerError?
     @State private var notice: String?
     @State private var invoking: TriggerSummary?
+    /// Triggers with a toggle in flight: a second tap waits for the first.
+    @State private var toggling: Set<Int> = []
 
     var body: some View {
         List {
@@ -163,6 +165,7 @@ struct TriggersView: View {
                     Button { invoking = trigger } label: { Label("Invoke", systemImage: "play.fill") }
                         .tint(.green)
                 }
+                .accessibilityElement(children: .contain)
                 .contextMenu {
                     Button { invoking = trigger } label: { Label("Invoke Now", systemImage: "play.fill") }
                     if let id = trigger.lastSessionID {
@@ -178,12 +181,14 @@ struct TriggersView: View {
         }
         .overlay(alignment: .bottom) { Toast(text: $notice) }
         .confirmationDialog(
-            invoking.map { "Invoke \($0.name) now?" } ?? "",
+            "Invoke now?",
             isPresented: Binding(get: { invoking != nil }, set: { if !$0 { invoking = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button("Invoke") { if let trigger = invoking { Task { await invoke(trigger) } } }
-        } message: {
+            titleVisibility: .visible,
+            presenting: invoking
+        ) { trigger in
+            Button("Invoke \(trigger.name)") { Task { await invoke(trigger) } }
+                .accessibilityIdentifier("trigger.invoke.confirm")
+        } message: { _ in
             Text("It fires as if its condition had matched, as the web UI's Invoke does.")
         }
         .refreshable { await load() }
@@ -203,6 +208,8 @@ struct TriggersView: View {
     }
 
     private func toggle(_ trigger: TriggerSummary) async {
+        guard toggling.insert(trigger.id).inserted else { return }
+        defer { toggling.remove(trigger.id) }
         do {
             let updated = try await app.api.toggleTrigger(trigger.id)
             if let index = triggers?.firstIndex(where: { $0.id == trigger.id }) { triggers?[index] = updated }
@@ -217,8 +224,15 @@ struct TriggersView: View {
     private func invoke(_ trigger: TriggerSummary) async {
         do {
             let result = try await app.api.invokeTrigger(trigger.id)
-            notice = result.message
-            Haptics.success()
+            // The web UI's Invoke tells these apart, and so does the toast: only a session that
+            // was actually started is a success.
+            switch result.outcome {
+            case .started: notice = result.message
+            case .burstNotice: notice = "Burst: no new session. \(result.message)"
+            case .pendingSession: notice = "A session is still pending. \(result.message)"
+            case .notReusable: notice = "Its session cannot take another turn. \(result.message)"
+            }
+            if result.started { Haptics.success() } else { Haptics.failure() }
             await load()
             if let id = result.sessionID { app.path = [id] }
         } catch {

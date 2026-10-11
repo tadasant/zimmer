@@ -646,7 +646,7 @@ extension FakeZimmerAPI {
 
     public func invokeTrigger(_ id: Int) async throws -> TriggerInvocation {
         guard let trigger = triggerList.first(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
-        guard trigger.isEnabled else { throw ZimmerError.http(status: 422, message: "Trigger is disabled") }
+        // A disabled trigger can still be fired by hand, as the server allows.
         let started = try await startQuickRouter("\(trigger.name): run now")
         return TriggerInvocation(sessionID: started, message: "Trigger '\(trigger.name)' fired: session \(started) started")
     }
@@ -686,9 +686,9 @@ extension FakeZimmerAPI {
         [
             InboxNotification(id: 91, type: "needs_input", read: false, createdAt: now.addingTimeInterval(-6 * 60),
                               session: .init(id: 1038, title: "PR #1261 is green and ready — merge it?", status: .needsInput)),
-            InboxNotification(id: 90, type: "failed", read: false, createdAt: now.addingTimeInterval(-180 * 60),
+            InboxNotification(id: 90, type: "session_failed", read: false, createdAt: now.addingTimeInterval(-180 * 60),
                               session: .init(id: 1027, title: "Rotate the staging deploy key", status: .failed)),
-            InboxNotification(id: 88, type: "completed", read: true, createdAt: now.addingTimeInterval(-1_400 * 60),
+            InboxNotification(id: 88, type: "session_complete", read: true, createdAt: now.addingTimeInterval(-1_400 * 60),
                               session: .init(id: 1019, title: "Fix the flaky transcript poller test", status: .archived)),
         ]
     }

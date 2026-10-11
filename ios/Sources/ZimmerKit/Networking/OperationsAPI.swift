@@ -62,8 +62,21 @@ extension ZimmerHTTPClient {
     }
 
     public func invokeTrigger(_ id: Int) async throws -> TriggerInvocation {
-        let response: TriggerInvokeResponse = try await post("/api/v1/triggers/\(id)/invoke", json: [:])
-        return TriggerInvocation(sessionID: response.session?.id, message: response.message ?? "Invoked")
+        // 409 and 422 name the session in the way, which the person wants to open; a 429 (burst
+        // suppressed) is an error like any other.
+        let raw = try await perform(method: "POST", path: "/api/v1/triggers/\(id)/invoke", query: [:], body: Data("{}".utf8), accepting: [409, 422])
+        let response = try? ZimmerJSON.decoder.decode(TriggerInvokeResponse.self, from: raw.body)
+        let message = response?.message ?? "Invoked"
+        switch raw.statusCode {
+        case 409: return TriggerInvocation(outcome: .pendingSession, sessionID: response?.session?.id, message: message)
+        case 422:
+            // A plain 422 with no session to show (an unknown agent root, say) is a refusal.
+            guard let session = response?.session?.id else { throw ZimmerError.http(status: 422, message: message) }
+            return TriggerInvocation(outcome: .notReusable, sessionID: session, message: message)
+        default:
+            return TriggerInvocation(outcome: response?.burst_notice == true ? .burstNotice : .started,
+                                     sessionID: response?.session?.id, message: message)
+        }
     }
 
     public func costs(days: Int) async throws -> CostSnapshot {
