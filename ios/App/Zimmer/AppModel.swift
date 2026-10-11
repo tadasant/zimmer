@@ -35,6 +35,8 @@ final class AppModel: ObservableObject {
     /// The navigation stack: session ids, so a push or a deep link can open one.
     @Published var path: [Int] = []
     @Published var showingQuickRouter = false
+    /// The full new-session form (touch and hold the pencil).
+    @Published var showingNewSession = false
 
     let environment: AppEnvironment
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
@@ -75,6 +77,7 @@ final class AppModel: ObservableObject {
             path = [id]
         }
         if arguments.contains("-ZimmerFixtureQuickRouter") { showingQuickRouter = true }
+        if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
         func value(_ flag: String) -> String? {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
@@ -102,6 +105,20 @@ final class AppModel: ObservableObject {
     /// A session left the list's filter (archived) or joined it (started).
     func sessionChanged() async {
         await refresh()
+    }
+
+    /// Start a session from the full form. The caller opens it.
+    func createSession(_ request: NewSessionRequest) async -> SessionSummary? {
+        do {
+            let session = try await connection.api.createSession(request)
+            Haptics.success()
+            await refresh()
+            return session
+        } catch {
+            handle(error)
+            Haptics.failure()
+            return nil
+        }
     }
 
     /// Start a Quick Router session and open it.

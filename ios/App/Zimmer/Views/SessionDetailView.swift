@@ -148,6 +148,8 @@ struct SessionDetailView: View {
     @Environment(\.openURL) private var openURL
     @StateObject private var model: SessionDetailModel
     @State private var confirmingArchive = false
+    @State private var choosingModel = false
+    @State private var editingCatalog: CatalogKind?
     @State private var showingToolTraffic = false
     @State private var editing: EditedText?
     @State private var renaming = false
@@ -236,6 +238,8 @@ struct SessionDetailView: View {
             }
             .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
+        .sheet(isPresented: $choosingModel) { modelSheet }
+        .sheet(item: $editingCatalog) { kind in catalogSheet(kind) }
         .sheet(item: $editing) { field in
             TextEditSheet(
                 title: field == .notes ? "Edit Notes" : "Modify Goal",
@@ -296,6 +300,26 @@ struct SessionDetailView: View {
                     .accessibilityLabel("Move to trash")
                     .accessibilityIdentifier("detail.archive")
                 }
+            }
+        }
+    }
+
+    // MARK: - Model and artifacts
+
+    @ViewBuilder
+    private var modelSheet: some View {
+        if let session = model.detail?.session {
+            ModelPickerSheet(session: session) { id in
+                await model.apply("Model: \(id)") { try await $0.updateModel(session.id, model: id) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func catalogSheet(_ kind: CatalogKind) -> some View {
+        if let session = model.detail?.session {
+            CatalogEditorSheet(kind: kind, initial: kind.selection(in: session)) { values in
+                await model.apply("\(kind.label) updated — from the next turn") { try await $0.updateSelection(session.id, kind, to: values) }
             }
         }
     }
@@ -434,6 +458,15 @@ struct SessionDetailView: View {
                     Label("Rename", systemImage: "pencil")
                 }
                 Button { editing = .goal } label: { Label("Modify Goal", systemImage: "flag") }
+                Button { choosingModel = true } label: { Label("Model: \(session.model ?? "default")", systemImage: "cpu") }
+                    .accessibilityIdentifier("detail.model")
+                Menu {
+                    ForEach(CatalogKind.allCases) { kind in
+                        Button("\(kind.label) (\(kind.selection(in: session).count))") { editingCatalog = kind }
+                    }
+                } label: {
+                    Label("MCP Servers, Skills, Hooks, Plugins", systemImage: "puzzlepiece.extension")
+                }
                 if let effort = session.effort, !effort.levels.isEmpty {
                     let modelDefault = effort.default.map { "Model default (\($0))" } ?? "Model default"
                     Menu {
