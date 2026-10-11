@@ -6,7 +6,7 @@ import ZimmerKit
 @MainActor
 final class SessionDetailModel: ObservableObject {
     let id: Int
-    private let api: ZimmerAPI
+    let api: ZimmerAPI
     /// Hands an error the whole app cares about (a sign-in that ended) to `AppModel`.
     var report: (ZimmerError) -> Void = { _ in }
 
@@ -17,6 +17,8 @@ final class SessionDetailModel: ObservableObject {
     @Published var error: ZimmerError?
     @Published var notice: String?
     @Published var draft = ""
+    /// The messages waiting for the turn in flight to end (`QueueCard`).
+    @Published var queue: [QueuedMessage] = []
 
     init(id: Int, api: ZimmerAPI) {
         self.id = id
@@ -29,13 +31,20 @@ final class SessionDetailModel: ObservableObject {
         do {
             detail = try await api.session(id)
             conversation = try await api.conversation(id)
+            // The queue is a panel, not the page: one that will not load keeps what it last
+            // showed rather than failing the session — unless the sign-in has ended.
+            do {
+                queue = try await api.queue(id)
+            } catch ZimmerError.unauthorized {
+                report(.unauthorized)
+            } catch {}
             error = nil
         } catch {
             fail(error)
         }
     }
 
-    private func fail(_ error: Error) {
+    func fail(_ error: Error) {
         let zimmerError = error as? ZimmerError ?? .transport(error)
         self.error = zimmerError
         report(zimmerError)
@@ -142,6 +151,8 @@ struct SessionDetailView: View {
     @State private var showingToolTraffic = false
     @State private var editing: EditedText?
     @State private var renaming = false
+    @State private var showingLogs = false
+    @State private var showingSubagents = false
     @State private var newTitle = ""
 
     /// Short answers a person gives most often — on a phone, typing is the expensive part.
@@ -181,7 +192,9 @@ struct SessionDetailView: View {
                         TextCard(title: "Notes", text: notes, identifier: "detail.notes") { editing = .notes }
                     }
                     if let hierarchy = detail.hierarchy, hierarchy.isWorthShowing {
-                        HierarchyCard(hierarchy: hierarchy)
+                        HierarchyCard(hierarchy: hierarchy) { junior, uncle in
+                            Task { await model.detachUncle(junior, uncle: uncle) }
+                        }
                     }
                 } else if model.isLoading {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
@@ -189,6 +202,10 @@ struct SessionDetailView: View {
                 if let error = model.error { ErrorBanner(error: error) }
                 if let conversation = model.conversation {
                     conversationSection(conversation)
+                }
+                // Under the conversation and above the composer, where the web UI puts it.
+                if !model.queue.isEmpty {
+                    QueueCard(model: model)
                 }
             }
             .padding()
@@ -231,6 +248,8 @@ struct SessionDetailView: View {
                 }
             }
         }
+        .sheet(isPresented: $showingLogs) { SessionLogsView(id: model.id, api: model.api) }
+        .sheet(isPresented: $showingSubagents) { SubagentsView(id: model.id, api: model.api) }
         .overlay(alignment: .bottom) {
             // Above the composer, which is a bottom inset.
             Toast(text: $model.notice, identifier: "followup.notice")
@@ -337,6 +356,8 @@ struct SessionDetailView: View {
             Section {
                 Button { app.showingQuickRouter = true } label: { Label("Quick Router", systemImage: "square.and.pencil") }
                 Button { editing = .notes } label: { Label("Edit Notes", systemImage: "note.text") }
+                Button { showingLogs = true } label: { Label("Show Logs", systemImage: "doc.plaintext") }
+                Button { showingSubagents = true } label: { Label("Subagents", systemImage: "person.2") }
                 if session.pullRequests.count == 1, let pr = session.pullRequests.first {
                     Button { openURL(pr.url) } label: { Label("View PR \(pr.label)", systemImage: "arrow.triangle.pull") }
                 } else if !session.pullRequests.isEmpty {
@@ -594,21 +615,39 @@ private struct SummaryCard: View {
 /// depth. Every other session in it opens on a tap.
 private struct HierarchyCard: View {
     let hierarchy: SessionHierarchy
+    /// Remove an "also senior" edge: (junior, uncle).
+    let detach: (Int, Int) -> Void
+    @State private var detaching: (junior: Int, uncle: Int)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Hierarchy").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             ForEach(hierarchy.nodes) { node in
-                if node.current {
-                    row(node).fontWeight(.semibold)
-                } else {
-                    NavigationLink(value: node.id) { row(node) }
-                        .buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: 2) {
+                    if node.current {
+                        row(node).fontWeight(.semibold)
+                    } else {
+                        NavigationLink(value: node.id) { row(node) }
+                            .buttonStyle(.plain)
+                    }
+                    // Beside the link, not in it, so a detach is never taken as opening the session.
+                    if !node.uncles.isEmpty { seniors(node) }
                 }
             }
             if hierarchy.truncated {
                 Text("Only part of the hierarchy is shown.").font(.caption).foregroundStyle(.secondary)
             }
+        }
+        .confirmationDialog(
+            detaching.map { "Remove #\($0.uncle) as an additional senior of #\($0.junior)?" } ?? "",
+            isPresented: Binding(get: { detaching != nil }, set: { if !$0 { detaching = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                if let edge = detaching { detach(edge.junior, edge.uncle) }
+            }
+        } message: {
+            Text("Both sessions stop pulling in the other's human messages through this edge. Spawn parents are untouched, and both timelines record the removal.")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
@@ -631,6 +670,35 @@ private struct HierarchyCard: View {
         .padding(.leading, CGFloat(min(node.depth, 6)) * 14)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("hierarchy.node.\(node.id)")
+    }
+
+    /// The web UI's amber "also senior" chips: the sessions that queued or interrupted this
+    /// one, each with its own detach.
+    private func seniors(_ node: SessionHierarchy.Node) -> some View {
+        HStack(spacing: 4) {
+            Text("also senior:")
+            ForEach(node.uncles, id: \.self) { uncle in
+                // As on the web: the number opens that session, only the × detaches.
+                HStack(spacing: 2) {
+                    NavigationLink(value: uncle) { Text(verbatim: "#\(uncle)").underline() }
+                        .buttonStyle(.plain)
+                    Button {
+                        detaching = (node.id, uncle)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Remove #\(uncle) as an additional senior of #\(node.id)")
+                    .accessibilityIdentifier("hierarchy.uncle.\(node.id).\(uncle)")
+                }
+            }
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(Color(red: 0.57, green: 0.25, blue: 0.05))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(Color.orange.opacity(0.15), in: Capsule())
+        .padding(.leading, CGFloat(min(node.depth, 6)) * 14 + 16)
     }
 }
 
@@ -707,7 +775,7 @@ private struct TextEditSheet: View {
     }
 }
 
-private struct MessageBubble: View {
+struct MessageBubble: View {
     let message: ConversationMessage
 
     var body: some View {
