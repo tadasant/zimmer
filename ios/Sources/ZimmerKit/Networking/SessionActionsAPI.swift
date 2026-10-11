@@ -8,8 +8,9 @@ import Foundation
 /// reaches (`accepts_native_app_tokens`), so none of it widens what a phone can do on the
 /// server: these are calls the app could already make, now with screens.
 public protocol SessionActionsAPI: Sendable {
-    /// The list, narrowed by board visibility as the web UI's board is.
-    func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> [SessionSummary]
+    /// The list, narrowed by board visibility as the web UI's board is: the newest
+    /// `SessionFilter.maxPages` pages, with `complete` false when there were more.
+    func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult
     /// Sessions matching `query` (the web UI's search box) within the same filters; with
     /// `contents`, transcripts are searched too — one bounded scan, its first page.
     func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult
@@ -42,8 +43,8 @@ public protocol SessionActionsAPI: Sendable {
     /// Trash several at once. Refusals (a turn in flight, queued messages) are reported per
     /// session and do not stop the rest.
     func bulkArchive(_ ids: [Int]) async throws -> BulkArchiveResult
-    /// The web UI's "Refresh all": re-read transcripts, and restart failed sessions and the
-    /// ones an interruption left waiting on you (not ones you paused).
+    /// "Refresh all" over the REST API: re-read transcripts, restart failed sessions, and
+    /// continue sessions waiting on you that you did not pause — up to 50 of those together.
     func refreshAll() async throws -> String
 }
 
@@ -135,22 +136,29 @@ public enum BoardFilter: String, Hashable, Sendable, CaseIterable, Identifiable 
 
 // `ZimmerHTTPClient: ZimmerAPI`, which refines `SessionActionsAPI`.
 extension ZimmerHTTPClient {
-    /// Up to `SessionFilter.maxPages` pages, so the board views order the same rows the web
-    /// UI's board does rather than only the newest hundred.
-    public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> [SessionSummary] {
-        var rows: [SessionSummary] = []
-        var page = 1
-        while true {
-            var query = filter.query.merging(board.query) { a, _ in a }
-            query["page"] = String(page)
-            let response: SessionListResponse = try await get("/api/v1/sessions", query: query)
-            rows += response.sessions
-            let pages = response.pagination?.total_pages ?? 1
-            guard page < pages, page < SessionFilter.maxPages else { break }
-            page += 1
+    /// Up to `SessionFilter.maxPages` pages of the newest sessions — the first, then the rest
+    /// at once — for the board views to order on the phone. `complete` is false when the
+    /// filter matched more than that, and the list says so.
+    public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
+        let base = filter.query.merging(board.query) { a, _ in a }
+        let first: SessionListResponse = try await get("/api/v1/sessions", query: base.merging(["page": "1"]) { _, new in new })
+        let pages = first.pagination?.total_pages ?? 1
+        var rest: [Int: [SessionSummary]] = [:]
+        if pages > 1 {
+            try await withThrowingTaskGroup(of: (Int, [SessionSummary]).self) { group in
+                for page in 2...min(pages, SessionFilter.maxPages) {
+                    group.addTask {
+                        let response: SessionListResponse = try await get("/api/v1/sessions", query: base.merging(["page": String(page)]) { _, new in new })
+                        return (page, response.sessions)
+                    }
+                }
+                for try await (page, rows) in group { rest[page] = rows }
+            }
         }
+        // A session created between two requests shifts a row onto the next page; it is shown once.
         var seen = Set<Int>()
-        return SessionOrdering.sorted(rows.filter { seen.insert($0.id).inserted })
+        let rows = (first.sessions + rest.keys.sorted().flatMap { rest[$0] ?? [] }).filter { seen.insert($0.id).inserted }
+        return SessionSearchResult(sessions: rows, complete: pages <= SessionFilter.maxPages)
     }
 
     public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {

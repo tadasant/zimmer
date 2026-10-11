@@ -32,9 +32,9 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
     public func sections(_ sessions: [SessionSummary]) -> [BoardSection] {
         switch self {
         case .lastTouched:
-            return [BoardSection(title: nil, sessions: Self.stable(sessions) { ($0.lastTouchedAt ?? .distantPast) > ($1.lastTouchedAt ?? .distantPast) })]
+            return [BoardSection(title: nil, sessions: Self.sorted(sessions, newestFirst: true) { ($0.lastTouchedAt ?? .distantPast) > ($1.lastTouchedAt ?? .distantPast) })]
         case .created:
-            return [BoardSection(title: nil, sessions: Self.stable(sessions) { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) })]
+            return [BoardSection(title: nil, sessions: Self.sorted(sessions, newestFirst: true) { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) })]
         case .yourBoard:
             let (priority, spot) = Self.halves(sessions)
             return [BoardSection(title: nil, sessions: priority + spot)]
@@ -46,7 +46,7 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
 
     /// `Session.ranked` over each scheduling class: precedence descending, then oldest first.
     static func halves(_ sessions: [SessionSummary]) -> (priority: [SessionSummary], spot: [SessionSummary]) {
-        let ranked = stable(sessions) { a, b in
+        let ranked = sorted(sessions, newestFirst: false) { a, b in
             let (pa, pb) = (a.precedence ?? 0, b.precedence ?? 0)
             if pa != pb { return pa > pb }
             return (a.createdAt ?? .distantPast) < (b.createdAt ?? .distantPast)
@@ -54,12 +54,14 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
         return (ranked.filter(\.isPriority), ranked.filter { !$0.isPriority })
     }
 
-    /// A sort that keeps equal rows in the order they came, by id as the last word.
-    static func stable(_ sessions: [SessionSummary], by before: (SessionSummary, SessionSummary) -> Bool) -> [SessionSummary] {
+    /// Sort by `before`, with the id as the last word so equal keys always land the same way:
+    /// higher ids first in a newest-first view (timestamps tie at the second, ids do not),
+    /// lower first in the ranked order, as `Session.ranked`'s `id: :asc`.
+    static func sorted(_ sessions: [SessionSummary], newestFirst: Bool, by before: (SessionSummary, SessionSummary) -> Bool) -> [SessionSummary] {
         sessions.sorted { a, b in
             if before(a, b) { return true }
             if before(b, a) { return false }
-            return a.id < b.id
+            return newestFirst ? a.id > b.id : a.id < b.id
         }
     }
 }

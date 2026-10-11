@@ -52,11 +52,13 @@ struct SessionListView: View {
                 Text("A session mid-turn, or with messages still queued, is refused and stays.")
             }
             .confirmationDialog("Refresh all sessions?", isPresented: $confirmingRefreshAll, titleVisibility: .visible) {
-                Button("Refresh All") { Task { await model.refreshAll() } }
+                Button("Refresh All Now") { Task { await model.refreshAll() } }
             } message: {
-                Text("Re-reads every transcript, and restarts failed sessions and ones an interruption left waiting on you. Sessions you paused stay paused.")
+                Text("Re-reads transcripts, restarts failed sessions, and continues sessions waiting on you that you didn't pause — up to 50 of those. That spends agent turns.")
             }
             .environment(\.editMode, $editMode)
+            // A selection only ever names rows on screen: a filter, search or view change drops the rest.
+            .onChange(of: model.sessions.map(\.id)) { _, ids in selection.formIntersection(ids) }
             .sheet(isPresented: $showingSettings) { SettingsView() }
             .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
     }
@@ -79,10 +81,13 @@ struct SessionListView: View {
             if model.sessions.isEmpty && !model.isLoading {
                 Section { EmptyListRow(filter: model.filter, searching: !model.searchText.isEmpty) }
             }
-            ForEach(model.sections) { section in
+            ForEach(model.sessions.isEmpty ? [] : model.sections) { section in
                 Section {
                     ForEach(section.sessions) { session in
                         SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing)
+                    }
+                    if section.sessions.isEmpty {
+                        Text("None.").foregroundStyle(.secondary)
                     }
                 } header: {
                     if let title = section.title {
@@ -90,10 +95,9 @@ struct SessionListView: View {
                     }
                 }
             }
-            if model.searchIncomplete && !model.searchText.isEmpty {
+            if model.listIncomplete {
                 Section {} footer: {
-                    Text("The transcript search stopped before reading every session. Narrow the search, or pick a status, to cover the rest.")
-                        .accessibilityIdentifier("search.incomplete")
+                    Text(incompleteNotice).accessibilityIdentifier("list.incomplete")
                 }
             }
         }
@@ -103,6 +107,16 @@ struct SessionListView: View {
     }
 
     private var isSelecting: Bool { editMode.isEditing }
+
+    private var incompleteNotice: String {
+        model.searchText.isEmpty
+            ? "Showing the newest \(SessionFilter.maxPages * 100) sessions that match. Pick a status or search to reach older ones."
+            : "The transcript search stopped before reading every session. Narrow the search, or pick a status, to cover the rest."
+    }
+
+    private var selectionLabel: String {
+        selection.isEmpty ? "Select sessions" : "\(selection.count) selected"
+    }
 
     private var searchableList: some View {
         list
@@ -149,7 +163,7 @@ struct SessionListView: View {
         }
         ToolbarItemGroup(placement: .bottomBar) {
             if isSelecting {
-                Text(selection.isEmpty ? "Select sessions" : "\(selection.count) selected")
+                Text(selectionLabel)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()

@@ -2,7 +2,7 @@ import XCTest
 
 /// The app, run on a simulator against its `#if DEBUG` fixture (`-ZimmerFixture`): an
 /// in-memory Zimmer, because an agent cannot complete a Google sign-in. What this proves is
-/// the app's own behaviour — the list orders by urgency, the filters ask for the right
+/// the app's own behaviour — the list follows the web UI's board views, the filters ask for the right
 /// rows, the build says which deployment it was made for — not the network.
 ///
 /// One flow, deliberately: a broad, flaky UI suite would redden every iOS pull request.
@@ -14,7 +14,7 @@ final class SessionListUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func test_needs_input_is_the_default_filter_and_sorts_above_everything_else() throws {
+    func test_needs_input_is_the_default_filter_and_last_touched_the_default_order() throws {
         let app = launch()
 
         // Needs input is selected on launch, and shows exactly the sessions waiting on a person.

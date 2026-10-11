@@ -206,13 +206,13 @@ final class SessionParityTests: XCTestCase {
 
     func testTheFixtureKeepsSnoozedSessionsOffTheBoard() async throws {
         let fake = FakeZimmerAPI()
-        let onBoard = try await fake.sessions(.active, board: .onBoard).map(\.id)
-        let offBoard = try await fake.sessions(.active, board: .offBoard).map(\.id)
+        let onBoard = try await fake.sessions(.active, board: .onBoard).sessions.map(\.id)
+        let offBoard = try await fake.sessions(.active, board: .offBoard).sessions.map(\.id)
         XCTAssertFalse(onBoard.contains(1029))
         XCTAssertEqual(offBoard, [1029])
 
         _ = try await fake.setVisibility(1029, .visible)
-        let afterwards = try await fake.sessions(.active, board: .onBoard).map(\.id)
+        let afterwards = try await fake.sessions(.active, board: .onBoard).sessions.map(\.id)
         XCTAssertTrue(afterwards.contains(1029))
     }
 

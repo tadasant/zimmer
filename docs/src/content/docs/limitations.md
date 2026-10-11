@@ -7841,6 +7841,16 @@ against a real Google login, and cloud signing at export are inferred, not obser
 project is hand-written (folder-synchronised groups, no per-file entries) and has only ever been
 read by `xcodebuild` on CI.
 
+## The iOS app orders the newest 500 sessions, and its Refresh All is the REST one
+
+The app's board views order, on the phone, the newest 500 sessions the filters match
+(`GET /api/v1/sessions` returns them newest first). The web UI orders on the server: Last Touched
+and Created page through every match, and Your board and Ranked take the top of the whole queue. So
+once more than 500 sessions match, an old session touched recently, or one high in the spot queue,
+can be missing from the app's view; the list says when it is cut. Its Refresh All is
+`POST /api/v1/sessions/refresh_all`, which differs from the web UI's button in two ways: it does not
+nudge stalled `waiting` sessions, and it re-reads at most 50 transcripts.
+
 ## The iOS app's running badge does not age, and it is not at parity yet
 
 The web UI's *Running* badge turns yellow after three minutes without activity and red after ten.

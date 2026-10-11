@@ -168,13 +168,13 @@ public actor FakeZimmerAPI: ZimmerAPI {
 // as the server does where the app depends on it: a pause needs a running session, a
 // restart a failed or needs-input one, a restore a trashed one; a blank title clears it.
 extension FakeZimmerAPI {
-    public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> [SessionSummary] {
-        try await sessions(filter).filter(board.admits)
+    public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
+        SessionSearchResult(sessions: try await sessions(filter).filter(board.admits))
     }
 
     public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
         let needle = query.lowercased()
-        let matches = try await sessions(filter, board: board).filter { session in
+        let matches = try await sessions(filter, board: board).sessions.filter { session in
             if session.displayTitle.lowercased().contains(needle) { return true }
             guard contents else { return false }
             return (conversations[session.id] ?? []).contains { $0.content.lowercased().contains(needle) }

@@ -27,8 +27,9 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
 - **Lists sessions** in one of the web UI's four board views, from the view menu: *Your board*
   (priority above spot, then precedence, then oldest first — `Sessions::UserView`), *Last
   Touched* (the default, as it is on the web UI on a phone), *Created*, and *Ranked* (the same
-  order as *Priority* and *Spot queue* sections). The app reads up to five pages of 100, the
-  web board's own cap of 500, and orders them on the phone by the server's rules.
+  order as *Priority* and *Spot queue* sections). The app reads the newest 500 sessions that
+  match the filters (five pages of 100) and orders them on the phone by the server's rules; when
+  more match, the list says so.
 - **Filters** by status and by board visibility. *Needs input* is the default status filter; the
   others are *Active* (everything not archived), *Running*, *Failed* and *Archived*. Board
   visibility is *On board* by default, like the web UI's board, with *Snoozed & hidden* and
@@ -36,8 +37,9 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   for a favourite, the latest PR, a notes marker, and when a snooze ends.
 - **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn or with
   queued messages is refused with the server's reason and stays; the rest go.
-- **Refresh All**, after a confirmation: re-reads every transcript, and restarts failed sessions
-  and ones an interruption left waiting on you, as the web UI's button does.
+- **Refresh All**, after a confirmation, through `POST /api/v1/sessions/refresh_all`: re-reads
+  transcripts, restarts failed sessions, and continues sessions waiting on you that you did not
+  pause, up to 50 of those together.
 - **Searches** titles and metadata from the search box, or transcripts too with the
   *Transcripts* scope (the web UI's "Search transcript contents"; the first page of one bounded
   scan, and the list says so when the scan stopped before reading every session).
