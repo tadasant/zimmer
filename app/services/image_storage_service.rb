@@ -57,10 +57,13 @@ class ImageStorageService < SessionAttachmentStorage
   #
   # @param data [String, nil] Base64-encoded image data
   # @param uploaded_file [ActionDispatch::Http::UploadedFile, nil] Uploaded file object
+  # @param bytes [String, nil] Image bytes already decoded
   # @param filename [String, nil] Original filename (used for extension detection)
   # @return [Hash] { path: String, media_type: String, size: Integer }
-  def store(data: nil, uploaded_file: nil, filename: nil)
-    if data.present?
+  def store(data: nil, uploaded_file: nil, bytes: nil, filename: nil)
+    if bytes.present?
+      validate_and_store(bytes, filename)
+    elsif data.present?
       store_from_base64(data, filename)
     elsif uploaded_file.present?
       store_from_upload(uploaded_file)
@@ -108,7 +111,14 @@ class ImageStorageService < SessionAttachmentStorage
     [ Base64.strict_encode64(content), media_type ]
   end
 
+  # The image type these bytes are, read from their magic bytes, or nil when they
+  # are not one this service keeps.
+  def media_type_of(binary_data)
+    detect_media_type_from_content(binary_data)
+  end
+
   private
+
 
   def store_from_base64(data, filename = nil)
     # Decode base64

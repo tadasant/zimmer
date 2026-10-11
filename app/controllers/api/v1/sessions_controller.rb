@@ -55,6 +55,9 @@ class Api::V1::SessionsController < Api::BaseController
     failed: { title: "Cannot restart", status: :internal_server_error }
   }.freeze
 
+  # Before the body is parsed: inline attachments make a follow-up the one request
+  # here that can be large, and a body over the limit is refused unread.
+  prepend_before_action :refuse_an_oversized_follow_up, only: [ :follow_up ]
   before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
 
   # GET /api/v1/sessions
@@ -375,6 +378,12 @@ class Api::V1::SessionsController < Api::BaseController
   #     branch; a blank or absent one preserves whatever goal the session already has
   #     (use PATCH /api/v1/sessions/:id to clear a goal).
   #   - force_immediate: When true, sends immediately even if session is running (default: false)
+  #   - attachments: Optional. Images and files the message carries, inline:
+  #     `[{ filename:, media_type:, data: <base64> }]`, at most
+  #     FOLLOW_UP_ATTACHMENT_LIMIT. An image type ImageStorageService takes goes to
+  #     the agent as an image, anything else as a file it is told to read — the web
+  #     composer's two pickers, in one list. They ride with the message whichever
+  #     way it goes: delivered now, queued behind a turn, or sent now.
   #   - acting_session_id: Optional. The ID of the agent session making this call. Records an
   #     "uncle" lineage edge marking the caller as a senior of the target session. Self-declared,
   #     because the shared API key identifies a caller and not a session; omitting it records
@@ -410,10 +419,14 @@ class Api::V1::SessionsController < Api::BaseController
 
     force_immediate = params[:force_immediate] == true || params[:force_immediate] == "true"
 
+    attachments = stage_follow_up_attachments
+    return if attachments.nil?
+
     # When force_immediate is set, send immediately regardless of session state.
     # If the session is running, pause it first, then resume with the new prompt.
     if force_immediate
       unless @session.running? || @session.waiting? || @session.needs_input?
+        discard_staged_attachments(attachments)
         render_api_error("Cannot send follow-up", "Session is #{@session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions.", status: :unprocessable_entity)
         return
       end
@@ -437,7 +450,8 @@ class Api::V1::SessionsController < Api::BaseController
           content: prompt,
           goal: goal,
           position: max_position + 1,
-          status: "pending"
+          status: "pending",
+          **attachments_for_the_record(attachments)
         )
       end
 
@@ -450,6 +464,7 @@ class Api::V1::SessionsController < Api::BaseController
       if result.success?
         record_uncle_edge(@session, "api_v1:sessions.follow_up")
         record_native_app_follow_up(prompt)
+        log_follow_up_attachments(attachments)
         render json: {
           session: session_json(@session.reload),
           message: "Follow-up prompt sent immediately"
@@ -461,7 +476,12 @@ class Api::V1::SessionsController < Api::BaseController
         # already claimed/destroyed it (RecordNotFound) — that is fine.
         begin
           enqueued_message.reload
-          enqueued_message.destroy! if enqueued_message.status == "pending"
+          if enqueued_message.status == "pending"
+            enqueued_message.destroy!
+            # Only when this request withdrew the message: one a concurrent
+            # interrupt claimed is being delivered, attachments and all.
+            discard_staged_attachments(attachments)
+          end
         rescue ActiveRecord::RecordNotFound
           # already claimed by a concurrent interrupt — nothing to clean up
         end
@@ -483,12 +503,14 @@ class Api::V1::SessionsController < Api::BaseController
         content: prompt,
         goal: goal,
         position: max_position + 1,
-        status: "pending"
+        status: "pending",
+        **attachments_for_the_record(attachments)
       )
       @session.logs.create!(
         content: "Message queued at position #{enqueued_message.position} (a turn is already underway)",
         level: "info"
       )
+      log_follow_up_attachments(attachments)
       record_uncle_edge(@session, "api_v1:sessions.follow_up")
       record_native_app_follow_up(prompt)
       render json: {
@@ -505,6 +527,7 @@ class Api::V1::SessionsController < Api::BaseController
 
     # For waiting/needs_input sessions, send immediately
     unless @session.waiting? || @session.needs_input?
+      discard_staged_attachments(attachments)
       render_api_error("Cannot send follow-up", "Session is #{@session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions.", status: :unprocessable_entity)
       return
     end
@@ -541,8 +564,9 @@ class Api::V1::SessionsController < Api::BaseController
       # context the edge exists to carry. A rollback takes the edge with it, so a
       # failed send still records nothing.
       record_uncle_edge(@session, "api_v1:sessions.follow_up")
-      job = AgentSessionJob.enqueue_with_prompt(@session.id, prompt)
+      job = AgentSessionJob.enqueue_with_prompt(@session.id, prompt, images: attachments[:images], files: attachments[:files])
       @session.update!(running_job_id: job.job_id)
+      log_follow_up_attachments(attachments)
     end
     record_native_app_follow_up(prompt)
 
@@ -1318,6 +1342,117 @@ class Api::V1::SessionsController < Api::BaseController
     return nil if id.blank?
 
     Session.where.not(status: :archived).spot.find_by(id: id)
+  end
+
+  # The most attachments one follow-up carries: the web composer's image cap.
+  FOLLOW_UP_ATTACHMENT_LIMIT = 20
+  # The most their decoded bytes may add up to, and the most a follow-up's body may
+  # be: base64 is four bytes for every three, and a JSON encoder may escape its
+  # slashes, so 75 MB of attachments needs a little over 100 MB of body.
+  FOLLOW_UP_ATTACHMENT_BYTES = 75.megabytes
+  def self.follow_up_body_limit = 110.megabytes
+
+  def refuse_an_oversized_follow_up
+    return unless request.content_length.to_i > self.class.follow_up_body_limit
+
+    render_api_error("Too large", "A follow-up's body may be at most #{self.class.follow_up_body_limit / 1.megabyte} MB, attachments included",
+      status: :content_too_large)
+  end
+
+  # Store a follow-up's inline `attachments` in the session's own storage, as the
+  # web composer's upload endpoints do, and return the descriptors the turn reads:
+  # `{ images:, files: }`, each nil when there are none. nil after rendering a
+  # refusal. One bad attachment refuses the message rather than sending it
+  # without, because an agent answering about a file it never received is the
+  # failure the person would not see; what was stored before it is removed.
+  #
+  # Which it is goes by the bytes, as ImageStorageService reads them: a PNG,
+  # JPEG, GIF or WebP is an image whatever `media_type` says, and anything else a
+  # file. `data` is base64, with or without a `data:<type>;base64,` prefix.
+  def stage_follow_up_attachments
+    raw = params[:attachments]
+    return { images: nil, files: nil } if raw.blank?
+
+    staged = { images: [], files: [] }
+    unless raw.is_a?(Array)
+      render_api_error("Invalid attachment", "attachments must be a list", status: :unprocessable_entity)
+      return nil
+    end
+    if raw.size > FOLLOW_UP_ATTACHMENT_LIMIT
+      render_api_error("Too many attachments", "A follow-up carries at most #{FOLLOW_UP_ATTACHMENT_LIMIT} attachments", status: :unprocessable_entity)
+      return nil
+    end
+
+    total = 0
+    raw.each do |entry|
+      unless entry.is_a?(ActionController::Parameters) || entry.is_a?(Hash)
+        raise FileStorageService::InvalidFileError, "Each attachment is an object with a filename and data"
+      end
+
+      filename = entry["filename"].to_s
+      bytes = decode_attachment(entry["data"].to_s)
+      raise FileStorageService::InvalidFileError, "Each attachment needs a filename and data" if filename.blank? || bytes.empty?
+
+      total += bytes.bytesize
+      if total > FOLLOW_UP_ATTACHMENT_BYTES
+        raise FileStorageService::InvalidFileError, "A follow-up's attachments may add up to at most #{FOLLOW_UP_ATTACHMENT_BYTES / 1.megabyte} MB"
+      end
+
+      images_store = ImageStorageService.new(session_id: @session.id)
+      if images_store.media_type_of(bytes)
+        stored = images_store.store(bytes: bytes, filename: filename)
+        staged[:images] << { path: stored[:path], media_type: stored[:media_type] }
+      else
+        stored = FileStorageService.new(session_id: @session.id).store(data: bytes, filename: filename)
+        staged[:files] << { path: stored[:path], original_filename: stored[:original_filename], size: stored[:size] }
+      end
+    end
+    { images: staged[:images].presence, files: staged[:files].presence }
+  rescue ImageStorageService::InvalidImageError, FileStorageService::InvalidFileError => e
+    discard_staged_attachments(staged)
+    render_api_error("Invalid attachment", e.message, status: :unprocessable_entity)
+    nil
+  end
+
+  def decode_attachment(data)
+    Base64.strict_decode64(data.sub(/\Adata:[^;,]+;base64,/, ""))
+  rescue ArgumentError
+    raise FileStorageService::InvalidFileError, "An attachment's data is not valid base64"
+  end
+
+  # Remove what a follow-up stored when the follow-up itself is refused, so a
+  # client that retries does not pile copies into the session's storage.
+  def discard_staged_attachments(attachments)
+    return if attachments.nil?
+
+    (Array(attachments[:images]) + Array(attachments[:files])).each do |descriptor|
+      path = descriptor[:path]
+      File.delete(path) if path && File.exist?(path)
+    end
+  rescue SystemCallError => e
+    Rails.logger.warn("[Api::V1::SessionsController] Could not remove a refused follow-up's attachment: #{e.message}")
+  end
+
+  # A line on the session's log, as the web composer writes one, so the timeline
+  # says what went with the message.
+  def log_follow_up_attachments(attachments)
+    images = Array(attachments[:images]).size
+    files = Array(attachments[:files]).size
+    return if images.zero? && files.zero?
+
+    parts = []
+    parts << "#{images} image#{'s' unless images == 1}" if images.positive?
+    parts << "#{files} file#{'s' unless files == 1}" if files.positive?
+    @session.logs.create!(content: "Follow-up carries #{parts.join(' and ')}", level: "info")
+  end
+
+  # The staged attachments as an EnqueuedMessage stores them (string keys), for a
+  # follow-up that is queued or sent now.
+  def attachments_for_the_record(attachments)
+    {
+      images: Sessions::AttachmentDescriptors.for_the_record(attachments[:images], keys: Sessions::AttachmentDescriptors::IMAGE_KEYS) || [],
+      files: Sessions::AttachmentDescriptors.for_the_record(attachments[:files], keys: Sessions::AttachmentDescriptors::FILE_KEYS) || []
+    }
   end
 
   # A session started from the iOS app's new-session form begins with a person's
