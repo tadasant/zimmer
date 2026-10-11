@@ -1,7 +1,8 @@
 import SwiftUI
 import ZimmerKit
 
-/// Sign-in gates everything; after it, the session list.
+/// Sign-in gates everything; after it, the tabs: the web UI's top navigation (sessions,
+/// notifications, triggers, and costs and health under More).
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
 
@@ -16,13 +17,36 @@ struct RootView: View {
             case .some(false):
                 SignInView()
             case .some(true):
-                NavigationStack(path: $model.path) {
-                    SessionListView()
-                        .navigationDestination(for: Int.self) { id in
-                            SessionDetailView(id: id, api: model.api)
-                        }
-                }
+                tabs
             }
+        }
+    }
+}
+
+extension RootView {
+    var tabs: some View {
+        TabView(selection: $model.tab) {
+            NavigationStack(path: $model.path) {
+                SessionListView()
+                    .navigationDestination(for: Int.self) { id in
+                        SessionDetailView(id: id, api: model.api)
+                    }
+            }
+            .tabItem { Label("Sessions", systemImage: "rectangle.stack") }
+            .tag(AppTab.sessions)
+
+            NavigationStack { InboxView() }
+                .tabItem { Label("Inbox", systemImage: "bell") }
+                .badge(model.unreadCount)
+                .tag(AppTab.inbox)
+
+            NavigationStack { TriggersView() }
+                .tabItem { Label("Triggers", systemImage: "bolt") }
+                .tag(AppTab.triggers)
+
+            NavigationStack { MoreView() }
+                .tabItem { Label("More", systemImage: "ellipsis") }
+                .tag(AppTab.more)
         }
     }
 }

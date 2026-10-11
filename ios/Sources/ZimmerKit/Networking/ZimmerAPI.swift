@@ -2,7 +2,7 @@ import Foundation
 
 /// What the app asks of Zimmer. A protocol so screens and tests can run against
 /// `FakeZimmerAPI` with no server and no sign-in.
-public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI {
+public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI, OperationsAPI {
     func sessions(_ filter: SessionFilter) async throws -> [SessionSummary]
     func session(_ id: Int) async throws -> SessionDetail
     func conversation(_ id: Int) async throws -> Conversation
@@ -102,7 +102,9 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     /// One call, with at most one retry for each of the two credentials that can be
     /// renewed: the edge's (an access proxy's refusal) and Zimmer's own (a 401 on a token
     /// the clock thought was still good, e.g. after the grant was refreshed elsewhere).
-    func perform(method: String, path: String, query: [String: String], body: Data?) async throws -> HTTPResponse {
+    /// `accepting` names non-2xx statuses whose body the caller reads itself (an invoke's 409
+    /// carries the pending session) rather than having them thrown.
+    func perform(method: String, path: String, query: [String: String], body: Data?, accepting: Set<Int> = []) async throws -> HTTPResponse {
         guard let baseURL = await auth.signIn?.origins.api else { throw ZimmerError.unauthorized }
         guard let url = HTTPEndpoint(method: method, path: path, query: query).url(relativeTo: baseURL) else {
             throw ZimmerError.notConfigured
@@ -132,7 +134,7 @@ public struct ZimmerHTTPClient: ZimmerAPI {
                 await auth.signOutLocally()
                 throw ZimmerError.unauthorized
             }
-            guard (200..<300).contains(response.statusCode) else {
+            guard (200..<300).contains(response.statusCode) || accepting.contains(response.statusCode) else {
                 let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: response.body)
                 throw ZimmerError.http(status: response.statusCode, message: envelope?.message)
             }

@@ -59,6 +59,8 @@ struct SessionListView: View {
                 Text("Re-reads transcripts, restarts failed sessions, and continues sessions waiting on you that you didn't pause — up to 50 of those. That spends agent turns.")
             }
             .environment(\.editMode, $editMode)
+            // Selecting hides the tab bar, as Mail does: the Trash bar takes its place at the bottom.
+            .toolbar(editMode.isEditing ? .hidden : .visible, for: .tabBar)
             // A selection only ever names rows on screen: a filter, search or view change drops the rest.
             .onChange(of: model.sessions.map(\.id)) { _, ids in selection.formIntersection(ids) }
             // The server orders each view, so a new view is a new list.
