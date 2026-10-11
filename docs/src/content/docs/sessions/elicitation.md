@@ -61,7 +61,8 @@ break the round-trip — the MCP server would poll forever into a corpse. So the
 
 `accept` and `decline` answer the question. `cancel` is the protocol's "dismissed without
 answering" — the **Dismiss** button on the banner, `action_type: "cancel"` on
-`PATCH …/respond`, and `"cancel"` on the `respond_to_elicitation` MCP tool. It ends the
+`PATCH …/respond` (which is what the [iOS app](/extend/ios-app/) sends), and `"cancel"` on the
+`respond_to_elicitation` MCP tool. It ends the
 round-trip with an outcome the polling server can read, instead of leaving a request nobody
 intends to answer to sit out its full window. `expired` is the clock answering instead of a
 person.
