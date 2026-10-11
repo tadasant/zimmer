@@ -88,6 +88,29 @@ final class SessionExtrasTests: XCTestCase {
         XCTAssertNotNil(messages.last?.timestamp)
     }
 
+    func testAnAlsoSeniorLinkIsDecodedAndDetachedByItsRoute() async throws {
+        let (api, transport) = client([
+            { _ in Fixtures.json(200, ["session": ["id": 5, "status": "running"], "session_hierarchy": ["nodes": [
+                ["id": 5, "status": "running", "depth": 0, "current": true, "uncle_session_ids": [8, 9]],
+            ]]]) },
+            { _ in HTTPResponse(statusCode: 204, headers: ["x-request-id": "r"], body: Data()) },
+        ])
+
+        let detail = try await api.session(5)
+        try await api.detachUncle(5, uncle: 8)
+
+        XCTAssertEqual(detail.hierarchy?.nodes.first?.uncles, [8, 9])
+        XCTAssertEqual("\(transport.sent[1].method) \(transport.sent[1].url.path)", "DELETE /api/v1/sessions/5/uncle_links/8")
+
+        let fake = FakeZimmerAPI()
+        let before = try await fake.session(1042)
+        XCTAssertEqual(before.hierarchy?.nodes.first { $0.id == 1031 }?.uncles, [1035])
+        try await fake.detachUncle(1031, uncle: 1035)
+        let after = try await fake.session(1042)
+        XCTAssertEqual(after.hierarchy?.nodes.first { $0.id == 1031 }?.uncles, [])
+        await XCTAssertThrowsAsync(try await fake.detachUncle(1031, uncle: 1035), "an edge that is not there is a 404")
+    }
+
     func testTheFixtureManagesAQueueAsTheServerDoes() async throws {
         let fake = FakeZimmerAPI()
         let moved = try await fake.moveQueued(1042, message: 502, to: 1)

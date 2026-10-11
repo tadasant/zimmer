@@ -56,6 +56,17 @@ final class SessionExtrasUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["detail.message.2"].waitForExistence(timeout: timeout), "the subagent's answer is shown")
     }
 
+    func test_an_also_senior_link_is_detached_from_the_hierarchy() throws {
+        let app = launch()
+        let chip = app.buttons["hierarchy.uncle.1031.1035"]
+        XCTAssertTrue(chip.waitForExistence(timeout: timeout))
+        chip.tap()
+        let remove = app.buttons["Remove"].firstMatch
+        XCTAssertTrue(remove.waitForExistence(timeout: timeout))
+        remove.tap()
+        XCTAssertTrue(waitForDisappearance(chip), "the detached senior's chip is gone")
+    }
+
     // MARK: - Helpers
 
     private func launch() -> XCUIApplication {
