@@ -209,7 +209,7 @@ final class BoardViewUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureFilter", "active"])
         app.buttons["board.menu"].tap()
         app.buttons["Refresh All"].firstMatch.tap()
-        let confirm = app.buttons["Refresh All"].firstMatch
+        let confirm = app.buttons["Refresh All Now"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
         XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
@@ -219,7 +219,9 @@ final class BoardViewUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureOpenSession", "1038"])
         let child = app.descendants(matching: .any)["hierarchy.node.1042"]
         XCTAssertTrue(child.waitForExistence(timeout: timeout))
-        if !child.isHittable { app.swipeUp() }
+        for _ in 0..<6 where !child.isHittable {
+            app.swipeUp(velocity: .slow)
+        }
         child.tap()
         XCTAssertTrue(app.navigationBars["#1042"].waitForExistence(timeout: timeout), "the spawned session opens")
     }

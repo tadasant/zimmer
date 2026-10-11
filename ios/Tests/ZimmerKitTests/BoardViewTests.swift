@@ -40,6 +40,15 @@ final class BoardViewTests: XCTestCase {
         XCTAssertEqual(BoardView.created.sections(rows)[0].sessions.map(\.id), [5, 1, 3, 4, 2])
     }
 
+    func testTiesBreakNewestIdFirstInNewestFirstViewsAndOldestFirstInRanked() {
+        let sameSecond = [
+            SessionSummary(id: 10, status: .running, createdAt: ago(1), priorityClass: "spot", precedence: 1),
+            SessionSummary(id: 11, status: .running, createdAt: ago(1), priorityClass: "spot", precedence: 1),
+        ]
+        XCTAssertEqual(BoardView.created.sections(sameSecond)[0].sessions.map(\.id), [11, 10])
+        XCTAssertEqual(BoardView.ranked.sections(sameSecond)[1].sessions.map(\.id), [10, 11], "Session.ranked ends on id ascending")
+    }
+
     func testLastUserActivityIsReadLeniently() throws {
         let json: [String: Any] = ["sessions": [
             ["id": 1, "status": "running", "metadata": ["last_user_activity_at": "2026-10-10T12:00:00Z"]],
@@ -56,11 +65,26 @@ final class BoardViewTests: XCTestCase {
         }
         let (api, transport) = client([page([1, 2], pages: 3), page([3], pages: 3), page([3, 4], pages: 3)])
 
-        let rows = try await api.sessions(.active, board: .onBoard)
+        let result = try await api.sessions(.active, board: .onBoard)
 
         XCTAssertEqual(transport.sent.count, 3)
-        XCTAssertEqual(transport.sent.map { URLComponents(url: $0.url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value }, ["1", "2", "3"])
-        XCTAssertEqual(Set(rows.map(\.id)), [1, 2, 3, 4], "a row that moved between pages is shown once")
+        XCTAssertEqual(Set(transport.sent.map { URLComponents(url: $0.url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value }), ["1", "2", "3"])
+        XCTAssertEqual(Set(result.sessions.map(\.id)), [1, 2, 3, 4], "a row that moved between pages is shown once")
+        XCTAssertEqual(result.sessions.count, 4)
+        XCTAssertTrue(result.complete)
+    }
+
+    func testMoreThanTheBoardsCapIsSaid() async throws {
+        let handler: ScriptedTransport.Handler = { request in
+            let page = URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value ?? "0"
+            return Fixtures.json(200, ["sessions": [["id": Int(page)!, "status": "running"]], "pagination": ["total_pages": 9]])
+        }
+        let (api, transport) = client(Array(repeating: handler, count: 5))
+
+        let result = try await api.sessions(.active, board: .all)
+
+        XCTAssertEqual(transport.sent.count, SessionFilter.maxPages, "five pages, not nine")
+        XCTAssertFalse(result.complete)
     }
 
     func testBulkTrashRefreshAllAndTheTranscript() async throws {
