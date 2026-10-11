@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "ostruct"
 
 # A follow-up's inline attachments: stored in the session's own storage and
 # handed to the turn as images and files, whichever way the message goes.
