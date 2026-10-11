@@ -438,8 +438,9 @@ module AutomatedPrompts
   #
   # The marker is what the MERGING SESSION reads; it is not what an AUDIT trusts.
   # Any caller of `action_session` → `follow_up` can type this text. The record an
-  # auditor keys on is the HumanMessage with entry_point `web_ui.authorize_merge`,
-  # which only the browser controllers write — see Sessions::AuthorizeMerge.
+  # auditor keys on is the HumanMessage with entry_point `web_ui.authorize_merge`
+  # (the browser) or `ios_app.authorize_merge` (the iOS app, on a sign-in that acts
+  # as its approver) — see Sessions::AuthorizeMerge.
   #
   # The conditions are NOT advisory. A green PR can still be un-mergeable — a base
   # branch that moved under it is the common case — so the message spends most of
@@ -450,7 +451,7 @@ module AutomatedPrompts
   MERGE_AUTHORIZATION_TEMPLATE = <<~PROMPT.strip
     #{MERGE_AUTHORIZATION_MARKER}
 
-    The user has hit the Merge button on this PR in the Zimmer dashboard:
+    The user has hit the Merge button on this PR in %{surface}:
 
     %{pr_url}
 
@@ -483,8 +484,10 @@ module AutomatedPrompts
   #
   # @param pr_url [String] the full GitHub PR URL the human clicked Merge on
   # @return [String]
-  def self.merge_authorization_message(pr_url)
-    format(MERGE_AUTHORIZATION_TEMPLATE, pr_url: pr_url)
+  # @param surface [String] where the button was pressed ("the Zimmer dashboard",
+  #   "the Zimmer iOS app")
+  def self.merge_authorization_message(pr_url, surface: "the Zimmer dashboard")
+    format(MERGE_AUTHORIZATION_TEMPLATE, pr_url: pr_url, surface: surface)
   end
 
   # Whether a prompt is one of these. Written next to the template for the same
