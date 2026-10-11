@@ -191,7 +191,7 @@ and the model refuses to write one, answering `422`.
 | `POST` | `/sessions/:id/restart` | clears stale retry metadata and re-queues the job; re-runs the whole setup pipeline when there is no conversation to prompt into — setup never finished (a failed clone, say), or the session [never ran at all](/sessions/lifecycle/#restoring-a-session-that-never-ran) — and the replacement first turn carries the session's [stored images and files](/limitations/#a-stranded-waiting-session-is-only-rescued-if-it-never-started). 422 `Session has no session_id` is reserved for the session that has a transcript but no id to resume it under. Either branch answers **503** rather than 500 when a dropped database connection survives its retries — the write is retryable, so the caller should retry it |
 | `POST` | `/sessions/:id/start_now` | the Ranked view's *Start now*, with MCP `start_now`'s answers: take a waiting session's next turn now rather than when the scheduler gets to it → `{session, outcome, message}`. It moves *when* the turn is asked for, not *whether* the spot gate allows it. 422 when [`Sessions::StartNow`](/sessions/spot-and-priority/#starting-a-queued-session-now) refuses (asleep on a wake, say) and when the session has no turn queued — send it a follow-up, or restart it |
 | `PATCH` | `/sessions/:id/reorder_precedence` | the Ranked view's drag-and-drop: `above_id` and/or `below_id`, the spot-queue rows it was dropped between (omit one at an end; a row no longer in the spot queue counts as omitted). The server derives the precedence, nudging a neighbour aside when there is no gap → `{session, changes: [{id, precedence}]}`, every row whose value moved. 422 with the reason on a refusal |
-| `POST` | `/sessions/:id/fork` | `message_index` required → 201 |
+| `POST` | `/sessions/:id/fork` | `message_index` required → 201. It counts the transcript's events (one per line, blank and unparseable lines skipped), not its user and assistant messages; take it from a message's `transcript_index` in `/conversation` |
 | `POST` | `/sessions/:id/regenerate_status_summary` | → 202. Queues a forced rewrite of the [Status summary](/sessions/status-summary/); it forks the session and spends an agent turn, so it is asynchronous and must not be polled. 422 with the reason, rather than a 202 for work that cannot run, when there is nothing to summarize: no transcript, or a session that is itself a summary fork. An archived session is a normal candidate however long ago it was archived — the fork answers from the conversation, and gets an empty working directory when Zimmer has already reclaimed the clone |
 | `POST` | `/sessions/:id/refresh` | re-read transcript from disk. A shorter filesystem transcript never overwrites a longer stored one — that happens when the clone was recreated at a new path, and the stored history wins. The write is retried on a dropped database connection, and 503 if it stays down |
 | `POST` | `/sessions/refresh_all` | → `{message, refreshed, restarted, continued, errors}`. Max 50 restarts/continues. A byte-identical transcript is not counted as refreshed; a transcript write the database keeps refusing counts under `errors` |
@@ -205,7 +205,7 @@ and the model refuses to write one, answering `422`.
 | `POST` | `/sessions/:id/toggle_favorite` | favorited sessions sort to the top of the dashboard. Same flip as the web star and the `toggle_favorite` MCP action, all through `Sessions::ToggleFavorite`, which reads the star under a row lock so concurrent toggles both land |
 | `PATCH` | `/sessions/:id/visibility` | `visibility` (`visible` \| `hidden` \| `snoozed`), plus `snoozed_until` and `timezone` for a snooze. **Board visibility only** — see [Board visibility](#board-visibility). It changes what the dashboard draws and nothing else: no session is started, stopped, slept, woken or reordered. Unknown value, missing or past-dated `snoozed_until` → 422 |
 | `GET` | `/sessions/:id/transcript` | `format=text` → `text/plain`, else `{transcript_text}` |
-| `GET` | `/sessions/:id/conversation` | the transcript's user and assistant messages as data, oldest first: `{messages: [{role, content, timestamp, has_tool_use, has_tool_result}], total, truncated}`. `limit` (default 50, max 200) keeps the newest that many. Each `content` is cut at 4,000 characters. What the [iOS app](/extend/ios-app/) renders |
+| `GET` | `/sessions/:id/conversation` | the transcript's user and assistant messages as data, oldest first: `{messages: [{role, content, timestamp, has_tool_use, has_tool_result, transcript_index}], total, truncated}`. `limit` (default 50, max 200) keeps the newest that many. `transcript_index` is the `message_index` that `fork` takes to fork at that message. Each `content` is cut at 4,000 characters. What the [iOS app](/extend/ios-app/) renders |
 
 `force_immediate: true` on `follow_up` interrupts a running session and delivers the prompt now,
 through the same race-free interrupt backend as the web UI's "Send Now" — exactly-once and
@@ -1168,6 +1168,14 @@ With an API key:
   answering"). `:id` is either the `request_id` or the numeric primary key, so the identifier you
   already hold — from a poll response or from the web UI's own `/elicitations/:id/respond` route —
   works here too. A session token does not reach it.
+- `GET /sessions/:session_id/elicitations` — the session's elicitations still waiting on an answer,
+  oldest first, as `{elicitations: [{id, request_id, mode, message, requested_schema, tool_name,
+  context, created_at, expires_at}]}`: what the web UI draws a banner for. One past its deadline is
+  expired by the read, as a poll would, and not listed.
+
+The [iOS app](/extend/ios-app/)'s token reaches that list and `respond`, nothing else here.
+It answers only on a connection that [acts on your behalf](/auth/mcp-authorization-server/#relay-only-or-acts-on-my-behalf);
+a relay-only one gets a 403, because an answer approves or refuses what the MCP server does next.
 
 Both polls stay `request_id`-only on purpose: the protocol speaks nothing else, and accepting a
 primary key would turn a poll into a sequential-id enumeration.
