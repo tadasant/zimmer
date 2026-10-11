@@ -110,7 +110,8 @@ module Sessions
     # The capture boundaries that mean "a human created this session" rather than
     # "a human intervened in one". Matched on HumanMessage#entry_point, which is
     # the specific boundary the capture recorded rather than the coarse channel.
-    CREATION_ENTRY_POINTS = %w[web_ui.new_session web_ui.quick_prompt].freeze
+    # The iOS app's two ways of starting a session are creations too.
+    CREATION_ENTRY_POINTS = %w[web_ui.new_session web_ui.quick_prompt ios_app.new_session ios_app.quick_router].freeze
 
     # How old a session has to be before it stops being demotable, measured from
     # `created_at`. The anti-starvation floor — see the class comment.

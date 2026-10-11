@@ -10,6 +10,9 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::UncleLinksController < Api::BaseController
+  # Zimmer's iOS app: the hierarchy panel's detach of an "also senior" link.
+  accepts_native_app_tokens only: %i[destroy]
+
   # DELETE /api/v1/sessions/:session_id/uncle_links/:uncle_id
   #
   # `:session_id` is the JUNIOR — the session whose hierarchy grew when the edge
@@ -51,6 +54,9 @@ class Api::V1::UncleLinksController < Api::BaseController
   # API caller" is still an answer to "a human or an agent?", because a human
   # detaching an edge does it from the hierarchy panel, not with curl.
   def actor_phrase
+    # A person in the app, not a script: both timelines say who detached the edge.
+    return "a person in the iOS app" if native_app_request?
+
     declared = params[:acting_session_id].to_s.strip[/\A\d+\z/]
     return "an undeclared REST API caller" if declared.nil?
 

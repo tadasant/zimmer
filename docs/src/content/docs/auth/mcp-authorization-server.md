@@ -161,9 +161,9 @@ which the pruner below never deletes.
   error page, never a redirect.
 - **The consent screen says so.** It names "Zimmer for iOS — Zimmer's own app, built in" and shows
   the scheme it returns to.
-- **Its tokens also open the REST API**, on the controllers that declare
-  `accepts_native_app_tokens` (sessions and the Quick Router, today). A token from any other client is still refused
-  there. Like every token this server issues, it opens all of `/mcp` too, and the consent screen
+- **Its tokens also open the REST API**, on exactly the actions each controller names with
+  `accepts_native_app_tokens` ([the table](/extend/rest-api/#the-ios-apps-bearer-token)). A token
+  from any other client is still refused there. Like every token this server issues, it opens all of `/mcp` too, and the consent screen
   says so. See [the REST API](/extend/rest-api/#the-ios-apps-bearer-token).
 
 ### Dynamic Client Registration

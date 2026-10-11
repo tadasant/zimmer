@@ -4,6 +4,10 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::HealthController < Api::BaseController
+  # Zimmer's iOS app: read-only. Health's operator actions (queue recovery, retries, post-
+  # deploy tasks, queued jobs) stay in the browser.
+  accepts_native_app_tokens only: %i[show]
+
   # Bounds for archive days
   MAX_ARCHIVE_DAYS = 365
   MIN_ARCHIVE_DAYS = 1

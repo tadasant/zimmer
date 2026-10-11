@@ -5,6 +5,10 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::TriggersController < Api::BaseController
+  # Zimmer's iOS app: list, turn on or off, and invoke. Creating and editing a trigger stays
+  # in the browser.
+  accepts_native_app_tokens only: %i[index show toggle invoke]
+
   before_action :set_trigger, only: [ :show, :update, :destroy, :toggle, :invoke ]
 
   # The AIR-catalog lists a trigger stamps onto the sessions it spawns. Every id
@@ -190,9 +194,10 @@ class Api::V1::TriggersController < Api::BaseController
   def invoke
     variables = invoke_variables
 
-    # An agent fired this over the API, so the session's genesis is `api` rather
-    # than the kind the trigger's conditions derive (which is what an actual
-    # condition match would give it) or `web_ui` (which is the button).
+    # An agent or the iOS app fired this over the API, so the session's genesis is
+    # `api` rather than the kind the trigger's conditions derive (which is what an
+    # actual condition match would give it) or `web_ui` (which is the button) — the
+    # same genesis the app's Quick Router sessions get.
     result = Triggers::ManualFire.call(trigger: @trigger, genesis: SessionGenesis::API, variables: variables)
 
     case result.outcome

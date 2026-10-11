@@ -5,6 +5,11 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::EnqueuedMessagesController < Api::BaseController
+  # Zimmer's iOS app: the app's queued-message list: read, edit, delete, reorder and Send
+  # now. Not `create`: the app queues through `follow_up`, which records the message through
+  # its grant.
+  accepts_native_app_tokens only: %i[index show update destroy reorder interrupt]
+
   include ApiSessionSerialization
 
   before_action :set_session
@@ -83,6 +88,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
 
     if @enqueued_message.update(attrs)
       @session.logs.create!(content: "Enqueued message at position #{@enqueued_message.position} updated", level: "info")
+      record_native_app_edit(attrs[:content]) if attrs.key?(:content)
       render json: { enqueued_message: enqueued_message_json(@enqueued_message) }
     else
       render_api_error("Validation failed", @enqueued_message.errors.full_messages, status: :unprocessable_entity)
@@ -143,7 +149,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
     result = Sessions::InterruptService.new(
       session: @session,
       enqueued_message: @enqueued_message,
-      actor: "api_v1"
+      actor: native_app_request? ? "ios_app" : "api_v1"
     ).call
 
     if result.success?
@@ -157,6 +163,17 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
   end
 
   private
+
+  # An edit from the iOS app is a person rewriting what will be delivered, so it
+  # is recorded the way the web UI records one (`web_ui.enqueued_message_edited`):
+  # through the app's grant, and only when that grant acts on its approver's
+  # behalf. An API key names a key, never a person, so a key's edit records nothing.
+  def record_native_app_edit(content)
+    return unless native_app_request?
+
+    HumanMessageCapture.record_assistant_message(session: @session, grant: native_app_grant, content: content,
+      entry_point: "ios_app.enqueued_message_edited")
+  end
 
   def set_session
     @session = Session.locate!(params[:session_id])
