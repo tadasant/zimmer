@@ -2400,8 +2400,9 @@ that does it has known limits:
   work backlog has had nothing new since the last one. That is right for the groomer this event exists
   for, but the event is generic: a deployment that listens to `no_sessions_in_progress` for idle-time
   work that has nothing to do with the backlog gets one fire per quiet interval, not one per cooldown,
-  unless it lowers the quiet interval to the cooldown. The back-off also cannot see a held item's hold
-  lapsing, so such an item waits for the quiet interval rather than the cooldown.
+  unless it lowers the quiet interval to the cooldown. The same goes for a top-up whose own job includes
+  *finding* work for the backlog: news is read from the backlog table, so work that only the top-up
+  itself would discover waits up to one quiet interval.
 - **A fleet that flaps across its ceiling never accumulates a stretch.** The dwell has to be
   *continuous*, and both the sweep and the state-machine hook end it the moment the fleet is at or
   over the ceiling. A deployment that keeps touching its ceiling and dropping back more often than

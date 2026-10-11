@@ -172,8 +172,8 @@
 # event exists for is the backlog top-up, and on a fleet that is quiet BECAUSE the
 # backlog is empty, every fire spawns a session that finds nothing to pull and
 # archives — and since that session never takes the fleet to its ceiling, the
-# stretch runs on and the next fire comes one cooldown later. At a 10-minute
-# cooldown that was ~130 empty top-ups a day.
+# stretch runs on and the next fire comes one cooldown later: at a 10-minute
+# cooldown, 144 empty top-ups a day.
 #
 # So a fire past the cooldown also asks whether the backlog has NEWS since the
 # last one, and without news it waits out `fleet_idle_quiet_backlog_interval_minutes`
@@ -184,11 +184,14 @@
 #   - queued items left over AND an item started since the last fire — the last
 #     top-up was productive, and the fleet ran out of room before the queue ran
 #     out of items, so the next quiet stretch should finish draining it.
+#   - a queued item whose hold lapsed since the last fire, which the last top-up
+#     could not pull and the next one can.
 #
-# Queued items with neither are ones the last top-up looked at and left — held,
-# or declined — so firing on them again every cooldown is the same loop with a
-# non-empty queue. The quiet interval is the safety net for everything this
-# reading cannot see: a hold lapsing, or a trigger that does more than pull.
+# Queued items with none of those are ones the last top-up looked at and left —
+# declined, or still held — so firing on them again every cooldown is the same
+# loop with a non-empty queue. The quiet interval is the safety net for
+# everything this reading cannot see: a listening trigger that does more than
+# pull, such as finding new work for the backlog itself.
 #
 # Like the cooldown, this reads only things the event's own session cannot fake:
 # a top-up that pulls nothing writes nothing to the backlog. An unreadable backlog
@@ -260,13 +263,15 @@ class FleetIdleMonitor
     end
 
     # Whether the work backlog has something to hand out that it did not have at
-    # `since`: an item queued after it, or leftovers behind an item started after
-    # it. See "Why an unchanged backlog backs off". False when it cannot be read.
+    # `since`: an item queued after it, a hold on a queued item lapsing after it,
+    # or leftovers behind an item started after it. See "Why an unchanged backlog
+    # backs off". False when it cannot be read.
     def backlog_news_since?(since)
       queued = WorkBacklogItem.queued
       return false unless queued.exists?
 
       queued.where("created_at > ?", since).exists? ||
+        queued.where(held_until: since..Time.current).exists? ||
         WorkBacklogItem.where("started_at > ?", since).exists?
     rescue => e
       Rails.logger.info "[FleetIdleMonitor] Could not read the work backlog: #{e.message}"

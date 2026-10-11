@@ -97,10 +97,19 @@ class FleetTopUpStatus
     return :at_ceiling unless under_ceiling?
     return :clock_not_started if idle_since.nil?
     return :inside_threshold if now - idle_since < threshold
+    # The quiet interval is checked first: when it applies it always ends at or
+    # after the cooldown, so it is the clock holding the fire for the whole of it.
+    return :backlog_quiet if quiet_backlog_binding?
     return :cooling_down if last_fired_at.present? && now - last_fired_at < min_fire_interval
-    return :backlog_quiet if quiet_backlog_pending? && !backlog_news?
 
     :due
+  end
+
+  # Whether the quiet-backlog interval, rather than the cooldown, is what holds
+  # the next fire: it is unspent, it ends after the cooldown, and the backlog has
+  # had no news since the last fire.
+  def quiet_backlog_binding?
+    quiet_backlog_pending? && quiet_backlog_ends_at > cooldown_ends_at && !backlog_news?
   end
 
   # Whether the backlog has had anything to hand out since the last fire — the
@@ -142,6 +151,7 @@ class FleetTopUpStatus
   def quiet_backlog_pending?
     quiet_backlog_ends_at.present? && quiet_backlog_ends_at > now
   end
+
   # Whichever floor since the last fire actually holds the next one: the quiet
   # interval while the backlog has nothing new, otherwise the cooldown. The later
   # of the two either way, so a quiet interval set below the cooldown never
@@ -194,10 +204,10 @@ class FleetTopUpStatus
         "so no top-up is due. The clock starts again when it drops below #{max_sessions}."
     when :clock_not_started
       "The fleet has #{sessions} on a worker#{split_clause}, under its ceiling of #{max_sessions}. The idle " \
-        "clock starts at the next check, and the event is due #{threshold.inspect} after that.#{cooldown_clause}"
+        "clock starts at the next check, and the event is due #{threshold.inspect} after that.#{cooldown_clause(now + threshold)}"
     when :inside_threshold
       "The fleet has been under its ceiling of #{max_sessions} for " \
-        "#{distance_words(now - idle_since)} of the #{threshold.inspect} it needs.#{cooldown_clause}"
+        "#{distance_words(now - idle_since)} of the #{threshold.inspect} it needs.#{cooldown_clause(idle_since + threshold)}"
     when :cooling_down
       "The fleet has been under its ceiling of #{max_sessions} for #{distance_words(now - idle_since)}, " \
         "past the #{threshold.inspect} it needs — now waiting out the #{min_fire_interval.inspect} cooldown " \
@@ -231,11 +241,11 @@ class FleetTopUpStatus
   #
   # The quiet-backlog interval is the same kind of floor and outranks the
   # cooldown whenever it applies, so it is the one named then.
-  def cooldown_clause
-    if quiet_backlog_pending? && !backlog_news? && quiet_backlog_ends_at > (cooldown_ends_at || now)
+  def cooldown_clause(threshold_ends_at)
+    if quiet_backlog_binding? && quiet_backlog_ends_at > threshold_ends_at
       return " The backlog has had nothing new since the last fire, so the #{quiet_backlog_interval.inspect} " \
-        "quiet interval holds the next one: #{distance_words(quiet_backlog_ends_at - now)} left, unless an " \
-        "item is queued first."
+        "quiet interval has #{distance_words(quiet_backlog_ends_at - now)} left, and it is the later of the " \
+        "clocks unless new work reaches the backlog first."
     end
     return "" unless cooldown_pending?
 

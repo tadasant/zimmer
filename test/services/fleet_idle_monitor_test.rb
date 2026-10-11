@@ -974,6 +974,25 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
   end
 
+  # A hold the last top-up could not pull past has lapsed: the next one can.
+  test "a hold lapsing on a queued item lifts the quiet interval" do
+    quiet_backlog!
+
+    freeze_time do
+      backlog_item(held_at: Time.current, held_until: 1.hour.from_now, held_by: "test",
+                   hold_reason: "waiting on a decision")
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold
+      assert FleetIdleMonitor.check!
+
+      travel 30.minutes
+      assert_not FleetIdleMonitor.check!, "the hold is still active"
+
+      travel 31.minutes
+      assert FleetIdleMonitor.check!, "the hold lapsed since the last fire"
+    end
+  end
+
   # Fail toward the quiet interval: a broken backlog read neither silences top-up
   # nor lets it run at the cooldown.
   test "an unreadable backlog counts as no news" do
