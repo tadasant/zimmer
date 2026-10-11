@@ -15,7 +15,9 @@ final class CatalogUITests: XCTestCase {
         let prompt = app.descendants(matching: .any)["newsession.prompt"]
         XCTAssertTrue(prompt.waitForExistence(timeout: timeout))
         // The root's defaults are already chosen.
-        XCTAssertTrue(app.staticTexts["2 chosen"].waitForExistence(timeout: timeout), "the root's two default skills are chosen")
+        // The row's value, wherever the form puts it (its label or its value).
+        let chosen = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS '2 chosen' OR value CONTAINS '2 chosen'")).firstMatch
+        XCTAssertTrue(chosen.waitForExistence(timeout: timeout), "the root's two default skills are chosen")
         prompt.tap()
         prompt.typeText("Rotate the staging deploy key")
         app.buttons["newsession.create"].tap()
