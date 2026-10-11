@@ -132,7 +132,13 @@ public enum SubagentTranscriptText {
                         parts.append("Using tool: \(block["name"] as? String ?? "tool")")
                     case "tool_result":
                         toolResult = true
-                        if let text = block["content"] as? String, !text.isEmpty { parts.append(text) }
+                        // A string, or (more often) a list of text blocks.
+                        if let text = block["content"] as? String, !text.isEmpty {
+                            parts.append(text)
+                        } else if let inner = block["content"] as? [[String: Any]] {
+                            let text = inner.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
+                            if !text.isEmpty { parts.append(text) }
+                        }
                     default:
                         break
                     }

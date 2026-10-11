@@ -31,9 +31,13 @@ final class SessionDetailModel: ObservableObject {
         do {
             detail = try await api.session(id)
             conversation = try await api.conversation(id)
-            // The queue is the panel under the conversation, not the page: a queue that
-            // will not load leaves the panel off rather than failing the session.
-            queue = (try? await api.queue(id)) ?? []
+            // The queue is a panel, not the page: one that will not load keeps what it last
+            // showed rather than failing the session — unless the sign-in has ended.
+            do {
+                queue = try await api.queue(id)
+            } catch ZimmerError.unauthorized {
+                report(.unauthorized)
+            } catch {}
             error = nil
         } catch {
             fail(error)
@@ -196,11 +200,12 @@ struct SessionDetailView: View {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
                 }
                 if let error = model.error { ErrorBanner(error: error) }
-                if !model.queue.isEmpty {
-                    QueueCard(model: model)
-                }
                 if let conversation = model.conversation {
                     conversationSection(conversation)
+                }
+                // Under the conversation and above the composer, where the web UI puts it.
+                if !model.queue.isEmpty {
+                    QueueCard(model: model)
                 }
             }
             .padding()
@@ -673,17 +678,19 @@ private struct HierarchyCard: View {
         HStack(spacing: 4) {
             Text("also senior:")
             ForEach(node.uncles, id: \.self) { uncle in
-                Button {
-                    detaching = (node.id, uncle)
-                } label: {
-                    HStack(spacing: 2) {
-                        Text(verbatim: "#\(uncle)")
+                // As on the web: the number opens that session, only the × detaches.
+                HStack(spacing: 2) {
+                    NavigationLink(value: uncle) { Text(verbatim: "#\(uncle)").underline() }
+                        .buttonStyle(.plain)
+                    Button {
+                        detaching = (node.id, uncle)
+                    } label: {
                         Image(systemName: "xmark.circle.fill")
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Remove #\(uncle) as an additional senior of #\(node.id)")
+                    .accessibilityIdentifier("hierarchy.uncle.\(node.id).\(uncle)")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Remove #\(uncle) as an additional senior of #\(node.id)")
-                .accessibilityIdentifier("hierarchy.uncle.\(node.id).\(uncle)")
             }
         }
         .font(.caption2.weight(.medium))

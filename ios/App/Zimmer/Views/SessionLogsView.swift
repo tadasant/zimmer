@@ -70,7 +70,10 @@ struct SessionLogsView: View {
         defer { loading = false }
         do {
             let next = try await api.logs(id, page: page + 1)
-            entries += next.entries
+            // A running session logs while you scroll, which shifts the pages: a row seen on
+            // the last page can come round again on this one.
+            let seen = Set(entries.map(\.id))
+            entries += next.entries.filter { !seen.contains($0.id) }
             page += 1
             hasMore = next.hasMore
             error = nil
@@ -84,8 +87,8 @@ struct SessionLogsView: View {
     static func color(for level: String?) -> Color {
         switch level {
         case "error": return .red
-        case "warn", "warning": return .orange
-        case "debug": return .gray
+        case "warning": return .yellow
+        case "debug", "verbose": return .gray
         default: return .blue
         }
     }
@@ -149,12 +152,19 @@ private struct SubagentTranscriptView: View {
     let api: ZimmerAPI
     @State private var messages: [ConversationMessage]?
     @State private var error: ZimmerError?
+    @State private var showingToolTraffic = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 if let error { ErrorBanner(error: error) }
-                ForEach(messages ?? []) { MessageBubble(message: $0) }
+                if messages?.contains(where: \.isToolTraffic) == true {
+                    // Folded, as the session's own conversation is.
+                    Toggle("Tool calls", isOn: $showingToolTraffic)
+                        .toggleStyle(.button)
+                        .font(.caption)
+                }
+                ForEach((messages ?? []).filter { showingToolTraffic || !$0.isToolTraffic }) { MessageBubble(message: $0) }
                 if messages?.isEmpty == true {
                     Text("No transcript recorded.").foregroundStyle(.secondary)
                 }
