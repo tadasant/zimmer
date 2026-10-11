@@ -178,7 +178,8 @@ sheet (Approve, Reply by voice, Archive) for a driver who would rather tap, and 
 restarts the conversation. The voice control, list and action sheet templates are all ones the
 category allows, and the stack never goes deeper than three. Speech is recognised on the phone only
 (`requiresOnDeviceRecognition`), so a spoken reply never goes to Apple's servers. A phone that can't
-recognise its language on the device doesn't listen, and the screen's buttons still work. The audio session is held only while
+recognise its language on the device says so instead of asking for an answer, and offers Approve and
+Archive on the screen without Reply by voice. The audio session is held only while
 the conversation runs. The rules live in `DrivingFlow`, which the unit tests cover.
 
 **The scene is inert until Apple grants the entitlement.** The entitlement lives in

@@ -71,7 +71,7 @@ final class VoiceIO: NSObject, AVSpeechSynthesizerDelegate {
     /// says so rather than listening for nothing.
     nonisolated static var canListen: Bool {
         guard let recognizer = SFSpeechRecognizer() else { return false }
-        return recognizer.supportsOnDeviceRecognition
+        return recognizer.isAvailable && recognizer.supportsOnDeviceRecognition
     }
 
     /// One dictated phrase: listens until the recogniser calls it final, the driver has
