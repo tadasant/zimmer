@@ -3,10 +3,11 @@
 require "test_helper"
 require "mocha/minitest"
 
-# The two REST actions that stand for a person's decision — the User view's Merge
-# and Reprioritize buttons — reach only the iOS app's token on a grant that acts
-# as its approver. An API key is the fleet's, and a relay-only grant was approved
-# to carry messages, not to decide.
+# The User view's two buttons on the REST surface. Merge stands for a person's
+# decision, so it reaches only the iOS app's token on a grant that acts as its
+# approver: an API key is the fleet's, and a relay-only grant was approved to carry
+# messages, not to decide. Reprioritize is an invoke of a trigger an API key can
+# already fire, so it is open like the rest of the sessions controller.
 class NativeAppPersonActionsTest < ActionDispatch::IntegrationTest
   include WebAuthTestHelpers
 
@@ -40,9 +41,12 @@ class NativeAppPersonActionsTest < ActionDispatch::IntegrationTest
     assert_equal "sent", JSON.parse(response.body)["outcome"]
     queued = session.enqueued_messages.pending.last
     assert AutomatedPrompts.merge_authorization?(queued.content)
+    assert_includes queued.content, "in the Zimmer iOS app", "the session is told where the sign-off came from"
     message = session.human_messages.sole
     assert_equal "Merge #{GREEN_PR}", message.content
+    assert_equal HumanMessage::ASSISTANT, message.channel
     assert_equal "ios_app.authorize_merge", message.provenance["entry_point"]
+    assert message.provenance["oauth_grant_id"].present?
     assert_equal User.for_email("tadas@tadasant.com").key, message.author
 
     post "/api/v1/sessions/#{session.id}/authorize_merge", headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
@@ -58,7 +62,10 @@ class NativeAppPersonActionsTest < ActionDispatch::IntegrationTest
     post "/api/v1/sessions/#{session.id}/authorize_merge", headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
 
     assert_response :unprocessable_entity
-    assert_match(/CI is pending/, JSON.parse(response.body)["message"])
+    body = JSON.parse(response.body)
+    assert_equal "Cannot merge", body["error"]
+    assert_equal "not_mergeable", body["outcome"]
+    assert_match(/CI is pending/, body["message"])
     assert_empty session.enqueued_messages
   end
 
@@ -67,7 +74,11 @@ class NativeAppPersonActionsTest < ActionDispatch::IntegrationTest
 
     post "/api/v1/sessions/#{session.id}/authorize_merge", headers: { "X-API-Key" => API_KEY }
     assert_response :forbidden
+    assert_equal "Forbidden", JSON.parse(response.body)["error"]
     assert_match(/Only a person/, JSON.parse(response.body)["message"])
+
+    post "/api/v1/sessions/0/authorize_merge", headers: { "X-API-Key" => API_KEY }
+    assert_response :forbidden, "refused before the lookup"
 
     post "/api/v1/sessions/#{session.id}/authorize_merge", headers: bearer(token)
     assert_response :forbidden
@@ -77,38 +88,42 @@ class NativeAppPersonActionsTest < ActionDispatch::IntegrationTest
     assert_empty session.human_messages
   end
 
-  test "Reprioritize from an app that acts as you hands the board over and names the session" do
+  test "Reprioritize hands the board over, names the session, and records the press as the API's" do
     reprioritizer = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "rank", status: :running)
-    Sessions::DashboardReprioritizer.expects(:call).once.returns(
+    Sessions::DashboardReprioritizer.expects(:call).with(genesis: SessionGenesis::API).twice.returns(
       Sessions::DashboardReprioritizer::Result.new(session: reprioritizer, outcome: :fired, message: "Reprioritizing in session ##{reprioritizer.id}")
     )
 
-    post "/api/v1/sessions/reprioritize", headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
-
+    post "/api/v1/sessions/reprioritize", headers: bearer(token)
     assert_response :success, response.body
     body = JSON.parse(response.body)
     assert_equal "fired", body["outcome"]
     assert_equal reprioritizer.id, body.dig("session", "id")
+
+    post "/api/v1/sessions/reprioritize", headers: { "X-API-Key" => API_KEY }
+    assert_response :success, "an API key can already invoke the reprioritizer's trigger"
   end
 
-  test "Reprioritize that did not hand the board over is a 422 with no session" do
+  test "Reprioritize that did not hand the board over is a 422 with the reason and no session" do
     Sessions::DashboardReprioritizer.expects(:call).returns(
       Sessions::DashboardReprioritizer::Result.new(session: nil, outcome: :burst_suppressed, message: "Pressed a moment ago")
     )
 
-    post "/api/v1/sessions/reprioritize", headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
+    post "/api/v1/sessions/reprioritize", headers: { "X-API-Key" => API_KEY }
 
     assert_response :unprocessable_entity
-    assert_nil JSON.parse(response.body)["session"]
+    body = JSON.parse(response.body)
+    assert_equal "burst_suppressed", body["outcome"]
+    assert_equal "Pressed a moment ago", body["message"]
+    assert_nil body["session"]
   end
 
-  test "Reprioritize refuses an API key and a relay-only app before doing anything" do
-    Sessions::DashboardReprioritizer.expects(:call).never
-
+  test "Reprioritize run for real starts the reprioritizer as an API session" do
     post "/api/v1/sessions/reprioritize", headers: { "X-API-Key" => API_KEY }
-    assert_response :forbidden
-    post "/api/v1/sessions/reprioritize", headers: bearer(token)
-    assert_response :forbidden
+
+    assert_response :success, response.body
+    session = Session.find(JSON.parse(response.body).dig("session", "id"))
+    assert_equal SessionGenesis::API, session.genesis
   end
 
   private

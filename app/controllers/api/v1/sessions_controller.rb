@@ -58,8 +58,9 @@ class Api::V1::SessionsController < Api::BaseController
   # Before the body is parsed: inline attachments make a follow-up the one request
   # here that can be large, and a body over the limit is refused unread.
   prepend_before_action :refuse_an_oversized_follow_up, only: [ :follow_up ]
+  # Before the lookup, so a refusal says nothing about which ids exist.
+  before_action :require_a_person_on_the_app, only: [ :authorize_merge ]
   before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat, :authorize_merge ]
-  before_action :require_a_person_on_the_app, only: [ :authorize_merge, :reprioritize ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -779,28 +780,35 @@ class Api::V1::SessionsController < Api::BaseController
         content: "Merge #{result.pr_url}", entry_point: "ios_app.authorize_merge")
     end
 
-    render json: { outcome: result.outcome, message: result.message, pr_url: result.pr_url },
-      status: (result.ok? ? :ok : :unprocessable_entity)
+    if result.ok?
+      render json: { outcome: result.outcome, message: result.message, pr_url: result.pr_url }
+    else
+      render_api_error("Cannot merge", result.message, status: :unprocessable_entity, outcome: result.outcome, pr_url: result.pr_url)
+    end
   end
 
   # POST /api/v1/sessions/reprioritize
   #
-  # The User view's Reprioritize button, from the iOS app: hand the board to the
-  # deployment's durable reprioritizing session (Sessions::DashboardReprioritizer).
-  # Re-ranking moves which spot sessions start first, so it is a person's call:
-  # the app's token on a grant that acts as its approver, never an API key.
+  # The User view's Reprioritize button: hand the board to the deployment's
+  # durable reprioritizing session (Sessions::DashboardReprioritizer). Open to an
+  # API key like the rest of this controller, because it is no more than an
+  # invoke of that session's trigger, which `/api/v1/triggers/:id/invoke` and MCP
+  # `action_trigger` already reach.
   #
   # 200 with `{outcome, message, session}` when the job was handed over
   # (`fired`); 422 with the reason for any other outcome (a burst suppressed, a
   # session still pending), and with no session, since none was given the job.
   def reprioritize
-    result = Sessions::DashboardReprioritizer.call
+    result = Sessions::DashboardReprioritizer.call(genesis: SessionGenesis::API)
 
     if result.fired?
       render json: { outcome: result.outcome, message: result.message, session: session_json(result.session) }
     else
-      render json: { outcome: result.outcome, message: result.message }, status: :unprocessable_entity
+      render_api_error("Not reprioritized", result.message, status: :unprocessable_entity, outcome: result.outcome)
     end
+  rescue => e
+    Rails.logger.error "[Api::V1::SessionsController#reprioritize] #{e.class}: #{e.message}"
+    render_api_error("Could not start the reprioritizer", e.message, status: :internal_server_error)
   end
 
   # POST /api/v1/sessions/:id/start_now
@@ -1501,9 +1509,10 @@ class Api::V1::SessionsController < Api::BaseController
     }
   end
 
-  # The actions that stand for a person's decision: only the iOS app's token, on a
-  # grant that acts as its approver. An API key names a key, never a person, and
-  # a relay-only grant was approved to carry messages, not to decide.
+  # The one REST action that stands for a person's decision, Merge: only the iOS
+  # app's token, on a grant that acts as its approver. An API key names a key,
+  # never a person, and a relay-only grant was approved to carry messages, not to
+  # decide.
   def require_a_person_on_the_app
     return if native_app_request? && native_app_grant.acts_as_human?
 

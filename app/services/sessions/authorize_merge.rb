@@ -82,7 +82,8 @@ module Sessions
 
     # @param session [Session] the session holding the PR
     # @return [Result]
-    # @param surface [String] where the Merge button was pressed, for the log line
+    # @param surface [String] where the Merge button was pressed, named in the
+    #   message to the session and in the log line
     def self.call(session:, surface: "the Zimmer dashboard")
       new(session: session, surface: surface).call
     end
@@ -116,7 +117,7 @@ module Sessions
 
       delivered = deliver_automated_message(
         @session,
-        AutomatedPrompts.merge_authorization_message(pr_url),
+        AutomatedPrompts.merge_authorization_message(pr_url, surface: @surface),
         event_description: "User authorized the merge of #{pr_url} with the Merge button in #{@surface}",
         origin: "caller"
       )
