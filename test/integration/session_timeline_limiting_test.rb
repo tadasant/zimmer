@@ -36,9 +36,8 @@ class SessionTimelineLimitingTest < ActionDispatch::IntegrationTest
     # Count data-timeline-item in the response body
     timeline_items_count = response.body.scan(/data-timeline-item/).count
 
-    # Should have limited items (100 is the limit, but we allow some slack)
-    assert timeline_items_count <= 110, "Should have limited items, got #{timeline_items_count}"
-    assert timeline_items_count >= 90, "Should have at least 90 items, got #{timeline_items_count}"
+    # Tail first: the panel's own response is only the newest few items.
+    assert_equal SessionsController::TRANSCRIPT_TAIL_LIMIT, timeline_items_count
   end
 
   test "transcript panel shows infinite scroll trigger when more items available" do
@@ -52,7 +51,7 @@ class SessionTimelineLimitingTest < ActionDispatch::IntegrationTest
   end
 
   test "transcript panel does not show infinite scroll trigger for small sessions" do
-    session = create_session_with_many_messages(count: 50)
+    session = create_session_with_many_messages(count: SessionsController::TRANSCRIPT_TAIL_LIMIT)
 
     get transcript_panel_session_path(session)
     assert_response :success

@@ -29,7 +29,7 @@
     new one (see SessionsHelper#timeline_item_dom_id). Nested rows are inside a
     subagent accordion, not the timeline's own append target, so they are left
     unidentified along with everything else the parent timeline ignores. %>
-<div<% unless nested %> id="<%= timeline_item_dom_id(item) %>" data-timeline-item data-filter-category="<%= mcp_app_panel ? "message" : OpenTranscript.filter_category(item) %>"<% end %>>
+<div<% unless nested %> id="<%= timeline_item_dom_id(item) %>" data-timeline-item data-filter-category="<%= mcp_app_panel ? "message" : OpenTranscript.filter_category(item) %>"<%= tag.attributes(data: { transcript_index: item[:transcript_index] }) if item[:transcript_index] %><% end %>>
 <% if item[:type] == "mcp_log" %>
   <%= render "timeline_items/mcp_log", item: item %>
 <% elsif item[:type] == "log" %>

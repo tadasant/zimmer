@@ -3059,6 +3059,25 @@ addresses events by their stored line index. Three edges remain:
 The REST routes (`GET /api/v1/sessions/:id?include_transcript=true`, `.../transcript`) are not
 sliced and still return the whole transcript.
 
+### The session page's transcript pages read backwards, and two edges come with it
+
+The detail page's transcript loads tail first and pages back from a cursor ([The transcript loads
+tail first](/sessions/transcripts/#the-transcript-loads-tail-first)). That keeps the panel cheap on a
+long session, and it leaves two edges:
+
+- **A line far out of time order can be skipped.** A page is cut by `sort_time`, and the backward
+  read stops 20 lines (`BACKWARD_READ_OVERLAP`) past the page boundary. A line stamped *newer* than
+  the page's oldest item but written more than 20 lines below it is never read into that page, and
+  every later page asks for items older than the cursor, so it is not shown at all. Transcripts are
+  written in time order, and a disorder that wide has not been seen, but nothing detects it if it
+  happens. Lines with no timestamp at all are the exception the read does handle: they sort at the
+  session's start and are added to the last page in one full pass.
+- **Row indices count raw lines.** `#message-N` anchors and each row's fork point use the stored
+  line index, while `ForkSessionService` indexes parsed messages with blank and unparseable lines
+  dropped. The two agree unless the transcript holds such a line, and then a fork made from an older
+  row lands that many messages early. The tail already worked this way before tail-first loading;
+  paging back now does too.
+
 ## AIR catalog
 
 ### A dangling reference fails the entire test suite

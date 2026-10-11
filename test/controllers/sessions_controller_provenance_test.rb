@@ -6,8 +6,9 @@ require "mocha/minitest"
 # The session hierarchy and human-message panels on the session detail screen.
 #
 # Fetched from #provenance_panel rather than #show: the detail page renders these
-# panels as a <turbo-frame loading="lazy"> pointing here, so this URL — not the
-# page — is where their markup lives. See SessionsController#provenance_panel.
+# panels as a <turbo-frame> pointing here, fetched right after first paint, so
+# this URL — not the page — is where their markup lives. See
+# SessionsController#provenance_panel.
 class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
   setup do
     Log.any_instance.stubs(:broadcast_append_to_timeline)
@@ -50,6 +51,24 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     assert_select "summary", text: /Human messages/
     assert_match "this session was not spawned by another, has spawned none, and none has queued or interrupted it", response.body
     assert_match "No message anywhere in this hierarchy was authored by a named human.", response.body
+  end
+
+  # Both start collapsed, however much they hold: the page opens short, and the
+  # frame has already been fetched by the time a reader clicks one open. The
+  # summary line is what answers the headline without a click.
+  test "both disclosures render collapsed even when the hierarchy and its messages are not empty" do
+    parent = spawn_session(title: "Parent")
+    child = spawn_session(parent: parent, title: "Child")
+    add_message(child, content: "please do the thing")
+
+    get provenance_panel_session_url(child)
+
+    assert_response :success
+    assert_select "details[data-disclosure='hierarchy']:not([open])", 1
+    assert_select "details[data-disclosure='human-messages']:not([open])", 1
+    assert_select "details[open]", 0
+    assert_select "summary", text: /2 sessions, origin ##{parent.id}/
+    assert_select "summary", text: /1 message in this session/
   end
 
   # #658 on the web surface. The panel's empty state read "No message anywhere in

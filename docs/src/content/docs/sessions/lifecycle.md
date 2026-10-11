@@ -2935,12 +2935,19 @@ direction: elicitation banners are appended when raised *and removed when answer
 them `append` would leave a dead approval prompt on screen after a reopen.
 
 **A deferred panel is fetched from its own URL.** The detail screen's transcript and provenance
-panels are `<turbo-frame loading="lazy">` stubs, so the page the backfill just fetched has them
-unloaded — a skeleton with no ids in it, which `backfillLiveRegions` correctly finds nothing to
+panels are `<turbo-frame>` stubs fetched after first paint, so the page the backfill just fetched has
+them unloaded — a skeleton with no ids in it, which `backfillLiveRegions` correctly finds nothing to
 reconcile against. Their content is at `/sessions/:id/transcript_panel` and
-`/sessions/:id/provenance_panel`, and the recovery fetches those too, for the frames the reader had
-actually opened. A frame still unloaded has nothing on screen to bring up to date, so it costs
-nothing.
+`/sessions/:id/provenance_panel`, and the recovery fetches those too, for every frame that has
+loaded. A frame still unloaded has nothing on screen to bring up to date, so it costs nothing. The
+transcript frame names a wider address for this in `data-backfill-src` — a 100-row tail rather than
+its own 10 — because a reader away for a while can have missed more than ten rows. Rows in that
+wider tail that come before the first row already on screen are older history the page never paged
+in, not missed updates, and the `append` reconcile leaves them out rather than appending them below
+the newest message.
+
+A `<details data-disclosure>` the reader opened stays open through a `replace` reconcile: the server
+renders them closed, and its copy takes the reader's open state before it is compared.
 
 They are *reconciled*, not reloaded, because reloading the frame would throw away the older pages
 infinite scroll had pulled in and the reader's place among them. The transcript's batch carries

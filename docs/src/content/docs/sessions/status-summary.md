@@ -16,17 +16,19 @@ The session detail screen opens with one card holding four sections:
 | Section | State | What it answers |
 | --- | --- | --- |
 | **Status** | always expanded | Where does this stand, and does it want me right now? |
-| **Session hierarchy** | collapsible | Who spawned this, and what else is in the tree? |
-| **Human messages** | collapsible | Did a human actually ask for this? |
+| **Session hierarchy** | collapsed by default | Who spawned this, and what else is in the tree? |
+| **Human messages** | collapsed by default | Did a human actually ask for this? |
 | **Transcript** | collapsed by default | What actually happened, in full? |
 
 Status is the only one that is never a disclosure. The other three are plain `<details>` elements —
 no JS to load, and nothing for the transcript's infinite-scroll and auto-scroll controllers to fight
 with.
 
-The transcript being collapsed is the point of the arrangement: on a session with thousands of rows,
-the three panels above it are what a returning reader wants first, and the transcript is what they
-open once they know which part they need.
+Everything but Status starts collapsed, so the first paint is the session's identity and status and
+nothing that has to be walked or parsed. Each collapsed section still answers its headline in its
+summary line (how many sessions, how many messages). Their contents are fetched in the background
+right after the page paints, so opening one is instant. The transcript arrives tail first; see
+[The transcript loads tail first](/sessions/transcripts/#the-transcript-loads-tail-first).
 
 ## Lead with what to do
 
@@ -60,8 +62,8 @@ Three kinds of link do most of the work:
 
 - **A specific transcript message.** Every top-level transcript row carries a stable `id` of
   `message-<transcript_index>` — the same index the fork-from-here affordance uses, so the two agree
-  by construction. A link to `#message-214` opens the collapsed Transcript panel, scrolls that row
-  into view, and rings it briefly.
+  by construction. A link to `#message-214` opens the collapsed Transcript panel, loads older
+  history back to that row if the tail does not reach it, scrolls it into view, and rings it briefly.
 - **A pull request, issue, or CI run** that came up in the conversation.
 - **Another Zimmer session**, by its `/sessions/:id` URL.
 
