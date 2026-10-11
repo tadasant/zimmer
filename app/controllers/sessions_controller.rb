@@ -651,14 +651,19 @@ class SessionsController < ApplicationController
     render json: { error: "Failed to create session: #{e.message}" }, status: :unprocessable_entity
   end
 
-  # Default number of timeline items to show on initial page load.
-  INITIAL_TIMELINE_ITEMS_LIMIT = 100
+  # How many items the transcript panel's own response carries: the newest few,
+  # which is what a reader opening the transcript is almost always looking for.
+  # Everything older arrives afterwards, a page at a time, through
+  # #timeline_items — the first of those pages is prefetched the moment this
+  # tail lands (infinite_scroll_controller.js#prefetchEarlier), so scrolling up
+  # does not wait on it.
+  TRANSCRIPT_TAIL_LIMIT = 10
 
-  # How many items to fetch from each source (transcript + logs) when building
-  # the tail of the timeline. Must be large enough that after filtering, we still
-  # have INITIAL_TIMELINE_ITEMS_LIMIT items. 500 from each source gives us up to
-  # 1000 items before filtering, which is more than enough.
-  TAIL_FETCH_BUFFER = 500
+  # Page size for the earlier pages #timeline_items serves.
+  TIMELINE_PAGE_LIMIT = 100
+
+  # The largest page a client may ask either endpoint for.
+  MAX_TIMELINE_PAGE_LIMIT = 200
 
   # Valid filter levels for timeline items
   # These correspond to the client-side log level filter values
@@ -669,10 +674,10 @@ class SessionsController < ApplicationController
   #
   # What this action does NOT load is as deliberate as what it does. The two
   # heaviest panels of the detail body — the transcript and the provenance tree
-  # — are <turbo-frame loading="lazy"> stubs pointing at #transcript_panel and
-  # #provenance_panel, so the first paint carries the identity of the session
-  # (title, status, metadata, composer) and nothing that has to be walked or
-  # parsed to produce. See load_session_detail.
+  # — are <turbo-frame> stubs pointing at #transcript_panel and
+  # #provenance_panel, fetched right after first paint, so the first paint
+  # carries the identity of the session (title, status, metadata, composer) and
+  # nothing that has to be walked or parsed to produce. See load_session_detail.
   def show
     load_session_detail
   end
@@ -704,13 +709,18 @@ class SessionsController < ApplicationController
 
   # GET /sessions/:id/transcript_panel
   # The body of the detail page's Transcript disclosure, on its own path so the
-  # panel can be a lazy frame.
+  # panel can be a deferred frame.
   #
-  # This is the expensive half of the detail body: the tail of the transcript and
-  # the logs merged and filtered, plus a total count that has to normalize every
-  # transcript entry to be exact. The disclosure is CLOSED on first paint, and a
-  # lazy frame inside a closed <details> has no layout, so none of that work
-  # happens until a reader actually opens the panel.
+  # Tail first: this response is the newest TRANSCRIPT_TAIL_LIMIT items and
+  # nothing else, read backwards from the end of the stored transcript a chunk at
+  # a time, so its cost does not grow with the session. In particular it carries
+  # no total — an exact count means normalizing every transcript entry — so the
+  # client asks for it on its own (#timeline_items with `total_only`) after it
+  # has prefetched the page before this one.
+  #
+  # `limit` widens the tail. The reconnect backfill asks for a wider one, because
+  # what it reconciles against is whatever was broadcast while the page was
+  # away, and that can be more than ten rows.
   #
   # One path serves both the full page and the drawer. Unlike #show/#drawer there
   # is only ever one body here — the same frame id, the same markup — so the
@@ -734,10 +744,19 @@ class SessionsController < ApplicationController
   # Fetch older timeline items for infinite scroll
   # GET /sessions/:id/timeline_items
   # Params:
-  #   - before_index: The index to fetch items before (exclusive) - index within FILTERED items
+  #   - before_timestamp: ISO8601 cursor — only items strictly older than this.
+  #   - before_line: transcript line the backward read starts below (exclusive).
+  #     A hint that saves re-reading the lines already on the page; without it the
+  #     read starts at the end of the transcript and the timestamp alone decides.
+  #   - through_index: keep reading until this transcript index is included — a
+  #     `#message-N` deep link into history older than what is loaded.
+  #   - total_only: answer with the filtered total and no items — the figure the
+  #     tail could not afford, fetched on its own after the prefetched page so
+  #     that page never waits on it.
   #   - limit: Number of items to fetch (default: 100, max: 200)
   #   - filter: Filter level (minimal, condensed, show-logs, verbose)
-  #   - before_timestamp: ISO8601 timestamp cursor (used for efficient pagination of large sessions)
+  #   - before_index: The index to fetch items before (exclusive) - index within
+  #     FILTERED items. The pre-cursor protocol; it parses everything.
   def timeline_items
     @session = find_session
 
@@ -745,28 +764,40 @@ class SessionsController < ApplicationController
     filter_level = params[:filter].presence || "minimal"
     filter_level = "minimal" unless VALID_FILTER_LEVELS.include?(filter_level)
 
-    limit = [ params.fetch(:limit, INITIAL_TIMELINE_ITEMS_LIMIT).to_i, 200 ].min
+    limit = timeline_limit_param(TIMELINE_PAGE_LIMIT)
 
-    # Use timestamp-based cursor for efficient pagination of large sessions.
-    # The before_timestamp param is set by the show action (oldest displayed item's
-    # timestamp). Each page response includes the next cursor timestamp.
-    if params[:before_timestamp].present?
+    if params[:total_only].present?
+      render partial: "sessions/timeline_items_batch", locals: {
+        items: [],
+        session: @session,
+        has_more: true,
+        next_before_index: 0,
+        next_before_timestamp: nil,
+        next_before_line: nil,
+        total_count: compute_filtered_count(@session, filter_level)
+      }
+    elsif params[:before_timestamp].present?
       before_ts = Time.zone.parse(params[:before_timestamp])
       if before_ts.nil?
         head :bad_request
         return
       end
 
-      items, has_more, next_cursor = build_timeline_items_before_timestamp(
-        @session, filter_level, limit, before_ts
+      page = build_timeline_items_backward(
+        @session, filter_level, limit,
+        before_ts: before_ts,
+        before_line: line_index_param(:before_line),
+        through_index: line_index_param(:through_index)
       )
 
       render partial: "sessions/timeline_items_batch", locals: {
-        items: items,
+        items: page[:items],
         session: @session,
-        has_more: has_more,
+        has_more: page[:has_more],
         next_before_index: 0, # Not used with timestamp cursor
-        next_before_timestamp: next_cursor&.iso8601(6)
+        next_before_timestamp: page[:next_before_timestamp]&.iso8601(6),
+        next_before_line: page[:next_before_line],
+        total_count: nil
       }
     else
       # Legacy index-based fallback (for any in-flight requests during deploy)
@@ -791,7 +822,9 @@ class SessionsController < ApplicationController
         session: @session,
         has_more: has_more,
         next_before_index: next_before_index,
-        next_before_timestamp: nil
+        next_before_timestamp: nil,
+        next_before_line: nil,
+        total_count: nil
       }
     end
   end
@@ -2918,7 +2951,7 @@ class SessionsController < ApplicationController
   # form/selector collections the detail view needs.
   #
   # Not the timeline. That is #transcript_panel's job — see load_timeline_tail,
-  # and the lazy frame in _detail.html.erb that fetches it.
+  # and the deferred frame in _detail.html.erb that fetches it.
   def load_session_detail
     @session = find_session
 
@@ -2950,12 +2983,6 @@ class SessionsController < ApplicationController
     # (log_level_filter_controller.js#refetchAtLevel). Exact-match, not `present?`:
     # the param is one instruction with one spelling, so anything else leaves the
     # disclosure where the default puts it.
-    #
-    # It is also what makes the deferred transcript frame load: a lazy frame in a
-    # closed <details> has no layout and is never fetched, and
-    # transcript-panel#frameTargetConnected switches an open one to `eager` — so
-    # rendering the disclosure open is exactly the instruction to go and get the
-    # rows, wherever on the page the panel has ended up.
     @transcript_open = params[:transcript] == "open"
 
     # Load MCP servers for the editable MCP selector, each carrying whether
@@ -2997,41 +3024,35 @@ class SessionsController < ApplicationController
     VALID_FILTER_LEVELS.include?(level) ? level : "minimal"
   end
 
-  # Everything the transcript panel renders: the tail of the timeline, the total
-  # it is a tail OF, and the cursors infinite scroll pages backwards with.
+  # Everything the transcript panel renders: the newest items of the timeline and
+  # the cursors infinite scroll pages backwards from.
   #
-  # Instead of loading ALL logs and parsing the ENTIRE transcript (280K+ logs and
-  # 9MB+ on a long-running session) this loads only the tail of each source —
-  # enough that after merging, sorting and filtering there are at least
-  # INITIAL_TIMELINE_ITEMS_LIMIT items to show.
-  #
-  # The total is the one part that cannot be a tail: an exact count of what the
-  # active filter would show means normalizing every transcript entry. That is
-  # why this whole method lives behind the lazy frame rather than in
-  # load_session_detail — it is linear in transcript size, and the panel it
-  # labels starts closed.
+  # No total. Counting what the active filter would show means normalizing every
+  # transcript entry, which is the one cost on this path that grows with the
+  # session, so the client fetches it on its own once the page before this one
+  # is in (#timeline_items with `total_only`). When there is nothing older the
+  # tail IS the whole timeline and its size is the total, which the view states
+  # directly.
   def load_timeline_tail
     @filter_level = resolved_filter_level
 
-    @total_timeline_items_count = compute_filtered_count(@session, @filter_level)
+    page = build_timeline_items_backward(@session, @filter_level, timeline_limit_param(TRANSCRIPT_TAIL_LIMIT))
+    @timeline_items = page[:items]
+    @has_more_items = page[:has_more]
+    @oldest_displayed_timestamp = page[:next_before_timestamp]&.iso8601(6)
+    @oldest_displayed_line = page[:next_before_line]
+  end
 
-    tail_items = build_timeline_items_tail(@session, @filter_level, TAIL_FETCH_BUFFER)
-    filtered_items = filter_timeline_items(tail_items, @filter_level)
+  # A transcript line index from params: a non-negative integer, or nil for a
+  # missing or malformed value (which then reads as "no hint"), never a silent 0.
+  def line_index_param(name)
+    value = Integer(params[name], exception: false) if params[name].is_a?(String)
+    value if value && value >= 0
+  end
 
-    # For the initial render, only show the last N filtered items
-    if @total_timeline_items_count > INITIAL_TIMELINE_ITEMS_LIMIT
-      @has_more_items = true
-      @oldest_displayed_index = @total_timeline_items_count - [ filtered_items.count, INITIAL_TIMELINE_ITEMS_LIMIT ].min
-      @timeline_items = filtered_items.last(INITIAL_TIMELINE_ITEMS_LIMIT)
-    else
-      @has_more_items = false
-      @oldest_displayed_index = 0
-      @timeline_items = filtered_items
-    end
-
-    # Timestamp cursor for infinite scroll pagination.
-    # The oldest displayed item's timestamp is used as the cursor for loading earlier items.
-    @oldest_displayed_timestamp = @timeline_items.first&.dig(:sort_time)&.iso8601(6)
+  # The `limit` param, clamped to 1..MAX_TIMELINE_PAGE_LIMIT.
+  def timeline_limit_param(default)
+    params.fetch(:limit, default).to_i.clamp(1, MAX_TIMELINE_PAGE_LIMIT)
   end
 
   # True when the current request is a deliberate human page/drawer load, as
@@ -3845,99 +3866,145 @@ class SessionsController < ApplicationController
     OpenTranscript.sort_events(timeline_items)
   end
 
-  # Build timeline items from only the tail of the data sources.
-  # Loads the last `buffer` transcript entries and last `buffer` logs,
-  # merges and sorts them. This avoids loading the entire history for
-  # sessions with hundreds of thousands of items.
+  # How far past the page boundary the backward read keeps going. Transcript
+  # lines are written in time order, but not strictly — a tool result can carry
+  # an earlier timestamp than the line before it — and the page is cut by
+  # sort_time, not by line. Reading a few lines further than the boundary is what
+  # keeps an item that sorts just inside the page from being left out of it.
+  BACKWARD_READ_OVERLAP = 20
+
+  # One page of the timeline, read from the newest end backwards: the `limit`
+  # newest items older than `before_ts` (all of them, when there is no cursor),
+  # with the cursors for the page before it.
   #
-  # @param session [Session] The session
-  # @param filter_level [String] The active filter level (for smart buffer sizing)
-  # @param buffer [Integer] How many items to fetch from each source
-  # @return [Array<Hash>] Timeline items from the tail, sorted by time
-  def build_timeline_items_tail(session, filter_level, buffer)
-    timeline_items = []
+  # The transcript is read through Session#each_transcript_line in reverse,
+  # which fetches one stored chunk at a time and stops as soon as the page is
+  # full — so the newest ten items of a 30 MB transcript cost the last chunk or
+  # two, not the document. `before_line` starts the read below lines the client
+  # already has; `through_index` keeps it going until that transcript index is
+  # in the page (a deep link), however many items that takes.
+  #
+  # Logs (show-logs, verbose) are their own source, cut by the same timestamp
+  # in SQL, and merged before the page is taken.
+  #
+  # Lines with no timestamp of their own (Claude's `last-prompt`, `mode`,
+  # `cost-state` bookkeeping) sort at the session's created_at, all of them
+  # together, whatever line they were written on. They cannot take part in a
+  # backward read — counted against a page, they would fill it and drag the
+  # cursor to created_at, ending the history early — so they are left out of
+  # every page except the one spanning created_at, which collects all of them
+  # in one full pass (see #undated_timeline_events).
+  #
+  # @return [Hash] items:, has_more:, next_before_timestamp:, next_before_line:
+  def build_timeline_items_backward(session, filter_level, limit, before_ts: nil, before_line: nil, through_index: nil)
+    upper = session.transcript_line_count
+    upper = [ upper, before_line + BACKWARD_READ_OVERLAP ].min if before_line
+    source = session.transcript_present? ? TranscriptRuntime.source_for(session) : nil
+    undated_at = session.created_at
 
-    # Load last N transcript entries (without parsing the full transcript)
-    transcript_entries, _total = session.parsed_transcript_tail(buffer)
-    if transcript_entries.present?
-      transcript_entries.each do |entry|
-        timeline_items.concat(build_transcript_timeline_item(entry, entry["_transcript_index"] || 0, session))
+    per_line = []
+    visible = 0
+    stop_at = nil
+    transcript_exhausted = true
+
+    if source
+      session.each_transcript_line(0, upper, reverse: true) do |index, line|
+        break if stop_at && index < stop_at
+
+        entry = source.parse_events(line).first
+        next if entry.nil?
+
+        events = build_transcript_timeline_item(entry, index, session).reject { |event| event[:sort_time] == undated_at }
+        events = events.select { |event| event[:sort_time] < before_ts } if before_ts
+        per_line << events
+        visible += events.count { |event| item_visible_for_filter?(event, filter_level) }
+
+        next if stop_at || visible <= limit
+        next if through_index && index > through_index
+
+        stop_at = index - BACKWARD_READ_OVERLAP
+        transcript_exhausted = stop_at <= 0
       end
     end
 
-    # Load last N logs via efficient SQL query (DESC + LIMIT + reverse)
-    # Only load logs if the filter level would show them
-    if filter_level == "show-logs" || filter_level == "verbose"
-      recent_logs = session.logs.order(created_at: :desc).limit(buffer).to_a.reverse
-      recent_logs.each do |log|
-        timeline_items << build_log_timeline_item(log)
-      end
+    transcript_events = per_line.reverse.flatten(1)
+    include_logs = filter_level == "show-logs" || filter_level == "verbose"
+    timeline_items = transcript_events.dup
+    if include_logs
+      logs = timeline_logs(session, filter_level)
+      logs = logs.where("created_at < ?", before_ts) if before_ts
+      page_logs = logs.order(created_at: :desc).limit(limit + 1).to_a.reverse
+      # A deep link can reach further back than `limit` logs would: every log
+      # from the deep-linked row onwards belongs on the page with it.
+      floor = transcript_events.select { |event| through_index && event[:transcript_index].to_i >= through_index }.map { |event| event[:sort_time] }.min
+      page_logs = (logs.where("created_at >= ?", floor).to_a + page_logs).uniq(&:id).sort_by(&:created_at) if floor
+      page_logs.each { |log| timeline_items << build_log_timeline_item(log) }
     end
 
-    OpenTranscript.sort_events(timeline_items)
+    filtered = filter_timeline_items(OpenTranscript.sort_events(timeline_items), filter_level)
+    take = limit
+    if through_index
+      first_wanted = filtered.index { |item| item[:transcript_index] && item[:transcript_index] >= through_index }
+      take = [ take, filtered.size - first_wanted ].max if first_wanted
+    end
+    # Never cut a page between two items with the same sort_time: the next page
+    # asks for items strictly older than this page's oldest, so the other half of
+    # a tie would never be shown. A log and a transcript line stamped the same
+    # second is the ordinary case.
+    take += 1 while take < filtered.size && filtered[-take - 1][:sort_time] == filtered[-take][:sort_time]
+    items = filtered.last(take)
+    left_behind = filtered.first(filtered.size - items.size)
+
+    has_more = left_behind.any? || !transcript_exhausted
+    if include_logs && !has_more && items.any?
+      has_more = timeline_logs(session, filter_level).where("created_at < ?", items.first[:sort_time]).exists?
+    end
+    next_before_line = next_backward_line(items, left_behind, stop_at)
+    next_before_timestamp = items.first&.dig(:sort_time)
+
+    # The undated lines all sort at created_at, so they belong to whichever page
+    # spans that instant: usually the last one, since a session is created
+    # before its conversation, but a fork's inherited history is older than the
+    # fork itself.
+    if source && undated_at < (before_ts || Float::INFINITY) && (!has_more || (items.any? && undated_at >= items.first[:sort_time]))
+      items = OpenTranscript.sort_events(undated_timeline_events(session, source, filter_level) + items)
+    end
+
+    { items: items, has_more: has_more, next_before_timestamp: next_before_timestamp, next_before_line: next_before_line }
   end
 
-  # Build timeline items before a given timestamp cursor.
-  # Used for efficient infinite scroll pagination without loading the entire history.
-  #
-  # The transcript is always parsed fully (typically hundreds to low thousands of entries,
-  # taking <0.5s even for large sessions). The optimization is on log loading: instead of
-  # loading 280K+ logs, we use a SQL WHERE + LIMIT to fetch only logs before the cursor.
-  #
-  # @param session [Session] The session
-  # @param filter_level [String] The active filter level
-  # @param limit [Integer] Number of filtered items to return
-  # @param before_ts [Time] Only include items before this timestamp
-  # @return [Array(Array<Hash>, Boolean, Time)] [items, has_more, next_cursor_timestamp]
-  def build_timeline_items_before_timestamp(session, filter_level, limit, before_ts)
-    fetch_buffer = limit * 3
+  # Every visible event whose line carried no timestamp of its own, in line
+  # order. A full read of the transcript, so it is reached only once, by the
+  # page spanning the session's created_at.
+  def undated_timeline_events(session, source, filter_level)
+    events = []
+    session.each_transcript_line(0, session.transcript_line_count) do |index, line|
+      entry = source.parse_events(line).first
+      next if entry.nil?
 
-    timeline_items = []
-
-    # Parse full transcript — this is fast (hundreds to low thousands of entries).
-    # Filter to only entries before the cursor timestamp.
-    transcript_entries = session.parsed_transcript
-    if transcript_entries.present?
-      transcript_entries.each_with_index do |entry, index|
-        build_transcript_timeline_item(entry, index, session).each do |event|
-          timeline_items << event if event[:sort_time] < before_ts
-        end
-      end
+      events.concat(build_transcript_timeline_item(entry, index, session).select { |event| event[:sort_time] == session.created_at })
     end
+    filter_timeline_items(OpenTranscript.sort_events(events), filter_level)
+  end
 
-    # Load logs before the cursor timestamp via efficient SQL query
-    if filter_level == "show-logs" || filter_level == "verbose"
-      logs_before = session.logs
-        .where("created_at < ?", before_ts)
-        .order(created_at: :desc)
-        .limit(fetch_buffer)
-        .to_a.reverse
+  # The logs a filter level shows: show-logs leaves verbose logs out, so they
+  # must not fill the page's SQL limit and push an older info log off it.
+  def timeline_logs(session, filter_level)
+    filter_level == "show-logs" ? session.logs.where.not(level: "verbose") : session.logs
+  end
 
-      logs_before.each do |log|
-        timeline_items << build_log_timeline_item(log)
-      end
-    end
+  # Where the next page's backward read starts: just above the highest line any
+  # item left off this page came from, so nothing read and not shown is skipped.
+  # nil when nothing on this page came from the transcript — the next read then
+  # starts at the end, and the timestamp alone decides.
+  def next_backward_line(items, left_behind, stop_at)
+    lines = left_behind.filter_map { |item| item[:transcript_index] }
+    return lines.max + 1 if lines.any?
 
-    timeline_items = OpenTranscript.sort_events(timeline_items)
-    filtered = filter_timeline_items(timeline_items, filter_level)
+    shown = items.filter_map { |item| item[:transcript_index] }
+    return nil if shown.empty?
 
-    # Take the last `limit` filtered items (closest to the cursor)
-    if filtered.count > limit
-      items = filtered.last(limit)
-      has_more = true
-      next_cursor = items.first[:sort_time]
-    else
-      items = filtered
-      # Check if there are still older logs we didn't fetch
-      has_more = if filter_level == "show-logs" || filter_level == "verbose"
-        session.logs.where("created_at < ?", items.first&.dig(:sort_time) || before_ts).exists?
-      else
-        false # For minimal/condensed, we loaded all transcript entries
-      end
-      next_cursor = items.first&.dig(:sort_time)
-    end
-
-    [ items, has_more, next_cursor ]
+    [ shown.min, stop_at.to_i ].max
   end
 
   # Compute the total count of filtered timeline items efficiently,
@@ -3957,7 +4024,18 @@ class SessionsController < ApplicationController
     # we need to know which entries are regular messages vs tool-use messages.
     # We do a lightweight scan of transcript lines, parsing only enough to
     # determine the category (checking for tool_use/tool_result in content).
-    transcript_count = count_transcript_entries_for_filter(session, filter_level)
+    #
+    # That scan is linear in transcript size, so its answer is cached against the
+    # transcript itself: every write moves `transcript_digest` (and an append
+    # moves the line and byte counts too), so a count is never served for a
+    # transcript other than the one it was taken over.
+    cache_key = [
+      "session-timeline-transcript-count", session.id, session.transcript_digest,
+      session.transcript_line_count, session.transcript_byte_size, filter_level
+    ]
+    transcript_count = Rails.cache.fetch(cache_key, expires_in: 1.day) do
+      count_transcript_entries_for_filter(session, filter_level)
+    end
 
     # Count logs by level using SQL (fast with index)
     log_count = case filter_level

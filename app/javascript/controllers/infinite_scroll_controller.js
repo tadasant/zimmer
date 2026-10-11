@@ -7,20 +7,35 @@ import { Controller } from "@hotwired/stimulus"
 // when the user scrolls up. The primary goal is improving browser performance
 // by limiting initial DOM size for sessions with many messages.
 //
+// Tail first: the transcript panel renders only the newest handful of items
+// (SessionsController::TRANSCRIPT_TAIL_LIMIT). The moment that tail is in the
+// DOM this controller prefetches a short page before it, in the background, so
+// a reader who scrolls up finds it already there — and only then asks for the
+// filtered total, which the tail does not compute and the prefetch must not
+// wait on.
+//
 // Filter-aware counting:
 // This controller works with the log-level-filter controller to show accurate
 // item counts based on the current filter level. Items have a data-filter-category
 // attribute ("message", "regular-log", or "verbose-log") that determines visibility.
 export default class extends Controller {
+  // How many earlier items the post-tail prefetch brings: "slightly earlier",
+  // enough to scroll up through without waiting, small enough to stay cheap.
+  // Pages after it are the server's default size.
+  static PREFETCH_LIMIT = 40
+
   static targets = ["loadMoreTrigger", "loadMoreButton", "timelineContent", "loadingIndicator", "itemsCount"]
   static values = {
     url: String,
-    beforeIndex: Number,
     beforeTimestamp: { type: String, default: "" },
+    // The transcript line the next backward read starts below. A hint, not the
+    // boundary — the timestamp is that — so a blank one only costs the server a
+    // read from the end.
+    beforeLine: { type: String, default: "" },
     hasMore: Boolean,
     loading: { type: Boolean, default: false },
+    // 0 until a page has reported it: the tail does not count.
     totalCount: Number,
-    displayedCount: Number,
     filterLevel: { type: String, default: "minimal" }
   }
 
@@ -50,6 +65,29 @@ export default class extends Controller {
         })
       })
     })
+
+    this.prefetchEarlier()
+  }
+
+  // Fetch the page before the tail once the browser is idle — after the tail has
+  // painted, never ahead of it. Whatever the reader does first (opening the
+  // panel, scrolling up, following a #message-N link) finds either the page
+  // already in place or this request already in flight, and loadMore's
+  // in-flight guard keeps the two from doubling up.
+  prefetchEarlier() {
+    if (!this.hasMoreValue) return
+
+    const run = async () => {
+      if (!this.isConnected) return
+
+      await this.loadMore({ limit: this.constructor.PREFETCH_LIMIT })
+      if (this.isConnected) this.fetchTotal()
+    }
+    if ("requestIdleCallback" in window) {
+      window.requestIdleCallback(run, { timeout: 500 })
+    } else {
+      setTimeout(run, 0)
+    }
   }
 
   disconnect() {
@@ -81,31 +119,76 @@ export default class extends Controller {
     }
   }
 
-  async loadMore() {
-    // Guard: need either a timestamp cursor or a legacy index cursor
-    const hasTimestampCursor = this.beforeTimestampValue && this.beforeTimestampValue.length > 0
-    const hasIndexCursor = this.beforeIndexValue > 0
-    if (this.loadingValue || !this.hasMoreValue || (!hasTimestampCursor && !hasIndexCursor)) {
-      return
+  // Load the page before the oldest item on screen.
+  //
+  // `throughIndex` asks for every item back to that transcript index in one
+  // response, however many that is — what a `#message-N` link older than the
+  // loaded history needs (transcript-panel#reveal). Resolves once the batch is
+  // in the DOM; a call made while another is in flight waits for that one
+  // instead of issuing its own.
+  async loadMore({ throughIndex = null, limit = null } = {}) {
+    if (this.inFlight) return this.inFlight
+    if (!this.hasMoreValue || !this.beforeTimestampValue) return
+
+    this.inFlight = this.fetchEarlier(throughIndex, limit)
+    try {
+      await this.inFlight
+    } finally {
+      this.inFlight = null
     }
+  }
 
-    this.loadingValue = true
-    this.showLoadingIndicator()
+  // Load until transcript index `index` is in the DOM, or there is nothing
+  // older to load. Usually one request — through_index makes the server read
+  // back to it — and a second only when the first was already in flight.
+  async loadThrough(index) {
+    while (this.hasMoreValue && !this.isIndexLoaded(index)) {
+      const before = this.beforeTimestampValue
+      await this.loadMore({ throughIndex: index })
+      if (this.beforeTimestampValue === before) return
+    }
+  }
 
-    // Remember scroll position before inserting new content
-    const scrollContainer = document.documentElement
-    const oldScrollHeight = scrollContainer.scrollHeight
-    const oldScrollTop = window.scrollY
+  // True when the oldest transcript row on screen is at or before `index`.
+  isIndexLoaded(index) {
+    if (!this.hasTimelineContentTarget) return false
+
+    const first = this.timelineContentTarget.querySelector("[data-transcript-index]")
+    return first !== null && parseInt(first.dataset.transcriptIndex, 10) <= index
+  }
+
+  // The filtered total the tail did not compute. Best effort: until it lands,
+  // or if it never does, the count reads "Showing latest N items".
+  async fetchTotal() {
+    if (this.totalCountValue || !this.hasMoreValue) return
 
     try {
       const url = new URL(this.urlValue, window.location.origin)
-      // Use timestamp cursor if available (efficient for large sessions),
-      // fall back to legacy index-based cursor
-      if (hasTimestampCursor) {
-        url.searchParams.set("before_timestamp", this.beforeTimestampValue)
-      } else {
-        url.searchParams.set("before_index", this.beforeIndexValue)
+      url.searchParams.set("total_only", "1")
+      url.searchParams.set("filter", this.filterLevelValue)
+      const response = await fetch(url, { headers: { "Accept": "text/html", "X-Requested-With": "XMLHttpRequest" } })
+      if (!response.ok) return
+
+      const state = new DOMParser().parseFromString(await response.text(), "text/html").querySelector("#timeline-pagination-state")
+      if (state && state.dataset.totalCount) {
+        this.totalCountValue = parseInt(state.dataset.totalCount, 10)
+        this.updateItemsCount()
       }
+    } catch (error) {
+      console.error("Error loading the timeline total:", error)
+    }
+  }
+
+  async fetchEarlier(throughIndex, limit) {
+    this.loadingValue = true
+    this.showLoadingIndicator()
+
+    try {
+      const url = new URL(this.urlValue, window.location.origin)
+      url.searchParams.set("before_timestamp", this.beforeTimestampValue)
+      if (this.beforeLineValue !== "") url.searchParams.set("before_line", this.beforeLineValue)
+      if (throughIndex !== null) url.searchParams.set("through_index", throughIndex)
+      if (limit !== null) url.searchParams.set("limit", limit)
       // Pass the current filter level to the server so it can filter before limiting
       url.searchParams.set("filter", this.filterLevelValue)
 
@@ -130,15 +213,18 @@ export default class extends Controller {
       const paginationState = tempDiv.querySelector("#timeline-pagination-state")
       if (paginationState) {
         this.hasMoreValue = paginationState.dataset.hasMore === "true"
-        // Use timestamp cursor if provided, otherwise fall back to index
-        if (paginationState.dataset.nextBeforeTimestamp) {
-          this.beforeTimestampValue = paginationState.dataset.nextBeforeTimestamp
-        } else {
-          this.beforeIndexValue = parseInt(paginationState.dataset.nextBeforeIndex, 10)
-        }
+        this.beforeTimestampValue = paginationState.dataset.nextBeforeTimestamp || ""
+        this.beforeLineValue = paginationState.dataset.nextBeforeLine || ""
         // Remove the pagination state element from the content to insert
         paginationState.remove()
       }
+
+      // Remember the scroll position just before inserting, not when the request
+      // went out: a prefetch runs in the background, and a reader may have
+      // scrolled anywhere while it was in flight.
+      const scrollContainer = document.documentElement
+      const oldScrollHeight = scrollContainer.scrollHeight
+      const oldScrollTop = window.scrollY
 
       // Insert new items AFTER the loadMoreTrigger and loadingIndicator elements.
       // This is critical for continued infinite scroll - if we prepend to innerHTML,
@@ -166,10 +252,12 @@ export default class extends Controller {
 
       // Restore scroll position so user stays at the same content
       // Use requestAnimationFrame to wait for layout to settle
+      // A batch landing in a closed panel adds no height, and then there is
+      // nothing to restore — leave the reader's scroll alone.
       requestAnimationFrame(() => {
         const newScrollHeight = scrollContainer.scrollHeight
         const scrollDiff = newScrollHeight - oldScrollHeight
-        window.scrollTo(0, oldScrollTop + scrollDiff)
+        if (scrollDiff !== 0) window.scrollTo(0, oldScrollTop + scrollDiff)
       })
 
       // Update the "Load more" button visibility
@@ -225,7 +313,9 @@ export default class extends Controller {
     if (this.hasItemsCountTarget) {
       const { visibleLoaded, visibleTotal, hasMoreVisible } = this.getFilteredCounts()
 
-      if (hasMoreVisible) {
+      if (hasMoreVisible && !this.totalCountValue) {
+        this.itemsCountTarget.textContent = `Showing latest ${visibleLoaded} items`
+      } else if (hasMoreVisible) {
         this.itemsCountTarget.textContent = `Showing ${visibleLoaded} of ${visibleTotal} items`
       } else {
         this.itemsCountTarget.textContent = `${visibleTotal} ${visibleTotal === 1 ? "item" : "items"}`

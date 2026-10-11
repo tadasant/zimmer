@@ -1266,41 +1266,6 @@ class Session < ApplicationRecord
     transcript_source.parse_events(transcript)
   end
 
-  # Parse only the last N lines of the JSONL transcript.
-  # Much faster than parsed_transcript for large transcripts when only
-  # recent entries are needed (e.g., initial page load showing last 100 items).
-  #
-  # Returns [entries, total_line_count] where entries is an array of parsed
-  # JSON objects and total_line_count is the total number of lines in the transcript.
-  # The transcript_offset in each entry reflects its position in the full transcript.
-  def parsed_transcript_tail(n)
-    return [ [], 0 ] unless transcript.present?
-
-    if transcript.is_a?(Array)
-      total = transcript.size
-      offset = [ total - n, 0 ].max
-      entries = transcript.last(n).each_with_index.map do |entry, i|
-        entry.merge("_transcript_index" => offset + i)
-      end
-      return [ entries, total ]
-    end
-
-    all_lines = transcript.lines
-    total = all_lines.size
-    tail_lines = all_lines.last(n)
-    offset = total - tail_lines.size
-
-    entries = tail_lines.each_with_index.filter_map do |line, i|
-      parsed = transcript_source.parse_events(line).first
-      next if parsed.nil?
-
-      parsed["_transcript_index"] = offset + i
-      parsed
-    end
-
-    [ entries, total ]
-  end
-
   # Parse transcript lines within a specific index range [start_idx, end_idx).
   # Used by timeline_items for efficient infinite scroll pagination.
   def parsed_transcript_range(start_idx, end_idx)
@@ -2271,7 +2236,7 @@ class Session < ApplicationRecord
   #
   # @return [Boolean] true when there is no conversation to bring back
   def never_ran?
-    session_id.blank? && transcript.blank?
+    session_id.blank? && !transcript_present?
   end
 
   # Is this session still on the near side of its first agent turn?

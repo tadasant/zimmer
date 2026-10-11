@@ -3,8 +3,8 @@ require "test_helper"
 # Integration coverage for transcript rendering in the session's transcript panel.
 #
 # Fetched from #transcript_panel rather than #show: the detail page defers the
-# whole panel into a <turbo-frame loading="lazy"> that loads when the reader
-# opens the Transcript disclosure, so this URL is where the rendered events are.
+# whole panel into a <turbo-frame> fetched after first paint, so this URL is
+# where the rendered events are.
 #
 # Both runtimes normalize their native JSONL into OpenTranscripts v0.1 events
 # (see OpenTranscript / https://docs.zimmer.tadasant.com/sessions/transcripts/). Every event renders through

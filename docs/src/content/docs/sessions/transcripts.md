@@ -702,64 +702,84 @@ conversation, and just as invisible until a session cannot authenticate.
 `test/config/runtime_home_volumes_test.rb` pins all three for every role, because the symptom of getting it wrong is not an error — it is
 an agent with amnesia and a timeline that still looks fine.
 
-## Opening the transcript is what loads it
+## The transcript loads tail first
 
-The Transcript disclosure on the session detail screen starts collapsed, and until a reader opens it
-the server does not build it at all. Its body is a `<turbo-frame loading="lazy">` pointing at
-`GET /sessions/:id/transcript_panel?filter=<level>`, and a lazy frame inside a closed `<details>` has
-no layout — so Turbo never fetches it. Opening the disclosure is what starts the request; a skeleton
-shaped like the rows stands in until the answer lands.
+The Transcript disclosure on the session detail screen starts collapsed, like every disclosure on the
+page. Collapsed is not unloaded. Its body is an eager `<turbo-frame>` pointing at
+`GET /sessions/:id/transcript_panel?filter=<level>`, fetched in the background as soon as the page is
+on screen. A reader who opens the panel finds the rows already there, not a skeleton.
 
-**Opening it is the trigger because `transcript-panel#loadFrame` makes it one.** Layout alone is not
-enough: `loading="lazy"` reads as "fetch once it is shown" and means something narrower — Turbo
-watches the frame with an `IntersectionObserver` and fetches when it appears **in the viewport**. A
-panel opened while it sits below the fold gains layout and is still never fetched, so it holds its
-skeleton and everything queued on the load waits for something that is not coming. The controller
-therefore switches the frame to `loading="eager"` the moment the disclosure opens, which keeps what
-lazy was for — the frame is untouched for as long as the panel is closed — and drops the part that
-was never wanted, the fetch being contingent on where the page happens to be scrolled.
+**That response is the tail and nothing else**: the newest `TRANSCRIPT_TAIL_LIMIT` (10) items, because
+the end of a transcript is what a reader almost always opens it for. It is read backwards from the
+end of the stored transcript through `Session#each_transcript_line`, which fetches one stored chunk at
+a time and stops once the page is full. The newest ten items of a 14 MB transcript therefore cost the
+last chunk or two, not the document. That makes the frame's cost flat in session length.
 
-Three openings reach it, because a panel can be opened in three ways and only one of them fires a
-`toggle`: `#toggled` for a reader's click, `#reveal` for a `#message-N` link, and
-`#frameTargetConnected` for a panel the server rendered **already open** — which is the
-`transcript=open` page the log-level filter re-fetches, where nothing toggles at all. The last two
-are the openings nobody scrolls to, and they are where this actually bit: a `#message-N` link opened
-cold opens the panel under a viewport still parked at the top of the page, and the system suite,
-which opens every panel by script, failed
-[CI run 34060027053](https://github.com/tadasant/zimmer/actions/runs/34060027053) that way.
-`#loadFrame` reads the attribute back before writing it, because `setAttribute` has no same-value
-short circuit and a second write while the first fetch is in flight would cancel it and issue
-another.
+Everything older pages in through `GET /sessions/:id/timeline_items`, and the first page is
+prefetched. As soon as the tail lands, `infinite-scroll#prefetchEarlier` fetches the 40 items before
+it in an idle callback, so a reader who scrolls up finds them already in place. Later pages are 100
+items, loaded as the reader scrolls toward the top. Each page carries two cursors:
 
-The panel is where the whole cost of the transcript lives, and on a long session it is most of the
-cost of the screen. Three things moved behind the frame:
+- **`before_timestamp`** is the boundary: only items strictly older than the oldest one shown. A page
+  is never cut between two items with the same `sort_time`, because the next page could not ask for
+  the other half of a tie. A log and a transcript line stamped the same second is the ordinary case.
+- **`before_line`** is a hint: the transcript line the next backward read starts below, so a page does
+  not re-read lines the reader already has. The read runs `BACKWARD_READ_OVERLAP` (20) lines past the
+  page boundary in both directions. Transcript lines are written in time order but not strictly, and
+  the page is cut by `sort_time`.
 
-- **The rows.** A hundred timeline items, and on a 2.4 MB transcript that is 594 KB of the 867 KB the
-  page used to weigh — markup that was rendered, transferred and parsed for a panel nobody had opened.
-- **The tail build and merge**, `build_timeline_items_tail`, which reads the last events of the
-  transcript and (at `show-logs`/`verbose`) the last logs.
-- **The total.** `compute_filtered_count` is the one part that cannot be a tail: an exact count of
-  what the active filter would show means normalizing *every* transcript entry, so it is linear in
-  transcript size — about 295 ms on 4,000 entries, and it ran on every page load and every drawer
-  open to label a closed panel. The count now states itself inside the panel, once the reader has
-  asked for it.
+At `show-logs` and `verbose`, logs are a second source, cut by the same timestamp in SQL (at
+`show-logs`, with verbose logs left out of the query so they cannot fill a page's limit) and merged
+before the page is taken.
 
-Together that is a detail response of 235 KB in ~150 ms over 20 queries, against 867 KB in ~750 ms
-over 67 before; the drawer is 207 KB in ~140 ms over 19.
+**Lines with no timestamp of their own** (Claude's `last-prompt`, `mode` and `cost-state` bookkeeping
+records, visible at `show-logs` and `verbose`) sort at the session's `created_at`, which a full build
+puts at the very top of the timeline. They cannot take part in a backward read: counted against a
+page they would fill it and drag the cursor to `created_at`, ending the history early. So they are
+left out of every page but the last, which collects all of them in one full pass of the transcript,
+the one full read paging ever does, and only for a reader who reaches the start of the history.
 
-Three things are deliberately *not* behind the frame, and each is load-bearing:
+**The total arrives separately.** `compute_filtered_count` is the one figure that cannot be read from
+a tail: an exact count of what the active filter would show means normalizing every transcript entry.
+So the tail says "Showing latest 10 items", and once the prefetched page is in,
+`infinite-scroll#fetchTotal` asks `timeline_items?total_only=1` for the count and writes "Showing 50
+of 1,288 items". The transcript half of the count is cached against `transcript_digest` and the line
+and byte counts, so a session that has stopped writing pays for it once. A tail with nothing older is
+the whole timeline, and states its own size.
+
+**A `#message-N` link into older history reads back to it.** The tail holds ten rows, so a link from
+the Status panel usually names a row that is not on the page yet. `transcript-panel#reveal` asks
+`infinite-scroll#loadThrough(N)`, which sends `through_index=N`. The server keeps reading backwards
+until that transcript index is in the page, and returns everything between it and the oldest row
+shown, in one request. A fragment that still matches nothing (an index past the end, or a row the
+active log level hides) leaves the panel open on the newest row.
+
+On a session with a 5,002-line, 14 MB transcript, measured against `main` on a development server:
+
+| | before | after |
+| --- | --- | --- |
+| Detail page response | 248 KB, ~390 ms, 35 queries | 248 KB, ~256 ms, 36 queries |
+| Transcript frame | 621 KB, ~790 ms (100 rows + full count) | 65 KB, ~46 ms (10 rows) |
+| Newest rows visible | after a click, 1.4–2.5 s from navigation | without a click, ~0.8–1.1 s from navigation |
+
+The detail page itself got faster because two checks on it had been materializing the whole
+transcript on every render. One is the Status panel's "could Regenerate run?" check, now
+`RuntimeConversationPresence.stored_transcript_conversation?`, which stops at the first conversation
+record. The other is `Session#never_ran?`, which now asks `transcript_present?`.
+
+Three things stay outside the frame, and each is load-bearing:
 
 - **The append target.** `#session_<id>_timeline` is rendered on the page, just after the frame, and
   starts empty. Turbo Stream appends target it by id (see [Broadcast
-  bookkeeping](#broadcast-bookkeeping)), so a message broadcast while the panel is closed — or while
-  its frame is in flight — still has somewhere to land, and lands below the batch the frame brings,
-  which is where the newest items belong.
+  bookkeeping](#broadcast-bookkeeping)), so a message broadcast while the frame is in flight still has
+  somewhere to land, and lands below the batch the frame brings, which is where the newest items
+  belong.
 - **The log-level select**, which lives in the sticky header and has to be there to be usable.
 - **The disclosure itself**, so the reader can see there is a transcript to open.
 
 **Both containers are live at once, so one of them has to give a row up.** A message broadcast while
-the panel is closed lands in the append target; opening the panel then renders the server's current
-tail, which contains that same message, into the frame just above it. Nothing dedupes across the two
+the frame is in flight lands in the append target; the frame then renders the server's current
+tail, which can contain that same message, just above it. Nothing dedupes across the two
 by itself — Turbo's `append` only compares direct children of its target, and a frame swap does no id
 reconciliation at all — so `transcript-panel#dropStreamedDuplicates` runs on every `turbo:frame-load`
 and removes any row from the append target whose id the frame has just brought its own copy of. It is
@@ -771,7 +791,8 @@ all.
 
 The reconnect backfill needs the same treatment from the other side: a fetched copy of the page has an
 unloaded frame and so cannot carry the rows. The recovery fetches the panel's own URL for any deferred
-frame the reader had opened, grafts its batch onto the append target's id before reconciling — which
+frame that has loaded — for the transcript, the wider `data-backfill-src` (a 100-item tail), because a
+reader away for a while can have missed more than ten rows — grafts its batch onto the append target's id before reconciling — which
 keeps a recovered row in the same container, and therefore the same order, as one that arrived over
 the socket — and sweeps the panel's empty-state placeholder if the server has stopped rendering it,
 which the region reconcile cannot see because it sits beside the append target rather than inside it.

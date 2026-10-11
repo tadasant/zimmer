@@ -1,6 +1,7 @@
 <%# Renders a batch of timeline items for infinite scroll %>
 <%# This partial is used by the timeline_items action to return older items %>
-<%# Expected locals: items, session, has_more, next_before_index, next_before_timestamp %>
+<%# Expected locals: items, session, has_more, next_before_index, next_before_timestamp,
+    next_before_line, total_count (nil unless the request asked total_only) %>
 
 <% items.each do |item| %>
   <%= render "timeline_items/item", item: item, session: session %>
@@ -12,6 +13,12 @@
      data-next-before-index="<%= next_before_index %>"
      <% if next_before_timestamp.present? %>
        data-next-before-timestamp="<%= next_before_timestamp %>"
+     <% end %>
+     <% unless next_before_line.nil? %>
+       data-next-before-line="<%= next_before_line %>"
+     <% end %>
+     <% unless total_count.nil? %>
+       data-total-count="<%= total_count %>"
      <% end %>
      style="display: none;">
 </div>

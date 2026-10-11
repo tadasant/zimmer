@@ -270,11 +270,8 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   # arrives asynchronously — the dashboard drawer loads the detail into a lazy
   # turbo-frame, so it is not in the DOM the instant the drawer opens.
   #
-  # Opening is only half of it. The rows are themselves a
-  # <turbo-frame loading="lazy">, which transcript-panel#loadFrame switches to
-  # `eager` on the toggle this dispatches — layout alone does not fetch a lazy
-  # frame, only appearing in the viewport does, and a panel opened by script sits
-  # wherever the page happens to be scrolled. So this returns when that fetch has
+  # Opening is only half of it. The rows are an eager <turbo-frame> fetched in
+  # the background after first paint, so this returns when that fetch has
   # landed, which Turbo marks with a `complete` attribute on the frame. Without
   # the wait every caller would race the request and see an empty panel.
   def open_transcript_panel(wait: 0, load_timeout: 10)
@@ -290,6 +287,19 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
     JS
 
     assert_selector "turbo-frame[id$='_transcript'][complete]", wait: load_timeout
+  end
+
+  # Open the Session hierarchy and Human messages disclosures. Both render
+  # collapsed, inside a frame fetched right after first paint, so this waits for
+  # the frame and then opens whichever of the two are present.
+  def open_provenance_panels(wait: 10)
+    assert_selector "turbo-frame[id$='_provenance_panel'][complete]", visible: :all, wait: wait
+
+    page.execute_script(<<~JS)
+      document.querySelectorAll("details[data-disclosure='hierarchy'], details[data-disclosure='human-messages']").forEach((d) => {
+        d.open = true
+      })
+    JS
   end
 
   # Capybara's matchers retry until the page agrees; a plain `assert` on a record

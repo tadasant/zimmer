@@ -59,7 +59,7 @@ class SessionsTranscriptTest < ApplicationSystemTestCase
     assert_no_text "Activity Logs"
   end
 
-  # The panel's rows are a `<turbo-frame loading="lazy">`, and lazy is an
+  # The panel's rows used to be a `<turbo-frame loading="lazy">`, and lazy is an
   # INTERSECTION trigger rather than a layout one: Turbo fetches when the frame
   # appears in the viewport. A short window puts the disclosure below the fold,
   # so opening it used to leave the frame on its skeleton indefinitely — which is
@@ -67,13 +67,10 @@ class SessionsTranscriptTest < ApplicationSystemTestCase
   # [CI run 34060027053](https://github.com/tadasant/zimmer/actions/runs/34060027053)
   # at Chrome's 800x600 default while passing at 1400x900.
   #
-  # `transcript-panel#loadFrame` makes opening the disclosure the trigger, so the
-  # rows have to arrive at a window where the panel starts off screen. The window
-  # is the one from that run, and `page.visit` is deliberate: the suite's own
-  # `visit` opens the panel for every caller, and this test has to look at the
-  # page before that happens. It skips the post-`visit` Turbo Stream readiness
-  # wait with it, which costs nothing here — the rows come from the frame's own
-  # fetch, not from a broadcast.
+  # The frame is eager now, fetched after first paint wherever it sits, and this
+  # pins that: the rows have to arrive at a window where the panel starts off
+  # screen. `page.visit` is deliberate: the suite's own `visit` opens the panel
+  # for every caller, and this test has to look at the page before that happens.
   test "opening the transcript below the fold still loads its rows" do
     page.driver.browser.manage.window.resize_to(800, 600)
 
@@ -90,10 +87,9 @@ class SessionsTranscriptTest < ApplicationSystemTestCase
   # The other opening nobody scrolls to, and the one a reader actually meets: the
   # log-level filter re-fetches with `transcript=open` so the panel comes back
   # open at the level just picked (log_level_filter_controller.js#refetchAtLevel).
-  # That page renders the disclosure already open, so no toggle fires and
-  # #loadFrame has to be reached through `frameTargetConnected` instead. On a
-  # phone the panel is a long way down the page, so intersection cannot be what
-  # rescues it.
+  # That page renders the disclosure already open, so no toggle fires; the rows
+  # have to arrive anyway. On a phone the panel is a long way down the page, so
+  # intersection cannot be what rescues it — the frame being eager is.
   test "a transcript rendered already open loads its rows below the fold" do
     page.driver.browser.manage.window.resize_to(800, 600)
 

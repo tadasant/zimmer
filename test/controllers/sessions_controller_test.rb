@@ -840,11 +840,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  # `transcript=open` and the deferred frame have to compose, and the composition
-  # is what makes the round trip work at all: rendering the disclosure open is
-  # what gives the frame layout, which is what makes Turbo fetch it. So the page
-  # still ships no rows — it ships a frame that will go and get them, at the level
-  # the reader just picked.
+  # `transcript=open` and the deferred frame have to compose: the page still ships
+  # no rows — it ships a frame that will go and get them, at the level the reader
+  # just picked, with the disclosure already open.
   test "an open disclosure still defers its rows, and the frame carries the new filter" do
     session = sessions(:with_transcript)
 
@@ -852,7 +850,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     assert_select "details[data-controller~='transcript-panel'][open]"
-    assert_select "turbo-frame#session_#{session.id}_transcript[loading='lazy']" \
+    assert_select "turbo-frame#session_#{session.id}_transcript" \
                   "[src='#{transcript_panel_session_path(session, filter: 'condensed')}']"
     assert_select "[data-timeline-item]", false,
       "an open disclosure must still defer its rows — the frame fetches them"
@@ -7382,15 +7380,17 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   # The point of the split, asserted directly: the page carries the identity of
   # the session and two frame stubs, and none of the work behind those stubs.
+  # The stubs are eager — fetched right after first paint, not on the click that
+  # opens a disclosure — so a reader who opens one finds it already loaded.
   test "the detail page defers the transcript and provenance panels" do
     session = sessions(:with_transcript)
 
     get session_url(session)
     assert_response :success
 
-    assert_select "turbo-frame#session_#{session.id}_transcript[loading='lazy']" \
+    assert_select "turbo-frame#session_#{session.id}_transcript:not([loading='lazy'])" \
                   "[src='#{transcript_panel_session_path(session, filter: 'minimal')}']"
-    assert_select "turbo-frame#session_#{session.id}_provenance_panel[loading='lazy']" \
+    assert_select "turbo-frame#session_#{session.id}_provenance_panel:not([loading='lazy'])" \
                   "[src='#{provenance_panel_session_path(session)}']"
 
     # None of the deferred content is on the page.
@@ -7408,8 +7408,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get drawer_session_url(session)
     assert_response :success
 
-    assert_select "turbo-frame#session_#{session.id}_transcript[loading='lazy']"
-    assert_select "turbo-frame#session_#{session.id}_provenance_panel[loading='lazy']"
+    assert_select "turbo-frame#session_#{session.id}_transcript[src]:not([loading='lazy'])"
+    assert_select "turbo-frame#session_#{session.id}_provenance_panel[src]:not([loading='lazy'])"
     assert_select "[data-timeline-item]", false
   end
 

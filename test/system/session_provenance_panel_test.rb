@@ -47,6 +47,7 @@ class SessionProvenancePanelTest < ApplicationSystemTestCase
     add_message(helper, content: "And check the Safari case too", at: Time.utc(2026, 8, 2, 5, 0, 0))
 
     visit session_path(worker)
+    open_provenance_panels
 
     # One message said here, two said elsewhere — one from the ancestor above,
     # one from the descendant below.
@@ -88,6 +89,7 @@ class SessionProvenancePanelTest < ApplicationSystemTestCase
 
     visit session_path(worker)
     assert_text "Session hierarchy"
+    open_provenance_panels
 
     panel = find("#session_#{worker.id}_provenance")
     chip = panel.find("[data-uncle-edge='#{stranger.id}-#{worker.id}']")
@@ -107,7 +109,8 @@ class SessionProvenancePanelTest < ApplicationSystemTestCase
     accept_confirm { js_click(detach) }
 
     # The panel repaints from the controller's Turbo Stream, so the chip goes
-    # without a page load.
+    # without a page load — and the disclosures the reader opened stay open
+    # through the repaint (disclosure-memory), which the capture below needs.
     assert_no_selector "[data-uncle-edge='#{stranger.id}-#{worker.id}']"
     assert_no_text "also senior:"
     assert_text "Removed ##{stranger.id} as an additional senior of ##{worker.id}"
