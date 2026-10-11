@@ -27,9 +27,12 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
 - **Lists sessions** in one of the web UI's four board views, from the view menu: *Your board*
   (priority above spot, then precedence, then oldest first — `Sessions::UserView`), *Last
   Touched* (the default, as it is on the web UI on a phone), *Created*, and *Ranked* (the same
-  order as *Priority* and *Spot queue* sections). The app reads the newest 500 sessions that
-  match the filters (five pages of 100) and orders them on the phone by the server's rules; when
-  more match, the list says so.
+  order as *Priority* and *Spot queue* sections). The server orders each view
+  (`GET /api/v1/sessions?view=`), so the app shows the same sessions the web board does: the first
+  500 by Last Touched or Created, or the top 500 of Your board and Ranked; when more match, the list
+  says so. In Ranked, *Reorder Spot Queue* (view menu) puts drag handles on the spot queue, and a
+  drop tells the server the rows it landed between, as the web UI's drag-and-drop does. *Start Now*
+  (press and hold a waiting session, or its session menu) takes its next turn now.
 - **Filters** by status and by board visibility. *Needs input* is the default status filter; the
   others are *Active* (everything not archived), *Running*, *Failed* and *Archived*. Board
   visibility is *On board* by default, like the web UI's board, with *Snoozed & hidden* and
@@ -73,8 +76,7 @@ of them widened what the phone can do on the server.
 
 ### Not in the app yet
 
-The Ranked view's drag-to-reorder and *Start now*, *Reprioritize*, *Authorize merge*, and Fork
-from a message have no `/api/v1` route yet. The web UI's queued-message list (reorder, edit,
+*Reprioritize*, *Authorize merge*, and Fork from a message have no `/api/v1` route yet. The web UI's queued-message list (reorder, edit,
 delete), logs and subagent transcripts, image and file attachments, the
 new-session form and MCP server / skill / hook / plugin / model changes, the notifications inbox,
 triggers, costs and health are not in the app yet. They need `/api/v1` controllers the app's token

@@ -7865,13 +7865,15 @@ against a real Google login, and cloud signing at export are inferred, not obser
 project is hand-written (folder-synchronised groups, no per-file entries) and has only ever been
 read by `xcodebuild` on CI.
 
-## The iOS app orders the newest 500 sessions, and its Refresh All is the REST one
+## The iOS app shows 500 sessions at most, and its Refresh All is the REST one
 
-The app's board views order, on the phone, the newest 500 sessions the filters match
-(`GET /api/v1/sessions` returns them newest first). The web UI orders on the server: Last Touched
-and Created page through every match, and Your board and Ranked take the top of the whole queue. So
-once more than 500 sessions match, an old session touched recently, or one high in the spot queue,
-can be missing from the app's view; the list says when it is cut. Its Refresh All is
+The app's board views are ordered by the server, but the app reads at most 500 rows of them: the
+first five pages of Last Touched and Created, or the one page of Your board and Ranked (which the
+web board caps at 500 too). The web UI pages Last Touched and Created further; the app's list says
+when it is cut. A drag in Ranked names only the rows on screen as its neighbours, so under a status
+filter "the top" means above the highest *visible* spot session, which can still sit below a
+higher-ranked one the filter hides; the web UI's Ranked view drags within the same filters. Its
+Refresh All is
 `POST /api/v1/sessions/refresh_all`, which differs from the web UI's button in two ways: it does not
 nudge stalled `waiting` sessions, and it re-reads at most 50 transcripts.
 
