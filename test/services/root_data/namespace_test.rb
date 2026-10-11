@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+# stub_root_data_catalog stubs AgentRootsConfig.all.
+require "mocha/minitest"
 
 class RootData::NamespaceTest < ActiveSupport::TestCase
   include RootDataHelpers
@@ -57,6 +59,16 @@ class RootData::NamespaceTest < ActiveSupport::TestCase
     session.update_columns(metadata: {}, git_root: "https://github.com/tadasant/zimmer.git", subdirectory: nil)
 
     assert_raises(RootData::Namespace::Unresolvable) { RootData::Namespace.for_session_id(session.id) }
+  end
+
+  test "the default is the short id, so a root that gains a scope qualifier keeps its namespace" do
+    root = AgentRootsConfig::AgentRoot.new(
+      "@acme/catalog/notes-root",
+      { "name" => "notes-root", "url" => "https://github.com/tadasant/zimmer.git" }
+    )
+    stub_root_data_catalog(root)
+
+    assert_equal "notes-root", RootData::Namespace.for_session_id(root_data_session("@acme/catalog/notes-root").id).namespace
   end
 
   test "refuses an invalid declared data_namespace" do

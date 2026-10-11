@@ -97,11 +97,13 @@ module RootData
       order_by = ORDERS[order.presence || "newest"] ||
         raise(Refused, "Unknown order #{order.inspect}. Use one of: #{ORDERS.keys.join(', ')}.")
       limit = limit.to_i.clamp(1, Limits::MAX_SEARCH_LIMIT)
-      offset = [ offset.to_i, 0 ].max
+      # A collection never holds more than the row cap, so no larger offset can return anything.
+      offset = offset.to_i.clamp(0, Limits::MAX_RECORDS_PER_COLLECTION)
 
       relation = scope(collection)
       unless filter.nil?
         raise Refused, "filter must be a JSON object, matched by containment against each record's data." unless filter.is_a?(Hash)
+        raise Refused, "filter contains a NUL character (U+0000), which Postgres cannot store." if nul_in_json?(filter)
 
         relation = relation.containing(filter) if filter.any?
       end
@@ -141,12 +143,24 @@ module RootData
     private
 
     def scope(collection)
-      AgentRootRecord.in_collection(namespace, collection.to_s)
+      AgentRootRecord.in_collection(namespace, without_nul!(collection.to_s, "collection"))
+    end
+
+    # Postgres refuses U+0000 in text and in jsonb, and the error it raises is
+    # not one a caller can read. Refuse it here instead, by name.
+    def without_nul!(value, what)
+      raise Refused, "#{what} contains a NUL character (U+0000), which Postgres cannot store." if value.include?("\u0000")
+
+      value
+    end
+
+    def nul_in_json?(value)
+      value.to_json.include?("\\u0000")
     end
 
     def locate(collection, key:, id:)
       if key.present?
-        scope(collection).find_by(key: key.to_s)
+        scope(collection).find_by(key: normalize_key!(key))
       elsif id.present?
         scope(collection).find_by(id: id)
       else
@@ -155,7 +169,8 @@ module RootData
     end
 
     def normalize_key!(key)
-      key = key.to_s.strip
+      # Checked before the strip, which would quietly drop a trailing NUL.
+      key = without_nul!(key.to_s, "key").strip
       raise Refused, "key must be a non-empty string." if key.empty?
       if key.length > Limits::MAX_KEY_LENGTH
         raise Refused, "key is #{key.length} characters; the limit is #{Limits::MAX_KEY_LENGTH}."
@@ -178,6 +193,7 @@ module RootData
       end
 
       raise Refused, "data must be a JSON object." unless data.is_a?(Hash)
+      raise Refused, "data contains a NUL character (U+0000), which Postgres cannot store." if nul_in_json?(data)
 
       bytes = data.to_json.bytesize
       if bytes > Limits::MAX_DATA_BYTES
@@ -219,9 +235,21 @@ module RootData
       counter = AgentRootRecordCounter.lock.find_by(namespace: namespace, collection: collection)
       return counter if counter
 
-      existing = AgentRootRecordCounter.for_namespace(namespace).count
+      # A namespace-wide transaction lock, so two writers each creating a
+      # different new collection cannot both pass the cap. Taken only on this
+      # path — the first write to a collection — and before any counter lock,
+      # which keeps the lock order (namespace, then counter, then records) one
+      # order everywhere.
+      AgentRootRecordCounter.connection.execute(
+        AgentRootRecordCounter.sanitize_sql([ "SELECT pg_advisory_xact_lock(hashtext(?))", "root_data:#{namespace}" ])
+      )
+
+      # Collections that hold records. An emptied collection gives its slot
+      # back, so the cap can never wedge a namespace permanently.
+      existing = AgentRootRecordCounter.for_namespace(namespace).where(records_count: 1..).count
       if existing >= Limits::MAX_COLLECTIONS_PER_NAMESPACE
-        raise Refused, "Namespace \"#{namespace}\" already has #{existing} collections, the limit."
+        raise Refused, "Namespace \"#{namespace}\" already has #{existing} collections holding records, the limit. " \
+                       "Empty one to free its slot."
       end
 
       AgentRootRecordCounter.create_or_find_by!(namespace: namespace, collection: collection).tap(&:lock!)

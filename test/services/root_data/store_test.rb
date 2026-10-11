@@ -35,6 +35,39 @@ class RootData::StoreTest < ActiveSupport::TestCase
     assert_equal replaced.data_bytes, counter.data_bytes
   end
 
+  test "a replacing put restarts the record's retention clock" do
+    record, = @store.put(collection: "notes", key: "k", data: { "title" => "a" })
+    later = @now + 10.days
+    store(now: later).put(collection: "notes", key: "k", data: { "title" => "b" })
+
+    assert_equal later + 30.days, record.reload.expires_at
+  end
+
+  test "keys are normalized the same way on write, read and delete" do
+    @store.put(collection: "notes", key: " pr-1 ", data: { "title" => "a" })
+
+    assert_equal "pr-1", @store.get(collection: "notes", key: "pr-1").key
+    assert @store.get(collection: "notes", key: "  pr-1")
+    assert @store.delete(collection: "notes", key: "pr-1 ")
+  end
+
+  test "refuses NUL characters by name instead of letting Postgres raise" do
+    [
+      -> { @store.append(collection: "runs", data: { "a" => "x\u0000y" }) },
+      -> { @store.put(collection: "notes", key: "k\u0000", data: { "title" => "t" }) },
+      -> { @store.search(collection: "notes", filter: { "a" => "\u0000" }) },
+      -> { @store.get(collection: "no\u0000tes", key: "k") }
+    ].each do |call|
+      error = assert_raises(RootData::Store::Refused) { call.call }
+      assert_match(/NUL character/, error.message)
+    end
+  end
+
+  test "an absurd offset is clamped rather than overflowing" do
+    @store.append(collection: "runs", data: { "n" => 1 })
+    assert_empty @store.search(collection: "runs", offset: 10**30)[:records]
+  end
+
   test "append adds keyless rows; a collection with no retention never expires" do
     a = @store.append(collection: "runs", data: { "n" => 1 })
     b = @store.append(collection: "runs", data: { "n" => 2 })
@@ -109,13 +142,16 @@ class RootData::StoreTest < ActiveSupport::TestCase
     RootData::Limits.const_set(:MAX_WRITES_PER_MINUTE, 60)
   end
 
-  test "caps the number of collections per namespace" do
+  test "caps the collections holding records per namespace; an emptied one frees its slot" do
     RootData::Limits::MAX_COLLECTIONS_PER_NAMESPACE.times do |i|
-      AgentRootRecordCounter.create!(namespace: "zimmer", collection: "c#{i}")
+      AgentRootRecordCounter.create!(namespace: "zimmer", collection: "c#{i}", records_count: 1)
     end
 
     error = assert_raises(RootData::Store::Refused) { @store.append(collection: "runs", data: { "n" => 1 }) }
-    assert_match(/collections, the limit/, error.message)
+    assert_match(/collections holding records, the limit/, error.message)
+
+    AgentRootRecordCounter.find_by(collection: "c0").update!(records_count: 0)
+    assert @store.append(collection: "runs", data: { "n" => 1 })
   end
 
   test "delete by key or id decrements the counter; a miss is nil" do
