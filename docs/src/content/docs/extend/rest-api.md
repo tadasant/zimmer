@@ -28,17 +28,33 @@ next request on. Every request that presents no key, an unknown key or a revoked
 [Zimmer's iOS app](/extend/ios-app/) holds no API key. It signs in through
 [the OAuth authorization server](/auth/mcp-authorization-server/#the-built-in-ios-app-client) as the
 built-in `zimmer-ios` client and sends `Authorization: Bearer <access token>`. The REST API takes
-that token only on controllers that declare `accepts_native_app_tokens`, and only when the token's
-grant belongs to the built-in client. Today that is `/api/v1/sessions` and everything under it, and
-`POST /api/v1/quick_router`. A token
-issued to any other OAuth client, or presented anywhere else, gets the same 401 as a bad key. The
+that token only on the actions a controller names with `accepts_native_app_tokens` (every action
+when it names none), and only when the token's grant belongs to the built-in client:
+
+| Routes | The app's token may |
+| --- | --- |
+| `/api/v1/sessions` and its member routes (not the nested resources below) | everything an API key may |
+| `POST /api/v1/quick_router`, `/api/v1/apns_devices` | everything |
+| `/api/v1/sessions/:id/enqueued_messages` | list, show, edit, delete, reorder, interrupt — not create: the app queues through `follow_up` |
+| `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
+| `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
+| `/api/v1/notifications` | list, show, badge, mark read, dismiss — not `push` |
+| `/api/v1/triggers` | list, show, toggle, invoke — not create, edit or delete |
+| `GET /api/v1/costs`, `GET /api/v1/costs/records` | read — not `backfill` |
+| `GET /api/v1/health` | read — none of its operator actions |
+| `GET /api/v1/configs`, `/mcp_servers`, `/skills`, `/model_catalog_entries` | read the catalogs |
+
+A token issued to any other OAuth client, the app's token on an action its controller does not name,
+or on any other controller, gets the same 401 as a bad key. The
 same expiry, revocation and audience checks as `/mcp` apply, and revoking the connection on
 **Settings → API keys** refuses the phone on its next request. `X-API-Key` is unchanged beside it.
 
 A follow-up the app sends is recorded the way any OAuth client's is
 ([the assistant channel](/sessions/hierarchy-and-human-messages/#the-assistant-channel)): as the
 approver's message, on channel `assistant` with entry point `ios_app.follow_up`, and only when the
-app's connection acts on their behalf. A relay-only connection, an approver with no roster row, or a
+app's connection acts on their behalf. Editing a queued message from the app is recorded the same
+way, as `ios_app.enqueued_message_edited`, the counterpart of the web UI's
+`web_ui.enqueued_message_edited`. A relay-only connection, an approver with no roster row, or a
 follow-up over an API key records nothing.
 
 On a deployment that serves the app from its own hostname behind an access proxy, the app also sends
