@@ -75,6 +75,12 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   follow-up to a session mid-turn is queued, and the app says so; touch and hold the button to
   *Send Now* instead, which ends the turn in flight (`force_immediate`, the web UI's Send Now).
   It is recorded as your message if the app's connection acts on your behalf (below).
+- **Attaches photos and files** to a message with the paperclip beside the box: *Photo Library* or
+  *Choose Files*, up to 20, shown as chips you can remove before sending. Photos go as JPEG, scaled
+  down if needed to fit the 10 MB image limit; the library's own HEIC is not a type the server keeps
+  as an image. A PNG, JPEG, GIF or WebP from Files goes as an image, anything else as a file the agent
+  is told to read, as the web composer's two pickers send them. They go with the message however it
+  is delivered: now, queued behind a turn, or with *Send Now*.
 - **Trashes** a session, after a confirmation, and restores one from the trash.
 - **Starts a session from a sentence** through the Quick Router (tap the pencil), then opens it,
   **or from the full form** (touch and hold the pencil → *New Session…*): the web UI's new-session
@@ -98,8 +104,8 @@ of them widened what the phone can do on the server.
 
 ### Not in the app yet
 
-*Reprioritize* and *Authorize merge* are not in the app yet, nor are image and file attachments.
-Fork from a message and answering an elicitation each need a server change first — the conversation endpoint does not say where a
+*Reprioritize* and *Authorize merge* are not in the app yet. Fork from a message and answering an
+elicitation each need a server change first — the conversation endpoint does not say where a
 message sits in the transcript the fork service counts, and no route lists a session's pending
 elicitations — and come in their own change. The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.

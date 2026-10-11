@@ -19,6 +19,8 @@ final class SessionDetailModel: ObservableObject {
     @Published var draft = ""
     /// The messages waiting for the turn in flight to end (`QueueCard`).
     @Published var queue: [QueuedMessage] = []
+    /// Photos and files going with the next message.
+    @Published var attachments: [MessageAttachment] = []
 
     init(id: Int, api: ZimmerAPI) {
         self.id = id
@@ -60,18 +62,39 @@ final class SessionDetailModel: ObservableObject {
         defer { isSending = false }
         do {
             let result: FollowUpResult
-            if now {
+            if !attachments.isEmpty {
+                result = try await api.followUp(id, prompt: prompt, attachments: attachments, now: now)
+            } else if now {
                 result = try await api.sendNow(id, prompt: prompt)
             } else {
                 result = try await api.followUp(id, prompt: prompt)
             }
             draft = ""
+            attachments = []
             notice = result.queued ? "Queued — it goes in when the current turn ends." : (now ? "Sent now." : "Sent.")
             error = nil
             Haptics.success()
             await load()
         } catch {
             fail(error)
+        }
+    }
+
+    /// Add what the pickers returned, refusing anything the server would refuse — the whole
+    /// message would fail on it — and past the per-message limit.
+    func attach(_ new: [MessageAttachment]) {
+        for attachment in new {
+            if let problem = attachment.problem {
+                notice = problem
+                Haptics.failure()
+                continue
+            }
+            guard attachments.count < MessageAttachment.limit else {
+                notice = "A message carries at most \(MessageAttachment.limit) attachments."
+                Haptics.failure()
+                return
+            }
+            attachments.append(attachment)
         }
     }
 
@@ -265,6 +288,10 @@ struct SessionDetailView: View {
         .task {
             model.report = { [weak app] error in app?.noteError(error) }
             await model.load()
+            if app.fixtureAttachesFile {
+                app.fixtureAttachesFile = false
+                model.attach([MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8))])
+            }
         }
         .onDisappear {
             // What changed here (a star, a snooze, a restore) shows on the list behind.
@@ -580,7 +607,11 @@ struct SessionDetailView: View {
                     }
                 }
             }
+            if !model.attachments.isEmpty {
+                AttachmentChips(attachments: $model.attachments)
+            }
             HStack(alignment: .bottom, spacing: 8) {
+                AttachMenu { model.attach($0) }
                 TextField(running ? "Queue Message" : "Send Message", text: $model.draft, axis: .vertical)
                     .lineLimit(1...5)
                     .padding(10)
