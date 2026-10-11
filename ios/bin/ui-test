@@ -242,6 +242,8 @@ if [ -d "$app" ]; then
   shoot session-detail-long -ZimmerFixture -ZimmerFixtureOpenSession 1044
   shoot session-detail-failed -ZimmerFixture -ZimmerFixtureOpenSession 1027
   shoot composer-attachment -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
+  shoot session-prompt -ZimmerFixture -ZimmerFixtureOpenSession 1035
+  shoot prompt-form -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureOpenPrompt
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
   shoot quick-router-advanced -ZimmerFixture -ZimmerFixtureQuickRouter -ZimmerFixtureQuickRouterAdvanced
   shoot new-session -ZimmerFixture -ZimmerFixtureNewSession

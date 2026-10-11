@@ -107,6 +107,15 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   send them. Anything that would be refused, or could not be read, is named rather than dropped
   quietly. They go with the message however it is delivered: now, queued behind a turn, or with
   *Send Now*.
+- **Answers an MCP server's prompt** (an elicitation). A session stopped on one shows an
+  *Approval Needed* card at the top, as the web UI shows its banner. Tapping it opens the prompt's
+  form, one control per field in the banner's order: a switch, a menu of choices, a number or a
+  text field. *Accept* sends the fields. A required field left empty is refused in the app, by name,
+  before anything is sent. *Decline* refuses, and *Dismiss Without Answering* tells the server
+  nobody decided. Only a connection that acts on your behalf may answer. A relay-only one shows
+  the server's refusal in the form.
+- **Forks at a message.** Touch and hold a message for *Fork from Here* (and *Copy*). After a
+  confirmation, the fork, a new session holding the conversation up to that message, opens on top.
 - **Trashes** a session, after a confirmation, and restores one from the trash.
 - **Starts a session from a sentence** through the Quick Router, then opens it. The Quick Router is
   where the web UI puts it: a field pinned to the foot of the Sessions screen ("What do you want
@@ -143,8 +152,7 @@ of them widened what the phone can do on the server.
 
 ### Not in the app yet
 
-*Reprioritize* and *Authorize merge* are not in the app yet. Fork from a message and answering an
-elicitation stay in the browser until the app draws them; the API they need is in place. The admin pages (API keys, inference accounts, connectors,
+*Reprioritize* and *Authorize merge* are not in the app yet. The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.
 
 ## Two origins
