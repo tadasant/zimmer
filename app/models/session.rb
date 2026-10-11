@@ -693,15 +693,40 @@ class Session < ApplicationRecord
   # than a column that landed empty by accident. See #record_explicit_mcp_servers.
   EXPLICIT_EMPTY_MCP_SERVERS_KEY = "mcp_servers_explicitly_empty"
 
+  # SQL ordering for the "last touched" view: the dashboard's flat view and
+  # `view=last_touched` on GET /api/v1/sessions, so the two cannot disagree.
+  # last_user_activity_at is not a column — it lives in the metadata JSON (written
+  # as an ISO8601 string by touch_user_activity!/touch_user_view!) and falls back
+  # to created_at when never recorded. This reproduces
+  # Session#last_user_activity_at's fallback in SQL so the ordering matches the
+  # model accessor: the value is cast to timestamptz only when it looks like an
+  # ISO8601 datetime, otherwise (absent, blank, or malformed) COALESCE degrades to
+  # created_at. The regex guard matters because an unconditional ::timestamptz
+  # cast on a non-empty garbage string would raise and 500 the whole dashboard,
+  # where the model accessor silently degrades. The guard deliberately requires a
+  # full datetime (date + HH:MM), so a bare date-only string would fall back to
+  # created_at here even though the model's Time.parse would accept it —
+  # acceptable because the app always writes this field as a full .iso8601
+  # timestamp. No user input is interpolated, so Arel.sql is safe.
+  LAST_TOUCHED_ORDER = Arel.sql(
+    "COALESCE(" \
+      "CASE WHEN sessions.metadata->>'last_user_activity_at' ~ " \
+      "'^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}' " \
+      "THEN (sessions.metadata->>'last_user_activity_at')::timestamptz END, " \
+      "sessions.created_at) DESC"
+  )
+
   # Character limits for prompts and goals
   # These limits are set to allow for large prompts while staying well within
   # Claude's ~200k token context window (~800k-1M characters). The prompt limit
   # of 500k characters leaves ample room for conversation history and system context.
   PROMPT_MAX_LENGTH = 500_000
   GOAL_MAX_LENGTH = 50_000
+
   # Cap on `session_notes`. Sessions::UpdateNotes refuses past it on every
   # surface; the validation below is the backstop.
   NOTES_MAX_LENGTH = 50_000
+
   # Cap on `title`. Sessions::UpdateTitle refuses past it on every surface; the
   # validation below is the backstop.
   TITLE_MAX_LENGTH = 100
