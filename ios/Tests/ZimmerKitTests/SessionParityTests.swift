@@ -83,8 +83,8 @@ final class SessionParityTests: XCTestCase {
         let queries = transport.sent.map { request in
             Dictionary(uniqueKeysWithValues: (URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
         }
-        XCTAssertEqual(queries[0], ["status": "needs_input", "per_page": "100", "visibility": "on_board"])
-        XCTAssertEqual(queries[1], ["per_page": "100"], "Both sends no visibility, which the server reads as unfiltered")
+        XCTAssertEqual(queries[0], ["status": "needs_input", "per_page": "100", "visibility": "on_board", "page": "1"])
+        XCTAssertEqual(queries[1], ["per_page": "100", "page": "1"], "Both sends no visibility, which the server reads as unfiltered")
         XCTAssertEqual(transport.sent[2].url.path, "/api/v1/sessions/search")
         XCTAssertEqual(queries[2], ["q": "deploy key", "search_contents": "true", "status": "failed", "per_page": "100", "visibility": "off_board"])
         XCTAssertFalse(partial.complete, "a scan that stopped early is not a \"no match\"")

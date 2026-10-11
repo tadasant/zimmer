@@ -26,10 +26,13 @@ public struct StatusSummary: Hashable, Sendable, Codable {
 public struct SessionDetail: Hashable, Sendable {
     public var session: SessionSummary
     public var statusSummary: StatusSummary?
+    /// The lineage graph the session belongs to, origin first.
+    public var hierarchy: SessionHierarchy?
 
-    public init(session: SessionSummary, statusSummary: StatusSummary? = nil) {
+    public init(session: SessionSummary, statusSummary: StatusSummary? = nil, hierarchy: SessionHierarchy? = nil) {
         self.session = session
         self.statusSummary = statusSummary
+        self.hierarchy = hierarchy
     }
 
     /// Follow-ups are accepted for these; Zimmer queues one sent mid-turn.
@@ -45,11 +48,83 @@ public struct SessionDetail: Hashable, Sendable {
 struct SessionShowResponse: Decodable {
     let session: SessionSummary
     let statusSummary: StatusSummary?
+    let hierarchy: SessionHierarchy?
 
     enum CodingKeys: String, CodingKey {
         case session
         case statusSummary = "status_summary"
+        case hierarchy = "session_hierarchy"
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        session = try container.decode(SessionSummary.self, forKey: .session)
+        statusSummary = try container.decodeIfPresent(StatusSummary.self, forKey: .statusSummary)
+        // Drawn when it reads, never a reason for the page to fail.
+        hierarchy = try? container.decodeIfPresent(SessionHierarchy.self, forKey: .hierarchy)
+    }
+}
+
+/// `session_hierarchy` on `GET /api/v1/sessions/:id`: the sessions that spawned this one
+/// and the ones it spawned, as the web UI's hierarchy panel draws them — origin first, each
+/// node at its depth, in the order to draw them.
+public struct SessionHierarchy: Hashable, Sendable, Decodable {
+    public struct Node: Hashable, Sendable, Decodable, Identifiable {
+        public var id: Int
+        public var title: String?
+        public var agentRoot: String?
+        public var status: SessionStatus
+        public var depth: Int
+        public var current: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case id, title, status, depth, current
+            case agentRoot = "agent_root"
+        }
+
+        public init(id: Int, title: String?, agentRoot: String? = nil, status: SessionStatus, depth: Int, current: Bool = false) {
+            self.id = id
+            self.title = title
+            self.agentRoot = agentRoot
+            self.status = status
+            self.depth = depth
+            self.current = current
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(Int.self, forKey: .id)
+            title = try? container.decodeIfPresent(String.self, forKey: .title)
+            agentRoot = try? container.decodeIfPresent(String.self, forKey: .agentRoot)
+            status = (try? container.decode(SessionStatus.self, forKey: .status)) ?? .unknown("unknown")
+            depth = (try? container.decodeIfPresent(Int.self, forKey: .depth)) ?? 0
+            current = (try? container.decodeIfPresent(Bool.self, forKey: .current)) ?? false
+        }
+
+        public var displayTitle: String {
+            if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return title }
+            return "Session \(id)"
+        }
+    }
+
+    public var nodes: [Node]
+    public var truncated: Bool
+
+    public init(nodes: [Node], truncated: Bool = false) {
+        self.nodes = nodes
+        self.truncated = truncated
+    }
+
+    enum CodingKeys: String, CodingKey { case nodes, truncated }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        nodes = try container.decodeIfPresent([Node].self, forKey: .nodes) ?? []
+        truncated = (try? container.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
+    }
+
+    /// Worth a panel only when the session is not alone in it.
+    public var isWorthShowing: Bool { nodes.count > 1 }
 }
 
 /// One message of a session's conversation (`GET /api/v1/sessions/:id/conversation`).

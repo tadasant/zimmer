@@ -37,6 +37,14 @@ public protocol SessionActionsAPI: Sendable {
     func regenerateStatusSummary(_ id: Int) async throws -> String
     /// Re-read the transcript from disk (the web UI's "Refresh Transcript").
     func refreshTranscript(_ id: Int) async throws -> String
+    /// The whole transcript as plain text — what the web UI's "Copy full transcript" copies.
+    func transcriptText(_ id: Int) async throws -> String
+    /// Trash several at once. Refusals (a turn in flight, queued messages) are reported per
+    /// session and do not stop the rest.
+    func bulkArchive(_ ids: [Int]) async throws -> BulkArchiveResult
+    /// The web UI's "Refresh all": re-read transcripts, and restart failed sessions and the
+    /// ones an interruption left waiting on you (not ones you paused).
+    func refreshAll() async throws -> String
 }
 
 /// A board-visibility change: back on the board, hidden until shown again, or snoozed
@@ -127,9 +135,22 @@ public enum BoardFilter: String, Hashable, Sendable, CaseIterable, Identifiable 
 
 // `ZimmerHTTPClient: ZimmerAPI`, which refines `SessionActionsAPI`.
 extension ZimmerHTTPClient {
+    /// Up to `SessionFilter.maxPages` pages, so the board views order the same rows the web
+    /// UI's board does rather than only the newest hundred.
     public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> [SessionSummary] {
-        let response: SessionListResponse = try await get("/api/v1/sessions", query: filter.query.merging(board.query) { a, _ in a })
-        return SessionOrdering.sorted(response.sessions)
+        var rows: [SessionSummary] = []
+        var page = 1
+        while true {
+            var query = filter.query.merging(board.query) { a, _ in a }
+            query["page"] = String(page)
+            let response: SessionListResponse = try await get("/api/v1/sessions", query: query)
+            rows += response.sessions
+            let pages = response.pagination?.total_pages ?? 1
+            guard page < pages, page < SessionFilter.maxPages else { break }
+            page += 1
+        }
+        var seen = Set<Int>()
+        return SessionOrdering.sorted(rows.filter { seen.insert($0.id).inserted })
     }
 
     public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
@@ -221,6 +242,22 @@ extension ZimmerHTTPClient {
         return response.message ?? "Transcript refreshed"
     }
 
+    public func transcriptText(_ id: Int) async throws -> String {
+        let segment = ZimmerPathComponent(String(id))
+        let response: TranscriptResponse = try await get("/api/v1/sessions/\(segment)/transcript")
+        return response.transcript_text
+    }
+
+    public func bulkArchive(_ ids: [Int]) async throws -> BulkArchiveResult {
+        let response: BulkArchiveResult = try await post("/api/v1/sessions/bulk_archive", json: ["session_ids": ids])
+        return response
+    }
+
+    public func refreshAll() async throws -> String {
+        let response: RefreshAllResponse = try await post("/api/v1/sessions/refresh_all", json: [:])
+        return response.summary
+    }
+
     // MARK: - Plumbing
 
     /// A `POST` with no body, answered with `{ session: … }`. Callers pass the whole path as
@@ -280,6 +317,55 @@ struct SchedulingResponse: Decodable {
     }
     let session: SessionSummary
     let start: Start?
+}
+
+/// What a bulk trash did: how many went, and each refusal with the server's reason.
+public struct BulkArchiveResult: Hashable, Sendable, Decodable {
+    public struct Refusal: Hashable, Sendable, Decodable {
+        public var id: Int
+        public var message: String
+    }
+
+    public var archivedCount: Int
+    public var errors: [Refusal]
+
+    public init(archivedCount: Int, errors: [Refusal] = []) {
+        self.archivedCount = archivedCount
+        self.errors = errors
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case archivedCount = "archived_count"
+        case errors
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        archivedCount = try container.decodeIfPresent(Int.self, forKey: .archivedCount) ?? 0
+        errors = (try? container.decodeIfPresent([Refusal].self, forKey: .errors)) ?? []
+    }
+}
+
+struct TranscriptResponse: Decodable {
+    let transcript_text: String
+}
+
+struct RefreshAllResponse: Decodable {
+    let message: String?
+    let refreshed: Int?
+    let restarted: Int?
+    let continued: Int?
+    let errors: Int?
+
+    /// The counts, which say more than the server's "Refresh complete"; its sentence only when
+    /// nothing was touched ("No non-archived sessions to refresh").
+    var summary: String {
+        let touched = (refreshed ?? 0) + (restarted ?? 0) + (continued ?? 0) + (errors ?? 0)
+        if touched == 0, let message, !message.isEmpty { return message }
+        var parts = ["Refreshed \(refreshed ?? 0)", "restarted \(restarted ?? 0)", "continued \(continued ?? 0)"]
+        if let errors, errors > 0 { parts.append("\(errors) failed") }
+        return parts.joined(separator: ", ")
+    }
 }
 
 /// Any response whose `session` key is the API's one session shape.
