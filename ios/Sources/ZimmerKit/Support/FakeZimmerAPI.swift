@@ -529,7 +529,7 @@ extension FakeZimmerAPI {
         let text = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let id = all.map(\.id).max().map { $0 + 1 } ?? 1
         var session = SessionSummary(
-            id: id, title: request.title ?? (text.count > 60 ? String(text.prefix(57)) + "…" : text),
+            id: id, title: request.title.flatMap { $0.isEmpty ? nil : $0 } ?? (text.count > 60 ? String(text.prefix(57)) + "…" : text),
             status: text.isEmpty ? .needsInput : .waiting, agentRuntime: runtime, prompt: text,
             createdAt: Date(), updatedAt: Date(), goal: request.goal,
             priorityClass: request.schedulingClass ?? "priority", model: model, agentRoot: root.name
@@ -551,12 +551,14 @@ extension FakeZimmerAPI {
         return try change(id) { $0.config = SessionConfig(model: model) }
     }
 
-    public func updateSelection(_ id: Int, _ kind: CatalogKind, to values: [String]) async throws -> SessionSummary {
+    public func updateSelection(_ id: Int, _ kind: CatalogKind, to values: [String]) async throws -> SelectionChange {
         let known = Set((Self.sampleCatalogs[kind] ?? []).map(\.id))
         if let unknown = values.first(where: { !known.contains($0) }) {
             throw ZimmerError.http(status: 422, message: "\(unknown) is not in the \(kind.label.lowercased()) catalog")
         }
-        return try change(id) { $0.setSelection(kind, values) }
+        let session = try change(id) { $0.setSelection(kind, values) }
+        // Slack is the fixture's server that needs authorizing.
+        return SelectionChange(session: session, needsAuthorizing: kind == .mcpServers && values.contains("slack") ? ["slack"] : [])
     }
 
     static let sampleConfigs = AppConfigs(

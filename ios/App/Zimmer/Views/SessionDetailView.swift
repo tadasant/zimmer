@@ -319,7 +319,18 @@ struct SessionDetailView: View {
     private func catalogSheet(_ kind: CatalogKind) -> some View {
         if let session = model.detail?.session {
             CatalogEditorSheet(kind: kind, initial: kind.selection(in: session)) { values in
-                await model.apply("\(kind.label) updated — from the next turn") { try await $0.updateSelection(session.id, kind, to: values) }
+                var needsAuthorizing: [String] = []
+                let saved = await model.apply("\(kind.label) updated — from the next turn") { api in
+                    let change = try await api.updateSelection(session.id, kind, to: values)
+                    needsAuthorizing = change.needsAuthorizing
+                    return change.session
+                }
+                if saved, !needsAuthorizing.isEmpty {
+                    // The server may park the session until these are authorized, which is a
+                    // browser step (the MCP OAuth flow); say so rather than "updated".
+                    model.notice = "Updated. Needs authorizing in the browser: \(needsAuthorizing.joined(separator: ", "))"
+                }
+                return saved
             }
         }
     }
