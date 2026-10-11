@@ -22,6 +22,9 @@ public struct MessageAttachment: Hashable, Sendable, Identifiable {
     public static let limit = 20
     /// The largest image the server stores (`ImageStorageService::MAX_IMAGE_SIZE`).
     public static let maxImageBytes = 10 * 1024 * 1024
+    /// The most one message's attachments may add up to
+    /// (`Api::V1::SessionsController::FOLLOW_UP_ATTACHMENT_BYTES`).
+    public static let maxTotalBytes = 75 * 1024 * 1024
 
     public var isImage: Bool { Self.imageTypes.contains(mediaType) }
 
