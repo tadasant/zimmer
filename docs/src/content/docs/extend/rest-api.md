@@ -1024,7 +1024,9 @@ the status off `failed`, including `POST /triggers/:id/toggle`, clears them.
 `POST /apns_devices` (`token` hex, `environment` `sandbox`|`production`, `device_name`, `app_version`)
 → 201 `{apns_device}` · `DELETE /apns_devices/:token` → 204. How [the iOS app](/extend/ios-app/#push-notifications)
 registers a phone for push. It is an upsert on the token, and one made with the app's bearer token is
-tied to its grant. Both take the app's token or an API key.
+tied to its grant. Both take the app's token or an API key. `DELETE` reaches only the caller's own
+registrations: those under its grant for the app's token, and grant-less ones for an API key. A token
+outside that scope is left alone and still answers 204.
 
 ## Health
 

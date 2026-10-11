@@ -7841,6 +7841,11 @@ configuration (`DEBUG` means sandbox), not read from the signed entitlement. A R
 for development would register with the wrong environment, and its pushes would be refused as
 `BadDeviceToken`, which disables the row.
 
+Signing out while offline leaves the phone registered. The app forgets its APNs token whether or not
+the unregister call succeeded, and revoking the grant is best-effort too, so a phone that signs out
+with no connection keeps receiving pushes until Apple reports its token dead. The alerts carry no
+session content, so what leaks is only that something happened.
+
 ## The iOS app has never been signed, installed on a device, or opened in Xcode
 
 Everything in [the iOS app](/extend/ios-app/) is proven the way Motet's was before its first upload:

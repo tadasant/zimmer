@@ -104,8 +104,8 @@ sends the APNs token and the environment it belongs to: `sandbox` for a developm
 phone (a connection can unregister only its own phones), and revoking its connection stops its pushes
 even if it never signs out.
 
-The server sends the same notifications the web push does (*needs input*, *finished*, *failed*, and a
-custom message) from `SendPushNotificationJob`, through `ApnsService`, but **the lock screen only says
+The server sends the same notifications the web push does (*needs input*, a question waiting for an
+answer, *finished*, *failed*, and a custom message) from `SendPushNotificationJob`, through `ApnsService`, but **the lock screen only says
 what kind of thing happened**: "Zimmer — A session needs you.", "A session failed." and so on. A web
 push is encrypted end to end, so the browser's push service relays ciphertext; an APNs alert is
 readable by Apple. So the session's title, the summary of its last message, a failure detail and a
