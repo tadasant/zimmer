@@ -149,7 +149,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
     result = Sessions::InterruptService.new(
       session: @session,
       enqueued_message: @enqueued_message,
-      actor: "api_v1"
+      actor: native_app_request? ? "ios_app" : "api_v1"
     ).call
 
     if result.success?

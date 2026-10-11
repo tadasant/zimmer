@@ -101,7 +101,7 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
       "/api/v1/health", "/api/v1/configs", "/api/v1/mcp_servers", "/api/v1/skills",
       "/api/v1/model_catalog_entries" ].each do |path|
       get path, headers: headers
-      assert_not_equal 401, response.status, "#{path} refused the app's token"
+      assert_response :success, "#{path} did not answer the app's token"
     end
   end
 
