@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+# stub_root_data_catalog stubs AgentRootsConfig.all.
+require "mocha/minitest"
 
 # Root data end to end, the way a session reaches it: JSON-RPC over POST /mcp,
 # with `tool_groups=root_data` and the `session_id` RuntimeConfigPostProcessor

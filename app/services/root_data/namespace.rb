@@ -69,17 +69,22 @@ module RootData
       router_names.lazy.filter_map { |name| ArtifactIdentity.find(roots, name) }.first
     end
 
+    # The default is the root's SHORT id, not its canonical token: the token
+    # becomes `@scope/id` the moment another composed catalog contributes the
+    # same short id, and a namespace that moved with it would orphan the root's
+    # data. A root that wants its store pinned against a rename declares
+    # `data_namespace`.
     def namespace_for(root)
       declared = root.data_namespace
-      return canonical_name(root.name) if declared.nil?
+      namespace = declared.nil? ? canonical_name(root.short_id || root.name) : declared
 
-      unless declared.is_a?(String) && declared.match?(PATTERN)
-        raise Unresolvable, "Agent root \"#{root.name}\" declares data_namespace #{declared.inspect}, which is not a " \
-                            "valid namespace (lowercase letters, digits, '.', '_' and '-', at most 100 characters). " \
-                            "Nothing was read or written."
+      unless namespace.is_a?(String) && namespace.match?(PATTERN)
+        raise Unresolvable, "Agent root \"#{root.name}\" resolves to data namespace #{namespace.inspect}, which is not " \
+                            "a valid namespace (lowercase letters, digits, '.', '_' and '-', at most 100 characters). " \
+                            "Declare a valid data_namespace on the root. Nothing was read or written."
       end
 
-      declared
+      namespace
     end
 
     def canonical_name(name)

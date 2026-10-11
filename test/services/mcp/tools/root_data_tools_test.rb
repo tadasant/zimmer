@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+# stub_root_data_catalog stubs AgentRootsConfig.all.
+require "mocha/minitest"
 
 # The six root_data tools, end to end through Mcp::Tool.call — the seam the MCP
 # endpoint uses — with the namespace coming only from the connection.
@@ -59,6 +61,10 @@ class Mcp::Tools::RootDataToolsTest < ActiveSupport::TestCase
     error, message = call(Mcp::Tools::AppendRootRecord, collection: "undeclared", data: { a: 1 })
     assert error
     assert_match(/not declared/, message)
+
+    error, message = call(Mcp::Tools::AppendRootRecord, collection: "runs", data: { a: "x\u0000" })
+    assert error, "a NUL must come back as a tool error, not a JSON-RPC internal error"
+    assert_match(/NUL character/, message)
 
     error, message = call(Mcp::Tools::ListRootCollections, context: Mcp::Context.new(tool_groups: "root_data"))
     assert error

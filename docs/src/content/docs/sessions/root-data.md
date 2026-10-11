@@ -35,10 +35,10 @@ A root opts in with two optional fields on its catalog entry:
 
 | Field | Meaning |
 | --- | --- |
-| `data_namespace` | The namespace this root's records live under. Defaults to the root's name. Two roots that declare the same value share one store. Lowercase letters, digits, `.`, `_` and `-`. |
+| `data_namespace` | The namespace this root's records live under. Defaults to the root's short name. Two roots that resolve to the same value share one store, and that includes a `data_namespace` equal to another root's name. Lowercase letters, digits, `.`, `_` and `-`. Pin it if the root's data must survive the root being renamed. |
 | `data_collections` | The collections the root may write. Each key is a name (`[a-z][a-z0-9_-]*`). |
 | `…schema` | A JSON Schema every written record's `data` must match. Optional; omitted means any JSON object. Remote `$ref`s are not fetched. |
-| `…retention_days` | Records older than this are deleted automatically. Optional; omitted means a record stays until it is deleted. Capped at 3650. |
+| `…retention_days` | Records not written for this long are deleted automatically. A `put` that replaces a record restarts its clock. Optional; omitted means a record stays until it is deleted. Capped at 3650. |
 | `…description` | Shown by `list_root_collections`. |
 
 A bare list (`"data_collections": ["notes", "runs"]`) declares those names with nothing set.
@@ -99,11 +99,12 @@ flowchart LR
 session's config, which is where the session id comes from. The router's deprecated alias,
 `zimmer-router`, resolves to `zimmer-orchestrator`, both its config and its name.
 
-The tools refuse in three cases rather than guess:
+The tools refuse rather than guess when:
 
-- the connection names no session;
+- the connection names no session, or a session that does not exist;
 - the session has no `agent_root_key`;
-- the root is not in the catalog.
+- the root is not in the catalog;
+- the resolved namespace is not valid (a malformed `data_namespace`).
 
 They never fall back to matching the session's repository the way
 `AgentRootsConfig.find_for_session` does, because several roots share a repository and that match
@@ -130,7 +131,7 @@ own catalog entry.
 | --- | --- |
 | Serialized `data` per record | 32 KB |
 | Records per collection | 10,000 |
-| Collections per namespace | 25 |
+| Collections per namespace | 25 holding records; an emptied collection frees its slot |
 | Writes per collection | 60 a minute (fixed window; put, append and delete all count) |
 | Key length | 200 characters |
 | Search page | 20 by default, 100 max, and it stops early at about 200 KB of record data with `truncated: true` |
@@ -145,7 +146,8 @@ concurrency. The retention sweep takes the same locks in the same order.
 `RootDataRetentionJob` runs hourly at :35. It deletes records whose `expires_at` has passed, a
 batch at a time inside a 60-second slice, and decrements the counters in the same transaction. Its
 selector is a partial index on `(expires_at, id) WHERE expires_at IS NOT NULL`, so collections
-with no retention are never scanned.
+with no retention are never scanned. Each tick then recounts up to 25 of the counters that have
+been quiet longest, under their locks, so a counter that drifted puts itself right.
 
 None of this needs a shell:
 

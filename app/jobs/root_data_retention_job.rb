@@ -19,6 +19,15 @@
 #
 # Idempotent and bounded: a run with nothing expired deletes nothing, and a
 # backlog drains SLICE_BUDGET at a time across ticks.
+#
+# Each tick then RECONCILES up to RECONCILE_PER_TICK counters, the ones least
+# recently touched: it recounts that collection's rows under the counter lock
+# and writes the truth back. Counters are otherwise trusted, so a row written or
+# deleted around RootData::Store would leave one wrong — and a wrong count can
+# refuse writes at the row cap. This is what puts it right without anyone
+# needing a shell. A recount is bounded by the row cap (10,000 rows), and the
+# save bumps `updated_at`, so the rotation reaches every counter within a few
+# ticks of it going quiet.
 class RootDataRetentionJob < ApplicationJob
   include SingletonSweep
 
@@ -26,6 +35,9 @@ class RootDataRetentionJob < ApplicationJob
 
   BATCH_SIZE = 1_000
   SLICE_BUDGET = 60.seconds
+  RECONCILE_PER_TICK = 25
+  # A counter written to within this long is being kept in step by live writes.
+  RECONCILE_AFTER = 1.hour
 
   def perform(now: Time.current, budget: SLICE_BUDGET, batch_size: BATCH_SIZE)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + budget.to_f
@@ -47,10 +59,35 @@ class RootDataRetentionJob < ApplicationJob
 
     Rails.logger.info("[RootDataRetentionJob] deleted #{total} expired root data record(s)") if total.positive?
 
-    { deleted: total }
+    corrected = reconcile(now)
+    Rails.logger.warn("[RootDataRetentionJob] corrected #{corrected} drifted root data counter(s)") if corrected.positive?
+
+    { deleted: total, counters_corrected: corrected }
   end
 
   private
+
+  def reconcile(now)
+    candidates = AgentRootRecordCounter.where(updated_at: ...(now - RECONCILE_AFTER))
+      .order(:updated_at).limit(RECONCILE_PER_TICK).pluck(:id)
+
+    candidates.count do |id|
+      AgentRootRecord.transaction do
+        counter = AgentRootRecordCounter.lock.find_by(id: id)
+        next false unless counter
+
+        count, bytes = AgentRootRecord.in_collection(counter.namespace, counter.collection)
+          .pick(Arel.sql("COUNT(*)"), Arel.sql("COALESCE(SUM(data_bytes), 0)"))
+        drifted = counter.records_count != count.to_i || counter.data_bytes != bytes.to_i
+
+        counter.records_count = count.to_i
+        counter.data_bytes = bytes.to_i
+        counter.updated_at = now
+        counter.save!
+        drifted
+      end
+    end
+  end
 
   def prune_group(namespace, collection, ids, now)
     AgentRootRecord.transaction do

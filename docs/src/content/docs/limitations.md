@@ -7913,13 +7913,15 @@ Closing it needs a per-session MCP credential, for example an HMAC over the sess
 spawn and checked by `McpController`. That would benefit every tool group, not just this one. Until
 then, keep secrets and anything sensitive out of root data. See [Root data](/sessions/root-data/).
 
-## Root data counters trust their writers
+## Root data counters can be wrong for up to a few hours
 
 `agent_root_record_counters` is what the row cap and the `/health` usage read. It is kept in step by
-`RootData::Store` and `RootDataRetentionJob`, in the same transaction as the rows they change, and
-nothing recounts it. A row inserted or deleted around those two (raw SQL, a console) leaves the
-counter wrong until somebody corrects it by hand. Sessions being deleted do not touch records:
-`writing_session_id` is nulled and the record stays.
+`RootData::Store` and `RootDataRetentionJob`, in the same transaction as the rows they change. A row
+inserted or deleted around those two (raw SQL, a console) leaves the counter wrong until the
+retention job's reconcile pass recounts that collection: 25 of the least recently touched counters
+an hour, each once it has been quiet for an hour. Until then a too-high count can refuse writes at
+the row cap. Deleting a session does not touch its records: `writing_session_id` is nulled and the
+record stays.
 
 ## Open questions
 

@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "mocha/minitest"
-
 # Builds catalog roots carrying `data_namespace` / `data_collections`, and
 # sessions created from them, for the root data tests.
 module RootDataHelpers
