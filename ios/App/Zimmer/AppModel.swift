@@ -56,6 +56,8 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
     /// since a UI test cannot drive the system photo and file pickers.
     var fixtureAttachesFile = false
+    /// `-ZimmerFixtureOpenPrompt`: the opened session shows its first prompt's form, once.
+    var fixtureOpensPrompt = false
 
     let environment: AppEnvironment
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
@@ -98,6 +100,7 @@ final class AppModel: ObservableObject {
         if arguments.contains("-ZimmerFixtureQuickRouter") { showingQuickRouter = true }
         if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
+        fixtureOpensPrompt = arguments.contains("-ZimmerFixtureOpenPrompt")
         func value(_ flag: String) -> String? {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
