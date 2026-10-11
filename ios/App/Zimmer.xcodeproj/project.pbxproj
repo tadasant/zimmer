@@ -45,6 +45,7 @@
 		AA0000000000000000000030 /* Exceptions for "Zimmer" folder in "Zimmer" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				CarPlay.entitlements,
 				Info.plist,
 				Push.entitlements,
 			);

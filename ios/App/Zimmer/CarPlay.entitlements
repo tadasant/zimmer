@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  CarPlay, as a voice-based conversational app (iOS 26.4+). Apple grants this by manual
+  review, for this exact category, and an ungranted entitlement fails a build to SIGN rather
+  than merely lacking CarPlay — so this file is wired into nothing: not CODE_SIGN_ENTITLEMENTS,
+  not a build setting, and `ios/bin/testflight` refuses to sign it in. When the grant
+  arrives: tick the CarPlay capability on the App ID, merge this key into the signed
+  entitlements, admit it in the testflight guard, and check the first signed build with
+  codesign (dump the entitlements of Zimmer.app) (a managed entitlement may need a manually made
+  profile if cloud signing drops it). See ios/README.md, "CarPlay".
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.carplay-voice-based-conversation</key>
+	<true/>
+</dict>
+</plist>
