@@ -4,6 +4,15 @@
 # native counterpart of WebPushService. SendPushNotificationJob calls both with
 # the same payload.
 #
+# **No session content leaves for Apple.** A web push is encrypted end to end
+# (RFC 8291), so the browser's push service relays ciphertext. An APNs alert is
+# readable by Apple. So the alert says only what kind of thing happened ("A
+# session needs you") and carries the session id; the session's title, the
+# summary of its last message, a failure detail and an agent's custom message all
+# stay on the server, and the app shows them when the push is tapped, over its
+# authenticated API. `title:` and `body:` are accepted so both services share the
+# job's payload, and are deliberately never sent.
+#
 # APNs takes one HTTP/2 POST per device to /3/device/<token>, on the production
 # host for TestFlight and App Store builds and the sandbox host for development
 # builds — a token only works against the environment it was issued in, which is
@@ -135,11 +144,24 @@ class ApnsService
     :sent
   end
 
+  # What the lock screen says, by notification type. Generic on purpose: see the
+  # class comment.
+  ALERT_BODIES = {
+    "needs_input" => "A session needs you.",
+    "elicitation_pending" => "A session is asking you something.",
+    "session_complete" => "A session finished.",
+    "session_failed" => "A session failed.",
+    "custom_message" => "A session sent you a message."
+  }.freeze
+  ALERT_TITLE = "Zimmer"
+
   # The app opens the session the push is about; `thread-id` groups a session's
-  # notifications together on the lock screen.
-  def build_payload(title:, body:, data:)
+  # notifications together on the lock screen. `title` and `body` are not used.
+  def build_payload(title:, body:, data:) # rubocop:disable Lint/UnusedMethodArgument
     session_id = data[:session_id] || data["session_id"]
-    aps = { alert: { title: title.to_s.truncate(120), body: body.to_s.truncate(400) }, sound: "default" }
+    type = (data[:notification_type] || data["notification_type"]).to_s
+    alert_body = ALERT_BODIES.fetch(type, "Something happened in a session.")
+    aps = { alert: { title: ALERT_TITLE, body: alert_body }, sound: "default" }
     aps[:"thread-id"] = "session-#{session_id}" if session_id
     { aps: aps }.merge(data.to_h.transform_keys(&:to_s).slice("session_id", "notification_type")).to_json
   end

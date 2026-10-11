@@ -10,7 +10,8 @@
 # and a re-registration revives a disabled row. A registration made with the
 # app's bearer token is tied to its OAuth grant, so revoking the phone's
 # connection also stops its pushes. Deleting is how the app unregisters on
-# sign-out; an unknown token is a 204 too, because the outcome is the same.
+# sign-out, and it reaches only that grant's own devices; an unknown token is a
+# 204 too, because the outcome is the same.
 class Api::V1::ApnsDevicesController < Api::BaseController
   accepts_native_app_tokens
 
@@ -28,7 +29,7 @@ class Api::V1::ApnsDevicesController < Api::BaseController
   end
 
   def destroy
-    ApnsDevice.where(token: params[:token].to_s.downcase).delete_all
+    ApnsDevice.where(token: params[:token].to_s.downcase, grant: @native_app_grant).delete_all
     head :no_content
   end
 

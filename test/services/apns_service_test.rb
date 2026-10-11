@@ -70,7 +70,10 @@ class ApnsServiceTest < ActiveSupport::TestCase
     assert_equal "ABC123DEFG", header["kid"]
 
     body = request[:body]
-    assert_equal({ "title" => "PR #1261 is green", "body" => "Needs your go-ahead" }, body["aps"]["alert"])
+    # Generic: Apple can read an alert, so no session text goes in it.
+    assert_equal({ "title" => "Zimmer", "body" => "A session needs you." }, body["aps"]["alert"])
+    assert_not_includes request[:body].to_json, "PR #1261"
+    assert_not_includes request[:body].to_json, "go-ahead"
     assert_equal "session-1038", body["aps"]["thread-id"]
     assert_equal 1038, body["session_id"]
     assert_not_nil @phone.reload.last_delivered_at
