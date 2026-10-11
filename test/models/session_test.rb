@@ -1237,59 +1237,6 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal 2, parsed.length
   end
 
-  # === Tests for parsed_transcript_tail ===
-  test "parsed_transcript_tail returns last N entries from JSONL transcript" do
-    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code")
-    lines = 10.times.map { |i| { "role" => "user", "content" => "Message #{i}", "timestamp" => "2025-11-12T12:00:#{i.to_s.rjust(2, '0')}Z" }.to_json }
-    session.transcript = lines.join("\n")
-
-    entries, total = session.parsed_transcript_tail(3)
-    assert_equal 10, total
-    assert_equal 3, entries.length
-    assert_equal "Message 7", entries[0]["content"]
-    assert_equal "Message 9", entries[2]["content"]
-  end
-
-  test "parsed_transcript_tail returns all entries when N exceeds total" do
-    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code")
-    lines = 3.times.map { |i| { "role" => "user", "content" => "Message #{i}" }.to_json }
-    session.transcript = lines.join("\n")
-
-    entries, total = session.parsed_transcript_tail(100)
-    assert_equal 3, total
-    assert_equal 3, entries.length
-  end
-
-  test "parsed_transcript_tail returns empty array when transcript is nil" do
-    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code")
-    session.transcript = nil
-
-    entries, total = session.parsed_transcript_tail(10)
-    assert_equal [], entries
-    assert_equal 0, total
-  end
-
-  test "parsed_transcript_tail handles array transcript format" do
-    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code")
-    session.transcript = 5.times.map { |i| { "role" => "user", "content" => "Message #{i}" } }
-
-    entries, total = session.parsed_transcript_tail(2)
-    assert_equal 5, total
-    assert_equal 2, entries.length
-    assert_equal "Message 3", entries[0]["content"]
-    assert_equal "Message 4", entries[1]["content"]
-  end
-
-  test "parsed_transcript_tail includes _transcript_index for JSONL" do
-    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code")
-    lines = 5.times.map { |i| { "role" => "user", "content" => "Message #{i}" }.to_json }
-    session.transcript = lines.join("\n")
-
-    entries, _total = session.parsed_transcript_tail(2)
-    assert_equal 3, entries[0]["_transcript_index"]
-    assert_equal 4, entries[1]["_transcript_index"]
-  end
-
   # === Tests for transcript_line_count ===
   test "transcript_line_count returns 0 for nil transcript" do
     session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code")

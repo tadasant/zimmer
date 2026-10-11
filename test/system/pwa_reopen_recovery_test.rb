@@ -71,20 +71,6 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
     )
   end
 
-  # Navigate WITHOUT the Transcript panel being opened for us.
-  #
-  # ApplicationSystemTestCase#visit opens it on every navigation, and that is a
-  # load-bearing convenience for the rest of the suite — but it also loads the
-  # deferred frame, and a frame that has already loaded does not re-fetch when the
-  # disclosure is toggled again. The closed-panel case therefore cannot be reached
-  # through `visit` at all: closing it afterwards leaves the batch already
-  # fetched. Going through Capybara's own `visit` skips the override, so the
-  # frame stays unloaded exactly as it is for a reader who never opened it.
-  def visit_without_opening_transcript(path)
-    page.visit(path)
-    connect_turbo_cable_stream_sources
-  end
-
   def same_document?
     page.evaluate_script("document.body.getAttribute('data-reopen-sentinel') === 'alive'")
   end
@@ -337,32 +323,28 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   # The duplication the deferred panel introduced, on the live-socket path rather
   # than the reopen one.
   #
-  # A row broadcast while the Transcript disclosure is CLOSED lands in the append
-  # target on the page. Opening the panel then renders the server's current tail
-  # — containing that same row — into the frame right above it, and neither
+  # A row broadcast while the transcript frame is not yet in — or before it next
+  # renders — lands in the append target on the page. The frame then renders the
+  # server's current tail, containing that same row, right above it, and neither
   # container dedupes against the other: Turbo's `append` only compares direct
   # children of its target, and a frame swap does no id reconciliation at all. So
   # without transcript-panel#dropStreamedDuplicates the reader sees the message
-  # twice, under two elements sharing one id.
-  test "a row broadcast while the panel was closed is not duplicated when it opens" do
+  # twice, under two elements sharing one id. Driven here by reloading the frame
+  # after the row has streamed in, which is the same render the first load does.
+  test "a row the frame brings again is not duplicated when it lands" do
     session = create_session
-    visit_without_opening_transcript(session_path(session, filter: "verbose"))
+    visit session_path(session, filter: "verbose")
     wait_for_turbo_streams_connected
 
-    assert page.has_css?("turbo-frame[id$='_transcript']:not([complete])", visible: :all, wait: 2),
-      "the transcript frame must still be unloaded, or this test is not exercising the closed-panel case"
-
-    # Arrives over the live socket with the disclosure shut, so it is on the page
-    # but not on screen — hence visible: :all.
-    Log.create!(session: session, level: "info", content: "ARRIVED WHILE CLOSED")
-    assert_selector "#session_#{session.id}_timeline", text: "ARRIVED WHILE CLOSED", visible: :all, wait: 5
+    Log.create!(session: session, level: "info", content: "ARRIVED OVER THE SOCKET")
+    assert_selector "#session_#{session.id}_timeline", text: "ARRIVED OVER THE SOCKET", wait: 5
     assert_equal 1, timeline_row_count(session)
 
-    open_transcript_panel
+    page.execute_script("document.querySelector(\"turbo-frame[id$='_transcript']\").reload()")
 
-    assert_selector "details[data-controller~='transcript-panel']", text: "ARRIVED WHILE CLOSED", wait: 5
+    assert_selector "turbo-frame[id$='_transcript']", text: "ARRIVED OVER THE SOCKET", wait: 5
     assert_equal 1, timeline_row_count(session),
-      "opening the panel rendered a second copy of the row that had already streamed in"
+      "the frame rendered a second copy of the row that had already streamed in"
   end
 
   # Reopening twice is the normal case — the user switches apps repeatedly — and

@@ -689,6 +689,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     visit session_path(session)
     assert_text "Human messages"
+    open_provenance_panels
     assert_text "Capture is not configured for Slack"
 
     panel = "[data-capture-gap='#{HumanMessage::SLACK}']"
@@ -726,6 +727,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     visit session_path(junior)
     assert_text "Session hierarchy"
+    open_provenance_panels
     within(list) { assert_text "drawn under" }
 
     scroll_into_center(find(list))
@@ -777,6 +779,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     visit session_path(current)
     assert_text "Session hierarchy"
+    open_provenance_panels
     within(list) { assert_text "also senior" }
     # The deepest node is the current one, and it carries every pill the panel can
     # render — so this is the widest row in the widest tree the fixture builds.
@@ -831,6 +834,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.driver.browser.manage.window.resize_to(1400, 900)
     visit session_path(current)
     assert_text "Session hierarchy"
+    open_provenance_panels
 
     assert_empty elements_past_right_edge(list), "hierarchy nodes end past the 1400px viewport"
     assert_equal "80px", current_node_indent(list),

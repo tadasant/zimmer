@@ -226,8 +226,8 @@ class MobileOverlaySubmitTest < ApplicationSystemTestCase
     )
     assert_no_horizontal_overflow("deferred panel skeletons")
 
-    # Content state.
-    assert_selector "turbo-frame[id$='_provenance_panel'][complete]", visible: :all
+    # Content state, with every disclosure open.
+    open_provenance_panels
     assert_selector "turbo-frame[id$='_transcript'][complete]", visible: :all
     assert_no_horizontal_overflow("deferred panel content")
   end

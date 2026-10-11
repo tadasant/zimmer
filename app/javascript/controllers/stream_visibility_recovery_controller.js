@@ -173,7 +173,7 @@ export default class extends Controller {
   }
 
   // The live regions inside a deferred panel are not in the page just fetched.
-  // That copy has its <turbo-frame loading="lazy"> unloaded — it holds a
+  // That copy's deferred <turbo-frame>s are unloaded — each holds a
   // skeleton, which carries no ids on purpose — so backfillLiveRegions finds no
   // source for them and leaves them alone. Their source is the panel's own URL.
   //
@@ -183,8 +183,8 @@ export default class extends Controller {
   // appends what is missing and touches nothing else, exactly as it does for the
   // regions on the page.
   //
-  // Only frames the reader actually opened are fetched — an unloaded frame has
-  // nothing on screen to bring up to date. A panel that will not come back is
+  // Only frames that have loaded are fetched — an unloaded frame has nothing on
+  // screen to bring up to date. A panel that will not come back is
   // skipped rather than escalated to a full reload: by this point the socket is
   // open again, so the next broadcast reaches it anyway.
   async backfillDeferredPanels() {
@@ -196,7 +196,10 @@ export default class extends Controller {
 
     for (const frame of loaded) {
       try {
-        const response = await fetch(frame.src, {
+        // A frame may name a wider address for this than its own src: the
+        // transcript's src is a ten-row tail, and a reader away for a while can
+        // have missed more than ten rows.
+        const response = await fetch(frame.dataset.backfillSrc || frame.src, {
           headers: { Accept: "text/html" },
           credentials: "same-origin",
           cache: "no-store",

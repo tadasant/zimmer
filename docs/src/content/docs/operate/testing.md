@@ -676,7 +676,7 @@ Two changes, because there were two defects and only one of them was in the test
 
 - **`transcript-panel#loadFrame` switches the frame to `loading="eager"` when the disclosure opens**,
   so opening the panel is what fetches the rows — which is what
-  [the transcript page](/sessions/transcripts/#opening-the-transcript-is-what-loads-it) had claimed
+  [the transcript page](/sessions/transcripts/#the-transcript-loads-tail-first) had claimed
   all along. This is a product fix, not a test one: a `#message-N` link opened cold opens the panel
   under a viewport still parked at the top of the page, and a panel the server rendered *already*
   open — the `transcript=open` page the log-level filter re-fetches — fires no toggle at all, so it
