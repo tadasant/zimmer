@@ -79,7 +79,7 @@ final class SessionDetailModel: ObservableObject {
 
     /// One action from the session's menu; the server's answer replaces what is shown.
     @discardableResult
-    func apply(_ done: String, _ action: (SessionActionsAPI) async throws -> SessionSummary) async -> Bool {
+    func apply(_ done: String, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
         do {
             let session = try await action(api)
             detail?.session = session
@@ -109,7 +109,7 @@ final class SessionDetailModel: ObservableObject {
     }
 
     /// An action the server answers with a sentence rather than the session.
-    func run(_ action: (SessionActionsAPI) async throws -> String) async {
+    func run(_ action: (ZimmerAPI) async throws -> String) async {
         do {
             notice = try await action(api)
             error = nil
