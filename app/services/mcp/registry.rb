@@ -81,8 +81,9 @@ module Mcp
       # login (the network perimeter is the boundary) and `action_session`'s
       # `follow_up` delivers any text, the `[HUMAN-AUTHORIZED MERGE]` marker
       # included. What an agent cannot produce from this endpoint is the
-      # HumanMessage the browser writes for the click, and that record — not the
-      # marker — is the provenance an audit keys on. See Sessions::AuthorizeMerge.
+      # HumanMessage the browser (or the iOS app, acting as its approver) writes for
+      # the click, and that record — not the marker — is the provenance an audit
+      # keys on. See Sessions::AuthorizeMerge.
       Definition.new(klass: "Mcp::Tools::GetUserView", group: "sessions", write: false),
 
       # Sessions — writes
