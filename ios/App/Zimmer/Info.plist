@@ -67,7 +67,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>In the car, Zimmer listens for your answer to a session that needs you.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>In the car, Zimmer turns what you say into a reply to the session that asked.</string>
+	<string>In the car, Zimmer turns what you say into a reply to the session that asked. Recognition stays on this iPhone.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
