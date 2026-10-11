@@ -218,6 +218,8 @@ Rails.application.routes.draw do
       resources :model_catalog_entries, only: [ :index, :create, :destroy ]
       resources :mcp_servers, only: [ :index ]
       resources :skills, only: [ :index ]
+      resources :hooks, only: [ :index ]
+      resources :plugins, only: [ :index ]
 
       # Token-spend ledger. `index` is the rollups the Costs page renders;
       # `records` is the row-level export the cost-vs-performance analysis needs.

@@ -12,16 +12,27 @@
 # A controller that declares `accepts_native_app_tokens` also takes
 # `Authorization: Bearer <access token>` from Zimmer's own iOS app — an OAuth
 # access token whose grant belongs to the built-in first-party client
-# (OauthServer::NativeApp). It is opt-in per controller, so the phone's
+# (OauthServer::NativeApp). It is opt-in per controller, and optionally per
+# action (`accepts_native_app_tokens only: %i[index show]`), so the phone's
 # credential opens the surfaces the app drives and nothing else; a token any
-# other OAuth client holds is refused here exactly as a bad key is.
+# other OAuth client holds is refused here exactly as a bad key is, and so is
+# the app's own token on an action its controller did not name.
 class Api::BaseController < ActionController::API
   include ControllerDatabaseRetry
 
   class_attribute :native_app_tokens_accepted, instance_writer: false, default: false
+  # The actions the app's token may call, as strings; nil means every action.
+  class_attribute :native_app_token_actions, instance_writer: false, default: nil
 
-  def self.accepts_native_app_tokens
+  # @param only [Array<Symbol>, nil] the actions the token opens; omit for all of them
+  def self.accepts_native_app_tokens(only: nil)
     self.native_app_tokens_accepted = true
+    self.native_app_token_actions = only&.map(&:to_s)&.freeze
+  end
+
+  # Whether the app's token opens this controller's `action`.
+  def self.native_app_tokens_accepted_for?(action)
+    native_app_tokens_accepted && (native_app_token_actions.nil? || native_app_token_actions.include?(action.to_s))
   end
 
   before_action :authenticate_api_key
@@ -102,7 +113,7 @@ class Api::BaseController < ActionController::API
   attr_reader :native_app_grant
 
   def native_app_token_presented?
-    native_app_tokens_accepted && native_app_bearer_token.present?
+    self.class.native_app_tokens_accepted_for?(action_name) && native_app_bearer_token.present?
   end
 
   def native_app_bearer_token

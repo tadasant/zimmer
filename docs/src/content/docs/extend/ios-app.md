@@ -117,9 +117,9 @@ and a malformed `state` gets a 400. The route has no web sign-in wall and
 no CSRF check: it hands back only what Access minted for this requester, and every API call still needs
 Zimmer's own token. The app checks `state` from the query, reads the JWT from the fragment, keeps it in the Keychain,
 and sends it as `cf-access-token` on every machine call, never in `Authorization`. The edge passes
-`Authorization` through untouched. Every `/api/v1` controller the app calls declares
-`accepts_native_app_tokens`, and `test/config/native_app_api_coverage_test.rb` reads the app's
-Swift sources and fails if one does not. Paths are joined so that none contains `//`, which the app
+`Authorization` through untouched. The REST API takes the app's token only on the actions a
+controller names with `accepts_native_app_tokens`, and `test/config/native_app_api_coverage_test.rb`
+reads the app's Swift sources and fails unless an action behind every path the app calls accepts it. Paths are joined so that none contains `//`, which the app
 host's tunnel answers with a 404. The JWT lives about 30 days. The app
 runs the handoff again when less than a day is left, or when Access refuses a call: a redirect to
 `*.cloudflareaccess.com`, which the app never follows, or a 401/403 page with `cf-access-aud`.
