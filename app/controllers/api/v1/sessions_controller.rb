@@ -1347,9 +1347,10 @@ class Api::V1::SessionsController < Api::BaseController
   # The most attachments one follow-up carries: the web composer's image cap.
   FOLLOW_UP_ATTACHMENT_LIMIT = 20
   # The most their decoded bytes may add up to, and the most a follow-up's body may
-  # be (base64 is four bytes for every three).
+  # be: base64 is four bytes for every three, and a JSON encoder may escape its
+  # slashes, so 75 MB of attachments needs a little over 100 MB of body.
   FOLLOW_UP_ATTACHMENT_BYTES = 75.megabytes
-  def self.follow_up_body_limit = 100.megabytes
+  def self.follow_up_body_limit = 110.megabytes
 
   def refuse_an_oversized_follow_up
     return unless request.content_length.to_i > self.class.follow_up_body_limit
