@@ -97,6 +97,7 @@ class SystemHealthMonitorJob < ApplicationJob
   def check_cron_freshness(system_health)
     report = CronFreshness.new.report
     stale = pageable_stale_keys(report, system_health)
+    stale -= recover_lost_ticks(stale)
 
     if stale.empty?
       Rails.cache.delete(CRON_STREAK_CACHE_KEY)
@@ -128,6 +129,47 @@ class SystemHealthMonitorJob < ApplicationJob
         consecutive_checks: streaks.slice(*confirmed.map { |r| r[:key] })
       }
     )
+  end
+
+  # Puts back each tick the cron manager owed, was witnessed running at, and never
+  # enqueued (CronFreshness `lost_tick`), and returns the readings it put back, which
+  # this check then does not page on. GoodJob never catches up a lost tick, so without
+  # this one enqueue dropped in a database stall is a cache-warming job that skips four
+  # hours and a page that fires for two (tadasant/zimmer#1288).
+  #
+  # Through the key's own CronEntry with the tick's own `cron_at`, so the job is the one
+  # cron would have enqueued — same queue, same arguments, the singleton's concurrency
+  # limit applied at enqueue — and the `(cron_key, cron_at)` unique index makes a repeat
+  # a no-op. A refused or failed enqueue is not a recovery: the key stays stale and
+  # pages on the usual streak.
+  #
+  # WARN, so every lost tick reaches VictoriaLogs without paging: the job ran, and a
+  # key that loses its next tick too is refused a second recovery and pages then.
+  def recover_lost_ticks(stale)
+    stale.select do |reading|
+      next false unless reading[:lost_tick]
+
+      tick = reading[:lost_tick].utc.iso8601
+      if GoodJob::CronEntry.find(reading[:key]).enqueue(reading[:lost_tick])
+        Rails.logger.warn(
+          "[SystemHealthMonitorJob] Cron lost a tick: #{reading[:key]} (#{reading[:job_class]}) produced no " \
+          "job for #{tick} although the cron manager was running; re-enqueued it"
+        )
+        true
+      else
+        Rails.logger.warn(
+          "[SystemHealthMonitorJob] Cron lost a tick: #{reading[:key]} produced no job for #{tick}, " \
+          "and re-enqueueing it was refused"
+        )
+        false
+      end
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[SystemHealthMonitorJob] Cron lost a tick: #{reading[:key]} produced no job for #{tick}, " \
+        "and re-enqueueing it failed: #{e.class}: #{e.message}"
+      )
+      false
+    end
   end
 
   # The stale keys this page speaks for. While the backlog gate is itself critical, a

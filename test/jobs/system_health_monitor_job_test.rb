@@ -584,6 +584,101 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     assert_nil Rails.cache.read(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
   end
 
+  # tadasant/zimmer#1288: `warm_skills_cache` lost its 16:00 enqueue in a database stall
+  # and paged from 18:02 until the 20:00 tick. The monitor puts the tick back instead.
+  def lost_warm_tick(created_late: false)
+    four = Time.current.beginning_of_hour - 2.hours
+    GoodJob::CronEntry.stubs(:all).returns([
+      GoodJob::CronEntry.new(key: :warm_skills_cache, cron: "0 */4 * * *", class: "WarmSkillsCacheJob"),
+      GoodJob::CronEntry.new(key: :clock, cron: "* * * * *", class: "PlaceholderJob")
+    ])
+    GoodJob::Process.insert_all([
+      { id: SecureRandom.uuid, state: { cron_enabled: true }, created_at: 1.day.ago, updated_at: Time.current }
+    ])
+    minute = Time.current.beginning_of_minute
+    GoodJob::Job.insert_all(Array.new(180) do |i|
+      at = minute - i.minutes
+      { queue_name: "pollers", job_class: "PlaceholderJob", cron_key: "clock", cron_at: at,
+        created_at: at, updated_at: at, scheduled_at: at, finished_at: at + 1 }
+    end)
+    last = four - 4.hours
+    created = created_late ? last + 2.hours + 2.minutes : last
+    GoodJob::Job.insert_all([ { queue_name: "pollers", job_class: "WarmSkillsCacheJob",
+                                cron_key: "warm_skills_cache", cron_at: last, created_at: created,
+                                updated_at: created, scheduled_at: created, finished_at: created + 30,
+                                concurrency_key: "warm_skills_cache" } ])
+    four
+  end
+
+  def with_good_job_adapter
+    previous = ActiveJob::Base.queue_adapter
+    ActiveJob::Base.queue_adapter = GoodJob::Adapter.new(execution_mode: :external)
+    assert_kind_of GoodJob::Adapter, WarmSkillsCacheJob.queue_adapter
+    yield
+  ensure
+    ActiveJob::Base.queue_adapter = previous
+  end
+
+  test "a single tick cron lost is re-enqueued for its own fire time, and does not page" do
+    Rails.cache.delete(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+    travel_to Time.current.utc.change(hour: 18, min: 2, sec: 0) do
+      four = lost_warm_tick
+      Rails.logger.expects(:warn).with(regexp_matches(/Cron lost a tick: warm_skills_cache .*re-enqueued it/)).once
+      Rails.logger.stubs(:warn).with(Not(regexp_matches(/Cron lost a tick/)))
+
+      pages = with_good_job_adapter { cron_pages { 2.times { SystemHealthMonitorJob.perform_now } } }
+
+      assert_empty pages
+      recovered = GoodJob::Job.where(cron_key: "warm_skills_cache", cron_at: four)
+      assert_equal 1, recovered.count, "put back once, with the tick's own cron_at; the second check finds it fresh"
+      assert_equal "WarmSkillsCacheJob", recovered.first.job_class
+      assert_equal "pollers", recovered.first.queue_name
+      assert_nil Rails.cache.read(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+      assert_equal :fresh,
+                   CronFreshness.new.report[:keys].find { |r| r[:key] == "warm_skills_cache" }[:state]
+    end
+  end
+
+  # GoodJob's own concurrency check refuses an enqueue with `false`; a class that no
+  # longer loads, or a database that is still down, raises. Neither is a recovery.
+  def assert_unrecovered_lost_tick_pages(warning)
+    Rails.cache.delete(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+    travel_to Time.current.utc.change(hour: 18, min: 2, sec: 0) do
+      four = lost_warm_tick
+      yield
+      Rails.logger.expects(:warn).with(regexp_matches(warning)).twice
+
+      pages = cron_pages { 2.times { SystemHealthMonitorJob.perform_now } }
+
+      assert_equal [ [ "warm_skills_cache" ] ], pages
+      assert_not GoodJob::Job.exists?(cron_key: "warm_skills_cache", cron_at: four)
+    end
+  end
+
+  test "a re-enqueue the singleton's concurrency check refuses is not a recovery, and the key pages" do
+    assert_unrecovered_lost_tick_pages(/warm_skills_cache produced no job .*re-enqueueing it was refused/) do
+      GoodJob::CronEntry.any_instance.stubs(:enqueue).returns(false)
+    end
+  end
+
+  test "a re-enqueue that raises is not a recovery, and the key pages" do
+    assert_unrecovered_lost_tick_pages(/re-enqueueing it failed: ActiveRecord::ConnectionTimeoutError: pool/) do
+      GoodJob::CronEntry.any_instance.stubs(:enqueue).raises(ActiveRecord::ConnectionTimeoutError, "pool")
+    end
+  end
+
+  test "a key that loses the tick after a recovered one is not recovered again, and pages" do
+    Rails.cache.delete(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+    travel_to Time.current.utc.change(hour: 18, min: 2, sec: 0) do
+      lost_warm_tick(created_late: true)
+
+      pages = with_good_job_adapter { cron_pages { 2.times { SystemHealthMonitorJob.perform_now } } }
+
+      assert_equal [ [ "warm_skills_cache" ] ], pages
+      assert_equal 1, GoodJob::Job.where(cron_key: "warm_skills_cache").count, "nothing was put back"
+    end
+  end
+
   test "a cron freshness check that cannot read fails the job rather than reading as nothing stale" do
     schedule(:sweep)
     GoodJob::Setting.stubs(:cron_keys_enabled).raises(ActiveRecord::StatementInvalid, "boom")
