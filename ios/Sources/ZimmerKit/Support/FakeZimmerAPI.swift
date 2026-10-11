@@ -395,6 +395,8 @@ extension FakeZimmerAPI {
         case (nil, nil): precedence = 0
         }
         return try change(id) { $0.precedence = precedence }
+    }
+}
 
 // MARK: - Queue, logs and subagents
 //
