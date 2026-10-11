@@ -404,11 +404,14 @@ struct SessionDetailView: View {
         if let runtime = session.agentRuntime { parts.append(runtime) }
         if let model = session.model { parts.append(model) }
         if let effort = session.effort?.level { parts.append("effort \(effort)") }
-        return HStack(spacing: 4) {
-            Text(parts.joined(separator: " · "))
+        let joined = parts.joined(separator: " · ")
+        // One Text, so a long line wraps as a sentence rather than as two columns.
+        return Group {
             if let date = session.updatedAt ?? session.createdAt {
-                if !parts.isEmpty { Text("·") }
-                Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
+                let age = date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+                Text(verbatim: joined.isEmpty ? age : "\(joined) · \(age)")
+            } else {
+                Text(verbatim: joined)
             }
         }
         .lineLimit(2)
