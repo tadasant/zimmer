@@ -112,32 +112,32 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     }
 
     private func showActions(for session: SessionSummary) {
-        let sheet = CPActionSheetTemplate(
-            title: session.displayTitle,
-            message: summaries[session.id],
-            actions: [
-                CPAlertAction(title: "Approve", style: .default) { [weak self] _ in
-                    self?.dismissThen {
-                        if await self?.perform(.followUp(sessionID: session.id, text: VoiceCommand.approvalText)) == true {
-                            await self?.refresh()
-                        }
+        var actions: [CPAlertAction] = [
+            CPAlertAction(title: "Approve", style: .default) { [weak self] _ in
+                self?.dismissThen {
+                    if await self?.perform(.followUp(sessionID: session.id, text: VoiceCommand.approvalText)) == true {
+                        await self?.refresh()
                     }
-                },
-                CPAlertAction(title: "Reply by voice", style: .default) { [weak self] _ in
-                    self?.dismissThen { self?.startConversation(focusing: session.id) }
-                },
-                CPAlertAction(title: "Archive", style: .destructive) { [weak self] _ in
-                    self?.dismissThen {
-                        if await self?.perform(.archive(sessionID: session.id)) == true {
-                            await self?.refresh()
-                        }
-                    }
-                },
-                CPAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
-                    self?.interfaceController?.dismissTemplate(animated: true, completion: nil)
-                },
-            ]
-        )
+                }
+            },
+        ]
+        // Only where the phone can recognise speech on its own: see VoiceIO.
+        if VoiceIO.canListen {
+            actions.append(CPAlertAction(title: "Reply by voice", style: .default) { [weak self] _ in
+                self?.dismissThen { self?.startConversation(focusing: session.id) }
+            })
+        }
+        actions.append(CPAlertAction(title: "Archive", style: .destructive) { [weak self] _ in
+            self?.dismissThen {
+                if await self?.perform(.archive(sessionID: session.id)) == true {
+                    await self?.refresh()
+                }
+            }
+        })
+        actions.append(CPAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+            self?.interfaceController?.dismissTemplate(animated: true, completion: nil)
+        })
+        let sheet = CPActionSheetTemplate(title: session.displayTitle, message: summaries[session.id], actions: actions)
         interfaceController?.presentTemplate(sheet, animated: true, completion: nil)
     }
 
@@ -176,6 +176,13 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
                 await self.voice.speak(failure)
                 return
             }
+            // Say it before asking the driver to speak, not after showing "Listening…".
+            guard VoiceIO.canListen else {
+                let waiting = flow.queue.count
+                let count = waiting == 0 ? "Nothing needs you right now." : waiting == 1 ? "One session needs you." : "\(waiting) sessions need you."
+                await self.voice.speak("\(count) This iPhone can't recognise speech on its own, so use Approve or Archive on the screen.")
+                return
+            }
             var effects = flow.opening()
             var misses = 0
             while !Task.isCancelled {
@@ -201,10 +208,6 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
                 // not sit through several requests' silence.
                 if acted { await self.refresh() }
                 template.activateVoiceControlState(withIdentifier: VoiceState.listening)
-                guard VoiceIO.canListen else {
-                    await self.voice.speak("This iPhone can't recognise speech on its own, so use the buttons on the screen.")
-                    return
-                }
                 guard let heard = await self.voice.listen(), let command = VoiceCommand(heard) else {
                     misses += 1
                     if misses >= 2 { await self.voice.speak("I'll leave it there."); return }
