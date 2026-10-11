@@ -25,7 +25,7 @@ struct SessionListView: View {
     @State private var reordering = false
 
     var body: some View {
-        searchableList
+        listWithDecisions
             .toolbar { toolbarContent }
             .confirmationDialog(
                 "Snooze until…", isPresented: isSnoozing,
@@ -56,21 +56,6 @@ struct SessionListView: View {
                 }
             } message: {
                 Text("A session mid-turn, or with messages still queued, is refused and stays.")
-            }
-            .confirmationDialog(
-                "Authorize the merge?", isPresented: isMerging,
-                titleVisibility: .visible, presenting: merging
-            ) { session in
-                Button("Merge \(session.mergeablePullRequest?.label ?? "PR")") {
-                    Task { await model.authorizeMerge(session.id) }
-                }
-            } message: { session in
-                Text("Session #\(session.id) is told to check for conflicts, merge \(session.mergeablePullRequest?.label ?? "its PR"), and archive itself. Your tap is the sign-off.")
-            }
-            .confirmationDialog("Reprioritize the board?", isPresented: $confirmingReprioritize, titleVisibility: .visible) {
-                Button("Reprioritize") { Task { await model.reprioritize() } }
-            } message: {
-                Text("Zimmer's reprioritizing session re-ranks this board and writes the order back. You can still drag anything afterwards.")
             }
             .confirmationDialog("Refresh all sessions?", isPresented: $confirmingRefreshAll, titleVisibility: .visible) {
                 Button("Refresh All Now") { Task { await model.refreshAll() } }
@@ -298,6 +283,27 @@ struct SessionListView: View {
 
     private var isSnoozing: Binding<Bool> {
         Binding(get: { snoozing != nil }, set: { if !$0 { snoozing = nil } })
+    }
+
+    /// The list with Merge's and Reprioritize's confirmations: a separate expression, because
+    /// one modifier chain holding every dialog is more than the type checker will take.
+    private var listWithDecisions: some View {
+        searchableList
+            .confirmationDialog(
+                "Authorize the merge?", isPresented: isMerging,
+                titleVisibility: .visible, presenting: merging
+            ) { session in
+                Button("Merge \(session.mergeablePullRequest?.label ?? "PR")") {
+                    Task { await model.authorizeMerge(session.id) }
+                }
+            } message: { session in
+                Text("Session #\(session.id) is told to check for conflicts, merge \(session.mergeablePullRequest?.label ?? "its PR"), and archive itself. Your tap is the sign-off.")
+            }
+            .confirmationDialog("Reprioritize the board?", isPresented: $confirmingReprioritize, titleVisibility: .visible) {
+                Button("Reprioritize") { Task { await model.reprioritize() } }
+            } message: {
+                Text("Zimmer's reprioritizing session re-ranks this board and writes the order back. You can still drag anything afterwards.")
+            }
     }
 
     private var isMerging: Binding<Bool> {
