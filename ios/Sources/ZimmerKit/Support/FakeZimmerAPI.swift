@@ -17,6 +17,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var queues: [Int: [QueuedMessage]] = FakeZimmerAPI.sampleQueues()
     /// 1035 queued a message to 1031, so it is drawn as 1031's additional senior.
     private var uncles: [Int: [Int]] = [1031: [1035]]
+    private var inbox: [InboxNotification] = FakeZimmerAPI.sampleNotifications()
+    private var triggerList: [TriggerSummary] = FakeZimmerAPI.sampleTriggers()
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
 
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date()) {
@@ -602,5 +604,102 @@ extension SessionSummary {
         case .hooks: catalogHooks = values
         case .plugins: catalogPlugins = values
         }
+    }
+}
+
+// MARK: - Inbox, triggers, costs and health
+//
+// As the server: an unread notification cannot be dismissed, and invoking a disabled
+// trigger is refused.
+extension FakeZimmerAPI {
+    public func notifications() async throws -> [InboxNotification] { inbox }
+
+    public func unreadNotificationCount() async throws -> Int { inbox.filter { !$0.read }.count }
+
+    public func markNotificationRead(_ id: Int) async throws -> InboxNotification {
+        guard let index = inbox.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        inbox[index].read = true
+        return inbox[index]
+    }
+
+    public func markAllNotificationsRead() async throws {
+        for index in inbox.indices { inbox[index].read = true }
+    }
+
+    public func dismissNotification(_ id: Int) async throws {
+        guard let notification = inbox.first(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        guard notification.read else { throw ZimmerError.http(status: 422, message: "Cannot dismiss unread notification") }
+        inbox.removeAll { $0.id == id }
+    }
+
+    public func dismissAllReadNotifications() async throws {
+        inbox.removeAll(where: \.read)
+    }
+
+    public func triggers() async throws -> [TriggerSummary] { triggerList }
+
+    public func toggleTrigger(_ id: Int) async throws -> TriggerSummary {
+        guard let index = triggerList.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        triggerList[index].status = triggerList[index].isEnabled ? "disabled" : "enabled"
+        return triggerList[index]
+    }
+
+    public func invokeTrigger(_ id: Int) async throws -> TriggerInvocation {
+        guard let trigger = triggerList.first(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        // A disabled trigger can still be fired by hand, as the server allows.
+        let started = try await startQuickRouter("\(trigger.name): run now")
+        return TriggerInvocation(sessionID: started, message: "Trigger '\(trigger.name)' fired: session \(started) started")
+    }
+
+    public func costs(days: Int) async throws -> CostSnapshot {
+        let now = Date()
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        let spend = [41.2, 55.0, 38.7, 62.3, 70.1, 48.9, 53.4]
+        let daysShown = spend.enumerated().map { offset, cost in
+            CostSnapshot.Day(day: formatter.string(from: now.addingTimeInterval(Double(offset - spend.count + 1) * 86_400)), costUSD: cost)
+        }
+        return CostSnapshot(
+            from: now.addingTimeInterval(-Double(days) * 86_400), to: now, totalUSD: spend.reduce(0, +), days: daysShown,
+            agentRoots: [.init(label: "zimmer", costUSD: 201.4), .init(label: "zimmer-orchestrator", costUSD: 88.2), .init(label: "motet", costUSD: 80.0)],
+            models: [.init(label: "opus", costUSD: 330.1), .init(label: "sonnet", costUSD: 39.5)],
+            topSessions: [.init(sessionID: 1042, costUSD: 23.81, tokens: 1_204_331), .init(sessionID: 1038, costUSD: 17.02, tokens: 880_120)]
+        )
+    }
+
+    public func health() async throws -> HealthReport {
+        HealthReport(
+            overall: .init(key: "overall", status: "warning", message: "One or more warnings detected"),
+            sections: [
+                .init(key: "auth_health", status: "healthy"),
+                .init(key: "cron_health", status: "healthy"),
+                .init(key: "process_health", status: "healthy"),
+                .init(key: "session_health", status: "warning", message: "Failure rate 12% over the last day"),
+                .init(key: "system_health", status: "healthy"),
+            ],
+            generatedAt: Date()
+        )
+    }
+
+    static func sampleNotifications(now: Date = Date()) -> [InboxNotification] {
+        [
+            InboxNotification(id: 91, type: "needs_input", read: false, createdAt: now.addingTimeInterval(-6 * 60),
+                              session: .init(id: 1038, title: "PR #1261 is green and ready — merge it?", status: .needsInput)),
+            InboxNotification(id: 90, type: "session_failed", read: false, createdAt: now.addingTimeInterval(-180 * 60),
+                              session: .init(id: 1027, title: "Rotate the staging deploy key", status: .failed)),
+            InboxNotification(id: 88, type: "session_complete", read: true, createdAt: now.addingTimeInterval(-1_400 * 60),
+                              session: .init(id: 1019, title: "Fix the flaky transcript poller test", status: .archived)),
+        ]
+    }
+
+    static func sampleTriggers(now: Date = Date()) -> [TriggerSummary] {
+        [
+            TriggerSummary(id: 5, name: "Nightly dependency sweep", status: "enabled", agentRoot: "zimmer",
+                           lastTriggeredAt: now.addingTimeInterval(-20 * 60), lastSessionID: 1031, sessionsCreated: 31,
+                           conditions: [.init(type: "schedule", description: "Every day at 02:00 UTC")]),
+            TriggerSummary(id: 6, name: "Slack #zimmer mentions", status: "disabled", agentRoot: "zimmer-orchestrator",
+                           sessionsCreated: 4, conditions: [.init(type: "slack", description: "@zimmer in #zimmer")]),
+        ]
     }
 }

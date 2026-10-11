@@ -239,6 +239,8 @@ if [ -d "$app" ]; then
   shoot session-detail-hierarchy -ZimmerFixture -ZimmerFixtureOpenSession 1042
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
   shoot new-session -ZimmerFixture -ZimmerFixtureNewSession
+  shoot inbox -ZimmerFixture -ZimmerFixtureTab inbox
+  shoot triggers -ZimmerFixture -ZimmerFixtureTab triggers
   # Dark mode, for the two screens a person reads most.
   xcrun simctl ui "$udid" appearance dark >/dev/null 2>&1 || true
   shoot sessions-active-dark -ZimmerFixture -ZimmerFixtureFilter active
