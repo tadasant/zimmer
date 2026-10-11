@@ -20,7 +20,7 @@ final class DecisionsUITests: XCTestCase {
         merge.tap()
 
         // The confirmation names the PR; the tap is the sign-off.
-        let confirm = app.buttons["Merge #1261"].firstMatch
+        let confirm = app.sheets.buttons["Merge #1261"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
         XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["toast"], "Merge authorized"))
@@ -31,8 +31,10 @@ final class DecisionsUITests: XCTestCase {
         let actions = app.buttons["detail.actions"]
         XCTAssertTrue(actions.waitForExistence(timeout: timeout))
         actions.tap()
-        app.buttons["Merge #1261"].firstMatch.tap()
-        let confirm = app.buttons["Merge #1261"].firstMatch
+        let item = app.buttons["Merge #1261"].firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: timeout))
+        item.tap()
+        let confirm = app.sheets.buttons["Merge #1261"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
         XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["followup.notice"], "Merge authorized"))
@@ -43,11 +45,13 @@ final class DecisionsUITests: XCTestCase {
         let menu = app.buttons["board.menu"]
         XCTAssertTrue(menu.waitForExistence(timeout: timeout))
         menu.tap()
-        app.buttons["Reprioritize"].firstMatch.tap()
-        let confirm = app.buttons["Reprioritize"].firstMatch
+        let item = app.buttons["Reprioritize"].firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: timeout))
+        item.tap()
+        let confirm = app.sheets.buttons["Reprioritize"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
-        XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["toast"], "Reprioritizing in session #"))
+        XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["toast"], "is re-ranking the board"))
     }
 
     // MARK: - Helpers

@@ -111,7 +111,8 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   a swipe right, a long-press item, and the first item in the session menu (*Merge #1261*). After a
   confirmation, the session is told it may merge (`POST /api/v1/sessions/:id/authorize_merge`). The
   tap is the sign-off, and it is recorded as your message. Only a sign-in that acts on your behalf
-  may give it; a relay-only one shows the server's refusal.
+  may give it; a relay-only one shows the server's refusal. The app does not show the web row's
+  *Merge sent* state: a second tap is answered "already authorized" and sends nothing.
 - **Reprioritizes** the board from the view menu in *Your board* and *Ranked*, after a confirmation:
   the deployment's reprioritizing session re-ranks it and writes the order back.
 - **Trashes** a session, after a confirmation, and restores one from the trash.
