@@ -2,7 +2,7 @@ require "application_system_test_case"
 
 # Tests for session detail page scrolling behavior:
 # - Initial page load: Data loads, jumps to bottom immediately
-# - Limited initial load: Only 100 messages loaded initially (per INITIAL_TIMELINE_ITEMS_LIMIT)
+# - Limited initial load: the newest TRANSCRIPT_TAIL_LIMIT messages, then a short prefetch
 # - Running sessions: New messages auto-append and auto-scroll to bottom when tailing
 # - User scroll up: Disables auto-scroll (no longer tailing)
 # - Scroll back to bottom: Re-enables auto-scroll (tailing again)
@@ -10,8 +10,13 @@ require "application_system_test_case"
 class SessionScrollBehaviorTest < ApplicationSystemTestCase
   # Create a session with many messages for infinite scroll testing
   # What the panel holds before the reader pages anything in: the tail, and
-  # once infinite-scroll#prefetchEarlier has run, the 40 items before it.
-  INITIAL_WINDOW = (SessionsController::TRANSCRIPT_TAIL_LIMIT..SessionsController::TRANSCRIPT_TAIL_LIMIT + 40)
+  # once infinite-scroll#prefetchEarlier has run, the 40 items before it. With
+  # only the tail on screen the load-more trigger can be in view as the panel
+  # opens, and then the observer pages one full batch in before the prefetch
+  # runs (the prefetch then waits on that request rather than issuing its own),
+  # so the window allows for that page instead of racing it.
+  INITIAL_WINDOW = (SessionsController::TRANSCRIPT_TAIL_LIMIT..
+                    SessionsController::TRANSCRIPT_TAIL_LIMIT + 40 + SessionsController::TIMELINE_PAGE_LIMIT)
 
   def create_session_with_many_messages(count:)
     transcript_entries = count.times.map do |i|
@@ -120,8 +125,8 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
   end
 
   test "session detail page loads limited items initially with infinite scroll trigger" do
-    # Create a session with more than the limit (100)
-    session = create_session_with_many_messages(count: 150)
+    # More than everything INITIAL_WINDOW allows for.
+    session = create_session_with_many_messages(count: 300)
 
     visit session_path(session)
 
@@ -132,8 +137,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     # This ensures we check item count BEFORE any infinite scroll auto-triggers
     sleep 0.8
 
-    # The tail, plus at most the one earlier page prefetched after it — never
-    # all 150.
+    # The tail, plus at most what INITIAL_WINDOW allows for — never all 300.
     loaded_items = page.all("[data-timeline-item]").count
     assert_includes INITIAL_WINDOW, loaded_items, "Should load limited items initially (got #{loaded_items})"
 
@@ -226,8 +230,8 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
   end
 
   test "infinite scroll loads more items when scrolling to top" do
-    # Create a session with more than the limit (100)
-    session = create_session_with_many_messages(count: 150)
+    # More than everything INITIAL_WINDOW allows for.
+    session = create_session_with_many_messages(count: 300)
 
     visit session_path(session)
 
@@ -251,8 +255,8 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
   end
 
   test "infinite scroll maintains scroll position when loading older items" do
-    # Create a session with more than the limit (100)
-    session = create_session_with_many_messages(count: 150)
+    # More than everything INITIAL_WINDOW allows for.
+    session = create_session_with_many_messages(count: 300)
 
     visit session_path(session)
     assert_selector "[data-timeline-item]", minimum: 1

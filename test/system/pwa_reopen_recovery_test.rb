@@ -343,8 +343,12 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
     page.execute_script("document.querySelector(\"turbo-frame[id$='_transcript']\").reload()")
 
     assert_selector "turbo-frame[id$='_transcript']", text: "ARRIVED OVER THE SOCKET", wait: 5
-    assert_equal 1, timeline_row_count(session),
-      "the frame rendered a second copy of the row that had already streamed in"
+    # The frame's rows are in the DOM a beat before turbo:frame-load fires and
+    # dropStreamedDuplicates runs, so the count is polled rather than read once.
+    # A real duplicate never resolves and still fails here.
+    assert_eventually("the frame rendered a second copy of the row that had already streamed in") do
+      timeline_row_count(session) == 1
+    end
   end
 
   # Reopening twice is the normal case — the user switches apps repeatedly — and

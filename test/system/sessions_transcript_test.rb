@@ -87,10 +87,9 @@ class SessionsTranscriptTest < ApplicationSystemTestCase
   # The other opening nobody scrolls to, and the one a reader actually meets: the
   # log-level filter re-fetches with `transcript=open` so the panel comes back
   # open at the level just picked (log_level_filter_controller.js#refetchAtLevel).
-  # That page renders the disclosure already open, so no toggle fires and
-  # #loadFrame has to be reached through `frameTargetConnected` instead. On a
-  # phone the panel is a long way down the page, so intersection cannot be what
-  # rescues it.
+  # That page renders the disclosure already open, so no toggle fires; the rows
+  # have to arrive anyway. On a phone the panel is a long way down the page, so
+  # intersection cannot be what rescues it — the frame being eager is.
   test "a transcript rendered already open loads its rows below the fold" do
     page.driver.browser.manage.window.resize_to(800, 600)
 

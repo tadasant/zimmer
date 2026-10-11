@@ -728,8 +728,16 @@ items, loaded as the reader scrolls toward the top. Each page carries two cursor
   page boundary in both directions. Transcript lines are written in time order but not strictly, and
   the page is cut by `sort_time`.
 
-At `show-logs` and `verbose`, logs are a second source, cut by the same timestamp in SQL and merged
+At `show-logs` and `verbose`, logs are a second source, cut by the same timestamp in SQL (at
+`show-logs`, with verbose logs left out of the query so they cannot fill a page's limit) and merged
 before the page is taken.
+
+**Lines with no timestamp of their own** (Claude's `last-prompt`, `mode` and `cost-state` bookkeeping
+records, visible at `show-logs` and `verbose`) sort at the session's `created_at`, which a full build
+puts at the very top of the timeline. They cannot take part in a backward read: counted against a
+page they would fill it and drag the cursor to `created_at`, ending the history early. So they are
+left out of every page but the last, which collects all of them in one full pass of the transcript,
+the one full read paging ever does, and only for a reader who reaches the start of the history.
 
 **The total arrives separately.** `compute_filtered_count` is the one figure that cannot be read from
 a tail: an exact count of what the active filter would show means normalizing every transcript entry.
