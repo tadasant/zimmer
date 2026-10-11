@@ -11,7 +11,10 @@ Rails.application.config.filter_parameters += [
   /\Acode\z/, /\Acode_verifier\z/, :redirect_response,
   # The Cloudflare Access JWT the iOS app's edge handoff returns (already caught
   # by :token; named so a change to that rule cannot expose it).
-  :cf_access_token
+  :cf_access_token,
+  # A follow-up's inline attachments (base64 file contents): megabytes per line, and
+  # whatever the person attached.
+  :attachments
 ]
 
 # The handoff's redirect carries the same JWT in its fragment, and Rails logs
