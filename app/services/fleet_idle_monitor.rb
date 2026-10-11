@@ -137,11 +137,12 @@
 # The dwell cannot pace a fleet that stays quiet. Once a stretch is past the
 # threshold it STAYS past it, for hours, so the threshold answers "may this
 # stretch fire at all" and never "may it fire again". The cooldown is what
-# answers the second question and it is the only thing that does: on a fleet
-# permanently under its ceiling the cadence is exactly
+# answers the second question: on a fleet permanently under its ceiling with a
+# backlog that keeps getting work, the cadence is exactly
 # `fleet_idle_min_fire_interval_minutes`. 60 minutes means at most 24 top-ups a
 # day whatever the ceiling is set to, so it is the interval an operator retunes
-# to change how often work gets started, not the ceiling.
+# to change how quickly new work gets started, not the ceiling. (When the backlog
+# has nothing new, the quiet interval below takes over.)
 #
 # It has to be a clock the fleet cannot touch, for a reason that is circular and
 # easy to miss: the fire spawns a session, and that session is itself work on the
@@ -164,6 +165,35 @@
 # accumulate a threshold at all. The clock now means what it says, and the latch
 # went with it — the cooldown was already the load-bearing half at any ceiling
 # above 1, and it is now the whole of it.
+#
+# == Why an unchanged backlog backs off
+#
+# The cooldown alone still makes an idle deployment poll itself. The trigger this
+# event exists for is the backlog top-up, and on a fleet that is quiet BECAUSE the
+# backlog is empty, every fire spawns a session that finds nothing to pull and
+# archives — and since that session never takes the fleet to its ceiling, the
+# stretch runs on and the next fire comes one cooldown later. At a 10-minute
+# cooldown that was ~130 empty top-ups a day.
+#
+# So a fire past the cooldown also asks whether the backlog has NEWS since the
+# last one, and without news it waits out `fleet_idle_quiet_backlog_interval_minutes`
+# instead (four hours by default). News is either of:
+#
+#   - an item queued AFTER the last fire. Rows only ever enter `queued` by being
+#     created (WorkBacklog::Append, the importer), so `created_at` is the arrival.
+#   - queued items left over AND an item started since the last fire — the last
+#     top-up was productive, and the fleet ran out of room before the queue ran
+#     out of items, so the next quiet stretch should finish draining it.
+#
+# Queued items with neither are ones the last top-up looked at and left — held,
+# or declined — so firing on them again every cooldown is the same loop with a
+# non-empty queue. The quiet interval is the safety net for everything this
+# reading cannot see: a hold lapsing, or a trigger that does more than pull.
+#
+# Like the cooldown, this reads only things the event's own session cannot fake:
+# a top-up that pulls nothing writes nothing to the backlog. An unreadable backlog
+# counts as no news, which bounds a broken read at the quiet interval rather than
+# either silencing top-up or letting it run at the cooldown.
 #
 # == Why the sweep is not the only observation
 #
@@ -207,8 +237,9 @@ class FleetIdleMonitor
 
   class << self
     # How few sessions the fleet may be running and still count as idle enough,
-    # how long it must stay that way, and the floor between two fires. All three are
-    # operator-tunable on /inference, so they are read rather than frozen.
+    # how long it must stay that way, the floor between two fires, and the longer
+    # floor while the backlog has nothing new. All four are operator-tunable on
+    # /inference, so they are read rather than frozen.
     #
     # Each takes the already-loaded settings row when the caller has one, so a
     # single `check!` decides on one observation of it.
@@ -222,6 +253,24 @@ class FleetIdleMonitor
 
     def min_fire_interval(setting = AppSetting.current)
       setting.fleet_idle_min_fire_interval_minutes.minutes
+    end
+
+    def quiet_backlog_interval(setting = AppSetting.current)
+      setting.fleet_idle_quiet_backlog_interval_minutes.minutes
+    end
+
+    # Whether the work backlog has something to hand out that it did not have at
+    # `since`: an item queued after it, or leftovers behind an item started after
+    # it. See "Why an unchanged backlog backs off". False when it cannot be read.
+    def backlog_news_since?(since)
+      queued = WorkBacklogItem.queued
+      return false unless queued.exists?
+
+      queued.where("created_at > ?", since).exists? ||
+        WorkBacklogItem.where("started_at > ?", since).exists?
+    rescue => e
+      Rails.logger.info "[FleetIdleMonitor] Could not read the work backlog: #{e.message}"
+      false
     end
 
     # Observe the fleet now, advance the idle clock, and fire the event if the
@@ -277,6 +326,13 @@ class FleetIdleMonitor
       # the quiet lasts. See "Why the cadence is the cooldown alone".
       last_fired = setting.fleet_idle_event_fired_at
       return false if last_fired.present? && now - last_fired < min_fire_interval(setting)
+
+      # The longer floor for a backlog with nothing new since the last fire. See
+      # "Why an unchanged backlog backs off".
+      if last_fired.present? && now - last_fired < quiet_backlog_interval(setting) &&
+          !backlog_news_since?(last_fired)
+        return false
+      end
 
       # A guarded write, so a `record_session_started!` that lands between the
       # read above and this line cannot be overwritten from a stale record.

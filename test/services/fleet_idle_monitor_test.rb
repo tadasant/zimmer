@@ -13,6 +13,7 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
   # the whole observable outcome here.
   include ActiveJob::TestHelper
   include ActiveSupport::Testing::TimeHelpers
+  include WorkBacklogHelpers
 
   setup do
     # The fixtures ship sessions in `running` and in `waiting`, which is exactly
@@ -23,7 +24,11 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
                                 quota_pool_available: true,
                                 fleet_idle_max_sessions: AppSetting::DEFAULT_FLEET_IDLE_MAX_SESSIONS,
                                 fleet_idle_threshold_minutes: AppSetting::DEFAULT_FLEET_IDLE_THRESHOLD_MINUTES,
-                                fleet_idle_min_fire_interval_minutes: AppSetting::DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES)
+                                fleet_idle_min_fire_interval_minutes: AppSetting::DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES,
+                                # 1 never binds below the cooldown, so the cases below pin the
+                                # cooldown alone. The quiet-backlog interval has its own cases,
+                                # which set it back to the default.
+                                fleet_idle_quiet_backlog_interval_minutes: 1)
   end
 
   # A ceiling of 1 is the boolean the threshold replaced — nothing running — so
@@ -852,5 +857,140 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
 
     assert_equal crossing.to_i, setting.fleet_idle_since.to_i
+  end
+
+  # ---- The quiet-backlog interval ------------------------------------------
+  #
+  # The reported loop: an idle fleet, an empty backlog, and a short cooldown.
+  # Every fire spawned a top-up that pulled nothing, so with the cooldown alone
+  # the event fired once per cooldown forever.
+
+  def quiet_backlog!(cooldown: 10, quiet: AppSetting::DEFAULT_FLEET_IDLE_QUIET_BACKLOG_INTERVAL_MINUTES)
+    WorkBacklogItem.delete_all
+    AppSetting.editable.update!(fleet_idle_min_fire_interval_minutes: cooldown,
+                                fleet_idle_quiet_backlog_interval_minutes: quiet)
+  end
+
+  # Advance minute by minute, sweeping like the cron does, and count the fires.
+  def fires_over(duration)
+    fires = 0
+    (duration / 1.minute).to_i.times do
+      travel 1.minute
+      fires += 1 if FleetIdleMonitor.check!
+    end
+    fires
+  end
+
+  test "an idle fleet with an empty backlog fires once per quiet interval, not once per cooldown" do
+    quiet_backlog!
+
+    freeze_time do
+      FleetIdleMonitor.check!
+      # 24 hours at a 10-minute cooldown used to be ~140 fires; the first fire
+      # has no last fire to compare against, and after it the four-hour interval
+      # holds.
+      fires = fires_over(24.hours)
+      assert_equal 6, fires, "one fire every #{FleetIdleMonitor.quiet_backlog_interval.inspect}"
+    end
+  end
+
+  test "an item queued after the last fire is drained at the next check past the cooldown" do
+    quiet_backlog!
+
+    freeze_time do
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold
+      assert FleetIdleMonitor.check!, "the first fire has nothing to compare against"
+
+      travel 30.minutes
+      assert_not FleetIdleMonitor.check!, "nothing new on the backlog — the quiet interval holds"
+
+      backlog_item
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ FleetIdleMonitor::EVENT_NAME ]) do
+        assert FleetIdleMonitor.check!, "a newly queued item lifts the quiet interval"
+      end
+    end
+  end
+
+  # The cooldown is still the floor: news on the backlog never fires inside it.
+  test "a newly queued item does not override the cooldown" do
+    quiet_backlog!(cooldown: 60)
+
+    freeze_time do
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold
+      assert FleetIdleMonitor.check!
+
+      travel 5.minutes
+      backlog_item
+      assert_not FleetIdleMonitor.check!, "the cooldown is still unspent"
+
+      travel 55.minutes
+      assert FleetIdleMonitor.check!
+    end
+  end
+
+  # Leftovers behind a productive top-up: the fleet ran out of room before the
+  # queue ran out of items, so the next quiet stretch should finish the job at
+  # the cooldown rather than four hours later.
+  test "a top-up that started something keeps the cooldown cadence while items are left" do
+    quiet_backlog!
+
+    freeze_time do
+      leftover = backlog_item
+      started = backlog_item
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold
+      assert FleetIdleMonitor.check!
+
+      travel 2.minutes
+      started.update!(status: WorkBacklogItem::STARTED, started_at: Time.current)
+
+      travel FleetIdleMonitor.min_fire_interval
+      assert FleetIdleMonitor.check!, "the last fire was productive and #{leftover.key} is still queued"
+
+      travel FleetIdleMonitor.min_fire_interval
+      assert_not FleetIdleMonitor.check!,
+        "the fire before this one started nothing, so the leftover is one the top-up declined"
+    end
+  end
+
+  # Items the top-up looked at and left — held, declined — are not news, so a
+  # non-empty queue alone does not bring back the cooldown loop.
+  test "queued items that were already there at the last fire do not lift the quiet interval" do
+    quiet_backlog!
+
+    freeze_time do
+      backlog_item
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold
+      assert FleetIdleMonitor.check!
+
+      travel 1.hour
+      assert_not FleetIdleMonitor.check!
+
+      travel FleetIdleMonitor.quiet_backlog_interval - 1.hour
+      assert FleetIdleMonitor.check!, "the quiet interval is the safety net for them"
+    end
+  end
+
+  # Fail toward the quiet interval: a broken backlog read neither silences top-up
+  # nor lets it run at the cooldown.
+  test "an unreadable backlog counts as no news" do
+    quiet_backlog!
+
+    freeze_time do
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold
+      assert FleetIdleMonitor.check!
+
+      WorkBacklogItem.stub(:queued, -> { raise ActiveRecord::StatementInvalid, "boom" }) do
+        travel 30.minutes
+        assert_not FleetIdleMonitor.check!
+
+        travel FleetIdleMonitor.quiet_backlog_interval
+        assert FleetIdleMonitor.check!
+      end
+    end
   end
 end

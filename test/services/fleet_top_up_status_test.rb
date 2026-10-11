@@ -7,13 +7,16 @@ require "test_helper"
 # look identical from outside and clear differently.
 class FleetTopUpStatusTest < ActiveSupport::TestCase
   include ActiveSupport::Testing::TimeHelpers
+  include WorkBacklogHelpers
 
   setup do
     Session.delete_all
     @setting = AppSetting.editable
     @setting.update!(fleet_idle_since: nil, fleet_idle_event_fired_at: nil,
                      fleet_idle_max_sessions: 3, fleet_idle_threshold_minutes: 5,
-                     fleet_idle_min_fire_interval_minutes: 60)
+                     fleet_idle_min_fire_interval_minutes: 60,
+                     # Never binds below the cooldown; the quiet-backlog cases raise it.
+                     fleet_idle_quiet_backlog_interval_minutes: 1)
   end
 
   # Most cases only care about the state arithmetic, so they name one number and
@@ -197,6 +200,47 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
     assert_equal now.to_i, s.next_fire_at.to_i
   end
 
+  # Past the cooldown with nothing new on the backlog: the quiet interval is the
+  # clock that holds the fire, so it is the one the card names and counts down.
+  test "past the cooldown with nothing new on the backlog, the quiet interval holds the fire" do
+    WorkBacklogItem.delete_all
+    now = Time.current
+    @setting.update!(fleet_idle_since: now - 90.minutes, fleet_idle_event_fired_at: now - 90.minutes,
+                     fleet_idle_quiet_backlog_interval_minutes: 240)
+    s = status(running: 0, now: now)
+
+    assert_equal :backlog_quiet, s.state
+    assert_equal (now + 150.minutes).to_i, s.next_fire_at.to_i
+    assert_match(/nothing new since the last fire/, s.sentence)
+    assert_equal "at most 6 top-ups a day", s.quiet_cadence_phrase
+  end
+
+  test "an item queued since the last fire lifts the quiet interval" do
+    WorkBacklogItem.delete_all
+    now = Time.current
+    @setting.update!(fleet_idle_since: now - 90.minutes, fleet_idle_event_fired_at: now - 90.minutes,
+                     fleet_idle_quiet_backlog_interval_minutes: 240)
+    backlog_item
+
+    s = status(running: 0, now: now)
+    assert_equal :due, s.state
+    assert_equal now.to_i, s.next_fire_at.to_i
+  end
+
+  # Inside the threshold, the quiet interval is the later clock and the one the
+  # sentence has to name — the cooldown is the smaller number and the wrong one.
+  test "inside the threshold with the quiet interval binding, the sentence names it" do
+    WorkBacklogItem.delete_all
+    now = Time.current
+    @setting.update!(fleet_idle_since: now - 2.minutes, fleet_idle_event_fired_at: now - 90.minutes,
+                     fleet_idle_quiet_backlog_interval_minutes: 240)
+    s = status(running: 0, now: now)
+
+    assert_equal :inside_threshold, s.state
+    assert_equal (now + 150.minutes).to_i, s.next_fire_at.to_i
+    assert_match(/quiet interval holds the next one/, s.sentence)
+  end
+
   test "max_fires_per_day is the cooldown expressed the way an operator retunes it" do
     assert_equal 24, status(running: 0).max_fires_per_day
 
@@ -260,6 +304,12 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
       when :cooling_down
         @setting.update!(fleet_idle_since: now - 10.minutes, fleet_idle_event_fired_at: now - 20.minutes)
         [ state, status(running: 0, now: now) ]
+      when :backlog_quiet
+        @setting.update!(fleet_idle_since: now - 90.minutes, fleet_idle_event_fired_at: now - 120.minutes,
+                         fleet_idle_quiet_backlog_interval_minutes: 240)
+        quiet = status(running: 0, now: now)
+        @setting.update!(fleet_idle_quiet_backlog_interval_minutes: 1)
+        [ state, quiet ]
       when :due
         @setting.update!(fleet_idle_since: now - 90.minutes, fleet_idle_event_fired_at: now - 120.minutes)
         [ state, status(running: 0, now: now) ]

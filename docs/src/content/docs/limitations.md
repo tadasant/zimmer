@@ -2394,8 +2394,14 @@ that does it has known limits:
   deployment would get one spawn every stretch, forever. The idle stretch runs on *through* a fire —
   only the fleet reaching its ceiling ends one — so the cooldown, not the ceiling and not the stretch,
   decides the cadence: 60 minutes means at most 24 top-ups a day. It is tunable, but it is still a
-  fixed floor rather than anything derived from how much work is actually queued, and it applies even
-  when the previous fire delivered nothing.
+  fixed floor rather than anything derived from how much work is actually queued.
+- **The quiet-backlog back-off assumes the listening trigger is the backlog top-up.**
+  `fleet_idle_quiet_backlog_interval_minutes` (four hours by default) holds the next fire whenever the
+  work backlog has had nothing new since the last one. That is right for the groomer this event exists
+  for, but the event is generic: a deployment that listens to `no_sessions_in_progress` for idle-time
+  work that has nothing to do with the backlog gets one fire per quiet interval, not one per cooldown,
+  unless it lowers the quiet interval to the cooldown. The back-off also cannot see a held item's hold
+  lapsing, so such an item waits for the quiet interval rather than the cooldown.
 - **A fleet that flaps across its ceiling never accumulates a stretch.** The dwell has to be
   *continuous*, and both the sweep and the state-machine hook end it the moment the fleet is at or
   over the ceiling. A deployment that keeps touching its ceiling and dropping back more often than
