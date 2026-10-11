@@ -6,7 +6,7 @@ import ZimmerKit
 @MainActor
 final class SessionDetailModel: ObservableObject {
     let id: Int
-    private let api: ZimmerAPI
+    let api: ZimmerAPI
     /// Hands an error the whole app cares about (a sign-in that ended) to `AppModel`.
     var report: (ZimmerError) -> Void = { _ in }
 
@@ -17,6 +17,8 @@ final class SessionDetailModel: ObservableObject {
     @Published var error: ZimmerError?
     @Published var notice: String?
     @Published var draft = ""
+    /// The messages waiting for the turn in flight to end (`QueueCard`).
+    @Published var queue: [QueuedMessage] = []
 
     init(id: Int, api: ZimmerAPI) {
         self.id = id
@@ -29,13 +31,16 @@ final class SessionDetailModel: ObservableObject {
         do {
             detail = try await api.session(id)
             conversation = try await api.conversation(id)
+            // The queue is the panel under the conversation, not the page: a queue that
+            // will not load leaves the panel off rather than failing the session.
+            queue = (try? await api.queue(id)) ?? []
             error = nil
         } catch {
             fail(error)
         }
     }
 
-    private func fail(_ error: Error) {
+    func fail(_ error: Error) {
         let zimmerError = error as? ZimmerError ?? .transport(error)
         self.error = zimmerError
         report(zimmerError)
@@ -142,6 +147,8 @@ struct SessionDetailView: View {
     @State private var showingToolTraffic = false
     @State private var editing: EditedText?
     @State private var renaming = false
+    @State private var showingLogs = false
+    @State private var showingSubagents = false
     @State private var newTitle = ""
 
     /// Short answers a person gives most often — on a phone, typing is the expensive part.
@@ -187,6 +194,9 @@ struct SessionDetailView: View {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
                 }
                 if let error = model.error { ErrorBanner(error: error) }
+                if !model.queue.isEmpty {
+                    QueueCard(model: model)
+                }
                 if let conversation = model.conversation {
                     conversationSection(conversation)
                 }
@@ -231,6 +241,8 @@ struct SessionDetailView: View {
                 }
             }
         }
+        .sheet(isPresented: $showingLogs) { SessionLogsView(id: model.id, api: model.api) }
+        .sheet(isPresented: $showingSubagents) { SubagentsView(id: model.id, api: model.api) }
         .overlay(alignment: .bottom) {
             // Above the composer, which is a bottom inset.
             Toast(text: $model.notice, identifier: "followup.notice")
@@ -337,6 +349,8 @@ struct SessionDetailView: View {
             Section {
                 Button { app.showingQuickRouter = true } label: { Label("Quick Router", systemImage: "square.and.pencil") }
                 Button { editing = .notes } label: { Label("Edit Notes", systemImage: "note.text") }
+                Button { showingLogs = true } label: { Label("Show Logs", systemImage: "doc.plaintext") }
+                Button { showingSubagents = true } label: { Label("Subagents", systemImage: "person.2") }
                 if session.pullRequests.count == 1, let pr = session.pullRequests.first {
                     Button { openURL(pr.url) } label: { Label("View PR \(pr.label)", systemImage: "arrow.triangle.pull") }
                 } else if !session.pullRequests.isEmpty {
@@ -707,7 +721,7 @@ private struct TextEditSheet: View {
     }
 }
 
-private struct MessageBubble: View {
+struct MessageBubble: View {
     let message: ConversationMessage
 
     var body: some View {
