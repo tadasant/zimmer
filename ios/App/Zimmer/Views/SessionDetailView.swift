@@ -622,6 +622,7 @@ private struct HierarchyCard: View {
         }
         .font(.subheadline)
         .padding(.leading, CGFloat(min(node.depth, 6)) * 14)
+        .accessibilityElement(children: .combine)
         .accessibilityIdentifier("hierarchy.node.\(node.id)")
     }
 }

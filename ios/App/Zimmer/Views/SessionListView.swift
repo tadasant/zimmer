@@ -64,7 +64,9 @@ struct SessionListView: View {
     }
 
     private var list: some View {
-        List(selection: $selection) {
+        // Selection is bound only while selecting: a List with a selection binding takes a
+        // tap on a row as a selection, not as opening the session.
+        List(selection: isSelecting ? $selection : nil) {
             Section {
                 FilterBar()
                     .listRowInsets(EdgeInsets())
