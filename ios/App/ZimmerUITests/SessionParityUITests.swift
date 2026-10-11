@@ -283,8 +283,9 @@ final class RankedUITests: XCTestCase {
         let handle = titled.waitForExistence(timeout: 5) ? titled : app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).element(boundBy: 3)
         XCTAssertTrue(handle.waitForExistence(timeout: timeout))
         // Let go near the top edge of the first row, so the drop lands above it, not below.
-        handle.press(forDuration: 0.6, thenDragTo: first.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.05)),
-                     withVelocity: .slow, thenHoldForDuration: 0.3)
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.6, thenDragTo: first.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.05)),
+                   withVelocity: .slow, thenHoldForDuration: 0.3)
         // The toast comes after the reload, so the new order is on screen by then.
         XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
         let deadline = Date().addingTimeInterval(timeout)
