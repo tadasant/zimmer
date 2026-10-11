@@ -244,3 +244,53 @@ final class BoardViewUITests: XCTestCase {
         return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
     }
 }
+
+/// Slice 2b: the Ranked view's Start now and drag-to-reorder.
+@MainActor
+final class RankedUITests: XCTestCase {
+    private let timeout: TimeInterval = 20
+
+    override func setUp() {
+        continueAfterFailure = false
+    }
+
+    func test_start_now_takes_a_waiting_sessions_turn() throws {
+        let app = launch()
+        let sweep = app.descendants(matching: .any)["session.row.1031"]
+        XCTAssertTrue(sweep.waitForExistence(timeout: timeout))
+        sweep.press(forDuration: 1.2)
+        let start = app.buttons["Start Now"].firstMatch
+        XCTAssertTrue(start.waitForExistence(timeout: timeout))
+        start.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
+        let running = expectation(for: NSPredicate(format: "label CONTAINS 'Running'"), evaluatedWith: sweep)
+        XCTAssertEqual(XCTWaiter().wait(for: [running], timeout: timeout), .completed)
+    }
+
+    func test_the_spot_queue_is_reordered_by_dragging() throws {
+        let app = launch()
+        app.buttons["board.menu"].tap()
+        let reorder = app.buttons["ranked.reorder"]
+        XCTAssertTrue(reorder.waitForExistence(timeout: timeout))
+        reorder.tap()
+
+        // Drag the last of the spot queue (the deploy key, 10) above the first (the sweep, 50).
+        let last = app.descendants(matching: .any)["session.row.1027"]
+        let first = app.descendants(matching: .any)["session.row.1031"]
+        XCTAssertTrue(last.waitForExistence(timeout: timeout))
+        let handle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).element(boundBy: 3)
+        handle.press(forDuration: 0.6, thenDragTo: first)
+        // The server answers, the list reloads in its new order, and the toast says so.
+        XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
+        app.buttons["select.done"].tap()
+        XCTAssertTrue(last.waitForExistence(timeout: timeout))
+        XCTAssertLessThan(last.frame.minY, first.frame.minY, "the dropped session now heads the spot queue")
+    }
+
+    private func launch() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-ZimmerFixture", "-ZimmerFixtureFilter", "active", "-ZimmerFixtureView", "ranked"]
+        app.launch()
+        return app
+    }
+}
