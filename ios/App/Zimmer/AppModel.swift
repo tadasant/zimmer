@@ -11,6 +11,15 @@ final class AppModel: ObservableObject {
     /// Nil until the stored sign-in has been read.
     @Published private(set) var isSignedIn: Bool?
     @Published var filter: SessionFilter = .needsInput
+    /// The board-visibility filter; "On board" by default, as on the web UI's board.
+    @Published private(set) var board: BoardFilter = .onBoard
+    /// The search box. Empty means the plain list.
+    @Published var searchText = ""
+    @Published var searchScope: SearchScope = .titles
+    /// True when the last transcript search stopped before reading every candidate.
+    @Published private(set) var searchIncomplete = false
+    /// A one-line confirmation of the last row action ("Snoozed until …").
+    @Published var notice: String?
     @Published private(set) var sessions: [SessionSummary] = []
     @Published private(set) var isLoading = false
     @Published var error: ZimmerError?
@@ -59,6 +68,19 @@ final class AppModel: ObservableObject {
             path = [id]
         }
         if arguments.contains("-ZimmerFixtureQuickRouter") { showingQuickRouter = true }
+        func value(_ flag: String) -> String? {
+            guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
+            return arguments[index + 1]
+        }
+        let listFilter = value("-ZimmerFixtureFilter").flatMap(SessionFilter.init(rawValue:))
+        let listBoard = value("-ZimmerFixtureBoard").flatMap(BoardFilter.init(rawValue:))
+        if listFilter != nil || listBoard != nil {
+            filter = listFilter ?? filter
+            board = listBoard ?? board
+            Task { await refresh() }
+        }
+        // The list's search box picks this up and searches, as if typed.
+        if let search = value("-ZimmerFixtureSearch") { searchText = search }
         #endif
     }
 
@@ -91,10 +113,19 @@ final class AppModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         let requested = filter
+        let board = board
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scope = searchScope
         do {
-            let rows = try await connection.api.sessions(requested)
-            guard requested == filter else { return }
-            sessions = rows
+            let result: SessionSearchResult
+            if query.isEmpty {
+                result = SessionSearchResult(sessions: try await connection.api.sessions(requested, board: board))
+            } else {
+                result = try await connection.api.search(query, contents: scope == .transcripts, filter: requested, board: board)
+            }
+            guard requested == filter, board == self.board, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            sessions = result.sessions
+            searchIncomplete = !result.complete
             error = nil
         } catch {
             handle(error)
@@ -107,6 +138,45 @@ final class AppModel: ObservableObject {
         self.filter = filter
         sessions = []
         await refresh()
+    }
+
+    func select(_ board: BoardFilter) async {
+        guard board != self.board else { return }
+        self.board = board
+        sessions = []
+        await refresh()
+    }
+
+    /// One action on one session from the list (a swipe or a long press): the server's answer
+    /// replaces the row, and a row that no longer belongs on this list leaves it.
+    @discardableResult
+    func perform(_ done: String, on id: Int, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
+        do {
+            let updated = try await action(connection.api)
+            withAnimation {
+                if let index = sessions.firstIndex(where: { $0.id == id }) {
+                    if belongsOnList(updated) { sessions[index] = updated } else { sessions.remove(at: index) }
+                }
+            }
+            notice = done
+            error = nil
+            Haptics.success()
+            return true
+        } catch {
+            handle(error)
+            Haptics.failure()
+            return false
+        }
+    }
+
+    private func belongsOnList(_ session: SessionSummary) -> Bool {
+        filter.admits(session.status) && board.admits(session)
+    }
+
+    /// The web UI's page for a session, for what the app does not do itself.
+    func webURL(for id: Int) -> URL? {
+        guard let web = signedInOrigins?.web else { return nil }
+        return ServerURL.join(web, "/sessions/\(id)")
     }
 
     /// Sign in to a deployment: the edge first when machine calls go to a separate app

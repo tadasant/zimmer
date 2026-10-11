@@ -20,18 +20,54 @@ is applied and this route is deployed, nothing has run the two sign-ins end to e
 
 ## What it does
 
-- **Lists sessions**, filtered by status. *Needs input* is the default filter and sorts above
-  everything else. The other filters are *Active* (everything not archived), *Running*, *Failed*
-  and *Archived*. Pull to refresh.
-- **Opens a session**: its status, the *Status summary* ("where things stand"), and the conversation,
-  newest last, with tool calls folded away until asked for (`GET /api/v1/sessions/:id/conversation`).
+The app follows the web UI's board and session page: the same words, the same status colours
+(needs input blue, running green, waiting purple, failed orange, trashed gray), the same actions.
+Where the web UI has a button, the app has a swipe, a long press, or a menu item.
+
+- **Lists sessions**, filtered by status and by board visibility. *Needs input* is the default
+  status filter and sorts above everything else; the others are *Active* (everything not
+  archived), *Running*, *Failed* and *Archived*. Board visibility is *On board* by default, like
+  the web UI's board, with *Snoozed & hidden* and *Both* in the filter menu. Pull to refresh.
+  Rows carry the status pill, a star for a favourite, the latest PR, a notes marker, and when a
+  snooze ends.
+- **Searches** titles and metadata from the search box, or transcripts too with the
+  *Transcripts* scope (the web UI's "Search transcript contents"; the first page of one bounded
+  scan, and the list says so when the scan stopped before reading every session).
+- **Acts on a row.** Swipe right to star or unstar. Swipe left to trash (or restore, in Archived)
+  and to snooze (*Later today*, *Tomorrow*, *In 3 days*, *This weekend*, *Next week*, the web UI's
+  presets, worked out in the phone's time zone) or hide. Press and hold for the rest: pause,
+  restart, view the PR, open the session in the browser.
+- **Opens a session**: its status, priority class and board visibility; its agent root, runtime,
+  model and effort; its PRs, coloured by state with the CI dot; the *Status summary* ("where
+  things stand") with *Regenerate*; its goal and notes; and the conversation, newest last, with
+  tool calls folded away until asked for (`GET /api/v1/sessions/:id/conversation`).
+- **The session menu** (the ⋯ button) is the web UI's mobile *Session actions* sheet, in its order:
+  Quick Router, Edit Notes, View PR, Snooze until… / Hide / Put back on the board, Refresh
+  Transcript, Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
+  edit: Rename, Modify Goal, Effort (the levels the session's model accepts, or the model
+  default), Promote to priority / Demote to spot (to the head of the spot queue), the heartbeat on
+  or off, Generate Status Summary when there is none, and Open in browser. A promotion that could
+  not start the session says why. The star and the trash (or restore) are in the toolbar.
 - **Sends a follow-up** from a box at the bottom, with quick replies for the common answers. A
-  follow-up to a session mid-turn is queued, and the app says so. It is recorded as your message if
-  the app's connection acts on your behalf (below).
-- **Archives** a session, after a confirmation. It goes to the trash and can be restored from the web UI.
+  follow-up to a session mid-turn is queued, and the app says so; touch and hold the button to
+  *Send Now* instead, which ends the turn in flight (`force_immediate`, the web UI's Send Now).
+  It is recorded as your message if the app's connection acts on your behalf (below).
+- **Trashes** a session, after a confirmation, and restores one from the trash.
 - **Starts a session from a sentence** through the Quick Router (the pencil button), then opens it.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
+
+Every action above is a route on `/api/v1/sessions` that the app's token could already reach; none
+of them widened what the phone can do on the server.
+
+### Not in the app yet
+
+The web UI's queued-message list (reorder, edit, delete), image and file attachments, the
+new-session form and MCP server / skill / hook / plugin / model changes, the notifications inbox,
+triggers, costs and health are not in the app yet. They need `/api/v1` controllers the app's token
+does not reach today, or, for attachments, an API route that does not exist, so each comes in its
+own change that says what it opens. The admin pages (API keys, inference accounts, connectors,
+settings) stay in the browser; *Open in browser* on any session gets you there.
 
 ## Two origins
 
