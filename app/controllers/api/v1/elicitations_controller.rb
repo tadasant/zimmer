@@ -152,14 +152,19 @@ class Api::V1::ElicitationsController < Api::BaseController
   private
 
   # What the app needs to draw and answer one prompt: the form's JSON Schema, and
-  # the numeric id that `respond` takes.
+  # the numeric id that `respond` takes. `field_order` is the order the web banner
+  # draws the schema's properties in, said outright because a JSON object's key
+  # order does not survive most clients' decoders.
   def elicitation_json(elicitation)
+    schema = elicitation.requested_schema
+    properties = schema.is_a?(Hash) ? schema["properties"] : nil
     {
       id: elicitation.id,
       request_id: elicitation.request_id,
       mode: elicitation.mode,
       message: elicitation.message,
-      requested_schema: elicitation.requested_schema,
+      requested_schema: schema,
+      field_order: properties.is_a?(Hash) ? properties.keys : [],
       tool_name: elicitation.tool_name,
       context: elicitation.context,
       created_at: elicitation.created_at.iso8601,
