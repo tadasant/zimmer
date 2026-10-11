@@ -2,8 +2,9 @@ import Foundation
 
 /// The web UI's two buttons that stand for a person's decision: Merge (the sign-off that lets
 /// a session merge its own PR) and Reprioritize (hand the board to the reprioritizing
-/// session). The server takes both only from the app, and only on a sign-in that acts as
-/// you. A relay-only one gets a 403 that says so.
+/// session). Merge is a person's sign-off, so the server takes it only from the app, and only
+/// on a sign-in that acts as you; a relay-only one gets a 403 that says so. Reprioritize is
+/// open like the trigger it fires.
 public protocol DecisionsAPI: Sendable {
     /// Tell the session it may merge its open, green PR. A second tap answers `alreadySent`.
     func authorizeMerge(_ id: Int) async throws -> MergeAuthorization
@@ -48,7 +49,10 @@ extension ZimmerHTTPClient {
 }
 
 struct DecisionResponse: Decodable {
+    /// Only the id is read: the session list shows the rest on its next refresh.
+    struct SessionID: Decodable { let id: Int }
+
     let outcome: String?
     let message: String?
-    let session: SessionSummary?
+    let session: SessionID?
 }

@@ -871,7 +871,7 @@ extension FakeZimmerAPI {
                                       prompt: "Re-rank the board.", createdAt: Date(), updatedAt: Date()))
             reprioritizerID = id
         }
-        return Reprioritization(sessionID: id, message: "Reprioritizing in session #\(id).")
+        return Reprioritization(sessionID: id, message: "Reprioritizing — session \(id) is re-ranking the board.")
     }
 }
 
