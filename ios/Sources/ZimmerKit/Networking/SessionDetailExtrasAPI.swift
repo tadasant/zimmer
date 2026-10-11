@@ -20,6 +20,9 @@ public protocol SessionDetailExtrasAPI: Sendable {
     func subagentTranscripts(_ id: Int) async throws -> [SubagentTranscriptSummary]
     /// A subagent's transcript, read into messages.
     func subagentTranscript(_ id: Int, transcript: Int) async throws -> [ConversationMessage]
+    /// Remove `uncle` as an additional senior of session `junior` — the hierarchy panel's
+    /// detach. Spawn parents are untouched.
+    func detachUncle(_ junior: Int, uncle: Int) async throws
 }
 
 // `ZimmerHTTPClient: ZimmerAPI`, which refines `SessionDetailExtrasAPI`.
@@ -57,6 +60,11 @@ extension ZimmerHTTPClient {
         let response: LogsResponse = try await get("/api/v1/sessions/\(segment)/logs", query: ["page": String(page), "per_page": "50"])
         let pages = response.pagination?.total_pages ?? 1
         return LogPage(entries: response.logs, hasMore: page < pages)
+    }
+
+    public func detachUncle(_ junior: Int, uncle: Int) async throws {
+        let segment = ZimmerPathComponent(String(junior))
+        _ = try await perform(method: "DELETE", path: "/api/v1/sessions/\(segment)/uncle_links/\(uncle)", query: [:], body: nil)
     }
 
     public func subagentTranscripts(_ id: Int) async throws -> [SubagentTranscriptSummary] {

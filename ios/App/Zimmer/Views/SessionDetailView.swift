@@ -188,7 +188,9 @@ struct SessionDetailView: View {
                         TextCard(title: "Notes", text: notes, identifier: "detail.notes") { editing = .notes }
                     }
                     if let hierarchy = detail.hierarchy, hierarchy.isWorthShowing {
-                        HierarchyCard(hierarchy: hierarchy)
+                        HierarchyCard(hierarchy: hierarchy) { junior, uncle in
+                            Task { await model.detachUncle(junior, uncle: uncle) }
+                        }
                     }
                 } else if model.isLoading {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
@@ -608,21 +610,39 @@ private struct SummaryCard: View {
 /// depth. Every other session in it opens on a tap.
 private struct HierarchyCard: View {
     let hierarchy: SessionHierarchy
+    /// Remove an "also senior" edge: (junior, uncle).
+    let detach: (Int, Int) -> Void
+    @State private var detaching: (junior: Int, uncle: Int)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Hierarchy").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             ForEach(hierarchy.nodes) { node in
-                if node.current {
-                    row(node).fontWeight(.semibold)
-                } else {
-                    NavigationLink(value: node.id) { row(node) }
-                        .buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: 2) {
+                    if node.current {
+                        row(node).fontWeight(.semibold)
+                    } else {
+                        NavigationLink(value: node.id) { row(node) }
+                            .buttonStyle(.plain)
+                    }
+                    // Beside the link, not in it, so a detach is never taken as opening the session.
+                    if !node.uncles.isEmpty { seniors(node) }
                 }
             }
             if hierarchy.truncated {
                 Text("Only part of the hierarchy is shown.").font(.caption).foregroundStyle(.secondary)
             }
+        }
+        .confirmationDialog(
+            detaching.map { "Remove #\($0.uncle) as an additional senior of #\($0.junior)?" } ?? "",
+            isPresented: Binding(get: { detaching != nil }, set: { if !$0 { detaching = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                if let edge = detaching { detach(edge.junior, edge.uncle) }
+            }
+        } message: {
+            Text("Both sessions stop pulling in the other's human messages through this edge. Spawn parents are untouched, and both timelines record the removal.")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
@@ -645,6 +665,33 @@ private struct HierarchyCard: View {
         .padding(.leading, CGFloat(min(node.depth, 6)) * 14)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("hierarchy.node.\(node.id)")
+    }
+
+    /// The web UI's amber "also senior" chips: the sessions that queued or interrupted this
+    /// one, each with its own detach.
+    private func seniors(_ node: SessionHierarchy.Node) -> some View {
+        HStack(spacing: 4) {
+            Text("also senior:")
+            ForEach(node.uncles, id: \.self) { uncle in
+                Button {
+                    detaching = (node.id, uncle)
+                } label: {
+                    HStack(spacing: 2) {
+                        Text(verbatim: "#\(uncle)")
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove #\(uncle) as an additional senior of #\(node.id)")
+                .accessibilityIdentifier("hierarchy.uncle.\(node.id).\(uncle)")
+            }
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(Color(red: 0.57, green: 0.25, blue: 0.05))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(Color.orange.opacity(0.15), in: Capsule())
+        .padding(.leading, CGFloat(min(node.depth, 6)) * 14 + 16)
     }
 }
 
