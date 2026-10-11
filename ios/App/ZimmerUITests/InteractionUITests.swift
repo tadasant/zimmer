@@ -53,6 +53,8 @@ final class InteractionUITests: XCTestCase {
         let message = app.descendants(matching: .any)["detail.message.0"]
         XCTAssertTrue(message.waitForExistence(timeout: timeout))
         XCTAssertTrue(app.descendants(matching: .any)["detail.message.2"].exists)
+        // Below the session's cards, the conversation can start under the composer.
+        for _ in 0..<4 where !message.isHittable { app.swipeUp() }
         message.press(forDuration: 1.0)
         let fork = app.buttons["Fork from Here"].firstMatch
         XCTAssertTrue(fork.waitForExistence(timeout: timeout))
