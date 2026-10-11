@@ -12,6 +12,9 @@ struct SessionListView: View {
     @State private var showingSettings = false
     @State private var snoozing: SessionSummary?
     @State private var trashing: SessionSummary?
+    /// A row whose PR is about to be authorized to merge, waiting on the confirmation.
+    @State private var merging: SessionSummary?
+    @State private var confirmingReprioritize = false
     /// The search the list last loaded, so appearing does not reload a list `start()` just loaded.
     @State private var appliedSearch = SearchKey(text: "", scope: .titles)
     @State private var editMode: EditMode = .inactive
@@ -53,6 +56,21 @@ struct SessionListView: View {
                 }
             } message: {
                 Text("A session mid-turn, or with messages still queued, is refused and stays.")
+            }
+            .confirmationDialog(
+                "Authorize the merge?", isPresented: isMerging,
+                titleVisibility: .visible, presenting: merging
+            ) { session in
+                Button("Merge \(session.mergeablePullRequest?.label ?? "PR")") {
+                    Task { await model.authorizeMerge(session.id) }
+                }
+            } message: { session in
+                Text("Session #\(session.id) is told to check for conflicts, merge \(session.mergeablePullRequest?.label ?? "its PR"), and archive itself. Your tap is the sign-off.")
+            }
+            .confirmationDialog("Reprioritize the board?", isPresented: $confirmingReprioritize, titleVisibility: .visible) {
+                Button("Reprioritize") { Task { await model.reprioritize() } }
+            } message: {
+                Text("Zimmer's reprioritizing session re-ranks this board and writes the order back. You can still drag anything afterwards.")
             }
             .confirmationDialog("Refresh all sessions?", isPresented: $confirmingRefreshAll, titleVisibility: .visible) {
                 Button("Refresh All Now") { Task { await model.refreshAll() } }
@@ -105,7 +123,7 @@ struct SessionListView: View {
             ForEach(model.sessions.isEmpty ? [] : model.sections) { section in
                 Section {
                     ForEach(section.sessions) { session in
-                        SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing)
+                        SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing, merging: $merging)
                     }
                     .onMove(perform: moveHandler(for: section))
                     if section.sessions.isEmpty {
@@ -244,6 +262,13 @@ struct SessionListView: View {
                     } label: {
                         Label("Select Sessions", systemImage: "checkmark.circle")
                     }
+                    if model.view == .yourBoard || model.view == .ranked {
+                        Button {
+                            confirmingReprioritize = true
+                        } label: {
+                            Label("Reprioritize", systemImage: "list.number")
+                        }
+                    }
                     if model.view == .ranked {
                         Button {
                             reordering = true
@@ -275,6 +300,10 @@ struct SessionListView: View {
         Binding(get: { snoozing != nil }, set: { if !$0 { snoozing = nil } })
     }
 
+    private var isMerging: Binding<Bool> {
+        Binding(get: { merging != nil }, set: { if !$0 { merging = nil } })
+    }
+
     private var isTrashing: Binding<Bool> {
         Binding(get: { trashing != nil }, set: { if !$0 { trashing = nil } })
     }
@@ -290,6 +319,7 @@ private struct SwipeableSessionRow: View {
     let session: SessionSummary
     @Binding var snoozing: SessionSummary?
     @Binding var trashing: SessionSummary?
+    @Binding var merging: SessionSummary?
 
     var body: some View {
         NavigationLink(value: session.id) {
@@ -308,6 +338,14 @@ private struct SwipeableSessionRow: View {
                 Label(session.isFavorite ? "Unfavorite" : "Favorite", systemImage: session.isFavorite ? "star.slash" : "star.fill")
             }
             .tint(Theme.Swipe.favorite)
+            // The web UI's row Merge button: offered only on an open, green PR.
+            if session.mergeablePullRequest != nil {
+                Button { merging = session } label: {
+                    Label("Merge", systemImage: "arrow.triangle.merge")
+                }
+                // The web Merge button's green-600.
+                .tint(Theme.Swipe.restore)
+            }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if session.status == .archived {
@@ -339,7 +377,7 @@ private struct SwipeableSessionRow: View {
                 .tint(Theme.Swipe.snooze)
             }
         }
-        .contextMenu { SessionContextMenu(session: session, trashing: $trashing) }
+        .contextMenu { SessionContextMenu(session: session, trashing: $trashing, merging: $merging) }
     }
 }
 
@@ -372,8 +410,14 @@ private struct SessionContextMenu: View {
     @Environment(\.openURL) private var openURL
     let session: SessionSummary
     @Binding var trashing: SessionSummary?
+    @Binding var merging: SessionSummary?
 
     var body: some View {
+        if let pr = session.mergeablePullRequest {
+            Button { merging = session } label: {
+                Label("Merge \(pr.label)", systemImage: "arrow.triangle.merge")
+            }
+        }
         Button {
             Task { await model.perform(session.isFavorite ? "Removed from favorites" : "Added to favorites", on: session.id) { try await $0.toggleFavorite(session.id) } }
         } label: {

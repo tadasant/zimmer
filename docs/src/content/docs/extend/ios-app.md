@@ -107,6 +107,13 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   send them. Anything that would be refused, or could not be read, is named rather than dropped
   quietly. They go with the message however it is delivered: now, queued behind a turn, or with
   *Send Now*.
+- **Merges.** On a session whose newest PR is open with CI green, the web UI's row *Merge* button is
+  a swipe right, a long-press item, and the first item in the session menu (*Merge #1261*). After a
+  confirmation, the session is told it may merge (`POST /api/v1/sessions/:id/authorize_merge`). The
+  tap is the sign-off, and it is recorded as your message. Only a sign-in that acts on your behalf
+  may give it; a relay-only one shows the server's refusal.
+- **Reprioritizes** the board from the view menu in *Your board* and *Ranked*, after a confirmation:
+  the deployment's reprioritizing session re-ranks it and writes the order back.
 - **Trashes** a session, after a confirmation, and restores one from the trash.
 - **Starts a session from a sentence** through the Quick Router, then opens it. The Quick Router is
   where the web UI puts it: a field pinned to the foot of the Sessions screen ("What do you want
@@ -138,15 +145,14 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
-Every action above is a route on `/api/v1/sessions` that the app's token could already reach; none
-of them widened what the phone can do on the server.
+Every action above is a route on `/api/v1/sessions`. Merge is the one the app's token reaches
+where an API key cannot: only a person may give it (see the [REST API](/extend/rest-api/)).
 
 ### Not in the app yet
 
-*Reprioritize* and *Authorize merge* are not in the app yet. Fork from a message and answering an
-elicitation each need a server change first — the conversation endpoint does not say where a
-message sits in the transcript the fork service counts, and no route lists a session's pending
-elicitations — and come in their own change. The admin pages (API keys, inference accounts, connectors,
+Fork from a message and answering an elicitation each need a server change first — the
+conversation endpoint does not say where a message sits in the transcript the fork service counts,
+and no route lists a session's pending elicitations — and come in their own change. The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.
 
 ## Two origins
