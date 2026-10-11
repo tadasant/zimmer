@@ -2,7 +2,7 @@ import Foundation
 
 /// What the app asks of Zimmer. A protocol so screens and tests can run against
 /// `FakeZimmerAPI` with no server and no sign-in.
-public protocol ZimmerAPI: SessionActionsAPI {
+public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI {
     func sessions(_ filter: SessionFilter) async throws -> [SessionSummary]
     func session(_ id: Int) async throws -> SessionDetail
     func conversation(_ id: Int) async throws -> Conversation
