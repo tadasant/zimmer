@@ -90,6 +90,16 @@
 # too would say the same thing twice, and would page right after queue recovery mode
 # lifts, while the halted lanes are still draining the copies it froze.
 #
+# A `nothing` reading that owes exactly one tick also carries that tick as `lost_tick`.
+# GoodJob's cron manager enqueues each tick once, at its fire time, and never catches
+# one up: an enqueue lost to a database stall at 16:00 leaves a 4-hourly key with no
+# job until 20:00, and this page firing from 18:00 until then (tadasant/zimmer#1288).
+# SystemHealthMonitorJob re-enqueues a `lost_tick` with the tick's own `cron_at`, so
+# the `(cron_key, cron_at)` unique index makes a second attempt a no-op and the key
+# reads fresh from the next check. It is offered once: a key whose newest row was
+# itself a recovery (`last_tick_recovered`) has lost two ticks running, gets no
+# `lost_tick`, and pages. See #lost_tick? for the four conditions.
+#
 # Two readings are never judged at all: a key disabled in the GoodJob dashboard
 # (`disabled`), and a key whose entry in config/cron_schedule.rb carries
 # `freshness_exempt:` with its reason (`exempt`).
@@ -312,6 +322,8 @@ class CronFreshness
       gap_started_at: history[:gap_started_at],
       gap_ended_at: history[:gap_ended_at],
       stopped_in_window: false,
+      lost_tick: nil,
+      last_tick_recovered: false,
       state: :fresh,
       reason: nil
     }
@@ -352,7 +364,8 @@ class CronFreshness
       grace_seconds: grace.round,
       blocker: blocker,
       blocker_since: blocker_since,
-      stopped_in_window: stopped_in_window?(reading, interval + grace)
+      stopped_in_window: stopped_in_window?(reading, interval + grace),
+      last_tick_recovered: recovered_tick?(job, grace)
     )
     return reading if @now - due_at < grace
 
@@ -364,8 +377,38 @@ class CronFreshness
       )
     end
 
+    reading[:lost_tick] = due_at if lost_tick?(reading, schedule, due_at)
+
     state, reason = judge(reading)
     reading.merge(state: state, reason: reason)
+  end
+
+  # Is the one tick this key owes a single enqueue the cron manager lost, which the
+  # monitor may put back? All four must hold:
+  #
+  # - nothing holds the slot, so cron was not refused: it did not enqueue;
+  # - the key owes exactly that one tick, so the next has not fallen yet. A key that
+  #   has missed two in a row is not one lost enqueue, it is a key cron has stopped
+  #   producing, and that pages. In practice this confines recovery to keys whose
+  #   interval is longer than their grace (4-hourly, 6-hourly, daily): a faster key
+  #   catches up a single lost tick on its own next tick and never reads stale for it;
+  # - the tick was witnessed, which a stale reading already guarantees, because an
+  #   owed tick with no witness is excused and moves `due_at` past it;
+  # - the key's newest row was not itself a recovery. Otherwise a key whose cron task
+  #   died for good would be put back once per tick, late by its grace each time, and
+  #   never page.
+  def lost_tick?(reading, schedule, due_at)
+    reading[:blocker].nil? && !reading[:last_tick_recovered] && next_fire(schedule, due_at) > @now
+  end
+
+  # Was the newest row enqueued by the monitor's recovery rather than by cron? Cron
+  # enqueues a tick within seconds of its fire time; a recovery only happens once the
+  # tick is past its grace, at least GRACE_FLOOR late, and carries the tick's own
+  # `cron_at`. So a row created a whole grace after its tick is a recovery. That rests
+  # on GoodJob's `cron_graceful_restart_period` staying unset: its catch-up enqueues
+  # are late cron rows too, and would read as recoveries.
+  def recovered_tick?(job, grace)
+    job.present? && job.cron_at.present? && job.created_at - job.cron_at >= grace
   end
 
   # Did the key's longest silence inside the window exceed one whole interval plus its
@@ -473,7 +516,11 @@ class CronFreshness
 
     case reading[:blocker]
     when nil
-      if reading[:last_enqueued_at]
+      if reading[:last_tick_recovered]
+        [ :stale, "Nothing enqueued since #{stamp(reading[:last_enqueued_at])}; #{owed}. That job was " \
+                  "itself a lost tick SystemHealthMonitorJob re-enqueued, so cron has missed this key's " \
+                  "ticks twice running and is not enqueuing it" ]
+      elsif reading[:last_enqueued_at]
         [ :stale, "Nothing enqueued since #{stamp(reading[:last_enqueued_at])}; #{owed}. " \
                   "Its last job finished and nothing holds its slot, so cron is not enqueuing this key" ]
       else
