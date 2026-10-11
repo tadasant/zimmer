@@ -16,9 +16,11 @@ module Sessions
   # Three records are written, and they are not equal:
   #
   #   * a HumanMessage, written through WebUiHumanMessageCapture — the same
-  #     attribution every other thing typed into the web UI gets. THIS is the
-  #     proof a person did it. It has one writer, the browser controllers; the
-  #     MCP and REST surfaces cannot create one. The `[HUMAN-AUTHORIZED MERGE]`
+  #     attribution every other thing typed into the web UI gets — or, from the
+  #     iOS app, through HumanMessageCapture.record_assistant_message on the
+  #     app's grant, which Api::V1::SessionsController#authorize_merge accepts
+  #     only when that grant acts as its approver. THIS is the proof a person did
+  #     it. An API key and MCP cannot create one. The `[HUMAN-AUTHORIZED MERGE]`
   #     marker in the message text is NOT proof on its own — `action_session`'s
   #     `follow_up` delivers any text, marker included — so an audit keys on the
   #     HumanMessage, not on the marker;
@@ -80,12 +82,14 @@ module Sessions
 
     # @param session [Session] the session holding the PR
     # @return [Result]
-    def self.call(session:)
-      new(session: session).call
+    # @param surface [String] where the Merge button was pressed, for the log line
+    def self.call(session:, surface: "the Zimmer dashboard")
+      new(session: session, surface: surface).call
     end
 
-    def initialize(session:)
+    def initialize(session:, surface: "the Zimmer dashboard")
       @session = session
+      @surface = surface
     end
 
     def call
@@ -113,7 +117,7 @@ module Sessions
       delivered = deliver_automated_message(
         @session,
         AutomatedPrompts.merge_authorization_message(pr_url),
-        event_description: "User authorized the merge of #{pr_url} with the Merge button in the Zimmer dashboard",
+        event_description: "User authorized the merge of #{pr_url} with the Merge button in #{@surface}",
         origin: "caller"
       )
 
