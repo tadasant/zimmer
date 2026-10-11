@@ -37,6 +37,16 @@ class ApnsService
   DEAD_TOKEN_REASONS = %w[BadDeviceToken DeviceTokenNotForTopic Unregistered].freeze
   # Reasons that mean our provider token is the problem: mint a fresh one next time.
   PROVIDER_TOKEN_REASONS = %w[ExpiredProviderToken InvalidProviderToken].freeze
+  # What the lock screen says, by notification type. Generic on purpose: see the
+  # class comment.
+  ALERT_BODIES = {
+    "needs_input" => "A session needs you.",
+    "elicitation_pending" => "A session is asking you something.",
+    "session_complete" => "A session finished.",
+    "session_failed" => "A session failed.",
+    "custom_message" => "A session sent you a message."
+  }.freeze
+  ALERT_TITLE = "Zimmer"
 
   # The HTTP/2 client, behind a seam so the tests never reach Apple. One client per
   # ApnsService, which is one per job, so a batch reuses a connection per host as
@@ -143,17 +153,6 @@ class ApnsService
     device.update_column(:last_delivered_at, Time.current)
     :sent
   end
-
-  # What the lock screen says, by notification type. Generic on purpose: see the
-  # class comment.
-  ALERT_BODIES = {
-    "needs_input" => "A session needs you.",
-    "elicitation_pending" => "A session is asking you something.",
-    "session_complete" => "A session finished.",
-    "session_failed" => "A session failed.",
-    "custom_message" => "A session sent you a message."
-  }.freeze
-  ALERT_TITLE = "Zimmer"
 
   # The app opens the session the push is about; `thread-id` groups a session's
   # notifications together on the lock screen. `title` and `body` are not used.

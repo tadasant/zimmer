@@ -10,8 +10,7 @@
 # one — and a re-registration revives a row that was disabled. A device stops
 # being deliverable when Apple reports its token dead (`disabled_at`), when the
 # app unregisters it on sign-out (the row is deleted), or when the grant it was
-# registered under is revoked: a revoked phone must not keep receiving session
-# titles on its lock screen.
+# registered under is revoked: a revoked phone must not keep receiving pushes.
 class ApnsDevice < ApplicationRecord
   SANDBOX = "sandbox"
   PRODUCTION = "production"

@@ -114,6 +114,22 @@ class ApnsServiceTest < ActiveSupport::TestCase
     assert_equal 2, result[:failed]
   end
 
+  test "every notification type has its own generic alert" do
+    assert_equal SendPushNotificationJob::NOTIFICATION_TYPES.sort, ApnsService::ALERT_BODIES.keys.sort
+  end
+
+  test "a custom message's or a failure's own text never reaches Apple" do
+    transport = FakeTransport.new
+    service = ApnsService.new(config: @config, transport: transport)
+    service.send_to_all(title: "Deploy strad", body: "rotated secret sk_live_123", data: { session_id: 1, notification_type: "custom_message" })
+    service.send_to_all(title: "Deploy strad", body: "Error: PG::ConnectionBad at db-7", data: { session_id: 1, notification_type: "session_failed" })
+
+    sent = transport.requests.map { |r| r[:body].to_json }.join
+    %w[strad sk_live_123 db-7].each { |secret| assert_not_includes sent, secret }
+    assert_includes sent, "A session sent you a message."
+    assert_includes sent, "A session failed."
+  end
+
   test "custom messages are never collapsed into one another" do
     transport = FakeTransport.new
     ApnsService.new(config: @config, transport: transport)
