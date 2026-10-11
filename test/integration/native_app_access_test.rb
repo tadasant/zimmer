@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "ostruct"
 
 # What the iOS app's token reaches beyond the sessions controller, action by
 # action (`accepts_native_app_tokens only:`). Each controller the app reads or
@@ -82,6 +83,24 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_equal "deploy to staging only", message.content
     assert_equal HumanMessage::ASSISTANT, message.channel
     assert_equal "ios_app.enqueued_message_edited", message.provenance["entry_point"]
+  end
+
+  test "a session started from an app that acts on its approver's behalf records its prompt as theirs" do
+    AgentSessionJob.stubs(:enqueue_new_session).returns(OpenStruct.new(job_id: "job-1"))
+
+    post "/api/v1/sessions", params: { agent_root: "zimmer", prompt: "Rotate the staging deploy key" },
+      headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
+    assert_response :created
+    from_phone = Session.find(JSON.parse(response.body)["session"]["id"])
+
+    post "/api/v1/sessions", params: { agent_root: "zimmer", prompt: "From a script" }, headers: { "X-API-Key" => API_KEY }
+    assert_response :created
+    from_key = Session.find(JSON.parse(response.body)["session"]["id"])
+
+    message = from_phone.human_messages.sole
+    assert_equal "Rotate the staging deploy key", message.content
+    assert_equal "ios_app.new_session", message.provenance["entry_point"]
+    assert_empty from_key.human_messages
   end
 
   test "a relay-only app's edit records nothing" do

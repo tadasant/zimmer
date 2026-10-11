@@ -54,7 +54,8 @@ A follow-up the app sends is recorded the way any OAuth client's is
 approver's message, on channel `assistant` with entry point `ios_app.follow_up`, and only when the
 app's connection acts on their behalf. Editing a queued message from the app is recorded the same
 way, as `ios_app.enqueued_message_edited`, the counterpart of the web UI's
-`web_ui.enqueued_message_edited`. A relay-only connection, an approver with no roster row, or a
+`web_ui.enqueued_message_edited`, and so is the prompt of a session the app creates with
+`POST /sessions`, as `ios_app.new_session` (the web UI's `web_ui.new_session`). A relay-only connection, an approver with no roster row, or a
 follow-up over an API key records nothing.
 
 On a deployment that serves the app from its own hostname behind an access proxy, the app also sends

@@ -217,6 +217,7 @@ class Api::V1::SessionsController < Api::BaseController
       if @session.prompt.present?
         job = AgentSessionJob.enqueue_new_session(@session.id)
         @session.update(job_id: job.job_id)
+        record_native_app_new_session
       end
 
       # This endpoint is what Mcp::Tools::StartSession mirrors, so it says the
@@ -1322,6 +1323,17 @@ class Api::V1::SessionsController < Api::BaseController
   # An API key names a key, never a person, so a key-authenticated follow-up
   # records nothing. Best-effort: HumanMessageCapture never raises into the
   # delivery it describes.
+  # A session started from the iOS app's new-session form begins with a person's
+  # words, recorded as the web UI records its form (`web_ui.new_session`): through
+  # the app's grant, and only when that grant acts on its approver's behalf. Not a
+  # replayed create, which records nothing the first call did not already.
+  def record_native_app_new_session
+    return unless native_app_request?
+
+    HumanMessageCapture.record_assistant_message(session: @session, grant: native_app_grant, content: @session.prompt,
+      entry_point: "ios_app.new_session")
+  end
+
   def record_native_app_follow_up(prompt)
     return unless native_app_request?
 
