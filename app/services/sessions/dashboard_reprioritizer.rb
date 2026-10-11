@@ -89,8 +89,14 @@ module Sessions
     end
 
     # @return [Result]
-    def self.call
-      new.call
+    # @param genesis [String] where the press came from, recorded on a session the
+    #   fire creates: the web UI's button, or the REST API's (the iOS app)
+    def self.call(genesis: SessionGenesis::WEB_UI)
+      new(genesis: genesis).call
+    end
+
+    def initialize(genesis: SessionGenesis::WEB_UI)
+      @genesis = genesis
     end
 
     def call
@@ -98,7 +104,7 @@ module Sessions
 
       fire = Triggers::ManualFire.call(
         trigger: trigger,
-        genesis: SessionGenesis::WEB_UI,
+        genesis: @genesis,
         variables: {}
       )
 
