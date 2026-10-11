@@ -14,6 +14,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var summaries: [Int: StatusSummary]
     private var conversations: [Int: [ConversationMessage]]
     private var nextID: Int
+    private var queues: [Int: [QueuedMessage]] = FakeZimmerAPI.sampleQueues()
+    /// 1035 queued a message to 1031, so it is drawn as 1031's additional senior.
+    private var uncles: [Int: [Int]] = [1031: [1035]]
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
 
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date()) {
@@ -37,7 +40,16 @@ public actor FakeZimmerAPI: ZimmerAPI {
     }
 
     public func session(_ id: Int) async throws -> SessionDetail {
-        SessionDetail(session: try find(id), statusSummary: summaries[id], hierarchy: Self.sampleHierarchy(for: id, in: all))
+        var hierarchy = Self.sampleHierarchy(for: id, in: all)
+        let seniors = uncles
+        if let nodes = hierarchy?.nodes {
+            hierarchy?.nodes = nodes.map { node in
+                var node = node
+                node.uncles = seniors[node.id] ?? []
+                return node
+            }
+        }
+        return SessionDetail(session: try find(id), statusSummary: summaries[id], hierarchy: hierarchy)
     }
 
     public func conversation(_ id: Int) async throws -> Conversation {
@@ -383,5 +395,114 @@ extension FakeZimmerAPI {
         case (nil, nil): precedence = 0
         }
         return try change(id) { $0.precedence = precedence }
+    }
+}
+
+// MARK: - Queue, logs and subagents
+//
+// As the server: a queue is managed but never added to here (the app queues through
+// follow_up), positions close up after a delete, and Send now delivers the message as the
+// session's next turn.
+extension FakeZimmerAPI {
+    public func queue(_ id: Int) async throws -> [QueuedMessage] {
+        _ = try find(id)
+        return (queues[id] ?? []).sorted { $0.position < $1.position }
+    }
+
+    public func editQueued(_ id: Int, message: Int, content: String) async throws -> QueuedMessage {
+        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw ZimmerError.http(status: 422, message: "Content can't be blank") }
+        var list = try queued(id)
+        guard let index = list.firstIndex(where: { $0.id == message }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        list[index].content = text
+        queues[id] = list
+        return list[index]
+    }
+
+    public func deleteQueued(_ id: Int, message: Int) async throws {
+        var list = try queued(id)
+        guard list.contains(where: { $0.id == message }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        list.removeAll { $0.id == message }
+        queues[id] = Self.renumbered(list)
+    }
+
+    public func moveQueued(_ id: Int, message: Int, to position: Int) async throws -> QueuedMessage {
+        guard position >= 1 else { throw ZimmerError.http(status: 422, message: "Position must be >= 1") }
+        var list = try queued(id)
+        guard let index = list.firstIndex(where: { $0.id == message }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        let moved = list.remove(at: index)
+        list.insert(moved, at: min(position - 1, list.count))
+        list = Self.renumbered(list)
+        queues[id] = list
+        return list.first { $0.id == message }!
+    }
+
+    public func sendQueuedNow(_ id: Int, message: Int) async throws {
+        var list = try queued(id)
+        guard let index = list.firstIndex(where: { $0.id == message }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        let sent = list.remove(at: index)
+        queues[id] = Self.renumbered(list)
+        var history = conversations[id] ?? []
+        history.append(ConversationMessage(id: history.count, role: .user, content: sent.content, timestamp: Date()))
+        conversations[id] = history
+    }
+
+    public func logs(_ id: Int, page: Int) async throws -> LogPage {
+        let session = try find(id)
+        let now = Date()
+        let lines = [
+            ("Turn started", "info", 2.0), ("Cloned the repository", "info", 9.0),
+            ("MCP server playwright took 41s to start", "warning", 9.5), ("Session created", "info", 10.0),
+        ]
+        let entries = lines.enumerated().map { offset, line in
+            LogEntry(id: session.id * 100 + offset, content: line.0, level: line.1, createdAt: now.addingTimeInterval(-line.2 * 60))
+        }
+        return LogPage(entries: page == 1 ? entries : [], hasMore: false)
+    }
+
+    public func subagentTranscripts(_ id: Int) async throws -> [SubagentTranscriptSummary] {
+        _ = try find(id)
+        guard id == 1042 else { return [] }
+        return [SubagentTranscriptSummary(id: 7, label: "Explore: find the CarPlay entry points", subagentType: "Explore",
+                                          status: "completed", messageCount: 4, duration: "1m 12s", tokens: "18.4k")]
+    }
+
+    public func subagentTranscript(_ id: Int, transcript: Int) async throws -> [ConversationMessage] {
+        _ = try find(id)
+        guard transcript == 7 else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        return [
+            ConversationMessage(id: 0, role: .user, content: "Find where the app declares its scenes."),
+            ConversationMessage(id: 1, role: .assistant, content: "Using tool: Grep", hasToolUse: true),
+            ConversationMessage(id: 2, role: .assistant, content: "Scenes are declared in Info.plist under UIApplicationSceneManifest; ZimmerApp.swift has the one WindowGroup."),
+        ]
+    }
+
+    public func detachUncle(_ junior: Int, uncle: Int) async throws {
+        _ = try find(junior)
+        guard uncles[junior]?.contains(uncle) == true else {
+            throw ZimmerError.http(status: 404, message: "Session \(uncle) is not a senior of session \(junior)")
+        }
+        uncles[junior]?.removeAll { $0 == uncle }
+    }
+
+    private func queued(_ id: Int) throws -> [QueuedMessage] {
+        _ = try find(id)
+        return (queues[id] ?? []).sorted { $0.position < $1.position }
+    }
+
+    private static func renumbered(_ list: [QueuedMessage]) -> [QueuedMessage] {
+        list.enumerated().map { offset, message in
+            var message = message
+            message.position = offset + 1
+            return message
+        }
+    }
+
+    /// The running CarPlay session has two messages waiting for its turn to end.
+    static func sampleQueues() -> [Int: [QueuedMessage]] {
+        [1042: [
+            QueuedMessage(id: 501, content: "Also add a Siri shortcut for \"what needs me\".", position: 1),
+            QueuedMessage(id: 502, content: "Then open a draft PR.", position: 2),
+        ]]
     }
 }

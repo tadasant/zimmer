@@ -55,8 +55,16 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   model and effort; its PRs, coloured by state with the CI dot; the *Status summary* ("where
   things stand") with *Regenerate*; its goal and notes; and the conversation, newest last, with
   tool calls folded away until asked for (`GET /api/v1/sessions/:id/conversation`).
+- **Manages the queue**: the messages waiting for the turn in flight to end, in delivery order,
+  each with *Send Now* (ending the turn), *Edit* and *Delete*; *Manage* opens the whole queue to
+  drag into a new order or swipe away. An edit is recorded as your message when the app acts on
+  your behalf, as the web UI records one. The app adds to the queue only through a follow-up.
+- **Shows the logs** (*Show Logs*, newest first, fifty at a time) and **the subagents** a session
+  ran (*Subagents*), each transcript read into messages.
+- **Detaches an "also senior" link** from the hierarchy, after a confirmation, as the web UI's
+  amber chip does.
 - **The session menu** (the ⋯ button) is the web UI's mobile *Session actions* sheet, in its order:
-  Quick Router, Edit Notes, View PR, Snooze until… / Hide / Put back on the board, Refresh
+  Quick Router, Edit Notes, Show Logs, Subagents, View PR, Snooze until… / Hide / Put back on the board, Refresh
   Transcript, Copy Transcript (the whole transcript as text), Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
   edit: Rename, Modify Goal, Effort (the levels the session's model accepts, or the model
   default), Promote to priority / Demote to spot (to the head of the spot queue), the heartbeat on
@@ -76,12 +84,11 @@ of them widened what the phone can do on the server.
 
 ### Not in the app yet
 
-*Reprioritize*, *Authorize merge*, and Fork from a message have no `/api/v1` route yet. The web UI's queued-message list (reorder, edit,
-delete), logs and subagent transcripts, image and file attachments, the
-new-session form and MCP server / skill / hook / plugin / model changes, the notifications inbox,
-triggers, costs and health are not in the app yet. They need `/api/v1` controllers the app's token
-does not reach today, or, for attachments, an API route that does not exist, so each comes in its
-own change that says what it opens. The admin pages (API keys, inference accounts, connectors,
+*Reprioritize* and *Authorize merge* are not in the app yet, nor are image and file attachments,
+the new-session form, model and MCP server / skill / hook / plugin changes, the notifications
+inbox, triggers, costs and health. Fork from a message and answering an elicitation stay in the
+browser: the web timeline, the fork service and the conversation endpoint count messages
+differently, and there is no route that lists a session's pending elicitations. The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.
 
 ## Two origins
