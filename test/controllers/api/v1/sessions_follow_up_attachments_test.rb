@@ -56,6 +56,39 @@ class Api::V1::SessionsFollowUpAttachmentsTest < ActionDispatch::IntegrationTest
     assert_equal "image/png", queued.images.sole["media_type"]
     assert_equal "deploy.log", queued.files.sole["original_filename"]
     assert File.exist?(queued.files.sole["path"])
+    assert File.exist?(queued.images.sole["path"])
+    assert session.logs.exists?(content: "Follow-up carries 1 image and 1 file")
+  end
+
+  test "sent now, the attachments ride the interrupt to the turn" do
+    session = sessions(:running)
+    reap(session)
+    Sessions::InterruptService.any_instance.stubs(:call).returns(OpenStruct.new(success?: true))
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Stop and look", force_immediate: true, attachments: attachments },
+      headers: @headers, as: :json
+
+    assert_response :success, response.body
+    staged = session.enqueued_messages.last
+    assert_equal "image/png", staged.images.sole["media_type"]
+    assert_equal "deploy.log", staged.files.sole["original_filename"]
+    job_images = Sessions::AttachmentDescriptors.for_a_job(staged.images, keys: Sessions::AttachmentDescriptors::IMAGE_KEYS)
+    assert File.exist?(job_images.sole[:path]), "the processor hands the turn a path that is on disk"
+  end
+
+  test "an image is an image by its bytes, whatever its media type says, and a data URL is read" do
+    session = sessions(:needs_input)
+    reap(session)
+    AgentSessionJob.expects(:enqueue_with_prompt).with do |_id, _prompt, images:, files:|
+      images.size == 2 && images.all? { |i| i[:media_type] == "image/png" } && files.nil?
+    end.returns(OpenStruct.new(job_id: "job-3"))
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Two shots", attachments: [
+      { filename: "a.jpg", media_type: "image/jpg", data: Base64.strict_encode64(minimal_png) },
+      { filename: "b.png", data: "data:image/png;base64,#{Base64.strict_encode64(minimal_png)}" }
+    ] }, headers: @headers, as: :json
+
+    assert_response :success, response.body
   end
 
   test "a follow-up without attachments is unchanged" do
@@ -78,12 +111,46 @@ class Api::V1::SessionsFollowUpAttachmentsTest < ActionDispatch::IntegrationTest
     assert_equal "Invalid attachment", JSON.parse(response.body)["error"]
 
     post "/api/v1/sessions/#{session.id}/follow_up",
+      params: { prompt: "x", attachments: [ { filename: "notes.txt", media_type: "text/plain", data: "%%%" } ] }, headers: @headers, as: :json
+    assert_response :unprocessable_entity
+    assert_match(/not valid base64/, JSON.parse(response.body)["message"])
+
+    post "/api/v1/sessions/#{session.id}/follow_up",
       params: { prompt: "x", attachments: [ { filename: "", data: "eA==" } ] }, headers: @headers, as: :json
+    assert_response :unprocessable_entity
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "x", attachments: "abc" }, headers: @headers, as: :json
+    assert_response :unprocessable_entity
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "x", attachments: [ "abc" ] }, headers: @headers, as: :json
     assert_response :unprocessable_entity
 
     too_many = Array.new(Api::V1::SessionsController::FOLLOW_UP_ATTACHMENT_LIMIT + 1) { { filename: "f.txt", data: "eA==" } }
     post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "x", attachments: too_many }, headers: @headers, as: :json
     assert_response :unprocessable_entity
+    assert_match(/at most/, JSON.parse(response.body)["message"])
+  end
+
+  test "a refused follow-up leaves nothing it stored behind" do
+    session = sessions(:needs_input)
+    reap(session)
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "x", attachments: [
+      { filename: "ok.log", data: Base64.strict_encode64("fine") },
+      { filename: "bad.txt", data: "%%%" }
+    ] }, headers: @headers, as: :json
+
+    assert_response :unprocessable_entity
+    assert_empty FileStorageService.new(session_id: session.id).list
+  end
+
+  test "a body over the limit is refused before it is read" do
+    session = sessions(:needs_input)
+    Api::V1::SessionsController.stubs(:follow_up_body_limit).returns(100)
+    AgentSessionJob.expects(:enqueue_with_prompt).never
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "x", attachments: attachments }, headers: @headers, as: :json
+
+    assert_response :content_too_large
     assert_match(/at most/, JSON.parse(response.body)["message"])
   end
 end
