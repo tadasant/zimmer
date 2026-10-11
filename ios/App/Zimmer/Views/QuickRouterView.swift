@@ -16,17 +16,19 @@ struct QuickRouterView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Say what you want done. Zimmer picks where it runs.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.inkSoft)
                 TextField("e.g. Rotate the staging deploy key", text: $prompt, axis: .vertical)
                     .lineLimit(4...10)
-                    .padding(12)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                    .foregroundStyle(Theme.ink)
+                    .padding(14)
+                    .themeCard(radius: Theme.smallRadius)
                     .focused($focused)
                     .accessibilityIdentifier("quickrouter.field")
                 if let error = app.error { ErrorBanner(error: error) }
                 Spacer()
             }
             .padding()
+            .background(Theme.ground)
             .navigationTitle("New session")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
