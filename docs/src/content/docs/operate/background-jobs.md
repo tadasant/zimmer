@@ -1580,6 +1580,26 @@ held back, not dropped: the streak starts once the backlog clears. The job calls
 directly rather than the rescued health section, so a check that cannot read fails the job loudly
 instead of reading as "nothing stale".
 
+**A single lost tick is put back, not paged.** GoodJob's cron manager enqueues each tick once, at
+its fire time, and never catches one up, so an insert lost to a database stall at 16:00 leaves a
+4-hourly key with no job until 20:00 ([#1288](https://github.com/tadasant/zimmer/issues/1288)).
+`CronFreshness` marks such a reading with `lost_tick` when four things hold: nothing holds the
+key's slot, it owes exactly one tick (the next has not fallen yet), that tick was witnessed (a
+stale reading guarantees it), and its newest row was not itself a recovery. Before streaking,
+`SystemHealthMonitorJob` re-enqueues each `lost_tick` through the key's own `GoodJob::CronEntry`
+with the tick's own `cron_at`, so the job is the one cron would have written: same queue, the
+singleton's concurrency limit applied at enqueue, and the `(cron_key, cron_at)` unique index making
+a repeat a no-op. It logs a WARN, `Cron lost a tick: <key> ... re-enqueued it`, which reaches
+VictoriaLogs without paging, and the key reads `fresh` from the next check. A refused or raising
+enqueue is not a recovery: it logs the WARN with why, and the key streaks and pages as before.
+
+A recovered row is recognisable afterwards because it was created at least a whole grace after its
+`cron_at`, where cron writes a tick within seconds. A key whose newest row is one has lost two
+ticks running, so it is not offered another (`last_tick_recovered`, and its reason says so) and
+pages. That is what keeps a key whose cron task has died for good from being silently recovered
+every tick. Only keys whose interval is longer than their grace can owe a single tick while stale
+(4-hourly, 6-hourly, daily). A faster key catches up a lost tick on its own next one.
+
 What fires it, and why each is real:
 
 - **A singleton `perform` that has not returned** past both its key's grace and its lane's ceiling.

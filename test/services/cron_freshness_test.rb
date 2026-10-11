@@ -329,6 +329,70 @@ class CronFreshnessTest < ActiveSupport::TestCase
     assert_match(/keeps failing \(6 attempt\(s\)\)/, retrying[:reason])
   end
 
+  # tadasant/zimmer#1288: a 4-hourly key whose 16:00 enqueue was lost in a database
+  # stall while every other key ticked. GoodJob never catches it up, so it is offered
+  # back to the monitor as `lost_tick`.
+  test "a single witnessed tick cron never enqueued is offered back as the lost tick" do
+    noon = Time.new(2026, 9, 11, 12, 0, 0)
+    four = Time.new(2026, 9, 11, 16, 0, 0)
+    now = Time.new(2026, 9, 11, 18, 2, 0)
+    cron_row("warm", enqueued: noon, finished: noon + 30)
+    ticking("clock", every: 1.minute, window: (four - 5.minutes)..now)
+
+    warm = reading(report([ entry(:warm, "0 */4 * * *"), entry(:clock, "* * * * *") ], now: now), :warm)
+
+    assert_equal :stale, warm[:state]
+    assert_nil warm[:blocker]
+    assert_equal four, warm[:lost_tick]
+    refute warm[:last_tick_recovered]
+  end
+
+  test "no lost tick is offered for a key that owes more than one, is held, or was not witnessed" do
+    # A five-minute key stale for two hours has missed twenty ticks: stopped, not lost.
+    cron_row("sweep", enqueued: NOW - 2.hours, finished: NOW - 2.hours + 5)
+    sweep = reading(report([ entry(:sweep, "*/5 * * * *") ]), :sweep)
+    assert_equal :stale, sweep[:state]
+    assert_nil sweep[:lost_tick]
+
+    # A copy stuck retrying is a failing job, not a lost enqueue.
+    GoodJob::Job.delete_all
+    cron_row("sweep", enqueued: NOW - 2.hours, retry_at: NOW + 10.minutes, executions: 6)
+    retrying = reading(report([ entry(:sweep, "*/5 * * * *") ]), :sweep)
+    assert_equal :stale, retrying[:state]
+    assert_nil retrying[:lost_tick]
+
+    # Nothing ticked at 16:00, so the tick fell in a deploy: excused, not lost.
+    GoodJob::Job.delete_all
+    noon = Time.new(2026, 9, 11, 12, 0, 0)
+    now = Time.new(2026, 9, 11, 18, 2, 0)
+    cron_row("warm", enqueued: noon, finished: noon + 30)
+    ticking("clock", every: 1.minute, window: (now - 30.minutes)..now)
+    warm = reading(report([ entry(:warm, "0 */4 * * *"), entry(:clock, "* * * * *") ], now: now), :warm)
+    assert_equal :fresh, warm[:state]
+    assert_nil warm[:lost_tick]
+  end
+
+  # The 16:00 row was put back by the monitor at 18:02; the 20:00 tick was lost too.
+  # A key whose cron task died for good must page rather than be recovered every tick.
+  test "a key whose newest row was itself a recovered tick is not offered another, and says why" do
+    four = Time.new(2026, 9, 11, 16, 0, 0)
+    eight = Time.new(2026, 9, 11, 20, 0, 0)
+    now = Time.new(2026, 9, 11, 22, 2, 0)
+    GoodJob::Job.insert_all([ {
+      queue_name: "pollers", job_class: "PlaceholderJob", cron_key: "warm", cron_at: four,
+      created_at: four + 2.hours + 2.minutes, updated_at: four + 2.hours + 3.minutes,
+      scheduled_at: four + 2.hours + 2.minutes, finished_at: four + 2.hours + 3.minutes, executions_count: 1
+    } ])
+    ticking("clock", every: 1.minute, window: (eight - 5.minutes)..now)
+
+    warm = reading(report([ entry(:warm, "0 */4 * * *"), entry(:clock, "* * * * *") ], now: now), :warm)
+
+    assert_equal :stale, warm[:state]
+    assert warm[:last_tick_recovered]
+    assert_nil warm[:lost_tick]
+    assert_match(/itself a lost tick SystemHealthMonitorJob re-enqueued/, warm[:reason])
+  end
+
   # A "run now" from the GoodJob dashboard carries the cron key but no `cron_at`. It is
   # not a tick, so it neither makes a stopped key look alive nor hides the last real one.
   test "a manual run from the dashboard is not a tick" do
