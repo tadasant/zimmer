@@ -85,7 +85,16 @@ function adopt(sourceChild) {
 function appendMissing(live, source) {
   let changed = 0
 
-  for (const child of childrenWithIds(source)) {
+  // Source rows ahead of the first one already on screen are older history,
+  // not updates the page missed: the server's copy can reach further back than
+  // the page has loaded (the transcript renders only its newest rows and pages
+  // the rest in), and appending those would put old rows below the newest one.
+  // With no row in common, everything in the source is newer than the page, and
+  // all of it is appended.
+  const sourceChildren = childrenWithIds(source)
+  const firstShared = sourceChildren.findIndex((child) => document.getElementById(child.id))
+
+  for (const child of sourceChildren.slice(Math.max(firstShared, 0))) {
     // Anywhere in the document, not just this region: an item that moved is
     // still on screen, and importing a second copy would duplicate it.
     if (document.getElementById(child.id)) continue
@@ -105,7 +114,21 @@ function appendMissing(live, source) {
   return changed
 }
 
+// A disclosure the reader opened is their state, not the server's: the server
+// renders every `<details data-disclosure>` closed. Carried onto the server's
+// copy before comparing, so an open disclosure neither reads as a difference
+// nor comes back shut.
+function carryDisclosureState(live, source) {
+  const open = new Set(
+    Array.from(live.querySelectorAll("details[data-disclosure][open]")).map((details) => details.dataset.disclosure)
+  )
+  for (const details of source.querySelectorAll("details[data-disclosure]")) {
+    details.open = open.has(details.dataset.disclosure)
+  }
+}
+
 function replaceElement(live, source) {
+  carryDisclosureState(live, source)
   if (live.isEqualNode(source)) return null
   if (inUse(live)) return null
 
