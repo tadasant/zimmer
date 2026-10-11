@@ -105,6 +105,11 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var config: SessionConfig?
     public var metadata: SessionMetadata?
     public var customMetadata: SessionCustomMetadata?
+    /// The catalog artifacts chosen for this session (not the plugin-bundled or injected ones).
+    public var mcpServers: [String]?
+    public var catalogSkills: [String]?
+    public var catalogHooks: [String]?
+    public var catalogPlugins: [String]?
 
     enum CodingKeys: String, CodingKey {
         case id, slug, title, status, prompt, goal, favorited, visibility, precedence, effort, config, metadata
@@ -119,6 +124,10 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         case priorityClass = "priority_class"
         case heartbeatEnabled = "heartbeat_enabled"
         case customMetadata = "custom_metadata"
+        case mcpServers = "mcp_servers"
+        case catalogSkills = "catalog_skills"
+        case catalogHooks = "catalog_hooks"
+        case catalogPlugins = "catalog_plugins"
     }
 
     public init(
