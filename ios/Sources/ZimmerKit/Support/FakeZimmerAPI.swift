@@ -19,6 +19,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var uncles: [Int: [Int]] = [1031: [1035]]
     private var inbox: [InboxNotification] = FakeZimmerAPI.sampleNotifications()
     private var triggerList: [TriggerSummary] = FakeZimmerAPI.sampleTriggers()
+    /// What each follow-up carried, newest last, so a test can see attachments arrive.
+    public private(set) var sentAttachments: [Int: [[MessageAttachment]]] = [:]
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
 
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date()) {
@@ -703,3 +705,24 @@ extension FakeZimmerAPI {
         ]
     }
 }
+
+// MARK: - Attachments
+//
+// As the server: too many, or an image over its limit, refuses the whole message; the
+// rest go with it however it is delivered, and the conversation names them.
+extension FakeZimmerAPI {
+    public func followUp(_ id: Int, prompt: String, attachments: [MessageAttachment], now: Bool) async throws -> FollowUpResult {
+        var accepted: [MessageAttachment] = []
+        for attachment in attachments {
+            if let refusal = MessageAttachment.refusal(adding: attachment, to: accepted) {
+                throw ZimmerError.http(status: 422, message: refusal)
+            }
+            accepted.append(attachment)
+        }
+        let named = attachments.isEmpty ? prompt : prompt + "\n\n📎 " + attachments.map(\.filename).joined(separator: ", ")
+        let result = now ? try await sendNow(id, prompt: named) : try await followUp(id, prompt: named)
+        sentAttachments[id, default: []].append(attachments)
+        return result
+    }
+}
+
