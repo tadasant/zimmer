@@ -233,7 +233,10 @@ if [ -d "$app" ]; then
   shoot sessions-active -ZimmerFixture -ZimmerFixtureFilter active
   shoot sessions-snoozed -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureBoard offBoard
   shoot search -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureSearch postgres
+  shoot sessions-ranked -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView ranked
+  shoot sessions-your-board -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView user
   shoot session-detail -ZimmerFixture -ZimmerFixtureOpenSession 1038
+  shoot session-detail-hierarchy -ZimmerFixture -ZimmerFixtureOpenSession 1042
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
   # Dark mode, for the two screens a person reads most.
   xcrun simctl ui "$udid" appearance dark >/dev/null 2>&1 || true
