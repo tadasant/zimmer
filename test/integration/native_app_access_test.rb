@@ -107,11 +107,12 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
 
   test "each controller's operator and authoring actions stay closed to the app" do
     headers = bearer(token)
-    trigger = Trigger.create!(name: "Nightly", agent_root_name: "zimmer", prompt_template: "go", status: "enabled")
+    # The token is refused before the record is looked up, so no trigger needs to exist:
+    # a 401 here, rather than the 404 an API key would get, is the boundary.
 
     post "/api/v1/notifications/push", params: { title: "t", body: "b" }, headers: headers
     assert_response :unauthorized
-    delete "/api/v1/triggers/#{trigger.id}", headers: headers
+    delete "/api/v1/triggers/0", headers: headers
     assert_response :unauthorized
     post "/api/v1/triggers", params: { name: "x" }, headers: headers
     assert_response :unauthorized
@@ -121,7 +122,6 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
     post "/api/v1/model_catalog_entries", params: { runtime: "claude_code", model: "x" }, headers: headers
     assert_response :unauthorized
-    assert Trigger.exists?(trigger.id)
   end
 
   test "a controller the app does not use refuses its token outright" do
