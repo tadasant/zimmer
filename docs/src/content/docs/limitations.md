@@ -7841,6 +7841,15 @@ against a real Google login, and cloud signing at export are inferred, not obser
 project is hand-written (folder-synchronised groups, no per-file entries) and has only ever been
 read by `xcodebuild` on CI.
 
+## The iOS app's running badge does not age, and it is not at parity yet
+
+The web UI's *Running* badge turns yellow after three minutes without activity and red after ten.
+The app's stays green: the list response carries no last-activity time, and `updated_at` moves for
+reasons that are not activity, so ageing on it would mislead. The app is also not yet at parity with
+the web UI: queued messages, attachments, the new-session form, catalog and model changes,
+notifications, triggers, costs and health are still browser-only — see
+[Not in the app yet](/extend/ios-app/#not-in-the-app-yet).
+
 ## The transcript archive's deadline cannot stop a run that is stuck
 
 `TranscriptArchiveJob` stops between sessions once its ten-minute `RUN_DEADLINE` has passed
