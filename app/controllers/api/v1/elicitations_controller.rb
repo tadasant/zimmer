@@ -105,15 +105,14 @@ class Api::V1::ElicitationsController < Api::BaseController
 
   # GET /api/v1/sessions/:session_id/elicitations
   #
-  # The elicitations still open on a session, oldest first — the ones the web UI
-  # draws a banner for. One past its deadline is expired here, as a poll would,
-  # rather than listed: it can no longer be answered.
+  # The elicitations still open on a session, oldest first: the `active` scope
+  # the web UI draws its banners from. A read only — one past its deadline is
+  # left out, and left for CleanupExpiredElicitationsJob to expire.
   def index
     session = Session.locate!(params[:session_id])
-    pending = session.elicitations.pending.order(:created_at).to_a
-    pending.each(&:expire_if_needed!)
+    elicitations = session.elicitations.active.order(:created_at)
 
-    render json: { elicitations: pending.select(&:pending?).map { |elicitation| elicitation_json(elicitation) } }
+    render json: { elicitations: elicitations.map { |elicitation| elicitation_json(elicitation) } }
   end
 
   # PATCH /api/v1/elicitations/:id/respond
