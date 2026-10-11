@@ -150,7 +150,7 @@ final class AppModel: ObservableObject {
     /// One action on one session from the list (a swipe or a long press): the server's answer
     /// replaces the row, and a row that no longer belongs on this list leaves it.
     @discardableResult
-    func perform(_ done: String, on id: Int, _ action: (SessionActionsAPI) async throws -> SessionSummary) async -> Bool {
+    func perform(_ done: String, on id: Int, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
         do {
             let updated = try await action(connection.api)
             withAnimation {
