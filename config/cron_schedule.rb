@@ -302,6 +302,16 @@ module CronSchedule
       description: "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity",
       environments: %i[production staging development]
     },
+    # Everywhere, for the same reason as log_retention: it is the only thing
+    # that enforces a root data collection's `retention_days`. Hourly, so a
+    # record outlives its window by at most an hour; a tick with nothing due is
+    # one probe of a partial index.
+    root_data_retention: {
+      cron: "35 * * * *", # Every hour at :35
+      class: "RootDataRetentionJob",
+      description: "Delete agent root data records past their collection's retention window",
+      environments: %i[production staging development]
+    },
     inbound_event_retention: {
       cron: "25 4 * * *", # Daily at 04:25
       class: "InboundEventRetentionJob",

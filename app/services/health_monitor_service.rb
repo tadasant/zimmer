@@ -37,6 +37,12 @@ class HealthMonitorService
   # first backlog, which really is behind.
   LOG_RETENTION_OVERDUE_GRACE = 7.days
 
+  # How far past `expires_at` a root data record may be before root_data_health
+  # says RootDataRetentionJob is behind. The job runs hourly, so two hours is one
+  # missed tick.
+  ROOT_DATA_RETENTION_GRACE = 2.hours
+  ROOT_DATA_OVERDUE_PROBE = 1_000
+
   # How far into the table the verbose half of that check looks.
   #
   # `index_logs_on_level_and_id_and_created_at` does answer "the oldest verbose
@@ -369,6 +375,8 @@ class HealthMonitorService
       log_retention_health: log_retention_health,
       # Also absent from the status list — see #inbound_event_health.
       inbound_event_health: inbound_event_health,
+      # Also absent — see #root_data_health.
+      root_data_health: root_data_health,
       overall_status: calculate_overall_status(
         [ process, session, system, egress, auth, post_deploy, cron ].map { |section| section[:status] }
       ),
@@ -611,6 +619,64 @@ class HealthMonitorService
       verbose_retention_days: (Log::VERBOSE_RETENTION / 1.day).to_i,
       status: HealthStatus.new(status: :warning, message: "Log retention status could not be read: #{e.message}")
     }
+  end
+
+  # Per-namespace usage of the agent root data store (AgentRootRecord), read
+  # from AgentRootRecordCounter so it never counts the records table, plus the
+  # two things worth a warning: expired records the retention sweep has not
+  # deleted, and collections near their row cap.
+  #
+  # Not folded into `overall_status`: a root filling its own store is that
+  # root's concern, not a reason to page about the deployment.
+  def root_data_health
+    usage = AgentRootRecordCounter.usage_by_namespace
+    # Bounded count off the partial expiry index: "is the sweep behind", not "by how much".
+    overdue = AgentRootRecord.expired(ROOT_DATA_RETENTION_GRACE.ago).limit(ROOT_DATA_OVERDUE_PROBE).count
+    near_cap = AgentRootRecordCounter
+      .where(records_count: (RootData::Limits::MAX_RECORDS_PER_COLLECTION * 9 / 10)..)
+      .order(:namespace, :collection)
+      .pluck(:namespace, :collection, :records_count)
+      .map { |namespace, collection, records| { namespace: namespace, collection: collection, records: records } }
+
+    {
+      namespaces: usage,
+      total_records: usage.sum { |row| row[:records] },
+      total_data_bytes: usage.sum { |row| row[:data_bytes] },
+      overdue_expired_records: overdue,
+      near_cap: near_cap,
+      max_records_per_collection: RootData::Limits::MAX_RECORDS_PER_COLLECTION,
+      status: root_data_status(usage, overdue, near_cap)
+    }
+  rescue StandardError => e
+    @logger.warn("Root data health could not be read", error: e.message)
+    {
+      namespaces: [], total_records: 0, total_data_bytes: 0, overdue_expired_records: 0, near_cap: [],
+      max_records_per_collection: RootData::Limits::MAX_RECORDS_PER_COLLECTION,
+      status: HealthStatus.new(status: :warning, message: "Root data status could not be read: #{e.message}")
+    }
+  end
+
+  def root_data_status(usage, overdue, near_cap)
+    if overdue.positive?
+      HealthStatus.new(
+        status: :warning,
+        message: "#{overdue}#{'+' if overdue >= ROOT_DATA_OVERDUE_PROBE} root data record(s) are more than " \
+                 "#{(ROOT_DATA_RETENTION_GRACE / 1.hour).to_i}h past expiry — RootDataRetentionJob is behind"
+      )
+    elsif near_cap.any?
+      HealthStatus.new(
+        status: :warning,
+        message: "#{near_cap.size} root data collection(s) at 90%+ of the " \
+                 "#{RootData::Limits::MAX_RECORDS_PER_COLLECTION}-record cap"
+      )
+    elsif usage.empty?
+      HealthStatus.new(status: :healthy, message: "No root data stored")
+    else
+      HealthStatus.new(
+        status: :healthy,
+        message: "#{usage.sum { |row| row[:records] }} record(s) across #{usage.size} namespace(s)"
+      )
+    end
   end
 
   # The oldest verbose row within the first VERBOSE_HEAD_PROBE_ROWS rows by id.

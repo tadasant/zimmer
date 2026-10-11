@@ -22,6 +22,9 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # Nullify, not cascade: the record of a comment an agent posted has to outlive
     # the session, because the comment on GitHub does.
     [ "agent_posted_github_comments", "session_id", :nullify ],
+    # Nullify: a root's data belongs to the root, not to the session that last
+    # wrote it, so deleting that session must not take the record with it.
+    [ "agent_root_records", "writing_session_id", :nullify ],
     # Nullify. Categories are gone from the app, but the table and this key stay
     # until their two-phase drop lands (tadasant/zimmer#16), and while they exist
     # a session delete must still not trip over the orphaned rows.

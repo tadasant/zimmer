@@ -22,6 +22,22 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     refute_includes result, "### CLI Status"
   end
 
+  test "names each root data namespace's usage, and is silent when nothing is stored" do
+    assert_not_includes @tool.call({}), "Root data"
+
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "healthy",
+        root_data_health: {
+          namespaces: [ { namespace: "zimmer", collections: 2, records: 7, data_bytes: 2048 } ],
+          status: HealthMonitorService::HealthStatus.new(status: :healthy, message: "7 record(s) across 1 namespace(s)")
+        } }
+    )
+    result = @tool.call({})
+
+    assert_includes result, "- **Root data:** 7 record(s) across 1 namespace(s)"
+    assert_includes result, "`zimmer`: 7 record(s) in 2 collection(s), 2 KB"
+  end
+
   test "include_cli_status appends the cli report" do
     CliStatusService.stubs(:unauthenticated_count).returns(2)
     CliStatusService.stubs(:cached_report).returns({ tools: { claude: { authenticated: false } } })

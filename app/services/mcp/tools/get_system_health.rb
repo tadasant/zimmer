@@ -50,6 +50,7 @@ module Mcp
           *in_flight_lines(report),
           *cron_freshness_lines(report),
           *inbound_event_lines(report),
+          *root_data_lines(report),
           "",
           "### Health Details",
           "```json",
@@ -190,6 +191,22 @@ module Mcp
         [
           "- **Webhook ingest:** #{status.message}",
           *enabled.map { |s| inbound_source_line(s) }
+        ]
+      end
+
+      # The agent root data store: per-namespace usage, so "how much is each root
+      # storing" is answerable without a shell. Silent when nothing is stored.
+      def root_data_lines(report)
+        root_data = report[:root_data_health] || {}
+        status = root_data[:status]
+        return [] if status.nil? || (root_data[:namespaces].blank? && status.status == :healthy)
+
+        [
+          "- **Root data:** #{status.message}",
+          *Array(root_data[:namespaces]).map do |row|
+            "  - `#{row[:namespace]}`: #{row[:records]} record(s) in #{row[:collections]} collection(s), " \
+              "#{ActiveSupport::NumberHelper.number_to_human_size(row[:data_bytes])}"
+          end
         ]
       end
 
