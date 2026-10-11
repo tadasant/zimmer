@@ -314,13 +314,18 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert_not ApnsDevice.exists?(device.id)
   end
 
-  test "the app unregisters its phone on sign-out, and a bad registration is refused" do
+  test "the app unregisters its own phone on sign-out, never another's, and a bad registration is refused" do
     tokens = sign_in
-    ApnsDevice.register!(token: "cd" * 32, environment: "sandbox", grant: nil)
+    post "/api/v1/apns_devices", params: { token: "cd" * 32, environment: "sandbox" }, headers: bearer(tokens["access_token"])
+    someone_elses = ApnsDevice.register!(token: "ef" * 32, environment: "sandbox", grant: nil)
+
+    delete "/api/v1/apns_devices/#{'ef' * 32}", headers: bearer(tokens["access_token"])
+    assert_response :no_content
+    assert ApnsDevice.exists?(someone_elses.id), "a token registered under another credential is out of reach"
 
     delete "/api/v1/apns_devices/#{'cd' * 32}", headers: bearer(tokens["access_token"])
     assert_response :no_content
-    assert_empty ApnsDevice.all
+    assert_equal [ someone_elses ], ApnsDevice.all.to_a
 
     post "/api/v1/apns_devices", params: { token: "nope", environment: "production" }, headers: bearer(tokens["access_token"])
     assert_response :unprocessable_entity

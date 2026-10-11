@@ -101,10 +101,16 @@ on its next request. Signing out in the app revokes it too.
 The app asks for permission after sign-in and registers the phone (`POST /api/v1/apns_devices`). It
 sends the APNs token and the environment it belongs to: `sandbox` for a development or Staging build,
 `production` for TestFlight. Tapping a notification opens its session. Signing out unregisters the
-phone, and revoking its connection stops its pushes even if it never signs out.
+phone (a connection can unregister only its own phones), and revoking its connection stops its pushes
+even if it never signs out.
 
 The server sends the same notifications the web push does (*needs input*, *finished*, *failed*, and a
-custom message) from `SendPushNotificationJob`, through `ApnsService`. That is one HTTP/2 request per
+custom message) from `SendPushNotificationJob`, through `ApnsService`, but **the lock screen only says
+what kind of thing happened**: "Zimmer — A session needs you.", "A session failed." and so on. A web
+push is encrypted end to end, so the browser's push service relays ciphertext; an APNs alert is
+readable by Apple. So the session's title, the summary of its last message, a failure detail and a
+custom message's text never go to Apple. The push carries the session id, and tapping it opens the
+session in the app, which reads it over its own authenticated connection. That is one HTTP/2 request per
 phone to Apple, authenticated with an ES256 provider token signed by the APNs key. The key is
 `APNS_AUTH_KEY_P8`, `APNS_KEY_ID` and `APNS_TEAM_ID` in the secret chain. **Until all three are set, it
 sends nothing and logs why.** A token Apple reports dead is disabled with Apple's reason, and an APNs
