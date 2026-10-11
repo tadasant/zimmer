@@ -98,7 +98,7 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     headers = bearer(token)
 
     [ "/api/v1/notifications", "/api/v1/notifications/badge", "/api/v1/triggers", "/api/v1/costs",
-      "/api/v1/health", "/api/v1/configs", "/api/v1/mcp_servers", "/api/v1/skills",
+      "/api/v1/health", "/api/v1/configs", "/api/v1/mcp_servers", "/api/v1/skills", "/api/v1/hooks", "/api/v1/plugins",
       "/api/v1/model_catalog_entries" ].each do |path|
       get path, headers: headers
       assert_response :success, "#{path} did not answer the app's token"
@@ -122,6 +122,16 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
     post "/api/v1/model_catalog_entries", params: { runtime: "claude_code", model: "x" }, headers: headers
     assert_response :unauthorized
+  end
+
+  test "the hook and plugin catalogs answer an API key with the catalog's entries" do
+    get "/api/v1/hooks", headers: { "X-API-Key" => API_KEY }
+    assert_response :success
+    assert_equal HooksConfig.all.map(&:id), JSON.parse(response.body)["hooks"].map { |h| h["id"] }
+
+    get "/api/v1/plugins", headers: { "X-API-Key" => API_KEY }
+    assert_response :success
+    assert_equal PluginsConfig.all.map(&:id), JSON.parse(response.body)["plugins"].map { |p| p["id"] }
   end
 
   test "a controller the app does not use refuses its token outright" do
