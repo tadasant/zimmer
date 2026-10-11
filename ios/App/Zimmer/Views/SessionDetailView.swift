@@ -19,6 +19,8 @@ final class SessionDetailModel: ObservableObject {
     @Published var draft = ""
     /// The messages waiting for the turn in flight to end (`QueueCard`).
     @Published var queue: [QueuedMessage] = []
+    /// Photos and files going with the next message.
+    @Published var attachments: [MessageAttachment] = []
 
     init(id: Int, api: ZimmerAPI) {
         self.id = id
@@ -60,18 +62,40 @@ final class SessionDetailModel: ObservableObject {
         defer { isSending = false }
         do {
             let result: FollowUpResult
-            if now {
+            let sending = attachments
+            if !sending.isEmpty {
+                result = try await api.followUp(id, prompt: prompt, attachments: sending, now: now)
+            } else if now {
                 result = try await api.sendNow(id, prompt: prompt)
             } else {
                 result = try await api.followUp(id, prompt: prompt)
             }
             draft = ""
+            // Only what went: anything added while it was sending stays for the next message.
+            attachments.removeAll { attached in sending.contains { $0.id == attached.id } }
             notice = result.queued ? "Queued — it goes in when the current turn ends." : (now ? "Sent now." : "Sent.")
             error = nil
             Haptics.success()
             await load()
         } catch {
             fail(error)
+        }
+    }
+
+    /// Add what the pickers returned, refusing anything the server would refuse — the whole
+    /// message would fail on it — and saying what could not be read at all.
+    func attach(_ new: [MessageAttachment], unreadable: [String] = []) {
+        var refusals = unreadable.map { "\($0) couldn't be read." }
+        for attachment in new {
+            if let refusal = MessageAttachment.refusal(adding: attachment, to: attachments) {
+                refusals.append(refusal)
+            } else {
+                attachments.append(attachment)
+            }
+        }
+        if let first = refusals.first {
+            notice = refusals.count == 1 ? first : "\(first) (and \(refusals.count - 1) more not attached)"
+            Haptics.failure()
         }
     }
 
@@ -265,6 +289,10 @@ struct SessionDetailView: View {
         .task {
             model.report = { [weak app] error in app?.noteError(error) }
             await model.load()
+            if app.fixtureAttachesFile {
+                app.fixtureAttachesFile = false
+                model.attach([MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8))])
+            }
         }
         .onDisappear {
             // What changed here (a star, a snooze, a restore) shows on the list behind.
@@ -580,7 +608,11 @@ struct SessionDetailView: View {
                     }
                 }
             }
+            if !model.attachments.isEmpty {
+                AttachmentChips(attachments: $model.attachments)
+            }
             HStack(alignment: .bottom, spacing: 8) {
+                AttachMenu { model.attach($0, unreadable: $1) }
                 TextField(running ? "Queue Message" : "Send Message", text: $model.draft, axis: .vertical)
                     .lineLimit(1...5)
                     .padding(10)
