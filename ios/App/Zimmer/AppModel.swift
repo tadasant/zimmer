@@ -123,6 +123,7 @@ final class AppModel: ObservableObject {
         defer { isLoading = false }
         let requested = filter
         let board = board
+        let view = view
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let scope = searchScope
         do {
@@ -132,7 +133,9 @@ final class AppModel: ObservableObject {
             } else {
                 result = try await connection.api.search(query, contents: scope == .transcripts, filter: requested, board: board)
             }
-            guard requested == filter, board == self.board, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            // A slower answer to an older request must not overwrite a newer list.
+            guard requested == filter, board == self.board, view == self.view,
+                  query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             sessions = result.sessions
             listIncomplete = !result.complete
             error = nil
@@ -229,13 +232,15 @@ final class AppModel: ObservableObject {
     func reorder(_ id: Int, above: Int?, below: Int?) async {
         do {
             _ = try await connection.api.reorder(id, above: above, below: below)
+            // After the reload, so the toast never shows over the row in its old place.
+            await refresh()
             notice = "Moved in the spot queue"
             Haptics.success()
         } catch {
             handle(error)
             Haptics.failure()
+            await refresh()
         }
-        await refresh()
     }
 
     /// The web UI's page for a session, for what the app does not do itself.
