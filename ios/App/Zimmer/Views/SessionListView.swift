@@ -1,10 +1,11 @@
 import SwiftUI
 import ZimmerKit
 
-/// Sessions, most urgent first, filtered by status and by board visibility as the web UI's
-/// board is. "Needs input" is the default filter and the first chip: the phone is for the
-/// sessions waiting on a person. Swipe right to star, left to trash or snooze; press and
-/// hold for everything else the web UI's card offers.
+/// Sessions, in one of the web UI's four board views, filtered by status and by board
+/// visibility as the web UI's board is. "Needs input" is the default filter and the first
+/// chip: the phone is for the sessions waiting on a person. Swipe right to star, left to
+/// trash or snooze; press and hold for everything else the web UI's card offers; Select to
+/// trash several at once.
 struct SessionListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingSettings = false
@@ -12,6 +13,10 @@ struct SessionListView: View {
     @State private var trashing: SessionSummary?
     /// The search the list last loaded, so appearing does not reload a list `start()` just loaded.
     @State private var appliedSearch = SearchKey(text: "", scope: .titles)
+    @State private var editMode: EditMode = .inactive
+    @State private var selection = Set<Int>()
+    @State private var confirmingBulkTrash = false
+    @State private var confirmingRefreshAll = false
 
     var body: some View {
         searchableList
@@ -34,12 +39,34 @@ struct SessionListView: View {
             } message: { _ in
                 Text("It moves to the trash. You can restore it from Archived.")
             }
+            .confirmationDialog("Move \(selection.count) to trash?", isPresented: $confirmingBulkTrash, titleVisibility: .visible) {
+                Button("Trash \(selection.count)", role: .destructive) {
+                    let ids = selection
+                    Task {
+                        await model.trash(ids)
+                        selection = []
+                        editMode = .inactive
+                    }
+                }
+            } message: {
+                Text("A session mid-turn, or with messages still queued, is refused and stays.")
+            }
+            .confirmationDialog("Refresh all sessions?", isPresented: $confirmingRefreshAll, titleVisibility: .visible) {
+                Button("Refresh All Now") { Task { await model.refreshAll() } }
+            } message: {
+                Text("Re-reads transcripts, restarts failed sessions, and continues sessions waiting on you that you didn't pause — up to 50 of those. That spends agent turns.")
+            }
+            .environment(\.editMode, $editMode)
+            // A selection only ever names rows on screen: a filter, search or view change drops the rest.
+            .onChange(of: model.sessions.map(\.id)) { _, ids in selection.formIntersection(ids) }
             .sheet(isPresented: $showingSettings) { SettingsView() }
             .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
     }
 
     private var list: some View {
-        List {
+        // Selection is bound only while selecting: a List with a selection binding takes a
+        // tap on a row as a selection, not as opening the session.
+        List(selection: isSelecting ? $selection : nil) {
             Section {
                 FilterBar()
                     .listRowInsets(EdgeInsets())
@@ -53,22 +80,44 @@ struct SessionListView: View {
             if let error = model.error {
                 Section { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
             }
-            Section {
-                if model.sessions.isEmpty && !model.isLoading {
-                    EmptyListRow(filter: model.filter, searching: !model.searchText.isEmpty)
+            if model.sessions.isEmpty && !model.isLoading {
+                Section { EmptyListRow(filter: model.filter, searching: !model.searchText.isEmpty) }
+            }
+            ForEach(model.sessions.isEmpty ? [] : model.sections) { section in
+                Section {
+                    ForEach(section.sessions) { session in
+                        SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing)
+                    }
+                    if section.sessions.isEmpty {
+                        Text("None.").foregroundStyle(.secondary)
+                    }
+                } header: {
+                    if let title = section.title {
+                        Text(title).accessibilityIdentifier("section.\(title)")
+                    }
                 }
-                ForEach(model.sessions) { session in
-                    SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing)
-                }
-            } footer: {
-                if model.searchIncomplete && !model.searchText.isEmpty {
-                    Text("The transcript search stopped before reading every session. Narrow the search, or pick a status, to cover the rest.")
-                        .accessibilityIdentifier("search.incomplete")
+            }
+            if model.listIncomplete {
+                Section {} footer: {
+                    Text(incompleteNotice).accessibilityIdentifier("list.incomplete")
                 }
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Sessions")
+        .navigationBarTitleDisplayMode(.large)
+    }
+
+    private var isSelecting: Bool { editMode.isEditing }
+
+    private var incompleteNotice: String {
+        model.searchText.isEmpty
+            ? "Showing the newest \(SessionFilter.maxPages * 100) sessions that match. Pick a status or search to reach older ones."
+            : "The transcript search stopped before reading every session. Narrow the search, or pick a status, to cover the rest."
+    }
+
+    private var selectionLabel: String {
+        selection.isEmpty ? "Select sessions" : "\(selection.count) selected"
     }
 
     private var searchableList: some View {
@@ -102,19 +151,55 @@ struct SessionListView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button { showingSettings = true } label: { Image(systemName: "gearshape") }
-                .accessibilityLabel("Settings")
-                .accessibilityIdentifier("settings.open")
+            if isSelecting {
+                Button("Done") {
+                    selection = []
+                    editMode = .inactive
+                }
+                .accessibilityIdentifier("select.done")
+            } else {
+                Button { showingSettings = true } label: { Image(systemName: "gearshape") }
+                    .accessibilityLabel("Settings")
+                    .accessibilityIdentifier("settings.open")
+            }
+        }
+        ToolbarItemGroup(placement: .bottomBar) {
+            if isSelecting {
+                Text(selectionLabel)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(role: .destructive) { confirmingBulkTrash = true } label: {
+                    Label("Trash", systemImage: "trash")
+                }
+                .disabled(selection.isEmpty)
+                .accessibilityIdentifier("select.trash")
+            }
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
             Menu {
+                Picker("View", selection: $model.view) {
+                    ForEach(BoardView.allCases) { view in Text(view.label).tag(view) }
+                }
                 Picker("Board visibility", selection: boardSelection) {
                     ForEach(BoardFilter.allCases) { board in Text(board.label).tag(board) }
+                }
+                Section {
+                    Button {
+                        editMode = .active
+                    } label: {
+                        Label("Select Sessions", systemImage: "checkmark.circle")
+                    }
+                    Button {
+                        confirmingRefreshAll = true
+                    } label: {
+                        Label("Refresh All", systemImage: "arrow.clockwise")
+                    }
                 }
             } label: {
                 Image(systemName: model.board == .onBoard ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
             }
-            .accessibilityLabel("Board visibility")
+            .accessibilityLabel("View options")
             .accessibilityIdentifier("board.menu")
             Button { model.showingQuickRouter = true } label: { Image(systemName: "square.and.pencil") }
                 .accessibilityLabel("New session")
@@ -321,6 +406,9 @@ struct SessionRow: View {
             }
             HStack(spacing: 6) {
                 StatusBadge(status: session.status, compact: true)
+                if session.isPriority {
+                    Text("Priority").foregroundStyle(.red)
+                }
                 // Verbatim: a session id is an identifier, not a quantity to group.
                 Text(verbatim: "#\(session.id)")
                 if let date = session.updatedAt ?? session.createdAt {

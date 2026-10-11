@@ -160,3 +160,87 @@ final class SessionParityUITests: XCTestCase {
         add(attachment)
     }
 }
+
+/// Slice 2: the board views, selecting several to trash, Refresh All, the hierarchy and the transcript.
+@MainActor
+final class BoardViewUITests: XCTestCase {
+    private let timeout: TimeInterval = 20
+
+    override func setUp() {
+        continueAfterFailure = false
+    }
+
+    func test_ranked_view_splits_priority_from_the_spot_queue_in_rank_order() throws {
+        let app = launch(["-ZimmerFixtureFilter", "active"])
+        app.buttons["board.menu"].tap()
+        app.buttons["Ranked"].firstMatch.tap()
+
+        XCTAssertTrue(app.descendants(matching: .any)["section.Priority"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(app.descendants(matching: .any)["section.Spot queue"].exists)
+        // Spot queue by precedence: the sweep (50) above CarPlay (30) above Postgres (20).
+        let sweep = row(app, 1031), carplay = row(app, 1042), postgres = row(app, 1035)
+        XCTAssertTrue(sweep.waitForExistence(timeout: timeout))
+        XCTAssertLessThan(sweep.frame.minY, carplay.frame.minY)
+        XCTAssertLessThan(carplay.frame.minY, postgres.frame.minY)
+        XCTAssertLessThan(row(app, 1038).frame.minY, sweep.frame.minY, "the priority session is above the whole spot queue")
+    }
+
+    func test_select_several_and_trash_them_with_refusals_reported() throws {
+        let app = launch(["-ZimmerFixtureFilter", "active"])
+        app.buttons["board.menu"].tap()
+        app.buttons["Select Sessions"].firstMatch.tap()
+
+        // A failed session goes; a running one is refused with the server's reason.
+        let failed = row(app, 1027), running = row(app, 1042)
+        XCTAssertTrue(failed.waitForExistence(timeout: timeout))
+        failed.tap()
+        running.tap()
+        app.buttons["select.trash"].tap()
+        let confirm = app.buttons["Trash 2"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
+        confirm.tap()
+
+        XCTAssertTrue(app.descendants(matching: .any)["error.banner"].waitForExistence(timeout: timeout), "the refusal is shown")
+        XCTAssertTrue(waitForDisappearance(failed))
+        XCTAssertTrue(running.exists, "the refused session stays")
+    }
+
+    func test_refresh_all_reports_what_it_did() throws {
+        let app = launch(["-ZimmerFixtureFilter", "active"])
+        app.buttons["board.menu"].tap()
+        app.buttons["Refresh All"].firstMatch.tap()
+        let confirm = app.buttons["Refresh All Now"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
+        confirm.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
+    }
+
+    func test_the_hierarchy_opens_a_related_session() throws {
+        let app = launch(["-ZimmerFixtureOpenSession", "1038"])
+        let child = app.descendants(matching: .any)["hierarchy.node.1042"]
+        XCTAssertTrue(child.waitForExistence(timeout: timeout))
+        for _ in 0..<6 where !child.isHittable {
+            app.swipeUp(velocity: .slow)
+        }
+        child.tap()
+        XCTAssertTrue(app.navigationBars["#1042"].waitForExistence(timeout: timeout), "the spawned session opens")
+    }
+
+    // MARK: - Helpers
+
+    private func launch(_ arguments: [String] = []) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-ZimmerFixture"] + arguments
+        app.launch()
+        return app
+    }
+
+    private func row(_ app: XCUIApplication, _ id: Int) -> XCUIElement {
+        app.descendants(matching: .any)["session.row.\(id)"]
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+}

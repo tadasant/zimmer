@@ -2,7 +2,7 @@ import XCTest
 
 /// The app, run on a simulator against its `#if DEBUG` fixture (`-ZimmerFixture`): an
 /// in-memory Zimmer, because an agent cannot complete a Google sign-in. What this proves is
-/// the app's own behaviour — the list orders by urgency, the filters ask for the right
+/// the app's own behaviour — the list follows the web UI's board views, the filters ask for the right
 /// rows, the build says which deployment it was made for — not the network.
 ///
 /// One flow, deliberately: a broad, flaky UI suite would redden every iOS pull request.
@@ -14,7 +14,7 @@ final class SessionListUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func test_needs_input_is_the_default_filter_and_sorts_above_everything_else() throws {
+    func test_needs_input_is_the_default_filter_and_last_touched_the_default_order() throws {
         let app = launch()
 
         // Needs input is selected on launch, and shows exactly the sessions waiting on a person.
@@ -24,13 +24,14 @@ final class SessionListUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["session.row.1042"].exists, "running sessions are not in Needs input")
         attachScreenshot(app, named: "sessions-needs-input")
 
-        // Active: everything not archived, with the needs-input rows above the running one.
+        // Active: everything not archived, in the web UI's phone default, Last Touched — the
+        // needs-input session you touched half an hour ago above the running one from earlier.
         app.buttons["filter.active"].tap()
         let running = app.descendants(matching: .any)["session.row.1042"]
         XCTAssertTrue(running.waitForExistence(timeout: timeout))
         let firstNeedsInput = app.descendants(matching: .any)["session.row.1038"]
         XCTAssertTrue(firstNeedsInput.waitForExistence(timeout: timeout))
-        XCTAssertLessThan(firstNeedsInput.frame.minY, running.frame.minY, "needs input sorts above running")
+        XCTAssertLessThan(firstNeedsInput.frame.minY, running.frame.minY, "Last Touched puts the more recently touched session first")
         XCTAssertFalse(app.descendants(matching: .any)["session.row.1019"].exists, "archived is hidden from Active")
         attachScreenshot(app, named: "sessions-active")
 

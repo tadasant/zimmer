@@ -40,7 +40,7 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     public func session(_ id: Int) async throws -> SessionDetail {
         let segment = ZimmerPathComponent(String(id))
         let response: SessionShowResponse = try await get("/api/v1/sessions/\(segment)")
-        return SessionDetail(session: response.session, statusSummary: response.statusSummary)
+        return SessionDetail(session: response.session, statusSummary: response.statusSummary, hierarchy: response.hierarchy)
     }
 
     public func conversation(_ id: Int) async throws -> Conversation {

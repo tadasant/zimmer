@@ -83,8 +83,8 @@ final class SessionParityTests: XCTestCase {
         let queries = transport.sent.map { request in
             Dictionary(uniqueKeysWithValues: (URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
         }
-        XCTAssertEqual(queries[0], ["status": "needs_input", "per_page": "100", "visibility": "on_board"])
-        XCTAssertEqual(queries[1], ["per_page": "100"], "Both sends no visibility, which the server reads as unfiltered")
+        XCTAssertEqual(queries[0], ["status": "needs_input", "per_page": "100", "visibility": "on_board", "page": "1"])
+        XCTAssertEqual(queries[1], ["per_page": "100", "page": "1"], "Both sends no visibility, which the server reads as unfiltered")
         XCTAssertEqual(transport.sent[2].url.path, "/api/v1/sessions/search")
         XCTAssertEqual(queries[2], ["q": "deploy key", "search_contents": "true", "status": "failed", "per_page": "100", "visibility": "off_board"])
         XCTAssertFalse(partial.complete, "a scan that stopped early is not a \"no match\"")
@@ -206,13 +206,13 @@ final class SessionParityTests: XCTestCase {
 
     func testTheFixtureKeepsSnoozedSessionsOffTheBoard() async throws {
         let fake = FakeZimmerAPI()
-        let onBoard = try await fake.sessions(.active, board: .onBoard).map(\.id)
-        let offBoard = try await fake.sessions(.active, board: .offBoard).map(\.id)
+        let onBoard = try await fake.sessions(.active, board: .onBoard).sessions.map(\.id)
+        let offBoard = try await fake.sessions(.active, board: .offBoard).sessions.map(\.id)
         XCTAssertFalse(onBoard.contains(1029))
         XCTAssertEqual(offBoard, [1029])
 
         _ = try await fake.setVisibility(1029, .visible)
-        let afterwards = try await fake.sessions(.active, board: .onBoard).map(\.id)
+        let afterwards = try await fake.sessions(.active, board: .onBoard).sessions.map(\.id)
         XCTAssertTrue(afterwards.contains(1029))
     }
 

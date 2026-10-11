@@ -24,12 +24,22 @@ The app follows the web UI's board and session page: the same words, the same st
 (needs input blue, running green, waiting purple, failed orange, trashed gray), the same actions.
 Where the web UI has a button, the app has a swipe, a long press, or a menu item.
 
-- **Lists sessions**, filtered by status and by board visibility. *Needs input* is the default
-  status filter and sorts above everything else; the others are *Active* (everything not
-  archived), *Running*, *Failed* and *Archived*. Board visibility is *On board* by default, like
-  the web UI's board, with *Snoozed & hidden* and *Both* in the filter menu. Pull to refresh.
-  Rows carry the status pill, a star for a favourite, the latest PR, a notes marker, and when a
-  snooze ends.
+- **Lists sessions** in one of the web UI's four board views, from the view menu: *Your board*
+  (priority above spot, then precedence, then oldest first — `Sessions::UserView`), *Last
+  Touched* (the default, as it is on the web UI on a phone), *Created*, and *Ranked* (the same
+  order as *Priority* and *Spot queue* sections). The app reads the newest 500 sessions that
+  match the filters (five pages of 100) and orders them on the phone by the server's rules; when
+  more match, the list says so.
+- **Filters** by status and by board visibility. *Needs input* is the default status filter; the
+  others are *Active* (everything not archived), *Running*, *Failed* and *Archived*. Board
+  visibility is *On board* by default, like the web UI's board, with *Snoozed & hidden* and
+  *Both* in the view menu. Pull to refresh. Rows carry the status pill, a *Priority* tag, a star
+  for a favourite, the latest PR, a notes marker, and when a snooze ends.
+- **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn or with
+  queued messages is refused with the server's reason and stays; the rest go.
+- **Refresh All**, after a confirmation, through `POST /api/v1/sessions/refresh_all`: re-reads
+  transcripts, restarts failed sessions, and continues sessions waiting on you that you did not
+  pause, up to 50 of those together.
 - **Searches** titles and metadata from the search box, or transcripts too with the
   *Transcripts* scope (the web UI's "Search transcript contents"; the first page of one bounded
   scan, and the list says so when the scan stopped before reading every session).
@@ -37,13 +47,14 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   and to snooze (*Later today*, *Tomorrow*, *In 3 days*, *This weekend*, *Next week*, the web UI's
   presets, worked out in the phone's time zone) or hide. Press and hold for the rest: pause,
   restart, view the PR, open the session in the browser.
-- **Opens a session**: its status, priority class and board visibility; its agent root, runtime,
+- **Opens a session**: its hierarchy (who spawned it and what it spawned, each a tap away); its
+  status, priority class and board visibility; its agent root, runtime,
   model and effort; its PRs, coloured by state with the CI dot; the *Status summary* ("where
   things stand") with *Regenerate*; its goal and notes; and the conversation, newest last, with
   tool calls folded away until asked for (`GET /api/v1/sessions/:id/conversation`).
 - **The session menu** (the ⋯ button) is the web UI's mobile *Session actions* sheet, in its order:
   Quick Router, Edit Notes, View PR, Snooze until… / Hide / Put back on the board, Refresh
-  Transcript, Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
+  Transcript, Copy Transcript (the whole transcript as text), Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
   edit: Rename, Modify Goal, Effort (the levels the session's model accepts, or the model
   default), Promote to priority / Demote to spot (to the head of the spot queue), the heartbeat on
   or off, Generate Status Summary when there is none, and Open in browser. A promotion that could
@@ -62,7 +73,9 @@ of them widened what the phone can do on the server.
 
 ### Not in the app yet
 
-The web UI's queued-message list (reorder, edit, delete), image and file attachments, the
+The Ranked view's drag-to-reorder and *Start now*, *Reprioritize*, *Authorize merge*, and Fork
+from a message have no `/api/v1` route yet. The web UI's queued-message list (reorder, edit,
+delete), logs and subagent transcripts, image and file attachments, the
 new-session form and MCP server / skill / hook / plugin / model changes, the notifications inbox,
 triggers, costs and health are not in the app yet. They need `/api/v1` controllers the app's token
 does not reach today, or, for attachments, an API route that does not exist, so each comes in its
