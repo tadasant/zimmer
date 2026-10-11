@@ -20,6 +20,8 @@ struct RootView: View {
                 tabs
             }
         }
+        // Behind the status bar, where the build strip's gold does not reach.
+        .background(Theme.ground.ignoresSafeArea())
     }
 }
 
@@ -52,8 +54,8 @@ extension RootView {
 }
 
 /// A strip that says which deployment a non-production build is for, so a staging screen
-/// is never mistaken for the real one: the mark's gold under the status bar, its navy in
-/// tracked small caps.
+/// is never mistaken for the real one: a strip of the mark's gold under the status bar (not
+/// behind it, where the status bar's white text would sit on it), its navy in tracked small caps.
 struct BuildBadge: View {
     let text: String
     let summary: String
@@ -63,7 +65,7 @@ struct BuildBadge: View {
             .themeLabel(size: 10, color: Theme.navy)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 4)
-            .background(Theme.signatureGold)
+            .background(Theme.signatureGold, ignoresSafeAreaEdges: [])
             .accessibilityIdentifier("build.badge")
             .accessibilityValue(summary)
     }

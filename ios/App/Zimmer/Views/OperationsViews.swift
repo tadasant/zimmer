@@ -38,7 +38,7 @@ struct InboxView: View {
                         } label: {
                             Label("Mark Read", systemImage: "envelope.open")
                         }
-                                .tint(Theme.accent)
+                        .tint(Theme.Swipe.snooze)
                     }
                 }
                 .listRowBackground(Theme.surface)
@@ -169,7 +169,7 @@ struct TriggersView: View {
                 }
                 .swipeActions(edge: .trailing) {
                     Button { invoking = trigger } label: { Label("Invoke", systemImage: "play.fill") }
-                        .tint(Theme.success)
+                        .tint(Theme.Swipe.restore)
                 }
                 .listRowBackground(Theme.surface)
                 .listRowSeparatorTint(Theme.rule)
@@ -300,7 +300,6 @@ struct MoreView: View {
                 NavigationLink { HealthView() } label: { Label("Health", systemImage: "heart.text.square") }
                     .accessibilityIdentifier("more.health")
                 Button { showingSettings = true } label: { Label("Settings", systemImage: "gearshape") }
-                    .foregroundStyle(Theme.ink)
             }
             .listRowBackground(Theme.surface)
         }

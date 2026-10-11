@@ -93,12 +93,7 @@ struct SignInView: View {
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Always the mark's navy, in either appearance: the PWA's launch colour, and the one
-        // screen that is all brand.
         .background(Theme.ground.ignoresSafeArea())
-        .environment(\.colorScheme, .dark)
-        // And the status bar's light text over it, while this screen is up.
-        .preferredColorScheme(.dark)
         .onAppear {
             guard server.isEmpty, let origins = model.environment.configuration.origins else { return }
             server = origins.web.absoluteString

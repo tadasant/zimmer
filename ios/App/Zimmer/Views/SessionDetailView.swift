@@ -637,7 +637,7 @@ struct SessionDetailView: View {
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(canSend ? Color.white : Theme.inkMute)
                         .frame(width: 36, height: 36)
-                        .background(Circle().fill(canSend ? Theme.accent : Theme.well))
+                        .background(Circle().fill(canSend ? Theme.accentFill : Theme.well))
                         .contentTransition(.symbolEffect(.replace))
                         .animation(.snappy(duration: 0.2), value: canSend)
                 }
