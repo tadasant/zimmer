@@ -278,13 +278,21 @@ final class RankedUITests: XCTestCase {
         let last = app.descendants(matching: .any)["session.row.1027"]
         let first = app.descendants(matching: .any)["session.row.1031"]
         XCTAssertTrue(last.waitForExistence(timeout: timeout))
-        let handle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).element(boundBy: 3)
-        handle.press(forDuration: 0.6, thenDragTo: first)
-        // The server answers, the list reloads in its new order, and the toast says so.
+        // The handle names its row on current iOS; failing that, it is the spot queue's fourth.
+        let titled = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Rotate the staging deploy key'")).firstMatch
+        let handle = titled.waitForExistence(timeout: 5) ? titled : app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).element(boundBy: 3)
+        XCTAssertTrue(handle.waitForExistence(timeout: timeout))
+        // Let go near the top edge of the first row, so the drop lands above it, not below.
+        handle.press(forDuration: 0.6, thenDragTo: first.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.05)),
+                     withVelocity: .slow, thenHoldForDuration: 0.3)
+        // The toast comes after the reload, so the new order is on screen by then.
         XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
-        app.buttons["select.done"].tap()
-        XCTAssertTrue(last.waitForExistence(timeout: timeout))
+        let deadline = Date().addingTimeInterval(timeout)
+        while last.frame.minY >= first.frame.minY, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
         XCTAssertLessThan(last.frame.minY, first.frame.minY, "the dropped session now heads the spot queue")
+        app.buttons["select.done"].tap()
     }
 
     private func launch() -> XCUIApplication {

@@ -138,7 +138,7 @@ struct SessionListView: View {
 
     private var incompleteNotice: String {
         model.searchText.isEmpty
-            ? "Showing the newest \(SessionFilter.maxPages * 100) sessions that match. Pick a status or search to reach older ones."
+            ? "Showing the first \(SessionFilter.maxPages * 100) sessions in this view. Pick a status or search to reach the rest."
             : "The transcript search stopped before reading every session. Narrow the search, or pick a status, to cover the rest."
     }
 
@@ -213,6 +213,7 @@ struct SessionListView: View {
                 }
                 Section {
                     Button {
+                        reordering = false
                         editMode = .active
                     } label: {
                         Label("Select Sessions", systemImage: "checkmark.circle")

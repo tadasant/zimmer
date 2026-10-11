@@ -7870,7 +7870,10 @@ read by `xcodebuild` on CI.
 The app's board views are ordered by the server, but the app reads at most 500 rows of them: the
 first five pages of Last Touched and Created, or the one page of Your board and Ranked (which the
 web board caps at 500 too). The web UI pages Last Touched and Created further; the app's list says
-when it is cut. Its Refresh All is
+when it is cut. A drag in Ranked names only the rows on screen as its neighbours, so under a status
+filter "the top" means above the highest *visible* spot session, which can still sit below a
+higher-ranked one the filter hides; the web UI's Ranked view drags within the same filters. Its
+Refresh All is
 `POST /api/v1/sessions/refresh_all`, which differs from the web UI's button in two ways: it does not
 nudge stalled `waiting` sessions, and it re-reads at most 50 transcripts.
 
