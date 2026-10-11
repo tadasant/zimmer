@@ -76,11 +76,13 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   *Send Now* instead, which ends the turn in flight (`force_immediate`, the web UI's Send Now).
   It is recorded as your message if the app's connection acts on your behalf (below).
 - **Attaches photos and files** to a message with the paperclip beside the box: *Photo Library* or
-  *Choose Files*, up to 20, shown as chips you can remove before sending. Photos go as JPEG, scaled
-  down if needed to fit the 10 MB image limit; the library's own HEIC is not a type the server keeps
-  as an image. A PNG, JPEG, GIF or WebP from Files goes as an image, anything else as a file the agent
-  is told to read, as the web composer's two pickers send them. They go with the message however it
-  is delivered: now, queued behind a turn, or with *Send Now*.
+  *Choose Files*, up to 20 and 75 MB altogether, shown as chips you can remove before sending. Photos
+  go as JPEG, scaled down if needed to fit the 10 MB image limit; the library's own HEIC is not a
+  type the server keeps as an image. A file from Files whose bytes are a PNG, JPEG, GIF or WebP goes
+  as an image, anything else as a file the agent is told to read, as the web composer's two pickers
+  send them. Anything that would be refused, or could not be read, is named rather than dropped
+  quietly. They go with the message however it is delivered: now, queued behind a turn, or with
+  *Send Now*.
 - **Trashes** a session, after a confirmation, and restores one from the trash.
 - **Starts a session from a sentence** through the Quick Router (tap the pencil), then opens it,
   **or from the full form** (touch and hold the pencil → *New Session…*): the web UI's new-session

@@ -62,15 +62,17 @@ final class SessionDetailModel: ObservableObject {
         defer { isSending = false }
         do {
             let result: FollowUpResult
-            if !attachments.isEmpty {
-                result = try await api.followUp(id, prompt: prompt, attachments: attachments, now: now)
+            let sending = attachments
+            if !sending.isEmpty {
+                result = try await api.followUp(id, prompt: prompt, attachments: sending, now: now)
             } else if now {
                 result = try await api.sendNow(id, prompt: prompt)
             } else {
                 result = try await api.followUp(id, prompt: prompt)
             }
             draft = ""
-            attachments = []
+            // Only what went: anything added while it was sending stays for the next message.
+            attachments.removeAll { attached in sending.contains { $0.id == attached.id } }
             notice = result.queued ? "Queued — it goes in when the current turn ends." : (now ? "Sent now." : "Sent.")
             error = nil
             Haptics.success()
@@ -81,25 +83,19 @@ final class SessionDetailModel: ObservableObject {
     }
 
     /// Add what the pickers returned, refusing anything the server would refuse — the whole
-    /// message would fail on it — and past the per-message limit.
-    func attach(_ new: [MessageAttachment]) {
+    /// message would fail on it — and saying what could not be read at all.
+    func attach(_ new: [MessageAttachment], unreadable: [String] = []) {
+        var refusals = unreadable.map { "\($0) couldn't be read." }
         for attachment in new {
-            if let problem = attachment.problem {
-                notice = problem
-                Haptics.failure()
-                continue
+            if let refusal = MessageAttachment.refusal(adding: attachment, to: attachments) {
+                refusals.append(refusal)
+            } else {
+                attachments.append(attachment)
             }
-            guard attachments.count < MessageAttachment.limit else {
-                notice = "A message carries at most \(MessageAttachment.limit) attachments."
-                Haptics.failure()
-                return
-            }
-            guard attachments.reduce(0, { $0 + $1.data.count }) + attachment.data.count <= MessageAttachment.maxTotalBytes else {
-                notice = "\(attachment.filename) would take this message over its 75 MB of attachments."
-                Haptics.failure()
-                continue
-            }
-            attachments.append(attachment)
+        }
+        if let first = refusals.first {
+            notice = refusals.count == 1 ? first : "\(first) (and \(refusals.count - 1) more not attached)"
+            Haptics.failure()
         }
     }
 
@@ -616,7 +612,7 @@ struct SessionDetailView: View {
                 AttachmentChips(attachments: $model.attachments)
             }
             HStack(alignment: .bottom, spacing: 8) {
-                AttachMenu { model.attach($0) }
+                AttachMenu { model.attach($0, unreadable: $1) }
                 TextField(running ? "Queue Message" : "Send Message", text: $model.draft, axis: .vertical)
                     .lineLimit(1...5)
                     .padding(10)

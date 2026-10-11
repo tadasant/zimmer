@@ -1,8 +1,9 @@
 import Foundation
 
 /// A photo or a file sent with a message, as the web composer's *Attach image* and
-/// *Attach file* send them. The server decides which it is from `mediaType`: a PNG, JPEG,
-/// GIF or WebP reaches the agent as an image, anything else as a file it is told to read.
+/// *Attach file* send them. The server decides which it is from the bytes, as
+/// `ImageStorageService` sniffs them: a PNG, JPEG, GIF or WebP reaches the agent as an
+/// image, anything else as a file it is told to read. `isImage` reads them the same way.
 public struct MessageAttachment: Hashable, Sendable, Identifiable {
     public var id: UUID
     public var filename: String
@@ -26,12 +27,34 @@ public struct MessageAttachment: Hashable, Sendable, Identifiable {
     /// (`Api::V1::SessionsController::FOLLOW_UP_ATTACHMENT_BYTES`).
     public static let maxTotalBytes = 75 * 1024 * 1024
 
-    public var isImage: Bool { Self.imageTypes.contains(mediaType) }
+    /// Whether the server will keep this as an image: its magic bytes are a PNG, JPEG, GIF or
+    /// WebP, whatever its name or `mediaType` say.
+    public var isImage: Bool { Self.sniffsAsImage(data) }
+
+    static func sniffsAsImage(_ data: Data) -> Bool {
+        let bytes = [UInt8](data.prefix(12))
+        guard bytes.count >= 4 else { return false }
+        if bytes.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return true }
+        if bytes.starts(with: [0xFF, 0xD8, 0xFF]) { return true }
+        if bytes.starts(with: [0x47, 0x49, 0x46, 0x38]) { return true }
+        return bytes.count >= 12 && bytes.starts(with: [0x52, 0x49, 0x46, 0x46]) && Array(bytes[8..<12]) == [0x57, 0x45, 0x42, 0x50]
+    }
 
     /// Why this one would be refused before it is sent, or nil.
     public var problem: String? {
         if isImage, data.count > Self.maxImageBytes { return "\(filename) is over the 10 MB image limit." }
         if data.isEmpty { return "\(filename) is empty." }
+        return nil
+    }
+
+    /// Why `candidate` cannot join `attached` in one message — the server's per-message
+    /// count and total — or nil. Its own `problem` is checked too.
+    public static func refusal(adding candidate: MessageAttachment, to attached: [MessageAttachment]) -> String? {
+        if let problem = candidate.problem { return problem }
+        if attached.count >= limit { return "A message carries at most \(limit) attachments." }
+        if attached.reduce(0, { $0 + $1.data.count }) + candidate.data.count > maxTotalBytes {
+            return "\(candidate.filename) would take this message over its 75 MB of attachments."
+        }
         return nil
     }
 

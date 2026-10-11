@@ -12,7 +12,7 @@ final class AttachmentsTests: XCTestCase {
         try XCTUnwrap(JSONSerialization.jsonObject(with: request.body ?? Data()) as? [String: Any])
     }
 
-    private let photo = MessageAttachment(filename: "screen.jpg", mediaType: "image/jpeg", data: Data([0xFF, 0xD8, 0xFF]))
+    private let photo = MessageAttachment(filename: "screen.jpg", mediaType: "image/jpeg", data: Data([0xFF, 0xD8, 0xFF, 0xE0]))
     private let log = MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8))
 
     func testAFollowUpSendsEachAttachmentInlineAsBase64() async throws {
@@ -26,7 +26,7 @@ final class AttachmentsTests: XCTestCase {
         XCTAssertNil(sent["force_immediate"])
         let attachments = try XCTUnwrap(sent["attachments"] as? [[String: String]])
         XCTAssertEqual(attachments, [
-            ["filename": "screen.jpg", "media_type": "image/jpeg", "data": "/9j/"],
+            ["filename": "screen.jpg", "media_type": "image/jpeg", "data": "/9j/4A=="],
             ["filename": "deploy.log", "media_type": "text/plain", "data": Data("failed at step 3\n".utf8).base64EncodedString()],
         ])
         XCTAssertFalse(result.queued)
@@ -47,14 +47,37 @@ final class AttachmentsTests: XCTestCase {
         XCTAssertTrue(result.queued)
     }
 
+    func testAnImageIsAnImageByItsBytesAsTheServerReadsThem() {
+        XCTAssertTrue(photo.isImage)
+        XCTAssertFalse(log.isImage)
+        XCTAssertTrue(MessageAttachment(filename: "shot", mediaType: "application/octet-stream", data: Data([0x89, 0x50, 0x4E, 0x47, 0, 0])).isImage,
+                      "a PNG with no extension is still an image")
+        XCTAssertTrue(MessageAttachment(filename: "a.gif", mediaType: "", data: Data("GIF89a".utf8)).isImage)
+        XCTAssertTrue(MessageAttachment(filename: "a.webp", mediaType: "", data: Data("RIFF\0\0\0\0WEBPVP8 ".utf8)).isImage)
+        XCTAssertFalse(MessageAttachment(filename: "fake.png", mediaType: "image/png", data: Data("not a png".utf8)).isImage,
+                       "a .png whose bytes are not one goes as a file")
+        XCTAssertFalse(MessageAttachment(filename: "x.heic", mediaType: "image/heic", data: Data([0, 0, 0, 0x18, 0x66, 0x74])).isImage,
+                       "HEIC is not one the server keeps as an image")
+    }
+
     func testAnImageOverTheServersLimitIsCaughtBeforeSending() {
-        let big = MessageAttachment(filename: "huge.png", mediaType: "image/png", data: Data(count: MessageAttachment.maxImageBytes + 1))
+        var pngBytes = Data([0x89, 0x50, 0x4E, 0x47])
+        pngBytes.append(Data(count: MessageAttachment.maxImageBytes))
+        let big = MessageAttachment(filename: "huge.png", mediaType: "image/png", data: pngBytes)
         XCTAssertEqual(big.problem, "huge.png is over the 10 MB image limit.")
         XCTAssertNil(MessageAttachment(filename: "huge.log", mediaType: "text/plain", data: Data(count: MessageAttachment.maxImageBytes + 1)).problem,
                      "files have a far larger limit than images")
-        XCTAssertTrue(photo.isImage)
-        XCTAssertFalse(log.isImage)
-        XCTAssertFalse(MessageAttachment(filename: "x.heic", mediaType: "image/heic", data: Data([1])).isImage, "HEIC is not one the server keeps as an image")
+    }
+
+    func testAMessageKeepsToTheServersCountAndTotal() {
+        let tenMB = Data(count: 10 * 1024 * 1024)
+        let seven = (1...7).map { MessageAttachment(filename: "f\($0).bin", mediaType: "application/octet-stream", data: tenMB) }
+        XCTAssertNil(MessageAttachment.refusal(adding: log, to: seven))
+        let eighth = MessageAttachment(filename: "f8.bin", mediaType: "application/octet-stream", data: tenMB)
+        XCTAssertEqual(MessageAttachment.refusal(adding: eighth, to: seven), "f8.bin would take this message over its 75 MB of attachments.")
+        let twenty = (1...20).map { MessageAttachment(filename: "n\($0).txt", mediaType: "text/plain", data: Data("x".utf8)) }
+        XCTAssertEqual(MessageAttachment.refusal(adding: log, to: twenty), "A message carries at most 20 attachments.")
+        XCTAssertEqual(MessageAttachment.refusal(adding: MessageAttachment(filename: "e.txt", mediaType: "text/plain", data: Data()), to: []), "e.txt is empty.")
     }
 
     func testTheFakeDeliversAndRecordsAttachments() async throws {
