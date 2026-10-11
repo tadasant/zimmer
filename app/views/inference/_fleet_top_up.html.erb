@@ -1,4 +1,4 @@
-<%# Backlog top-up: the three numbers FleetIdleMonitor fires on, and where the
+<%# Backlog top-up: the four numbers FleetIdleMonitor fires on, and where the
     fleet currently sits against them.
 
     It lives on this page because it counts the same population the card above
@@ -27,7 +27,7 @@
   <div class="px-4 py-5 sm:px-6 space-y-6">
     <%# ---- The policy form ---- %>
     <%= form_with url: fleet_top_up_policy_path, method: :patch, data: { turbo: false } do %>
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div>
           <label for="app_setting_fleet_idle_max_sessions" class="block text-sm font-medium text-gray-700 mb-2">
             Top up while under
@@ -46,12 +46,12 @@
           <% if @fleet_top_up.ceiling_out_of_reach? %>
             <%# A ceiling above the worker pool can never be reached, because the count
                 is the turns those workers are running — so the fleet always reads as
-                having room and the two clocks below are the only pacing left. %>
+                having room and the clocks beside it are the only pacing left. %>
             <p class="mt-1 text-xs text-amber-700" id="fleet-top-up-ceiling-above-worker-pool">
               The <code class="bg-gray-100 px-1 rounded">agents</code> pool runs
               <strong><%= @fleet_top_up.worker_slots %></strong> turns at once, so this ceiling of
               <%= @fleet_top_up.max_sessions %> can never be reached: the fleet always counts as having
-              room, and the two settings beside this one are all that paces top-up. The effective ceiling
+              room, and the settings beside this one are all that paces top-up. The effective ceiling
               is <strong><%= @fleet_top_up.effective_ceiling %></strong> until that pool grows.
             </p>
           <% end %>
@@ -86,7 +86,25 @@
           <p class="mt-1 text-xs text-gray-500">
             The floor between two fires — <strong><%= @fleet_top_up.cadence_phrase %></strong>. On a fleet
             that stays under its ceiling this, not the ceiling, is the whole of the cadence: the stretch
-            runs on through a fire, so only the cooldown decides when the next one is allowed.
+            runs on through a fire, so only the cooldown decides when the next one is allowed — while the
+            work backlog has something new.
+          </p>
+        </div>
+        <div>
+          <label for="app_setting_fleet_idle_quiet_backlog_interval_minutes" class="block text-sm font-medium text-gray-700 mb-2">
+            With nothing new on the backlog (minutes)
+          </label>
+          <input type="number"
+                 name="app_setting[fleet_idle_quiet_backlog_interval_minutes]"
+                 id="app_setting_fleet_idle_quiet_backlog_interval_minutes"
+                 value="<%= @app_setting.fleet_idle_quiet_backlog_interval_minutes %>"
+                 min="1" max="10080" step="1"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
+          <p class="mt-1 text-xs text-gray-500">
+            The longer floor while the work backlog has had nothing new since the last fire — nothing
+            queued since, and nothing started from what is left — so an idle fleet with an empty backlog
+            tops up <strong><%= @fleet_top_up.quiet_cadence_phrase %></strong> instead of every cooldown.
+            A newly queued item lifts it at the next check.
           </p>
         </div>
       </div>
