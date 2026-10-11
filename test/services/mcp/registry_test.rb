@@ -83,7 +83,7 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     names = Mcp::Registry::ALL_TOOLS.map { |d| d.klass.constantize.tool_name }
 
     assert_equal names.uniq.size, names.size, "duplicate tool names: #{names.tally.select { |_, c| c > 1 }.keys}"
-    assert_equal 39, names.size
+    assert_equal 45, names.size
   end
 
   # A spawn, so it rides with start_session; a session managing itself has no

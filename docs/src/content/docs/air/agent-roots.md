@@ -31,6 +31,7 @@ From `roots.json`:
 | `user_invocable` | Whether it appears in the "new session" picker |
 | `default_goal` | Seeds `session.goal` |
 | `default_runtime` / `default_model` | Seeds the runtime and model |
+| `data_namespace` / `data_collections` | Optional. The root's [persistent data store](/sessions/root-data/): which namespace it writes, and which collections (each with an optional JSON Schema and `retention_days`) it may write. Zimmer reads both; AIR passes them through unchanged |
 
 The `default_skills`, `default_mcp_servers`, `default_hooks`, `default_plugins`, and
 `default_subagent_roots` fields you'll see at runtime are not written in `roots.json` — AIR

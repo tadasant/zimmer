@@ -25,7 +25,7 @@ class AgentRootsConfig
   class AgentRoot
     include ArtifactIdentity::Entry
 
-    attr_reader :name, :display_name, :description, :url, :default_branch, :subdirectory, :default_goal, :default_mcp_servers, :default_skills, :default_hooks, :default_plugins, :default_subagent_roots, :user_invocable, :default_model, :default_runtime
+    attr_reader :name, :display_name, :description, :url, :default_branch, :subdirectory, :default_goal, :default_mcp_servers, :default_skills, :default_hooks, :default_plugins, :default_subagent_roots, :user_invocable, :default_model, :default_runtime, :data_namespace, :data_collections
 
     # @param app_setting [AppSetting, AppSetting::NULL, nil] the global base
     #   defaults. Passed in by build_roots so the singleton is read once per
@@ -52,6 +52,12 @@ class AgentRootsConfig
       @default_plugins = config["default_plugins"] || []
       @default_subagent_roots = config["default_subagent_roots"] || []
       @user_invocable = config.fetch("user_invocable", true)
+      # Root data (RootData::Namespace, RootData::Collections). Kept raw: both
+      # are read tolerantly where they are used, so an older or malformed shape
+      # in a stale catalog snapshot degrades to "not declared" rather than
+      # failing the whole catalog build.
+      @data_namespace = config["data_namespace"]
+      @data_collections = config["data_collections"]
 
       app_setting ||= AppSetting.current
 
@@ -100,7 +106,9 @@ class AgentRootsConfig
         default_plugins: default_plugins,
         user_invocable: user_invocable?,
         default_model: default_model,
-        default_runtime: default_runtime
+        default_runtime: default_runtime,
+        data_namespace: data_namespace,
+        data_collections: data_collections
       }
     end
 

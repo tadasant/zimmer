@@ -7899,6 +7899,30 @@ that happens, which is the intended signal. Killing a thread from inside the job
 alternative, because an interrupted write is exactly what the temp sweep and the atomic rename are
 there to survive, not something to cause on purpose.
 
+## Root data isolation is a scoping boundary, not an authorization one
+
+The `root_data` tools resolve the namespace from the connection's `session_id`
+(`RootData::Namespace`) and accept no namespace argument, so an agent using them as offered only
+reaches its own root's records. But the MCP endpoint cannot authenticate which session is calling:
+the API key is shared by the whole fleet, and `session_id` is a query parameter
+`RuntimeConfigPostProcessor` writes and a caller could rewrite. A session that composed a URL naming
+another session's id would read and write that session's root's namespace. Every write stamps
+`writing_session_id`, so it would be attributable, not prevented.
+
+Closing it needs a per-session MCP credential, for example an HMAC over the session id minted at
+spawn and checked by `McpController`. That would benefit every tool group, not just this one. Until
+then, keep secrets and anything sensitive out of root data. See [Root data](/sessions/root-data/).
+
+## Root data counters can be wrong for up to a few hours
+
+`agent_root_record_counters` is what the row cap and the `/health` usage read. It is kept in step by
+`RootData::Store` and `RootDataRetentionJob`, in the same transaction as the rows they change. A row
+inserted or deleted around those two (raw SQL, a console) leaves the counter wrong until the
+retention job's reconcile pass recounts that collection: 25 of the least recently touched counters
+an hour, each once it has been quiet for an hour. Until then a too-high count can refuse writes at
+the row cap. Deleting a session does not touch its records: `writing_session_id` is nulled and the
+record stays.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

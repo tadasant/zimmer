@@ -145,6 +145,11 @@
       "class": "LogRetentionJob",
       "description": "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity"
     },
+    "root_data_retention": {
+      "cron": "35 * * * *",
+      "class": "RootDataRetentionJob",
+      "description": "Delete agent root data records past their collection's retention window"
+    },
     "inbound_event_retention": {
       "cron": "25 4 * * *",
       "class": "InboundEventRetentionJob",
@@ -422,6 +427,11 @@
       "class": "LogRetentionJob",
       "description": "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity"
     },
+    "root_data_retention": {
+      "cron": "35 * * * *",
+      "class": "RootDataRetentionJob",
+      "description": "Delete agent root data records past their collection's retention window"
+    },
     "inbound_event_retention": {
       "cron": "25 4 * * *",
       "class": "InboundEventRetentionJob",
@@ -663,6 +673,11 @@
       "cron": "*/10 * * * *",
       "class": "LogRetentionJob",
       "description": "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity"
+    },
+    "root_data_retention": {
+      "cron": "35 * * * *",
+      "class": "RootDataRetentionJob",
+      "description": "Delete agent root data records past their collection's retention window"
     },
     "inbound_event_retention": {
       "cron": "25 4 * * *",

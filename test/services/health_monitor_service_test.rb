@@ -32,6 +32,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert report.key?(:api_error_retry_health)
     assert report.key?(:log_retention_health)
     assert report.key?(:inbound_event_health)
+    assert report.key?(:root_data_health)
     assert report.key?(:cron_health)
     assert report.key?(:overall_status)
     assert report.key?(:generated_at)
@@ -124,6 +125,35 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   def log_retention_session
     Session.create!(prompt: "Log retention", agent_runtime: "claude_code", status: :running,
                     git_root: "https://github.com/test/repo.git", branch: "main")
+  end
+
+  # === Root data ===
+
+  test "root_data_health reports per-namespace usage from the counters" do
+    AgentRootRecordCounter.create!(namespace: "zimmer", collection: "notes", records_count: 3, data_bytes: 300,
+                                   last_written_at: 1.hour.ago)
+    AgentRootRecordCounter.create!(namespace: "zimmer", collection: "runs", records_count: 2, data_bytes: 50)
+    AgentRootRecordCounter.create!(namespace: "other", collection: "notes", records_count: 1, data_bytes: 10)
+
+    root_data = @service.full_health_report[:root_data_health]
+
+    assert_equal :healthy, root_data[:status].status
+    assert_equal 6, root_data[:total_records]
+    assert_equal 360, root_data[:total_data_bytes]
+    zimmer = root_data[:namespaces].find { |row| row[:namespace] == "zimmer" }
+    assert_equal({ collections: 2, records: 5, data_bytes: 350 }, zimmer.slice(:collections, :records, :data_bytes))
+  end
+
+  test "root_data_health warns when the retention sweep is behind or a collection is near its cap" do
+    AgentRootRecord.create!(namespace: "zimmer", collection: "notes", data: {}, expires_at: 3.hours.ago)
+    assert_equal :warning, @service.full_health_report[:root_data_health][:status].status
+
+    AgentRootRecord.delete_all
+    AgentRootRecordCounter.create!(namespace: "zimmer", collection: "notes",
+                                   records_count: RootData::Limits::MAX_RECORDS_PER_COLLECTION)
+    root_data = @service.full_health_report[:root_data_health]
+    assert_equal :warning, root_data[:status].status
+    assert_equal [ "notes" ], root_data[:near_cap].map { |row| row[:collection] }
   end
 
   test "log_retention_health reports the size of the logs table and the policy in force" do

@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 39 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 45 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -89,11 +89,12 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=sessions_readonly,outcome_analyses` | [Outcome analysis](/sessions/outcomes/#over-mcp): start, batch and stop analyses, plus the session reads |
 | `/mcp?tool_groups=settings` | The Settings page's global defaults: read and change the base runtime and model and the Experimental toggles |
 | `/mcp?tool_groups=external_apps` | [Zimmer plugins](/extend/zimmer-plugins/): register one, set the triggers it may invoke, mint and revoke its keys |
+| `/mcp?tool_groups=root_data` | [Root data](/sessions/root-data/): the calling session's agent root's persistent records |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
 The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions`,
-`work_backlog`, `outcome_analyses`, `settings` and `external_apps` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
+`work_backlog`, `outcome_analyses`, `settings`, `external_apps` and `root_data` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
 `_readonly` variant. Omitting `tool_groups` enables the four base groups and nothing else — an
 opt-in group is valid and addressable but never handed out by default, so `/mcp` on its own does
 not carry `record_gate_decision`. An unknown group is dropped with a warning rather than failing
@@ -215,7 +216,7 @@ production.
 
 ## The tool surface
 
-39 tools, nine domains — 27 of them on the unscoped surface.
+45 tools, ten domains — 27 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
@@ -228,6 +229,7 @@ production.
 | `outcome_analyses` (opt-in) | `action_outcome_analysis` (its read, `get_outcome_analysis`, is in `sessions`) |
 | `settings` (opt-in) | `get_app_settings`, `action_app_settings` |
 | `external_apps` (opt-in) | `search_external_apps`, `action_external_app` — register [Zimmer plugins](/extend/zimmer-plugins/) and mint their keys |
+| `root_data` (opt-in) | `list_root_collections`, `search_root_records`, `get_root_record`, `put_root_record`, `append_root_record`, `delete_root_record` — the calling root's [persistent data](/sessions/root-data/) |
 
 `get_user_view` and `reorder_user_view` are the read and write halves of the dashboard's
 [User view](/sessions/user-view/) — the human's decision board. The read returns the board in the
