@@ -68,7 +68,7 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   Transcript, Copy Transcript (the whole transcript as text), Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
   edit: Rename, Modify Goal, Effort (the levels the session's model accepts, or the model
   default), Model (the models the session's runtime lists), MCP Servers, Skills, Hooks and Plugins
-(each a checklist of its catalog, from the next turn), Promote to priority / Demote to spot (to the head of the spot queue), the heartbeat on
+  (each a checklist of its catalog, from the next turn), Promote to priority / Demote to spot (to the head of the spot queue), the heartbeat on
   or off, Generate Status Summary when there is none, and Open in browser. A promotion that could
   not start the session says why. The star and the trash (or restore) are in the toolbar.
 - **Sends a follow-up** from a box at the bottom, with quick replies for the common answers. A

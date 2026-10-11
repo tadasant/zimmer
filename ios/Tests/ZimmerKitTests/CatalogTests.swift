@@ -78,11 +78,15 @@ final class CatalogTests: XCTestCase {
 
     func testModelAndSelectionChangesHitTheirRoutes() async throws {
         let ok: ScriptedTransport.Handler = { _ in Fixtures.json(200, ["session": ["id": 5, "status": "running", "catalog_skills": ["open-pr"]]]) }
-        let (api, transport) = client(Array(repeating: ok, count: 5))
+        let oauth: ScriptedTransport.Handler = { _ in Fixtures.json(200, [
+            "session": ["id": 5, "status": "needs_input"], "message": "MCP servers updated",
+            "oauth_required": true, "oauth_required_servers": ["slack"],
+        ]) }
+        let (api, transport) = client([ok, oauth, ok, ok, ok])
 
         _ = try await api.updateModel(5, model: "sonnet")
-        _ = try await api.updateSelection(5, .mcpServers, to: ["slack"])
-        let skills = try await api.updateSelection(5, .skills, to: ["open-pr"])
+        let servers = try await api.updateSelection(5, .mcpServers, to: ["slack"])
+        let skills = try await api.updateSelection(5, .skills, to: ["open-pr"]).session
         _ = try await api.updateSelection(5, .hooks, to: [])
         _ = try await api.updateSelection(5, .plugins, to: ["p1"])
 
@@ -93,6 +97,18 @@ final class CatalogTests: XCTestCase {
         XCTAssertEqual(try body(transport.sent[0]) as? [String: String], ["model": "sonnet"])
         XCTAssertEqual(try body(transport.sent[3])["catalog_hooks"] as? [String], [])
         XCTAssertEqual(CatalogKind.skills.selection(in: skills), ["open-pr"])
+        XCTAssertEqual(servers.needsAuthorizing, ["slack"], "a server that needs authorizing is named")
+    }
+
+    func testARetryOfTheSameRequestKeepsItsKeyAndAnEditedOneDoesNot() {
+        let first = NewSessionRequest(agentRoot: "zimmer", prompt: "Go", idempotencyKey: "a")
+        var same = first
+        same.idempotencyKey = "b"
+        var edited = first
+        edited.prompt = "Go now"
+        XCTAssertEqual(first.fingerprint, same.fingerprint, "the key is not part of what makes two attempts the same")
+        XCTAssertNotEqual(first.fingerprint, edited.fingerprint)
+        XCTAssertNil(NewSessionRequest(agentRoot: "zimmer", prompt: "x").body["title"], "no title is sent as no title")
     }
 
     func testTheFixtureStartsASessionWithTheRootsDefaultsForWhatWasNotChosen() async throws {

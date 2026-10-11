@@ -19,8 +19,16 @@ struct NewSessionView: View {
     @State private var selections: [CatalogKind: [String]] = [:]
     @State private var starting = false
     @State private var error: ZimmerError?
-    /// One attempt's key, kept across retries so a lost response cannot start a second session.
+    /// One attempt's key, kept across retries of the same request so a lost response cannot
+    /// start a second session — and replaced the moment the request changes, so an edited
+    /// retry is never answered with the session the first one made.
     @State private var idempotencyKey = UUID().uuidString
+    @State private var lastAttempt: String?
+    /// What `apply(root:)` filled in, so only a runtime or model the person chose, or the root
+    /// names, is sent; otherwise the server's own defaults (Settings) apply.
+    @State private var appliedRuntime = ""
+    @State private var appliedModel = ""
+    @State private var rootDeclares = (runtime: false, model: false)
 
     var body: some View {
         NavigationStack {
@@ -67,6 +75,7 @@ struct NewSessionView: View {
                 }
             }
             Picker("Model", selection: $modelID) {
+                if configs.models(for: runtime).isEmpty { Text("Default").tag("") }
                 ForEach(configs.models(for: runtime)) { model in Text(model.title).tag(model.id) }
             }
             .accessibilityIdentifier("newsession.model")
@@ -86,6 +95,11 @@ struct NewSessionView: View {
                 modelID = configs.runtimeModels[runtime]?.default ?? configs.models(for: runtime).first?.id ?? ""
                 effort = ""
             }
+        }
+        .onChange(of: modelID) { _, id in
+            // A level the new model does not take is dropped, as the web form's effort picker does.
+            let levels = configs.models(for: runtime).first { $0.id == id }?.effortLevels ?? []
+            if !levels.contains(effort) { effort = "" }
         }
     }
 
@@ -145,12 +159,20 @@ struct NewSessionView: View {
     /// The goal picker: a predefined goal's id, none, or custom text in the field below.
     private func goalPreset(_ configs: AppConfigs) -> Binding<String> {
         Binding(
-            get: { goalIsCustom ? Self.customGoal : (configs.goals.contains { $0.id == goal } ? goal : (goal.isEmpty ? "" : Self.customGoal)) },
+            get: { goalSelection(configs) },
             set: { value in
                 goalIsCustom = value == Self.customGoal
-                if value != Self.customGoal { goal = value }
+                // Custom starts empty, not with the preset's id in the box.
+                goal = value == Self.customGoal ? "" : value
             }
         )
+    }
+
+    private func goalSelection(_ configs: AppConfigs) -> String {
+        if goalIsCustom { return Self.customGoal }
+        if goal.isEmpty { return "" }
+        let preset = configs.goals.contains { $0.id == goal }
+        return preset ? goal : Self.customGoal
     }
 
     private func binding(for kind: CatalogKind) -> Binding<[String]> {
@@ -182,23 +204,47 @@ struct NewSessionView: View {
     /// Choosing a root resets what follows it to that root's defaults, as the web form does.
     private func apply(root option: AgentRootOption, in configs: AppConfigs) {
         root = option.name
-        runtime = option.defaultRuntime ?? configs.runtimeModels.keys.sorted().first ?? "claude_code"
-        modelID = option.defaultModel ?? configs.runtimeModels[runtime]?.default ?? configs.models(for: runtime).first?.id ?? ""
+        runtime = option.defaultRuntime ?? "claude_code"
+        // The root's model only if its runtime lists it; else the runtime's default — the web
+        // form's model picker does the same.
+        let allowed = configs.models(for: runtime).map(\.id)
+        if let rootModel = option.defaultModel, allowed.contains(rootModel) {
+            modelID = rootModel
+        } else {
+            modelID = configs.runtimeModels[runtime]?.default ?? allowed.first ?? ""
+        }
+        appliedRuntime = runtime
+        appliedModel = modelID
+        rootDeclares = (option.defaultRuntime != nil, option.defaultModel.map(allowed.contains) ?? false)
         effort = ""
-        if goal.isEmpty, let defaultGoal = option.defaultGoal { goal = defaultGoal }
+        // A new root brings its own goal, or none, as the web form does.
+        goal = option.defaultGoal ?? ""
+        goalIsCustom = false
         for kind in CatalogKind.allCases { selections[kind] = kind.defaults(of: option) }
     }
 
     private func create() async {
         starting = true
         defer { starting = false }
-        let request = NewSessionRequest(
+        let trimmedTitle = title.trimmingCharacters(in: .whitespaces)
+        let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A predefined goal is stored as its words, as the web form stores it.
+        let goalText = configs?.goals.first { $0.id == trimmedGoal }?.description ?? trimmedGoal
+        let sendRuntime = rootDeclares.runtime || runtime != appliedRuntime
+        let sendModel = !modelID.isEmpty && (rootDeclares.model || modelID != appliedModel || sendRuntime)
+        var request = NewSessionRequest(
             agentRoot: root, prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
-            runtime: runtime, model: modelID.isEmpty ? nil : modelID, effort: effort.isEmpty ? nil : effort,
-            title: title.trimmingCharacters(in: .whitespaces), goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
+            runtime: sendRuntime ? runtime : nil, model: sendModel ? modelID : nil, effort: effort.isEmpty ? nil : effort,
+            title: trimmedTitle.isEmpty ? nil : trimmedTitle, goal: goalText.isEmpty ? nil : goalText,
             schedulingClass: schedulingClass.isEmpty ? nil : schedulingClass,
             selections: selections, idempotencyKey: idempotencyKey
         )
+        let attempt = request.fingerprint
+        if let lastAttempt, lastAttempt != attempt {
+            idempotencyKey = UUID().uuidString
+            request.idempotencyKey = idempotencyKey
+        }
+        lastAttempt = attempt
         if let session = await app.createSession(request) {
             dismiss()
             app.path.append(session.id)

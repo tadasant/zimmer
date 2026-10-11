@@ -256,6 +256,14 @@ public struct NewSessionRequest: Hashable, Sendable {
         self.idempotencyKey = idempotencyKey
     }
 
+    /// Everything but the key: two attempts with the same fingerprint are the same request.
+    public var fingerprint: String {
+        var body = self.body
+        body["idempotency_key"] = nil
+        let data = (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
+
     /// The body of `POST /api/v1/sessions`.
     public var body: [String: Any] {
         var json: [String: Any] = ["agent_root": agentRoot, "prompt": prompt, "idempotency_key": idempotencyKey]
