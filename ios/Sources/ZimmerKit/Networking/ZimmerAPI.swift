@@ -10,6 +10,10 @@ public protocol ZimmerAPI: SessionActionsAPI {
     func archive(_ id: Int) async throws -> SessionSummary
     /// Start a Quick Router session from a plain-language request; returns its id.
     func startQuickRouter(_ prompt: String) async throws -> Int
+    /// Register this phone for push notifications (idempotent: an upsert on the token).
+    func registerDevice(token: String, environment: APNsEnvironment, deviceName: String?, appVersion: String?) async throws
+    /// Unregister it, on sign-out.
+    func unregisterDevice(token: String) async throws
 }
 
 /// Zimmer's REST API (`/api/v1`), called with the signed-in grant's access token.
@@ -61,6 +65,18 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     public func startQuickRouter(_ prompt: String) async throws -> Int {
         let response: QuickRouterResponse = try await post("/api/v1/quick_router", json: ["prompt": prompt])
         return response.session_id
+    }
+
+    public func registerDevice(token: String, environment: APNsEnvironment, deviceName: String?, appVersion: String?) async throws {
+        var json: [String: Any] = ["token": token, "environment": environment.rawValue]
+        if let deviceName { json["device_name"] = deviceName }
+        if let appVersion { json["app_version"] = appVersion }
+        let _: DeviceRegistration.Response = try await post("/api/v1/apns_devices", json: json)
+    }
+
+    public func unregisterDevice(token: String) async throws {
+        let segment = ZimmerPathComponent(token)
+        _ = try await perform(method: "DELETE", path: "/api/v1/apns_devices/\(segment)", query: [:], body: nil)
     }
 
     // MARK: - Plumbing

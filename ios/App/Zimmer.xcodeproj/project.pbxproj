@@ -46,6 +46,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Push.entitlements,
 			);
 			target = AA0000000000000000000020 /* Zimmer */;
 		};

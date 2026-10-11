@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_09_220000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_10_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -81,6 +81,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_09_220000) do
     t.index ["external_app_id"], name: "index_api_keys_on_external_app_id"
     t.index ["token_digest"], name: "index_api_keys_on_token_digest", unique: true
     t.check_constraint "(\"grant\"::text = 'external_app'::text) = (external_app_id IS NOT NULL)", name: "api_keys_external_app_grant_has_app"
+  end
+
+  create_table "apns_devices", force: :cascade do |t|
+    t.string "app_version"
+    t.datetime "created_at", null: false
+    t.string "device_name"
+    t.datetime "disabled_at"
+    t.string "disabled_reason"
+    t.string "environment", null: false
+    t.datetime "last_delivered_at"
+    t.datetime "last_registered_at", null: false
+    t.bigint "oauth_server_grant_id"
+    t.string "token", null: false
+    t.datetime "updated_at", null: false
+    t.index ["oauth_server_grant_id"], name: "index_apns_devices_on_oauth_server_grant_id"
+    t.index ["token"], name: "index_apns_devices_on_token", unique: true
   end
 
   create_table "app_settings", force: :cascade do |t|
@@ -1163,6 +1179,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_09_220000) do
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_to_id", on_delete: :nullify
   add_foreign_key "agent_posted_github_comments", "sessions", on_delete: :nullify
   add_foreign_key "api_keys", "external_apps", on_delete: :cascade
+  add_foreign_key "apns_devices", "oauth_server_grants", on_delete: :cascade
   add_foreign_key "category_feedback_events", "categories", column: "auto_category_id", on_delete: :nullify
   add_foreign_key "category_feedback_events", "categories", column: "corrected_category_id", on_delete: :nullify
   add_foreign_key "category_feedback_events", "categories", column: "replay_category_id", on_delete: :nullify

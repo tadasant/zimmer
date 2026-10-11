@@ -12,6 +12,8 @@ Rails.application.routes.draw do
     # Read-only: keys are minted, revoked and restored on /settings/api_keys
     # (ApiKeysController), the one place a key is ever shown.
     resources :api_keys, only: [ :index, :show ]
+    # Read-only: the iOS app registers and unregisters its own phones.
+    resources :apns_devices, only: [ :index, :show ]
     resources :app_settings
     resources :catalog_pins
     resources :claude_accounts
@@ -226,6 +228,8 @@ Rails.application.routes.draw do
 
       # Push notifications
       post "notifications/push", to: "notifications#push"
+      # The iOS app's push registration (ApnsDevice). The token is hex.
+      resources :apns_devices, only: [ :create, :destroy ], param: :token
 
       resources :sessions do
         collection do

@@ -55,6 +55,7 @@ final class AppModel: ObservableObject {
         await refreshEdgeExpiry()
         await refresh()
         openFixtureScreen()
+        if !environment.isFixture { await PushCoordinator.shared.enable() }
     }
 
     /// `#if DEBUG` launch arguments that open a screen `simctl` cannot tap its way to,
@@ -227,6 +228,7 @@ final class AppModel: ObservableObject {
     }
 
     func signOut() async {
+        await PushCoordinator.shared.unregister()
         await connection.auth.signOut()
         await connection.edge?.forget()
         sessions = []

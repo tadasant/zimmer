@@ -17,6 +17,11 @@ module OauthServer
 
     belongs_to :client, class_name: "OauthServer::Client", foreign_key: :oauth_server_client_id,
       inverse_of: :grants
+    # The phones Zimmer's iOS app registered for push under this grant. Deleted with
+    # it: a device left with no grant would read as an API-key registration and keep
+    # receiving pushes.
+    has_many :apns_devices, class_name: "::ApnsDevice", foreign_key: :oauth_server_grant_id, inverse_of: :grant,
+      dependent: :delete_all
     has_many :tokens, class_name: "OauthServer::Token", foreign_key: :oauth_server_grant_id,
       inverse_of: :grant, dependent: :delete_all
 
