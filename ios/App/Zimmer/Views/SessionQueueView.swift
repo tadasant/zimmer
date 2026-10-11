@@ -8,6 +8,7 @@ struct QueueCard: View {
     @ObservedObject var model: SessionDetailModel
     @State private var editing: QueuedMessage?
     @State private var managing = false
+    @State private var deleting: QueuedMessage?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -29,15 +30,16 @@ struct QueueCard: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("queue.message.\(message.id)")
                     Menu {
-                        Button {
-                            Task { await model.sendQueuedNow(message) }
-                        } label: {
-                            Label("Send Now", systemImage: "bolt.fill")
+                        // Only where the server can deliver it: a paused or failed session refuses.
+                        if model.detail?.acceptsFollowUp ?? false {
+                            Button {
+                                Task { await model.sendQueuedNow(message) }
+                            } label: {
+                                Label("Send Now", systemImage: "bolt.fill")
+                            }
                         }
                         Button { editing = message } label: { Label("Edit", systemImage: "pencil") }
-                        Button(role: .destructive) {
-                            Task { await model.deleteQueued(message) }
-                        } label: {
+                        Button(role: .destructive) { deleting = message } label: {
                             Label("Delete", systemImage: "trash")
                         }
                     } label: {
@@ -53,9 +55,18 @@ struct QueueCard: View {
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail.queue")
+        .confirmationDialog(
+            "Delete this queued message?",
+            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let message = deleting { Task { await model.deleteQueued(message) } }
+            }
+        }
         .sheet(item: $editing) { message in
             QueuedMessageEditor(message: message) { text in
-                await model.editQueued(message, content: text)
+                await model.editQueued(message, content: text) ? nil : model.error
             }
         }
         .sheet(isPresented: $managing) { QueueManager(model: model) }
@@ -71,18 +82,24 @@ private struct QueueManager: View {
     var body: some View {
         NavigationStack {
             List {
+                // Here, not on the page behind the sheet.
+                if let error = model.error { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
                 ForEach(model.queue) { message in
                     Text(message.content).lineLimit(3)
                 }
                 .onMove { source, destination in
-                    guard let from = source.first else { return }
+                    guard let from = source.first, destination != from, destination != from + 1 else { return }
                     let message = model.queue[from]
-                    // `destination` counts the slot before the move; positions count from 1.
-                    let position = destination > from ? destination : destination + 1
+                    // The position of the row it lands beside, as the server numbers it — not
+                    // the list index, since an undelivered message can hold a lower position
+                    // than any of these.
+                    let position = destination > from ? model.queue[destination - 1].position : model.queue[destination].position
+                    model.queue.move(fromOffsets: source, toOffset: destination)
                     Task { await model.moveQueued(message, to: position) }
                 }
                 .onDelete { offsets in
                     let doomed = offsets.map { model.queue[$0] }
+                    model.queue.remove(atOffsets: offsets)
                     Task { for message in doomed { await model.deleteQueued(message) } }
                 }
             }
@@ -99,19 +116,24 @@ private struct QueueManager: View {
     }
 }
 
-/// Rewrite one queued message before it is delivered.
+/// Rewrite one queued message before it is delivered. `save` answers the server's refusal,
+/// or nil when it took the edit.
 private struct QueuedMessageEditor: View {
     let message: QueuedMessage
-    let save: (String) async -> Bool
+    let save: (String) async -> ZimmerError?
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
     @State private var saving = false
+    @State private var error: ZimmerError?
 
     var body: some View {
         NavigationStack {
-            TextEditor(text: $text)
-                .padding()
-                .accessibilityIdentifier("queue.edit.text")
+            VStack(spacing: 0) {
+                if let error { ErrorBanner(error: error).padding([.horizontal, .top]) }
+                TextEditor(text: $text)
+                    .padding()
+                    .accessibilityIdentifier("queue.edit.text")
+            }
                 .navigationTitle("Edit queued message")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -120,9 +142,9 @@ private struct QueuedMessageEditor: View {
                         Button(saving ? "Saving…" : "Save") {
                             Task {
                                 saving = true
-                                let saved = await save(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                                error = await save(text.trimmingCharacters(in: .whitespacesAndNewlines))
                                 saving = false
-                                if saved { dismiss() }
+                                if error == nil { dismiss() }
                             }
                         }
                         .disabled(saving || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -139,8 +161,10 @@ private struct QueuedMessageEditor: View {
 
 extension SessionDetailModel {
     func sendQueuedNow(_ message: QueuedMessage) async {
-        await changeQueue("Sent now — the current turn ends.") { try await $0.sendQueuedNow(self.id, message: message.id) }
-        await load()
+        // The page reloads only on success: a reload would clear the refusal from view.
+        if await changeQueue("Sent now — the current turn ends.", { try await $0.sendQueuedNow(self.id, message: message.id) }) {
+            await load()
+        }
     }
 
     func deleteQueued(_ message: QueuedMessage) async {

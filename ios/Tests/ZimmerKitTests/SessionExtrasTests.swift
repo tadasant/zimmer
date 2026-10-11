@@ -60,6 +60,8 @@ final class SessionExtrasTests: XCTestCase {
         let page = try await api.logs(9, page: 1)
 
         XCTAssertEqual(transport.sent[0].url.path, "/api/v1/sessions/9/logs")
+        XCTAssertEqual(URLComponents(url: transport.sent[0].url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "exclude_level" }?.value,
+                       "verbose", "the web UI's Show Logs leaves the raw CLI output out")
         XCTAssertEqual(page.entries.map(\.content), ["Turn started"])
         XCTAssertTrue(page.hasMore)
     }
@@ -68,7 +70,7 @@ final class SessionExtrasTests: XCTestCase {
         let jsonl = [
             #"{"type":"user","message":{"role":"user","content":"Find the scenes."}}"#,
             #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Grep","input":{}}]}}"#,
-            #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"Info.plist:12"}]}}"#,
+            #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":[{"type":"text","text":"Info.plist:12"}]}]}}"#,
             "not json",
             #"{"type":"summary","summary":"x"}"#,
             #"{"type":"assistant","timestamp":"2026-10-11T01:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"In Info.plist."}]}}"#,
