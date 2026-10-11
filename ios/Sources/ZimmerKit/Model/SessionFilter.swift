@@ -22,6 +22,9 @@ public enum SessionFilter: String, Hashable, Sendable, CaseIterable, Identifiabl
         }
     }
 
+    /// How many pages of 100 a list reads: the web UI's board caps itself at 500 rows.
+    public static let maxPages = 5
+
     /// Whether a session with this status belongs under this filter — what the server's
     /// `status` parameter selects, for a row the app has just changed.
     public func admits(_ status: SessionStatus) -> Bool {

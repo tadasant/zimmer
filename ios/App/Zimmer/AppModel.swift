@@ -11,13 +11,19 @@ final class AppModel: ObservableObject {
     /// Nil until the stored sign-in has been read.
     @Published private(set) var isSignedIn: Bool?
     @Published var filter: SessionFilter = .needsInput
+    /// The board view: Your board, Last Touched, Created or Ranked. Remembered, as the web UI
+    /// remembers it in a cookie; "Last Touched" by default, the web UI's default on a phone.
+    @Published var view: BoardView = BoardView(rawValue: UserDefaults.standard.string(forKey: "boardView") ?? "") ?? .lastTouched {
+        didSet { UserDefaults.standard.set(view.rawValue, forKey: "boardView") }
+    }
     /// The board-visibility filter; "On board" by default, as on the web UI's board.
     @Published private(set) var board: BoardFilter = .onBoard
     /// The search box. Empty means the plain list.
     @Published var searchText = ""
     @Published var searchScope: SearchScope = .titles
-    /// True when the last transcript search stopped before reading every candidate.
-    @Published private(set) var searchIncomplete = false
+    /// True when the list is not everything the filters matched: a transcript search that
+    /// stopped early, or more sessions than the newest five pages.
+    @Published private(set) var listIncomplete = false
     /// A one-line confirmation of the last row action ("Snoozed until …").
     @Published var notice: String?
     @Published private(set) var sessions: [SessionSummary] = []
@@ -73,6 +79,8 @@ final class AppModel: ObservableObject {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
         }
+        // Every fixture launch starts from the default view, whatever an earlier run chose.
+        view = value("-ZimmerFixtureView").flatMap(BoardView.init(rawValue:)) ?? .lastTouched
         let listFilter = value("-ZimmerFixtureFilter").flatMap(SessionFilter.init(rawValue:))
         let listBoard = value("-ZimmerFixtureBoard").flatMap(BoardFilter.init(rawValue:))
         if listFilter != nil || listBoard != nil {
@@ -120,13 +128,13 @@ final class AppModel: ObservableObject {
         do {
             let result: SessionSearchResult
             if query.isEmpty {
-                result = SessionSearchResult(sessions: try await connection.api.sessions(requested, board: board))
+                result = try await connection.api.sessions(requested, board: board)
             } else {
                 result = try await connection.api.search(query, contents: scope == .transcripts, filter: requested, board: board)
             }
             guard requested == filter, board == self.board, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             sessions = result.sessions
-            searchIncomplete = !result.complete
+            listIncomplete = !result.complete
             error = nil
         } catch {
             handle(error)
@@ -172,6 +180,37 @@ final class AppModel: ObservableObject {
 
     private func belongsOnList(_ session: SessionSummary) -> Bool {
         filter.admits(session.status) && board.admits(session)
+    }
+
+    /// The rows in the current view's order and sections.
+    var sections: [BoardSection] { view.sections(sessions) }
+
+    /// Trash the selected sessions. Each refusal is shown with the server's reason; the rest go.
+    func trash(_ ids: Set<Int>) async {
+        do {
+            let result = try await connection.api.bulkArchive(Array(ids).sorted())
+            await refresh()
+            // After the refresh, which clears the banner: the refusals are what it is for.
+            let refused = result.errors.map { "#\($0.id): \($0.message)" }
+            notice = "Moved \(result.archivedCount) to trash" + (refused.isEmpty ? "" : "; \(refused.count) refused")
+            if !refused.isEmpty { error = .http(status: 422, message: refused.joined(separator: "\n")) }
+            if refused.isEmpty { Haptics.success() } else { Haptics.failure() }
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
+    func refreshAll() async {
+        do {
+            let summary = try await connection.api.refreshAll()
+            await refresh()
+            notice = summary
+            Haptics.success()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
     }
 
     /// The web UI's page for a session, for what the app does not do itself.

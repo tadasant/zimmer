@@ -37,7 +37,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     }
 
     public func session(_ id: Int) async throws -> SessionDetail {
-        SessionDetail(session: try find(id), statusSummary: summaries[id])
+        SessionDetail(session: try find(id), statusSummary: summaries[id], hierarchy: Self.sampleHierarchy(for: id, in: all))
     }
 
     public func conversation(_ id: Int) async throws -> Conversation {
@@ -119,23 +119,27 @@ public actor FakeZimmerAPI: ZimmerAPI {
         func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
         return [
             SessionSummary(id: 1042, title: "Add a CarPlay scene to the iOS app", status: .running,
-                           agentRuntime: "claude_code", createdAt: ago(90), updatedAt: ago(2)),
+                           agentRuntime: "claude_code", createdAt: ago(90), updatedAt: ago(2),
+                           priorityClass: "spot", precedence: 30, lastUserActivityAt: ago(70)),
             SessionSummary(id: 1038, title: "PR #1261 is green and ready — merge it?", status: .needsInput,
                            agentRuntime: "claude_code", createdAt: ago(240), updatedAt: ago(6),
                            goal: "Unmerged PR is open and CI is green.", favorited: true,
-                           priorityClass: "priority",
+                           priorityClass: "priority", precedence: 5,
                            effort: EffortSummary(level: "high", source: "default", default: "high", levels: ["low", "medium", "high", "xhigh", "max"]),
-                           model: "opus", agentRoot: "zimmer",
+                           model: "opus", agentRoot: "zimmer", lastUserActivityAt: ago(30),
                            pullRequests: [PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1261")!, state: "open", ci: "pass")]),
             SessionSummary(id: 1035, title: "Which Postgres version should staging run?", status: .needsInput,
-                           agentRuntime: "codex", createdAt: ago(300), updatedAt: ago(41)),
+                           agentRuntime: "codex", createdAt: ago(300), updatedAt: ago(41),
+                           priorityClass: "spot", precedence: 20, lastUserActivityAt: ago(3)),
             SessionSummary(id: 1031, title: "Nightly dependency sweep", status: .waiting,
-                           agentRuntime: "claude_code", createdAt: ago(20), updatedAt: ago(20)),
+                           agentRuntime: "claude_code", createdAt: ago(20), updatedAt: ago(20),
+                           priorityClass: "spot", precedence: 50),
             SessionSummary(id: 1029, title: "Draft the October changelog", status: .waiting,
                            agentRuntime: "claude_code", createdAt: ago(900), updatedAt: ago(800),
                            visibility: .snoozed, snoozedUntil: now.addingTimeInterval(20 * 3600)),
             SessionSummary(id: 1027, title: "Rotate the staging deploy key", status: .failed,
-                           agentRuntime: "claude_code", createdAt: ago(600), updatedAt: ago(180)),
+                           agentRuntime: "claude_code", createdAt: ago(600), updatedAt: ago(180),
+                           priorityClass: "spot", precedence: 10),
             SessionSummary(id: 1019, title: "Fix the flaky transcript poller test", status: .archived,
                            agentRuntime: "claude_code", createdAt: ago(2_000), updatedAt: ago(1_400),
                            archivedAt: ago(1_400)),
@@ -173,13 +177,13 @@ public actor FakeZimmerAPI: ZimmerAPI {
 // as the server does where the app depends on it: a pause needs a running session, a
 // restart a failed or needs-input one, a restore a trashed one; a blank title clears it.
 extension FakeZimmerAPI {
-    public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> [SessionSummary] {
-        try await sessions(filter).filter(board.admits)
+    public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
+        SessionSearchResult(sessions: try await sessions(filter).filter(board.admits))
     }
 
     public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
         let needle = query.lowercased()
-        let matches = try await sessions(filter, board: board).filter { session in
+        let matches = try await sessions(filter, board: board).sessions.filter { session in
             if session.displayTitle.lowercased().contains(needle) { return true }
             guard contents else { return false }
             return (conversations[session.id] ?? []).contains { $0.content.lowercased().contains(needle) }
@@ -281,6 +285,47 @@ extension FakeZimmerAPI {
 
     public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {
         try change(id) { $0.heartbeatEnabled = enabled }
+    }
+
+    public func transcriptText(_ id: Int) async throws -> String {
+        _ = try find(id)
+        let messages = conversations[id] ?? []
+        guard !messages.isEmpty else { throw ZimmerError.http(status: 404, message: "No transcript available for this session") }
+        return messages.map { "\($0.role == .user ? "User" : "Assistant"): \($0.content)" }.joined(separator: "\n\n")
+    }
+
+    public func bulkArchive(_ ids: [Int]) async throws -> BulkArchiveResult {
+        var archived = 0
+        var errors: [BulkArchiveResult.Refusal] = []
+        for id in ids {
+            do {
+                _ = try await archive(id)
+                archived += 1
+            } catch let ZimmerError.http(_, message) {
+                errors.append(BulkArchiveResult.Refusal(id: id, message: message ?? "Cannot archive"))
+            }
+        }
+        return BulkArchiveResult(archivedCount: archived, errors: errors)
+    }
+
+    public func refreshAll() async throws -> String {
+        let failed = all.filter { $0.status == .failed }
+        for session in failed {
+            var restarted = session
+            restarted.status = .waiting
+            replace(restarted)
+        }
+        return "Refreshed \(all.count - failed.count), restarted \(failed.count), continued 0"
+    }
+
+    /// 1038 spawned 1042 and 1031; every one of them sees the same three-node tree.
+    static func sampleHierarchy(for id: Int, in sessions: [SessionSummary]) -> SessionHierarchy? {
+        let tree = [(1038, 0), (1042, 1), (1031, 1)]
+        guard tree.contains(where: { $0.0 == id }) else { return SessionHierarchy(nodes: []) }
+        return SessionHierarchy(nodes: tree.compactMap { nodeID, depth in
+            guard let session = sessions.first(where: { $0.id == nodeID }) else { return nil }
+            return SessionHierarchy.Node(id: nodeID, title: session.title, agentRoot: "zimmer", status: session.status, depth: depth, current: nodeID == id)
+        })
     }
 
     public func regenerateStatusSummary(_ id: Int) async throws -> String {

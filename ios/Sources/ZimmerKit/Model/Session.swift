@@ -127,8 +127,8 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         createdAt: Date? = nil, updatedAt: Date? = nil, archivedAt: Date? = nil,
         goal: String? = nil, notes: String? = nil, favorited: Bool? = nil,
         visibility: SessionVisibility? = nil, snoozedUntil: Date? = nil,
-        priorityClass: String? = nil, effort: EffortSummary? = nil, model: String? = nil,
-        agentRoot: String? = nil, pullRequests: [PullRequestLink] = []
+        priorityClass: String? = nil, precedence: Int? = nil, effort: EffortSummary? = nil, model: String? = nil,
+        agentRoot: String? = nil, lastUserActivityAt: Date? = nil, pullRequests: [PullRequestLink] = []
     ) {
         self.id = id
         self.slug = slug
@@ -146,9 +146,11 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         self.effectiveVisibility = visibility
         self.snoozedUntil = snoozedUntil
         self.priorityClass = priorityClass
+        self.precedence = precedence
         self.effort = effort
         self.config = model.map { SessionConfig(model: $0) }
-        self.metadata = agentRoot.map { SessionMetadata(agentRoot: $0) }
+        self.metadata = (agentRoot != nil || lastUserActivityAt != nil)
+            ? SessionMetadata(agentRoot: agentRoot, lastUserActivityAt: lastUserActivityAt) : nil
         self.customMetadata = pullRequests.isEmpty ? nil : SessionCustomMetadata(pullRequests: pullRequests)
     }
 
@@ -162,6 +164,9 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var isPriority: Bool { priorityClass == "priority" }
     public var model: String? { config?.model }
     public var agentRoot: String? { metadata?.agentRoot }
+    /// When a person last did something to this session — the web UI's "Last Touched" key,
+    /// which falls back to when the session was created.
+    public var lastTouchedAt: Date? { metadata?.lastUserActivityAt ?? createdAt }
     public var pullRequests: [PullRequestLink] { customMetadata?.pullRequests ?? [] }
 
     /// What the board shows for this session's visibility, with an expired snooze read as visible.
@@ -228,14 +233,30 @@ public struct SessionConfig: Hashable, Sendable, Codable {
 /// The part of a session's Zimmer-owned `metadata` the app reads.
 public struct SessionMetadata: Hashable, Sendable, Codable {
     public var agentRoot: String?
+    public var lastUserActivityAt: Date?
 
-    public init(agentRoot: String?) { self.agentRoot = agentRoot }
+    public init(agentRoot: String?, lastUserActivityAt: Date? = nil) {
+        self.agentRoot = agentRoot
+        self.lastUserActivityAt = lastUserActivityAt
+    }
 
-    enum CodingKeys: String, CodingKey { case agentRoot = "agent_root_key" }
+    enum CodingKeys: String, CodingKey {
+        case agentRoot = "agent_root_key"
+        case lastUserActivityAt = "last_user_activity_at"
+    }
 
     public init(from decoder: Decoder) throws {
         let container = try? decoder.container(keyedBy: CodingKeys.self)
         agentRoot = try? container?.decodeIfPresent(String.self, forKey: .agentRoot)
+        // A string the server writes by hand, so a value that is not a timestamp is ignored,
+        // as the web UI's `LAST_TOUCHED_ORDER` ignores it.
+        lastUserActivityAt = (try? container?.decodeIfPresent(String.self, forKey: .lastUserActivityAt)).flatMap(ZimmerJSON.parseDate)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(agentRoot, forKey: .agentRoot)
+        try container.encodeIfPresent(lastUserActivityAt.map { ISO8601DateFormatter().string(from: $0) }, forKey: .lastUserActivityAt)
     }
 }
 
@@ -296,5 +317,7 @@ public struct SessionCustomMetadata: Hashable, Sendable, Codable {
 }
 
 struct SessionListResponse: Decodable {
+    struct Pagination: Decodable { let total_pages: Int? }
     let sessions: [SessionSummary]
+    let pagination: Pagination?
 }

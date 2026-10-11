@@ -108,6 +108,18 @@ final class SessionDetailModel: ObservableObject {
         }
     }
 
+    /// The web UI's "Copy full transcript": the whole transcript as text, on the pasteboard.
+    func copyTranscript() async {
+        do {
+            UIPasteboard.general.string = try await api.transcriptText(id)
+            notice = "Transcript copied"
+            error = nil
+            Haptics.success()
+        } catch {
+            fail(error)
+        }
+    }
+
     /// An action the server answers with a sentence rather than the session.
     func run(_ action: (ZimmerAPI) async throws -> String) async {
         do {
@@ -167,6 +179,9 @@ struct SessionDetailView: View {
                     }
                     if detail.session.hasNotes, let notes = detail.session.notes {
                         TextCard(title: "Notes", text: notes, identifier: "detail.notes") { editing = .notes }
+                    }
+                    if let hierarchy = detail.hierarchy, hierarchy.isWorthShowing {
+                        HierarchyCard(hierarchy: hierarchy)
                     }
                 } else if model.isLoading {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
@@ -362,6 +377,11 @@ struct SessionDetailView: View {
                     Task { await model.run { try await $0.refreshTranscript(session.id) } }
                 } label: {
                     Label("Refresh Transcript", systemImage: "arrow.triangle.2.circlepath")
+                }
+                Button {
+                    Task { await model.copyTranscript() }
+                } label: {
+                    Label("Copy Transcript", systemImage: "doc.on.doc")
                 }
                 if session.status == .running {
                     Button {
@@ -560,6 +580,50 @@ private struct SummaryCard: View {
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail.summary")
+    }
+}
+
+/// The web UI's hierarchy panel: who spawned this session and what it spawned, indented by
+/// depth. Every other session in it opens on a tap.
+private struct HierarchyCard: View {
+    let hierarchy: SessionHierarchy
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Hierarchy").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ForEach(hierarchy.nodes) { node in
+                if node.current {
+                    row(node).fontWeight(.semibold)
+                } else {
+                    NavigationLink(value: node.id) { row(node) }
+                        .buttonStyle(.plain)
+                }
+            }
+            if hierarchy.truncated {
+                Text("Only part of the hierarchy is shown.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("detail.hierarchy")
+    }
+
+    private func row(_ node: SessionHierarchy.Node) -> some View {
+        HStack(spacing: 6) {
+            StatusDot(status: node.status)
+            Text(node.displayTitle).lineLimit(1)
+            Spacer(minLength: 4)
+            Text(verbatim: "#\(node.id)").font(.caption).foregroundStyle(.secondary)
+            if !node.current {
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .font(.subheadline)
+        .padding(.leading, CGFloat(min(node.depth, 6)) * 14)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("hierarchy.node.\(node.id)")
     }
 }
 
