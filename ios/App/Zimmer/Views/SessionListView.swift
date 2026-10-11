@@ -17,6 +17,8 @@ struct SessionListView: View {
     @State private var selection = Set<Int>()
     @State private var confirmingBulkTrash = false
     @State private var confirmingRefreshAll = false
+    /// The Ranked view's drag-and-drop, as an edit mode of its own: handles on the spot queue.
+    @State private var reordering = false
 
     var body: some View {
         searchableList
@@ -59,6 +61,11 @@ struct SessionListView: View {
             .environment(\.editMode, $editMode)
             // A selection only ever names rows on screen: a filter, search or view change drops the rest.
             .onChange(of: model.sessions.map(\.id)) { _, ids in selection.formIntersection(ids) }
+            // The server orders each view, so a new view is a new list.
+            .onChange(of: model.view) { _, view in
+                if view != .ranked, reordering { reordering = false; editMode = .inactive }
+                Task { await model.refresh() }
+            }
             .sheet(isPresented: $showingSettings) { SettingsView() }
             .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
     }
@@ -88,6 +95,7 @@ struct SessionListView: View {
                     ForEach(section.sessions) { session in
                         SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing)
                     }
+                    .onMove(perform: moveHandler(for: section))
                     if section.sessions.isEmpty {
                         Text("None.").foregroundStyle(.secondary)
                     }
@@ -108,7 +116,25 @@ struct SessionListView: View {
         .navigationBarTitleDisplayMode(.large)
     }
 
-    private var isSelecting: Bool { editMode.isEditing }
+    private var isSelecting: Bool { editMode.isEditing && !reordering }
+
+    /// Drag handles on the Ranked view's spot queue while reordering, and nowhere else.
+    private func moveHandler(for section: BoardSection) -> ((IndexSet, Int) -> Void)? {
+        guard reordering, section.title == "Spot queue" else { return nil }
+        return { source, destination in drop(section.sessions, from: source, to: destination) }
+    }
+
+    /// A drop in the spot queue: the server is told the rows it landed between and works out
+    /// the precedence, as the web UI's Ranked view does.
+    private func drop(_ rows: [SessionSummary], from source: IndexSet, to destination: Int) {
+        var moved = rows
+        moved.move(fromOffsets: source, toOffset: destination)
+        guard let from = source.first, let index = moved.firstIndex(where: { $0.id == rows[from].id }) else { return }
+        let session = moved[index]
+        let above = index > 0 ? moved[index - 1].id : nil
+        let below = index < moved.count - 1 ? moved[index + 1].id : nil
+        Task { await model.reorder(session.id, above: above, below: below) }
+    }
 
     private var incompleteNotice: String {
         model.searchText.isEmpty
@@ -151,9 +177,10 @@ struct SessionListView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            if isSelecting {
+            if editMode.isEditing {
                 Button("Done") {
                     selection = []
+                    reordering = false
                     editMode = .inactive
                 }
                 .accessibilityIdentifier("select.done")
@@ -189,6 +216,15 @@ struct SessionListView: View {
                         editMode = .active
                     } label: {
                         Label("Select Sessions", systemImage: "checkmark.circle")
+                    }
+                    if model.view == .ranked {
+                        Button {
+                            reordering = true
+                            editMode = .active
+                        } label: {
+                            Label("Reorder Spot Queue", systemImage: "arrow.up.arrow.down")
+                        }
+                        .accessibilityIdentifier("ranked.reorder")
                     }
                     Button {
                         confirmingRefreshAll = true
@@ -335,6 +371,13 @@ private struct SessionContextMenu: View {
                 Task { await model.perform("Paused", on: session.id) { try await $0.pause(session.id) } }
             } label: {
                 Label("Pause Session", systemImage: "pause.circle")
+            }
+        }
+        if session.status == .waiting {
+            Button {
+                Task { await model.startNow(session.id) }
+            } label: {
+                Label("Start Now", systemImage: "play.circle")
             }
         }
         if session.status == .failed || session.status == .needsInput {

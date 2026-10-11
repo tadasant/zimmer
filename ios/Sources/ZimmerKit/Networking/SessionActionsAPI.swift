@@ -11,6 +11,16 @@ public protocol SessionActionsAPI: Sendable {
     /// The list, narrowed by board visibility as the web UI's board is: the newest
     /// `SessionFilter.maxPages` pages, with `complete` false when there were more.
     func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult
+    /// The list in a board view's order, as the server orders it (`view=`): Last Touched and
+    /// Created page through the newest-touched or newest-created first; Your board and Ranked
+    /// are the User view's top 500 in one page. `complete` is false when more matched.
+    func sessions(_ filter: SessionFilter, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult
+    /// The Ranked view's *Start now*: take a waiting session's next turn now. Refused when it
+    /// has no turn queued (restart it instead) or is asleep on a wake.
+    func startNow(_ id: Int) async throws -> String
+    /// The Ranked view's drag-and-drop: put a spot session between `above` and `below` (either
+    /// nil at an end); the server works out the precedence.
+    func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary
     /// Sessions matching `query` (the web UI's search box) within the same filters; with
     /// `contents`, transcripts are searched too — one bounded scan, its first page.
     func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult
@@ -140,7 +150,11 @@ extension ZimmerHTTPClient {
     /// at once — for the board views to order on the phone. `complete` is false when the
     /// filter matched more than that, and the list says so.
     public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
-        let base = filter.query.merging(board.query) { a, _ in a }
+        try await pagedSessions(filter, board: board, extra: [:])
+    }
+
+    private func pagedSessions(_ filter: SessionFilter, board: BoardFilter, extra: [String: String]) async throws -> SessionSearchResult {
+        let base = filter.query.merging(board.query) { a, _ in a }.merging(extra) { _, new in new }
         let first: SessionListResponse = try await get("/api/v1/sessions", query: base.merging(["page": "1"]) { _, new in new })
         let pages = first.pagination?.total_pages ?? 1
         var rest: [Int: [SessionSummary]] = [:]
@@ -159,6 +173,34 @@ extension ZimmerHTTPClient {
         var seen = Set<Int>()
         let rows = (first.sessions + rest.keys.sorted().flatMap { rest[$0] ?? [] }).filter { seen.insert($0.id).inserted }
         return SessionSearchResult(sessions: rows, complete: pages <= SessionFilter.maxPages)
+    }
+
+    public func sessions(_ filter: SessionFilter, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
+        switch view {
+        case .lastTouched, .created:
+            return try await pagedSessions(filter, board: board, extra: ["view": view.rawValue])
+        case .yourBoard, .ranked:
+            var query = filter.query.merging(board.query) { a, _ in a }
+            query["view"] = view.rawValue
+            query["per_page"] = nil
+            let response: SessionListResponse = try await get("/api/v1/sessions", query: query)
+            return SessionSearchResult(sessions: response.sessions, complete: !(response.truncated ?? false))
+        }
+    }
+
+    public func startNow(_ id: Int) async throws -> String {
+        let segment = ZimmerPathComponent(String(id))
+        let response: MessageEnvelope = try await post("/api/v1/sessions/\(segment)/start_now", json: [:])
+        return response.message ?? "Starting now"
+    }
+
+    public func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary {
+        let segment = ZimmerPathComponent(String(id))
+        var body: [String: Any] = [:]
+        if let above { body["above_id"] = above }
+        if let below { body["below_id"] = below }
+        let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)/reorder_precedence", json: body)
+        return response.session
     }
 
     public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
