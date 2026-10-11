@@ -351,3 +351,37 @@ extension FakeZimmerAPI {
         return session
     }
 }
+
+// MARK: - The Ranked view's writes, and server-side view ordering
+//
+// As the server: Start now needs a waiting session with a turn to take, and a reorder takes
+// a spot session to the midpoint of the neighbours it was dropped between.
+extension FakeZimmerAPI {
+    public func sessions(_ filter: SessionFilter, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
+        let rows = try await sessions(filter, board: board).sessions
+        return SessionSearchResult(sessions: view.sections(rows).flatMap(\.sessions))
+    }
+
+    public func startNow(_ id: Int) async throws -> String {
+        let session = try find(id)
+        guard session.status == .waiting else {
+            throw ZimmerError.http(status: 422, message: "Session \(id) is \(session.status.rawValue); only a waiting session's turn can be brought forward.")
+        }
+        _ = try change(id) { $0.status = .running }
+        return "Session \(id)'s next turn is due now: resumed from the spot queue."
+    }
+
+    public func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary {
+        guard above != id, below != id else { throw ZimmerError.http(status: 422, message: "A session cannot be dropped next to itself") }
+        let upper = try above.map { try find($0).precedence ?? 0 }
+        let lower = try below.map { try find($0).precedence ?? 0 }
+        let precedence: Int
+        switch (upper, lower) {
+        case let (upper?, lower?): precedence = (upper + lower) / 2
+        case let (upper?, nil): precedence = upper - 10
+        case let (nil, lower?): precedence = lower + 10
+        case (nil, nil): precedence = 0
+        }
+        return try change(id) { $0.precedence = precedence }
+    }
+}

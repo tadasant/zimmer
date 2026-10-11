@@ -123,16 +123,19 @@ final class AppModel: ObservableObject {
         defer { isLoading = false }
         let requested = filter
         let board = board
+        let view = view
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let scope = searchScope
         do {
             let result: SessionSearchResult
             if query.isEmpty {
-                result = try await connection.api.sessions(requested, board: board)
+                result = try await connection.api.sessions(requested, board: board, view: view)
             } else {
                 result = try await connection.api.search(query, contents: scope == .transcripts, filter: requested, board: board)
             }
-            guard requested == filter, board == self.board, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            // A slower answer to an older request must not overwrite a newer list.
+            guard requested == filter, board == self.board, view == self.view,
+                  query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             sessions = result.sessions
             listIncomplete = !result.complete
             error = nil
@@ -210,6 +213,33 @@ final class AppModel: ObservableObject {
         } catch {
             handle(error)
             Haptics.failure()
+        }
+    }
+
+    /// The Ranked view's *Start now*.
+    func startNow(_ id: Int) async {
+        do {
+            notice = try await connection.api.startNow(id)
+            Haptics.success()
+            await refresh()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
+    /// The Ranked view's drag-and-drop, then the queue as the server now ranks it.
+    func reorder(_ id: Int, above: Int?, below: Int?) async {
+        do {
+            _ = try await connection.api.reorder(id, above: above, below: below)
+            // After the reload, so the toast never shows over the row in its old place.
+            await refresh()
+            notice = "Moved in the spot queue"
+            Haptics.success()
+        } catch {
+            handle(error)
+            Haptics.failure()
+            await refresh()
         }
     }
 
