@@ -36,12 +36,15 @@ enum Theme {
     /// The web UI's one brand colour (`indigo-600`, buttons, links, focus rings), lifted to
     /// indigo-400 on navy so it still reads.
     static let accent = dynamic(light: 0x4F46E5, dark: 0x818CF8)
+    /// The accent as a fill under white words and glyphs: indigo-600 / indigo-500, which keep
+    /// white legible where indigo-400 would not.
+    static let accentFill = dynamic(light: 0x4F46E5, dark: 0x6366F1)
     /// The gold ring of the app mark. A signature, used sparingly — a hairline under the
     /// primary button, the ring around an empty state, the favourite star — never for words.
     static let gold = dynamic(light: 0xE0A526, dark: 0xF2B947)
     /// The gold as a fill, the same in both appearances: the build strip.
     static let signatureGold = Color(uiColor: UIColor(hex: 0xF2B947))
-    /// The mark's navy, the same in both appearances: the sign-in screen and the build strip.
+    /// The mark's navy, the same in both appearances: the build strip's words.
     static let navy = Color(uiColor: UIColor(hex: 0x031942))
 
     /// Errors and destructive swipes. red-600 / red-400.
@@ -66,8 +69,6 @@ enum Theme {
     static func title(_ style: Font.TextStyle = .title2) -> Font { .system(style, weight: .bold) }
     /// A card or row title.
     static func headline(emphasized: Bool = false) -> Font { .system(.body, weight: emphasized ? .semibold : .medium) }
-    /// Metadata under a title: ids, times, roots.
-    static let meta = Font.system(.footnote).monospacedDigit()
     /// The web UI's `font-mono` ids and branch lines.
     static let mono = Font.system(.caption, design: .monospaced)
     /// Small tracked labels: section heads, card heads.
@@ -96,6 +97,15 @@ enum Theme {
         case .archived, .unknown:
             return StatusColors(text: dynamic(light: 0x1F2937, dark: 0xD1D5DB), fill: wash(light: 0xF3F4F6, dark: 0x374151), dot: Color(uiColor: UIColor(hex: 0x9CA3AF)))
         }
+    }
+
+    /// Swipe actions carry the system's white label, so their fills are the 600s in both
+    /// appearances rather than the lighter dark-mode tints.
+    enum Swipe {
+        static let favorite = Color(uiColor: UIColor(hex: 0xCA8A04))
+        static let restore = Color(uiColor: UIColor(hex: 0x16A34A))
+        static let trash = Color(uiColor: UIColor(hex: 0xDC2626))
+        static let snooze = Color(uiColor: UIColor(hex: 0x4F46E5))
     }
 
     /// A pull request's state colour, the web UI's `pr_icon_color_class`.
@@ -137,15 +147,14 @@ enum Theme {
 
     // MARK: - UIKit chrome
 
-    /// The navigation bar's title colours and the app-wide tint, set once at launch. Only the
-    /// text: the bars keep the system's own material, so they stay native on every iOS.
+    /// The navigation bar's title colours, set once at launch. Only the text: the bars keep the
+    /// system's own material, so they stay native on every iOS. The tint is `ZimmerApp`'s.
     @MainActor
     static func applyBarAppearance() {
         let ink = dynamicUIColor(light: 0x111827, dark: 0xF3F4F6)
         let bar = UINavigationBar.appearance()
         bar.largeTitleTextAttributes = [.foregroundColor: ink]
         bar.titleTextAttributes = [.foregroundColor: ink, .font: UIFont.systemFont(ofSize: 17, weight: .semibold)]
-        UISegmentedControl.appearance().selectedSegmentTintColor = dynamicUIColor(light: 0xFFFFFF, dark: 0x0B2555)
     }
 }
 
@@ -221,7 +230,7 @@ struct PrimaryButtonStyle: ButtonStyle {
             .padding(.vertical, 15)
             .padding(.horizontal, 24)
             .frame(maxWidth: .infinity)
-            .background(Theme.accent.opacity(isEnabled ? 1 : 0.4))
+            .background(Theme.accentFill.opacity(isEnabled ? 1 : 0.4))
             .overlay(alignment: .bottom) {
                 if isEnabled { Theme.gold.frame(height: 2.5) }
             }
@@ -243,7 +252,7 @@ struct Pill<Content: View>: View {
             .foregroundStyle(selected ? Color.white : Theme.ink)
             .padding(.horizontal, 14)
             .frame(minHeight: 34)
-            .background(Capsule().fill(selected ? Theme.accent : Theme.surface))
+            .background(Capsule().fill(selected ? Theme.accentFill : Theme.surface))
             .overlay(Capsule().strokeBorder(selected ? Color.clear : Theme.rule, lineWidth: 1))
             .contentShape(Capsule())
     }

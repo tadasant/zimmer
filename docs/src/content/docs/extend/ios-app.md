@@ -28,7 +28,7 @@ It looks like the web UI, too. The colours are the web UI's: a gray-50 page, whi
 hairline borders, indigo as the one accent, and the web's pastel status badges. The web UI has no
 dark mode, so the app's dark mode is built on the PWA's navy (the manifest's `#000e2b` and
 `#031942`, the same navy as the otter mark). The gold of the mark shows up in a few small places:
-the sign-in screen, empty states, the favourite star. Every token is in one file,
+the sign-in screen, empty states, the status summary's edge, the favourite star. Every token is in one file,
 `ios/App/Zimmer/Support/Theme.swift`. It is laid out the way the Motet app's design layer is.
 
 - **Lists sessions** in one of the web UI's four board views, from the view menu: *Your board*

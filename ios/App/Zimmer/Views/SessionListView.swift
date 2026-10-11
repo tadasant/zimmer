@@ -301,6 +301,8 @@ private struct SwipeableSessionRow: View {
             SessionRow(session: session)
         }
         .themeCardRow()
+        // The press-and-hold preview lifts the card, not the square row around it.
+        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: Theme.largeRadius, style: .continuous))
         .accessibilityIdentifier("session.row.\(session.id)")
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
@@ -308,7 +310,7 @@ private struct SwipeableSessionRow: View {
             } label: {
                 Label(session.isFavorite ? "Unfavorite" : "Favorite", systemImage: session.isFavorite ? "star.slash" : "star.fill")
             }
-            .tint(Theme.gold)
+            .tint(Theme.Swipe.favorite)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if session.status == .archived {
@@ -317,27 +319,27 @@ private struct SwipeableSessionRow: View {
                 } label: {
                     Label("Restore", systemImage: "arrow.uturn.backward")
                 }
-                .tint(Theme.success)
+                .tint(Theme.Swipe.restore)
             } else {
                 // Not `role: .destructive`: that animates the row away on the tap, before
                 // the confirmation has been answered.
                 Button { trashing = session } label: {
                     Label("Trash", systemImage: "trash")
                 }
-                .tint(Theme.danger)
+                .tint(Theme.Swipe.trash)
             }
             if session.boardVisibility == .visible {
                 Button { snoozing = session } label: {
                     Label("Snooze", systemImage: "moon.zzz")
                 }
-                .tint(Theme.snooze)
+                .tint(Theme.Swipe.snooze)
             } else {
                 Button {
                     Task { await model.perform("Back on the board", on: session.id) { try await $0.setVisibility(session.id, .visible) } }
                 } label: {
                     Label("Put back", systemImage: "eye")
                 }
-                .tint(Theme.snooze)
+                .tint(Theme.Swipe.snooze)
             }
         }
         .contextMenu { SessionContextMenu(session: session, trashing: $trashing) }
