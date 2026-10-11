@@ -68,6 +68,7 @@ struct SessionListView: View {
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
             .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
+            .sheet(isPresented: $model.showingNewSession) { NewSessionView() }
     }
 
     private var list: some View {
@@ -238,9 +239,18 @@ struct SessionListView: View {
             }
             .accessibilityLabel("View options")
             .accessibilityIdentifier("board.menu")
-            Button { model.showingQuickRouter = true } label: { Image(systemName: "square.and.pencil") }
-                .accessibilityLabel("New session")
-                .accessibilityIdentifier("quickrouter.open")
+            // Tap: the Quick Router, a sentence. Touch and hold: the full form.
+            Menu {
+                Button { model.showingQuickRouter = true } label: { Label("Quick Router", systemImage: "sparkles") }
+                Button { model.showingNewSession = true } label: { Label("New Session…", systemImage: "square.and.pencil") }
+                    .accessibilityIdentifier("newsession.open")
+            } label: {
+                Image(systemName: "square.and.pencil")
+            } primaryAction: {
+                model.showingQuickRouter = true
+            }
+            .accessibilityLabel("New session")
+            .accessibilityIdentifier("quickrouter.open")
         }
     }
 

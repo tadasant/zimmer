@@ -67,7 +67,8 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   Quick Router, Edit Notes, Show Logs, Subagents, View PR, Snooze until… / Hide / Put back on the board, Refresh
   Transcript, Copy Transcript (the whole transcript as text), Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
   edit: Rename, Modify Goal, Effort (the levels the session's model accepts, or the model
-  default), Promote to priority / Demote to spot (to the head of the spot queue), the heartbeat on
+  default), Model (the models the session's runtime lists), MCP Servers, Skills, Hooks and Plugins
+  (each a checklist of its catalog, from the next turn), Promote to priority / Demote to spot (to the head of the spot queue), the heartbeat on
   or off, Generate Status Summary when there is none, and Open in browser. A promotion that could
   not start the session says why. The star and the trash (or restore) are in the toolbar.
 - **Sends a follow-up** from a box at the bottom, with quick replies for the common answers. A
@@ -75,7 +76,12 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   *Send Now* instead, which ends the turn in flight (`force_immediate`, the web UI's Send Now).
   It is recorded as your message if the app's connection acts on your behalf (below).
 - **Trashes** a session, after a confirmation, and restores one from the trash.
-- **Starts a session from a sentence** through the Quick Router (the pencil button), then opens it.
+- **Starts a session from a sentence** through the Quick Router (tap the pencil), then opens it,
+  **or from the full form** (touch and hold the pencil → *New Session…*): the web UI's new-session
+  form, with agent root, runtime, model, reasoning effort, prompt, title, goal (a predefined one or
+  your own words), scheduling class, and the MCP servers, skills, hooks and plugins, each starting
+  at the root's defaults. The create is retry-safe (`idempotency_key`), and its prompt is recorded
+  as your message when the app acts on your behalf.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
@@ -85,10 +91,10 @@ of them widened what the phone can do on the server.
 ### Not in the app yet
 
 *Reprioritize* and *Authorize merge* are not in the app yet, nor are image and file attachments,
-the new-session form, model and MCP server / skill / hook / plugin changes, the notifications
-inbox, triggers, costs and health. Fork from a message and answering an elicitation stay in the
-browser: the web timeline, the fork service and the conversation endpoint count messages
-differently, and there is no route that lists a session's pending elicitations. The admin pages (API keys, inference accounts, connectors,
+the notifications inbox, triggers, costs and health. Fork from a message and answering an
+elicitation each need a server change first — the conversation endpoint does not say where a
+message sits in the transcript the fork service counts, and no route lists a session's pending
+elicitations — and come in their own change. The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.
 
 ## Two origins
