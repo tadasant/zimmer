@@ -840,6 +840,9 @@ extension FakeZimmerAPI {
         let result = now ? try await sendNow(id, prompt: named) : try await followUp(id, prompt: named)
         sentAttachments[id, default: []].append(attachments)
         return result
+    }
+}
+
 // MARK: - Merge and Reprioritize
 //
 // As the server: Merge is offered only on an open, green PR and answers a second tap as

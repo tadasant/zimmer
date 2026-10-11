@@ -267,6 +267,30 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The User view's Merge: the sign-off that lets a session merge its open, green PR.
+    func authorizeMerge(_ id: Int) async {
+        do {
+            notice = try await connection.api.authorizeMerge(id).message
+            Haptics.success()
+            await refresh()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
+    /// The User view's Reprioritize: the board goes to the reprioritizing session, which
+    /// writes the new order back; the list shows it on the next refresh.
+    func reprioritize() async {
+        do {
+            notice = try await connection.api.reprioritize().message
+            Haptics.success()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
     /// The Ranked view's *Start now*.
     func startNow(_ id: Int) async {
         do {
