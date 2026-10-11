@@ -144,9 +144,7 @@ of them widened what the phone can do on the server.
 ### Not in the app yet
 
 *Reprioritize* and *Authorize merge* are not in the app yet. Fork from a message and answering an
-elicitation each need a server change first — the conversation endpoint does not say where a
-message sits in the transcript the fork service counts, and no route lists a session's pending
-elicitations — and come in their own change. The admin pages (API keys, inference accounts, connectors,
+elicitation stay in the browser until the app draws them; the API they need is in place. The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.
 
 ## Two origins
