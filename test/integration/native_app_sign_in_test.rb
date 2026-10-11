@@ -293,6 +293,46 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert_empty Session.find(JSON.parse(response.body)["session_id"]).human_messages
   end
 
+  test "the app registers its phone for push, tied to its grant; revoking the grant stops the pushes" do
+    tokens = sign_in
+    token = "ab" * 32
+
+    post "/api/v1/apns_devices", params: { token: token, environment: "production", device_name: "iPhone", app_version: "0.1.0 (3)" },
+      headers: bearer(tokens["access_token"])
+
+    assert_response :created
+    device = ApnsDevice.find_by!(token: token)
+    assert_equal OauthServer::NativeApp.client.grants.sole, device.grant
+    assert_includes ApnsDevice.deliverable, device
+
+    device.grant.revoke!("signed out elsewhere")
+    assert_not_includes ApnsDevice.deliverable, device
+
+    # Deleting the grant outright must not leave a grant-less row behind, which would
+    # read as an API-key registration and be deliverable again.
+    device.grant.destroy!
+    assert_not ApnsDevice.exists?(device.id)
+  end
+
+  test "the app unregisters its own phone on sign-out, never another's, and a bad registration is refused" do
+    tokens = sign_in
+    post "/api/v1/apns_devices", params: { token: "cd" * 32, environment: "sandbox" }, headers: bearer(tokens["access_token"])
+    someone_elses = ApnsDevice.register!(token: "ef" * 32, environment: "sandbox", grant: nil)
+
+    delete "/api/v1/apns_devices/#{'ef' * 32}", headers: bearer(tokens["access_token"])
+    assert_response :no_content
+    assert ApnsDevice.exists?(someone_elses.id), "a token registered under another credential is out of reach"
+
+    delete "/api/v1/apns_devices/#{'cd' * 32}", headers: bearer(tokens["access_token"])
+    assert_response :no_content
+    assert_equal [ someone_elses ], ApnsDevice.all.to_a
+
+    post "/api/v1/apns_devices", params: { token: "nope", environment: "production" }, headers: bearer(tokens["access_token"])
+    assert_response :unprocessable_entity
+    post "/api/v1/apns_devices", params: { environment: "production" }, headers: bearer(tokens["access_token"])
+    assert_response :unprocessable_entity
+  end
+
   private
 
   def build_zimmer_session(**attrs)

@@ -36,6 +36,17 @@ class SendPushNotificationJobTest < ActiveJob::TestCase
 
   # === Notification type handling ===
 
+  test "the same notification goes to the iOS app, and an APNs failure never breaks the web push" do
+    apns = mock("ApnsService")
+    @job.apns_service = apns
+    @mock_service.expects(:send_to_all).returns({ sent: 1, failed: 0, expired: 0 })
+    apns.expects(:send_to_all).with { |**payload| payload[:title] == "Test Session" && payload[:data][:session_id] == @session.id }
+      .raises(Errno::ECONNREFUSED)
+
+    assert_nothing_raised { @job.perform(@session.id, "session_complete") }
+    assert_equal 1, @session.notifications.where(notification_type: "session_complete").count
+  end
+
   test "perform sends session_complete notification" do
     @mock_service.expects(:send_to_all).with(
       title: @session.title,

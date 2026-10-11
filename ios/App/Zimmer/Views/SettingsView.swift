@@ -4,6 +4,7 @@ import ZimmerKit
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @State private var notificationStatus = "…"
 
     var body: some View {
         NavigationStack {
@@ -28,6 +29,22 @@ struct SettingsView: View {
                         Text("The app host sits behind an access proxy with its own sign-in. It renews itself a day before it expires.")
                     }
                 }
+                Section {
+                    LabeledContent("Status", value: notificationStatus)
+                        .accessibilityIdentifier("settings.notifications")
+                    if notificationStatus == "Not asked yet" {
+                        Button("Turn on notifications") {
+                            Task {
+                                await PushCoordinator.shared.enable()
+                                await loadNotificationStatus()
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("Zimmer pushes when a session needs your input, finishes, or fails. Change it in iOS Settings → Zimmer.")
+                }
                 Section("This build") {
                     LabeledContent("Version", value: Self.version)
                     Text(model.buildTarget.summary)
@@ -47,11 +64,21 @@ struct SettingsView: View {
                     Text("Signing out revokes this phone's connection on the server.")
                 }
             }
+            .task { await loadNotificationStatus() }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
+        }
+    }
+
+    private func loadNotificationStatus() async {
+        switch await PushCoordinator.shared.authorizationStatus() {
+        case .authorized, .provisional, .ephemeral: notificationStatus = "On"
+        case .denied: notificationStatus = "Off"
+        case .notDetermined: notificationStatus = "Not asked yet"
+        @unknown default: notificationStatus = "Unknown"
         }
     }
 

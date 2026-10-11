@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Push notifications, and nothing else. Signed in only by `ios/bin/testflight upload` when
+  the `ZIMMER_IOS_PUSH_ENABLED` variable is `1` — that is, once Push Notifications is ticked
+  on the App ID `com.tadasant.zimmer`; an entitlement the App ID lacks fails signing.
+  `development` here; export for App Store Connect rewrites it to `production` (check the
+  first signed build with codesign (dump the entitlements of Zimmer.app)). The guard in
+  `ios/bin/testflight` refuses this file if it ever asks for anything but aps-environment.
+-->
+<plist version="1.0">
+<dict>
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

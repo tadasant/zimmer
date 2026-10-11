@@ -14,6 +14,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var summaries: [Int: StatusSummary]
     private var conversations: [Int: [ConversationMessage]]
     private var nextID: Int
+    public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
 
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date()) {
         self.all = sessions
@@ -89,6 +90,14 @@ public actor FakeZimmerAPI: ZimmerAPI {
                                   prompt: text, createdAt: Date(), updatedAt: Date()))
         conversations[id] = [ConversationMessage(id: 0, role: .user, content: text, timestamp: Date())]
         return id
+    }
+
+    public func registerDevice(token: String, environment: APNsEnvironment, deviceName: String?, appVersion: String?) async throws {
+        registeredDevices[token] = environment
+    }
+
+    public func unregisterDevice(token: String) async throws {
+        registeredDevices[token] = nil
     }
 
     private func find(_ id: Int) throws -> SessionSummary {
