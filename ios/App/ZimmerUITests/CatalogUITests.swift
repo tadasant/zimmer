@@ -14,10 +14,13 @@ final class CatalogUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureNewSession"])
         let prompt = app.descendants(matching: .any)["newsession.prompt"]
         XCTAssertTrue(prompt.waitForExistence(timeout: timeout))
-        // The root's defaults are already chosen.
+        // The root's defaults are already chosen. The Artifacts rows are below the fold, and a
+        // form row off screen is not in the accessibility tree, so scroll to them.
         // The row's value, wherever the form puts it (its label or its value).
         let chosen = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS '2 chosen' OR value CONTAINS '2 chosen'")).firstMatch
+        for _ in 0..<4 where !chosen.exists { app.swipeUp() }
         XCTAssertTrue(chosen.waitForExistence(timeout: timeout), "the root's two default skills are chosen")
+        for _ in 0..<4 where !prompt.isHittable { app.swipeDown() }
         prompt.tap()
         prompt.typeText("Rotate the staging deploy key")
         app.buttons["newsession.create"].tap()
