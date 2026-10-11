@@ -119,28 +119,6 @@ class SessionsController < ApplicationController
   # default applies. Without it those two cases are the same request.
   FILTERS_SUBMITTED_PARAM = "filters"
 
-  # SQL ordering for the "last touched" flat view. last_user_activity_at is not a
-  # column — it lives in the metadata JSON (written as an ISO8601 string by
-  # touch_user_activity!/touch_user_view!) and falls back to created_at when
-  # never recorded. This reproduces Session#last_user_activity_at's fallback in
-  # SQL so the ordering matches the model accessor: the value is cast to
-  # timestamptz only when it looks like an ISO8601 datetime, otherwise (absent,
-  # blank, or malformed) COALESCE degrades to created_at. The regex guard matters
-  # because an unconditional ::timestamptz cast on a non-empty garbage string
-  # would raise and 500 the whole dashboard, where the model accessor silently
-  # degrades. The guard deliberately requires a full datetime (date + HH:MM), so
-  # a bare date-only string would fall back to created_at here even though the
-  # model's Time.parse would accept it — acceptable because the app always writes
-  # this field as a full .iso8601 timestamp. No user input is interpolated, so
-  # Arel.sql is safe.
-  LAST_TOUCHED_ORDER = Arel.sql(
-    "COALESCE(" \
-      "CASE WHEN sessions.metadata->>'last_user_activity_at' ~ " \
-      "'^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}' " \
-      "THEN (sessions.metadata->>'last_user_activity_at')::timestamptz END, " \
-      "sessions.created_at) DESC"
-  )
-
   # User agents we treat as "mobile" for the purpose of choosing a default view.
   # This only affects the default when the user has not explicitly chosen a view;
   # the choice is always overridable and persisted, so a coarse heuristic is fine.
@@ -289,7 +267,7 @@ class SessionsController < ApplicationController
     if @view_mode == VIEW_MODE_LAST_TOUCHED || @view_mode == VIEW_MODE_CREATED_DESC
       flat_sorted =
         if @view_mode == VIEW_MODE_LAST_TOUCHED
-          sessions.order(LAST_TOUCHED_ORDER)
+          sessions.order(Session::LAST_TOUCHED_ORDER)
         else
           sessions.order(created_at: :desc)
         end

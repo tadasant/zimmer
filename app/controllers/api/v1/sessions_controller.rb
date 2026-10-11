@@ -15,6 +15,13 @@ class Api::V1::SessionsController < Api::BaseController
   # Zimmer's iOS app lists, reads, follows up and archives sessions here.
   accepts_native_app_tokens
 
+  # The dashboard's board views (SessionsController::VALID_VIEW_MODES), for `view=` on #index.
+  VIEW_USER = "user"
+  VIEW_LAST_TOUCHED = "last_touched"
+  VIEW_RANKED = "ranked"
+  # The dashboard caps its User view at the same number.
+  USER_VIEW_LIMIT = 500
+
   # A `place`/`precedence` pair the server cannot act on. Raised rather than
   # rendered-and-returned because the resolver's nil already means "the caller
   # named no placement": a write path that answered a rendered 422 with a second
@@ -54,7 +61,7 @@ class Api::V1::SessionsController < Api::BaseController
     failed: { title: "Cannot restart", status: :internal_server_error }
   }.freeze
 
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -68,6 +75,11 @@ class Api::V1::SessionsController < Api::BaseController
   #     ones. OMITTED BY DEFAULT — this listing is unfiltered on that axis, so an
   #     agent checking whether work is already in flight is never shown fewer
   #     sessions because a human tidied their board.
+  #   - view: the dashboard's board view, so a client orders the same rows the web UI
+  #     does. "created_desc" (the default) and "last_touched" (Session::LAST_TOUCHED_ORDER)
+  #     page as usual. "user" and "ranked" are Sessions::UserView — priority above spot,
+  #     then precedence, then oldest — which is not one ORDER BY, so they answer the top
+  #     USER_VIEW_LIMIT rows in a single page, as the dashboard's board caps itself.
   #   - page: Page number (default: 1)
   #   - per_page: Results per page (default: 25, max: 100)
   def index
@@ -92,6 +104,14 @@ class Api::V1::SessionsController < Api::BaseController
 
     # Exclude archived unless requested
     scope = scope.where.not(status: :archived) unless params[:show_archived] == "true"
+
+    case params[:view].to_s
+    when VIEW_LAST_TOUCHED
+      scope = scope.reorder(Session::LAST_TOUCHED_ORDER).order(id: :desc)
+    when VIEW_USER, VIEW_RANKED
+      render_user_view(scope)
+      return
+    end
 
     result = paginate(scope)
 
@@ -710,6 +730,58 @@ class Api::V1::SessionsController < Api::BaseController
     end
   end
 
+  # POST /api/v1/sessions/:id/start_now
+  # Take a waiting session's next turn now instead of when the scheduler gets
+  # round to it — the Ranked view's "Start now" and MCP `action_session`
+  # start_now, with MCP's answers: a refusal (asleep on a wake, say) and a session
+  # with no turn queued are both 422s naming what to do instead, because there is
+  # nothing to bring forward. It moves WHEN the turn is asked for, not WHETHER the
+  # spot gate allows it.
+  def start_now
+    result = Sessions::StartNow.call(@session, actor: "the REST API")
+
+    if result.refused?
+      render_api_error("Cannot start", result.message, status: :unprocessable_entity)
+    elsif result.nothing_queued?
+      render_api_error(
+        "Nothing queued",
+        "#{result.message} There is no turn to bring forward: send it a follow-up, or restart it if it is stuck.",
+        status: :unprocessable_entity
+      )
+    else
+      render json: { session: session_json(@session.reload), outcome: result.outcome.to_s, message: result.message }
+    end
+  end
+
+  # PATCH /api/v1/sessions/:id/reorder_precedence
+  # The Ranked view's drag-and-drop: the caller names the spot-queue rows it
+  # dropped the session between (`above_id`, `below_id`; either may be omitted at
+  # an end) and Sessions::ReorderPrecedence derives the value, nudging a
+  # neighbour aside when there is no gap — the same service the dashboard's drag
+  # calls. A neighbour that is no longer in the spot queue counts as omitted.
+  # Answers with the session and every row whose precedence moved.
+  def reorder_precedence
+    above = spot_queue_neighbour(params[:above_id])
+    below = spot_queue_neighbour(params[:below_id])
+
+    result = Sessions::ReorderPrecedence.call(session: @session, above: above, below: below)
+
+    if result.changes.key?(@session.id)
+      @session.logs.create!(
+        content: "Precedence set to #{result.precedence} by a reorder through the REST API",
+        level: "info"
+      )
+    end
+
+    render json: {
+      session: session_json(@session.reload),
+      changes: result.changes.map { |id, precedence| { id: id, precedence: precedence } }
+    }
+  rescue Sessions::ReorderPrecedence::Error, ActiveRecord::RecordInvalid,
+         ActiveRecord::LockWaitTimeout, ActiveRecord::Deadlocked => e
+    render_api_error("Cannot reorder", e.message, status: :unprocessable_entity)
+  end
+
   # POST /api/v1/sessions/:id/regenerate_status_summary
   # Rewrite the session's Status blurb. Forced — it regenerates even when the
   # cached blurb is current — and asynchronous, because generation normally forks
@@ -1201,6 +1273,26 @@ class Api::V1::SessionsController < Api::BaseController
   end
 
   private
+
+  # `view=user` / `view=ranked`: Sessions::UserView's rows, in one page.
+  def render_user_view(scope)
+    rows = Sessions::UserView.rows(scope: scope.reorder(nil), limit: USER_VIEW_LIMIT)
+    total = scope.count
+    delegates = goal_check_delegates_for(rows)
+
+    render json: {
+      sessions: rows.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
+      pagination: { page: 1, per_page: USER_VIEW_LIMIT, total_count: total, total_pages: 1 },
+      truncated: total > rows.size
+    }
+  end
+
+  # A neighbour named by a reorder: a live spot-queue row, or nil.
+  def spot_queue_neighbour(id)
+    return nil if id.blank?
+
+    Session.where.not(status: :archived).spot.find_by(id: id)
+  end
 
   # A follow-up from the iOS app is recorded the way any OAuth client's delivered
   # message is: as its approver's, and only when the grant acts on their behalf.
