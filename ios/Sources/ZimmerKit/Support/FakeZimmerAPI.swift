@@ -506,3 +506,99 @@ extension FakeZimmerAPI {
         ]]
     }
 }
+
+// MARK: - The new-session form and a session's catalog artifacts
+//
+// As the server: a session starts on a known root with that root's defaults for anything
+// not chosen, a model must be one its runtime lists, and an artifact must be in its catalog.
+extension FakeZimmerAPI {
+    public func configs() async throws -> AppConfigs {
+        Self.sampleConfigs
+    }
+
+    public func catalog(_ kind: CatalogKind) async throws -> [CatalogItem] {
+        Self.sampleCatalogs[kind] ?? []
+    }
+
+    public func createSession(_ request: NewSessionRequest) async throws -> SessionSummary {
+        guard let root = Self.sampleConfigs.agentRoots.first(where: { $0.name == request.agentRoot }) else {
+            throw ZimmerError.http(status: 422, message: "Agent root '\(request.agentRoot)' not found in catalog")
+        }
+        let runtime = request.runtime ?? root.defaultRuntime ?? "claude_code"
+        let model = request.model ?? root.defaultModel ?? Self.sampleConfigs.runtimeModels[runtime]?.default
+        let text = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let id = all.map(\.id).max().map { $0 + 1 } ?? 1
+        var session = SessionSummary(
+            id: id, title: request.title ?? (text.count > 60 ? String(text.prefix(57)) + "…" : text),
+            status: text.isEmpty ? .needsInput : .waiting, agentRuntime: runtime, prompt: text,
+            createdAt: Date(), updatedAt: Date(), goal: request.goal,
+            priorityClass: request.schedulingClass ?? "priority", model: model, agentRoot: root.name
+        )
+        for kind in CatalogKind.allCases {
+            let chosen = request.selections[kind] ?? kind.defaults(of: root)
+            session.setSelection(kind, chosen)
+        }
+        all.append(session)
+        return session
+    }
+
+    public func updateModel(_ id: Int, model: String) async throws -> SessionSummary {
+        let session = try find(id)
+        let runtime = session.agentRuntime ?? "claude_code"
+        guard Self.sampleConfigs.models(for: runtime).contains(where: { $0.id == model }) else {
+            throw ZimmerError.http(status: 422, message: "\(model) is not a model for \(runtime)")
+        }
+        return try change(id) { $0.config = SessionConfig(model: model) }
+    }
+
+    public func updateSelection(_ id: Int, _ kind: CatalogKind, to values: [String]) async throws -> SessionSummary {
+        let known = Set((Self.sampleCatalogs[kind] ?? []).map(\.id))
+        if let unknown = values.first(where: { !known.contains($0) }) {
+            throw ZimmerError.http(status: 422, message: "\(unknown) is not in the \(kind.label.lowercased()) catalog")
+        }
+        return try change(id) { $0.setSelection(kind, values) }
+    }
+
+    static let sampleConfigs = AppConfigs(
+        agentRoots: [
+            AgentRootOption(name: "zimmer", displayName: "Zimmer", description: "The Zimmer Rails app and its iOS app.", isDefault: true,
+                            defaultRuntime: "claude_code", defaultModel: "opus", defaultGoal: "open-reviewed-green-pr",
+                            defaultMcpServers: ["playwright-custom"], defaultSkills: ["open-pr", "wait-for-ci"]),
+            AgentRootOption(name: "zimmer-orchestrator", displayName: "Zimmer orchestrator", description: "Plans and routes work across roots.",
+                            defaultRuntime: "claude_code", defaultModel: "opus"),
+            AgentRootOption(name: "internal-only", userInvocable: false),
+        ],
+        runtimeModels: [
+            "claude_code": RuntimeModels(default: "opus", models: [
+                ModelOption(id: "opus", label: "Opus", effortLevels: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high"),
+                ModelOption(id: "sonnet", label: "Sonnet", effortLevels: ["low", "medium", "high"], defaultEffort: "medium"),
+            ]),
+            "codex": RuntimeModels(default: "gpt-5.6-sol", models: [ModelOption(id: "gpt-5.6-sol", label: "GPT-5.6 Sol")]),
+        ],
+        goals: [
+            GoalOption(id: "open-reviewed-green-pr", name: "Open a reviewed, green PR", description: "Unmerged PR is open and CI is green."),
+            GoalOption(id: "answer-question", name: "Answer a question"),
+        ],
+        mcpServers: [CatalogItem(id: "playwright-custom", title: "Playwright"), CatalogItem(id: "slack", title: "Slack", unavailableReason: "Needs authorizing")]
+    )
+
+    static let sampleCatalogs: [CatalogKind: [CatalogItem]] = [
+        .mcpServers: sampleConfigs.mcpServers,
+        .skills: [CatalogItem(id: "open-pr", title: "Open a PR"), CatalogItem(id: "wait-for-ci", title: "Wait for CI"),
+                  CatalogItem(id: "zimmer-qa-mobile-screens", title: "QA mobile screens")],
+        .hooks: [CatalogItem(id: "block-force-push", title: "Block force-push")],
+        .plugins: [CatalogItem(id: "screenshots-videos", title: "Screenshots and videos")],
+    ]
+}
+
+extension SessionSummary {
+    /// Set what the session has chosen of one kind.
+    public mutating func setSelection(_ kind: CatalogKind, _ values: [String]) {
+        switch kind {
+        case .mcpServers: mcpServers = values
+        case .skills: catalogSkills = values
+        case .hooks: catalogHooks = values
+        case .plugins: catalogPlugins = values
+        }
+    }
+}
