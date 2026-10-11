@@ -4,6 +4,9 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::LogsController < Api::BaseController
+  # Zimmer's iOS app: read-only: the session page's logs.
+  accepts_native_app_tokens only: %i[index show]
+
   before_action :set_session
   before_action :set_log, only: [ :show, :update, :destroy ]
 

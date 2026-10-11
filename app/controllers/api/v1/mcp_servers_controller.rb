@@ -7,6 +7,10 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::McpServersController < Api::BaseController
+  # Zimmer's iOS app: read-only: the catalog for the new-session form and a session's MCP
+  # servers.
+  accepts_native_app_tokens only: %i[index]
+
   # GET /api/v1/mcp_servers
   # List all available MCP servers with their metadata.
   #

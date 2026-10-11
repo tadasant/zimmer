@@ -9,6 +9,10 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::ModelCatalogEntriesController < Api::BaseController
+  # Zimmer's iOS app: read-only: the models a session can switch to. Adding or removing one
+  # stays in the browser.
+  accepts_native_app_tokens only: %i[index]
+
   # GET /api/v1/model_catalog_entries
   def index
     render json: { model_catalog_entries: ModelCatalogEntry.ordered.map { |entry| entry_json(entry) } }

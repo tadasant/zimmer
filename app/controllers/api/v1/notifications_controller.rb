@@ -8,6 +8,10 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::NotificationsController < Api::BaseController
+  # Zimmer's iOS app: the inbox. Not `push`, which sends a notification rather than reading
+  # one.
+  accepts_native_app_tokens only: %i[index show badge mark_read mark_all_read dismiss dismiss_all_read]
+
   before_action :set_notification, only: [ :show, :mark_read, :dismiss ]
 
   # GET /api/v1/notifications

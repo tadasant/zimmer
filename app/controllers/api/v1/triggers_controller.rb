@@ -5,6 +5,10 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::TriggersController < Api::BaseController
+  # Zimmer's iOS app: list, turn on or off, and invoke. Creating and editing a trigger stays
+  # in the browser.
+  accepts_native_app_tokens only: %i[index show toggle invoke]
+
   before_action :set_trigger, only: [ :show, :update, :destroy, :toggle, :invoke ]
 
   # The AIR-catalog lists a trigger stamps onto the sessions it spawns. Every id
