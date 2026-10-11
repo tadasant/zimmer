@@ -7,6 +7,9 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::SkillsController < Api::BaseController
+  # Zimmer's iOS app: read-only: the catalog for the new-session form.
+  accepts_native_app_tokens only: %i[index]
+
   # GET /api/v1/skills
   # List all available skills with their metadata.
   #

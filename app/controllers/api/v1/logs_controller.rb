@@ -4,6 +4,9 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::LogsController < Api::BaseController
+  # Zimmer's iOS app: read-only: the session page's logs.
+  accepts_native_app_tokens only: %i[index show]
+
   before_action :set_session
   before_action :set_log, only: [ :show, :update, :destroy ]
 
@@ -19,6 +22,9 @@ class Api::V1::LogsController < Api::BaseController
 
     # Filter by level
     scope = scope.where(level: params[:level]) if params[:level].present?
+    # Leave a level out: `exclude_level=verbose` is the web UI's "Show Logs", which
+    # hides the raw CLI output that is most of the table (Log::VERBOSE_LEVEL).
+    scope = scope.where.not(level: params[:exclude_level]) if params[:exclude_level].present?
 
     result = paginate(scope)
 

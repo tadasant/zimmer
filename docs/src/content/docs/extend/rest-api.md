@@ -28,17 +28,34 @@ next request on. Every request that presents no key, an unknown key or a revoked
 [Zimmer's iOS app](/extend/ios-app/) holds no API key. It signs in through
 [the OAuth authorization server](/auth/mcp-authorization-server/#the-built-in-ios-app-client) as the
 built-in `zimmer-ios` client and sends `Authorization: Bearer <access token>`. The REST API takes
-that token only on controllers that declare `accepts_native_app_tokens`, and only when the token's
-grant belongs to the built-in client. Today that is `/api/v1/sessions` and everything under it, and
-`POST /api/v1/quick_router`. A token
-issued to any other OAuth client, or presented anywhere else, gets the same 401 as a bad key. The
+that token only on the actions a controller names with `accepts_native_app_tokens` (every action
+when it names none), and only when the token's grant belongs to the built-in client:
+
+| Routes | The app's token may |
+| --- | --- |
+| `/api/v1/sessions` and its member routes (not the nested resources below) | everything an API key may |
+| `POST /api/v1/quick_router`, `/api/v1/apns_devices` | everything |
+| `/api/v1/sessions/:id/enqueued_messages` | list, show, edit, delete, reorder, interrupt — not create: the app queues through `follow_up` |
+| `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
+| `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
+| `/api/v1/notifications` | list, show, badge, mark read, dismiss — not `push` |
+| `/api/v1/triggers` | list, show, toggle, invoke — not create, edit or delete |
+| `GET /api/v1/costs`, `GET /api/v1/costs/records` | read — not `backfill` |
+| `GET /api/v1/health` | read — none of its operator actions |
+| `GET /api/v1/configs`, `/mcp_servers`, `/skills`, `/hooks`, `/plugins`, `/model_catalog_entries` | read the catalogs |
+
+A token issued to any other OAuth client, the app's token on an action its controller does not name,
+or on any other controller, gets the same 401 as a bad key. The
 same expiry, revocation and audience checks as `/mcp` apply, and revoking the connection on
 **Settings → API keys** refuses the phone on its next request. `X-API-Key` is unchanged beside it.
 
 A follow-up the app sends is recorded the way any OAuth client's is
 ([the assistant channel](/sessions/hierarchy-and-human-messages/#the-assistant-channel)): as the
 approver's message, on channel `assistant` with entry point `ios_app.follow_up`, and only when the
-app's connection acts on their behalf. A relay-only connection, an approver with no roster row, or a
+app's connection acts on their behalf. Editing a queued message from the app is recorded the same
+way, as `ios_app.enqueued_message_edited`, the counterpart of the web UI's
+`web_ui.enqueued_message_edited`, and so is the prompt of a session the app creates with
+`POST /sessions`, as `ios_app.new_session` (the web UI's `web_ui.new_session`). A relay-only connection, an approver with no roster row, or a
 follow-up over an API key records nothing.
 
 On a deployment that serves the app from its own hostname behind an access proxy, the app also sends
@@ -1304,12 +1321,12 @@ curl "$BASE_URL/gate_decisions?gate=pr_merge&surface=zimmer&decision=hold&per_pa
 
 | Resource | Endpoints |
 | --- | --- |
-| **Logs** | Full CRUD at `/sessions/:session_id/logs[/:id]`. `content` and `level` are required on create; `level` ∈ `info · error · debug · warning · verbose`, and doubles as the index filter |
+| **Logs** | Full CRUD at `/sessions/:session_id/logs[/:id]`. `content` and `level` are required on create; `level` ∈ `info · error · debug · warning · verbose`, and doubles as the index filter; `exclude_level` leaves one level out (`exclude_level=verbose` is the web UI's *Show Logs*) |
 | **Subagent transcripts** | Full CRUD at `/sessions/:session_id/subagent_transcripts[/:id]`. `agent_id` required on create; `PATCH` takes every field but `id` and `session_id`; index filters on `status` and `subagent_type`; `include_transcript=true` on show returns the full JSONL |
 | **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent · undelivered`; the read payload also carries `origin` ∈ `caller · automated_pr_merged · automated_merge_conflict · automated_recovery_nudge`, which records who wrote the row. No request can set it: every create site names its attributes literally and no `permit` list mentions it. Zimmer assigns it, and on one internal path (`SpotSessionHold`, for a refused turn it is re-queueing) derives it from the prompt body. Archiving a session is **refused** (422) while any row is `pending`, since the archive would discard it; `force: true` on the archive overrides that and retires the rows to `undelivered` — see [lifecycle](/sessions/lifecycle/). Deleting one re-numbers the positions behind it |
 | **CLIs** | `GET /clis/status` · `POST /clis/refresh` · `POST /clis/clear_cache` |
 | **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status`. `status` returns `{state, generated_at, session_count, file_size_bytes, stale, stale_reason, complete, deferred_count, incomplete_reason}` where `state` is `present`. `complete` is false while the job is still draining a backlog — a partial archive is freshly written, so `stale` is false and `complete` is the only thing that distinguishes it; a 404 carries `state` `never_built` or `missing` plus the `archive_path` it looked at, so "no archive" is a fact you can check rather than a promise to wait. The download's `X-Archive-*` headers carry the same generated-at, session count and staleness. **Not the way to search conversations** — use `/sessions/search?search_contents=true`; the zip is hundreds of megabytes and up to ten minutes stale |
-| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, `requires_oauth`, `effort_levels`, `default_effort` and `source` (`built_in` or `added`; an added model also carries `cli_listed`, `cli_version` and `cli_note`, see [Models](#models)) · each goal is `{id, name, description, checks}`, where `checks` names the [goal check](/sessions/goals/#how-a-goal-is-checked) criteria · `GET /mcp_servers` → `{name, title, scope, description, unavailable, unavailable_reason, startup_timeout_sec}` · `GET /skills` |
+| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, `requires_oauth`, `effort_levels`, `default_effort` and `source` (`built_in` or `added`; an added model also carries `cli_listed`, `cli_version` and `cli_note`, see [Models](#models)) · each goal is `{id, name, description, checks}`, where `checks` names the [goal check](/sessions/goals/#how-a-goal-is-checked) criteria · `GET /mcp_servers` → `{name, title, scope, description, unavailable, unavailable_reason, startup_timeout_sec}` · `GET /skills` · `GET /hooks` → `{id, name, qualified_name, title, description}` · `GET /plugins` → `{id, qualified_name, title, description, version, skills, mcp_servers, hooks, keywords}` |
 
 **Every artifact also says which AIR catalog it came from.** A server carries `scope`, and a root
 and a skill carry `qualified_name`, so two artifacts that a composed catalog contributes under the

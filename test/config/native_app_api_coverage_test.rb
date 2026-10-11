@@ -22,12 +22,16 @@ class NativeAppApiCoverageTest < ActiveSupport::TestCase
     end.uniq.map { |path| path.gsub(/\\\((?:[^()]|\([^()]*\))*\)/, "1") }
   end
 
+  # Every [controller, action, verb] an app path reaches. The app's source names
+  # a path, not the verb it sends, so the path passes when an action behind it
+  # under some verb accepts the token; which verb the app sends, and so whether it
+  # is the open one, is pinned by the app's own ZimmerKit tests.
   def controllers_for(path)
     METHODS.filter_map do |verb|
       route = Rails.application.routes.recognize_path(path, method: verb)
       controller = "#{route[:controller]}_controller".camelize.constantize
       # The catch-all error route answers every verb nothing else does.
-      controller if controller < Api::BaseController
+      [ controller, route[:action], verb ] if controller < Api::BaseController
     rescue ActionController::RoutingError
       nil
     end.uniq
@@ -41,15 +45,21 @@ class NativeAppApiCoverageTest < ActiveSupport::TestCase
     app_paths.each do |path|
       controllers = controllers_for(path)
       assert controllers.any?, "the iOS app calls #{path}, which no route serves"
-      controllers.each do |controller|
-        assert controller.native_app_tokens_accepted,
-          "the iOS app calls #{path}, but #{controller.name} does not declare accepts_native_app_tokens"
-      end
+      opened = controllers.select { |controller, action, _verb| controller.native_app_tokens_accepted_for?(action) }
+      assert opened.any?,
+        "the iOS app calls #{path}, but no action behind it (#{controllers.map { |c, a, v| "#{v} #{c.name}##{a}" }.join(', ')}) accepts its token"
     end
   end
 
   test "a controller the app does not call stays closed to its token" do
-    refute Api::V1::ConfigsController.native_app_tokens_accepted
     refute Api::V1::ExternalAppTriggersController.native_app_tokens_accepted
+    refute Api::V1::GateDecisionsController.native_app_tokens_accepted
+  end
+
+  test "an action its controller did not name stays closed to the token" do
+    refute Api::V1::LogsController.native_app_tokens_accepted_for?(:create)
+    refute Api::V1::TriggersController.native_app_tokens_accepted_for?(:destroy)
+    refute Api::V1::HealthController.native_app_tokens_accepted_for?(:enter_queue_recovery_mode)
+    assert Api::V1::SessionsController.native_app_tokens_accepted_for?(:create), "no `only:` opens every action"
   end
 end

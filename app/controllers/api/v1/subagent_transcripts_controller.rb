@@ -5,6 +5,9 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::SubagentTranscriptsController < Api::BaseController
+  # Zimmer's iOS app: read-only: the session page's subagent transcripts.
+  accepts_native_app_tokens only: %i[index show]
+
   before_action :set_session
   before_action :set_transcript, only: [ :show, :update, :destroy ]
 
