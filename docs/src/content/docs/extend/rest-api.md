@@ -42,6 +42,7 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | `/api/v1/triggers` | list, show, toggle, invoke — not create, edit or delete |
 | `GET /api/v1/costs`, `GET /api/v1/costs/records` | read — not `backfill` |
 | `GET /api/v1/health` | read — none of its operator actions |
+| `GET /api/v1/sessions/:id/elicitations`, `PATCH /api/v1/elicitations/:id/respond` | list a session's open prompts; answer one only on a grant that acts as you (403 otherwise) — not create or poll |
 | `GET /api/v1/configs`, `/mcp_servers`, `/skills`, `/hooks`, `/plugins`, `/model_catalog_entries` | read the catalogs |
 
 A token issued to any other OAuth client, the app's token on an action its controller does not name,
@@ -1180,8 +1181,8 @@ With an API key:
   oldest first, as `{elicitations: [{id, request_id, mode, message, requested_schema, field_order,
   tool_name, context, created_at, expires_at}]}`: what the web UI draws a banner for. `field_order`
   lists `requested_schema`'s properties in the order the banner draws them, because a JSON object's
-  key order does not survive most decoders. One past its deadline is
-  expired by the read, as a poll would, and not listed.
+  key order does not survive most decoders. One past its deadline is left out; the read does not
+  expire it, the five-minute sweep does.
 
 The [iOS app](/extend/ios-app/)'s token reaches that list and `respond`, nothing else here.
 It answers only on a connection that [acts on your behalf](/auth/mcp-authorization-server/#relay-only-or-acts-on-my-behalf);

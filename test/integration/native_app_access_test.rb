@@ -168,13 +168,14 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     headers = bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
     session = build_zimmer_session(status: :needs_input)
     open_prompt = create_elicitation(session, message: "Send the email?")
-    create_elicitation(session, message: "Too late", expires_at: 1.minute.ago)
+    too_late = create_elicitation(session, message: "Too late", expires_at: 1.minute.ago)
     create_elicitation(session, message: "Answered").update!(status: "accept", responded_at: Time.current)
 
     get "/api/v1/sessions/#{session.id}/elicitations", headers: headers
     assert_response :success
     listed = JSON.parse(response.body)["elicitations"]
     assert_equal [ open_prompt.id ], listed.map { |e| e["id"] }, "only the prompt that can still be answered"
+    assert_equal "pending", too_late.reload.status, "a read leaves expiry to the sweep"
     assert_equal %w[to confirmed], listed.first["field_order"]
     assert_equal "boolean", listed.first.dig("requested_schema", "properties", "confirmed", "type")
 
@@ -197,10 +198,25 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
     assert_equal "pending", prompt.reload.status
 
+    patch "/api/v1/elicitations/0/respond", params: { action_type: "accept" }, headers: headers
+    assert_response :forbidden, "refused before the lookup, so it cannot tell which ids exist"
+
     get "/api/v1/elicitations/#{prompt.request_id}", headers: headers
     assert_response :unauthorized
     post "/api/v1/elicitations", params: { message: "forged", _meta: { "com.pulsemcp/request-id" => "r" } }, headers: headers
     assert_response :unauthorized
+  end
+
+  test "a session's open prompts answer an API key too, and an unknown session is a 404" do
+    session = build_zimmer_session(status: :needs_input)
+    prompt = create_elicitation(session, message: "Send the email?")
+
+    get "/api/v1/sessions/#{session.id}/elicitations", headers: { "X-API-Key" => API_KEY }
+    assert_response :success
+    assert_equal [ prompt.id ], JSON.parse(response.body)["elicitations"].map { |e| e["id"] }
+
+    get "/api/v1/sessions/0/elicitations", headers: { "X-API-Key" => API_KEY }
+    assert_response :not_found
   end
 
   test "a controller the app does not use refuses its token outright" do
