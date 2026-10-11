@@ -24,8 +24,8 @@ class NativeAppApiCoverageTest < ActiveSupport::TestCase
 
   # Every [controller, action, verb] an app path reaches. The app's source names
   # a path, not the verb it sends, so the path passes when an action behind it
-  # under some verb accepts the token; which verb the app sends is pinned by its
-  # own ZimmerKit tests.
+  # under some verb accepts the token; which verb the app sends, and so whether it
+  # is the open one, is pinned by the app's own ZimmerKit tests.
   def controllers_for(path)
     METHODS.filter_map do |verb|
       route = Rails.application.routes.recognize_path(path, method: verb)
