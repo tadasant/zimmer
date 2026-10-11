@@ -15,12 +15,6 @@ class Api::V1::SessionsController < Api::BaseController
   # Zimmer's iOS app lists, reads, follows up and archives sessions here.
   accepts_native_app_tokens
 
-  # The dashboard's board views (SessionsController::VALID_VIEW_MODES), for `view=` on #index.
-  VIEW_USER = "user"
-  VIEW_LAST_TOUCHED = "last_touched"
-  VIEW_RANKED = "ranked"
-  # The dashboard caps its User view at the same number.
-  USER_VIEW_LIMIT = 500
 
   # A `place`/`precedence` pair the server cannot act on. Raised rather than
   # rendered-and-returned because the resolver's nil already means "the caller
@@ -79,7 +73,8 @@ class Api::V1::SessionsController < Api::BaseController
   #     does. "created_desc" (the default) and "last_touched" (Session::LAST_TOUCHED_ORDER)
   #     page as usual. "user" and "ranked" are Sessions::UserView — priority above spot,
   #     then precedence, then oldest — which is not one ORDER BY, so they answer the top
-  #     USER_VIEW_LIMIT rows in a single page, as the dashboard's board caps itself.
+  #     SessionsController::USER_VIEW_LIMIT rows in a single page, with `truncated` when
+  #     more matched, as the dashboard's board caps itself. Any other value is a 422.
   #   - page: Page number (default: 1)
   #   - per_page: Results per page (default: 25, max: 100)
   def index
@@ -106,10 +101,15 @@ class Api::V1::SessionsController < Api::BaseController
     scope = scope.where.not(status: :archived) unless params[:show_archived] == "true"
 
     case params[:view].to_s
-    when VIEW_LAST_TOUCHED
+    when "", SessionsController::VIEW_MODE_CREATED_DESC
+      # The default order.
+    when SessionsController::VIEW_MODE_LAST_TOUCHED
       scope = scope.reorder(Session::LAST_TOUCHED_ORDER).order(id: :desc)
-    when VIEW_USER, VIEW_RANKED
+    when SessionsController::VIEW_MODE_USER, SessionsController::VIEW_MODE_RANKED
       render_user_view(scope)
+      return
+    else
+      render_api_error("Invalid parameter", "view must be one of: #{SessionsController::VALID_VIEW_MODES.join(', ')}", status: :unprocessable_entity)
       return
     end
 
@@ -749,6 +749,9 @@ class Api::V1::SessionsController < Api::BaseController
         status: :unprocessable_entity
       )
     else
+      # A person tapping Start in the app is user activity, as the web button is
+      # (it resets the session's GitHub-poll backoff). An API key is not a person.
+      touch_user_activity(@session) if native_app_request?
       render json: { session: session_json(@session.reload), outcome: result.outcome.to_s, message: result.message }
     end
   end
@@ -1274,17 +1277,37 @@ class Api::V1::SessionsController < Api::BaseController
 
   private
 
-  # `view=user` / `view=ranked`: Sessions::UserView's rows, in one page.
+  # `view=user` / `view=ranked`: Sessions::UserView's rows, in one page. One more
+  # than the cap is fetched, so `truncated` says a row was actually cut rather than
+  # that some matching row belongs to neither class. Without the transcript column,
+  # as the dashboard reads it: the rows are listed, not opened.
   def render_user_view(scope)
-    rows = Sessions::UserView.rows(scope: scope.reorder(nil), limit: USER_VIEW_LIMIT)
-    total = scope.count
+    if pagination_params[:page] > 1
+      render_api_error("Invalid parameter", "view=#{params[:view]} answers a single page; it has no page #{pagination_params[:page]}", status: :unprocessable_entity)
+      return
+    end
+
+    limit = user_view_limit
+    fetched = Sessions::UserView.rows(scope: scope.reorder(nil).select(Session.column_names - [ "transcript" ]), limit: limit + 1)
+    rows = fetched.first(limit)
     delegates = goal_check_delegates_for(rows)
 
     render json: {
       sessions: rows.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
-      pagination: { page: 1, per_page: USER_VIEW_LIMIT, total_count: total, total_pages: 1 },
-      truncated: total > rows.size
+      pagination: { page: 1, per_page: limit, total_count: scope.count, total_pages: 1 },
+      truncated: fetched.size > limit
     }
+  end
+
+  # The dashboard's User-view cap, which MCP `get_user_view` reads too.
+  def user_view_limit
+    SessionsController::USER_VIEW_LIMIT
+  end
+
+  def touch_user_activity(session)
+    with_db_retry { session.touch_user_activity! }
+  rescue => e
+    Rails.logger.info("[api start_now] could not record user activity on session #{session.id}: #{e.class}: #{e.message}")
   end
 
   # A neighbour named by a reorder: a live spot-queue row, or nil.
