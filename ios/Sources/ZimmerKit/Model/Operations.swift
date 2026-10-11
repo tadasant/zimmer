@@ -278,7 +278,7 @@ public struct HealthReport: Hashable, Sendable {
     static func parse(_ data: Data) throws -> HealthReport {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let report = root["health_report"] as? [String: Any]
-        else { throw ZimmerError.decoding("/api/v1/health: no health_report") }
+        else { throw ZimmerError.decoding("health report: no health_report key") }
 
         func status(_ value: Any?) -> (String, String?)? {
             if let word = value as? String { return (word, nil) }
