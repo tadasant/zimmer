@@ -81,17 +81,27 @@ struct SessionListView: View {
                 FilterBar()
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             } footer: {
                 if model.board != .onBoard {
                     Label("Showing: \(model.board.label)", systemImage: "eye")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(Theme.snooze)
                         .accessibilityIdentifier("board.current")
                 }
             }
             if let error = model.error {
-                Section { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
+                Section {
+                    ErrorBanner(error: error)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                }
             }
             if model.sessions.isEmpty && !model.isLoading {
-                Section { EmptyListRow(filter: model.filter, searching: !model.searchText.isEmpty) }
+                Section {
+                    EmptyListRow(filter: model.filter, searching: !model.searchText.isEmpty)
+                        .listRowBackground(Color.clear)
+                }
             }
             ForEach(model.sessions.isEmpty ? [] : model.sections) { section in
                 Section {
@@ -100,11 +110,17 @@ struct SessionListView: View {
                     }
                     .onMove(perform: moveHandler(for: section))
                     if section.sessions.isEmpty {
-                        Text("None.").foregroundStyle(.secondary)
+                        Text("None.")
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.inkMute)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
                     }
                 } header: {
                     if let title = section.title {
-                        Text(title).accessibilityIdentifier("section.\(title)")
+                        Text(title)
+                            .themeLabel()
+                            .accessibilityIdentifier("section.\(title)")
                     }
                 }
             }
@@ -115,6 +131,10 @@ struct SessionListView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
+        .themeGround()
+        // Rows arriving, leaving and reordering slide rather than jump.
+        .animation(.snappy(duration: 0.3), value: model.sessions.map(\.id))
         .navigationTitle("Sessions")
         .navigationBarTitleDisplayMode(.large)
     }
@@ -157,7 +177,7 @@ struct SessionListView: View {
             .task(id: SearchKey(text: model.searchText, scope: model.searchScope)) { await search() }
             .refreshable { await model.refresh() }
             .overlay {
-                if model.isLoading && model.sessions.isEmpty { ProgressView() }
+                if model.isLoading && model.sessions.isEmpty { LoadingState(text: "Loading sessions…") }
             }
             .overlay(alignment: .bottom) { Toast(text: $model.notice) }
     }
@@ -197,7 +217,7 @@ struct SessionListView: View {
             if isSelecting {
                 Text(selectionLabel)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.inkSoft)
                 Spacer()
                 Button(role: .destructive) { confirmingBulkTrash = true } label: {
                     Label("Trash", systemImage: "trash")
@@ -280,6 +300,7 @@ private struct SwipeableSessionRow: View {
         NavigationLink(value: session.id) {
             SessionRow(session: session)
         }
+        .themeCardRow()
         .accessibilityIdentifier("session.row.\(session.id)")
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
@@ -287,7 +308,7 @@ private struct SwipeableSessionRow: View {
             } label: {
                 Label(session.isFavorite ? "Unfavorite" : "Favorite", systemImage: session.isFavorite ? "star.slash" : "star.fill")
             }
-            .tint(.yellow)
+            .tint(Theme.gold)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if session.status == .archived {
@@ -296,27 +317,27 @@ private struct SwipeableSessionRow: View {
                 } label: {
                     Label("Restore", systemImage: "arrow.uturn.backward")
                 }
-                .tint(.green)
+                .tint(Theme.success)
             } else {
                 // Not `role: .destructive`: that animates the row away on the tap, before
                 // the confirmation has been answered.
                 Button { trashing = session } label: {
                     Label("Trash", systemImage: "trash")
                 }
-                .tint(.red)
+                .tint(Theme.danger)
             }
             if session.boardVisibility == .visible {
                 Button { snoozing = session } label: {
                     Label("Snooze", systemImage: "moon.zzz")
                 }
-                .tint(.indigo)
+                .tint(Theme.snooze)
             } else {
                 Button {
                     Task { await model.perform("Back on the board", on: session.id) { try await $0.setVisibility(session.id, .visible) } }
                 } label: {
                     Label("Put back", systemImage: "eye")
                 }
-                .tint(.indigo)
+                .tint(Theme.snooze)
             }
         }
         .contextMenu { SessionContextMenu(session: session, trashing: $trashing) }
@@ -424,12 +445,7 @@ private struct FilterBar: View {
                         Haptics.selection()
                         Task { await model.select(filter) }
                     } label: {
-                        Text(filter.label)
-                            .font(.subheadline.weight(selected ? .semibold : .regular))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(selected ? Color.accentColor : Color(.secondarySystemBackground), in: Capsule())
-                            .foregroundStyle(selected ? Color.white : Color.primary)
+                        Pill(selected: selected) { Text(filter.label) }
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("filter.\(filter.rawValue)")
@@ -437,6 +453,7 @@ private struct FilterBar: View {
                 }
             }
             .padding(.vertical, 4)
+            .animation(.snappy(duration: 0.25), value: model.filter)
         }
     }
 }
@@ -447,32 +464,38 @@ struct SessionRow: View {
     let session: SessionSummary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(session.displayTitle)
-                    .font(.body.weight(session.status == .needsInput ? .semibold : .regular))
+                    .font(Theme.headline(emphasized: session.status == .needsInput))
+                    .foregroundStyle(Theme.ink)
                     .lineLimit(2)
                 Spacer(minLength: 4)
                 if session.isFavorite {
                     Image(systemName: "star.fill")
                         .font(.caption)
-                        .foregroundStyle(.yellow)
+                        .foregroundStyle(Theme.gold)
                         .accessibilityLabel("Favorite")
                 }
             }
             HStack(spacing: 6) {
                 StatusBadge(status: session.status, compact: true)
                 if session.isPriority {
-                    Text("Priority").foregroundStyle(.red)
+                    Text("Priority")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.danger)
                 }
-                // Verbatim: a session id is an identifier, not a quantity to group.
+                // Verbatim: a session id is an identifier, not a quantity to group. Monospaced,
+                // as the web UI's `font-mono` ids are.
                 Text(verbatim: "#\(session.id)")
+                    .font(Theme.mono)
+                    .foregroundStyle(Theme.inkMute)
                 if let date = session.updatedAt ?? session.createdAt {
-                    Text("·")
+                    Text("·").foregroundStyle(Theme.inkMute)
                     Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
                 }
                 if let pr = session.pullRequests.last {
-                    Text("·")
+                    Text("·").foregroundStyle(Theme.inkMute)
                     Image(systemName: PullRequestChip.symbol(for: pr.state))
                         .foregroundStyle(PullRequestChip.color(for: pr.state))
                     Text(pr.label)
@@ -481,16 +504,15 @@ struct SessionRow: View {
                     Image(systemName: "note.text").accessibilityLabel("Has notes")
                 }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(Theme.inkSoft)
             .lineLimit(1)
             if session.boardVisibility != .visible {
                 VisibilityLabel(session: session)
-                    .font(.caption)
-                    .foregroundStyle(.indigo)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.snooze)
             }
         }
-        .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
     }
 }
@@ -500,21 +522,23 @@ private struct EmptyListRow: View {
     let searching: Bool
 
     var body: some View {
-        VStack(spacing: 6) {
-            Image(systemName: searching ? "magnifyingglass" : (filter == .needsInput ? "checkmark.circle" : "tray"))
-                .font(.title2)
-                .foregroundStyle(.secondary)
-            Text(message)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
+        EmptyState(
+            title: message,
+            symbol: searching ? "magnifyingglass" : (filter == .needsInput ? "checkmark" : "tray"),
+            message: detail
+        )
+        .accessibilityElement(children: .combine)
         .accessibilityIdentifier("sessions.empty")
     }
 
     private var message: String {
         if searching { return "No sessions match." }
         return filter == .needsInput ? "Nothing needs you right now." : "No \(filter.label.lowercased()) sessions."
+    }
+
+    private var detail: String? {
+        if searching { return "Try other words, or search transcripts." }
+        return filter == .needsInput ? "Sessions waiting on you land here." : nil
     }
 }
 
@@ -527,9 +551,11 @@ struct Toast: View {
         if let text {
             Text(text)
                 .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(.thinMaterial, in: Capsule())
+                .foregroundStyle(Theme.ink)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 11)
+                .background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(Theme.rule, lineWidth: 1))
                 .padding(.bottom, 12)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .accessibilityIdentifier(identifier)

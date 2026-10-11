@@ -10,10 +10,15 @@ struct ZimmerApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
+    init() {
+        Theme.applyBarAppearance()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(model)
+                .tint(Theme.accent)
                 .task {
                     PushCoordinator.shared.model = model
                     await model.start()

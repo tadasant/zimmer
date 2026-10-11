@@ -46,6 +46,26 @@ ios/
   field beyond `id` and `status` is optional and unknown statuses decode as `.unknown`, because
   TestFlight ships minutes after a merge and the server may be older or newer than the app.
 
+## How it looks
+
+Every colour, radius, type role and shared component is in `App/Zimmer/Support/Theme.swift`, and
+no screen names a colour of its own. It is shaped like Motet's `Theme`: a ground, a surface, ink at
+three strengths, hairlines instead of shadows, small uppercase tracked labels, and digits that do
+not jitter. The colours come from the Zimmer web UI instead of Motet's:
+
+- **Light** is the web UI's own Tailwind palette: gray-50 page, white cards, gray-200 rules,
+  gray-900 ink, indigo-600 accent (also `AccentColor` in the asset catalog).
+- **Dark** is drawn on the PWA manifest's navy (`#000e2b` ground, `#031942` cards), because the
+  web UI has no dark mode to copy.
+- **Status colours** are `SessionsHelper#status_badge_classes`: the `bg-*-100 text-*-800` pastel
+  in light, and the same hue on a deep wash in dark.
+- **The mark's gold** is a signature used sparingly: the primary button's foot, empty-state rings,
+  the favourite star, and the build strip. It is never used for text.
+
+The system font is kept, as the web UI's `font-sans` is on a phone, and the bars keep the system
+material. The app stays native in the places where iOS's own chrome is the familiar thing.
+`ui-test` photographs every main screen in both appearances.
+
 ## Running the checks
 
 Every check is a script; every CI step is one line that calls it. Each script **skips** on a
