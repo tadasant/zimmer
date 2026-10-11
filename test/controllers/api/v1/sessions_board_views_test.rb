@@ -55,6 +55,44 @@ class Api::V1::SessionsBoardViewsTest < ActionDispatch::IntegrationTest
     assert_equal false, json["truncated"]
   end
 
+  test "view=user says when the cap cut rows, and only then" do
+    Api::V1::SessionsController.any_instance.stubs(:user_view_limit).returns(2)
+    3.times { |i| make("s#{i}", created: i.hours.ago, precedence: i) }
+
+    get "/api/v1/sessions", params: { view: "user" }, headers: @headers
+    json = JSON.parse(response.body)
+    assert_equal 2, json["sessions"].size
+    assert_equal true, json["truncated"]
+    assert_equal 3, json["pagination"]["total_count"]
+  end
+
+  test "an unknown view, or a second page of a one-page view, is refused with the reason" do
+    get "/api/v1/sessions", params: { view: "lasttouched" }, headers: @headers
+    assert_response :unprocessable_entity
+    assert_match(/last_touched/, JSON.parse(response.body)["message"])
+
+    get "/api/v1/sessions", params: { view: "ranked", page: 2 }, headers: @headers
+    assert_response :unprocessable_entity
+    assert_match(/single page/, JSON.parse(response.body)["message"])
+  end
+
+  test "view=last_touched breaks a tie on the newer id" do
+    at = 1.hour.ago
+    older = make("a", created: at)
+    newer = make("b", created: at)
+
+    assert_equal [ newer.id, older.id ], ids_for("last_touched")
+  end
+
+  test "view=user honours board visibility" do
+    shown = make("shown", created: 1.hour.ago)
+    hidden = make("hidden", created: 2.hours.ago)
+    hidden.update!(visibility: "hidden")
+
+    get "/api/v1/sessions", params: { view: "user", visibility: "on_board" }, headers: @headers
+    assert_equal [ shown.id ], JSON.parse(response.body)["sessions"].map { |s| s["id"] }
+  end
+
   test "view=user honours the filters the index already applies" do
     make("waiting", created: 1.hour.ago, status: :waiting)
     asked = make("asked", created: 2.hours.ago)
@@ -98,6 +136,17 @@ class Api::V1::SessionsBoardViewsTest < ActionDispatch::IntegrationTest
     assert_operator precedence, :>, 10
     assert_includes json["changes"].map { |c| c["id"] }, moved.id
     assert_equal [ top.id, moved.id, bottom.id ], ids_for("ranked")
+  end
+
+  test "reorder_precedence ignores a neighbour that is not in the spot queue" do
+    priority = make("priority", created: 3.hours.ago, scheduling_class: "priority", precedence: 50)
+    below = make("below", created: 2.hours.ago, precedence: 10)
+    moved = make("moved", created: 1.hour.ago, precedence: 0)
+
+    patch "/api/v1/sessions/#{moved.id}/reorder_precedence", params: { above_id: priority.id, below_id: below.id }, headers: @headers
+
+    assert_response :success, response.body
+    assert_operator JSON.parse(response.body)["session"]["precedence"], :>, 10, "placed above its one real neighbour"
   end
 
   test "reorder_precedence answers a refusal with the reason" do
