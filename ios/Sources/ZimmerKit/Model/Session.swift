@@ -320,4 +320,6 @@ struct SessionListResponse: Decodable {
     struct Pagination: Decodable { let total_pages: Int? }
     let sessions: [SessionSummary]
     let pagination: Pagination?
+    /// `view=user` / `view=ranked`: more matched than the one page holds.
+    let truncated: Bool?
 }

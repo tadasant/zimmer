@@ -390,6 +390,13 @@ struct SessionDetailView: View {
                         Label("Pause Session", systemImage: "pause.circle")
                     }
                 }
+                if session.status == .waiting {
+                    Button {
+                        Task { await model.run { try await $0.startNow(session.id) } }
+                    } label: {
+                        Label("Start Now", systemImage: "play.circle")
+                    }
+                }
                 if session.status == .failed || session.status == .needsInput {
                     Button {
                         Task { await model.apply("Restarted") { try await $0.restart(session.id) } }

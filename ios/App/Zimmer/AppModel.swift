@@ -128,7 +128,7 @@ final class AppModel: ObservableObject {
         do {
             let result: SessionSearchResult
             if query.isEmpty {
-                result = try await connection.api.sessions(requested, board: board)
+                result = try await connection.api.sessions(requested, board: board, view: view)
             } else {
                 result = try await connection.api.search(query, contents: scope == .transcripts, filter: requested, board: board)
             }
@@ -211,6 +211,31 @@ final class AppModel: ObservableObject {
             handle(error)
             Haptics.failure()
         }
+    }
+
+    /// The Ranked view's *Start now*.
+    func startNow(_ id: Int) async {
+        do {
+            notice = try await connection.api.startNow(id)
+            Haptics.success()
+            await refresh()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
+    /// The Ranked view's drag-and-drop, then the queue as the server now ranks it.
+    func reorder(_ id: Int, above: Int?, below: Int?) async {
+        do {
+            _ = try await connection.api.reorder(id, above: above, below: below)
+            notice = "Moved in the spot queue"
+            Haptics.success()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+        await refresh()
     }
 
     /// The web UI's page for a session, for what the app does not do itself.
