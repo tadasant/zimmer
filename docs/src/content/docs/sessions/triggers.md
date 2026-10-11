@@ -1251,12 +1251,17 @@ stale record — losing that race means the fleet reached its ceiling while the 
 which is exactly when it must not fire. The `UPDATE` deliberately leaves `fleet_idle_since` where it
 is: the stretch did not end because the event fired.
 
+One more asymmetry. An undelivered `quota_available` fire **re-arms** its edge, because the sessions
+it exists to wake are still parked and the next sweep should try again. An undelivered
+`no_sessions_in_progress` fire does not: nothing is waiting on it, and re-arming would produce one
+fire per tick for as long as the quiet lasted — the exact loop the cooldown exists to prevent.
+
 ##### Why an unchanged backlog backs off
 
 The cooldown alone still lets an idle deployment poll itself. On a fleet that is quiet *because* the
 backlog is empty, every fire spawns a top-up session that finds nothing to pull and archives. That
 session never takes the fleet to its ceiling, so the stretch runs on and the next fire comes one
-cooldown later. With the cooldown set to 10 minutes, that came to about 130 empty top-ups a day.
+cooldown later: at a 10-minute cooldown, 144 empty top-ups a day.
 
 So a fire past the cooldown also asks whether the [work backlog](/operate/work-backlog/) has **news**
 since the last fire. Either of these counts:
@@ -1265,26 +1270,23 @@ since the last fire. Either of these counts:
   is the arrival;
 - items still queued **and** an item started since the last fire. The last top-up was productive and
   the fleet ran out of room before the queue ran out of items, so the next quiet stretch should finish
-  draining it.
+  draining it;
+- a queued item whose hold lapsed since the last fire, which the last top-up could not pull and the
+  next one can.
 
 With no news, the next fire waits out `fleet_idle_quiet_backlog_interval_minutes` instead: four hours
 by default, so **at most six top-ups a day** on an idle fleet with an empty backlog. A new item lifts
 that floor at the next check past the cooldown, so the cooldown is how quickly new work is picked up,
 and the quiet interval is how often an unchanged backlog gets checked again. Queued items with neither
-signal are ones the last top-up looked at and left (held, or declined). Firing on them every cooldown
+signal are ones the last top-up looked at and left (declined, or still held). Firing on them every cooldown
 would be the same loop with a non-empty queue. The quiet interval is the safety net for what this
-reading cannot see: a hold lapsing, or a listening trigger that does more than pull.
+reading cannot see, such as a listening trigger that finds new work for the backlog itself.
 
 Like the cooldown, this reads only things the event's own session cannot fake: a top-up that pulls
 nothing writes nothing to the backlog. An unreadable backlog counts as no news, so a broken read
 waits for the quiet interval. It neither silences top-up nor lets it run at the cooldown.
 
 `/inference` and `get_spot_policy` report this as the `backlog_quiet` state, with the time left.
-
-One more asymmetry. An undelivered `quota_available` fire **re-arms** its edge, because the sessions
-it exists to wake are still parked and the next sweep should try again. An undelivered
-`no_sessions_in_progress` fire does not: nothing is waiting on it, and re-arming would produce one
-fire per tick for as long as the quiet lasted — the exact loop the cooldown exists to prevent.
 
 ### `github_label`
 

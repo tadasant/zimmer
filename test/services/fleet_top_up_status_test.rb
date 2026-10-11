@@ -215,6 +215,21 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
     assert_equal "at most 6 top-ups a day", s.quiet_cadence_phrase
   end
 
+  # The first cooldown after a quiet fire: the cooldown is unspent too, but the
+  # quiet interval ends later, so it is the clock the card has to name.
+  test "inside the cooldown with nothing new on the backlog, the quiet interval is the state" do
+    WorkBacklogItem.delete_all
+    now = Time.current
+    @setting.update!(fleet_idle_since: now - 30.minutes, fleet_idle_event_fired_at: now - 3.minutes,
+                     fleet_idle_min_fire_interval_minutes: 10,
+                     fleet_idle_quiet_backlog_interval_minutes: 240)
+    s = status(running: 0, now: now)
+
+    assert_equal :backlog_quiet, s.state
+    assert_equal (now + 237.minutes).to_i, s.next_fire_at.to_i
+    assert_no_match(/cooldown/, s.sentence)
+  end
+
   test "an item queued since the last fire lifts the quiet interval" do
     WorkBacklogItem.delete_all
     now = Time.current
@@ -238,7 +253,7 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
 
     assert_equal :inside_threshold, s.state
     assert_equal (now + 150.minutes).to_i, s.next_fire_at.to_i
-    assert_match(/quiet interval holds the next one/, s.sentence)
+    assert_match(/240 minutes quiet interval has about 3 hours left/, s.sentence)
   end
 
   test "max_fires_per_day is the cooldown expressed the way an operator retunes it" do

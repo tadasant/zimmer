@@ -3,8 +3,8 @@
 # The fleet top-up policy: how few sessions the fleet must be running to count as
 # idle enough, how long it must stay there, and how often the
 # `no_sessions_in_progress` event may fire at most — with work on the backlog, and
-# without. FleetIdleMonitor reads all four off the settings row on every sweep, so a change here takes effect at the
-# next minute without a deploy.
+# without. FleetIdleMonitor reads all four off the settings row on every sweep,
+# so a change here takes effect at the next minute without a deploy.
 #
 # The card lives on /inference for the reason the spot gate card does: the
 # population it counts — sessions a worker is running — is the one that page already

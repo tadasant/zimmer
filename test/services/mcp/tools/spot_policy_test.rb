@@ -649,10 +649,16 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
     assert_match(/State:\*\* `clock_not_started`/, get_policy)
 
+    # An empty backlog since that fire: the longer quiet interval is the clock.
+    WorkBacklogItem.delete_all
     AppSetting.editable.update!(fleet_idle_since: 30.minutes.ago, fleet_idle_event_fired_at: 25.minutes.ago)
     policy = get_policy
-    assert_match(/State:\*\* `cooling_down`/, policy)
+    assert_match(/State:\*\* `backlog_quiet`/, policy)
     assert_match(/under its ceiling of 100 for 30 minutes/, policy)
+
+    # With the quiet interval at the floor, the cooldown is what is left.
+    AppSetting.editable.update!(fleet_idle_quiet_backlog_interval_minutes: 1)
+    assert_match(/State:\*\* `cooling_down`/, get_policy)
 
     AppSetting.editable.update!(fleet_idle_since: 2.minutes.ago, fleet_idle_event_fired_at: nil)
     assert_match(/State:\*\* `inside_threshold`/, get_policy)
