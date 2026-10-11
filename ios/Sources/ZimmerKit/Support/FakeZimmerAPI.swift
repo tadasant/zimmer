@@ -15,6 +15,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var conversations: [Int: [ConversationMessage]]
     private var nextID: Int
     private var queues: [Int: [QueuedMessage]] = FakeZimmerAPI.sampleQueues()
+    /// 1035 queued a message to 1031, so it is drawn as 1031's additional senior.
+    private var uncles: [Int: [Int]] = [1031: [1035]]
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
 
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date()) {
@@ -38,7 +40,16 @@ public actor FakeZimmerAPI: ZimmerAPI {
     }
 
     public func session(_ id: Int) async throws -> SessionDetail {
-        SessionDetail(session: try find(id), statusSummary: summaries[id], hierarchy: Self.sampleHierarchy(for: id, in: all))
+        var hierarchy = Self.sampleHierarchy(for: id, in: all)
+        let seniors = uncles
+        if let nodes = hierarchy?.nodes {
+            hierarchy?.nodes = nodes.map { node in
+                var node = node
+                node.uncles = seniors[node.id] ?? []
+                return node
+            }
+        }
+        return SessionDetail(session: try find(id), statusSummary: summaries[id], hierarchy: hierarchy)
     }
 
     public func conversation(_ id: Int) async throws -> Conversation {
@@ -462,6 +473,14 @@ extension FakeZimmerAPI {
             ConversationMessage(id: 1, role: .assistant, content: "Using tool: Grep", hasToolUse: true),
             ConversationMessage(id: 2, role: .assistant, content: "Scenes are declared in Info.plist under UIApplicationSceneManifest; ZimmerApp.swift has the one WindowGroup."),
         ]
+    }
+
+    public func detachUncle(_ junior: Int, uncle: Int) async throws {
+        _ = try find(junior)
+        guard uncles[junior]?.contains(uncle) == true else {
+            throw ZimmerError.http(status: 404, message: "Session \(uncle) is not a senior of session \(junior)")
+        }
+        uncles[junior]?.removeAll { $0 == uncle }
     }
 
     private func queued(_ id: Int) throws -> [QueuedMessage] {

@@ -156,6 +156,18 @@ extension SessionDetailModel {
         await changeQueue("Queued message updated") { _ = try await $0.editQueued(self.id, message: message.id, content: content) }
     }
 
+    /// Remove an "also senior" edge from the hierarchy, then show the hierarchy as it now is.
+    func detachUncle(_ junior: Int, uncle: Int) async {
+        do {
+            try await api.detachUncle(junior, uncle: uncle)
+            notice = "Removed #\(uncle) as a senior of #\(junior)"
+            Haptics.success()
+            await load()
+        } catch {
+            fail(error)
+        }
+    }
+
     /// One change, then the queue as the server now has it.
     @discardableResult
     private func changeQueue(_ done: String, _ change: (ZimmerAPI) async throws -> Void) async -> Bool {
