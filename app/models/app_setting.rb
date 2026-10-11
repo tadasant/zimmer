@@ -113,6 +113,13 @@ class AppSetting < ApplicationRecord
   # "Why the cadence is the cooldown alone".
   DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES = 60
 
+  # The longer floor that replaces the cooldown while the work backlog has
+  # nothing new to hand out: no item queued since the last fire, and nothing
+  # started since it either. 240 minutes is at most six top-ups a day on an empty
+  # backlog, against the cooldown's 24. See FleetIdleMonitor, "Why an unchanged
+  # backlog backs off".
+  DEFAULT_FLEET_IDLE_QUIET_BACKLOG_INTERVAL_MINUTES = 240
+
   # The knobs an OPERATOR sets: the spot gate, the concurrency limit, the backlog
   # top-up thresholds and the genesis class overrides. Every one of them is a
   # fleet-scheduling decision somebody made deliberately, and every change to one
@@ -136,6 +143,7 @@ class AppSetting < ApplicationRecord
     fleet_idle_max_sessions
     fleet_idle_threshold_minutes
     fleet_idle_min_fire_interval_minutes
+    fleet_idle_quiet_backlog_interval_minutes
     genesis_class_overrides
   ].freeze
 
@@ -237,6 +245,10 @@ class AppSetting < ApplicationRecord
       DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES
     end
 
+    def fleet_idle_quiet_backlog_interval_minutes
+      DEFAULT_FLEET_IDLE_QUIET_BACKLOG_INTERVAL_MINUTES
+    end
+
     # No row means no observation, which is what NULL means on a real row too:
     # the fleet was at or over its ceiling when it was last looked at, and nothing
     # has fired. FleetTopUpStatus reads both unconditionally, so a DB-less boot
@@ -302,6 +314,10 @@ class AppSetting < ApplicationRecord
   validates :fleet_idle_threshold_minutes,
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 1440 }
   validates :fleet_idle_min_fire_interval_minutes,
+    numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 10_080 }
+  # Same week-long ceiling as the cooldown. A value below the cooldown is legal
+  # and simply never binds: the cooldown is the floor either way.
+  validates :fleet_idle_quiet_backlog_interval_minutes,
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 10_080 }
   validate :genesis_class_overrides_well_formed
 

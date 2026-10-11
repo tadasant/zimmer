@@ -2,8 +2,8 @@
 
 # The fleet top-up policy: how few sessions the fleet must be running to count as
 # idle enough, how long it must stay there, and how often the
-# `no_sessions_in_progress` event may fire at most. FleetIdleMonitor reads all
-# three off the settings row on every sweep, so a change here takes effect at the
+# `no_sessions_in_progress` event may fire at most — with work on the backlog, and
+# without. FleetIdleMonitor reads all four off the settings row on every sweep, so a change here takes effect at the
 # next minute without a deploy.
 #
 # The card lives on /inference for the reason the spot gate card does: the
@@ -15,13 +15,14 @@
 # PATCH that saved both would let a validation failure on one card reject a change
 # made on the other.
 class FleetTopUpPoliciesController < ApplicationController
-  # The three numbers this card writes. One list, for the same reason
+  # The four numbers this card writes. One list, for the same reason
   # SpotPoliciesController keeps one: the audit-coverage test reads it to check
   # that everything reachable from this form is recorded when it moves.
   FIELDS = %i[
     fleet_idle_max_sessions
     fleet_idle_threshold_minutes
     fleet_idle_min_fire_interval_minutes
+    fleet_idle_quiet_backlog_interval_minutes
   ].freeze
 
   # Named on the audit line, so a change made here is distinguishable from one an

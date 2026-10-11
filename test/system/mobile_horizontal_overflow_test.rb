@@ -1344,8 +1344,11 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
                                 spot_reserve_weekly_pct: 20,
                                 spot_max_concurrent_sessions: RunningTurns.worker_slots + 2,
                                 fleet_idle_max_sessions: RunningTurns.worker_slots + 3,
-                                fleet_idle_since: 10.minutes.ago,
-                                fleet_idle_event_fired_at: 20.minutes.ago)
+                                fleet_idle_since: 100.minutes.ago,
+                                # Past the cooldown with an empty backlog: the `backlog_quiet`
+                                # state, whose sentence is the longest the status box prints.
+                                fleet_idle_event_fired_at: 90.minutes.ago)
+    WorkBacklogItem.delete_all
     3.times do |i|
       account = ClaudeAccount.create!(
         email: "a-rather-long-account-address-#{i}@subdomain.example.com",
@@ -1362,9 +1365,11 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     visit inference_path
     assert_selector "h1"
     assert_selector "#spot-gate-pool-note"
-    # The top-up card's three-up knob row and four-up reading row are the two
+    # The top-up card's four-up knob row and four-up reading row are the two
     # blocks on it that have to collapse below `sm`.
+    assert_selector "#app_setting_fleet_idle_quiet_backlog_interval_minutes"
     assert_selector "#fleet-top-up-status"
+    assert_selector "#fleet-top-up-sentence", text: /nothing new since the last fire/
     assert_selector "#fleet-top-up-next-fire"
     # The clock cell, which carries a two-line explanation under its value — the
     # tallest and narrowest cell in the four-up reading row.

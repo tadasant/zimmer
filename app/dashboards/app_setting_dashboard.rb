@@ -45,6 +45,7 @@ class AppSettingDashboard < Administrate::BaseDashboard
     fleet_idle_threshold_minutes: Field::Number,
     fleet_idle_max_sessions: Field::Number,
     fleet_idle_min_fire_interval_minutes: Field::Number,
+    fleet_idle_quiet_backlog_interval_minutes: Field::Number,
     fleet_idle_since: Field::DateTime,
     fleet_idle_event_fired_at: Field::DateTime,
     created_at: Field::DateTime,

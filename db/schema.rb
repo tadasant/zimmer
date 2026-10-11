@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_11_090000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_11_230000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -139,6 +139,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_11_090000) do
     t.datetime "fleet_idle_event_fired_at"
     t.integer "fleet_idle_max_sessions", default: 3, null: false
     t.integer "fleet_idle_min_fire_interval_minutes", default: 60, null: false
+    t.integer "fleet_idle_quiet_backlog_interval_minutes", default: 240, null: false
     t.datetime "fleet_idle_since"
     t.integer "fleet_idle_threshold_minutes", default: 5, null: false
     t.jsonb "genesis_class_overrides", default: {}, null: false
