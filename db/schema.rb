@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_10_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_11_090000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -65,6 +65,36 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_10_010000) do
     t.datetime "updated_at", null: false
     t.index ["comment_type", "comment_id"], name: "index_agent_posted_github_comments_on_type_and_comment_id", unique: true
     t.index ["session_id"], name: "index_agent_posted_github_comments_on_session_id"
+  end
+
+  create_table "agent_root_record_counters", force: :cascade do |t|
+    t.string "collection", null: false
+    t.datetime "created_at", null: false
+    t.bigint "data_bytes", default: 0, null: false
+    t.datetime "last_written_at"
+    t.string "namespace", null: false
+    t.integer "records_count", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.datetime "window_started_at"
+    t.integer "window_writes", default: 0, null: false
+    t.index ["namespace", "collection"], name: "index_agent_root_record_counters_on_namespace_collection", unique: true
+  end
+
+  create_table "agent_root_records", force: :cascade do |t|
+    t.string "collection", null: false
+    t.datetime "created_at", null: false
+    t.jsonb "data", default: {}, null: false
+    t.integer "data_bytes", default: 0, null: false
+    t.datetime "expires_at"
+    t.string "key"
+    t.string "namespace", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "writing_session_id"
+    t.index ["data"], name: "index_agent_root_records_on_data", opclass: :jsonb_path_ops, using: :gin
+    t.index ["expires_at", "id"], name: "index_agent_root_records_on_expiry", where: "(expires_at IS NOT NULL)"
+    t.index ["namespace", "collection", "created_at"], name: "index_agent_root_records_on_namespace_collection_created"
+    t.index ["namespace", "collection", "key"], name: "index_agent_root_records_on_namespace_collection_key", unique: true, where: "(key IS NOT NULL)"
+    t.index ["writing_session_id"], name: "index_agent_root_records_on_writing_session_id"
   end
 
   create_table "api_keys", force: :cascade do |t|
@@ -1178,6 +1208,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_10_010000) do
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_from_id", on_delete: :nullify
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_to_id", on_delete: :nullify
   add_foreign_key "agent_posted_github_comments", "sessions", on_delete: :nullify
+  add_foreign_key "agent_root_records", "sessions", column: "writing_session_id", on_delete: :nullify
   add_foreign_key "api_keys", "external_apps", on_delete: :cascade
   add_foreign_key "apns_devices", "oauth_server_grants", on_delete: :cascade
   add_foreign_key "category_feedback_events", "categories", column: "auto_category_id", on_delete: :nullify

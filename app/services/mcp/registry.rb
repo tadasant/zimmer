@@ -15,6 +15,8 @@ module Mcp
   #   settings       → read and change the Settings page's global defaults.
   #                    OPT-IN, like gate_decisions
   #   external_apps  → register Zimmer plugins and mint their keys. OPT-IN
+  #   root_data      → the calling session's agent root's persistent data
+  #                    store. OPT-IN
   #   self_session   → the curated set auto-injected into every session, so a
   #                    session can manage itself (notes/title/heartbeat/archive),
   #                    notify its user, and schedule its own wake-ups
@@ -36,7 +38,7 @@ module Mcp
     # included — but deliberately outside the default-everything set, the way
     # COMPOSITE_GROUPS is. A group lands here when the cost of every unscoped
     # connection carrying its write tools outweighs the convenience.
-    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings external_apps].freeze
+    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings external_apps root_data].freeze
 
     COMPOSITE_GROUPS = %w[self_session].freeze
 
@@ -265,7 +267,25 @@ module Mcp
       # `invoke_trigger` are served only on `POST /mcp/external_app`, from
       # Mcp::ExternalAppContext, and no group reaches them.
       Definition.new(klass: "Mcp::Tools::SearchExternalApps", group: "external_apps", write: false),
-      Definition.new(klass: "Mcp::Tools::ActionExternalApp", group: "external_apps", write: true)
+      Definition.new(klass: "Mcp::Tools::ActionExternalApp", group: "external_apps", write: true),
+
+      # Root data — a per-agent-root persistent document store (RootData::Store).
+      #
+      # OPT-IN because a root that stores nothing should not be offered six
+      # tools for it, and because a write here outlives the session that made
+      # it. `zimmer-root-data` / `zimmer-root-data-readonly` (mcp.json) are the
+      # catalog entries; a root attaches one when it declares `data_collections`.
+      #
+      # No tool takes a namespace. It is resolved from the connection's
+      # `session_id` (RootData::Namespace), which — like every scope on this
+      # endpoint — is a scoping boundary and not an authorization one: the fleet
+      # shares one API key. Every write stamps `writing_session_id`.
+      Definition.new(klass: "Mcp::Tools::ListRootCollections", group: "root_data", write: false),
+      Definition.new(klass: "Mcp::Tools::SearchRootRecords", group: "root_data", write: false),
+      Definition.new(klass: "Mcp::Tools::GetRootRecord", group: "root_data", write: false),
+      Definition.new(klass: "Mcp::Tools::PutRootRecord", group: "root_data", write: true),
+      Definition.new(klass: "Mcp::Tools::AppendRootRecord", group: "root_data", write: true),
+      Definition.new(klass: "Mcp::Tools::DeleteRootRecord", group: "root_data", write: true)
     ].freeze
 
     module_function
