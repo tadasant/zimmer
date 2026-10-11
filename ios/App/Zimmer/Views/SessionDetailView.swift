@@ -223,7 +223,7 @@ struct SessionDetailView: View {
                         }
                     }
                 } else if model.isLoading {
-                    ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+                    LoadingState(text: "Loading session…").padding(.top, 60)
                 }
                 if let error = model.error { ErrorBanner(error: error) }
                 if let conversation = model.conversation {
@@ -234,9 +234,11 @@ struct SessionDetailView: View {
                     QueueCard(model: model)
                 }
             }
-            .padding()
+            .padding(.horizontal, Theme.margin)
+            .padding(.vertical, 12)
+            .animation(.snappy(duration: 0.3), value: model.detail == nil)
         }
-        .background(Color(.systemGroupedBackground))
+        .background(Theme.ground)
         .navigationTitle(Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
@@ -308,7 +310,8 @@ struct SessionDetailView: View {
                     Task { await model.apply(session.isFavorite ? "Removed from favorites" : "Added to favorites") { try await $0.toggleFavorite(session.id) } }
                 } label: {
                     Image(systemName: session.isFavorite ? "star.fill" : "star")
-                        .foregroundStyle(session.isFavorite ? Color.yellow : Color.accentColor)
+                        .foregroundStyle(session.isFavorite ? Theme.gold : Theme.accent)
+                        .contentTransition(.symbolEffect(.replace))
                 }
                 .accessibilityLabel(session.isFavorite ? "Remove from Favorites" : "Add to Favorites")
                 .accessibilityIdentifier("detail.favorite")
@@ -366,29 +369,32 @@ struct SessionDetailView: View {
     // MARK: - Header
 
     private func header(_ detail: SessionDetail) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 StatusBadge(status: detail.session.status)
                     .accessibilityIdentifier("detail.status")
                 if detail.session.isPriority {
                     Text("Priority")
                         .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .foregroundStyle(.red)
-                        .background(Color.red.opacity(0.12), in: Capsule())
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .foregroundStyle(Theme.danger)
+                        .background(Theme.danger.opacity(0.12), in: Capsule())
                 }
                 VisibilityLabel(session: detail.session)
-                    .font(.caption)
-                    .foregroundStyle(.indigo)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.snooze)
             }
             Text(detail.session.displayTitle)
-                .font(.title2.weight(.bold))
+                .font(Theme.title())
+                .foregroundStyle(Theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("detail.title")
             metadataLine(detail.session)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Theme.mono)
+                .foregroundStyle(Theme.inkSoft)
         }
+        .padding(.top, 4)
     }
 
     /// Runtime, model, effort, root and age — the web UI's metadata block, on one line.
@@ -570,23 +576,24 @@ struct SessionDetailView: View {
     // MARK: - Conversation
 
     private func conversationSection(_ conversation: Conversation) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Conversation").font(.headline)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Conversation").themeLabel()
                 Spacer()
                 if conversation.messages.contains(where: \.isToolTraffic) {
                     Toggle("Tool calls", isOn: $showingToolTraffic)
                         .toggleStyle(.button)
-                        .font(.caption)
+                        .font(.footnote.weight(.medium))
                 }
             }
+            .padding(.top, 8)
             if conversation.truncated {
                 Text("Showing the last \(conversation.messages.count) of \(conversation.total) messages.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.inkSoft)
             }
             if conversation.messages.isEmpty {
-                Text("No transcript yet.").foregroundStyle(.secondary)
+                Text("No transcript yet.").font(.subheadline).foregroundStyle(Theme.inkMute)
             }
             ForEach(conversation.messages.filter { showingToolTraffic || !$0.isToolTraffic }) { message in
                 MessageBubble(message: message)
@@ -602,12 +609,15 @@ struct SessionDetailView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(Self.quickReplies, id: \.self) { reply in
-                        Button(reply) { model.draft = reply }
-                            .buttonStyle(.bordered)
-                            .font(.footnote)
+                        Button { model.draft = reply } label: {
+                            Pill { Text(reply) }
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
+                .padding(.horizontal, Theme.margin)
             }
+            .padding(.horizontal, -Theme.margin)
             if !model.attachments.isEmpty {
                 AttachmentChips(attachments: $model.attachments)
             }
@@ -615,17 +625,23 @@ struct SessionDetailView: View {
                 AttachMenu { model.attach($0, unreadable: $1) }
                 TextField(running ? "Queue Message" : "Send Message", text: $model.draft, axis: .vertical)
                     .lineLimit(1...5)
-                    .padding(10)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 19, style: .continuous).strokeBorder(Theme.rule, lineWidth: 1))
                     .accessibilityIdentifier("followup.field")
                 Button {
                     Task { await model.send() }
                 } label: {
-                    Image(systemName: model.isSending ? "hourglass" : (running ? "text.badge.plus" : "arrow.up.circle.fill"))
-                        .font(.system(size: running ? 26 : 32))
-                        .frame(width: 34, height: 34)
+                    Image(systemName: model.isSending ? "hourglass" : (running ? "text.badge.plus" : "arrow.up"))
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(canSend ? Color.white : Theme.inkMute)
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(canSend ? Theme.accent : Theme.well))
+                        .contentTransition(.symbolEffect(.replace))
+                        .animation(.snappy(duration: 0.2), value: canSend)
                 }
-                .disabled(model.isSending || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!canSend)
                 .accessibilityLabel(running ? "Queue" : "Send")
                 .accessibilityHint(running ? "Touch and hold to send now, ending the current turn." : "")
                 .accessibilityIdentifier("followup.send")
@@ -643,13 +659,22 @@ struct SessionDetailView: View {
             if running {
                 Text("A turn is running: this queues. Touch and hold to send now.")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.inkSoft)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(.bar)
+        .padding(.horizontal, Theme.margin)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background {
+            Theme.ground
+                .overlay(alignment: .top) { Theme.rule.frame(height: 1) }
+                .ignoresSafeArea(edges: .bottom)
+        }
+    }
+
+    private var canSend: Bool {
+        !model.isSending && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
@@ -658,30 +683,27 @@ private struct SummaryCard: View {
     let regenerate: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Where things stand").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Spacer()
-                if status.generating == true {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Button("Regenerate", action: regenerate)
-                        .font(.caption)
-                        .accessibilityIdentifier("detail.summary.regenerate")
-                }
+        ThemeCard(title: "Where things stand") {
+            if status.generating == true {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Regenerate", action: regenerate)
+                    .accessibilityIdentifier("detail.summary.regenerate")
             }
+        } content: {
             if let text = status.summary {
-                Text(text)
+                Text(text).foregroundStyle(Theme.ink)
             } else if status.generating == true {
-                Text("Writing a status summary…").foregroundStyle(.secondary)
+                Text("Writing a status summary…").foregroundStyle(Theme.inkSoft)
             }
             if let error = status.error, status.generating != true {
-                Text("The last attempt failed: \(error)").font(.caption).foregroundStyle(.orange)
+                Text("The last attempt failed: \(error)").font(.caption).foregroundStyle(Theme.warning)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+        // The one card that leads the page: a gold rule down its edge, the mark's signature.
+        .overlay(alignment: .leading) {
+            Theme.gold.frame(width: 3).padding(.vertical, 16)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail.summary")
     }
@@ -697,7 +719,7 @@ private struct HierarchyCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Hierarchy").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text("Hierarchy").themeLabel()
             ForEach(hierarchy.nodes) { node in
                 VStack(alignment: .leading, spacing: 2) {
                     if node.current {
@@ -711,7 +733,7 @@ private struct HierarchyCard: View {
                 }
             }
             if hierarchy.truncated {
-                Text("Only part of the hierarchy is shown.").font(.caption).foregroundStyle(.secondary)
+                Text("Only part of the hierarchy is shown.").font(.caption).foregroundStyle(Theme.inkSoft)
             }
         }
         .confirmationDialog(
@@ -726,8 +748,8 @@ private struct HierarchyCard: View {
             Text("Both sessions stop pulling in the other's human messages through this edge. Spawn parents are untouched, and both timelines record the removal.")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+        .padding(16)
+        .themeCard()
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail.hierarchy")
     }
@@ -735,11 +757,11 @@ private struct HierarchyCard: View {
     private func row(_ node: SessionHierarchy.Node) -> some View {
         HStack(spacing: 6) {
             StatusDot(status: node.status)
-            Text(node.displayTitle).lineLimit(1)
+            Text(node.displayTitle).lineLimit(1).foregroundStyle(Theme.ink)
             Spacer(minLength: 4)
-            Text(verbatim: "#\(node.id)").font(.caption).foregroundStyle(.secondary)
+            Text(verbatim: "#\(node.id)").font(Theme.mono).foregroundStyle(Theme.inkMute)
             if !node.current {
-                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(Theme.inkMute)
             }
         }
         .font(.subheadline)
@@ -770,10 +792,10 @@ private struct HierarchyCard: View {
             }
         }
         .font(.caption2.weight(.medium))
-        .foregroundStyle(Color(red: 0.57, green: 0.25, blue: 0.05))
+        .foregroundStyle(Theme.status(.failed).text)
         .padding(.horizontal, 8)
         .padding(.vertical, 2)
-        .background(Color.orange.opacity(0.15), in: Capsule())
+        .background(Theme.status(.failed).fill, in: Capsule())
         .padding(.leading, CGFloat(min(node.depth, 6)) * 14 + 16)
     }
 }
@@ -786,17 +808,11 @@ private struct TextCard: View {
     let edit: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Spacer()
-                Button("Edit", action: edit).font(.caption)
-            }
-            Text(text).textSelection(.enabled)
+        ThemeCard(title: title) {
+            Button("Edit", action: edit)
+        } content: {
+            Text(text).foregroundStyle(Theme.ink).textSelection(.enabled)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(identifier)
     }
@@ -818,13 +834,18 @@ private struct TextEditSheet: View {
         NavigationStack {
             ZStack(alignment: .topLeading) {
                 if text.isEmpty {
-                    Text(placeholder).foregroundStyle(.tertiary).padding(.top, 8).padding(.leading, 5)
+                    Text(placeholder).foregroundStyle(Theme.inkMute).padding(.top, 8).padding(.leading, 5)
                 }
                 TextEditor(text: $text)
+                    .scrollContentBackground(.hidden)
                     .focused($focused)
                     .accessibilityIdentifier("edit.text")
             }
+            .padding(12)
+            .themeCard(radius: Theme.smallRadius)
             .padding()
+            .frame(maxHeight: .infinity, alignment: .top)
+            .background(Theme.ground)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -856,21 +877,35 @@ struct MessageBubble: View {
 
     var body: some View {
         let fromAgent = message.role == .assistant
-        VStack(alignment: fromAgent ? .leading : .trailing, spacing: 4) {
+        VStack(alignment: fromAgent ? .leading : .trailing, spacing: 5) {
             Text(message.isToolTraffic ? "Tool" : (fromAgent ? "Agent" : "You"))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .themeLabel(size: 10, color: Theme.inkMute)
+                .padding(.horizontal, 4)
             Text(message.content)
-                .font(message.isToolTraffic ? .caption.monospaced() : .body)
-                .padding(10)
-                .background(
-                    fromAgent ? Color(.secondarySystemGroupedBackground) : Color.accentColor.opacity(0.15),
-                    in: RoundedRectangle(cornerRadius: 12)
-                )
+                .font(message.isToolTraffic ? Theme.mono : .body)
+                .foregroundStyle(message.isToolTraffic ? Theme.inkSoft : Theme.ink)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(bubble(fromAgent: fromAgent))
                 .textSelection(.enabled)
         }
+        // A reply from you sits to the right and stops short of the far edge, as in Messages.
+        .padding(.leading, fromAgent ? 0 : 36)
         .frame(maxWidth: .infinity, alignment: fromAgent ? .leading : .trailing)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("detail.message.\(message.id)")
+    }
+
+    /// The agent's words on a card; yours on the accent's wash; tool traffic in a quiet well.
+    @ViewBuilder
+    private func bubble(fromAgent: Bool) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.largeRadius, style: .continuous)
+        if message.isToolTraffic {
+            shape.fill(Theme.well)
+        } else if fromAgent {
+            shape.fill(Theme.surface).overlay(shape.strokeBorder(Theme.rule, lineWidth: 1))
+        } else {
+            shape.fill(Theme.accent.opacity(0.14))
+        }
     }
 }

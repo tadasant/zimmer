@@ -33,13 +33,19 @@ struct NewSessionView: View {
     var body: some View {
         NavigationStack {
             Form {
-                if let error { Section { ErrorBanner(error: error).listRowInsets(EdgeInsets()) } }
-                if let configs {
-                    form(configs)
-                } else if error == nil {
-                    Section { ProgressView().frame(maxWidth: .infinity) }
+                if let error {
+                    Section { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
                 }
+                Group {
+                    if let configs {
+                        form(configs)
+                    } else if error == nil {
+                        Section { LoadingState().padding(.vertical, 8) }
+                    }
+                }
+                .themeRows()
             }
+            .themeGround()
             .navigationTitle("New session")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -267,31 +273,33 @@ struct CatalogPicker: View {
 
     var body: some View {
         List {
-            if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
+            if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
             ForEach(filtered) { item in
                 Button {
                     toggle(item.id)
                 } label: {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.displayTitle).foregroundStyle(.primary)
+                            Text(item.displayTitle).foregroundStyle(Theme.ink)
                             if let reason = item.unavailableReason {
-                                Text(reason).font(.caption).foregroundStyle(.orange)
+                                Text(reason).font(.caption).foregroundStyle(Theme.warning)
                             } else if let description = item.description, !description.isEmpty {
-                                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                Text(description).font(.caption).foregroundStyle(Theme.inkSoft).lineLimit(2)
                             }
                         }
                         Spacer()
                         if selection.contains(item.id) {
-                            Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
+                            Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Theme.accent)
                         }
                     }
                 }
                 .accessibilityIdentifier("catalog.item.\(item.id)")
                 .accessibilityAddTraits(selection.contains(item.id) ? .isSelected : [])
+                .themeRows()
             }
         }
-        .overlay { if items == nil && error == nil { ProgressView() } }
+        .themeGround()
+        .overlay { if items == nil && error == nil { LoadingState() } }
         .searchable(text: $query)
         .navigationTitle(kind.label)
         .navigationBarTitleDisplayMode(.inline)
@@ -336,21 +344,25 @@ struct ModelPickerSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
+                if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
                 ForEach(models ?? []) { model in
                     Button {
                         Task { if await choose(model.id) { dismiss() } }
                     } label: {
                         HStack {
-                            Text(model.title).foregroundStyle(.primary)
+                            Text(model.title).foregroundStyle(Theme.ink)
                             Spacer()
-                            if model.id == session.model { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+                            if model.id == session.model {
+                                Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Theme.accent)
+                            }
                         }
                     }
                     .accessibilityIdentifier("model.\(model.id)")
+                    .themeRows()
                 }
             }
-            .overlay { if models == nil && error == nil { ProgressView() } }
+            .themeGround()
+            .overlay { if models == nil && error == nil { LoadingState() } }
             .navigationTitle("Model")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }

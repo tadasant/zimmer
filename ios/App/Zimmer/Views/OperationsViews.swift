@@ -17,7 +17,7 @@ struct InboxView: View {
 
     var body: some View {
         List {
-            if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
+            if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
             ForEach(notifications ?? []) { notification in
                 Button {
                     Task { await open(notification) }
@@ -38,15 +38,20 @@ struct InboxView: View {
                         } label: {
                             Label("Mark Read", systemImage: "envelope.open")
                         }
-                        .tint(.blue)
+                                .tint(Theme.accent)
                     }
                 }
+                .listRowBackground(Theme.surface)
+                .listRowSeparatorTint(Theme.rule)
             }
         }
-        .listStyle(.plain)
+        .listStyle(.insetGrouped)
+        .themeGround()
         .overlay {
-            if notifications == nil && error == nil { ProgressView() }
-            if notifications?.isEmpty == true { ContentUnavailableView("No notifications", systemImage: "bell.slash") }
+            if notifications == nil && error == nil { LoadingState() }
+            if notifications?.isEmpty == true {
+                EmptyState(title: "No notifications", symbol: "bell.slash", message: "When a session needs you, it shows up here.")
+            }
         }
         .overlay(alignment: .bottom) { Toast(text: $notice) }
         .refreshable { await load() }
@@ -114,31 +119,32 @@ private struct InboxRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Circle()
-                .fill(notification.read ? Color.clear : Color.blue)
+                .fill(notification.read ? Color.clear : Theme.accent)
                 .frame(width: 8, height: 8)
                 .padding(.top, 6)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(notification.headline)
                     .font(.subheadline.weight(notification.read ? .regular : .semibold))
+                    .foregroundStyle(notification.read ? Theme.inkSoft : Theme.ink)
                 if let session = notification.session {
                     Text(session.title ?? "Session \(session.id)")
-                        .font(.body)
-                        .foregroundStyle(.primary)
+                        .font(Theme.headline())
+                        .foregroundStyle(Theme.ink)
                         .lineLimit(2)
                 }
                 HStack(spacing: 6) {
                     if let status = notification.session?.status { StatusBadge(status: status, compact: true) }
-                    if let session = notification.session { Text(verbatim: "#\(session.id)") }
+                    if let session = notification.session { Text(verbatim: "#\(session.id)").font(Theme.mono).foregroundStyle(Theme.inkMute) }
                     if let date = notification.createdAt {
-                        Text("·")
+                        Text("·").foregroundStyle(Theme.inkMute)
                         Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(Theme.inkSoft)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
     }
 }
@@ -156,15 +162,17 @@ struct TriggersView: View {
 
     var body: some View {
         List {
-            if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
+            if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
             ForEach(triggers ?? []) { trigger in
                 TriggerRow(trigger: trigger) {
                     Task { await toggle(trigger) }
                 }
                 .swipeActions(edge: .trailing) {
                     Button { invoking = trigger } label: { Label("Invoke", systemImage: "play.fill") }
-                        .tint(.green)
+                        .tint(Theme.success)
                 }
+                .listRowBackground(Theme.surface)
+                .listRowSeparatorTint(Theme.rule)
                 .accessibilityElement(children: .contain)
                 .contextMenu {
                     Button { invoking = trigger } label: { Label("Invoke Now", systemImage: "play.fill") }
@@ -175,9 +183,12 @@ struct TriggersView: View {
                 .accessibilityIdentifier("trigger.\(trigger.id)")
             }
         }
+        .themeGround()
         .overlay {
-            if triggers == nil && error == nil { ProgressView() }
-            if triggers?.isEmpty == true { ContentUnavailableView("No triggers", systemImage: "bolt.slash") }
+            if triggers == nil && error == nil { LoadingState() }
+            if triggers?.isEmpty == true {
+                EmptyState(title: "No triggers", symbol: "bolt.slash", message: "Create one in the browser; it shows up here.")
+            }
         }
         .overlay(alignment: .bottom) { Toast(text: $notice) }
         .confirmationDialog(
@@ -249,28 +260,29 @@ private struct TriggerRow: View {
     var body: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(trigger.name).font(.body.weight(.medium))
+                Text(trigger.name).font(Theme.headline()).foregroundStyle(Theme.ink)
                 ForEach(Array(trigger.conditions.enumerated()), id: \.offset) { _, condition in
                     Text(condition.description ?? condition.type ?? "condition")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.inkSoft)
                 }
                 HStack(spacing: 6) {
-                    if let root = trigger.agentRoot { Text(root) }
+                    if let root = trigger.agentRoot { Text(root).font(Theme.mono) }
                     if let last = trigger.lastTriggeredAt {
-                        Text("·")
+                        Text("·").foregroundStyle(Theme.inkMute)
                         Text("fired \(last.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)))")
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(Theme.inkMute)
                 if trigger.status == "failed", let lastError = trigger.lastError {
-                    Text(lastError).font(.caption).foregroundStyle(.orange).lineLimit(3)
+                    Text(lastError).font(.caption).foregroundStyle(Theme.warning).lineLimit(3)
                 }
             }
             Spacer()
             Toggle("Enabled", isOn: Binding(get: { trigger.isEnabled }, set: { _ in toggle() }))
                 .labelsHidden()
+                .tint(Theme.accent)
                 .accessibilityIdentifier("trigger.toggle.\(trigger.id)")
         }
     }
@@ -282,12 +294,17 @@ struct MoreView: View {
 
     var body: some View {
         List {
-            NavigationLink { CostsView() } label: { Label("Costs", systemImage: "dollarsign.circle") }
-                .accessibilityIdentifier("more.costs")
-            NavigationLink { HealthView() } label: { Label("Health", systemImage: "heart.text.square") }
-                .accessibilityIdentifier("more.health")
-            Button { showingSettings = true } label: { Label("Settings", systemImage: "gearshape") }
+            Section {
+                NavigationLink { CostsView() } label: { Label("Costs", systemImage: "dollarsign.circle") }
+                    .accessibilityIdentifier("more.costs")
+                NavigationLink { HealthView() } label: { Label("Health", systemImage: "heart.text.square") }
+                    .accessibilityIdentifier("more.health")
+                Button { showingSettings = true } label: { Label("Settings", systemImage: "gearshape") }
+                    .foregroundStyle(Theme.ink)
+            }
+            .listRowBackground(Theme.surface)
         }
+        .themeGround()
         .navigationTitle("More")
         .sheet(isPresented: $showingSettings) { SettingsView() }
     }
@@ -309,44 +326,53 @@ struct CostsView: View {
             }
             .pickerStyle(.segmented)
             .listRowBackground(Color.clear)
-            if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
+            if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
             if let snapshot {
                 Section {
                     Text(snapshot.totalUSD, format: .currency(code: "USD"))
-                        .font(.largeTitle.weight(.bold))
+                        .font(.system(size: 40, weight: .bold).monospacedDigit())
+                        .foregroundStyle(Theme.ink)
+                        .contentTransition(.numericText())
                         .accessibilityIdentifier("costs.total")
                     if !snapshot.days.isEmpty {
                         Chart(snapshot.days) { day in
                             BarMark(x: .value("Day", day.day), y: .value("USD", day.costUSD))
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(Theme.accent)
+                                .cornerRadius(3)
                         }
                         .chartXAxis(.hidden)
                         .frame(height: 140)
                         .accessibilityLabel("Spend by day")
                     }
                 } header: {
-                    Text("Last \(days) days")
+                    Text("Last \(days) days").themeLabel()
                 }
+                .listRowBackground(Theme.surface)
                 rows("By agent root", snapshot.agentRoots)
                 rows("By model", snapshot.models)
                 if !snapshot.topSessions.isEmpty {
-                    Section("Most expensive sessions") {
+                    Section {
                         ForEach(snapshot.topSessions) { top in
                             Button {
                                 app.path = [top.sessionID]
                             } label: {
                                 LabeledContent {
-                                    Text(top.costUSD, format: .currency(code: "USD"))
+                                    Text(top.costUSD, format: .currency(code: "USD")).monospacedDigit()
                                 } label: {
-                                    Text(verbatim: "#\(top.sessionID)")
+                                    Text(verbatim: "#\(top.sessionID)").font(.system(.body, design: .monospaced))
                                 }
                             }
+                            .foregroundStyle(Theme.ink)
                         }
+                    } header: {
+                        Text("Most expensive sessions").themeLabel()
                     }
+                    .listRowBackground(Theme.surface)
                 }
             }
         }
-        .overlay { if snapshot == nil && error == nil { ProgressView() } }
+        .themeGround()
+        .overlay { if snapshot == nil && error == nil { LoadingState() } }
         .task(id: days) { await load() }
         .refreshable { await load() }
         .navigationTitle("Costs")
@@ -355,11 +381,14 @@ struct CostsView: View {
     @ViewBuilder
     private func rows(_ title: String, _ rows: [CostSnapshot.Row]) -> some View {
         if !rows.isEmpty {
-            Section(title) {
+            Section {
                 ForEach(rows) { row in
-                    LabeledContent(row.label) { Text(row.costUSD, format: .currency(code: "USD")) }
+                    LabeledContent(row.label) { Text(row.costUSD, format: .currency(code: "USD")).monospacedDigit() }
                 }
+            } header: {
+                Text(title).themeLabel()
             }
+            .listRowBackground(Theme.surface)
         }
     }
 
@@ -382,19 +411,24 @@ struct HealthView: View {
 
     var body: some View {
         List {
-            if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
+            if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
             if let report {
                 Section {
                     row(report.overall, title: "Overall").accessibilityIdentifier("health.overall")
                 } footer: {
                     if let at = report.generatedAt { Text("Checked \(at.formatted(.relative(presentation: .named)))") }
                 }
-                Section("Sections") {
+                .listRowBackground(Theme.surface)
+                Section {
                     ForEach(report.sections) { section in row(section, title: section.title) }
+                } header: {
+                    Text("Sections").themeLabel()
                 }
+                .listRowBackground(Theme.surface)
             }
         }
-        .overlay { if report == nil && error == nil { ProgressView() } }
+        .themeGround()
+        .overlay { if report == nil && error == nil { LoadingState() } }
         .task { await load() }
         .refreshable { await load() }
         .navigationTitle("Health")
@@ -403,17 +437,17 @@ struct HealthView: View {
     private func row(_ section: HealthReport.Section, title: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(title)
+                Text(title).foregroundStyle(Theme.ink)
                 Spacer()
                 Text(section.status.capitalized)
                     .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
                     .foregroundStyle(Self.color(section.status))
-                    .background(Self.color(section.status).opacity(0.15), in: Capsule())
+                    .background(Self.color(section.status).opacity(0.14), in: Capsule())
             }
             if let message = section.message {
-                Text(message).font(.caption).foregroundStyle(.secondary)
+                Text(message).font(.caption).foregroundStyle(Theme.inkSoft)
             }
         }
         .accessibilityElement(children: .combine)
@@ -422,10 +456,10 @@ struct HealthView: View {
     /// The web UI's health colours.
     static func color(_ status: String) -> Color {
         switch status {
-        case "healthy": return .green
-        case "warning": return .orange
-        case "critical": return .red
-        default: return .gray
+        case "healthy": return Theme.success
+        case "warning": return Theme.warning
+        case "critical": return Theme.danger
+        default: return Theme.inkMute
         }
     }
 

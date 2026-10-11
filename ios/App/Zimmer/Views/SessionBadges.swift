@@ -2,19 +2,26 @@ import SwiftUI
 import ZimmerKit
 
 /// The status pill, in the web UI's colours (`SessionsHelper#status_badge_classes`): needs
-/// input blue, running green, waiting purple, failed orange, trashed gray. A tint on a light
-/// wash of the same colour, as the web's `bg-*-100 text-*-800`, which also reads in dark mode.
+/// input blue, running green, waiting purple, failed orange, trashed gray — the web's
+/// `bg-*-100 text-*-800` pastel in light, the same hue on a deep wash in dark (`Theme.status`).
+/// A dot leads the word; a running session's dot wears a halo, where the web badge spins.
 struct StatusBadge: View {
     let status: SessionStatus
     var compact = false
 
     var body: some View {
+        let colors = Theme.status(status)
+        let dot: CGFloat = compact ? 5 : 6
+        // The Text stays the root, so UI tests and VoiceOver still read it as text; the dot
+        // sits in the padding beside it.
         Text(Self.label(for: status))
-            .font((compact ? Font.caption2 : .caption).weight(.semibold))
-            .padding(.horizontal, compact ? 6 : 8)
-            .padding(.vertical, compact ? 2 : 3)
-            .foregroundStyle(StatusDot.color(for: status))
-            .background(StatusDot.color(for: status).opacity(0.15), in: Capsule())
+            .font(.system(compact ? .caption2 : .caption, weight: .semibold))
+            .padding(.leading, dot + (compact ? 4 : 5))
+            .overlay(alignment: .leading) { StatusDot(status: status, size: dot) }
+            .padding(.horizontal, compact ? 7 : 9)
+            .padding(.vertical, compact ? 2.5 : 4)
+            .foregroundStyle(colors.text)
+            .background(colors.fill, in: Capsule())
             .accessibilityLabel(Self.label(for: status))
     }
 
@@ -25,22 +32,26 @@ struct StatusBadge: View {
     }
 }
 
+/// Still, not pulsing: a repeating animation keeps the app from ever going idle, which is
+/// what XCUITest waits for between steps.
 struct StatusDot: View {
     let status: SessionStatus
+    var size: CGFloat = 8
 
     var body: some View {
-        Circle().fill(Self.color(for: status)).frame(width: 10, height: 10)
+        Circle()
+            .fill(Self.color(for: status))
+            .frame(width: size, height: size)
+            .background {
+                if status == .running {
+                    Circle().fill(Self.color(for: status).opacity(0.3)).frame(width: size * 2, height: size * 2)
+                }
+            }
     }
 
     /// The one status → colour map in the app, matching the web UI's.
     static func color(for status: SessionStatus) -> Color {
-        switch status {
-        case .needsInput: return .blue
-        case .running: return .green
-        case .waiting: return .purple
-        case .failed: return .orange
-        case .archived, .unknown: return .gray
-        }
+        Theme.status(status).dot
     }
 }
 
@@ -60,11 +71,12 @@ struct PullRequestChip: View {
                         .accessibilityLabel("CI \(ci)")
                 }
             }
-            .font(.footnote.weight(.semibold))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(.secondarySystemGroupedBackground), in: Capsule())
-            .overlay(Capsule().strokeBorder(Color(.separator), lineWidth: 0.5))
+            .font(.footnote.weight(.semibold).monospacedDigit())
+            .foregroundStyle(Theme.ink)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 32)
+            .background(Theme.surface, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.rule, lineWidth: 1))
         }
         .accessibilityLabel("PR \(pullRequest.label), \(pullRequest.state ?? "unknown")")
         .accessibilityIdentifier("detail.pr.\(pullRequest.label)")
@@ -79,22 +91,12 @@ struct PullRequestChip: View {
     }
 
     static func color(for state: String?) -> Color {
-        switch state {
-        case "merged": return .purple
-        case "open": return .green
-        case "closed": return .red
-        default: return .gray
-        }
+        Theme.pullRequest(state)
     }
 
     /// `SessionsHelper#ci_status_bg_class`'s map, over `Github::PrStatusEvaluator`'s words.
     static func ciColor(_ ci: String) -> Color {
-        switch ci {
-        case "pass": return .green
-        case "fail": return .red
-        case "pending": return .yellow
-        default: return .gray
-        }
+        Theme.ci(ci)
     }
 }
 

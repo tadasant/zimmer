@@ -13,7 +13,7 @@ struct RootView: View {
             }
             switch model.isSignedIn {
             case .none:
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                LoadingState(text: "Opening Zimmer…").background(Theme.ground)
             case .some(false):
                 SignInView()
             case .some(true):
@@ -52,18 +52,18 @@ extension RootView {
 }
 
 /// A strip that says which deployment a non-production build is for, so a staging screen
-/// is never mistaken for the real one.
+/// is never mistaken for the real one: the mark's gold under the status bar, its navy in
+/// tracked small caps.
 struct BuildBadge: View {
     let text: String
     let summary: String
 
     var body: some View {
         Text(text)
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(.white)
+            .themeLabel(size: 10, color: Theme.navy)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 3)
-            .background(Color.orange)
+            .padding(.vertical, 4)
+            .background(Theme.signatureGold)
             .accessibilityIdentifier("build.badge")
             .accessibilityValue(summary)
     }
