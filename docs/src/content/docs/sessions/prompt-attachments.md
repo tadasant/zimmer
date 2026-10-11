@@ -90,7 +90,7 @@ media_type, data }]` with `data` in base64 (a `data:<type>;base64,` prefix is fi
 - **The split is made on the server, by the bytes.** A PNG, JPEG, GIF or WebP is an image whatever
   `media_type` says; anything else, HEIC and video included, is a file the agent is told to read.
 - **At most 20 attachments, and 75 MB of them**, against the browser's 20 images and 200 files. A
-  body over 100 MB is refused unread (413).
+  body over 110 MB is refused unread (413).
 - **All or nothing.** One attachment that will not store refuses the whole message with a 422
   naming it, and whatever the message had already stored is removed. The browser drops the bad
   one and sends the rest.
