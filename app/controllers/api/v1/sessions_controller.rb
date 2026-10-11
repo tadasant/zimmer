@@ -215,9 +215,11 @@ class Api::V1::SessionsController < Api::BaseController
     else
       # Queue the agent job if a prompt was provided
       if @session.prompt.present?
+        # Before the enqueue, as the Quick Router records: the person's words are on
+        # record whether or not the job is.
+        record_native_app_new_session
         job = AgentSessionJob.enqueue_new_session(@session.id)
         @session.update(job_id: job.job_id)
-        record_native_app_new_session
       end
 
       # This endpoint is what Mcp::Tools::StartSession mirrors, so it says the
@@ -1318,11 +1320,6 @@ class Api::V1::SessionsController < Api::BaseController
     Session.where.not(status: :archived).spot.find_by(id: id)
   end
 
-  # A follow-up from the iOS app is recorded the way any OAuth client's delivered
-  # message is: as its approver's, and only when the grant acts on their behalf.
-  # An API key names a key, never a person, so a key-authenticated follow-up
-  # records nothing. Best-effort: HumanMessageCapture never raises into the
-  # delivery it describes.
   # A session started from the iOS app's new-session form begins with a person's
   # words, recorded as the web UI records its form (`web_ui.new_session`): through
   # the app's grant, and only when that grant acts on its approver's behalf. Not a
@@ -1334,6 +1331,11 @@ class Api::V1::SessionsController < Api::BaseController
       entry_point: "ios_app.new_session")
   end
 
+  # A follow-up from the iOS app is recorded the way any OAuth client's delivered
+  # message is: as its approver's, and only when the grant acts on their behalf.
+  # An API key names a key, never a person, so a key-authenticated follow-up
+  # records nothing. Best-effort: HumanMessageCapture never raises into the
+  # delivery it describes.
   def record_native_app_follow_up(prompt)
     return unless native_app_request?
 
