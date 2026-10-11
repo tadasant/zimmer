@@ -7,7 +7,11 @@
   _detail.html.erb): Status, Session hierarchy, Human messages, Transcript.
   Placed above the transcript rather than in a drawer: "who spawned this, and
   what did a human actually ask for?" is the first thing a reader of a
-  long-running session needs, and it should not take a click to reach.
+  long-running session needs. Both start collapsed, so the page opens short, but
+  each summary line answers the headline (how many sessions, how many messages)
+  without a click, and the frame this arrives in is fetched in the background
+  right after the page paints — opening either is instant. A reader's open
+  disclosure survives a re-broadcast of this partial (disclosure-memory).
 
   Rendered with <details> rather than a Stimulus controller: no JS to load, and
   nothing for the transcript's infinite-scroll/auto-scroll controllers to fight
@@ -27,7 +31,7 @@
 <div class="divide-y divide-gray-200" id="session_<%= agent_session.id %>_provenance" data-live-region="replace">
 
   <%# ---- Spawn hierarchy ---- %>
-  <details <%= "open" unless hierarchy.solitary? %>>
+  <details data-disclosure="hierarchy">
     <summary class="px-4 sm:px-6 py-3 cursor-pointer select-none flex items-center justify-between gap-3 hover:bg-gray-50">
       <span class="flex items-center gap-2 min-w-0">
         <svg class="h-4 w-4 flex-shrink-0 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
@@ -213,7 +217,7 @@
   </details>
 
   <%# ---- Human messages across the hierarchy ---- %>
-  <details <%= "open" if entries.any? || capture_gaps.any? %>>
+  <details data-disclosure="human-messages">
     <summary class="px-4 sm:px-6 py-3 cursor-pointer select-none flex items-center justify-between gap-3 hover:bg-gray-50">
       <span class="flex items-center gap-2 min-w-0">
         <svg class="h-4 w-4 flex-shrink-0 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">

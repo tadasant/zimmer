@@ -555,7 +555,11 @@ that a description good enough to stand alone, on a tool every session carries, 
 block every session pays for on every turn and most never read.
 
 **On the session detail screen.** Two of the four sections in the page's panel group — below
-[Status](/sessions/status-summary/) and above the collapsed Transcript. The hierarchy renders the tree as
+[Status](/sessions/status-summary/) and above the Transcript. Both start collapsed, with a summary line
+that gives the headline ("5 sessions, origin #1", "2 messages in this session · 1 elsewhere"). Their
+frame, `GET /sessions/:id/provenance_panel`, is fetched right after the page paints, so opening either
+is instant. A section the reader opened stays open when a family change re-broadcasts the panel
+(`disclosure-memory`). The hierarchy renders the tree as
 indented nodes, each showing the session's agent root and title, each a link through to that
 session's detail page, with the current session marked and not linked to itself. Below it, the human
 messages, badged `this session` or `elsewhere`, with a link to the authoring session and a Slack

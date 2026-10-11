@@ -291,7 +291,7 @@ class SessionStatusSummaryGenerator
   def unavailable_reason
     if session.status_summary_fork?
       Result.new(outcome: :skipped, message: "A status-summary fork does not summarize itself.")
-    elsif !RuntimeConversationPresence.conversation?(session.transcript, session: session)
+    elsif !RuntimeConversationPresence.stored_transcript_conversation?(session)
       # Line count is the wrong question here for the same reason it was the wrong
       # question in RuntimeConversationPresence (#519): a session wedged in its
       # opening seconds has a one-line transcript holding a title record and no

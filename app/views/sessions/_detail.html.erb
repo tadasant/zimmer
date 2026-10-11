@@ -237,51 +237,46 @@
     <%# The session detail panel group: four sections in one card, divided rather
         than stacked, so they read as one system. Status is always expanded (it
         is the at-a-glance surface), and so is the Goal check under it when the
-        goal has one (see _goal_check_panel); Session hierarchy, Human messages and
-        Transcript are <details> disclosures. Transcript is collapsed by default
-        — on a long session it is thousands of rows, and the three panels above
-        it are what a returning reader wants first. %>
+        goal has one (see _goal_check_panel). Session hierarchy, Human messages
+        and Transcript are <details> disclosures, and every one of them starts
+        collapsed: the first paint is the identity of the session and nothing
+        that has to be walked or parsed to produce.
+
+        Collapsed is not unloaded. The disclosures' contents are eager frames,
+        fetched in the background the moment this page is on screen, because a
+        reader who came to this page is likely to open one next — and when they
+        do, it opens on rows that are already there rather than on a skeleton. %>
     <div class="bg-white shadow rounded-lg mb-4 divide-y divide-gray-200" id="session_<%= @session.id %>_panels" data-session-panels>
     <%= render "sessions/status_panel", agent_session: @session %>
     <%= render "sessions/goal_check_panel", agent_session: @session %>
 
     <%# Deferred: SessionHierarchy walks the family breadth-first, one query per
         level in each direction, and that walk is the majority of the queries a
-        detail response would otherwise issue before it could paint. The frame is
-        visible on load, so Turbo fetches it the moment the page is on screen —
-        the reader gets the identity of the session immediately and the tree a
-        beat later, against a skeleton the same size. %>
+        detail response would otherwise issue before it could paint. The frame
+        brings both disclosures, closed, with their one-line summaries. %>
     <%= turbo_frame_tag "session_#{@session.id}_provenance_panel",
                         src: provenance_panel_session_path(@session),
-                        loading: "lazy",
-                        data: { deferred_panel: true } do %>
+                        data: { deferred_panel: true, controller: "disclosure-memory" } do %>
       <%= render "sessions/provenance_skeleton" %>
     <% end %>
 
-    <%# Opening the transcript is what LOADS it. The disclosure starts closed, and
-        a <turbo-frame loading="lazy"> inside a closed <details> has no layout, so
-        Turbo does not fetch it until the reader opens the panel. On a long
-        session that batch of rows is the bulk of this response and the only part
-        whose size grows without bound — deferring it is the difference between a
-        page that paints and one that waits.
+    <%# The transcript, tail first. The frame's response is only the newest few
+        rows (SessionsController::TRANSCRIPT_TAIL_LIMIT) — what a reader opening
+        the transcript is almost always looking for — and is cheap however long
+        the session is. Once it lands, infinite-scroll prefetches the page before
+        it, so scrolling up is instant too; a `#message-N` link into older
+        history reads back to that row in one request (transcript-panel#reveal).
 
-        Layout is not the same as a fetch, and the gap is what
-        transcript-panel#loadFrame closes: Turbo fetches a lazy frame when it
-        APPEARS IN THE VIEWPORT, so the controller switches this one to `eager`
-        the moment the disclosure opens — including a disclosure that arrived
-        open, via frameTargetConnected.
-
-        `transcript=open` is therefore two instructions in one: render the
-        disclosure open, and go and fetch the rows. The one address that sends it
-        is the log-level filter's own re-fetch, so the panel the reader had open
-        comes back open, at the level they just picked. Why that round trip is
-        the exception: log_level_filter_controller.js#refetchAtLevel.
+        `transcript=open` renders the disclosure open. The one address that sends
+        it is the log-level filter's own re-fetch, so the panel the reader had
+        open comes back open, at the level they just picked. Why that round trip
+        is the exception: log_level_filter_controller.js#refetchAtLevel.
 
         Opening also scrolls to the bottom: while closed, the auto-scroll
         controller's pinning has nothing to measure, so a session that streamed
-        messages in the background would otherwise open at the top, thousands of
-        rows away from what just happened. The controller waits for the frame
-        before it measures — see transcript_panel_controller.js. %>
+        messages in the background would otherwise open at the top. The
+        controller waits for the frame before it measures — see
+        transcript_panel_controller.js. %>
     <details data-controller="transcript-panel" data-action="toggle->transcript-panel#toggled"
              data-log-level-filter-target="transcript"
              data-transcript-panel-deferred-value="true" <%= 'open' if @transcript_open %>>
@@ -302,17 +297,21 @@
           the items that supersede it can arrive in either. %>
       <div class="divide-y divide-gray-200" data-controller="timeline"
            data-auto-scroll-target="timelineContainer" data-log-level-filter-target="timeline">
+        <%# data-backfill-src: the reconnect backfill reconciles against rows
+            broadcast while the page was away, which can be more than a tail's
+            worth — so it asks for a page-sized tail instead (see
+            stream_visibility_recovery_controller#backfillDeferredPanels). %>
         <%= turbo_frame_tag "session_#{@session.id}_transcript",
                             src: transcript_panel_session_path(@session, filter: @filter_level),
-                            loading: "lazy",
-                            data: { deferred_panel: true, transcript_panel_target: "frame" } do %>
+                            data: { deferred_panel: true, transcript_panel_target: "frame",
+                                    backfill_src: transcript_panel_session_path(@session, filter: @filter_level, limit: SessionsController::TIMELINE_PAGE_LIMIT) } do %>
           <%= render "sessions/transcript_skeleton" %>
         <% end %>
 
         <%# Always rendered, always outside the frame, always empty on first
             paint. Turbo Stream appends target this id (BroadcastService), so a
-            message broadcast while the panel is closed — or while its frame is
-            still in flight — still has somewhere to land, and lands below the
+            message broadcast while its frame is still in flight still has
+            somewhere to land, and lands below the
             batch the frame brings, which is where the newest items belong.
 
             A row that landed here while the panel was closed is in the frame's

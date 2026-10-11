@@ -4,9 +4,10 @@ require "test_helper"
 # from it.
 #
 # The batch is fetched from #transcript_panel, not #show: the detail page defers
-# the whole panel into a <turbo-frame loading="lazy"> that only loads when the
-# reader opens the Transcript disclosure, so this URL is where the items and the
-# infinite-scroll data attributes live.
+# the whole panel into a <turbo-frame> it fetches after first paint, so this URL
+# is where the items and the infinite-scroll data attributes live. That batch is
+# the tail — the newest TRANSCRIPT_TAIL_LIMIT items — and everything older pages
+# in through #timeline_items.
 class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
   setup do
     @session = sessions(:running)
@@ -15,13 +16,24 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
   end
 
   # Test transcript panel pagination
-  test "should show only last 100 items on initial panel load when session has more items" do
+  test "the transcript panel renders only the newest items, without a total" do
     get transcript_panel_session_url(@large_session)
 
     assert_response :success
-    # Should show that there are more items to load
-    assert_match /Showing 100 of/, response.body
-    assert_match /Load earlier messages/, response.body
+    tail = SessionsController::TRANSCRIPT_TAIL_LIMIT
+    assert_select "[data-timeline-item]", tail
+    # The newest message is the last one on the panel.
+    assert_includes css_select("[data-timeline-item]").last.text, "Assistant response 149"
+    assert_match(/Showing latest #{tail} items/, response.body)
+    assert_match(/Load earlier messages/, response.body)
+    assert_select "[data-infinite-scroll-total-count-value='0']"
+  end
+
+  test "limit widens the tail" do
+    get transcript_panel_session_url(@large_session, limit: 100)
+
+    assert_response :success
+    assert_select "[data-timeline-item]", 100
   end
 
   test "should show all items when session has fewer than 100 items" do
@@ -41,8 +53,9 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "[data-controller='infinite-scroll']"
     assert_select "[data-infinite-scroll-url-value]"
-    assert_select "[data-infinite-scroll-before-index-value]"
-    assert_select "[data-infinite-scroll-has-more-value]"
+    assert_select "[data-infinite-scroll-before-timestamp-value]"
+    assert_select "[data-infinite-scroll-before-line-value]"
+    assert_select "[data-infinite-scroll-has-more-value='true']"
   end
 
   # Test timeline_items action
@@ -90,12 +103,15 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     assert_select "#timeline-pagination-state[data-has-more='false']"
   end
 
-  test "transcript panel sets correct before_index value when items are truncated" do
+  test "the tail's cursors point at its oldest item" do
     get transcript_panel_session_url(@large_session)
 
     assert_response :success
-    # With 150 items and showing last 100, before_index should be 50
-    assert_select "[data-infinite-scroll-before-index-value='50']"
+    # 150 transcript lines, the newest ten on the panel: the oldest shown is
+    # line 140, and the next read starts just above the lines left behind.
+    oldest = @large_session.parsed_transcript[140]
+    assert_select "[data-infinite-scroll-before-timestamp-value='#{Time.zone.parse(oldest["timestamp"]).iso8601(6)}']"
+    assert_select "[data-infinite-scroll-before-line-value='140']"
   end
 
   test "timeline_items action returns items in correct order" do
@@ -203,7 +219,7 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     session = create_session_with_many_logs_few_messages
 
     # With minimal filter, should only get messages (not logs)
-    get transcript_panel_session_url(session, filter: "minimal")
+    get transcript_panel_session_url(session, filter: "minimal", limit: 100)
 
     assert_response :success
     # Should show the messages only (25 messages available, all should be shown)
@@ -217,13 +233,12 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     session = create_session_with_many_logs_few_messages
 
     # With verbose filter, should get everything (limited to 100)
-    # Total: 25 messages + 100 regular logs + 100 verbose logs = 225 items
     # Last 100 should be mostly logs given the timestamps
-    get transcript_panel_session_url(session, filter: "verbose")
+    get transcript_panel_session_url(session, filter: "verbose", limit: 100)
 
     assert_response :success
-    # Should show that there are more items and have a mix of types
-    assert_match /Showing 100 of 225/, response.body
+    assert_select "[data-timeline-item]", 100
+    assert_match(/Showing latest 100 items/, response.body)
     # Should have logs in the visible items (since logs are more recent)
     assert_select "[data-timeline-item][data-filter-category='regular-log']"
     assert_select "[data-timeline-item][data-filter-category='verbose-log']"
@@ -284,7 +299,7 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     session = create_session_with_many_logs_few_messages
 
     # With minimal filter (25 messages only), all should be shown
-    get transcript_panel_session_url(session, filter: "minimal")
+    get transcript_panel_session_url(session, filter: "minimal", limit: 100)
 
     assert_response :success
     # Should show all 25 messages (no pagination needed)
@@ -293,15 +308,17 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     assert_no_match /Load earlier messages/, response.body
   end
 
-  test "filtered pagination shows correct load more count when items exceed limit" do
-    session = create_session_with_150_messages
+  test "total_only states the filtered total the tail does not compute" do
+    session = create_session_with_many_logs_few_messages
 
-    # With minimal filter (150 messages), should show 100 and have 50 more
-    get transcript_panel_session_url(session, filter: "minimal")
+    # 25 messages + 100 regular logs + 100 verbose logs.
+    { "minimal" => 25, "show-logs" => 125, "verbose" => 225 }.each do |filter, total|
+      get timeline_items_session_url(session, total_only: 1, filter: filter)
 
-    assert_response :success
-    assert_match /Showing 100 of 150/, response.body
-    assert_match /Load earlier messages \(50 more\)/, response.body
+      assert_response :success
+      assert_select "#timeline-pagination-state[data-total-count='#{total}']"
+      assert_select "[data-timeline-item]", 0
+    end
   end
 
   # The log-level select lives in the page's sticky header, not in the deferred

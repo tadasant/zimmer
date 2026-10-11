@@ -59,13 +59,32 @@ module RuntimeConversationPresence
   # whole of #519 is about — so a question that cannot be answered is answered
   # "present" rather than allowed to escape.
   def stored_conversation?(session)
-    conversation?(session.transcript, session: session)
+    stored_transcript_conversation?(session)
   rescue => e
     Rails.logger.warn(
       "[RuntimeConversationPresence] Could not inspect the stored transcript for " \
       "session #{session&.id}: #{e.message} — assuming a conversation exists"
     )
     true
+  end
+
+  # The same question of Zimmer's own copy, unrescued, read a chunk at a time and
+  # stopped at the first conversation record. That record is almost always in the
+  # first few lines, so the answer costs one chunk rather than the whole document
+  # — which is what lets the session detail page ask it on every render (the
+  # Status panel's Regenerate button) without loading a 30 MB transcript to do so.
+  def stored_transcript_conversation?(session)
+    return false unless session.transcript_present?
+
+    normalizer = TranscriptRuntime.normalizer_for(session)
+    source = TranscriptRuntime.source_for(session)
+    session.each_transcript_line(0, session.transcript_line_count) do |_index, line|
+      next if line.strip.empty?
+
+      return true if normalizer.conversation_record?(source.parse_events(line).first || {})
+    end
+
+    false
   end
 
   # Errors are answered as "present" — the conservative direction. A lookup that

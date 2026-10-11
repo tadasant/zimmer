@@ -17,23 +17,24 @@
     too, and transcript-panel#dropStreamedDuplicates drops the other copy. %>
 <div data-controller="infinite-scroll"
      data-infinite-scroll-url-value="<%= timeline_items_session_path(@session) %>"
-     data-infinite-scroll-before-index-value="<%= @oldest_displayed_index %>"
      data-infinite-scroll-before-timestamp-value="<%= @oldest_displayed_timestamp %>"
+     data-infinite-scroll-before-line-value="<%= @oldest_displayed_line %>"
      data-infinite-scroll-has-more-value="<%= @has_more_items %>"
-     data-infinite-scroll-total-count-value="<%= @total_timeline_items_count %>"
-     data-infinite-scroll-displayed-count-value="<%= @timeline_items.count %>"
+     data-infinite-scroll-total-count-value="<%= @has_more_items ? 0 : @timeline_items.count %>"
      data-infinite-scroll-filter-level-value="<%= @filter_level %>">
 
-  <%# The count the closed summary cannot afford to show. Producing it is linear
+  <%# The count is the one figure this tail cannot afford: producing it is linear
       in transcript size (every entry has to be normalized to know which events
-      it fans out into), so it is stated here, once the reader has asked for the
-      panel, rather than on every page load and drawer open. %>
+      it fans out into). So the tail states only what it has, and
+      infinite-scroll#fetchTotal asks for the total on its own once the page
+      before this one has been prefetched, then writes it here. With nothing older, the tail
+      is the whole timeline and its size is the total. %>
   <div class="px-4 sm:px-6 py-2 text-xs text-gray-500 border-b border-gray-100 flex items-center justify-between gap-3">
     <span data-infinite-scroll-target="itemsCount">
       <% if @has_more_items %>
-        Showing <%= @timeline_items.count %> of <%= @total_timeline_items_count %> items
+        Showing latest <%= @timeline_items.count %> items
       <% else %>
-        <%= pluralize(@total_timeline_items_count, "item") %>
+        <%= pluralize(@timeline_items.count, "item") %>
       <% end %>
     </span>
     <%# Spelled the way the four log-level selects spell it. `humanize` would
@@ -53,7 +54,7 @@
           <svg class="mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd" />
           </svg>
-          Load earlier messages (<%= @oldest_displayed_index %> more)
+          Load earlier messages
         </button>
       </div>
       <div data-infinite-scroll-target="loadingIndicator"

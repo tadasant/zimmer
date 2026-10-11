@@ -155,9 +155,8 @@ class TranscriptParityTest < ApplicationSystemTestCase
   #
   # Read from the panel's own container rather than the page's append target:
   # the detail page renders no rows at all — the transcript arrives in a
-  # <turbo-frame loading="lazy"> that Turbo fetches once the disclosure has
-  # layout — so opening the panel is part of reading it. open_transcript_panel
-  # waits for that frame.
+  # <turbo-frame> fetched after first paint — so opening the panel is part of
+  # reading it. open_transcript_panel waits for that frame.
   def extract_normalized_timeline_html
     open_transcript_panel
 

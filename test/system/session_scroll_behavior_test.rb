@@ -9,6 +9,10 @@ require "application_system_test_case"
 # - Infinite scroll (upward): When scrolling up to the top, load older messages
 class SessionScrollBehaviorTest < ApplicationSystemTestCase
   # Create a session with many messages for infinite scroll testing
+  # What the panel holds before the reader pages anything in: the tail, and
+  # once infinite-scroll#prefetchEarlier has run, the 40 items before it.
+  INITIAL_WINDOW = (SessionsController::TRANSCRIPT_TAIL_LIMIT..SessionsController::TRANSCRIPT_TAIL_LIMIT + 40)
+
   def create_session_with_many_messages(count:)
     transcript_entries = count.times.map do |i|
       role = i.even? ? "user" : "assistant"
@@ -128,12 +132,10 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     # This ensures we check item count BEFORE any infinite scroll auto-triggers
     sleep 0.8
 
-    # Count loaded items - should be ~100 (the INITIAL_TIMELINE_ITEMS_LIMIT)
+    # The tail, plus at most the one earlier page prefetched after it — never
+    # all 150.
     loaded_items = page.all("[data-timeline-item]").count
-
-    # Should show approximately 100 items initially, not all 150
-    assert loaded_items <= 110, "Should load limited items initially (got #{loaded_items}, expected <= 110)"
-    assert loaded_items >= 90, "Should load at least 90 items (got #{loaded_items})"
+    assert_includes INITIAL_WINDOW, loaded_items, "Should load limited items initially (got #{loaded_items})"
 
     # Should show "Load more" indicator when there are more items
     assert_selector "[data-infinite-scroll-target='loadMoreTrigger']"
@@ -237,7 +239,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
 
     # Count initial loaded items
     initial_count = page.all("[data-timeline-item]").count
-    assert initial_count <= 110, "Should have limited items initially"
+    assert_includes INITIAL_WINDOW, initial_count, "Should have limited items initially"
 
     # Trigger loading older items and wait deterministically for the next batch
     # to append (via the "Load earlier messages" button — see
@@ -261,7 +263,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
 
     # Count initial items to verify we have limited load
     initial_count = page.all("[data-timeline-item]").count
-    assert initial_count <= 110, "Should have limited items initially"
+    assert_includes INITIAL_WINDOW, initial_count, "Should have limited items initially"
 
     # Capture the scroll position before loading older items. The page is pinned
     # near the bottom after the initial auto-scroll, so scrollY is > 0 here.
@@ -330,15 +332,13 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     # Wait for initial scroll to bottom and IntersectionObserver to be set up
     sleep 0.8
 
-    # Count initial loaded items - should be ~100
     initial_count = page.all("[data-timeline-item]").count
-    assert initial_count <= 110, "Should have limited items initially (got #{initial_count})"
-    assert initial_count >= 90, "Should have at least 90 items (got #{initial_count})"
+    assert_includes INITIAL_WINDOW, initial_count, "Should have limited items initially (got #{initial_count})"
 
     # Track loading progress
     previous_count = initial_count
     load_attempts = 0
-    max_attempts = 10 # Safety limit to prevent infinite loops
+    max_attempts = 12 # Safety limit to prevent infinite loops
 
     # Keep loading older items until we have all 500
     while timeline_item_count < 500 && load_attempts < max_attempts
@@ -380,10 +380,10 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
 
     # Count initial loaded items
     initial_count = page.all("[data-timeline-item]").count
-    assert initial_count <= 110, "Should have limited items initially"
+    assert_includes INITIAL_WINDOW, initial_count, "Should have limited items initially"
 
     # Load all items by repeatedly triggering the next batch
-    max_iterations = 15 # 1000 items / ~100 per load = ~10 loads needed, with buffer
+    max_iterations = 16 # 1000 items / ~100 per load = ~10 loads needed, with buffer
     iteration = 0
     previous_count = initial_count
 
