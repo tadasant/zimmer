@@ -32,6 +32,10 @@ Rails.application.routes.draw do
     # authenticated human at the web-UI boundary rather than typed into a form.
     resources :gate_decisions, only: [ :index, :show ]
     resources :gate_decision_feedbacks, only: [ :index, :show ]
+    # Read-only: every write to root data goes through RootData::Store, which
+    # holds the caps and keeps the counters in the same transaction.
+    resources :agent_root_records, only: [ :index, :show ]
+    resources :agent_root_record_counters, only: [ :index, :show ]
     # Read-only: models are added and removed on /settings/models.
     resources :model_catalog_entries, only: [ :index, :show ]
     # Read-only: every write to the queue goes through WorkBacklog::Ranking's

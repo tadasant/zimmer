@@ -103,6 +103,20 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_select "h3", text: "Session Health"
     assert_select "h3", text: "System Health"
     assert_select "h3", text: "Maintenance Actions"
+    assert_select "h3", text: "Root Data"
+  end
+
+  # UI/MCP parity for root data: `get_system_health` carries the same reading.
+  test "dashboard shows root data usage per namespace" do
+    AgentRootRecordCounter.create!(namespace: "zimmer-orchestrator", collection: "notes", records_count: 4,
+                                   data_bytes: 2048, last_written_at: 5.minutes.ago)
+
+    get health_dashboard_url
+    assert_response :success
+
+    assert_select "h3", text: "Root Data"
+    assert_match "zimmer-orchestrator", response.body
+    assert_match "4 record(s) across 1 namespace(s)", response.body
   end
 
   # UI/MCP parity for webhook ingest: `get_system_health` carries the same reading.

@@ -143,6 +143,24 @@
       "X-API-Key": "${ZIMMER_PROD_API_KEY}"
     }
   },
+  "zimmer-root-data": {
+    "title": "Zimmer Root Data",
+    "description": "Zimmer's native MCP server, scoped to the calling session's agent root's persistent data store: list_root_collections, search_root_records (JSON-containment filter, order, limit), get_root_record, and the writes put_root_record (upsert by key), append_root_record and delete_root_record. The namespace is resolved server-side from the session's agent root (or the root's data_namespace) and is never an argument; only collections the root declares under data_collections can be written, each checked against its declared JSON Schema. root_data is an opt-in tool group. Attach it to a root that declares data_collections; prefer zimmer-root-data-readonly for a root that only reads.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=root_data",
+    "headers": {
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
+    }
+  },
+  "zimmer-root-data-readonly": {
+    "title": "Zimmer Root Data (read-only)",
+    "description": "Zimmer's native MCP server, scoped to reading the calling session's agent root's persistent data store: list_root_collections, search_root_records and get_root_record. Read-only by construction — the root_data group's write tools are excluded. The namespace is resolved server-side from the session's agent root and is never an argument.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=root_data_readonly",
+    "headers": {
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
+    }
+  },
   "figma": {
     "title": "Figma",
     "description": "Figma design MCP server (hosted, streamable-http). OAuth via browser flow.",

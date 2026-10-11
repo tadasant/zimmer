@@ -1,0 +1,84 @@
+<%# Agent root data: what each root is storing, and whether retention is keeping up. %>
+<%#
+  Per-namespace usage of `agent_root_records`, read from its counter table. Same
+  object as the REST health report and `get_system_health`, so "how much is each
+  root storing" needs no shell on the database host.
+%>
+<% root_data = health_report[:root_data_health] %>
+<div class="mt-6 bg-white rounded-lg shadow">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0">
+        <h3 class="text-lg font-medium text-gray-900">Root Data</h3>
+        <p class="mt-1 text-sm text-gray-500">
+          Each agent root's persistent records, written through the <code class="font-mono text-xs">root_data</code> MCP tools.
+          Expired records are pruned hourly by <code class="font-mono text-xs">RootDataRetentionJob</code>.
+        </p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
+        <%= status_badge(root_data[:status]) %>
+        <%= link_to "All records", supervisor_agent_root_records_path,
+              class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
+      </div>
+    </div>
+  </div>
+
+  <div class="px-4 py-5 sm:p-6">
+    <dl class="grid grid-cols-2 gap-4 mb-6 sm:grid-cols-3">
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Records</dt>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= number_with_delimiter(root_data[:total_records]) %></dd>
+      </div>
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Data</dt>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words"><%= number_to_human_size(root_data[:total_data_bytes]) %></dd>
+      </div>
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Overdue expiry</dt>
+        <dd class="mt-1 text-2xl font-semibold <%= root_data[:overdue_expired_records] > 0 ? 'text-yellow-600' : 'text-gray-900' %>">
+          <%= number_with_delimiter(root_data[:overdue_expired_records]) %>
+        </dd>
+      </div>
+    </dl>
+
+    <p class="text-sm text-gray-600 mb-4 break-words"><%= root_data[:status].message %></p>
+
+    <% if root_data[:namespaces].any? %>
+      <div class="overflow-x-auto -mx-4 sm:mx-0">
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+          <thead>
+            <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th class="px-4 py-2">Namespace</th>
+              <th class="px-4 py-2">Collections</th>
+              <th class="px-4 py-2">Records</th>
+              <th class="px-4 py-2">Data</th>
+              <th class="px-4 py-2">Last write</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <% root_data[:namespaces].each do |row| %>
+              <tr>
+                <td class="px-4 py-3 font-mono text-xs text-gray-900 break-all"><%= row[:namespace] %></td>
+                <td class="px-4 py-3 text-gray-600"><%= row[:collections] %></td>
+                <td class="px-4 py-3 text-gray-600"><%= number_with_delimiter(row[:records]) %></td>
+                <td class="px-4 py-3 text-gray-600 whitespace-nowrap"><%= number_to_human_size(row[:data_bytes]) %></td>
+                <td class="px-4 py-3 text-gray-600 whitespace-nowrap">
+                  <%= row[:last_written_at] ? "#{time_ago_in_words(row[:last_written_at])} ago" : "never" %>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% end %>
+
+    <% if root_data[:near_cap].any? %>
+      <ul class="mt-4 text-sm text-yellow-700 list-disc pl-5">
+        <% root_data[:near_cap].each do |row| %>
+          <li class="break-words"><code class="font-mono text-xs"><%= row[:namespace] %>/<%= row[:collection] %></code>:
+            <%= number_with_delimiter(row[:records]) %> of <%= number_with_delimiter(root_data[:max_records_per_collection]) %> records</li>
+        <% end %>
+      </ul>
+    <% end %>
+  </div>
+</div>
