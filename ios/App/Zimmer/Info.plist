@@ -21,6 +21,12 @@
   * `ZimmerBuildEnvironment` — which deployment this build was made for (`production`,
     `staging`, `development`), from `ZIMMER_BUILD_ENVIRONMENT`. A label, never a hostname;
     empty or unrecognised reads as production.
+  * The CarPlay scene (`CPTemplateApplicationSceneSessionRoleApplication`). Declared, and
+    inert: CarPlay connects it only once the voice-based conversational entitlement is
+    granted by Apple and signed in (App/Zimmer/CarPlay.entitlements, wired into nothing).
+  * `NSMicrophoneUsageDescription` / `NSSpeechRecognitionUsageDescription` — the CarPlay
+    conversation listens for the driver's answer. Without the keys iOS terminates the app
+    the first time it asks, rather than showing the permission prompt.
 -->
 <plist version="1.0">
 <dict>
@@ -58,10 +64,28 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>In the car, Zimmer listens for your answer to a session that needs you.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>In the car, Zimmer turns what you say into a reply to the session that asked. Recognition stays on this iPhone.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
+		<true/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>CPTemplateApplicationSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneClassName</key>
+					<string>CPTemplateApplicationScene</string>
+					<key>UISceneConfigurationName</key>
+					<string>CarPlay</string>
+					<key>UISceneDelegateClassName</key>
+					<string>$(PRODUCT_MODULE_NAME).CarPlaySceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
 	</dict>
 </dict>
 </plist>

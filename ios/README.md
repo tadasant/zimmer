@@ -147,6 +147,30 @@ When web and api are one origin there is no edge credential (`NoEdgeCredential`)
 shared secret in either** — a service token compiled into a public app is a published service
 token.
 
+## CarPlay
+
+A voice-based conversational CarPlay app (`com.apple.developer.carplay-voice-based-conversation`,
+iOS 26.4+, Apple CarPlay Developer Guide, June 2026). The other categories don't fit: Zimmer is not
+audio, navigation, communication (SiriKit messaging or VoIP) or a driving task, and what a driver does
+with it is talk. The category allows list, grid, tab bar, alert, action sheet, information and voice
+control templates, with a depth of three, and requires voice as the primary modality at launch.
+
+- `ZimmerKit/Driving/DrivingFlow.swift` is the conversation as a pure state machine. It holds
+  `VoiceCommand` parsing, at most five needs-input sessions, and a spoken confirmation before
+  any archive or reply. It is tested on Linux.
+- `App/Zimmer/CarPlay/CarPlaySceneDelegate.swift` performs its effects. It uses a
+  `CPListTemplate` root, a `CPActionSheetTemplate` per row, and a `CPVoiceControlTemplate` while
+  talking. `VoiceIO` uses `AVSpeechSynthesizer` and `SFSpeechRecognizer`, on-device only, so spoken
+  replies never go to Apple's servers. The tap and the
+  recognition handler are built in a `nonisolated` helper, because a closure formed on the main
+  actor and called from an audio thread is a Swift 6 runtime crash.
+- **Inert until the grant**, as Motet's scene is. `App/Zimmer/CarPlay.entitlements` holds the key
+  and is in the project's exception set, wired into nothing. `ios/bin/testflight` signs in only
+  `Push.entitlements`. When Apple grants the entitlement: tick CarPlay on the App ID, merge the key
+  into the signed entitlements, admit it in the guard, and check the first signed build's
+  entitlements with codesign. Cloud signing may drop a managed entitlement; if it does, use a
+  manually made App Store profile.
+
 ## Distribution
 
 `.github/workflows/testflight.yml` runs `ios/bin/testflight upload` on every push to `main` that
