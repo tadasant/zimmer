@@ -33,7 +33,14 @@ final class AppModel: ObservableObject {
     /// When the edge's credential expires, on a deployment that has one.
     @Published private(set) var edgeExpiry: Date?
     /// The navigation stack: session ids, so a push or a deep link can open one.
-    @Published var path: [Int] = []
+    @Published var path: [Int] = [] {
+        // Opening a session from anywhere (a push, the inbox, a trigger) shows the Sessions tab.
+        didSet { if !path.isEmpty, tab != .sessions { tab = .sessions } }
+    }
+    /// The tab bar: the web UI's top navigation, as iOS tabs.
+    @Published var tab: AppTab = .sessions
+    /// Unread notifications, for the Inbox tab's badge.
+    @Published var unreadCount = 0
     @Published var showingQuickRouter = false
     /// The full new-session form (touch and hold the pencil).
     @Published var showingNewSession = false
@@ -93,6 +100,7 @@ final class AppModel: ObservableObject {
         }
         // The list's search box picks this up and searches, as if typed.
         if let search = value("-ZimmerFixtureSearch") { searchText = search }
+        if let tab = value("-ZimmerFixtureTab").flatMap(AppTab.init(rawValue:)) { self.tab = tab }
         #endif
     }
 
@@ -160,6 +168,12 @@ final class AppModel: ObservableObject {
             handle(error)
         }
         await refreshEdgeExpiry()
+        await refreshUnreadCount()
+    }
+
+    func refreshUnreadCount() async {
+        // The badge is a hint, never a reason to show an error over the list.
+        if let count = try? await connection.api.unreadNotificationCount() { unreadCount = count }
     }
 
     func select(_ filter: SessionFilter) async {
