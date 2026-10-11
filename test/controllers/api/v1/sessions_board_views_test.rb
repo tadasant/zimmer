@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # The dashboard's board views and the Ranked view's two writes, on the REST
 # surface: `view=` on the index, `start_now`, and `reorder_precedence`. Each one
