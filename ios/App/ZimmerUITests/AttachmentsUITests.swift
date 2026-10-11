@@ -30,7 +30,7 @@ final class AttachmentsUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureOpenSession", "1035", "-ZimmerFixtureAttachment"])
         let chip = app.descendants(matching: .any)["composer.attachment.deploy.log"]
         XCTAssertTrue(chip.waitForExistence(timeout: timeout))
-        app.buttons["Remove deploy.log"].tap()
+        app.buttons["composer.attachment.remove.deploy.log"].tap()
         XCTAssertTrue(waitForDisappearance(chip))
     }
 

@@ -712,11 +712,12 @@ extension FakeZimmerAPI {
 // rest go with it however it is delivered, and the conversation names them.
 extension FakeZimmerAPI {
     public func followUp(_ id: Int, prompt: String, attachments: [MessageAttachment], now: Bool) async throws -> FollowUpResult {
-        if attachments.count > MessageAttachment.limit {
-            throw ZimmerError.http(status: 422, message: "A follow-up carries at most \(MessageAttachment.limit) attachments")
-        }
-        if let problem = attachments.lazy.compactMap(\.problem).first {
-            throw ZimmerError.http(status: 422, message: problem)
+        var accepted: [MessageAttachment] = []
+        for attachment in attachments {
+            if let refusal = MessageAttachment.refusal(adding: attachment, to: accepted) {
+                throw ZimmerError.http(status: 422, message: refusal)
+            }
+            accepted.append(attachment)
         }
         let named = attachments.isEmpty ? prompt : prompt + "\n\n📎 " + attachments.map(\.filename).joined(separator: ", ")
         let result = now ? try await sendNow(id, prompt: named) : try await followUp(id, prompt: named)
