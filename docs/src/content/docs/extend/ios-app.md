@@ -82,6 +82,14 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   your own words), scheduling class, and the MCP servers, skills, hooks and plugins, each starting
   at the root's defaults. The create is retry-safe (`idempotency_key`), and its prompt is recorded
   as your message when the app acts on your behalf.
+- **Has the web UI's other pages as tabs.** *Inbox* is the notifications inbox, with the unread
+  count on its badge: tap one to open its session (and mark it read), swipe to mark one read or
+  dismiss a read one, and mark all read or dismiss all read from its menu. *Triggers* lists each
+  trigger with what fires it and when it last did; turn one on or off, invoke it now (after a
+  confirmation, then open the session it started), or open its last session. Creating and editing a
+  trigger stay in the browser. *More* holds *Costs* (the window's total, spend by day as a chart, by
+  agent root and by model, and the most expensive sessions, each a tap away) and *Health* (the
+  overall status and each section's), read-only; Health's operator actions stay in the browser.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
@@ -90,9 +98,8 @@ of them widened what the phone can do on the server.
 
 ### Not in the app yet
 
-*Reprioritize* and *Authorize merge* are not in the app yet, nor are image and file attachments,
-the notifications inbox, triggers, costs and health. Fork from a message and answering an
-elicitation each need a server change first — the conversation endpoint does not say where a
+*Reprioritize* and *Authorize merge* are not in the app yet, nor are image and file attachments.
+Fork from a message and answering an elicitation each need a server change first — the conversation endpoint does not say where a
 message sits in the transcript the fork service counts, and no route lists a session's pending
 elicitations — and come in their own change. The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.
