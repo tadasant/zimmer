@@ -23,7 +23,10 @@ final class InteractionUITests: XCTestCase {
         let refusal = app.descendants(matching: .any)["prompt.refusal"]
         XCTAssertTrue(refusal.waitForExistence(timeout: timeout), "Database is required")
 
-        app.buttons["prompt.field.database"].tap()
+        let database = app.buttons["prompt.field.database"].exists
+            ? app.buttons["prompt.field.database"]
+            : app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Database'")).firstMatch
+        database.tap()
         app.buttons["staging"].firstMatch.tap()
         let batch = app.textFields["prompt.field.batch_size"]
         batch.tap()
@@ -46,20 +49,22 @@ final class InteractionUITests: XCTestCase {
 
     func test_forking_at_a_message_opens_the_fork() throws {
         let app = launch(1038)
-        let message = app.descendants(matching: .any)["detail.message.1"]
+        // Message 0 is the person's request; 1 is a tool call, hidden by default; 2 is the answer.
+        let message = app.descendants(matching: .any)["detail.message.0"]
         XCTAssertTrue(message.waitForExistence(timeout: timeout))
+        XCTAssertTrue(app.descendants(matching: .any)["detail.message.2"].exists)
         message.press(forDuration: 1.0)
-        let fork = app.buttons["message.fork"]
+        let fork = app.buttons["Fork from Here"].firstMatch
         XCTAssertTrue(fork.waitForExistence(timeout: timeout))
         fork.tap()
-        let confirm = app.buttons["fork.confirm"]
+        let confirm = app.buttons["Fork"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
 
         // The fork opens on top: its own number, and the conversation up to the message.
         XCTAssertTrue(app.navigationBars["#1043"].waitForExistence(timeout: timeout))
-        XCTAssertTrue(app.descendants(matching: .any)["detail.message.1"].waitForExistence(timeout: timeout))
-        XCTAssertFalse(app.descendants(matching: .any)["detail.message.2"].exists, "nothing after the fork point")
+        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["detail.message.2"]), "nothing after the fork point")
+        XCTAssertTrue(app.descendants(matching: .any)["detail.message.0"].exists)
     }
 
     // MARK: - Helpers

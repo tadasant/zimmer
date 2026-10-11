@@ -108,7 +108,7 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   quietly. They go with the message however it is delivered: now, queued behind a turn, or with
   *Send Now*.
 - **Answers an MCP server's prompt** (an elicitation). A session stopped on one shows an
-  *Approval Needed* card at the top, as the web UI shows its banner. Tapping it opens the prompt's
+  *Approval Needed* card above the conversation, as the web UI shows its banner. Tapping it opens the prompt's
   form, one control per field in the banner's order: a switch, a menu of choices, a number or a
   text field. *Accept* sends the fields. A required field left empty is refused in the app, by name,
   before anything is sent. *Decline* refuses, and *Dismiss Without Answering* tells the server

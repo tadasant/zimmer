@@ -61,11 +61,12 @@ final class InteractionTests: XCTestCase {
             .init(key: "tone", title: "Tone", kind: .choice(["warm", "dry"])),
         ])
 
-        let content = try form.content(from: ["to": " team@ ", "count": "4", "ratio": ""], toggles: [:])
+        let content = try form.content(from: ["to": " team@ ", "count": "-4", "ratio": ""], toggles: [:])
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
 
         XCTAssertEqual(object["to"] as? String, "team@")
-        XCTAssertEqual(object["count"] as? Int, 4)
+        XCTAssertEqual(object["count"] as? Int, -4)
+        XCTAssertEqual(try form.content(from: ["to": "x", "ratio": "1,5"], toggles: [:]).contains(#""ratio":1.5"#), true, "a comma decimal is read")
         XCTAssertTrue(object["ratio"] is NSNull)
         XCTAssertEqual(object["urgent"] as? Bool, false)
         XCTAssertTrue(object["tone"] is NSNull)
