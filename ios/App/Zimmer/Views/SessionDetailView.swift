@@ -94,6 +94,11 @@ final class SessionDetailModel: ObservableObject {
                 Haptics.failure()
                 return
             }
+            guard attachments.reduce(0, { $0 + $1.data.count }) + attachment.data.count <= MessageAttachment.maxTotalBytes else {
+                notice = "\(attachment.filename) would take this message over its 75 MB of attachments."
+                Haptics.failure()
+                continue
+            }
             attachments.append(attachment)
         }
     }
