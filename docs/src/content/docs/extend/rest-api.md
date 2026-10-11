@@ -1169,8 +1169,10 @@ With an API key:
   already hold — from a poll response or from the web UI's own `/elicitations/:id/respond` route —
   works here too. A session token does not reach it.
 - `GET /sessions/:session_id/elicitations` — the session's elicitations still waiting on an answer,
-  oldest first, as `{elicitations: [{id, request_id, mode, message, requested_schema, tool_name,
-  context, created_at, expires_at}]}`: what the web UI draws a banner for. One past its deadline is
+  oldest first, as `{elicitations: [{id, request_id, mode, message, requested_schema, field_order,
+  tool_name, context, created_at, expires_at}]}`: what the web UI draws a banner for. `field_order`
+  lists `requested_schema`'s properties in the order the banner draws them, because a JSON object's
+  key order does not survive most decoders. One past its deadline is
   expired by the read, as a poll would, and not listed.
 
 The [iOS app](/extend/ios-app/)'s token reaches that list and `respond`, nothing else here.

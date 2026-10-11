@@ -175,7 +175,8 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_response :success
     listed = JSON.parse(response.body)["elicitations"]
     assert_equal [ open_prompt.id ], listed.map { |e| e["id"] }, "only the prompt that can still be answered"
-    assert_equal({ "type" => "object" }, listed.first["requested_schema"])
+    assert_equal %w[to confirmed], listed.first["field_order"]
+    assert_equal "boolean", listed.first.dig("requested_schema", "properties", "confirmed", "type")
 
     patch "/api/v1/elicitations/#{open_prompt.id}/respond", params: { action_type: "accept", content: { confirmed: true } },
       headers: headers, as: :json
@@ -231,7 +232,8 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
 
   def create_elicitation(session, message:, expires_at: 10.minutes.from_now)
     Elicitation.create!(session: session, request_id: "req-#{SecureRandom.hex(6)}", mode: "form", message: message,
-      requested_schema: { type: "object" }, expires_at: expires_at)
+      requested_schema: { type: "object", properties: { to: { type: "string" }, confirmed: { type: "boolean" } } },
+      expires_at: expires_at)
   end
 
   def build_zimmer_session(**attrs)
