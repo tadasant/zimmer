@@ -15,7 +15,8 @@ public protocol SessionDetailExtrasAPI: Sendable {
     func moveQueued(_ id: Int, message: Int, to position: Int) async throws -> QueuedMessage
     /// Deliver a queued message now, ending the turn in flight — the web UI's queue "Send now".
     func sendQueuedNow(_ id: Int, message: Int) async throws
-    /// One page of the session's log, newest first.
+    /// One page of the session's log, newest first, without the raw CLI output — the web
+    /// UI's *Show Logs*.
     func logs(_ id: Int, page: Int) async throws -> LogPage
     func subagentTranscripts(_ id: Int) async throws -> [SubagentTranscriptSummary]
     /// A subagent's transcript, read into messages.
@@ -57,7 +58,7 @@ extension ZimmerHTTPClient {
 
     public func logs(_ id: Int, page: Int) async throws -> LogPage {
         let segment = ZimmerPathComponent(String(id))
-        let response: LogsResponse = try await get("/api/v1/sessions/\(segment)/logs", query: ["page": String(page), "per_page": "50"])
+        let response: LogsResponse = try await get("/api/v1/sessions/\(segment)/logs", query: ["page": String(page), "per_page": "50", "exclude_level": "verbose"])
         let pages = response.pagination?.total_pages ?? 1
         return LogPage(entries: response.logs, hasMore: page < pages)
     }

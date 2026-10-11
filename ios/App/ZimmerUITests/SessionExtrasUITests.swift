@@ -27,9 +27,12 @@ final class SessionExtrasUITests: XCTestCase {
         app.buttons["queue.edit.save"].tap()
         XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["queue.message.501"], "Please."))
 
-        // Delete the second.
+        // Delete the second, after the confirmation the web UI asks for too.
         app.buttons["queue.actions.502"].tap()
         app.buttons["Delete"].firstMatch.tap()
+        let confirmDelete = app.sheets.buttons["Delete"].firstMatch
+        XCTAssertTrue(confirmDelete.waitForExistence(timeout: timeout))
+        confirmDelete.tap()
         XCTAssertTrue(waitForDisappearance(second), "a deleted message leaves the queue")
 
         // Send the first now: it becomes the next turn, and the queue is empty.

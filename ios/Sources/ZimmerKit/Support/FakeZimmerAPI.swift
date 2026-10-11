@@ -450,7 +450,7 @@ extension FakeZimmerAPI {
         let now = Date()
         let lines = [
             ("Turn started", "info", 2.0), ("Cloned the repository", "info", 9.0),
-            ("MCP server playwright took 41s to start", "warn", 9.5), ("Session created", "info", 10.0),
+            ("MCP server playwright took 41s to start", "warning", 9.5), ("Session created", "info", 10.0),
         ]
         let entries = lines.enumerated().map { offset, line in
             LogEntry(id: session.id * 100 + offset, content: line.0, level: line.1, createdAt: now.addingTimeInterval(-line.2 * 60))
