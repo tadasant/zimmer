@@ -867,20 +867,22 @@ the collector and its rules live in `tadasant-internal`, not here.
 ### A single tick cron fails to enqueue runs a grace late, and a second one pages a whole cadence late
 
 GoodJob does not retry a cron enqueue or catch up a missed tick, so a transient database error at
-exactly 16:00 used to mean a 4-hourly key's job never ran that tick, and the key paged from 18:00
-until the 20:00 tick landed ([#1288](https://github.com/tadasant/zimmer/issues/1288)).
-`SystemHealthMonitorJob` now puts that tick back: a key with nothing holding its slot that owes
-exactly one witnessed tick gets it re-enqueued, with the tick's own `cron_at`, on the first check
-that finds it stale (see
-[the page](/operate/background-jobs/#a-sweep-that-stops-is-noticed-cron-freshness)). Two edges
+exactly 16:00 leaves a 4-hourly key with no job for that tick
+([#1288](https://github.com/tadasant/zimmer/issues/1288)). `SystemHealthMonitorJob` puts it back:
+a key with nothing holding its slot that owes exactly one witnessed tick gets it re-enqueued, with
+the tick's own `cron_at`, on the first check that finds it stale (see
+[the page](/operate/background-jobs/#a-sweep-that-stops-is-noticed-cron-freshness)). Three edges
 remain. The recovered job runs one grace late (two hours for a 4-hourly or daily key), because
-that is when the key is first judged stale. And the recovery is offered once: a key whose newest
-row was itself a recovery is not recovered again, so a key whose cron task died for good pages
-after its *second* lost tick rather than its first. For a daily key that is a page 26 hours after
-the first miss instead of 2, with the first day's job run late in between. Only keys whose
-interval is longer than their grace qualify. A faster key that loses one tick catches up on its
-own next tick and never reads stale for it, and one that has missed several is stopped, not lost,
-and pages as before.
+that is when the key is first judged stale, so a key offset from its neighbours to spread load
+(`claude_code_update` at 06:00, `cert_expiry_monitor` at 07:00) runs beside them that once. The
+recovery is offered once: a key whose newest row was itself a recovery is not recovered again, so
+a key whose cron task died for good pages after its *second* lost tick rather than its first. For
+a daily key that is a page 26 hours after the first miss instead of 2, with the first day's job
+run late in between. And a recovered row is recognised by being created a whole grace after its
+`cron_at`, which holds only while GoodJob's `cron_graceful_restart_period` stays unset. Only keys
+whose interval is longer than their grace qualify. A faster key that loses one tick catches up on
+its own next tick and never reads stale for it, and one that has missed several is stopped, not
+lost, and pages.
 
 Two blunter edges are in the safe direction. Enabling or disabling *any* cron key in the GoodJob
 dashboard resets every key's lower bound, since GoodJob keeps all the switches in one settings row.

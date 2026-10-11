@@ -1591,7 +1591,7 @@ with the tick's own `cron_at`, so the job is the one cron would have written: sa
 singleton's concurrency limit applied at enqueue, and the `(cron_key, cron_at)` unique index making
 a repeat a no-op. It logs a WARN, `Cron lost a tick: <key> ... re-enqueued it`, which reaches
 VictoriaLogs without paging, and the key reads `fresh` from the next check. A refused or raising
-enqueue is not a recovery: it logs the WARN with why, and the key streaks and pages as before.
+enqueue is not a recovery: it logs the WARN with why, and the key streaks and pages. A `false` from the unique index, because cron's own insert committed late, is told apart by finding the row, and counts as the tick arriving.
 
 A recovered row is recognisable afterwards because it was created at least a whole grace after its
 `cron_at`, where cron writes a tick within seconds. A key whose newest row is one has lost two

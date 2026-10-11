@@ -404,7 +404,9 @@ class CronFreshness
   # Was the newest row enqueued by the monitor's recovery rather than by cron? Cron
   # enqueues a tick within seconds of its fire time; a recovery only happens once the
   # tick is past its grace, at least GRACE_FLOOR late, and carries the tick's own
-  # `cron_at`. So a row created a whole grace after its tick is a recovery.
+  # `cron_at`. So a row created a whole grace after its tick is a recovery. That rests
+  # on GoodJob's `cron_graceful_restart_period` staying unset: its catch-up enqueues
+  # are late cron rows too, and would read as recoveries.
   def recovered_tick?(job, grace)
     job.present? && job.cron_at.present? && job.created_at - job.cron_at >= grace
   end

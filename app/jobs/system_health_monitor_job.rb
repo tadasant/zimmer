@@ -149,27 +149,34 @@ class SystemHealthMonitorJob < ApplicationJob
     stale.select do |reading|
       next false unless reading[:lost_tick]
 
+      recovered, outcome = recover_lost_tick(reading)
       tick = reading[:lost_tick].utc.iso8601
-      if GoodJob::CronEntry.find(reading[:key]).enqueue(reading[:lost_tick])
-        Rails.logger.warn(
-          "[SystemHealthMonitorJob] Cron lost a tick: #{reading[:key]} (#{reading[:job_class]}) produced no " \
-          "job for #{tick} although the cron manager was running; re-enqueued it"
-        )
-        true
-      else
-        Rails.logger.warn(
-          "[SystemHealthMonitorJob] Cron lost a tick: #{reading[:key]} produced no job for #{tick}, " \
-          "and re-enqueueing it was refused"
-        )
-        false
-      end
-    rescue StandardError => e
       Rails.logger.warn(
-        "[SystemHealthMonitorJob] Cron lost a tick: #{reading[:key]} produced no job for #{tick}, " \
-        "and re-enqueueing it failed: #{e.class}: #{e.message}"
+        "[SystemHealthMonitorJob] Cron lost a tick: #{reading[:key]} (#{reading[:job_class]}) produced no job " \
+        "for #{tick} although the cron manager was running; #{outcome}"
       )
-      false
+      recovered
     end
+  end
+
+  # What became of one recovery: whether the tick now exists, and the clause the WARN
+  # ends on. `enqueue` answers
+  # `false` both when the singleton's concurrency check refuses it and when the
+  # `(cron_key, cron_at)` unique index finds the tick already written, so a `false`
+  # is told apart by looking for the row: a cron insert that committed late is the
+  # tick arriving, not a refusal. The enabled check is the one GoodJob's cron manager
+  # makes before each enqueue, for a key switched off since the report was read.
+  def recover_lost_tick(reading)
+    entry = GoodJob::CronEntry.find(reading[:key])
+    return [ false, "not re-enqueued: the key was disabled in the GoodJob dashboard" ] unless entry.enabled?
+    return [ true, "re-enqueued it" ] if entry.enqueue(reading[:lost_tick])
+    if GoodJob::Job.exists?(cron_key: reading[:key], cron_at: reading[:lost_tick])
+      return [ true, "cron's own enqueue for it has since landed" ]
+    end
+
+    [ false, "re-enqueueing it was refused" ]
+  rescue StandardError => e
+    [ false, "re-enqueueing it failed: #{e.class}: #{e.message}" ]
   end
 
   # The stale keys this page speaks for. While the backlog gate is itself critical, a

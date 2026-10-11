@@ -347,6 +347,23 @@ class CronFreshnessTest < ActiveSupport::TestCase
     refute warm[:last_tick_recovered]
   end
 
+  test "a daily key's lost tick is offered once its two-hour cap has passed, and a never-run key's too" do
+    yesterday = Time.new(2026, 9, 10, 6, 0, 0)
+    six = Time.new(2026, 9, 11, 6, 0, 0)
+    cron_row("daily", enqueued: yesterday, finished: yesterday + 30)
+    ticking("clock", every: 1.minute, window: (six - 5.minutes)..(six + 5.minutes))
+    entries = [ entry(:daily, "0 6 * * *"), entry(:clock, "* * * * *") ]
+
+    assert_nil reading(report(entries, now: six + 1.hour, cron_running_since: yesterday), :daily)[:lost_tick],
+               "inside the grace nothing is lost yet"
+    assert_equal six, reading(report(entries, now: six + 2.hours, cron_running_since: yesterday), :daily)[:lost_tick]
+
+    GoodJob::Job.where(cron_key: "daily").delete_all
+    never = reading(report(entries, now: six + 2.hours, cron_running_since: yesterday), :daily)
+    assert_equal :stale, never[:state]
+    assert_equal six, never[:lost_tick]
+  end
+
   test "no lost tick is offered for a key that owes more than one, is held, or was not witnessed" do
     # A five-minute key stale for two hours has missed twenty ticks: stopped, not lost.
     cron_row("sweep", enqueued: NOW - 2.hours, finished: NOW - 2.hours + 5)
