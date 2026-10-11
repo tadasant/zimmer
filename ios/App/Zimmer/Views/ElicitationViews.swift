@@ -132,10 +132,11 @@ struct ElicitationSheet: View {
                 ForEach(options, id: \.self) { Text($0).tag($0) }
             }
             .pickerStyle(.menu)
+            .labelsHidden()
             .accessibilityIdentifier("prompt.field.\(field.key)")
         case let .number(integer):
             TextField(field.placeholder ?? (integer ? "Whole number" : "Number"), text: binding(field.key))
-                .keyboardType(integer ? .numberPad : .decimalPad)
+                .keyboardType(.numbersAndPunctuation)
                 .accessibilityIdentifier("prompt.field.\(field.key)")
         case .text:
             TextField(field.placeholder ?? "", text: binding(field.key), axis: .vertical)

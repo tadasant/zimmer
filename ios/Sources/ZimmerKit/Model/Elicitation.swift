@@ -117,7 +117,7 @@ public struct ElicitationForm: Hashable, Sendable {
                     object[field.key] = NSNull()
                 } else if integer, let value = Int(raw) {
                     object[field.key] = value
-                } else if !integer, let value = Double(raw) {
+                } else if !integer, let value = Double(raw.replacingOccurrences(of: ",", with: ".")) {
                     object[field.key] = value
                 } else {
                     throw ElicitationFormError.notANumber(field.title)

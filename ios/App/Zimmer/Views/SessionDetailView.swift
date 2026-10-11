@@ -192,7 +192,12 @@ final class SessionDetailModel: ObservableObject {
             await load()
             return nil
         } catch let failure as ZimmerError {
-            if case .unauthorized = failure { report(failure) }
+            switch failure {
+            case .unauthorized: report(failure)
+            case .http(status: 403, _): break
+            // Answered elsewhere, or expired: the card goes when the list is read again.
+            default: await load()
+            }
             Haptics.failure()
             return failure.userMessage
         } catch {
