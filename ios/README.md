@@ -160,7 +160,8 @@ control templates, with a depth of three, and requires voice as the primary moda
   any archive or reply. It is tested on Linux.
 - `App/Zimmer/CarPlay/CarPlaySceneDelegate.swift` performs its effects. It uses a
   `CPListTemplate` root, a `CPActionSheetTemplate` per row, and a `CPVoiceControlTemplate` while
-  talking. `VoiceIO` uses `AVSpeechSynthesizer` and `SFSpeechRecognizer`. The tap and the
+  talking. `VoiceIO` uses `AVSpeechSynthesizer` and `SFSpeechRecognizer`, on-device only, so spoken
+  replies never go to Apple's servers. The tap and the
   recognition handler are built in a `nonisolated` helper, because a closure formed on the main
   actor and called from an audio thread is a Swift 6 runtime crash.
 - **Inert until the grant**, as Motet's scene is. `App/Zimmer/CarPlay.entitlements` holds the key

@@ -201,6 +201,10 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
                 // not sit through several requests' silence.
                 if acted { await self.refresh() }
                 template.activateVoiceControlState(withIdentifier: VoiceState.listening)
+                guard VoiceIO.canListen else {
+                    await self.voice.speak("This iPhone can't recognise speech on its own, so use the buttons on the screen.")
+                    return
+                }
                 guard let heard = await self.voice.listen(), let command = VoiceCommand(heard) else {
                     misses += 1
                     if misses >= 2 { await self.voice.speak("I'll leave it there."); return }

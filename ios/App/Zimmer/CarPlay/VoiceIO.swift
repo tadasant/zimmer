@@ -67,6 +67,13 @@ final class VoiceIO: NSObject, AVSpeechSynthesizerDelegate {
         current = nil
     }
 
+    /// Whether this phone can recognise speech without a server. When it can't, the car
+    /// says so rather than listening for nothing.
+    nonisolated static var canListen: Bool {
+        guard let recognizer = SFSpeechRecognizer() else { return false }
+        return recognizer.supportsOnDeviceRecognition
+    }
+
     /// One dictated phrase: listens until the recogniser calls it final, the driver has
     /// been quiet for a moment, or `timeout` passes. Nil when permission is missing or
     /// nothing was heard.
@@ -108,9 +115,15 @@ final class VoiceIO: NSObject, AVSpeechSynthesizerDelegate {
     /// recognition handler run on audio and Speech threads, and a closure formed in a
     /// main-actor function would be main-actor-isolated — which Swift 6 enforces at run
     /// time, as a crash. Formed here, they carry no isolation.
+    ///
+    /// Recognition is on the device only. A driver's reply is the text of a message to a
+    /// session, and server recognition would send that audio to Apple; where the device
+    /// cannot recognise on its own, the car does not listen at all.
     nonisolated private static func startRecognition() -> RecognitionSession? {
-        guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else { return nil }
+        guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable,
+              recognizer.supportsOnDeviceRecognition else { return nil }
         let request = SFSpeechAudioBufferRecognitionRequest()
+        request.requiresOnDeviceRecognition = true
         request.shouldReportPartialResults = true
         let engine = AVAudioEngine()
         let input = engine.inputNode
