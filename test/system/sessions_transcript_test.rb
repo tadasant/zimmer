@@ -117,9 +117,9 @@ class SessionsTranscriptTest < ApplicationSystemTestCase
     #
     # The scroll and the measurement are one script, not two round-trips, because
     # the page scrolls itself in between. A panel rendered open is a panel the
-    # app pins to the newest row: session-scroll does it on connect, and the
-    # disclosure's parser-fired `toggle` queues transcript-panel#scrollToBottom
-    # for whenever the eager frame lands. A frame landing between a separate
+    # app pins to the newest row: session-scroll and auto-scroll do it after
+    # connect, and the disclosure's parser-fired `toggle` queues
+    # transcript-panel#scrollToBottom for whenever the eager frame lands. A frame landing between a separate
     # scrollTo and the read puts the disclosure hundreds of pixels ABOVE the
     # viewport and fails the precondition on a layout that satisfies it
     # ([CI run 38169570425](https://github.com/tadasant/zimmer/actions/runs/38169570425)).
