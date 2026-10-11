@@ -1038,8 +1038,10 @@ class Api::V1::SessionsController < Api::BaseController
   # GET /api/v1/sessions/:id/conversation
   # The user and assistant messages of the transcript, oldest first, as data
   # rather than as rendered text: { messages: [{ role, content, timestamp,
-  # has_tool_use, has_tool_result }], total, truncated }. `limit` (default 50,
-  # max 200) keeps the newest that many; each content is cut at 4,000 characters.
+  # has_tool_use, has_tool_result, transcript_index }], total, truncated }.
+  # `limit` (default 50, max 200) keeps the newest that many; each content is cut
+  # at 4,000 characters. `transcript_index` is what `fork` takes as message_index
+  # to fork at that message.
   CONVERSATION_DEFAULT_LIMIT = 50
   CONVERSATION_MAX_LIMIT = 200
   CONVERSATION_CONTENT_LIMIT = 4_000
@@ -1049,7 +1051,7 @@ class Api::V1::SessionsController < Api::BaseController
     messages = @session.formatted_conversation
     render json: {
       messages: messages.last(limit).map do |message|
-        message.slice(:role, :timestamp, :has_tool_use, :has_tool_result)
+        message.slice(:role, :timestamp, :has_tool_use, :has_tool_result, :transcript_index)
           .merge(content: message[:content].to_s.truncate(CONVERSATION_CONTENT_LIMIT, omission: "\n…[truncated]"))
       end,
       total: messages.size,

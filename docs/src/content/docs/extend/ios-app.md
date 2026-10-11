@@ -199,9 +199,11 @@ under the built-in `zimmer-ios` client:
    [web sign-in](/auth/web-sign-in/) does the rest, as it does in a browser: Google, restricted to
    the deployment's domain, then the second factor. Zimmer then shows a consent screen for
    "Zimmer for iOS". It asks for a [connection level](/auth/mcp-authorization-server/#relay-only-or-acts-on-my-behalf) like every
-   other OAuth connection. Both levels reach the same API. **Acts on my behalf** records what you
-   send from the app (follow-ups, Quick Router prompts) as your message, the way it does for an
-   assistant; **Relay only** records nothing.
+   other OAuth connection. Both levels reach the same API, with one exception. **Acts on my behalf**
+   records what you send from the app (follow-ups, Quick Router prompts) as your message, the way it
+   does for an assistant, and is the only level that may answer an MCP server's prompt (an
+   elicitation), because an answer approves or refuses what that server does next. **Relay only**
+   records nothing, and may read a prompt but not answer it.
 3. Approving sends the sheet to `com.tadasant.zimmer:/oauth/callback` with a 60-second code. The app
    redeems it at `/oauth/token` on the app origin with the verifier only it holds.
 4. The access and refresh tokens go into the Keychain (`AfterFirstUnlockThisDeviceOnly`). The app

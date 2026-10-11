@@ -1304,6 +1304,11 @@ class Session < ApplicationRecord
 
   # Format transcript as conversation messages for display
   # Groups related messages and extracts all content properly
+  #
+  # Each message carries `transcript_index`, its event's position in
+  # parsed_transcript — the index space ForkSessionService.parsed_messages slices,
+  # since both parse one event per non-blank line and drop what does not parse —
+  # so a reader can fork at a message it was shown.
   def formatted_conversation
     entries = parsed_transcript
     return [] if entries.empty?
@@ -1313,11 +1318,11 @@ class Session < ApplicationRecord
     # Filter to only user and assistant type messages. Claude Code's synthetic
     # "No response requested." resume stub is dropped: the model never said it,
     # and SendPushNotificationJob reads the last assistant message from here.
-    conversation_entries = entries.select do |e|
+    conversation_entries = entries.each_with_index.select do |e, _index|
       e["type"].in?([ "user", "assistant" ]) && !ClaudeTranscriptNormalizer.resume_stub?(e)
     end
 
-    conversation_entries.each do |entry|
+    conversation_entries.each do |entry, transcript_index|
       message_data = entry["message"] || {}
       role = message_data["role"] || entry["type"]
       timestamp = entry["timestamp"]
@@ -1365,7 +1370,8 @@ class Session < ApplicationRecord
         content: content_parts.map { |p| p[:text] }.join("\n\n"),
         timestamp: timestamp,
         has_tool_use: content_parts.any? { |p| p[:type] == "tool_use" },
-        has_tool_result: content_parts.any? { |p| p[:type] == "tool_result" }
+        has_tool_result: content_parts.any? { |p| p[:type] == "tool_result" },
+        transcript_index: transcript_index
       }
     end
 
