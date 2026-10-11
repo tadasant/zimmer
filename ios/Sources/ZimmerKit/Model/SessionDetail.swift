@@ -76,19 +76,24 @@ public struct SessionHierarchy: Hashable, Sendable, Decodable {
         public var status: SessionStatus
         public var depth: Int
         public var current: Bool
+        /// Sessions that queued or interrupted this one and so count as additional seniors —
+        /// the web UI's "also senior" chips, each of which can be detached.
+        public var uncles: [Int]
 
         enum CodingKeys: String, CodingKey {
             case id, title, status, depth, current
             case agentRoot = "agent_root"
+            case uncles = "uncle_session_ids"
         }
 
-        public init(id: Int, title: String?, agentRoot: String? = nil, status: SessionStatus, depth: Int, current: Bool = false) {
+        public init(id: Int, title: String?, agentRoot: String? = nil, status: SessionStatus, depth: Int, current: Bool = false, uncles: [Int] = []) {
             self.id = id
             self.title = title
             self.agentRoot = agentRoot
             self.status = status
             self.depth = depth
             self.current = current
+            self.uncles = uncles
         }
 
         public init(from decoder: Decoder) throws {
@@ -99,6 +104,7 @@ public struct SessionHierarchy: Hashable, Sendable, Decodable {
             status = (try? container.decode(SessionStatus.self, forKey: .status)) ?? .unknown("unknown")
             depth = (try? container.decodeIfPresent(Int.self, forKey: .depth)) ?? 0
             current = (try? container.decodeIfPresent(Bool.self, forKey: .current)) ?? false
+            uncles = (try? container.decodeIfPresent([Int].self, forKey: .uncles)) ?? []
         }
 
         public var displayTitle: String {
