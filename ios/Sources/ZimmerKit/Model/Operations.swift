@@ -32,14 +32,13 @@ public struct InboxNotification: Hashable, Sendable, Decodable, Identifiable {
         self.session = session
     }
 
-    /// The line the web UI's inbox shows for the type.
+    /// The line the web UI's inbox shows for the type (`_notification_row.html.erb`).
     public var headline: String {
         switch type {
         case "needs_input": return "Needs your input"
-        case "completed": return "Finished"
-        case "failed": return "Failed"
-        case let other?: return other.replacingOccurrences(of: "_", with: " ").capitalized
-        case nil: return "Notification"
+        case "session_failed": return "Session failed"
+        case "session_complete": return "Session completed"
+        default: return "Status update"
         }
     }
 }
@@ -105,15 +104,32 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
     public var isEnabled: Bool { status == "enabled" }
 }
 
-/// What invoking a trigger did: the session it started (or re-used), and the server's sentence.
+/// What invoking a trigger did, as the web UI's Invoke tells them apart.
 public struct TriggerInvocation: Hashable, Sendable {
+    public enum Outcome: Hashable, Sendable {
+        /// It started (or re-used) a session.
+        case started
+        /// A burst of fires was folded into a notice session; the one asked for was not made.
+        case burstNotice
+        /// It found a session of its own still pending, and started nothing (409).
+        case pendingSession
+        /// The session it re-uses cannot take another turn (422).
+        case notReusable
+    }
+
+    public var outcome: Outcome
+    /// The session to open: the one started, the burst notice, or the one in the way.
     public var sessionID: Int?
     public var message: String
 
-    public init(sessionID: Int?, message: String) {
+    public init(outcome: Outcome = .started, sessionID: Int?, message: String) {
+        self.outcome = outcome
         self.sessionID = sessionID
         self.message = message
     }
+
+    /// Whether the session that was asked for now exists.
+    public var started: Bool { outcome == .started }
 }
 
 /// The web UI's Costs page, in the parts a phone shows (`GET /api/v1/costs`): the window's
@@ -305,4 +321,5 @@ struct TriggerInvokeResponse: Decodable {
     struct SessionRef: Decodable { let id: Int }
     let session: SessionRef?
     let message: String?
+    let burst_notice: Bool?
 }

@@ -35,7 +35,11 @@ final class AppModel: ObservableObject {
     /// The navigation stack: session ids, so a push or a deep link can open one.
     @Published var path: [Int] = [] {
         // Opening a session from anywhere (a push, the inbox, a trigger) shows the Sessions tab.
-        didSet { if !path.isEmpty, tab != .sessions { tab = .sessions } }
+        didSet {
+            if !path.isEmpty, tab != .sessions { tab = .sessions }
+            // A session opened from a push or a notification has usually just been read.
+            if !path.isEmpty { Task { await refreshUnreadCount() } }
+        }
     }
     /// The tab bar: the web UI's top navigation, as iOS tabs.
     @Published var tab: AppTab = .sessions

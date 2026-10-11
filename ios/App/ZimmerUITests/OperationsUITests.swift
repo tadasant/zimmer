@@ -32,7 +32,7 @@ final class OperationsUITests: XCTestCase {
         let nightly = app.descendants(matching: .any)["trigger.5"].firstMatch
         nightly.swipeLeft()
         app.buttons["Invoke"].firstMatch.tap()
-        let confirm = app.buttons["Invoke"].firstMatch
+        let confirm = app.sheets.buttons["Invoke Nightly dependency sweep"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
         XCTAssertTrue(app.staticTexts["detail.title"].waitForExistence(timeout: timeout), "the session it started opens")
