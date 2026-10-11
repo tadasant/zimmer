@@ -58,7 +58,8 @@ class Api::V1::SessionsController < Api::BaseController
   # Before the body is parsed: inline attachments make a follow-up the one request
   # here that can be large, and a body over the limit is refused unread.
   prepend_before_action :refuse_an_oversized_follow_up, only: [ :follow_up ]
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat, :authorize_merge ]
+  before_action :require_a_person_on_the_app, only: [ :authorize_merge, :reprioritize ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -754,6 +755,51 @@ class Api::V1::SessionsController < Api::BaseController
       render json: { session: session_json(result.forked_session), message: "Session forked successfully" }, status: :created
     else
       render_api_error("Fork failed", result.error, status: :unprocessable_entity)
+    end
+  end
+
+  # POST /api/v1/sessions/:id/authorize_merge
+  #
+  # The User view's Merge button, from the iOS app: a person has decided this
+  # session's PR should land, and the tap is the sign-off (Sessions::AuthorizeMerge
+  # says why that is the one sanctioned route to an agent merging its own work).
+  # Only a person may give it, so only the app's token on a grant that acts as
+  # its approver reaches this action (#require_a_person_on_the_app). An API key is
+  # the fleet's, and an agent authorizing its own merge is exactly what the button
+  # exists to prevent. The sign-off is recorded as that person's message, as the
+  # web UI records the click.
+  #
+  # 200 with `{outcome, message, pr_url}` when the message went (`sent`) or was
+  # already sent (`already_sent`); 422 with the reason otherwise.
+  def authorize_merge
+    result = Sessions::AuthorizeMerge.call(session: @session, surface: "the Zimmer iOS app")
+
+    if result.sent?
+      HumanMessageCapture.record_assistant_message(session: @session, grant: native_app_grant,
+        content: "Merge #{result.pr_url}", entry_point: "ios_app.authorize_merge")
+    end
+
+    render json: { outcome: result.outcome, message: result.message, pr_url: result.pr_url },
+      status: (result.ok? ? :ok : :unprocessable_entity)
+  end
+
+  # POST /api/v1/sessions/reprioritize
+  #
+  # The User view's Reprioritize button, from the iOS app: hand the board to the
+  # deployment's durable reprioritizing session (Sessions::DashboardReprioritizer).
+  # Re-ranking moves which spot sessions start first, so it is a person's call:
+  # the app's token on a grant that acts as its approver, never an API key.
+  #
+  # 200 with `{outcome, message, session}` when the job was handed over
+  # (`fired`); 422 with the reason for any other outcome (a burst suppressed, a
+  # session still pending), and with no session, since none was given the job.
+  def reprioritize
+    result = Sessions::DashboardReprioritizer.call
+
+    if result.fired?
+      render json: { outcome: result.outcome, message: result.message, session: session_json(result.session) }
+    else
+      render json: { outcome: result.outcome, message: result.message }, status: :unprocessable_entity
     end
   end
 
@@ -1453,6 +1499,20 @@ class Api::V1::SessionsController < Api::BaseController
       images: Sessions::AttachmentDescriptors.for_the_record(attachments[:images], keys: Sessions::AttachmentDescriptors::IMAGE_KEYS) || [],
       files: Sessions::AttachmentDescriptors.for_the_record(attachments[:files], keys: Sessions::AttachmentDescriptors::FILE_KEYS) || []
     }
+  end
+
+  # The actions that stand for a person's decision: only the iOS app's token, on a
+  # grant that acts as its approver. An API key names a key, never a person, and
+  # a relay-only grant was approved to carry messages, not to decide.
+  def require_a_person_on_the_app
+    return if native_app_request? && native_app_grant.acts_as_human?
+
+    message = if native_app_request?
+      "This sign-in may not act as you; sign in again and allow acting as you"
+    else
+      "Only a person can do this: it takes the iOS app's sign-in, acting as you, or the web UI"
+    end
+    render_api_error("Forbidden", message, status: :forbidden)
   end
 
   # A session started from the iOS app's new-session form begins with a person's
