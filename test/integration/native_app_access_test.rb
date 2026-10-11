@@ -48,6 +48,17 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_equal [ "Cloned the repo" ], session.logs.pluck(:content)
   end
 
+  test "logs can leave the verbose level out, as the web UI's Show Logs does" do
+    session = build_zimmer_session(status: :running)
+    session.logs.create!(content: "Cloned the repo", level: "info")
+    session.logs.create!(content: "raw cli output", level: Log::VERBOSE_LEVEL)
+
+    get "/api/v1/sessions/#{session.id}/logs", params: { exclude_level: Log::VERBOSE_LEVEL }, headers: bearer(token)
+
+    assert_response :success
+    assert_equal [ "Cloned the repo" ], JSON.parse(response.body)["logs"].map { |l| l["content"] }
+  end
+
   test "the app reads and manages a session's queue but adds to it only through follow_up" do
     headers = bearer(token)
     session = build_zimmer_session(status: :running)
