@@ -279,11 +279,12 @@ private struct TriggerRow: View {
                     if let root = trigger.agentRoot { Text(root).font(Theme.mono) }
                     if let last = trigger.lastTriggeredAt {
                         if trigger.agentRoot != nil { Text("·") }
-                        Text(verbatim: "fired \(Format.age(last))")
+                        let age = Format.age(last)
+                        Text(verbatim: age == "now" ? "fired just now" : "fired \(age)")
                             .accessibilityLabel("fired \(last.formatted(.relative(presentation: .named)))")
                     }
                     if let count = trigger.sessionsCreated, count > 0 {
-                        Text("·")
+                        if trigger.agentRoot != nil || trigger.lastTriggeredAt != nil { Text("·") }
                         Text(verbatim: "\(count) sessions")
                     }
                 }
@@ -313,8 +314,6 @@ struct MoreView: View {
                     .accessibilityIdentifier("more.costs")
                 NavigationLink { HealthView() } label: { row("Health", "heart.text.square", "Processes, sessions and the system") }
                     .accessibilityIdentifier("more.health")
-            } header: {
-                Text("The web UI's other pages").themeLabel()
             }
             .themeRows()
             Section {
@@ -462,7 +461,9 @@ struct HealthView: View {
                     row(report.overall, title: "Overall").accessibilityIdentifier("health.overall")
                 } footer: {
                     if let at = report.generatedAt {
-                        Text(verbatim: "Checked \(Format.age(at)) ago").font(.caption).foregroundStyle(Theme.inkMute)
+                        // The report is stamped as it is read, so "just now" is the usual case.
+                        let age = Format.age(at)
+                        Text(verbatim: age == "now" ? "Checked just now" : "Checked \(age) ago").font(.caption).foregroundStyle(Theme.inkMute)
                     }
                 }
                 .themeRows()
