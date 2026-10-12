@@ -59,9 +59,12 @@ public actor FakeZimmerAPI: ZimmerAPI {
                              goalCheck: Self.sampleGoalChecks()[id], humanMessages: Self.sampleHumanMessages()[id] ?? [])
     }
 
-    public func conversation(_ id: Int) async throws -> Conversation {
+    /// As the server: the newest `limit`, positions counted from the start, capped at 200.
+    public func conversation(_ id: Int, limit: Int) async throws -> Conversation {
         _ = try find(id)
-        return Conversation(messages: conversations[id] ?? [])
+        let all = conversations[id] ?? []
+        let window = min(max(limit, 1), Conversation.maxLimit)
+        return Conversation(messages: Array(all.suffix(window)), total: all.count, truncated: all.count > window)
     }
 
     public func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult {
@@ -237,7 +240,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
             ],
             1035: [
                 ConversationMessage(id: 0, role: .user, content: "Bring staging's database up to date.", timestamp: ago(300)),
-                ConversationMessage(id: 1, role: .assistant, content: "Production runs Postgres 16. Should staging match it, or try 17 first?", timestamp: ago(41)),
+                ConversationMessage(id: 1, role: .assistant, content: "Production runs **Postgres 16**; staging is on 15. Two ways to go:\n\n- Match production: `pg_upgrade` to 16, ten minutes, no surprises.\n- Try 17 first on staging, so production's upgrade is rehearsed.\n\nThe upgrade itself is one command either way:\n\n```sh\nbin/rails db:upgrade -- --target 16\n```\n\nShould staging match it, or try 17 first?", timestamp: ago(41)),
             ],
             1044: [
                 ConversationMessage(id: 0, role: .user, content: "Zimmer iOS still doesn't have parity with PWA. There is no quick router in the corner of every screen, and it should be the most prominent thing on the main screen. With real data the detail page is too verbose and hard to parse. Make it more information dense. Do an extensive audit for parity and design, then implement it as a series of standalone slices.", timestamp: ago(3_000)),
