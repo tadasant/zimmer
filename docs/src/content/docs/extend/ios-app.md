@@ -91,8 +91,11 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   quietly. They go with the message however it is delivered: now, queued behind a turn, or with
   *Send Now*.
 - **Trashes** a session, after a confirmation, and restores one from the trash.
-- **Starts a session from a sentence** through the Quick Router (tap the pencil), then opens it,
-  **or from the full form** (touch and hold the pencil → *New Session…*): the web UI's new-session
+- **Starts a session from a sentence** through the Quick Router, then opens it. The Quick Router is
+  where the web UI puts it: a field pinned to the foot of the Sessions screen ("What do you want
+  to do?", the web board's prompt box), and a button in the bottom-right corner of every other
+  screen (the web's bubble), which opens the same field as a sheet. **Or from the full form** (the
+  pencil in the Sessions toolbar): the web UI's new-session
   form, with agent root, runtime, model, reasoning effort, prompt, title, goal (a predefined one or
   your own words), scheduling class, and the MCP servers, skills, hooks and plugins, each starting
   at the root's defaults. The create is retry-safe (`idempotency_key`), and its prompt is recorded
