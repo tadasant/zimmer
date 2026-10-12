@@ -70,11 +70,6 @@ struct SessionListView: View {
                 Task { await model.refresh() }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
-            // The web UI's prompt box, at the foot of the board where a thumb reaches it.
-            // Selecting puts the Trash bar there instead.
-            .safeAreaInset(edge: .bottom) {
-                if !editMode.isEditing { QuickRouterBar() }
-            }
     }
 
     private var list: some View {
@@ -175,6 +170,10 @@ struct SessionListView: View {
 
     private var searchableList: some View {
         list
+            // The web UI's prompt box, at the foot of the board where a thumb reaches it.
+            // Inside the searchable scope, so the bar knows when the search box has the
+            // keyboard and steps aside.
+            .safeAreaInset(edge: .bottom) { QuickRouterBar(editing: editMode.isEditing) }
             .searchable(text: $model.searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions...")
             .searchScopes($model.searchScope) { scopeTabs }
             // Debounced: a refresh per keystroke would be a request per keystroke.
