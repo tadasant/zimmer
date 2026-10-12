@@ -110,14 +110,18 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   your own words), scheduling class, and the MCP servers, skills, hooks and plugins, each starting
   at the root's defaults. The create is retry-safe (`idempotency_key`), and its prompt is recorded
   as your message when the app acts on your behalf.
-- **Has the web UI's other pages as tabs.** *Inbox* is the notifications inbox, with the unread
-  count on its badge: tap one to open its session (and mark it read), swipe to mark one read or
+- **Has the web UI's other pages as tabs**, their rows in the board's shape (one surface, hairlines,
+  compact ages). *Inbox* is the notifications inbox, with the unread count on its badge: each row
+  is the kind as a small label, the session's title, and its status, id and age; unread rows are in
+  the full ink with a dot. Tap one to open its session (and mark it read), swipe to mark one read or
   dismiss a read one, and mark all read or dismiss all read from its menu. *Triggers* lists each
-  trigger with what fires it and when it last did; turn one on or off, invoke it now (after a
+  trigger with what fires it on one line (two at most), its root, when it last fired and how many
+  sessions it has made; turn one on or off (a trigger that is off reads in the quieter ink), invoke it now (after a
   confirmation, then open the session it started), or open its last session. Creating and editing a
   trigger stay in the browser. *More* holds *Costs* (the window's total, spend by day as a chart, by
-  agent root and by model, and the most expensive sessions, each a tap away) and *Health* (the
-  overall status and each section's), read-only; Health's operator actions stay in the browser.
+  agent root and by model, and the most expensive sessions with their tokens, each a tap away) and
+  *Health* (the overall status and each section's), read-only; Health's operator actions stay in
+  the browser.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 

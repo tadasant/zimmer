@@ -41,8 +41,8 @@ struct InboxView: View {
                         .tint(Theme.Swipe.snooze)
                     }
                 }
-                .listRowBackground(Theme.surface)
-                .listRowSeparatorTint(Theme.rule)
+                .themeRows()
+                .listRowInsets(EdgeInsets(top: 9, leading: 20, bottom: 9, trailing: 16))
             }
         }
         .listStyle(.insetGrouped)
@@ -113,38 +113,40 @@ struct InboxView: View {
     }
 }
 
+/// One notification, in the board's row shape: the kind as a small label, the session's
+/// title, then one line of status, id and age. Unread rows are in the full ink with a dot;
+/// read ones in the quieter ink, as Motet dims what is done.
 private struct InboxRow: View {
     let notification: InboxNotification
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 8) {
             Circle()
                 .fill(notification.read ? Color.clear : Theme.accent)
-                .frame(width: 8, height: 8)
-                .padding(.top, 6)
-            VStack(alignment: .leading, spacing: 5) {
+                .frame(width: 7, height: 7)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(notification.headline)
-                    .font(.subheadline.weight(notification.read ? .regular : .semibold))
-                    .foregroundStyle(notification.read ? Theme.inkSoft : Theme.ink)
+                    .themeLabel(size: 10, color: notification.read ? Theme.inkMute : Theme.accent)
                 if let session = notification.session {
                     Text(session.title ?? "Session \(session.id)")
-                        .font(Theme.headline())
-                        .foregroundStyle(Theme.ink)
+                        .font(.system(.subheadline, weight: notification.read ? .medium : .semibold))
+                        .foregroundStyle(notification.read ? Theme.inkSoft : Theme.ink)
                         .lineLimit(2)
                 }
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     if let status = notification.session?.status { StatusBadge(status: status, compact: true) }
                     if let session = notification.session { Text(verbatim: "#\(session.id)").font(Theme.mono).foregroundStyle(Theme.inkMute) }
                     if let date = notification.createdAt {
                         Text("·").foregroundStyle(Theme.inkMute)
-                        Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
+                        Text(verbatim: Format.age(date))
+                            .accessibilityLabel(date.formatted(.relative(presentation: .named)))
                     }
                 }
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(Theme.inkSoft)
             }
         }
-        .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
     }
 }
@@ -171,8 +173,8 @@ struct TriggersView: View {
                     Button { invoking = trigger } label: { Label("Invoke", systemImage: "play.fill") }
                         .tint(Theme.Swipe.restore)
                 }
-                .listRowBackground(Theme.surface)
-                .listRowSeparatorTint(Theme.rule)
+                .themeRows()
+                .listRowInsets(EdgeInsets(top: 9, leading: 20, bottom: 9, trailing: 16))
                 .accessibilityElement(children: .contain)
                 .contextMenu {
                     Button { invoking = trigger } label: { Label("Invoke Now", systemImage: "play.fill") }
@@ -253,33 +255,46 @@ struct TriggersView: View {
     }
 }
 
+/// One trigger, in the board's row shape: the name, what fires it on one line, then the
+/// root, when it last fired and how many sessions it has made. A trigger that is off reads
+/// in the quieter ink.
 private struct TriggerRow: View {
     let trigger: TriggerSummary
     let toggle: () -> Void
 
     var body: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(trigger.name).font(Theme.headline()).foregroundStyle(Theme.ink)
-                ForEach(Array(trigger.conditions.enumerated()), id: \.offset) { _, condition in
-                    Text(condition.description ?? condition.type ?? "condition")
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(trigger.name)
+                    .font(.system(.subheadline, weight: .semibold))
+                    .foregroundStyle(trigger.isEnabled ? Theme.ink : Theme.inkSoft)
+                    .lineLimit(2)
+                if !trigger.conditions.isEmpty {
+                    Text(verbatim: trigger.conditions.map { $0.description ?? $0.type ?? "condition" }.joined(separator: " · "))
                         .font(.caption)
                         .foregroundStyle(Theme.inkSoft)
+                        .lineLimit(2)
                 }
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     if let root = trigger.agentRoot { Text(root).font(Theme.mono) }
                     if let last = trigger.lastTriggeredAt {
-                        Text("·").foregroundStyle(Theme.inkMute)
-                        Text("fired \(last.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)))")
+                        if trigger.agentRoot != nil { Text("·") }
+                        let age = Format.age(last)
+                        Text(verbatim: age == "now" ? "fired just now" : "fired \(age)")
+                            .accessibilityLabel("fired \(last.formatted(.relative(presentation: .named)))")
+                    }
+                    if let count = trigger.sessionsCreated, count > 0 {
+                        if trigger.agentRoot != nil || trigger.lastTriggeredAt != nil { Text("·") }
+                        Text(verbatim: "\(count) sessions")
                     }
                 }
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(Theme.inkMute)
                 if trigger.status == "failed", let lastError = trigger.lastError {
-                    Text(lastError).font(.caption).foregroundStyle(Theme.warning).lineLimit(3)
+                    Text(lastError).font(.caption).foregroundStyle(Theme.warning).lineLimit(2)
                 }
             }
-            Spacer()
+            Spacer(minLength: 4)
             Toggle("Enabled", isOn: Binding(get: { trigger.isEnabled }, set: { _ in toggle() }))
                 .labelsHidden()
                 .tint(Theme.accent)
@@ -295,17 +310,36 @@ struct MoreView: View {
     var body: some View {
         List {
             Section {
-                NavigationLink { CostsView() } label: { Label("Costs", systemImage: "dollarsign.circle") }
+                NavigationLink { CostsView() } label: { row("Costs", "dollarsign.circle", "Spend by day, root, model and session") }
                     .accessibilityIdentifier("more.costs")
-                NavigationLink { HealthView() } label: { Label("Health", systemImage: "heart.text.square") }
+                NavigationLink { HealthView() } label: { row("Health", "heart.text.square", "Processes, sessions and the system") }
                     .accessibilityIdentifier("more.health")
-                Button { showingSettings = true } label: { Label("Settings", systemImage: "gearshape") }
             }
-            .listRowBackground(Theme.surface)
+            .themeRows()
+            Section {
+                Button { showingSettings = true } label: { row("Settings", "gearshape", "Sign-in, notifications, this build") }
+            }
+            .themeRows()
         }
+        .listStyle(.insetGrouped)
         .themeGround()
         .navigationTitle("More")
         .sheet(isPresented: $showingSettings) { SettingsView() }
+    }
+
+    /// A row with a glyph, a name and a line of what is behind it.
+    private func row(_ title: String, _ symbol: String, _ detail: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(.subheadline, weight: .medium)).foregroundStyle(Theme.ink)
+                Text(detail).font(.caption).foregroundStyle(Theme.inkSoft)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 
@@ -329,7 +363,7 @@ struct CostsView: View {
             if let snapshot {
                 Section {
                     Text(snapshot.totalUSD, format: .currency(code: "USD"))
-                        .font(.system(size: 40, weight: .bold).monospacedDigit())
+                        .font(.system(size: 34, weight: .semibold).monospacedDigit())
                         .foregroundStyle(Theme.ink)
                         .contentTransition(.numericText())
                         .accessibilityIdentifier("costs.total")
@@ -346,7 +380,7 @@ struct CostsView: View {
                 } header: {
                     Text("Last \(days) days").themeLabel()
                 }
-                .listRowBackground(Theme.surface)
+                .themeRows()
                 rows("By agent root", snapshot.agentRoots)
                 rows("By model", snapshot.models)
                 if !snapshot.topSessions.isEmpty {
@@ -356,9 +390,16 @@ struct CostsView: View {
                                 app.path = [top.sessionID]
                             } label: {
                                 LabeledContent {
-                                    Text(top.costUSD, format: .currency(code: "USD")).monospacedDigit()
+                                    Text(top.costUSD, format: .currency(code: "USD")).font(.subheadline.monospacedDigit())
                                 } label: {
-                                    Text(verbatim: "#\(top.sessionID)").font(.system(.body, design: .monospaced))
+                                    HStack(spacing: 6) {
+                                        Text(verbatim: "#\(top.sessionID)").font(Theme.mono)
+                                        if let tokens = top.tokens {
+                                            Text(verbatim: "\(tokens.formatted(.number.notation(.compactName))) tokens")
+                                                .font(.caption.monospacedDigit())
+                                                .foregroundStyle(Theme.inkMute)
+                                        }
+                                    }
                                 }
                             }
                             .foregroundStyle(Theme.ink)
@@ -366,7 +407,7 @@ struct CostsView: View {
                     } header: {
                         Text("Most expensive sessions").themeLabel()
                     }
-                    .listRowBackground(Theme.surface)
+                    .themeRows()
                 }
             }
         }
@@ -382,12 +423,16 @@ struct CostsView: View {
         if !rows.isEmpty {
             Section {
                 ForEach(rows) { row in
-                    LabeledContent(row.label) { Text(row.costUSD, format: .currency(code: "USD")).monospacedDigit() }
+                    LabeledContent {
+                        Text(row.costUSD, format: .currency(code: "USD")).font(.subheadline.monospacedDigit()).foregroundStyle(Theme.ink)
+                    } label: {
+                        Text(row.label).font(.subheadline).foregroundStyle(Theme.ink)
+                    }
                 }
             } header: {
                 Text(title).themeLabel()
             }
-            .listRowBackground(Theme.surface)
+            .themeRows()
         }
     }
 
@@ -415,15 +460,19 @@ struct HealthView: View {
                 Section {
                     row(report.overall, title: "Overall").accessibilityIdentifier("health.overall")
                 } footer: {
-                    if let at = report.generatedAt { Text("Checked \(at.formatted(.relative(presentation: .named)))") }
+                    if let at = report.generatedAt {
+                        // The report is stamped as it is read, so "just now" is the usual case.
+                        let age = Format.age(at)
+                        Text(verbatim: age == "now" ? "Checked just now" : "Checked \(age) ago").font(.caption).foregroundStyle(Theme.inkMute)
+                    }
                 }
-                .listRowBackground(Theme.surface)
+                .themeRows()
                 Section {
                     ForEach(report.sections) { section in row(section, title: section.title) }
                 } header: {
                     Text("Sections").themeLabel()
                 }
-                .listRowBackground(Theme.surface)
+                .themeRows()
             }
         }
         .themeGround()
@@ -434,19 +483,19 @@ struct HealthView: View {
     }
 
     private func row(_ section: HealthReport.Section, title: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text(title).foregroundStyle(Theme.ink)
+                Text(title).font(.subheadline).foregroundStyle(Theme.ink)
                 Spacer()
                 Text(section.status.capitalized)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2.5)
                     .foregroundStyle(Self.color(section.status))
                     .background(Self.color(section.status).opacity(0.14), in: Capsule())
             }
             if let message = section.message {
-                Text(message).font(.caption).foregroundStyle(Theme.inkSoft)
+                Text(message).font(.caption).foregroundStyle(Theme.inkSoft).lineLimit(3)
             }
         }
         .accessibilityElement(children: .combine)
