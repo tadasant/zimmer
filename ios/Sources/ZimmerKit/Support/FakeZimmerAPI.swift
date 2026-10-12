@@ -169,7 +169,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
                            // title could push them off a small simulator's screen.
                            priorityClass: "spot", precedence: 5,
                            effort: EffortSummary(level: "high", source: "explicit", default: "medium", levels: ["low", "medium", "high", "xhigh", "max"]),
-                           model: "claude-opus-4-5-20260401", agentRoot: "zimmer-orchestrator", lastUserActivityAt: ago(15),
+                           // No last touch of its own, so Last Touched files it last: the rows above it
+                           // keep the places the UI tests tap, on a simulator of any height.
+                           model: "claude-opus-4-5-20260401", agentRoot: "zimmer-orchestrator",
                            pullRequests: [
                                PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1281")!, state: "merged", ci: "pass"),
                                PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1282")!, state: "open", ci: "pass"),
