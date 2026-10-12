@@ -237,6 +237,10 @@ if [ -d "$app" ]; then
   shoot sessions-your-board -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView user
   shoot session-detail -ZimmerFixture -ZimmerFixtureOpenSession 1038
   shoot session-detail-hierarchy -ZimmerFixture -ZimmerFixtureOpenSession 1042
+  # The richest session (a long title, four PRs, a long goal, notes, a wide hierarchy) and a
+  # failed one with its failure details: what the page has to stay legible on.
+  shoot session-detail-long -ZimmerFixture -ZimmerFixtureOpenSession 1044
+  shoot session-detail-failed -ZimmerFixture -ZimmerFixtureOpenSession 1027
   shoot composer-attachment -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
   shoot new-session -ZimmerFixture -ZimmerFixtureNewSession
@@ -251,6 +255,7 @@ if [ -d "$app" ]; then
   shoot sessions-active-dark -ZimmerFixture -ZimmerFixtureFilter active
   shoot sessions-ranked-dark -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView ranked
   shoot session-detail-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038
+  shoot session-detail-long-dark -ZimmerFixture -ZimmerFixtureOpenSession 1044
   shoot composer-attachment-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   shoot new-session-dark -ZimmerFixture -ZimmerFixtureNewSession
   shoot inbox-dark -ZimmerFixture -ZimmerFixtureTab inbox

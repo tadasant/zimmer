@@ -8,18 +8,35 @@ public struct StatusSummary: Hashable, Sendable, Codable {
     public var generating: Bool?
     /// Why the last generation failed, when it did.
     public var error: String?
+    /// Messages that landed after the summary was written: the web UI's "3 messages since
+    /// summary generated". Nil when there is no summary.
+    public var messagesSinceGenerated: Int?
 
     enum CodingKeys: String, CodingKey {
         case summary, generating, error
         case generatedAt = "generated_at"
+        case messagesSinceGenerated = "messages_since_generated"
     }
 
-    public init(summary: String?, generatedAt: Date? = nil, generating: Bool? = nil, error: String? = nil) {
+    public init(summary: String?, generatedAt: Date? = nil, generating: Bool? = nil, error: String? = nil, messagesSinceGenerated: Int? = nil) {
         self.summary = summary
         self.generatedAt = generatedAt
         self.generating = generating
         self.error = error
+        self.messagesSinceGenerated = messagesSinceGenerated
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        summary = try? container.decodeIfPresent(String.self, forKey: .summary)
+        generatedAt = try? container.decodeIfPresent(Date.self, forKey: .generatedAt)
+        generating = try? container.decodeIfPresent(Bool.self, forKey: .generating)
+        error = try? container.decodeIfPresent(String.self, forKey: .error)
+        messagesSinceGenerated = try? container.decodeIfPresent(Int.self, forKey: .messagesSinceGenerated)
+    }
+
+    /// Whether the summary still describes the session: no message since it was written.
+    public var isCurrent: Bool { (messagesSinceGenerated ?? 0) == 0 }
 }
 
 /// One session, as the detail screen shows it.
@@ -28,11 +45,18 @@ public struct SessionDetail: Hashable, Sendable {
     public var statusSummary: StatusSummary?
     /// The lineage graph the session belongs to, origin first.
     public var hierarchy: SessionHierarchy?
+    /// The web UI's Goal check panel: what Zimmer can read back about the goal.
+    public var goalCheck: GoalCheck?
+    /// The web UI's Human messages panel: what people said to this session and its family.
+    public var humanMessages: [HumanMessage]
 
-    public init(session: SessionSummary, statusSummary: StatusSummary? = nil, hierarchy: SessionHierarchy? = nil) {
+    public init(session: SessionSummary, statusSummary: StatusSummary? = nil, hierarchy: SessionHierarchy? = nil,
+                goalCheck: GoalCheck? = nil, humanMessages: [HumanMessage] = []) {
         self.session = session
         self.statusSummary = statusSummary
         self.hierarchy = hierarchy
+        self.goalCheck = goalCheck
+        self.humanMessages = humanMessages
     }
 
     /// Follow-ups are accepted for these; Zimmer queues one sent mid-turn.
@@ -49,19 +73,145 @@ struct SessionShowResponse: Decodable {
     let session: SessionSummary
     let statusSummary: StatusSummary?
     let hierarchy: SessionHierarchy?
+    let goalCheck: GoalCheck?
+    let humanMessages: [HumanMessage]
 
     enum CodingKeys: String, CodingKey {
         case session
         case statusSummary = "status_summary"
         case hierarchy = "session_hierarchy"
+        case humanMessages = "human_messages"
+    }
+
+    enum SessionKeys: String, CodingKey {
+        case goalCheck = "goal_check"
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         session = try container.decode(SessionSummary.self, forKey: .session)
-        statusSummary = try container.decodeIfPresent(StatusSummary.self, forKey: .statusSummary)
-        // Drawn when it reads, never a reason for the page to fail.
+        statusSummary = try? container.decodeIfPresent(StatusSummary.self, forKey: .statusSummary)
+        // Drawn when they read, never a reason for the page to fail.
         hierarchy = try? container.decodeIfPresent(SessionHierarchy.self, forKey: .hierarchy)
+        // The goal check rides inside the session object, as `session_json` writes it.
+        let sessionContainer = try? container.nestedContainer(keyedBy: SessionKeys.self, forKey: .session)
+        goalCheck = (try? sessionContainer?.decodeIfPresent(GoalCheck.self, forKey: .goalCheck)) ?? nil
+        humanMessages = (try? container.decodeIfPresent([LenientHumanMessage].self, forKey: .humanMessages))?.compactMap(\.message) ?? []
+    }
+
+    var detail: SessionDetail {
+        SessionDetail(session: session, statusSummary: statusSummary, hierarchy: hierarchy, goalCheck: goalCheck, humanMessages: humanMessages)
+    }
+}
+
+/// `goal_check` on a session: the web UI's Goal check panel — one line per criterion the
+/// goal's catalog entry declares, each met, unmet, pending or unknown, and a verdict over
+/// them. Advisory: nothing acts on it. Nil when the goal is free text or has no checks.
+public struct GoalCheck: Hashable, Sendable, Decodable {
+    public struct Criterion: Hashable, Sendable, Decodable, Identifiable {
+        public var key: String
+        public var label: String
+        public var status: String
+        public var detail: String?
+
+        public var id: String { key }
+
+        public init(key: String, label: String, status: String, detail: String? = nil) {
+            self.key = key
+            self.label = label
+            self.status = status
+            self.detail = detail
+        }
+
+        enum CodingKeys: String, CodingKey { case key, label, status, detail }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            key = try container.decode(String.self, forKey: .key)
+            label = (try? container.decodeIfPresent(String.self, forKey: .label)) ?? key
+            status = (try? container.decodeIfPresent(String.self, forKey: .status)) ?? "unknown"
+            detail = try? container.decodeIfPresent(String.self, forKey: .detail)
+        }
+    }
+
+    public var goalName: String?
+    /// "met", "unmet" or "pending".
+    public var verdict: String
+    /// The session has not come to rest, so an unmet criterion is work in progress.
+    public var provisional: Bool
+    public var criteria: [Criterion]
+
+    public init(goalName: String? = nil, verdict: String, provisional: Bool = false, criteria: [Criterion]) {
+        self.goalName = goalName
+        self.verdict = verdict
+        self.provisional = provisional
+        self.criteria = criteria
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case verdict, provisional, criteria
+        case goalName = "goal_name"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        goalName = try? container.decodeIfPresent(String.self, forKey: .goalName)
+        verdict = (try? container.decodeIfPresent(String.self, forKey: .verdict)) ?? "pending"
+        provisional = (try? container.decodeIfPresent(Bool.self, forKey: .provisional)) ?? false
+        criteria = (try? container.decodeIfPresent([Criterion].self, forKey: .criteria)) ?? []
+    }
+
+    public var metCount: Int { criteria.filter { $0.status == "met" }.count }
+}
+
+/// One entry of `human_messages` on a session: something a person said to this session or
+/// to one of its family, through whichever channel, as the web UI's Human messages panel
+/// lists them.
+public struct HumanMessage: Hashable, Sendable, Identifiable {
+    public var author: String?
+    public var channelLabel: String?
+    public var authoredInSessionID: Int?
+    public var content: String
+    public var occurredAt: Date?
+
+    public var id: String { "\(authoredInSessionID ?? 0)-\(occurredAt?.timeIntervalSince1970 ?? 0)-\(content.hashValue)" }
+
+    public init(author: String?, channelLabel: String?, authoredInSessionID: Int?, content: String, occurredAt: Date?) {
+        self.author = author
+        self.channelLabel = channelLabel
+        self.authoredInSessionID = authoredInSessionID
+        self.content = content
+        self.occurredAt = occurredAt
+    }
+}
+
+/// An entry that does not read (no content) is dropped, not the whole panel.
+struct LenientHumanMessage: Decodable {
+    let message: HumanMessage?
+
+    enum CodingKeys: String, CodingKey {
+        case content, author
+        case authorDisplayName = "author_display_name"
+        case channelLabel = "channel_label"
+        case authoredInSessionID = "authored_in_session_id"
+        case occurredAt = "occurred_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try? decoder.container(keyedBy: CodingKeys.self)
+        guard let content = try? container?.decodeIfPresent(String.self, forKey: .content), !content.isEmpty else {
+            message = nil
+            return
+        }
+        let display = try? container?.decodeIfPresent(String.self, forKey: .authorDisplayName)
+        let author = try? container?.decodeIfPresent(String.self, forKey: .author)
+        message = HumanMessage(
+            author: display ?? author,
+            channelLabel: try? container?.decodeIfPresent(String.self, forKey: .channelLabel),
+            authoredInSessionID: try? container?.decodeIfPresent(Int.self, forKey: .authoredInSessionID),
+            content: content,
+            occurredAt: (try? container?.decodeIfPresent(String.self, forKey: .occurredAt)).flatMap(ZimmerJSON.parseDate)
+        )
     }
 }
 
