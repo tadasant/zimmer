@@ -43,8 +43,11 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **Filters** by status and by board visibility. *Needs input* is the default status filter; the
   others are *Active* (everything not archived), *Running*, *Failed* and *Archived*. Board
   visibility is *On board* by default, like the web UI's board, with *Snoozed & hidden* and
-  *Both* in the view menu. Pull to refresh. Rows carry the status pill, a *Priority* tag, a star
-  for a favourite, the latest PR, a notes marker, and when a snooze ends.
+  *Both* in the view menu. Pull to refresh. Rows sit on one surface with hairlines between them,
+  as the web board's Your board and Ranked rows do: the title on up to two lines, then one line
+  with the status pill, a *Priority* tag, `#id`, a compact age ("41m", "3h"), the latest PR with
+  its CI dot and a notes marker; a star for a favourite; and a snoozed or hidden one adds when
+  the snooze ends. A trashed session reads in the quieter ink.
 - **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn or with
   queued messages is refused with the server's reason and stays; the rest go.
 - **Refresh All**, after a confirmation, through `POST /api/v1/sessions/refresh_all`: re-reads
@@ -57,11 +60,18 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   and to snooze (*Later today*, *Tomorrow*, *In 3 days*, *This weekend*, *Next week*, the web UI's
   presets, worked out in the phone's time zone) or hide. Press and hold for the rest: pause,
   restart, view the PR, open the session in the browser.
-- **Opens a session**: its hierarchy (who spawned it and what it spawned, each a tap away); its
-  status, priority class and board visibility; its agent root, runtime,
-  model and effort; its PRs, coloured by state with the CI dot; the *Status summary* ("where
-  things stand") with *Regenerate*; its goal and notes; and the conversation, newest last, with
-  tool calls folded away until asked for (`GET /api/v1/sessions/:id/conversation`).
+- **Opens a session**, laid out the way the web UI's phone page is: the title, then one line of
+  chips (status, priority class, `#id` and age, each PR coloured by state with its CI dot, board
+  visibility) and one line of what runs it (agent root, runtime, model, effort). Then *Where
+  things stand* with how fresh it is ("as of 12m · 2 new since", the web's "messages since summary
+  generated") and *Regenerate*; for a failed session, why it failed (`metadata.failure_reason`,
+  the exception and exit status, the web's failure details); then one divided card: the **Goal
+  check** (the web panel's verdict and one line per criterion, when the goal is a catalog goal
+  with checks), the goal and notes (two lines each until tapped), the hierarchy (who spawned it
+  and what it spawned, each a tap away; folded when wider than four sessions) and the **Human
+  messages** (who said what to this session and its family, through which channel; folded). The
+  conversation follows, newest last, each message with its age, tool calls folded away until
+  asked for (`GET /api/v1/sessions/:id/conversation`).
 - **Manages the queue**: the messages waiting for the turn in flight to end, in delivery order,
   each with *Send Now* (ending the turn), *Edit* and *Delete*; *Manage* opens the whole queue to
   drag into a new order or swipe away. An edit is recorded as your message when the app acts on

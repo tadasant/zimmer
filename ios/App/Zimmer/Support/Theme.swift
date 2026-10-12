@@ -203,17 +203,6 @@ extension View {
     func themeRows() -> some View {
         listRowBackground(Theme.surface).listRowSeparatorTint(Theme.rule)
     }
-
-    /// A List row drawn as a free-standing card on the ground. In an inset-grouped list the
-    /// section already keeps its margin, so the row adds none of its own.
-    func themeCardRow(inset: CGFloat = 0) -> some View {
-        padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .themeCard()
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 4, leading: inset, bottom: 4, trailing: inset))
-    }
 }
 
 // MARK: - Components
@@ -244,14 +233,16 @@ struct PrimaryButtonStyle: ButtonStyle {
 /// filter chips and the quick replies.
 struct Pill<Content: View>: View {
     var selected = false
+    /// A smaller pill, for a row of choices that should not crowd what they sit under.
+    var compact = false
     @ViewBuilder var content: Content
 
     var body: some View {
         HStack(spacing: 6) { content }
-            .font(.system(.subheadline, weight: selected ? .semibold : .medium))
+            .font(.system(compact ? .footnote : .subheadline, weight: selected ? .semibold : .medium))
             .foregroundStyle(selected ? Color.white : Theme.ink)
-            .padding(.horizontal, 14)
-            .frame(minHeight: 34)
+            .padding(.horizontal, compact ? 11 : 14)
+            .frame(minHeight: compact ? 28 : 34)
             .background(Capsule().fill(selected ? Theme.accentFill : Theme.surface))
             .overlay(Capsule().strokeBorder(selected ? Color.clear : Theme.rule, lineWidth: 1))
             .contentShape(Capsule())

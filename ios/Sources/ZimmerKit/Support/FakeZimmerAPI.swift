@@ -53,7 +53,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
                 return node
             }
         }
-        return SessionDetail(session: try find(id), statusSummary: summaries[id], hierarchy: hierarchy)
+        return SessionDetail(session: try find(id), statusSummary: summaries[id], hierarchy: hierarchy,
+                             goalCheck: Self.sampleGoalChecks()[id], humanMessages: Self.sampleHumanMessages()[id] ?? [])
     }
 
     public func conversation(_ id: Int) async throws -> Conversation {
@@ -153,18 +154,52 @@ public actor FakeZimmerAPI: ZimmerAPI {
             SessionSummary(id: 1029, title: "Draft the October changelog", status: .waiting,
                            agentRuntime: "claude_code", createdAt: ago(900), updatedAt: ago(800),
                            visibility: .snoozed, snoozedUntil: now.addingTimeInterval(20 * 3600)),
-            SessionSummary(id: 1027, title: "Rotate the staging deploy key", status: .failed,
-                           agentRuntime: "claude_code", createdAt: ago(600), updatedAt: ago(180),
-                           priorityClass: "spot", precedence: 10),
+            failed(SessionSummary(id: 1027, title: "Rotate the staging deploy key", status: .failed,
+                                  agentRuntime: "claude_code", createdAt: ago(600), updatedAt: ago(180),
+                                  priorityClass: "spot", precedence: 10, agentRoot: "zimmer-production",
+                                  pullRequests: [PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1288")!, state: "open", ci: "fail")])),
+            // The richest session: a long title, four PRs, a long goal, notes, a wide
+            // hierarchy, a long conversation. What the detail screen has to stay legible on.
+            SessionSummary(id: 1044, title: "Audit the iOS app for parity with the PWA, then implement the findings as a series of standalone slices — quick router and the detail page first",
+                           status: .needsInput, agentRuntime: "claude_code", createdAt: ago(3_000), updatedAt: ago(9),
+                           goal: "Unmerged PR is open, CI is confirmed green, an independent fresh-eyes review of the PR has been performed and all of its feedback addressed, and the PR description carries a Verification section with screenshots for every UI change.",
+                           notes: "Tadas: the detail page is too verbose with real data. Keep the slices off the files #1282 and #1284 touch where possible.",
+                           // Spot, at the foot of the queue: the Ranked view's UI test reads row
+                           // frames in the spot queue, and a second priority row with a two-line
+                           // title could push them off a small simulator's screen.
+                           priorityClass: "spot", precedence: 5,
+                           effort: EffortSummary(level: "high", source: "explicit", default: "medium", levels: ["low", "medium", "high", "xhigh", "max"]),
+                           model: "claude-opus-4-5-20260401", agentRoot: "zimmer-orchestrator", lastUserActivityAt: ago(15),
+                           pullRequests: [
+                               PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1281")!, state: "merged", ci: "pass"),
+                               PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1282")!, state: "open", ci: "pass"),
+                               PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1283")!, state: "open", ci: "pending"),
+                               PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1284")!, state: "closed", ci: "fail"),
+                           ]),
             SessionSummary(id: 1019, title: "Fix the flaky transcript poller test", status: .archived,
                            agentRuntime: "claude_code", createdAt: ago(2_000), updatedAt: ago(1_400),
                            archivedAt: ago(1_400)),
         ]
     }
 
-    static func sampleSummaries() -> [Int: StatusSummary] {
+    /// The failure the web UI's failure details read: a reason, an exception, an exit status.
+    private static func failed(_ session: SessionSummary) -> SessionSummary {
+        var session = session
+        session.metadata = SessionMetadata(
+            agentRoot: session.agentRoot, lastUserActivityAt: session.metadata?.lastUserActivityAt,
+            failureReason: "process_exited",
+            exceptionMessage: "The deploy key in the secret store is read-only for this session (secrets/staging-deploy-key: permission denied).",
+            exceptionClass: "Zimmer::SecretWriteRefused", exitStatus: 1
+        )
+        return session
+    }
+
+    static func sampleSummaries(now: Date = Date()) -> [Int: StatusSummary] {
         [
-            1038: StatusSummary(summary: "The PR is open, CI is green and the review is done. It needs your go-ahead to merge."),
+            1044: StatusSummary(
+                summary: "The audit is written up in ios/PARITY_AUDIT.md and the first two slices are open as PRs: the Quick Router on every screen, and the session page's density. The second one is waiting on your look at the screenshots before it goes further; the third slice, the board's rows, is drafted on a branch.",
+                generatedAt: now.addingTimeInterval(-12 * 60), messagesSinceGenerated: 2),
+            1038: StatusSummary(summary: "The PR is open, CI is green and the review is done. It needs your go-ahead to merge.", generatedAt: now.addingTimeInterval(-6 * 60), messagesSinceGenerated: 0),
             1035: StatusSummary(summary: "Asking whether staging should match production's Postgres 16 or try 17 first."),
             1042: StatusSummary(summary: "Building the CarPlay list template; about halfway through."),
             1027: StatusSummary(summary: "Failed: the deploy key in the secret store is read-only for this session."),
@@ -182,6 +217,45 @@ public actor FakeZimmerAPI: ZimmerAPI {
             1035: [
                 ConversationMessage(id: 0, role: .user, content: "Bring staging's database up to date.", timestamp: ago(300)),
                 ConversationMessage(id: 1, role: .assistant, content: "Production runs Postgres 16. Should staging match it, or try 17 first?", timestamp: ago(41)),
+            ],
+            1044: [
+                ConversationMessage(id: 0, role: .user, content: "Zimmer iOS still doesn't have parity with PWA. There is no quick router in the corner of every screen, and it should be the most prominent thing on the main screen. With real data the detail page is too verbose and hard to parse. Make it more information dense. Do an extensive audit for parity and design, then implement it as a series of standalone slices.", timestamp: ago(3_000)),
+                ConversationMessage(id: 1, role: .assistant, content: "Using tool: Bash\ngh pr view 1270 --json body", timestamp: ago(2_900), hasToolUse: true),
+                ConversationMessage(id: 2, role: .assistant, content: "Tool result: (4,812 characters)", timestamp: ago(2_899), hasToolResult: true),
+                ConversationMessage(id: 3, role: .assistant, content: "The audit is done. Twenty-six findings, grouped into six slices:\n\n1. Quick Router on every screen — a bar at the foot of the board, a button in every other corner.\n2. Session page density — one chip line for the header, a divided card for goal, notes and hierarchy, tighter conversation.\n3. Board density — grouped rows, compact ages.\n4. Quick Router advanced options and attachments (a server parameter change).\n5. The other tabs.\n6. Transcript parity: markdown, earlier messages, copy.\n\nThe first slice is open as #1293. Shall I carry on with the session page before you have looked at the first?", timestamp: ago(1_400)),
+                ConversationMessage(id: 4, role: .user, content: "Carry on. Screenshots with real data on every slice.", timestamp: ago(1_380)),
+                ConversationMessage(id: 5, role: .assistant, content: "Using tool: Edit\nios/App/Zimmer/Views/SessionDetailView.swift", timestamp: ago(600), hasToolUse: true),
+                ConversationMessage(id: 6, role: .assistant, content: "Slice 2 is open as #1294 with before-and-after screenshots from the simulator on the long-titled fixture session. The header is one chip line, goal and notes clamp to two lines, the hierarchy is a disclosure, and the conversation is in the smaller face. The board's density is drafted on a branch and goes up next.\n\nOne thing needs you: the Goal check panel reads `pending` on every session whose goal is free text, because the API returns a check only for catalog goals. Should the app hide the panel in that case, as the web does, or say \"no checks for this goal\"? I have gone with hiding it, as the web does.", timestamp: ago(9)),
+            ],
+        ]
+    }
+
+    /// `goal_check` as the server writes it for a catalog goal with criteria.
+    static func sampleGoalChecks() -> [Int: GoalCheck] {
+        [
+            1044: GoalCheck(goalName: "open-reviewed-green-pr", verdict: "pending", provisional: false, criteria: [
+                GoalCheck.Criterion(key: "pr_open", label: "An unmerged PR is open", status: "met", detail: "#1282 is open"),
+                GoalCheck.Criterion(key: "ci_green", label: "CI is green on the PR", status: "met", detail: "pass on #1282"),
+                GoalCheck.Criterion(key: "reviewed", label: "A fresh-eyes review has been addressed", status: "pending", detail: "no review comment yet"),
+                GoalCheck.Criterion(key: "screenshots", label: "The PR carries screenshots", status: "unknown"),
+            ]),
+            1038: GoalCheck(goalName: "open-reviewed-green-pr", verdict: "met", criteria: [
+                GoalCheck.Criterion(key: "pr_open", label: "An unmerged PR is open", status: "met", detail: "#1261 is open"),
+                GoalCheck.Criterion(key: "ci_green", label: "CI is green on the PR", status: "met", detail: "pass on #1261"),
+            ]),
+        ]
+    }
+
+    /// `human_messages` as the server writes them: what people said, through which channel.
+    static func sampleHumanMessages(now: Date = Date()) -> [Int: [HumanMessage]] {
+        func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
+        return [
+            1044: [
+                HumanMessage(author: "Tadas", channelLabel: "Web UI", authoredInSessionID: 1040, content: "Zimmer iOS still doesn't have parity with PWA…", occurredAt: ago(3_010)),
+                HumanMessage(author: "Tadas", channelLabel: "iOS app", authoredInSessionID: 1044, content: "Carry on. Screenshots with real data on every slice.", occurredAt: ago(1_380)),
+            ],
+            1038: [
+                HumanMessage(author: "Tadas", channelLabel: "Web UI", authoredInSessionID: 1038, content: "Open a PR for the iOS scaffold and get CI green.", occurredAt: ago(240)),
             ],
         ]
     }
@@ -334,8 +408,24 @@ extension FakeZimmerAPI {
         return "Refreshed \(all.count - failed.count), restarted \(failed.count), continued 0"
     }
 
-    /// 1038 spawned 1042 and 1031; every one of them sees the same three-node tree.
+    /// 1038 spawned 1042 and 1031; every one of them sees the same three-node tree. 1044
+    /// sits under a router session with five siblings it spawned, a tree wide enough that
+    /// the panel folds it.
     static func sampleHierarchy(for id: Int, in sessions: [SessionSummary]) -> SessionHierarchy? {
+        if id == 1044 {
+            let family: [(Int, String, SessionStatus, Int)] = [
+                (1040, "Route: iOS parity audit and slices", .archived, 0),
+                (1044, "Audit the iOS app for parity with the PWA, then implement the findings as a series of standalone slices — quick router and the detail page first", .needsInput, 1),
+                (1045, "Slice 1: the Quick Router on every screen", .archived, 2),
+                (1046, "Slice 2: the session page's density", .running, 2),
+                (1047, "Slice 3: the board's rows", .waiting, 2),
+                (1048, "Fresh-eyes review of #1293", .archived, 2),
+                (1049, "Fresh-eyes review of #1294", .failed, 2),
+            ]
+            return SessionHierarchy(nodes: family.map { nodeID, title, status, depth in
+                SessionHierarchy.Node(id: nodeID, title: title, agentRoot: depth == 0 ? "zimmer-orchestrator" : "zimmer", status: status, depth: depth, current: nodeID == id)
+            })
+        }
         let tree = [(1038, 0), (1042, 1), (1031, 1)]
         guard tree.contains(where: { $0.0 == id }) else { return SessionHierarchy(nodes: []) }
         return SessionHierarchy(nodes: tree.compactMap { nodeID, depth in
