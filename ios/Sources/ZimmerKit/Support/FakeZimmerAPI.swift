@@ -164,7 +164,10 @@ public actor FakeZimmerAPI: ZimmerAPI {
                            status: .needsInput, agentRuntime: "claude_code", createdAt: ago(3_000), updatedAt: ago(9),
                            goal: "Unmerged PR is open, CI is confirmed green, an independent fresh-eyes review of the PR has been performed and all of its feedback addressed, and the PR description carries a Verification section with screenshots for every UI change.",
                            notes: "Tadas: the detail page is too verbose with real data. Keep the slices off the files #1282 and #1284 touch where possible.",
-                           priorityClass: "priority", precedence: 8,
+                           // Spot, at the foot of the queue: the Ranked view's UI test reads row
+                           // frames in the spot queue, and a second priority row with a two-line
+                           // title could push them off a small simulator's screen.
+                           priorityClass: "spot", precedence: 5,
                            effort: EffortSummary(level: "high", source: "explicit", default: "medium", levels: ["low", "medium", "high", "xhigh", "max"]),
                            model: "claude-opus-4-5-20260401", agentRoot: "zimmer-orchestrator", lastUserActivityAt: ago(15),
                            pullRequests: [
