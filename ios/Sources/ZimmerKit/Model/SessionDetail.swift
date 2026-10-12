@@ -315,6 +315,11 @@ public struct ConversationMessage: Hashable, Sendable, Codable, Identifiable {
 
 /// The conversation, newest last, and whether older messages were left out.
 public struct Conversation: Hashable, Sendable {
+    /// How many the page reads at a time, and by how much *Show earlier* widens the window.
+    public static let pageSize = 100
+    /// The most the server returns in one read (`CONVERSATION_MAX_LIMIT`).
+    public static let maxLimit = 200
+
     public var messages: [ConversationMessage]
     public var total: Int
     public var truncated: Bool

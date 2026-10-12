@@ -5,7 +5,8 @@ import Foundation
 public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI, OperationsAPI, AttachmentsAPI {
     func sessions(_ filter: SessionFilter) async throws -> [SessionSummary]
     func session(_ id: Int) async throws -> SessionDetail
-    func conversation(_ id: Int) async throws -> Conversation
+    /// The newest `limit` messages (the server caps it at 200), and how many there are.
+    func conversation(_ id: Int, limit: Int) async throws -> Conversation
     func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult
     func archive(_ id: Int) async throws -> SessionSummary
     /// Start a Quick Router session from a plain-language request, with what the web
@@ -15,6 +16,13 @@ public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI
     func registerDevice(token: String, environment: APNsEnvironment, deviceName: String?, appVersion: String?) async throws
     /// Unregister it, on sign-out.
     func unregisterDevice(token: String) async throws
+}
+
+extension ZimmerAPI {
+    /// The page's first read: the newest hundred.
+    public func conversation(_ id: Int) async throws -> Conversation {
+        try await conversation(id, limit: Conversation.pageSize)
+    }
 }
 
 /// Zimmer's REST API (`/api/v1`), called with the signed-in grant's access token.
@@ -44,9 +52,9 @@ public struct ZimmerHTTPClient: ZimmerAPI {
         return response.detail
     }
 
-    public func conversation(_ id: Int) async throws -> Conversation {
+    public func conversation(_ id: Int, limit: Int) async throws -> Conversation {
         let segment = ZimmerPathComponent(String(id))
-        let response: ConversationResponse = try await get("/api/v1/sessions/\(segment)/conversation", query: ["limit": "100"])
+        let response: ConversationResponse = try await get("/api/v1/sessions/\(segment)/conversation", query: ["limit": String(limit)])
         return response.conversation
     }
 

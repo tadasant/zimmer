@@ -12,6 +12,9 @@ final class SessionDetailModel: ObservableObject {
 
     @Published private(set) var detail: SessionDetail?
     @Published private(set) var conversation: Conversation?
+    /// How far back the conversation reads: a hundred at first, a hundred more on *Show
+    /// earlier*, up to what the server returns in one read.
+    @Published private(set) var conversationLimit = Conversation.pageSize
     @Published private(set) var isLoading = false
     @Published private(set) var isSending = false
     @Published var error: ZimmerError?
@@ -32,7 +35,7 @@ final class SessionDetailModel: ObservableObject {
         defer { isLoading = false }
         do {
             detail = try await api.session(id)
-            conversation = try await api.conversation(id)
+            conversation = try await api.conversation(id, limit: conversationLimit)
             // The queue is a panel, not the page: one that will not load keeps what it last
             // showed rather than failing the session — unless the sign-in has ended.
             do {
@@ -40,6 +43,21 @@ final class SessionDetailModel: ObservableObject {
             } catch ZimmerError.unauthorized {
                 report(.unauthorized)
             } catch {}
+            error = nil
+        } catch {
+            fail(error)
+        }
+    }
+
+    /// Widen the window by a page and read again: the web UI's transcript reading back as
+    /// you scroll up.
+    func showEarlier() async {
+        guard conversationLimit < Conversation.maxLimit else { return }
+        let next = min(conversationLimit + Conversation.pageSize, Conversation.maxLimit)
+        do {
+            conversation = try await api.conversation(id, limit: next)
+            // Only once the wider read is on screen: a read that failed leaves the button.
+            conversationLimit = next
             error = nil
         } catch {
             fail(error)
@@ -174,7 +192,9 @@ struct SessionDetailView: View {
     @State private var confirmingArchive = false
     @State private var choosingModel = false
     @State private var editingCatalog: CatalogKind?
-    @State private var showingToolTraffic = false
+    /// The web UI's log-level filter, as far as the conversation goes. Minimal by default:
+    /// on a phone the tool traffic buries the words.
+    @State private var level: ConversationLevel = .minimal
     @State private var editing: EditedText?
     @State private var renaming = false
     @State private var showingLogs = false
@@ -584,7 +604,7 @@ struct SessionDetailView: View {
     // MARK: - Conversation
 
     private func conversationSection(_ conversation: Conversation) -> some View {
-        let shown = conversation.messages.filter { showingToolTraffic || !$0.isToolTraffic }
+        let shown = conversation.messages(at: level)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("Conversation").themeLabel()
@@ -593,26 +613,41 @@ struct SessionDetailView: View {
                     .foregroundStyle(Theme.inkMute)
                 Spacer()
                 if conversation.messages.contains(where: \.isToolTraffic) {
-                    Toggle("Tool calls", isOn: $showingToolTraffic)
-                        .toggleStyle(.button)
-                        .font(.caption.weight(.medium))
-                        .controlSize(.small)
+                    // The web UI's log-level select, on the conversation: Minimal, Condensed,
+                    // Verbose. Its fourth level, Show Logs, is the logs screen in the menu.
+                    Picker("Detail", selection: $level) {
+                        ForEach(ConversationLevel.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.menu)
+                    .font(.caption.weight(.medium))
+                    .tint(Theme.accent)
+                    .accessibilityIdentifier("detail.level")
                 }
             }
             .padding(.top, 6)
             .padding(.bottom, 4)
             if conversation.truncated {
-                Text("The last \(conversation.messages.count) of \(conversation.total).")
-                    .font(.caption)
-                    .foregroundStyle(Theme.inkMute)
-                    .padding(.bottom, 4)
+                // The web UI reads the transcript back as you scroll up; here a tap reads a
+                // hundred more, up to the server's one-read cap.
+                HStack(spacing: 6) {
+                    Text("The last \(conversation.messages.count) of \(conversation.total).")
+                    if model.conversationLimit < Conversation.maxLimit {
+                        Button("Show earlier") { Task { await model.showEarlier() } }
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Theme.accent)
+                            .accessibilityIdentifier("detail.earlier")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(Theme.inkMute)
+                .padding(.bottom, 4)
             }
             if conversation.messages.isEmpty {
                 Text("No transcript yet.").font(.subheadline).foregroundStyle(Theme.inkMute).padding(.vertical, 8)
             }
             ForEach(Array(shown.enumerated()), id: \.element.id) { index, message in
                 if index > 0 { Theme.rule.frame(height: 1).padding(.vertical, 8) }
-                MessageBubble(message: message)
+                MessageBubble(message: message, folded: level.foldsToolTraffic)
             }
         }
     }
@@ -1163,6 +1198,8 @@ private struct TextEditSheet: View {
 
 struct MessageBubble: View {
     let message: ConversationMessage
+    /// Tool traffic cut to a line: the Condensed level.
+    var folded = false
 
     var body: some View {
         let fromAgent = message.role == .assistant
@@ -1175,14 +1212,25 @@ struct MessageBubble: View {
                 }
             }
             .themeLabel(size: 10, color: Theme.inkMute)
-            Text(message.content)
-                .font(message.isToolTraffic ? Theme.mono : .subheadline)
-                .foregroundStyle(message.isToolTraffic ? Theme.inkSoft : Theme.ink)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, fromAgent && !message.isToolTraffic ? 0 : 12)
-                .padding(.vertical, fromAgent && !message.isToolTraffic ? 0 : 8)
-                .background(bubble(fromAgent: fromAgent))
-                .textSelection(.enabled)
+            Group {
+                if message.isToolTraffic && folded {
+                    Text(message.condensedLine)
+                        .font(Theme.mono)
+                        .foregroundStyle(Theme.inkSoft)
+                        .lineLimit(1)
+                } else if message.isToolTraffic {
+                    // The server writes tool traffic as markdown too (`**Using tool: Bash**`
+                    // over a fenced block), so it renders the same way, in the monospaced face.
+                    MarkdownText(message.content, proseFont: Theme.mono, proseColor: Theme.inkSoft)
+                } else {
+                    MarkdownText(message.content)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, fromAgent && !message.isToolTraffic ? 0 : 12)
+            .padding(.vertical, fromAgent && !message.isToolTraffic ? 0 : 8)
+            .background(bubble(fromAgent: fromAgent))
+            .textSelection(.enabled)
         }
         // A reply from you sits to the right and stops short of the far edge, as in Messages.
         .padding(.leading, fromAgent ? 0 : 36)
@@ -1203,5 +1251,47 @@ struct MessageBubble: View {
         } else {
             shape.fill(Theme.accent.opacity(0.14))
         }
+    }
+}
+
+/// A message's text as the web UI renders it: prose as inline markdown (emphasis, code
+/// spans, links, list markers kept as typed), fenced code blocks in the monospaced face on
+/// a well. Markdown that does not parse is shown as it was written.
+struct MarkdownText: View {
+    let text: String
+    var proseFont: Font = .subheadline
+    var proseColor: Color = Theme.ink
+
+    init(_ text: String, proseFont: Font = .subheadline, proseColor: Color = Theme.ink) {
+        self.text = text
+        self.proseFont = proseFont
+        self.proseColor = proseColor
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(MessageSegment.segments(of: text).enumerated()), id: \.offset) { _, segment in
+                switch segment {
+                case let .prose(prose):
+                    Text(Self.attributed(prose))
+                        .font(proseFont)
+                        .foregroundStyle(proseColor)
+                case let .code(code, _):
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        Text(code)
+                            .font(Theme.mono)
+                            .foregroundStyle(Theme.ink)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                    }
+                    .background(Theme.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+        }
+    }
+
+    /// Inline-only, keeping line breaks and list markers: a paragraph stays a paragraph.
+    static func attributed(_ prose: String) -> AttributedString {
+        (try? AttributedString(markdown: prose, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(prose)
     }
 }

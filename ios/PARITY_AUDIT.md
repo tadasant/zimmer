@@ -22,9 +22,9 @@ tabular digits everywhere, read state shown by dimming rather than by a badge.
 | 1. Quick Router everywhere | P1, P2, D1 | merged, #1293 |
 | 2. Session page density | D2–D9, P8, P9, P10 | merged, in #1295 |
 | 3. Board density and type | D10, D11, D13 (D12's search and D14 kept as they were, on reflection) | merged, #1295 |
-| 4. Quick Router advanced and attachments | P3, P4, P5 | this PR, #1296 (a parameter change on the same route, no auth change) |
+| 4. Quick Router advanced and attachments | P3, P4, P5 | merged, #1296 (a parameter change on the same route, no auth change) |
 | 5. The other tabs | D15–D18 (P11 needs a server field; recorded) | merged, #1297 |
-| 6. Transcript parity | P6, P7, P12 | planned |
+| 6. Transcript parity | P6, P7, P12 | this PR |
 
 ## Findings, by priority
 
@@ -119,7 +119,7 @@ two screens down.
   limit. **Slice 6.**
 - **P12 — parity.** The PWA's transcript has a log-level filter (Minimal / Condensed / Show Logs /
   Verbose). The app folds tool calls behind one toggle and keeps logs on their own screen. Plan:
-  the same four levels on the conversation. **Slice 6.**
+  Minimal, Condensed and Verbose on the conversation; Show Logs is the logs screen. **Slice 6.**
 
 ### The other tabs (density, design, parity)
 
