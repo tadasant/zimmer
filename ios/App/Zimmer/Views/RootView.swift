@@ -37,19 +37,27 @@ extension RootView {
             .tabItem { Label("Sessions", systemImage: "rectangle.stack") }
             .tag(AppTab.sessions)
 
+            // The Quick Router sits in the corner of these, and of everything pushed on them
+            // (Costs, Health), as the web UI's bubble is on every page. The board has the bar.
             NavigationStack { InboxView() }
+                .quickRouterCorner()
                 .tabItem { Label("Inbox", systemImage: "bell") }
                 .badge(model.unreadCount)
                 .tag(AppTab.inbox)
 
             NavigationStack { TriggersView() }
+                .quickRouterCorner()
                 .tabItem { Label("Triggers", systemImage: "bolt") }
                 .tag(AppTab.triggers)
 
             NavigationStack { MoreView() }
+                .quickRouterCorner()
                 .tabItem { Label("More", systemImage: "ellipsis") }
                 .tag(AppTab.more)
         }
+        // Presented from the tabs, not from one screen: the button on any tab opens it.
+        .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
+        .sheet(isPresented: $model.showingNewSession) { NewSessionView() }
     }
 }
 

@@ -284,6 +284,8 @@ struct SessionDetailView: View {
             // Above the composer, which is a bottom inset.
             Toast(text: $model.notice, identifier: "followup.notice")
         }
+        // The web UI's bubble, above the composer as its joystick is.
+        .quickRouterCorner()
         .safeAreaInset(edge: .bottom) {
             if model.detail?.acceptsFollowUp ?? false { composer }
         }
@@ -426,7 +428,7 @@ struct SessionDetailView: View {
     private func actionsMenu(_ session: SessionSummary) -> some View {
         Menu {
             Section {
-                Button { app.showingQuickRouter = true } label: { Label("Quick Router", systemImage: "square.and.pencil") }
+                Button { app.showingQuickRouter = true } label: { Label("Quick Router", systemImage: "sparkles") }
                 Button { editing = .notes } label: { Label("Edit Notes", systemImage: "note.text") }
                 Button { showingLogs = true } label: { Label("Show Logs", systemImage: "doc.plaintext") }
                 Button { showingSubagents = true } label: { Label("Subagents", systemImage: "person.2") }

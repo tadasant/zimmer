@@ -46,7 +46,7 @@ final class AppModel: ObservableObject {
     /// Unread notifications, for the Inbox tab's badge.
     @Published var unreadCount = 0
     @Published var showingQuickRouter = false
-    /// The full new-session form (touch and hold the pencil).
+    /// The full new-session form (the pencil in the Sessions toolbar).
     @Published var showingNewSession = false
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
     /// since a UI test cannot drive the system photo and file pickers.

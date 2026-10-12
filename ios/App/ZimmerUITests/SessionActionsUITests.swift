@@ -63,18 +63,16 @@ final class SessionActionsUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["session.row.1035"].exists, "the archived session left Active")
     }
 
-    func test_the_quick_router_starts_a_session_from_a_sentence_and_opens_it() throws {
+    /// The bar at the foot of the board: the web UI's "What do you want to do?" box.
+    func test_the_quick_router_bar_starts_a_session_from_a_sentence_and_opens_it() throws {
         let app = launch()
 
-        let open = app.buttons["quickrouter.open"]
-        XCTAssertTrue(open.waitForExistence(timeout: timeout))
-        open.tap()
-        let field = app.descendants(matching: .any)["quickrouter.field"]
+        let field = app.descendants(matching: .any)["quickrouter.bar.field"]
         XCTAssertTrue(field.waitForExistence(timeout: timeout))
         field.tap()
         field.typeText("Rotate the staging deploy key")
-        attachScreenshot(app, named: "quick-router")
-        app.buttons["quickrouter.start"].tap()
+        attachScreenshot(app, named: "quick-router-bar")
+        app.buttons["quickrouter.bar.start"].tap()
 
         let title = app.staticTexts["detail.title"]
         XCTAssertTrue(title.waitForExistence(timeout: timeout))
@@ -82,9 +80,30 @@ final class SessionActionsUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["detail.status"].label, "Waiting")
     }
 
-    private func launch() -> XCUIApplication {
+    /// The button in the corner of every other screen: the web UI's bubble. From the Inbox
+    /// it opens the sheet, and the session it starts opens on the Sessions tab.
+    func test_the_quick_router_button_is_in_the_corner_of_the_inbox_and_opens_the_sheet() throws {
+        let app = launch(arguments: ["-ZimmerFixtureTab", "inbox"])
+
+        let button = app.buttons["quickrouter.fab"]
+        XCTAssertTrue(button.waitForExistence(timeout: timeout))
+        attachScreenshot(app, named: "inbox-quick-router-button")
+        button.tap()
+        let field = app.descendants(matching: .any)["quickrouter.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: timeout))
+        field.tap()
+        field.typeText("Draft the release notes")
+        attachScreenshot(app, named: "quick-router")
+        app.buttons["quickrouter.start"].tap()
+
+        let title = app.staticTexts["detail.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: timeout))
+        XCTAssertEqual(title.label, "Draft the release notes")
+    }
+
+    private func launch(arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-ZimmerFixture"]
+        app.launchArguments = ["-ZimmerFixture"] + arguments
         app.launch()
         return app
     }
