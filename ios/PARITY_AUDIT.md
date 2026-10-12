@@ -119,7 +119,7 @@ two screens down.
   limit. **Slice 6.**
 - **P12 — parity.** The PWA's transcript has a log-level filter (Minimal / Condensed / Show Logs /
   Verbose). The app folds tool calls behind one toggle and keeps logs on their own screen. Plan:
-  the same four levels on the conversation. **Slice 6.**
+  Minimal, Condensed and Verbose on the conversation; Show Logs is the logs screen. **Slice 6.**
 
 ### The other tabs (density, design, parity)
 

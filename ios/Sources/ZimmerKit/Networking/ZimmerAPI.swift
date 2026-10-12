@@ -18,6 +18,13 @@ public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI
     func unregisterDevice(token: String) async throws
 }
 
+extension ZimmerAPI {
+    /// The page's first read: the newest hundred.
+    public func conversation(_ id: Int) async throws -> Conversation {
+        try await conversation(id, limit: Conversation.pageSize)
+    }
+}
+
 /// Zimmer's REST API (`/api/v1`), called with the signed-in grant's access token.
 ///
 /// No Swift client is generated: Zimmer publishes no OpenAPI document, so the few

@@ -53,9 +53,11 @@ final class SessionDetailModel: ObservableObject {
     /// you scroll up.
     func showEarlier() async {
         guard conversationLimit < Conversation.maxLimit else { return }
-        conversationLimit = min(conversationLimit + Conversation.pageSize, Conversation.maxLimit)
+        let next = min(conversationLimit + Conversation.pageSize, Conversation.maxLimit)
         do {
-            conversation = try await api.conversation(id, limit: conversationLimit)
+            conversation = try await api.conversation(id, limit: next)
+            // Only once the wider read is on screen: a read that failed leaves the button.
+            conversationLimit = next
             error = nil
         } catch {
             fail(error)
@@ -632,6 +634,7 @@ struct SessionDetailView: View {
                     if model.conversationLimit < Conversation.maxLimit {
                         Button("Show earlier") { Task { await model.showEarlier() } }
                             .font(.caption.weight(.medium))
+                            .foregroundStyle(Theme.accent)
                             .accessibilityIdentifier("detail.earlier")
                     }
                 }
@@ -1210,11 +1213,15 @@ struct MessageBubble: View {
             }
             .themeLabel(size: 10, color: Theme.inkMute)
             Group {
-                if message.isToolTraffic {
-                    Text(message.content)
+                if message.isToolTraffic && folded {
+                    Text(message.condensedLine)
                         .font(Theme.mono)
                         .foregroundStyle(Theme.inkSoft)
-                        .lineLimit(folded ? 1 : nil)
+                        .lineLimit(1)
+                } else if message.isToolTraffic {
+                    // The server writes tool traffic as markdown too (`**Using tool: Bash**`
+                    // over a fenced block), so it renders the same way, in the monospaced face.
+                    MarkdownText(message.content, proseFont: Theme.mono, proseColor: Theme.inkSoft)
                 } else {
                     MarkdownText(message.content)
                 }
@@ -1252,8 +1259,14 @@ struct MessageBubble: View {
 /// a well. Markdown that does not parse is shown as it was written.
 struct MarkdownText: View {
     let text: String
+    var proseFont: Font = .subheadline
+    var proseColor: Color = Theme.ink
 
-    init(_ text: String) { self.text = text }
+    init(_ text: String, proseFont: Font = .subheadline, proseColor: Color = Theme.ink) {
+        self.text = text
+        self.proseFont = proseFont
+        self.proseColor = proseColor
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1261,8 +1274,8 @@ struct MarkdownText: View {
                 switch segment {
                 case let .prose(prose):
                     Text(Self.attributed(prose))
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.ink)
+                        .font(proseFont)
+                        .foregroundStyle(proseColor)
                 case let .code(code, _):
                     ScrollView(.horizontal, showsIndicators: false) {
                         Text(code)
