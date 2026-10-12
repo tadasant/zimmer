@@ -24,7 +24,7 @@ tabular digits everywhere, read state shown by dimming rather than by a badge.
 | 3. Board density and type | D10, D11, D13 (D12's search and D14 kept as they were, on reflection) | merged, #1295 |
 | 4. Quick Router advanced and attachments | P3, P4, P5 | this PR, #1296 (a parameter change on the same route, no auth change) |
 | 5. The other tabs | D15–D18 (P11 needs a server field; recorded) | merged, #1297 |
-| 6. Transcript parity | P6, P7, P12 | planned |
+| 6. Transcript parity | P6, P7, P12 | this PR |
 
 ## Findings, by priority
 
