@@ -115,9 +115,8 @@ final class ZimmerHTTPClientTests: XCTestCase {
         }
     }
 
-    // A long cost report once outlasted the proxy, which answered with an HTML 504. The phone
-    // reached Zimmer; it just waited too long. Saying "couldn't reach" sent the reader to
-    // check their network.
+    // A proxy that gives up on a slow answer replies with an HTML 504. The phone reached
+    // Zimmer; it waited too long. "Couldn't reach" would send the reader to check their network.
     func testAGatewayTimeoutSaysItTimedOut() async throws {
         let html = HTTPResponse(statusCode: 504, headers: ["content-type": "text/html"], body: Data("<title>504 — Gateway Timeout</title>".utf8))
         let transport = ScriptedTransport([{ _ in html }])

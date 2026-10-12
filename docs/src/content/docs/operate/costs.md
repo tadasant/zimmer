@@ -368,7 +368,9 @@ summed as its own column. Pricing every row in SQL (`TokenPricing.cost_sql`, fiv
 matches per row) costs several times the scan itself. On a seeded ledger of 400k calls and
 2.8M feature rows, a 90-day report took 37s that way, which is past the proxy's timeout. As five
 rollups it takes 3.5s. `test/services/cost_analytics_test.rb` fails if the query count starts
-depending on the window's length, or if a section starts pricing rows in SQL again.
+depending on the window's length, or if a section starts pricing rows in SQL again. The one
+exception is the experiment labels: they are read for the window's sessions in slices of 5,000,
+so a window with tens of thousands of sessions takes a few extra small reads.
 
 The cache does not hide the five scans for long. The snapshot's key includes the ledger's
 highest row id, and ingestion writes every ten minutes, so the first request for a window after

@@ -350,10 +350,12 @@ class CostAnalyticsTest < ActiveSupport::TestCase
   end
 
   test "a long window costs the same number of queries as a short one, and prices no row in SQL" do
-    # A 90-day report outlasted the proxy timeout when every section ran its own
-    # scan and priced every row in SQL. The report is five grouped scans, each
-    # pricing per (group, model) in Ruby, whatever the window. A section that
-    # grows its own query, or a fold that reaches for `cost_sql`, fails here.
+    # A section with its own scan, or one that prices every row in SQL, multiplies
+    # the cost of a long window past the proxy timeout. The report is five grouped
+    # scans, each priced per (group, model) in Ruby, whatever the window. A section
+    # that grows its own query, or a fold that reaches for `cost_sql`, fails here.
+    # (Labels are read in slices of ExperimentAnalytics::FLAG_BATCH sessions; both
+    # windows here hold one session, so both read one slice.)
     [ 1.hour.ago, 3.days.ago, 40.days.ago, 200.days.ago ].each_with_index do |at, i|
       usage(called_at: at, session_id: sessions(:running).id, agent_root: "root-#{i}")
     end

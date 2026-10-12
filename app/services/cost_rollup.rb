@@ -13,8 +13,8 @@
 #
 # The one non-linear piece of the row price is the unsplit cache write (a row
 # with no 5m/1h split is charged at the 1-hour rate), so it is summed as its own
-# column. `TokenPricing.cost_for` makes the same assumption per row, and
-# test/services/cost_rollup_test.rb holds the two paths to the same figure.
+# column. `TokenPricing.cost_sql` and `cost_for` make the same assumption per
+# row, and test/services/cost_rollup_test.rb holds all three to the same figure.
 #
 # Every caller reads a rollup through `fold`, so one query can serve as many
 # breakdowns as can be derived from its grouping.
