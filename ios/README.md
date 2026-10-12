@@ -73,6 +73,9 @@ Motet, grouped into the slices that land it.
 
 The system font is kept, as the web UI's `font-sans` is on a phone, and the bars keep the system
 material. The app stays native in the places where iOS's own chrome is the familiar thing.
+Rows on the board share one surface with hairlines between them rather than a card each, and
+ages are compact (`Format.age`: "41m", "3h"), so a screen shows roughly half again as many
+sessions as a card per row did.
 `ui-test` photographs the main screens in both appearances.
 
 ## Running the checks

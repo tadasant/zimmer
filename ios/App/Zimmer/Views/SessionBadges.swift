@@ -59,6 +59,8 @@ struct StatusDot: View {
 /// merged purple, closed red, unknown gray.
 struct PullRequestChip: View {
     let pullRequest: PullRequestLink
+    /// The session page's chip line: as tall as a status badge.
+    var compact = false
 
     var body: some View {
         Link(destination: pullRequest.url) {
@@ -71,10 +73,10 @@ struct PullRequestChip: View {
                         .accessibilityLabel("CI \(ci)")
                 }
             }
-            .font(.footnote.weight(.semibold).monospacedDigit())
+            .font((compact ? Font.caption : .footnote).weight(.semibold).monospacedDigit())
             .foregroundStyle(Theme.ink)
-            .padding(.horizontal, 12)
-            .frame(minHeight: 32)
+            .padding(.horizontal, compact ? 8 : 12)
+            .frame(minHeight: compact ? 24 : 32)
             .background(Theme.surface, in: Capsule())
             .overlay(Capsule().strokeBorder(Theme.rule, lineWidth: 1))
         }
