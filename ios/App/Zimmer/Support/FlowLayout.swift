@@ -17,10 +17,9 @@ struct FlowLayout: Layout {
         var y = bounds.minY
         for row in arrange(proposal: proposal, subviews: subviews) {
             var x = bounds.minX
-            for index in row.indices {
-                let size = subviews[index].sizeThatFits(.unspecified)
+            for (index, size) in zip(row.indices, row.sizes) {
                 // Centred in the row, so a short chip sits level with a tall one.
-                subviews[index].place(at: CGPoint(x: x, y: y + (row.height - size.height) / 2), proposal: .unspecified)
+                subviews[index].place(at: CGPoint(x: x, y: y + (row.height - size.height) / 2), proposal: ProposedViewSize(size))
                 x += size.width + spacing
             }
             y += row.height + rowSpacing
@@ -29,6 +28,7 @@ struct FlowLayout: Layout {
 
     private struct Row {
         var indices: [Int] = []
+        var sizes: [CGSize] = []
         var width: CGFloat = 0
         var height: CGFloat = 0
     }
@@ -38,7 +38,10 @@ struct FlowLayout: Layout {
         var rows: [Row] = []
         var row = Row()
         for (index, subview) in subviews.enumerated() {
-            let size = subview.sizeThatFits(.unspecified)
+            var size = subview.sizeThatFits(.unspecified)
+            // A chip wider than the line (a long snooze date on a narrow phone) is asked to
+            // wrap to the line's width rather than run past the edge.
+            if size.width > limit { size = subview.sizeThatFits(ProposedViewSize(width: limit, height: nil)) }
             let needed = row.indices.isEmpty ? size.width : row.width + spacing + size.width
             if !row.indices.isEmpty, needed > limit {
                 rows.append(row)
@@ -47,6 +50,7 @@ struct FlowLayout: Layout {
             row.width = row.indices.isEmpty ? size.width : row.width + spacing + size.width
             row.height = max(row.height, size.height)
             row.indices.append(index)
+            row.sizes.append(size)
         }
         if !row.indices.isEmpty { rows.append(row) }
         return rows

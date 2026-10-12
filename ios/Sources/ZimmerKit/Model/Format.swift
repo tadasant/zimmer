@@ -16,8 +16,8 @@ public enum Format {
         }
     }
 
-    /// A model id as the web UI's metadata block shows it: the vendor prefix and date suffix
-    /// dropped, so `claude-opus-4-5-20260401` reads "opus 4.5" and `gpt-5.2-codex` stays.
+    /// A model id with its vendor prefix and snapshot date dropped, so
+    /// `claude-opus-4-5-20260401` reads "opus-4-5" and `gpt-5.2-codex` stays as it is.
     public static func modelName(_ id: String) -> String {
         var name = id
         for prefix in ["claude-", "anthropic/", "openai/"] where name.hasPrefix(prefix) {

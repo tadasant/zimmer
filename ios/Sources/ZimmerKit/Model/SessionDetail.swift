@@ -174,7 +174,10 @@ public struct HumanMessage: Hashable, Sendable, Identifiable {
     public var content: String
     public var occurredAt: Date?
 
-    public var id: String { "\(authoredInSessionID ?? 0)-\(occurredAt?.timeIntervalSince1970 ?? 0)-\(content.hashValue)" }
+    /// The same words at the same moment through two channels are two entries.
+    public var id: String {
+        "\(authoredInSessionID ?? 0)-\(occurredAt?.timeIntervalSince1970 ?? 0)-\(channelLabel ?? "")-\(author ?? "")-\(content.hashValue)"
+    }
 
     public init(author: String?, channelLabel: String?, authoredInSessionID: Int?, content: String, occurredAt: Date?) {
         self.author = author

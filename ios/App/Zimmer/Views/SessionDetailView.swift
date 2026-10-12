@@ -1167,7 +1167,8 @@ struct MessageBubble: View {
             HStack(spacing: 4) {
                 Text(message.isToolTraffic ? "Tool" : (fromAgent ? "Agent" : "You"))
                 if let date = message.timestamp {
-                    Text(verbatim: "· \(Format.age(date))").monospacedDigit()
+                    // Not uppercased with the label: "41m", not "41M".
+                    Text(verbatim: "· \(Format.age(date))").monospacedDigit().textCase(nil)
                 }
             }
             .themeLabel(size: 10, color: Theme.inkMute)
