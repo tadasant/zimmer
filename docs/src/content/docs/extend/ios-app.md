@@ -43,8 +43,11 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **Filters** by status and by board visibility. *Needs input* is the default status filter; the
   others are *Active* (everything not archived), *Running*, *Failed* and *Archived*. Board
   visibility is *On board* by default, like the web UI's board, with *Snoozed & hidden* and
-  *Both* in the view menu. Pull to refresh. Rows carry the status pill, a *Priority* tag, a star
-  for a favourite, the latest PR, a notes marker, and when a snooze ends.
+  *Both* in the view menu. Pull to refresh. Rows sit on one surface with hairlines between them,
+  as the web board's Your board and Ranked rows do, each two lines: the title, then the status
+  pill, a *Priority* tag, `#id`, a compact age ("41m", "3h"), the latest PR with its CI dot and
+  a notes marker; a star for a favourite; and when a snooze ends. A session that is done or
+  asleep reads in the quieter ink.
 - **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn or with
   queued messages is refused with the server's reason and stays; the rest go.
 - **Refresh All**, after a confirmation, through `POST /api/v1/sessions/refresh_all`: re-reads
