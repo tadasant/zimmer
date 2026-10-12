@@ -203,17 +203,6 @@ extension View {
     func themeRows() -> some View {
         listRowBackground(Theme.surface).listRowSeparatorTint(Theme.rule)
     }
-
-    /// A List row drawn as a free-standing card on the ground. In an inset-grouped list the
-    /// section already keeps its margin, so the row adds none of its own.
-    func themeCardRow(inset: CGFloat = 0) -> some View {
-        padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .themeCard()
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 4, leading: inset, bottom: 4, trailing: inset))
-    }
 }
 
 // MARK: - Components
