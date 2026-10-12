@@ -35,7 +35,7 @@ tabular digits everywhere, read state shown by dimming rather than by a badge.
   on the Sessions tab and as the first item of a session's ⋯ menu; the Inbox, Triggers, More, Costs
   and Health screens have no way to start work. **Slice 1.**
 - **P2 — parity.** On the PWA's board the phone layout has a prompt box, "What do you want to do?",
-  as its own element under the list (`sessions/index.html.erb`, `md:hidden`). The app's board has
+  as its own element above the list (`sessions/index.html.erb`, `md:hidden`). The app's board has
   only the pencil in the toolbar. Tadas: it should be the most prominent thing on the main screen.
   **Slice 1.**
 - **D1 — design.** The Quick Router sheet is titled "New session" and its placeholder is an example
@@ -85,7 +85,7 @@ two screens down.
 - **P8 — parity.** The PWA shows a failed session's failure reason and exception on the phone
   (`_failure_details.html.erb`: `metadata.failure_reason`, `exception_message`, `exception_class`,
   `exit_status`). The app shows nothing about why a session failed. The fields are in
-  `session.metadata`. **Slice 2.**
+  `session.metadata`, which the app's `SessionMetadata` has to start decoding. **Slice 2.**
 - **P9 — parity.** The PWA's **Goal check** panel (met / unmet / pending per criterion) is always
   open under Status. The API returns `goal_check`; the app ignores it. **Slice 2.**
 - **P10 — parity.** The PWA's provenance panel lists **Human messages** (who said what, through
@@ -115,10 +115,11 @@ two screens down.
   shows the raw text, asterisks and backticks included. Plan: `AttributedString(markdown:)` with
   inline-only parsing, and code blocks in the monospaced face. **Slice 6.**
 - **P7 — parity.** The PWA's transcript loads tail-first and reads back as you scroll up. The app
-  shows the last 50 and says how many it left out. Plan: a *Show earlier* row that raises the
+  shows the last 100 and says how many it left out. Plan: a *Show earlier* row that raises the
   limit. **Slice 6.**
-- **P12 — parity.** Each PWA message has *Copy*. The app's text is selectable but has no copy per
-  message. Plan: a context menu on each message. **Slice 6.**
+- **P12 — parity.** The PWA's transcript has a log-level filter (Minimal / Condensed / Show Logs /
+  Verbose). The app folds tool calls behind one toggle and keeps logs on their own screen. Plan:
+  the same four levels on the conversation. **Slice 6.**
 
 ### The other tabs (density, design, parity)
 

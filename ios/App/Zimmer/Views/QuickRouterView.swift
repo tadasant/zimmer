@@ -58,13 +58,23 @@ struct QuickRouterView: View {
 /// The web UI's prompt box on the board, pinned to the foot of the Sessions screen: the
 /// first thing a thumb reaches, and the most prominent thing on the main screen. Type a
 /// sentence, send it, and the session it starts opens.
+///
+/// It stands aside while the search box has the keyboard — a second field above the
+/// keyboard would take the room the results need — and while rows are being selected,
+/// when the Trash bar has the foot.
 struct QuickRouterBar: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(\.isSearching) private var isSearching
+    var editing = false
     @State private var prompt = ""
     @State private var isStarting = false
     @FocusState private var focused: Bool
 
     var body: some View {
+        if !isSearching && !editing { bar }
+    }
+
+    private var bar: some View {
         HStack(alignment: .bottom, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "sparkles")
@@ -156,10 +166,13 @@ extension View {
     /// The Quick Router button in the corner, above whatever the screen keeps at its foot
     /// (a composer, a tab bar) — apply it before a `safeAreaInset` so it sits above the inset.
     func quickRouterCorner() -> some View {
-        overlay(alignment: .bottomTrailing) {
-            QuickRouterButton()
-                .padding(.trailing, Theme.margin)
-                .padding(.bottom, 14)
-        }
+        // The scroll content keeps room at its foot, so the last row or message can be
+        // scrolled clear of the button rather than living under it.
+        contentMargins(.bottom, 76, for: .scrollContent)
+            .overlay(alignment: .bottomTrailing) {
+                QuickRouterButton()
+                    .padding(.trailing, Theme.margin)
+                    .padding(.bottom, 14)
+            }
     }
 }
