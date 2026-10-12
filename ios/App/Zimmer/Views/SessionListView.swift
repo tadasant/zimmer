@@ -132,6 +132,7 @@ struct SessionListView: View {
         }
         .listStyle(.insetGrouped)
         .listSectionSpacing(.compact)
+        .environment(\.defaultMinListRowHeight, 40)
         .themeGround()
         // Rows arriving, leaving and reordering slide rather than jump.
         .animation(.snappy(duration: 0.3), value: model.sessions.map(\.id))
@@ -300,9 +301,10 @@ private struct SwipeableSessionRow: View {
         NavigationLink(value: session.id) {
             SessionRow(session: session)
         }
-        .themeCardRow()
-        // The press-and-hold preview lifts the card, not the square row around it.
-        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: Theme.largeRadius, style: .continuous))
+        // Rows share one surface with hairlines between them, as the web UI's Your board and
+        // Ranked views draw theirs: a card per row spent a third of the screen on margins.
+        .themeRows()
+        .listRowInsets(EdgeInsets(top: 9, leading: 14, bottom: 9, trailing: 10))
         .accessibilityIdentifier("session.row.\(session.id)")
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
@@ -440,51 +442,55 @@ private struct FilterBar: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 ForEach(SessionFilter.allCases) { filter in
                     let selected = filter == model.filter
                     Button {
                         Haptics.selection()
                         Task { await model.select(filter) }
                     } label: {
-                        Pill(selected: selected) { Text(filter.label) }
+                        Pill(selected: selected, compact: true) { Text(filter.label) }
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("filter.\(filter.rawValue)")
                     .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 2)
             .animation(.snappy(duration: 0.25), value: model.filter)
         }
     }
 }
 
-/// One card of the web UI's board, as a row: title, the status pill, `#id`, when it last
-/// moved, and the markers the card carries — a star, a PR, notes, a snooze.
+/// One row of the web UI's board: the title on two lines at most, then one line of what the
+/// card carries — the status pill, Priority, `#id`, a compact age, the latest PR, a notes
+/// mark — and a star when it is a favourite. A session that is done or asleep reads in the
+/// quieter ink, as Motet dims what needs nothing, so the ones waiting on you stand out
+/// without a heavier face.
 struct SessionRow: View {
     let session: SessionSummary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let quiet = session.status == .archived || session.status == .waiting
+        VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(session.displayTitle)
-                    .font(Theme.headline(emphasized: session.status == .needsInput))
-                    .foregroundStyle(Theme.ink)
+                    .font(.system(.subheadline, weight: session.status == .needsInput ? .semibold : .medium))
+                    .foregroundStyle(quiet ? Theme.inkSoft : Theme.ink)
                     .lineLimit(2)
                 Spacer(minLength: 4)
                 if session.isFavorite {
                     Image(systemName: "star.fill")
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(Theme.gold)
                         .accessibilityLabel("Favorite")
                 }
             }
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 StatusBadge(status: session.status, compact: true)
                 if session.isPriority {
                     Text("Priority")
-                        .font(.caption.weight(.semibold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(Theme.danger)
                 }
                 // Verbatim: a session id is an identifier, not a quantity to group. Monospaced,
@@ -493,14 +499,17 @@ struct SessionRow: View {
                     .font(Theme.mono)
                     .foregroundStyle(Theme.inkMute)
                 if let date = session.updatedAt ?? session.createdAt {
-                    Text("·").foregroundStyle(Theme.inkMute)
-                    Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
+                    Text(verbatim: "· \(Format.age(date))")
                 }
                 if let pr = session.pullRequests.last {
                     Text("·").foregroundStyle(Theme.inkMute)
                     Image(systemName: PullRequestChip.symbol(for: pr.state))
                         .foregroundStyle(PullRequestChip.color(for: pr.state))
                     Text(pr.label)
+                    if pr.state == "open", let ci = pr.ci {
+                        Circle().fill(PullRequestChip.ciColor(ci)).frame(width: 6, height: 6)
+                            .accessibilityLabel("CI \(ci)")
+                    }
                 }
                 if session.hasNotes {
                     Image(systemName: "note.text").accessibilityLabel("Has notes")
@@ -511,7 +520,7 @@ struct SessionRow: View {
             .lineLimit(1)
             if session.boardVisibility != .visible {
                 VisibilityLabel(session: session)
-                    .font(.caption.weight(.medium))
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.snooze)
             }
         }
