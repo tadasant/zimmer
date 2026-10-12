@@ -243,6 +243,7 @@ if [ -d "$app" ]; then
   shoot session-detail-failed -ZimmerFixture -ZimmerFixtureOpenSession 1027
   shoot composer-attachment -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
+  shoot quick-router-advanced -ZimmerFixture -ZimmerFixtureQuickRouter -ZimmerFixtureQuickRouterAdvanced
   shoot new-session -ZimmerFixture -ZimmerFixtureNewSession
   shoot inbox -ZimmerFixture -ZimmerFixtureTab inbox
   shoot triggers -ZimmerFixture -ZimmerFixtureTab triggers

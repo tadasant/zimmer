@@ -815,8 +815,11 @@ it holds a permission for is exempt from it.
 **Zimmer's iOS app uses it too**, with its [bearer token](#the-ios-apps-bearer-token) instead of a
 key. The session is started the same way, with `metadata.source` set to `ios_app`. It has `api`
 genesis at priority, as MCP's `quick_router` does for an OAuth caller, because it arrives over an
-OAuth grant rather than from a browser. The prompt is recorded the same way as the app's follow-ups
-(`ios_app.quick_router`). The rate limit applies to both.
+OAuth grant rather than from a browser — unless `scheduling_class` is `spot`. The prompt is recorded
+the same way as the app's follow-ups (`ios_app.quick_router`). The rate limit applies to both.
+
+The route also takes what the in-app bubble's **Advanced** accordion and attach buttons send, so the
+app can offer the same: a harness, a model, the spot opt-in, a parent session and attachments.
 
 ```bash
 curl -X POST https://zimmer.example.com/api/v1/quick_router \
@@ -843,6 +846,11 @@ curl -X POST https://zimmer.example.com/api/v1/quick_router \
 | `page_title` | no | Cut to 300 |
 | `page_context` | no | The page, as markdown. Cut to 50,000 — the same cap as the in-app bubble's; the extension sends at most 20,000 |
 | `pin` | no | An object. `x`, `y` (page coordinates), `viewport_width`, `viewport_height` are integers; `selector` (≤ 500), `tag` (≤ 32), `text` (≤ 1,000) and `excerpt` (≤ 4,000) are strings. Anything else in it is dropped; a `pin` that is not an object is ignored |
+| `agent_runtime` | no | A registered harness (`claude_code`, `codex`, …). Blank leaves it to the router root. One the registry does not carry is a 422, "That harness is not available." — refused, not replaced, as the bubble refuses it |
+| `model` | no | A model the effective harness offers (`runtime_models` in `GET /api/v1/configs`). Blank leaves it to the ordinary chain (the router root's, then Settings, then the catalog's default). One the harness does not offer is a 422 |
+| `scheduling_class` | no | `spot` to wait for quota room instead of starting now; it lands at the top of the spot queue, as the bubble's does. Anything else leaves the class alone |
+| `parent_session_id` | no | The session the request was made from, so the new one threads under it (the bubble on a session page sends this). An id that names no session is a 422 |
+| `attachments` | no | Inline, as [`follow_up`](#attachments-on-a-follow-up) carries them: a list of `{ filename, media_type, data }`, `data` base64. At most 20, 75 MB together; the body may be 110 MB. One bad attachment refuses the whole request before any session exists |
 
 The pin's caps are separate from the page's, so a long page never truncates away the thing that
 was pinned. Everything is composed into one prompt — the same

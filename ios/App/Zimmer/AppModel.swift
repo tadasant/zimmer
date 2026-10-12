@@ -46,6 +46,11 @@ final class AppModel: ObservableObject {
     /// Unread notifications, for the Inbox tab's badge.
     @Published var unreadCount = 0
     @Published var showingQuickRouter = false
+    /// The session the Quick Router was opened from, so the new one threads under it, as
+    /// the web bubble on a session page sends `parent_session_id`.
+    var quickRouterParent: Int?
+    /// Words typed in the board's bar, carried into the sheet when it is opened for more.
+    var quickRouterDraft = ""
     /// The full new-session form (the pencil in the Sessions toolbar).
     @Published var showingNewSession = false
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
@@ -139,9 +144,16 @@ final class AppModel: ObservableObject {
 
     /// Start a Quick Router session and open it.
     func startQuickRouter(_ prompt: String) async -> Bool {
+        await startQuickRouter(QuickRouterRequest(prompt: prompt))
+    }
+
+    /// Start a Quick Router session with the sheet's choices and open it.
+    func startQuickRouter(_ request: QuickRouterRequest) async -> Bool {
         do {
-            let id = try await connection.api.startQuickRouter(prompt)
+            let id = try await connection.api.startQuickRouter(request)
             showingQuickRouter = false
+            quickRouterParent = nil
+            quickRouterDraft = ""
             path.append(id)
             await refresh()
             return true

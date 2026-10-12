@@ -1344,13 +1344,11 @@ class Api::V1::SessionsController < Api::BaseController
     Session.where.not(status: :archived).spot.find_by(id: id)
   end
 
-  # The most attachments one follow-up carries: the web composer's image cap.
-  FOLLOW_UP_ATTACHMENT_LIMIT = 20
-  # The most their decoded bytes may add up to, and the most a follow-up's body may
-  # be: base64 is four bytes for every three, and a JSON encoder may escape its
-  # slashes, so 75 MB of attachments needs a little over 100 MB of body.
-  FOLLOW_UP_ATTACHMENT_BYTES = 75.megabytes
-  def self.follow_up_body_limit = 110.megabytes
+  # The most attachments one follow-up carries, and the most their bytes may add up
+  # to: `InlineAttachments`' caps, which the Quick Router start shares.
+  FOLLOW_UP_ATTACHMENT_LIMIT = InlineAttachments::LIMIT
+  FOLLOW_UP_ATTACHMENT_BYTES = InlineAttachments::TOTAL_BYTES
+  def self.follow_up_body_limit = InlineAttachments::BODY_LIMIT
 
   def refuse_an_oversized_follow_up
     return unless request.content_length.to_i > self.class.follow_up_body_limit
@@ -1359,78 +1357,20 @@ class Api::V1::SessionsController < Api::BaseController
       status: :content_too_large)
   end
 
-  # Store a follow-up's inline `attachments` in the session's own storage, as the
-  # web composer's upload endpoints do, and return the descriptors the turn reads:
-  # `{ images:, files: }`, each nil when there are none. nil after rendering a
-  # refusal. One bad attachment refuses the message rather than sending it
-  # without, because an agent answering about a file it never received is the
-  # failure the person would not see; what was stored before it is removed.
-  #
-  # Which it is goes by the bytes, as ImageStorageService reads them: a PNG,
-  # JPEG, GIF or WebP is an image whatever `media_type` says, and anything else a
-  # file. `data` is base64, with or without a `data:<type>;base64,` prefix.
+  # Store a follow-up's inline `attachments` in the session's own storage and return the
+  # descriptors the turn reads: `{ images:, files: }`, each nil when there are none. nil
+  # after rendering a refusal. The rules are `InlineAttachments`'.
   def stage_follow_up_attachments
-    raw = params[:attachments]
-    return { images: nil, files: nil } if raw.blank?
-
-    staged = { images: [], files: [] }
-    unless raw.is_a?(Array)
-      render_api_error("Invalid attachment", "attachments must be a list", status: :unprocessable_entity)
-      return nil
-    end
-    if raw.size > FOLLOW_UP_ATTACHMENT_LIMIT
-      render_api_error("Too many attachments", "A follow-up carries at most #{FOLLOW_UP_ATTACHMENT_LIMIT} attachments", status: :unprocessable_entity)
-      return nil
-    end
-
-    total = 0
-    raw.each do |entry|
-      unless entry.is_a?(ActionController::Parameters) || entry.is_a?(Hash)
-        raise FileStorageService::InvalidFileError, "Each attachment is an object with a filename and data"
-      end
-
-      filename = entry["filename"].to_s
-      bytes = decode_attachment(entry["data"].to_s)
-      raise FileStorageService::InvalidFileError, "Each attachment needs a filename and data" if filename.blank? || bytes.empty?
-
-      total += bytes.bytesize
-      if total > FOLLOW_UP_ATTACHMENT_BYTES
-        raise FileStorageService::InvalidFileError, "A follow-up's attachments may add up to at most #{FOLLOW_UP_ATTACHMENT_BYTES / 1.megabyte} MB"
-      end
-
-      images_store = ImageStorageService.new(session_id: @session.id)
-      if images_store.media_type_of(bytes)
-        stored = images_store.store(bytes: bytes, filename: filename)
-        staged[:images] << { path: stored[:path], media_type: stored[:media_type] }
-      else
-        stored = FileStorageService.new(session_id: @session.id).store(data: bytes, filename: filename)
-        staged[:files] << { path: stored[:path], original_filename: stored[:original_filename], size: stored[:size] }
-      end
-    end
-    { images: staged[:images].presence, files: staged[:files].presence }
-  rescue ImageStorageService::InvalidImageError, FileStorageService::InvalidFileError => e
-    discard_staged_attachments(staged)
-    render_api_error("Invalid attachment", e.message, status: :unprocessable_entity)
+    InlineAttachments.stage(params[:attachments], session_id: @session.id)
+  rescue InlineAttachments::Invalid => e
+    render_api_error(e.title, e.message, status: :unprocessable_entity)
     nil
-  end
-
-  def decode_attachment(data)
-    Base64.strict_decode64(data.sub(/\Adata:[^;,]+;base64,/, ""))
-  rescue ArgumentError
-    raise FileStorageService::InvalidFileError, "An attachment's data is not valid base64"
   end
 
   # Remove what a follow-up stored when the follow-up itself is refused, so a
   # client that retries does not pile copies into the session's storage.
   def discard_staged_attachments(attachments)
-    return if attachments.nil?
-
-    (Array(attachments[:images]) + Array(attachments[:files])).each do |descriptor|
-      path = descriptor[:path]
-      File.delete(path) if path && File.exist?(path)
-    end
-  rescue SystemCallError => e
-    Rails.logger.warn("[Api::V1::SessionsController] Could not remove a refused follow-up's attachment: #{e.message}")
+    InlineAttachments.discard(attachments)
   end
 
   # A line on the session's log, as the web composer writes one, so the timeline
