@@ -284,6 +284,8 @@ struct SessionDetailView: View {
             // Above the composer, which is a bottom inset.
             Toast(text: $model.notice, identifier: "followup.notice")
         }
+        // The web UI's bubble, above the composer as its joystick is.
+        .quickRouterCorner()
         .safeAreaInset(edge: .bottom) {
             if model.detail?.acceptsFollowUp ?? false { composer }
         }

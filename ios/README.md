@@ -64,6 +64,13 @@ not jitter. The colours come from the Zimmer web UI instead of Motet's:
   mark on sign-in, empty-state rings, the status summary's edge, the favourite star, and the build
   strip. It is never used for text.
 
+The Quick Router is placed as the web UI places it: a bar pinned to the foot of the Sessions
+screen, and a round button in the bottom-right corner of every other screen (`quickRouterCorner()`),
+which opens the sheet. The button carries the app's one shadow — a thing floating over content
+needs the lift, as Motet's play button does.
+[`PARITY_AUDIT.md`](PARITY_AUDIT.md) is the running comparison against the web UI and against
+Motet, grouped into the slices that land it.
+
 The system font is kept, as the web UI's `font-sans` is on a phone, and the bars keep the system
 material. The app stays native in the places where iOS's own chrome is the familiar thing.
 `ui-test` photographs the main screens in both appearances.
