@@ -99,16 +99,27 @@ struct QuickRouterView: View {
             VStack(alignment: .leading, spacing: 10) {
                 if let configs {
                     let runtimes = configs.runtimeModels.keys.sorted()
-                    Picker("Harness", selection: $runtime) {
-                        Text("Default (\(defaultRuntime(configs)))").tag("")
-                        ForEach(runtimes, id: \.self) { Text($0).tag($0) }
+                    // A menu picker shows only its value, so each carries its name beside it.
+                    LabeledContent {
+                        Picker("Harness", selection: $runtime) {
+                            Text("Default (\(defaultRuntime(configs)))").tag("")
+                            ForEach(runtimes, id: \.self) { Text($0).tag($0) }
+                        }
+                        .labelsHidden()
+                        .accessibilityIdentifier("quickrouter.runtime")
+                    } label: {
+                        Text("Harness").font(.subheadline).foregroundStyle(Theme.ink)
                     }
-                    .accessibilityIdentifier("quickrouter.runtime")
-                    Picker("Model", selection: $modelID) {
-                        Text("Default").tag("")
-                        ForEach(configs.models(for: effectiveRuntime(configs))) { model in Text(model.title).tag(model.id) }
+                    LabeledContent {
+                        Picker("Model", selection: $modelID) {
+                            Text("Default").tag("")
+                            ForEach(configs.models(for: effectiveRuntime(configs))) { model in Text(model.title).tag(model.id) }
+                        }
+                        .labelsHidden()
+                        .accessibilityIdentifier("quickrouter.model")
+                    } label: {
+                        Text("Model").font(.subheadline).foregroundStyle(Theme.ink)
                     }
-                    .accessibilityIdentifier("quickrouter.model")
                     .onChange(of: runtime) { _, runtime in
                         // A model of the harness just left is dropped, as the web panel drops it.
                         if !configs.models(for: runtime.isEmpty ? defaultRuntime(configs) : runtime).contains(where: { $0.id == modelID }) { modelID = "" }
