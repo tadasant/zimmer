@@ -1201,39 +1201,3 @@ struct MessageBubble: View {
         }
     }
 }
-    let message: ConversationMessage
-
-    var body: some View {
-        let fromAgent = message.role == .assistant
-        VStack(alignment: fromAgent ? .leading : .trailing, spacing: 5) {
-            Text(message.isToolTraffic ? "Tool" : (fromAgent ? "Agent" : "You"))
-                .themeLabel(size: 10, color: Theme.inkMute)
-                .padding(.horizontal, 4)
-            Text(message.content)
-                .font(message.isToolTraffic ? Theme.mono : .body)
-                .foregroundStyle(message.isToolTraffic ? Theme.inkSoft : Theme.ink)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(bubble(fromAgent: fromAgent))
-                .textSelection(.enabled)
-        }
-        // A reply from you sits to the right and stops short of the far edge, as in Messages.
-        .padding(.leading, fromAgent ? 0 : 36)
-        .frame(maxWidth: .infinity, alignment: fromAgent ? .leading : .trailing)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("detail.message.\(message.id)")
-    }
-
-    /// The agent's words on a card; yours on the accent's wash; tool traffic in a quiet well.
-    @ViewBuilder
-    private func bubble(fromAgent: Bool) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Theme.largeRadius, style: .continuous)
-        if message.isToolTraffic {
-            shape.fill(Theme.well)
-        } else if fromAgent {
-            shape.fill(Theme.surface).overlay(shape.strokeBorder(Theme.rule, lineWidth: 1))
-        } else {
-            shape.fill(Theme.accent.opacity(0.14))
-        }
-    }
-}
