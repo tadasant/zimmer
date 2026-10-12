@@ -243,8 +243,11 @@ module Mcp
       end
 
       def agent_root_report(root, analytics, window)
-        scope = analytics.session_scope.for_agent_root(root)
-        totals = scope.totals
+        # Per-model sums priced in Ruby, not `scope.totals`: a root can carry most
+        # of the fleet's spend, and pricing each of its rows in SQL is what makes a
+        # long window slow. See CostRollup.
+        by_model = CostRollup.new(analytics.session_scope.for_agent_root(root)).fold { |model| model.to_s }
+        totals = by_model.values.reduce(CostRollup.blank) { |sum, row| sum.merge(row) { |_, a, b| a + b } }
         return "No spend recorded for agent root `#{root}` over #{window.label}." if totals[:api_calls].zero?
 
         fleet = analytics.totals[:cost_usd]
@@ -261,9 +264,8 @@ module Mcp
           "",
           "| Model | Cost | Calls |",
           "|---|---:|---:|",
-          *scope.group(:model).order(SessionTokenUsage.cost_sum_sql.desc)
-            .pluck(:model, SessionTokenUsage.cost_sum_sql, Arel.sql("COUNT(*)"))
-            .map { |model, cost, calls| "| `#{model}` | #{money(cost.to_f)} | #{number(calls)} |" },
+          *by_model.sort_by { |model, row| [ -row[:cost_usd], model ] }
+            .map { |model, row| "| `#{model}` | #{money(row[:cost_usd])} | #{number(row[:api_calls])} |" },
           # The drilldown this root-scoped report exists for: which of the bytes
           # this root carries were context management rather than the work.
           *feature_lines(analytics.feature_breakdown(agent_root: root))
@@ -271,13 +273,14 @@ module Mcp
       end
 
       def session_report(session_id, analytics, window)
-        scope = analytics.session_scope.where(session_id: session_id)
-        totals = scope.totals
+        by_thread = CostRollup.new(analytics.session_scope.where(session_id: session_id), "subagent")
+          .fold { |subagent, _model| subagent ? :sub : :main }
+        main = by_thread.fetch(:main) { CostRollup.blank }
+        sub = by_thread.fetch(:sub) { CostRollup.blank }
+        totals = main.merge(sub) { |_, a, b| a + b }
         return "No spend recorded for session ##{session_id} over #{window.label}." if totals[:api_calls].zero?
 
         session = Session.find_by(id: session_id)
-        main = scope.main_thread.totals
-        sub = scope.subagents.totals
 
         [
           "## Session ##{session_id}#{session&.title ? " — #{session.title}" : ""}",

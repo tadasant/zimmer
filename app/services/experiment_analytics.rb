@@ -59,8 +59,7 @@ class ExperimentAnalytics
   #
   # Every setting is answered from the same per-session rollup and one read of
   # the labels, joined in Ruby. Joining the usage table to the labels in SQL
-  # costs two priced scans per setting, which made this the slowest section of
-  # a long-window report.
+  # would cost two priced scans of the window per setting.
   def reports
     settings = ExperimentalSettingsRegistry.all
     keys = settings.map(&:key)

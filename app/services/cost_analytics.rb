@@ -2,15 +2,15 @@
 
 # Rollups behind the Costs page, the REST endpoints, and the MCP tool.
 #
-# Every figure is computed in SQL over a time window. Nothing loads rows into
-# Ruby to add them up — the usage tables grow by thousands of rows a day, and a
-# year of history is millions.
+# Token volumes are summed in SQL over a time window; nothing loads usage rows
+# into Ruby to add them up — the usage tables grow by thousands of rows a day,
+# and a year of history is millions.
 #
 # The whole report is FIVE grouped scans (see the rollups below), each summing
-# plain token columns per model, with dollars applied in Ruby by CostRollup.
-# Every section is folded out of those five. A section that issued its own
-# query, or priced rows in SQL, is what made a 90-day report outlast the proxy
-# timeout — test/services/cost_analytics_test.rb pins the query count.
+# plain token columns per (group, model), with dollars applied in Ruby by
+# CostRollup. Every section is folded out of those five. A section with its own
+# query, or one that prices rows in SQL, multiplies the cost of a long window
+# past the proxy timeout — test/services/cost_analytics_test.rb pins the shape.
 #
 # Money is applied at read time from TokenPricing, never stored. That is what
 # lets this answer "re-price last month at today's rates" and "what would this
@@ -53,11 +53,9 @@ class CostAnalytics
   # Everything the Costs page and the REST rollup endpoint render, in one
   # memoizable bundle.
   #
-  # There are a dozen separate aggregates here and each one scans the window. That
-  # is fine at a week and ruinous at a year: this table grows by thousands of rows
-  # a day, so a 365-day window is millions of rows read a dozen times over, per
-  # request, by every viewer. Computing them together and caching the result makes
-  # the expensive case pay once per ingestion cycle instead of once per page view.
+  # Five grouped scans of the window, each of which reads every row in it. At a
+  # year that is millions of rows read five times over, so the bundle is cached:
+  # the expensive case pays once per ingestion cycle instead of once per viewer.
   def snapshot
     Rails.cache.fetch(cache_key, expires_in: CACHE_TTL) do
       {
@@ -377,7 +375,7 @@ class CostAnalytics
 
     bucket
       .reject { |k, _| k.blank? }
-      .sort_by { |_, v| -v[:cost_usd] }
+      .sort_by { |k, v| [ -v[:cost_usd], k ] }
       .first(limit)
       .map { |k, v| v.merge(label => k) }
   end
@@ -391,7 +389,7 @@ class CostAnalytics
   end
 
   def top_rows(hash, label:, limit: TOP_N)
-    sorted = hash.reject { |k, _| k.blank? }.sort_by { |_, v| -v[:cost_usd] }
+    sorted = hash.reject { |k, _| k.blank? }.sort_by { |k, v| [ -v[:cost_usd], k ] }
     head = sorted.first(limit).map { |key, v| v.merge(label => key) }
     tail = sorted.drop(limit)
     return head if tail.empty?

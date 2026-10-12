@@ -1,9 +1,5 @@
 import Foundation
 
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
-
 /// Every way a call to Zimmer can fail, as the app needs to tell them apart.
 ///
 /// The distinction that matters most is `.unauthorized` versus everything else: a 401 means
