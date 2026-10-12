@@ -136,6 +136,7 @@ public struct ZimmerHTTPClient: ZimmerAPI {
                 throw ZimmerError.unauthorized
             }
             guard (200..<300).contains(response.statusCode) || accepting.contains(response.statusCode) else {
+                if ZimmerError.gatewayTimeoutStatuses.contains(response.statusCode) { throw ZimmerError.timedOut }
                 let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: response.body)
                 throw ZimmerError.http(status: response.statusCode, message: envelope?.message)
             }
