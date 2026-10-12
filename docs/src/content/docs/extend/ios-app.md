@@ -70,8 +70,15 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   with checks), the goal and notes (two lines each until tapped), the hierarchy (who spawned it
   and what it spawned, each a tap away; folded when wider than four sessions) and the **Human
   messages** (who said what to this session and its family, through which channel; folded). The
-  conversation follows, newest last, each message with its age, tool calls folded away until
-  asked for (`GET /api/v1/sessions/:id/conversation`).
+  conversation follows, newest last, each message with its age, rendered the way the web renders
+  it as far as a phone's text goes: inline markdown (emphasis, code spans, links) and fenced code
+  in the monospaced face; list markers and headings stay as typed, where the web draws them as
+  structure. The web UI's log-level filter is a menu on it: *Minimal* (the words alone, the
+  default on a phone), *Condensed* (each tool call as one line naming the tool and what it was
+  given) and *Verbose* (the tool traffic whole, rendered the same way); the web's *Show Logs* is
+  the logs screen in the menu. The page reads the newest hundred messages
+  (`GET /api/v1/sessions/:id/conversation?limit=`), and *Show earlier* reads a hundred more, up to
+  the two hundred the server returns in one read.
 - **Manages the queue**: the messages waiting for the turn in flight to end, in delivery order,
   each with *Send Now* (ending the turn), *Edit* and *Delete*; *Manage* opens the whole queue to
   drag into a new order or swipe away. An edit is recorded as your message when the app acts on
