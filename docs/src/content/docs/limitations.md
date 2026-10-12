@@ -7142,6 +7142,23 @@ in the window, and it excludes sessions whose start and end values disagree. Tho
 the most obvious wrong readings. They do not turn an observational comparison into a causal
 one, and a thin report saying "not enough data to compare" is the correct output, not a bug.
 
+## The cost report rescans its window after every ingestion sweep
+
+The Costs page, `GET /api/v1/costs` and `get_costs` share one cached snapshot, but its key
+includes the ledger's highest row id, and ingestion writes every ten minutes. The first request
+for a window after each sweep runs all five rollup scans again, and their time grows with the
+number of rows in the window: about 3.5s for 90 days on a ledger seeded at roughly four times
+this deployment's volume. Nothing stores daily rollups yet, so a much busier fleet will push a
+year-long window back toward the proxy's timeout. See
+[How a long window stays fast](/operate/costs/#how-a-long-window-stays-fast).
+
+## The cost rollups' planner statistics exist only where the migration ran
+
+The two `CREATE STATISTICS` objects on `session_token_usages` that let Postgres hash the daily
+and per-session rollups cannot be expressed in `schema.rb`. A database loaded from the schema
+(CI, a fresh clone's `db:prepare`) does not have them, and nothing checks for their absence. The
+figures are the same either way; only the plan is slower.
+
 ## Session-scoped Claude credentials have no rollback
 
 Every Claude Code session gets its credentials from the DB row — an access token through
