@@ -5,7 +5,8 @@ import ZimmerKit
 /// visibility as the web UI's board is. "Needs input" is the default filter and the first
 /// chip: the phone is for the sessions waiting on a person. Swipe right to star, left to
 /// trash or snooze; press and hold for everything else the web UI's card offers; Select to
-/// trash several at once.
+/// trash several at once. The Quick Router bar is pinned to the foot: the board is where
+/// work starts.
 struct SessionListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingSettings = false
@@ -69,8 +70,6 @@ struct SessionListView: View {
                 Task { await model.refresh() }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
-            .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
-            .sheet(isPresented: $model.showingNewSession) { NewSessionView() }
     }
 
     private var list: some View {
@@ -171,6 +170,10 @@ struct SessionListView: View {
 
     private var searchableList: some View {
         list
+            // The web UI's prompt box, at the foot of the board where a thumb reaches it.
+            // Inside the searchable scope, so the bar knows when the search box has the
+            // keyboard and steps aside.
+            .safeAreaInset(edge: .bottom) { QuickRouterBar(editing: editMode.isEditing) }
             .searchable(text: $model.searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions...")
             .searchScopes($model.searchScope) { scopeTabs }
             // Debounced: a refresh per keystroke would be a request per keystroke.
@@ -261,18 +264,10 @@ struct SessionListView: View {
             }
             .accessibilityLabel("View options")
             .accessibilityIdentifier("board.menu")
-            // Tap: the Quick Router, a sentence. Touch and hold: the full form.
-            Menu {
-                Button { model.showingQuickRouter = true } label: { Label("Quick Router", systemImage: "sparkles") }
-                Button { model.showingNewSession = true } label: { Label("New Session…", systemImage: "square.and.pencil") }
-                    .accessibilityIdentifier("newsession.open")
-            } label: {
-                Image(systemName: "square.and.pencil")
-            } primaryAction: {
-                model.showingQuickRouter = true
-            }
-            .accessibilityLabel("New session")
-            .accessibilityIdentifier("quickrouter.open")
+            // The full form. The Quick Router is the bar at the foot of the screen.
+            Button { model.showingNewSession = true } label: { Image(systemName: "square.and.pencil") }
+                .accessibilityLabel("New session")
+                .accessibilityIdentifier("newsession.open")
         }
     }
 
