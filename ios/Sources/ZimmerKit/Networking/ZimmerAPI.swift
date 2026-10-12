@@ -8,8 +8,9 @@ public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI
     func conversation(_ id: Int) async throws -> Conversation
     func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult
     func archive(_ id: Int) async throws -> SessionSummary
-    /// Start a Quick Router session from a plain-language request; returns its id.
-    func startQuickRouter(_ prompt: String) async throws -> Int
+    /// Start a Quick Router session from a plain-language request, with what the web
+    /// bubble's Advanced accordion and attach buttons add; returns its id.
+    func startQuickRouter(_ request: QuickRouterRequest) async throws -> Int
     /// Register this phone for push notifications (idempotent: an upsert on the token).
     func registerDevice(token: String, environment: APNsEnvironment, deviceName: String?, appVersion: String?) async throws
     /// Unregister it, on sign-out.
@@ -62,8 +63,8 @@ public struct ZimmerHTTPClient: ZimmerAPI {
         return response.session
     }
 
-    public func startQuickRouter(_ prompt: String) async throws -> Int {
-        let response: QuickRouterResponse = try await post("/api/v1/quick_router", json: ["prompt": prompt])
+    public func startQuickRouter(_ request: QuickRouterRequest) async throws -> Int {
+        let response: QuickRouterResponse = try await post("/api/v1/quick_router", json: request.json)
         return response.session_id
     }
 

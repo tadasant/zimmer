@@ -94,11 +94,20 @@ final class SessionActionsUITests: XCTestCase {
         field.tap()
         field.typeText("Draft the release notes")
         attachScreenshot(app, named: "quick-router")
+
+        // The web bubble's Advanced accordion: harness, model, spot. Spot is chosen here, and
+        // the session it starts is read back as spot.
+        app.buttons["quickrouter.advanced"].firstMatch.tap()
+        let spot = app.switches["quickrouter.spot"]
+        XCTAssertTrue(spot.waitForExistence(timeout: timeout))
+        spot.tap()
+        attachScreenshot(app, named: "quick-router-advanced")
         app.buttons["quickrouter.start"].tap()
 
         let title = app.staticTexts["detail.title"]
         XCTAssertTrue(title.waitForExistence(timeout: timeout))
         XCTAssertEqual(title.label, "Draft the release notes")
+        XCTAssertFalse(app.staticTexts["Priority"].exists, "a spot start is not a priority session")
     }
 
     private func launch(arguments: [String] = []) -> XCUIApplication {

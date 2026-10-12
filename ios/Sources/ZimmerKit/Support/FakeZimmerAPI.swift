@@ -21,6 +21,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var triggerList: [TriggerSummary] = FakeZimmerAPI.sampleTriggers()
     /// What each follow-up carried, newest last, so a test can see attachments arrive.
     public private(set) var sentAttachments: [Int: [[MessageAttachment]]] = [:]
+    /// Every Quick Router start, in order, so a test can see what went with the words.
+    public private(set) var quickRouterRequests: [QuickRouterRequest] = []
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
 
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date()) {
@@ -97,15 +99,32 @@ public actor FakeZimmerAPI: ZimmerAPI {
         return session
     }
 
-    public func startQuickRouter(_ prompt: String) async throws -> Int {
-        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// As the server: a blank prompt, a harness the registry does not carry, a model the
+    /// harness does not offer, or a parent that is not there is refused; spot lands at the
+    /// top of the spot queue; the new session threads under its parent.
+    public func startQuickRouter(_ request: QuickRouterRequest) async throws -> Int {
+        let text = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw ZimmerError.http(status: 422, message: "prompt can't be blank") }
+        let runtime = request.runtime ?? "claude_code"
+        guard Self.sampleConfigs.runtimeModels[runtime] != nil else {
+            throw ZimmerError.http(status: 422, message: "That harness is not available.")
+        }
+        if let model = request.model, !Self.sampleConfigs.models(for: runtime).contains(where: { $0.id == model }) {
+            throw ZimmerError.http(status: 422, message: "That model is not available for the \(runtime) harness.")
+        }
+        if let parent = request.parentSessionID, !all.contains(where: { $0.id == parent }) {
+            throw ZimmerError.http(status: 422, message: "parent_session_id names no session")
+        }
         let id = nextID
         nextID += 1
         let title = text.count > 60 ? String(text.prefix(57)) + "…" : text
-        all.append(SessionSummary(id: id, title: title, status: .waiting, agentRuntime: "claude_code",
-                                  prompt: text, createdAt: Date(), updatedAt: Date()))
+        let topOfSpot = (all.compactMap { $0.priorityClass == "spot" ? $0.precedence : nil }.max() ?? 0) + 1
+        all.append(SessionSummary(id: id, title: title, status: .waiting, agentRuntime: runtime,
+                                  prompt: text, createdAt: Date(), updatedAt: Date(),
+                                  priorityClass: request.spot ? "spot" : "priority", precedence: request.spot ? topOfSpot : nil,
+                                  model: request.model))
         conversations[id] = [ConversationMessage(id: 0, role: .user, content: text, timestamp: Date())]
+        quickRouterRequests.append(request)
         return id
     }
 
