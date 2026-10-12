@@ -132,7 +132,6 @@ struct SessionListView: View {
         }
         .listStyle(.insetGrouped)
         .listSectionSpacing(.compact)
-        .environment(\.defaultMinListRowHeight, 40)
         .themeGround()
         // Rows arriving, leaving and reordering slide rather than jump.
         .animation(.snappy(duration: 0.3), value: model.sessions.map(\.id))
@@ -304,7 +303,8 @@ private struct SwipeableSessionRow: View {
         // Rows share one surface with hairlines between them, as the web UI's Your board and
         // Ranked views draw theirs: a card per row spent a third of the screen on margins.
         .themeRows()
-        .listRowInsets(EdgeInsets(top: 9, leading: 14, bottom: 9, trailing: 10))
+        // 20 leading, where the section headers' text sits, so titles line up under them.
+        .listRowInsets(EdgeInsets(top: 9, leading: 20, bottom: 9, trailing: 10))
         .accessibilityIdentifier("session.row.\(session.id)")
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
@@ -464,14 +464,13 @@ private struct FilterBar: View {
 
 /// One row of the web UI's board: the title on two lines at most, then one line of what the
 /// card carries — the status pill, Priority, `#id`, a compact age, the latest PR, a notes
-/// mark — and a star when it is a favourite. A session that is done or asleep reads in the
-/// quieter ink, as Motet dims what needs nothing, so the ones waiting on you stand out
-/// without a heavier face.
+/// mark — and a star when it is a favourite. A trashed session reads in the quieter ink, as
+/// Motet dims what is done, so the ones waiting on you stand out without a heavier face.
 struct SessionRow: View {
     let session: SessionSummary
 
     var body: some View {
-        let quiet = session.status == .archived || session.status == .waiting
+        let quiet = session.status == .archived
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(session.displayTitle)
@@ -499,7 +498,10 @@ struct SessionRow: View {
                     .font(Theme.mono)
                     .foregroundStyle(Theme.inkMute)
                 if let date = session.updatedAt ?? session.createdAt {
-                    Text(verbatim: "· \(Format.age(date))")
+                    Text("·").foregroundStyle(Theme.inkMute)
+                    // Compact on screen; VoiceOver still hears "41 minutes ago".
+                    Text(verbatim: Format.age(date))
+                        .accessibilityLabel(date.formatted(.relative(presentation: .named)))
                 }
                 if let pr = session.pullRequests.last {
                     Text("·").foregroundStyle(Theme.inkMute)
