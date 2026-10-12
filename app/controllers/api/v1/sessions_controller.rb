@@ -1344,10 +1344,9 @@ class Api::V1::SessionsController < Api::BaseController
     Session.where.not(status: :archived).spot.find_by(id: id)
   end
 
-  # The most attachments one follow-up carries, and the most their bytes may add up
-  # to: `InlineAttachments`' caps, which the Quick Router start shares.
+  # The most attachments one follow-up carries, and the most its body may be:
+  # `InlineAttachments`' caps, which the Quick Router start shares.
   FOLLOW_UP_ATTACHMENT_LIMIT = InlineAttachments::LIMIT
-  FOLLOW_UP_ATTACHMENT_BYTES = InlineAttachments::TOTAL_BYTES
   def self.follow_up_body_limit = InlineAttachments::BODY_LIMIT
 
   def refuse_an_oversized_follow_up

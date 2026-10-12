@@ -125,9 +125,6 @@ class Api::V1::QuickRouterController < Api::BaseController
         skip_enqueue: true
       )
 
-      # Stored under the session's own id; an I/O failure here rolls the session back.
-      staged = InlineAttachments.store(attachments, session_id: session.id)
-
       # The human's own words, not the page block Zimmer wrapped around them. From
       # the iOS app they are recorded through its grant, like any OAuth client's.
       if native_app_request?
@@ -136,16 +133,24 @@ class Api::V1::QuickRouterController < Api::BaseController
       else
         HumanMessageCapture.record_web_ui_message(session: session, content: prompt, entry_point: ENTRY_POINT)
       end
+
+      # Last in the block, under the session's own id: a refusal here rolls the session
+      # back, and `store` removes what it wrote before the refusal.
+      staged = InlineAttachments.store(attachments, session_id: session.id)
     end
 
     AgentSessionJob.enqueue_new_session(session.id, images: staged[:images], files: staged[:files])
 
     render json: { session_id: session.id, session_url: "#{AppUrl.base_url}#{session_path(session)}" }, status: :created
   rescue InlineAttachments::Invalid => e
-    InlineAttachments.discard(staged)
     render_api_error(e.title, e.message, status: :unprocessable_entity)
   rescue AgentRootsConfig::AgentRootNotFoundError => e
     render_api_error("Unprocessable Entity", "Router agent root not configured: #{e.message}", status: :unprocessable_entity)
+  rescue StandardError
+    # A failure after the files were stored (the commit itself) leaves a session that
+    # does not exist; its files must not stay behind.
+    InlineAttachments.discard(staged)
+    raise
   end
 
   private
