@@ -41,20 +41,41 @@ class ExperimentAnalytics
   COMPARED = %w[off on].freeze
   ALL_COHORTS = %w[off on mixed unknown].freeze
 
+  # How many session ids go into one `IN (...)` when reading labels. A year of
+  # history is tens of thousands of sessions; slicing keeps each statement small.
+  FLAG_BATCH = 5_000
+
   # @param session_scope [ActiveRecord::Relation] SessionTokenUsage already
   #   narrowed to the window every other figure on the page uses.
-  def initialize(session_scope)
-    @session_scope = session_scope
+  # @param per_session [CostRollup, nil] that window's usage grouped by
+  #   (session_id, agent_root). CostAnalytics passes the one it already holds for
+  #   the top-sessions table, so the cohorts cost no scan of their own.
+  def initialize(session_scope, per_session: nil)
+    @per_session = per_session ||
+      CostRollup.new(session_scope.where.not(session_id: nil), "session_id", "agent_root")
   end
 
   # One report per experimental setting.
+  #
+  # Every setting is answered from the same per-session rollup and one read of
+  # the labels, joined in Ruby. Joining the usage table to the labels in SQL
+  # costs two priced scans per setting, which made this the slowest section of
+  # a long-window report.
   def reports
-    ExperimentalSettingsRegistry.all.map { |setting| report_for(setting) }
+    settings = ExperimentalSettingsRegistry.all
+    keys = settings.map(&:key)
+    cohorts = cohorts_by_session(keys)
+    tagging = tagging_counts(keys)
+
+    settings.map { |setting| report_for(setting, cohorts[setting.key], tagging[setting.key]) }
   end
 
-  def report_for(setting)
-    cohorts = cohort_totals(setting.key)
-    tagging = tagging_counts(setting.key)
+  private
+
+  attr_reader :per_session
+
+  def report_for(setting, cohort_of, tagging)
+    cohorts = cohort_totals(cohort_of)
 
     {
       key: setting.key,
@@ -67,37 +88,43 @@ class ExperimentAnalytics
       tagged_by_source: tagging,
       cohorts: cohorts,
       comparison: comparison(cohorts),
-      paired_roots: paired_roots(setting.key)
+      paired_roots: paired_roots(cohort_of)
     }
   end
 
-  private
+  # setting key => session id => cohort, for the sessions in the window. A
+  # session with no label for a setting is absent, which is what keeps untagged
+  # sessions out of every cohort, exactly as an INNER JOIN would.
+  def cohorts_by_session(keys)
+    result = keys.index_with { {} }
+    session_ids = per_session.rows.map { |row| row.keys.first }.uniq
 
-  attr_reader :session_scope
+    session_ids.each_slice(FLAG_BATCH) do |ids|
+      SessionExperimentalFlag
+        .where(setting_key: keys, session_id: ids)
+        .pluck(:setting_key, :session_id, Arel.sql(cohort_expression))
+        .each { |key, session_id, cohort| result[key][session_id] = cohort }
+    end
 
-  # Usage in the window, grouped by the cohort the session's flags put it in.
-  # An INNER JOIN, so untagged sessions and ad hoc spend simply are not in this
-  # report — that is what the tagged/total counts on screen are for.
-  def cohort_totals(key)
-    rows = flagged(key)
-      .group(Arel.sql(cohort_expression))
-      .pluck(
-        Arel.sql(cohort_expression),
-        SessionTokenUsage.cost_sum_sql,
-        SessionTokenUsage.total_tokens_sql,
-        Arel.sql("COUNT(*)"),
-        Arel.sql("COUNT(DISTINCT session_token_usages.session_id)")
-      )
-      .to_h { |cohort, cost, tokens, calls, sessions| [ cohort.to_s, metrics(cost, tokens, calls, sessions) ] }
+    result
+  end
 
+  # Usage in the window, bucketed by the cohort the session's flags put it in.
+  # Untagged sessions and ad hoc spend simply are not in this report — that is
+  # what the tagged/total counts on screen are for.
+  def cohort_totals(cohort_of)
+    rows = accumulate(cohort_of) { |cohort, _root| cohort }
     ALL_COHORTS.index_with { |cohort| rows[cohort] || metrics(0, 0, 0, 0) }
   end
 
-  # How many sessions carry a label for this setting, and where each label came
+  # How many sessions carry a label for each setting, and where each label came
   # from. Not restricted to the window: this answers "is the tagging working",
   # which is a property of the corpus, not of what you are looking at.
-  def tagging_counts(key)
-    SessionExperimentalFlag.for_setting(key).group(:source).count
+  def tagging_counts(keys)
+    counts = keys.index_with { {} }
+    SessionExperimentalFlag.where(setting_key: keys).group(:setting_key, :source).count
+      .each { |(key, source), n| counts[key][source] = n }
+    counts
   end
 
   # Whether the two sides can be compared, and — when they cannot — WHICH of the
@@ -135,24 +162,10 @@ class ExperimentAnalytics
   # single variable that moves session cost most. Roots present on only one side
   # are dropped rather than shown with half a row — a root that only ever ran
   # under one cohort tells you about scheduling, not about the setting.
-  def paired_roots(key)
-    grouped = flagged(key)
-      .where.not(agent_root: nil)
-      .group(Arel.sql(cohort_expression), :agent_root)
-      .pluck(
-        Arel.sql(cohort_expression),
-        :agent_root,
-        SessionTokenUsage.cost_sum_sql,
-        SessionTokenUsage.total_tokens_sql,
-        Arel.sql("COUNT(*)"),
-        Arel.sql("COUNT(DISTINCT session_token_usages.session_id)")
-      )
-
+  def paired_roots(cohort_of)
     by_root = Hash.new { |h, k| h[k] = {} }
-    grouped.each do |cohort, root, cost, tokens, calls, sessions|
-      next unless COMPARED.include?(cohort.to_s)
-      by_root[root.to_s][cohort.to_s] = metrics(cost, tokens, calls, sessions)
-    end
+    accumulate(cohort_of) { |cohort, root| [ cohort, root.to_s ] unless root.nil? || !COMPARED.include?(cohort) }
+      .each { |(cohort, root), side| by_root[root][cohort] = side }
 
     by_root
       .select { |_, sides| COMPARED.all? { |cohort| sides[cohort] } }
@@ -167,14 +180,25 @@ class ExperimentAnalytics
       .sort_by { |row| -(row[:off][:cost_usd] + row[:on][:cost_usd]) }
   end
 
-  # Usage rows in the window joined to this setting's per-session label.
-  def flagged(key)
-    session_scope.joins(
-      SessionTokenUsage.sanitize_sql_array([
-        "INNER JOIN session_experimental_flags ON session_experimental_flags.session_id = " \
-        "session_token_usages.session_id AND session_experimental_flags.setting_key = ?", key
-      ])
-    )
+  # The per-session rollup summed into whatever buckets the block names, given
+  # each row's cohort and agent root, with each bucket's DISTINCT session count —
+  # which is why the rollup is per session rather than already per cohort.
+  def accumulate(cohort_of)
+    sums = Hash.new { |h, k| h[k] = { cost: 0.0, tokens: 0, calls: 0, sessions: Set.new } }
+
+    per_session.rows.each do |row|
+      session_id, root = row.keys
+      cohort = cohort_of[session_id] or next
+      bucket = yield(cohort, root) or next
+
+      sum = sums[bucket]
+      sum[:cost] += row.cost_usd
+      sum[:tokens] += TokenAccounting::VOLUME_COLUMNS.sum { |c| row.sums[c] }
+      sum[:calls] += row.sums[:api_calls]
+      sum[:sessions] << session_id
+    end
+
+    sums.transform_values { |s| metrics(s[:cost], s[:tokens], s[:calls], s[:sessions].size) }
   end
 
   def cohort_expression = SessionExperimentalFlag.cohort_sql

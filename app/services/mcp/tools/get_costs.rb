@@ -147,8 +147,12 @@ module Mcp
 
       private
 
+      # Read from the same cached snapshot the Costs page and `GET /api/v1/costs`
+      # render, so the three surfaces pay for a window once between them, not once
+      # each — and a long window costs this tool no more than it costs the page.
       def fleet_report(analytics, window)
-        totals = analytics.totals
+        report = analytics.snapshot
+        totals = report[:totals]
         return empty_notice(window) if totals[:api_calls].zero?
 
         lines = [
@@ -165,31 +169,31 @@ module Mcp
           "|---|---:|---:|"
         ]
 
-        analytics.cost_breakdown.each do |row|
+        report[:cost_breakdown].each do |row|
           lines << "| #{row[:component]} | #{money(row[:cost_usd])} | #{pct(row[:share])} |"
         end
 
-        lines.concat(table("By agent root", "Agent root", analytics.by_agent_root, :agent_root, totals[:cost_usd]))
-        lines.concat(table("By model", "Model", analytics.by_model, :model, totals[:cost_usd]))
-        lines.concat(table("Main thread vs subagents", "Thread", analytics.by_thread_kind, :kind, totals[:cost_usd]))
+        lines.concat(table("By agent root", "Agent root", report[:by_agent_root], :agent_root, totals[:cost_usd]))
+        lines.concat(table("By model", "Model", report[:by_model], :model, totals[:cost_usd]))
+        lines.concat(table("Main thread vs subagents", "Thread", report[:by_thread_kind], :kind, totals[:cost_usd]))
         # By billing relationship, not just by harness: `claude_code` is
         # subscription spend priced at list, `pi` is a metered OpenRouter invoice,
         # `codex` is subscription spend whose models have no rate yet. Every other
         # figure in this report adds them together.
         lines.concat(table("By runtime — `claude_code` is subscription-billed; `pi` is metered by OpenRouter, so its " \
                            "share is money actually owed; `codex` carries tokens at $0 because its models are unpriced",
-                           "Runtime", analytics.by_runtime, :runtime, totals[:cost_usd]))
+                           "Runtime", report[:by_runtime], :runtime, totals[:cost_usd]))
 
-        adhoc = analytics.by_adhoc_source
+        adhoc = report[:by_adhoc_source]
         lines.concat(table("Ad hoc calls from Zimmer's own code", "Source", adhoc, :source, totals[:cost_usd])) if adhoc.any?
 
         lines.concat(burn_rate_lines)
         lines.concat(coverage_lines)
-        lines.concat(feature_lines(analytics.by_feature))
-        lines.concat(experiment_lines(analytics.by_experiment))
-        lines.concat(by_day_lines(analytics))
-        lines.concat(top_sessions_lines(analytics))
-        lines.concat(unpriced_lines(analytics))
+        lines.concat(feature_lines(report[:by_feature]))
+        lines.concat(experiment_lines(report[:by_experiment]))
+        lines.concat(by_day_lines(report[:by_day]))
+        lines.concat(top_sessions_lines(report[:top_sessions]))
+        lines.concat(unpriced_lines(report[:unpriced_models]))
         lines << ""
         lines << "_List price, applied on read. Subscription-billed accounts — a comparable unit, not a bill._"
         lines.join("\n")
@@ -396,8 +400,7 @@ module Mcp
       # The page and the REST API both carry a daily series; without it here an
       # agent can see a total but not that it doubled on Tuesday, which is the
       # question a spend spike actually raises.
-      def by_day_lines(analytics)
-        rows = analytics.by_day
+      def by_day_lines(rows)
         return [] if rows.blank?
 
         [
@@ -407,8 +410,8 @@ module Mcp
         ]
       end
 
-      def top_sessions_lines(analytics)
-        rows = analytics.top_sessions(limit: TOP_N)
+      def top_sessions_lines(rows)
+        rows = Array(rows).first(TOP_N)
         return [] if rows.blank?
 
         [
@@ -447,8 +450,7 @@ module Mcp
         end
       end
 
-      def unpriced_lines(analytics)
-        unpriced = analytics.unpriced_models
+      def unpriced_lines(unpriced)
         return [] if unpriced.empty?
 
         [

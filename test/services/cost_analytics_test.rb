@@ -348,4 +348,50 @@ class CostAnalyticsTest < ActiveSupport::TestCase
     assert_equal 0.0, breakdown[:coverage]
     assert_in_delta breakdown[:total_cost_usd], breakdown[:residual_cost_usd], 0.001
   end
+
+  test "a long window costs the same number of queries as a short one, and prices no row in SQL" do
+    # A 90-day report outlasted the proxy timeout when every section ran its own
+    # scan and priced every row in SQL. The report is five grouped scans, each
+    # pricing per (group, model) in Ruby, whatever the window. A section that
+    # grows its own query, or a fold that reaches for `cost_sql`, fails here.
+    [ 1.hour.ago, 3.days.ago, 40.days.ago, 200.days.ago ].each_with_index do |at, i|
+      usage(called_at: at, session_id: sessions(:running).id, agent_root: "root-#{i}")
+    end
+    AdhocTokenUsage.create!(request_id: "req_adhoc_window", source: "cli_status_probe",
+      model: "claude-haiku-4-5", called_at: 50.days.ago, input_tokens: 5, output_tokens: 10)
+
+    week = queries_for { CostAnalytics.new(from: 7.days.ago).snapshot }
+    year = queries_for { CostAnalytics.new(from: 365.days.ago).snapshot }
+
+    assert_equal week.size, year.size, "query count must not depend on the window's length"
+    assert_operator year.size, :<=, 16, year.join("\n")
+    assert_empty year.grep(/POSITION\(/), "the snapshot must not price rows in SQL"
+    assert_equal 5, year.count { |sql| sql.match?(/FROM "?(session_token_usages|adhoc_token_usages|token_usage_features)"?.*GROUP BY/m) },
+      "five grouped scans of the ledger, no more"
+  end
+
+  test "the rollups agree with the per-row SQL price over every section that carries money" do
+    usage
+    usage(model: "claude-sonnet-5", agent_root: "motet", cache_creation_5m_tokens: 5_000, cache_creation_1h_tokens: 0)
+    usage(model: "claude-haiku-4-5", subagent: true, cache_creation_1h_tokens: 0, web_search_requests: 4)
+
+    analytics = CostAnalytics.new(from: 7.days.ago)
+    sql_total = SessionTokenUsage.in_window(analytics.from, analytics.to).totals[:cost_usd]
+
+    assert_in_delta sql_total, analytics.totals[:session_cost_usd], 1e-9
+    assert_in_delta sql_total, analytics.by_agent_root.sum { |r| r[:cost_usd] }, 1e-9
+    assert_in_delta sql_total, analytics.by_thread_kind.sum { |r| r[:cost_usd] }, 1e-9
+    assert_in_delta sql_total, analytics.by_day.sum { |r| r[:session_cost_usd] }, 1e-9
+    assert_in_delta SessionTokenUsage.for_agent_root("motet").totals[:cost_usd],
+      analytics.by_agent_root.find { |r| r[:agent_root] == "motet" }[:cost_usd], 1e-9
+  end
+
+  private
+
+  def queries_for(&block)
+    statements = []
+    collect = ->(*, payload) { statements << payload[:sql] unless payload[:name] == "SCHEMA" || payload[:cached] }
+    ActiveRecord::Base.uncached { ActiveSupport::Notifications.subscribed(collect, "sql.active_record", &block) }
+    statements
+  end
 end

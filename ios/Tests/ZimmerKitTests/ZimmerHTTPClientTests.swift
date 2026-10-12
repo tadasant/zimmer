@@ -114,4 +114,48 @@ final class ZimmerHTTPClientTests: XCTestCase {
             XCTAssertEqual(error as? ZimmerError, .http(status: 422, message: "prompt can't be blank"))
         }
     }
+
+    // A long cost report once outlasted the proxy, which answered with an HTML 504. The phone
+    // reached Zimmer; it just waited too long. Saying "couldn't reach" sent the reader to
+    // check their network.
+    func testAGatewayTimeoutSaysItTimedOut() async throws {
+        let html = HTTPResponse(statusCode: 504, headers: ["content-type": "text/html"], body: Data("<title>504 — Gateway Timeout</title>".utf8))
+        let transport = ScriptedTransport([{ _ in html }])
+        let auth = AuthSession(store: Fixtures.signedIn(), transport: transport)
+        let client = ZimmerHTTPClient(auth: auth, transport: transport)
+
+        do {
+            _ = try await client.sessions(.active)
+            XCTFail("expected timedOut")
+        } catch {
+            XCTAssertEqual(error as? ZimmerError, .timedOut)
+            XCTAssertEqual((error as? ZimmerError)?.userMessage, "Zimmer took too long to answer. Try again in a moment.")
+        }
+    }
+
+    func testTheRequestsOwnTimeoutSaysItTimedOut() async throws {
+        let transport = ScriptedTransport([{ _ in throw URLError(.timedOut) }])
+        let auth = AuthSession(store: Fixtures.signedIn(), transport: transport)
+        let client = ZimmerHTTPClient(auth: auth, transport: transport)
+
+        do {
+            _ = try await client.sessions(.active)
+            XCTFail("expected timedOut")
+        } catch {
+            XCTAssertEqual(error as? ZimmerError, .timedOut)
+        }
+    }
+
+    func testAnUnreachableServerStillSaysSo() async throws {
+        let transport = ScriptedTransport([{ _ in throw URLError(.cannotConnectToHost) }])
+        let auth = AuthSession(store: Fixtures.signedIn(), transport: transport)
+        let client = ZimmerHTTPClient(auth: auth, transport: transport)
+
+        do {
+            _ = try await client.sessions(.active)
+            XCTFail("expected transport")
+        } catch {
+            XCTAssertEqual((error as? ZimmerError)?.userMessage, "Couldn't reach Zimmer.")
+        }
+    }
 }
