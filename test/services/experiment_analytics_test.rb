@@ -147,4 +147,29 @@ class ExperimentAnalyticsTest < ActiveSupport::TestCase
 
     assert_nil report[:comparison][:reason]
   end
+
+  test "a session spread over two models and two roots is still one session" do
+    # The cohorts are summed from a per-(session, root, model) rollup, so one
+    # session arrives as several rows. Counting rows instead of distinct sessions
+    # would inflate the denominator of cost per session.
+    session = tagged_session(start_value: true, calls: 4)
+    other = tagged_session(start_value: false, calls: 4)
+    [ [ "claude-haiku-4-5", "zimmer" ], [ "claude-opus-5", "motet" ] ].each_with_index do |(model, root), i|
+      [ session, other ].each do |s|
+        SessionTokenUsage.create!(
+          request_id: "req_extra_#{s.id}_#{i}", session_id: s.id, agent_root: root, model: model,
+          called_at: 1.hour.ago, input_tokens: 100, output_tokens: 50
+        )
+      end
+    end
+
+    result = report
+
+    assert_equal 1, result[:cohorts]["on"][:sessions]
+    assert_equal 6, result[:cohorts]["on"][:api_calls]
+    paired = result[:paired_roots].to_h { |r| [ r[:agent_root], r ] }
+    assert_equal %w[motet zimmer], paired.keys.sort
+    assert_equal 1, paired["zimmer"][:on][:sessions]
+    assert_equal 1, paired["motet"][:on][:sessions]
+  end
 end
