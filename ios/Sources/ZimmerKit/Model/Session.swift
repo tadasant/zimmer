@@ -243,15 +243,30 @@ public struct SessionConfig: Hashable, Sendable, Codable {
 public struct SessionMetadata: Hashable, Sendable, Codable {
     public var agentRoot: String?
     public var lastUserActivityAt: Date?
+    /// Why a session failed, as the web UI's failure details read it: the reason the state
+    /// machine recorded, the exception and its class, and the process's exit status.
+    public var failureReason: String?
+    public var exceptionMessage: String?
+    public var exceptionClass: String?
+    public var exitStatus: Int?
 
-    public init(agentRoot: String?, lastUserActivityAt: Date? = nil) {
+    public init(agentRoot: String?, lastUserActivityAt: Date? = nil,
+                failureReason: String? = nil, exceptionMessage: String? = nil, exceptionClass: String? = nil, exitStatus: Int? = nil) {
         self.agentRoot = agentRoot
         self.lastUserActivityAt = lastUserActivityAt
+        self.failureReason = failureReason
+        self.exceptionMessage = exceptionMessage
+        self.exceptionClass = exceptionClass
+        self.exitStatus = exitStatus
     }
 
     enum CodingKeys: String, CodingKey {
         case agentRoot = "agent_root_key"
         case lastUserActivityAt = "last_user_activity_at"
+        case failureReason = "failure_reason"
+        case exceptionMessage = "exception_message"
+        case exceptionClass = "exception_class"
+        case exitStatus = "exit_status"
     }
 
     public init(from decoder: Decoder) throws {
@@ -260,13 +275,29 @@ public struct SessionMetadata: Hashable, Sendable, Codable {
         // A string the server writes by hand, so a value that is not a timestamp is ignored,
         // as the web UI's `LAST_TOUCHED_ORDER` ignores it.
         lastUserActivityAt = (try? container?.decodeIfPresent(String.self, forKey: .lastUserActivityAt)).flatMap(ZimmerJSON.parseDate)
+        failureReason = try? container?.decodeIfPresent(String.self, forKey: .failureReason)
+        exceptionMessage = try? container?.decodeIfPresent(String.self, forKey: .exceptionMessage)
+        exceptionClass = try? container?.decodeIfPresent(String.self, forKey: .exceptionClass)
+        // Written as a number or as a string, depending on who recorded it.
+        if let status = try? container?.decodeIfPresent(Int.self, forKey: .exitStatus) {
+            exitStatus = status
+        } else {
+            exitStatus = (try? container?.decodeIfPresent(String.self, forKey: .exitStatus)).flatMap(Int.init)
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(agentRoot, forKey: .agentRoot)
         try container.encodeIfPresent(lastUserActivityAt.map { ISO8601DateFormatter().string(from: $0) }, forKey: .lastUserActivityAt)
+        try container.encodeIfPresent(failureReason, forKey: .failureReason)
+        try container.encodeIfPresent(exceptionMessage, forKey: .exceptionMessage)
+        try container.encodeIfPresent(exceptionClass, forKey: .exceptionClass)
+        try container.encodeIfPresent(exitStatus, forKey: .exitStatus)
     }
+
+    /// The web UI shows failure details only when there is a reason recorded.
+    public var hasFailureDetails: Bool { !(failureReason ?? "").isEmpty }
 }
 
 /// A pull request a session opened, as Zimmer's PR poller records it.
