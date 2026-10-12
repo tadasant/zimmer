@@ -77,12 +77,15 @@ class Api::V1::QuickRouterAdvancedTest < ActionDispatch::IntegrationTest
   # --- Spot ---
 
   test "scheduling_class spot lands at the top of the spot queue" do
+    # Read before the post: once created, the new session is itself the top of the queue.
+    expected = Session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT)
+
     post_router(scheduling_class: "spot")
 
     assert_response :created
     created = created_session
     assert_equal SessionGenesis::SPOT, created.scheduling_class
-    assert_equal Session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT), created.precedence
+    assert_equal expected, created.precedence
   end
 
   test "anything but spot leaves the class alone" do

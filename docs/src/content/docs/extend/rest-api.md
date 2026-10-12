@@ -850,7 +850,7 @@ curl -X POST https://zimmer.example.com/api/v1/quick_router \
 | `model` | no | A model the effective harness offers (`runtime_models` in `GET /api/v1/configs`). Blank leaves it to the ordinary chain (the router root's, then Settings, then the catalog's default). One the harness does not offer is a 422 |
 | `scheduling_class` | no | `spot` to wait for quota room instead of starting now; it lands at the top of the spot queue, as the bubble's does. Anything else leaves the class alone |
 | `parent_session_id` | no | The session the request was made from, so the new one threads under it (the bubble on a session page sends this). An id that names no session is a 422 |
-| `attachments` | no | Inline, as [`follow_up`](#attachments-on-a-follow-up) carries them: a list of `{ filename, media_type, data }`, `data` base64. At most 20, 75 MB together; the body may be 110 MB. One bad attachment refuses the whole request before any session exists |
+| `attachments` | no | Inline, as [`follow_up`](/sessions/prompt-attachments/#from-the-rest-api-and-the-ios-app) carries them: a list of `{ filename, media_type, data }`, `data` base64. At most 20, 75 MB together; the body may be 110 MB. One bad attachment refuses the whole request before any session exists |
 
 The pin's caps are separate from the page's, so a long page never truncates away the thing that
 was pinned. Everything is composed into one prompt — the same

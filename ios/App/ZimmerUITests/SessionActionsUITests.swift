@@ -83,7 +83,8 @@ final class SessionActionsUITests: XCTestCase {
     /// The button in the corner of every other screen: the web UI's bubble. From the Inbox
     /// it opens the sheet, and the session it starts opens on the Sessions tab.
     func test_the_quick_router_button_is_in_the_corner_of_the_inbox_and_opens_the_sheet() throws {
-        let app = launch(arguments: ["-ZimmerFixtureTab", "inbox"])
+        // The sheet opens with Advanced already unfolded, as the screenshot run opens it.
+        let app = launch(arguments: ["-ZimmerFixtureTab", "inbox", "-ZimmerFixtureQuickRouterAdvanced"])
 
         let button = app.buttons["quickrouter.fab"]
         XCTAssertTrue(button.waitForExistence(timeout: timeout))
@@ -97,7 +98,6 @@ final class SessionActionsUITests: XCTestCase {
 
         // The web bubble's Advanced accordion: harness, model, spot. Spot is chosen here, and
         // the session it starts is read back as spot.
-        app.buttons["quickrouter.advanced"].firstMatch.tap()
         let spot = app.switches["quickrouter.spot"]
         XCTAssertTrue(spot.waitForExistence(timeout: timeout))
         spot.tap()

@@ -132,12 +132,11 @@ struct QuickRouterView: View {
             }
             .padding(.top, 8)
         } label: {
-            Text("Advanced").themeLabel()
+            Text("Advanced").themeLabel().accessibilityIdentifier("quickrouter.advanced")
         }
         .tint(Theme.inkMute)
         .padding(12)
         .themeCard(radius: Theme.smallRadius)
-        .accessibilityIdentifier("quickrouter.advanced")
     }
 
     /// The harness a blank picker lands on: the default root's, or the first the server lists.
@@ -171,9 +170,13 @@ struct QuickRouterView: View {
     private func start() async {
         isStarting = true
         defer { isStarting = false }
+        // The server validates a model against the harness it was picked for. The app
+        // cannot know which root the router is (configs does not say), so a model always
+        // travels with the harness the picker listed it under.
+        let pickedRuntime = runtime.isEmpty ? nil : runtime
         let request = QuickRouterRequest(
             prompt: prompt,
-            runtime: runtime.isEmpty ? nil : runtime,
+            runtime: modelID.isEmpty ? pickedRuntime : configs.map(effectiveRuntime) ?? pickedRuntime,
             model: modelID.isEmpty ? nil : modelID,
             spot: spot,
             parentSessionID: threadUnderParent ? app.quickRouterParent : nil,
