@@ -65,8 +65,10 @@ final class InteractionUITests: XCTestCase {
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
 
-        // The fork opens on top: its own number, and the conversation up to the message.
-        XCTAssertTrue(app.navigationBars["#1043"].waitForExistence(timeout: timeout))
+        // The fork opens on top — its title says what it was forked from, whatever number the
+        // fixture gives it — holding the conversation up to the message.
+        let forkTitle = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Fork of '")).firstMatch
+        XCTAssertTrue(forkTitle.waitForExistence(timeout: timeout))
         XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["detail.message.2"]), "nothing after the fork point")
         XCTAssertTrue(app.descendants(matching: .any)["detail.message.0"].exists)
     }
