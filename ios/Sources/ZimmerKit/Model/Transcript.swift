@@ -76,3 +76,22 @@ extension Conversation {
         messages.filter(level.shows)
     }
 }
+
+extension ConversationMessage {
+    /// Tool traffic as one line, for the Condensed level: the tool and what it was given
+    /// ("Using tool: Bash · gh pr checks 1261"), or the result's first line. The server writes
+    /// tool traffic as `**Using tool: Bash**` over a fenced block, so the emphasis marks and
+    /// the fences are dropped and the first line inside the fence follows the name.
+    public var condensedLine: String {
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.replacingOccurrences(of: "**", with: "").trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("```") }
+        guard let first = lines.first else { return "" }
+        if let index = lines.firstIndex(where: { $0.hasPrefix("Using tool:") || $0.hasPrefix("Tool Result") }) {
+            let head = lines[index]
+            let next = lines.indices.contains(index + 1) ? lines[index + 1] : nil
+            return next.map { "\(head) · \($0)" } ?? head
+        }
+        return first
+    }
+}

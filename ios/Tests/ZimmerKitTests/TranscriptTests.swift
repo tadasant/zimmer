@@ -32,6 +32,17 @@ final class TranscriptTests: XCTestCase {
         XCTAssertEqual(ConversationLevel.allCases.map(\.label), ["Minimal", "Condensed", "Verbose"])
     }
 
+    func testToolTrafficCondensesToTheToolAndWhatItWasGiven() {
+        let use = ConversationMessage(id: 1, role: .assistant, content: "**Using tool: Bash**\n```\ngh pr checks 1261\n```", timestamp: nil, hasToolUse: true)
+        XCTAssertEqual(use.condensedLine, "Using tool: Bash · gh pr checks 1261")
+        let result = ConversationMessage(id: 2, role: .assistant, content: "**Tool Result:**\n```\n✓ ios pass\n✓ lint pass\n```", timestamp: nil, hasToolResult: true)
+        XCTAssertEqual(result.condensedLine, "Tool Result: · ✓ ios pass")
+        let mixed = ConversationMessage(id: 3, role: .assistant, content: "Checking now.\n**Using tool: Bash**\n```\nls\n```", timestamp: nil, hasToolUse: true)
+        XCTAssertEqual(mixed.condensedLine, "Using tool: Bash · ls", "the tool, not the words before it")
+        XCTAssertEqual(ConversationMessage(id: 4, role: .assistant, content: "Using tool: Bash\nls", timestamp: nil, hasToolUse: true).condensedLine, "Using tool: Bash · ls")
+        XCTAssertEqual(ConversationMessage(id: 5, role: .assistant, content: "", timestamp: nil, hasToolUse: true).condensedLine, "")
+    }
+
     func testTheReadSendsItsLimitAndTheFixtureWindowsLikeTheServer() async throws {
         let transport = ScriptedTransport([{ _ in Fixtures.json(200, ["messages": [], "total": 0, "truncated": false]) }])
         let api = ZimmerHTTPClient(auth: AuthSession(store: Fixtures.signedIn(), transport: transport), transport: transport)
