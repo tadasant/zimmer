@@ -83,7 +83,8 @@ final class SessionActionsUITests: XCTestCase {
     /// The button in the corner of every other screen: the web UI's bubble. From the Inbox
     /// it opens the sheet, and the session it starts opens on the Sessions tab.
     func test_the_quick_router_button_is_in_the_corner_of_the_inbox_and_opens_the_sheet() throws {
-        let app = launch(arguments: ["-ZimmerFixtureTab", "inbox"])
+        // The sheet opens with Advanced already unfolded, as the screenshot run opens it.
+        let app = launch(arguments: ["-ZimmerFixtureTab", "inbox", "-ZimmerFixtureQuickRouterAdvanced"])
 
         let button = app.buttons["quickrouter.fab"]
         XCTAssertTrue(button.waitForExistence(timeout: timeout))
@@ -94,11 +95,19 @@ final class SessionActionsUITests: XCTestCase {
         field.tap()
         field.typeText("Draft the release notes")
         attachScreenshot(app, named: "quick-router")
+
+        // The web bubble's Advanced accordion: harness, model, spot. Spot is chosen here, and
+        // the session it starts is read back as spot.
+        let spot = app.switches["quickrouter.spot"]
+        XCTAssertTrue(spot.waitForExistence(timeout: timeout))
+        spot.tap()
+        attachScreenshot(app, named: "quick-router-advanced")
         app.buttons["quickrouter.start"].tap()
 
         let title = app.staticTexts["detail.title"]
         XCTAssertTrue(title.waitForExistence(timeout: timeout))
         XCTAssertEqual(title.label, "Draft the release notes")
+        XCTAssertFalse(app.staticTexts["Priority"].exists, "a spot start is not a priority session")
     }
 
     private func launch(arguments: [String] = []) -> XCUIApplication {

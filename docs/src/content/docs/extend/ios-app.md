@@ -104,7 +104,13 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **Starts a session from a sentence** through the Quick Router, then opens it. The Quick Router is
   where the web UI puts it: a field pinned to the foot of the Sessions screen ("What do you want
   to do?", the web board's prompt box), and a button in the bottom-right corner of every other
-  screen (the web's bubble), which opens the same field as a sheet. **Or from the full form** (the
+  screen (the web's bubble), which opens the sheet. The sheet is the web bubble's panel: the
+  words, photos and files from the paperclip, and under *Advanced* the harness, the model and
+  *Run as spot* (wait for quota room, at the top of the spot queue), each picker leading with
+  the default rather than preselecting it. The sparkles in the bar open the sheet with the words
+  typed so far. Opened from a session, the new one threads under it (*Thread under #id*, the
+  bubble's `parent_session_id`), which you can switch off. All of it goes to
+  `POST /api/v1/quick_router`. **Or from the full form** (the
   pencil in the Sessions toolbar): the web UI's new-session
   form, with agent root, runtime, model, reasoning effort, prompt, title, goal (a predefined one or
   your own words), scheduling class, and the MCP servers, skills, hooks and plugins, each starting
