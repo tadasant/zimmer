@@ -126,9 +126,11 @@ struct VisibilityLabel: View {
     }
 }
 
-/// When a trashed session's held artifacts go for good (`trash_after`): what the web page's
-/// header says beside Restore, as a date rather than "Expires 3 days from now", so a row read
-/// tomorrow still reads true. The time too where there is room for it.
+/// When a trashed session's restore window closes (`trash_after`): what the web page's header
+/// says beside Restore. After that date `EmptyTrashJob` deletes what is held for a restore —
+/// the preserved clone, the scratch directory, prompt attachments — not the session. A date
+/// rather than the web's "Expires 3 days from now", so a row read tomorrow still reads true;
+/// the time too where there is room for it.
 struct TrashExpiryLabel: View {
     let session: SessionSummary
     var withTime = false
@@ -137,7 +139,7 @@ struct TrashExpiryLabel: View {
         switch session.trashExpiry() {
         case let .on(date)?:
             Label {
-                Text("Deleted on \(withTime ? date.formatted(date: .abbreviated, time: .shortened) : date.formatted(date: .abbreviated, time: .omitted))")
+                Text("Expires \(withTime ? date.formatted(date: .abbreviated, time: .shortened) : date.formatted(date: .abbreviated, time: .omitted))")
             } icon: {
                 Image(systemName: "hourglass")
             }

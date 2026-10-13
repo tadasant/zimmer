@@ -109,7 +109,7 @@ struct SessionListView: View {
                 }
             } message: { session in
                 // The web UI's own confirm text for this session's restart.
-                Text(session.restartConfirmation ?? "")
+                Text(session.restartConfirmation(transcriptPresent: nil) ?? "")
             }
     }
 
@@ -339,7 +339,8 @@ struct SessionListView: View {
             restart: { session in
                 // A failed session restarts at once; one waiting on you is taken over, so the
                 // web UI asks first.
-                if session.restartConfirmation != nil {
+                // The board does not know whether a transcript is stored; the session page does.
+                if session.restartConfirmation(transcriptPresent: nil) != nil {
                     restarting = session
                 } else {
                     Task { await model.perform("Restarted", on: session.id) { try await $0.restart(session.id) } }

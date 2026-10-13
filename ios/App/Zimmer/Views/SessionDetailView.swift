@@ -197,8 +197,8 @@ final class SessionDetailModel: ObservableObject {
 
     /// Add what the pickers returned, refusing anything the server would refuse — the whole
     /// message would fail on it — and saying what could not be read at all.
-    func attach(_ new: [MessageAttachment], unreadable: [String] = []) {
-        var refusals = unreadable.map { "\($0) couldn't be read." }
+    func attach(_ new: [MessageAttachment], problems: [String] = []) {
+        var refusals = problems
         for attachment in new {
             if let refusal = MessageAttachment.refusal(adding: attachment, to: attachments) {
                 refusals.append(refusal)
@@ -757,7 +757,7 @@ struct SessionDetailView: View {
                     Button {
                         // A failed session restarts at once; one waiting on you is taken over,
                         // so the web UI asks first.
-                        if let confirmation = session.restartConfirmation {
+                        if let confirmation = session.restartConfirmation(transcriptPresent: model.conversation.map { $0.total > 0 }) {
                             confirmingRestart = confirmation
                         } else {
                             Task { await model.apply("Restarted") { try await $0.restart(session.id) } }
@@ -946,7 +946,7 @@ struct SessionDetailView: View {
                 AttachmentChips(attachments: $model.attachments)
             }
             HStack(alignment: .bottom, spacing: 8) {
-                AttachMenu { model.attach($0, unreadable: $1) }
+                AttachMenu { model.attach($0, problems: $1) }
                 // The hint lives in the placeholder: a running turn queues, and a touch and
                 // hold on the button sends now instead.
                 TextField(running ? "Queue message · hold send for now" : "Send message", text: $model.draft, axis: .vertical)

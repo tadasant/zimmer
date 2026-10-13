@@ -103,14 +103,19 @@ final class SessionControlsTests: XCTestCase {
 
     // MARK: - Restart confirmation
 
+    private let paused = "This session is paused, not failed. Restarting takes it over and sends an automated \"continue\" prompt into its existing conversation. Restart it?"
+    private let fromScratch = "There is no conversation to continue here — this session's setup never finished. Restarting throws away whatever was set up for it and re-runs the whole pipeline — a fresh clone, a fresh process — with its original prompt. Restart it?"
+
     func testRestartingAFailedSessionAsksNothing() throws {
-        XCTAssertNil(try decode(["id": 1, "status": "failed", "session_id": "abc"]).restartConfirmation)
+        let failed = try decode(["id": 1, "status": "failed", "session_id": "abc"])
+        XCTAssertNil(failed.restartConfirmation(transcriptPresent: true))
+        XCTAssertNil(failed.restartConfirmation(transcriptPresent: nil))
     }
 
     func testRestartingAPausedSessionSaysItTakesItOver() throws {
-        let paused = try decode(["id": 1, "status": "needs_input", "session_id": "abc", "metadata": ["clone_path": "/clones/1"]])
-        XCTAssertEqual(paused.restartConfirmation,
-                       "This session is paused, not failed. Restarting takes it over and sends an automated \"continue\" prompt into its existing conversation. Restart it?")
+        let session = try decode(["id": 1, "status": "needs_input", "session_id": "abc", "metadata": ["clone_path": "/clones/1"]])
+        XCTAssertEqual(session.restartConfirmation(transcriptPresent: true), paused)
+        XCTAssertEqual(session.restartConfirmation(transcriptPresent: nil), paused)
     }
 
     func testASessionWhoseTurnDiedBeforeItsPromptIsToldItsPromptGoesAgain() throws {
@@ -118,23 +123,36 @@ final class SessionControlsTests: XCTestCase {
             "id": 1, "status": "needs_input", "session_id": "abc", "prompt": "Do the thing",
             "metadata": ["clone_path": "/clones/1", "failure_reason": "spawn_failed"],
         ])
-        XCTAssertEqual(session.restartConfirmation,
+        XCTAssertEqual(session.restartConfirmation(transcriptPresent: true),
                        "This session's turn died before its prompt was ever delivered. Restarting takes it over and sends that original prompt again, into a freshly spawned runtime. Restart it?")
+        let blankPrompt = try decode([
+            "id": 1, "status": "needs_input", "session_id": "abc", "prompt": "  \n",
+            "metadata": ["clone_path": "/clones/1", "failure_reason": "spawn_failed"],
+        ])
+        XCTAssertEqual(blankPrompt.restartConfirmation(transcriptPresent: true), paused, "a whitespace prompt is blank, as Ruby's present? reads it")
     }
 
     func testASessionWhoseSetupNeverFinishedIsToldItStartsOver() throws {
-        let fromScratch = "There is no conversation to continue here — this session's setup never finished. Restarting throws away whatever was set up for it and re-runs the whole pipeline — a fresh clone, a fresh process — with its original prompt. Restart it?"
         let noClone = try decode([
             "id": 1, "status": "needs_input", "session_id": "abc", "prompt": "Do the thing",
-            "metadata": ["failure_reason": "git_clone_failed"],
+            "metadata": ["failure_reason": "git_clone_failed", "clone_path": "   "],
         ])
-        XCTAssertEqual(noClone.restartConfirmation, fromScratch)
-        let neverLaunched = try decode(["id": 1, "status": "needs_input", "metadata": ["clone_path": "/clones/1"]])
-        XCTAssertEqual(neverLaunched.restartConfirmation, fromScratch)
+        XCTAssertEqual(noClone.restartConfirmation(transcriptPresent: nil), fromScratch, "a whitespace clone path is no clone")
+        let neverLaunched = try decode(["id": 1, "status": "needs_input", "session_id": " ", "metadata": ["clone_path": "/clones/1"]])
+        XCTAssertEqual(neverLaunched.restartConfirmation(transcriptPresent: false), fromScratch)
+    }
+
+    /// `ProcessLifecycleManager#release_stale_runtime_session_id!` blanks a codex session's id
+    /// and leaves its transcript: it has a conversation to continue.
+    func testABlankIdWithATranscriptIsStillAConversationToContinue() throws {
+        let released = try decode(["id": 1, "status": "needs_input", "agent_runtime": "codex", "metadata": ["clone_path": "/clones/1"]])
+        XCTAssertEqual(released.restartConfirmation(transcriptPresent: true), paused, "the session page read its messages")
+        XCTAssertEqual(released.restartConfirmation(transcriptPresent: nil), paused, "the board cannot tell, so it does not claim the setup never finished")
+        XCTAssertEqual(released.restartConfirmation(transcriptPresent: false), fromScratch)
     }
 
     func testTheFixturesPausedSessionsAreRestartedAsTakeovers() async throws {
         let session = try await FakeZimmerAPI().session(1038).session
-        XCTAssertEqual(session.restartConfirmation?.hasPrefix("This session is paused, not failed."), true)
+        XCTAssertEqual(session.restartConfirmation(transcriptPresent: true), paused)
     }
 }
