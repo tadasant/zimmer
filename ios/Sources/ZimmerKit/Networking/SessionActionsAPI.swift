@@ -49,6 +49,9 @@ public protocol SessionActionsAPI: Sendable {
     func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SchedulingChange
     /// Turn the session's heartbeat on or off, at the interval it already has.
     func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary
+    /// Set how often the heartbeat beats, leaving it on or off as it is — the web UI's heart
+    /// popout's "Beat every". The server takes 30 seconds to a day.
+    func setHeartbeatInterval(_ id: Int, seconds: Int) async throws -> SessionSummary
     /// Ask for a fresh "where things stand"; it is written in the background.
     func regenerateStatusSummary(_ id: Int) async throws -> String
     /// Re-read the transcript from disk (the web UI's "Refresh Transcript").
@@ -290,6 +293,12 @@ extension ZimmerHTTPClient {
     public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {
         let segment = ZimmerPathComponent(String(id))
         let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)/heartbeat", json: ["enabled": enabled])
+        return response.session
+    }
+
+    public func setHeartbeatInterval(_ id: Int, seconds: Int) async throws -> SessionSummary {
+        let segment = ZimmerPathComponent(String(id))
+        let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)/heartbeat", json: ["interval_seconds": seconds])
         return response.session
     }
 

@@ -4,14 +4,20 @@ import ZimmerKit
 /// Sessions, in one of the web UI's four board views, filtered by status and by board
 /// visibility as the web UI's board is. "Needs input" is the default filter and the first
 /// chip: the phone is for the sessions waiting on a person. Swipe right to star, left to
-/// trash or snooze; press and hold for everything else the web UI's card offers; Select to
-/// trash several at once. The Quick Router bar is pinned to the foot: the board is where
-/// work starts.
+/// trash or snooze; press and hold for everything else the web UI's card and its row menu
+/// offer; Select to trash several at once. The Quick Router bar is pinned to the foot: the
+/// board is where work starts.
 struct SessionListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingSettings = false
     @State private var snoozing: SessionSummary?
     @State private var trashing: SessionSummary?
+    /// A row's *Custom…* snooze, open in its sheet.
+    @State private var customSnoozing: SessionSummary?
+    @State private var renaming: SessionSummary?
+    @State private var newTitle = ""
+    /// A restart that takes over a session waiting on you, waiting on its confirmation.
+    @State private var restarting: SessionSummary?
     /// The search the list last loaded, so appearing does not reload a list `start()` just loaded.
     @State private var appliedSearch = SearchKey(text: "", scope: .titles)
     @State private var editMode: EditMode = .inactive
@@ -22,13 +28,13 @@ struct SessionListView: View {
     @State private var reordering = false
 
     var body: some View {
-        searchableList
+        promptingList
             .toolbar { toolbarContent }
             .confirmationDialog(
                 "Snooze until…", isPresented: isSnoozing,
                 titleVisibility: .visible, presenting: snoozing
             ) { session in
-                SnoozeButtons(session: session)
+                SnoozeButtons(session: session) { customSnoozing = session }
             } message: { _ in
                 Text("Visual only — it does not pause, start or stop the session.")
             }
@@ -74,6 +80,39 @@ struct SessionListView: View {
             .sheet(isPresented: $showingSettings) { SettingsView() }
     }
 
+    /// The questions a row's own actions ask: a custom snooze time, a new title, and whether a
+    /// restart may take a session over.
+    private var promptingList: some View {
+        searchableList
+            .sheet(item: $customSnoozing) { session in
+                CustomSnoozeSheet { until in
+                    let label = until.formatted(date: .abbreviated, time: .shortened)
+                    return await model.perform("Snoozed until \(label)", on: session.id) { try await $0.setVisibility(session.id, .snoozed(until: until)) }
+                }
+            }
+            .alert("Rename session", isPresented: isRenaming, presenting: renaming) { session in
+                TextField("Title", text: $newTitle)
+                    .accessibilityIdentifier("rename.field")
+                Button("Cancel", role: .cancel) {}
+                Button("Save") {
+                    let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Task { await model.perform("Renamed", on: session.id) { try await $0.rename(session.id, title: title) } }
+                }
+                .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .confirmationDialog(
+                "Restart this session?", isPresented: isRestarting,
+                titleVisibility: .visible, presenting: restarting
+            ) { session in
+                Button("Restart") {
+                    Task { await model.perform("Restarted", on: session.id) { try await $0.restart(session.id) } }
+                }
+            } message: { session in
+                // The web UI's own confirm text for this session's restart.
+                Text(session.restartConfirmation ?? "")
+            }
+    }
+
     private var list: some View {
         // Selection is bound only while selecting: a List with a selection binding takes a
         // tap on a row as a selection, not as opening the session.
@@ -107,7 +146,7 @@ struct SessionListView: View {
             ForEach(model.sessions.isEmpty ? [] : model.sections) { section in
                 Section {
                     ForEach(section.sessions) { session in
-                        SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing)
+                        SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing, prompts: rowPrompts)
                     }
                     .onMove(perform: moveHandler(for: section))
                     if section.sessions.isEmpty {
@@ -281,9 +320,44 @@ struct SessionListView: View {
         Binding(get: { trashing != nil }, set: { if !$0 { trashing = nil } })
     }
 
+    private var isRenaming: Binding<Bool> {
+        Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })
+    }
+
+    private var isRestarting: Binding<Bool> {
+        Binding(get: { restarting != nil }, set: { if !$0 { restarting = nil } })
+    }
+
+    /// What a row's long press opens on this screen.
+    private var rowPrompts: RowPrompts {
+        RowPrompts(
+            customSnooze: { customSnoozing = $0 },
+            rename: { session in
+                newTitle = session.title ?? ""
+                renaming = session
+            },
+            restart: { session in
+                // A failed session restarts at once; one waiting on you is taken over, so the
+                // web UI asks first.
+                if session.restartConfirmation != nil {
+                    restarting = session
+                } else {
+                    Task { await model.perform("Restarted", on: session.id) { try await $0.restart(session.id) } }
+                }
+            }
+        )
+    }
+
     private var boardSelection: Binding<BoardFilter> {
         Binding(get: { model.board }, set: { board in Task { await model.select(board) } })
     }
+}
+
+/// The questions a row's long press hands back to the list to ask.
+private struct RowPrompts {
+    let customSnooze: (SessionSummary) -> Void
+    let rename: (SessionSummary) -> Void
+    let restart: (SessionSummary) -> Void
 }
 
 /// One row with the web UI card's quick actions on its swipes and its long press.
@@ -292,6 +366,7 @@ private struct SwipeableSessionRow: View {
     let session: SessionSummary
     @Binding var snoozing: SessionSummary?
     @Binding var trashing: SessionSummary?
+    let prompts: RowPrompts
 
     var body: some View {
         NavigationLink(value: session.id) {
@@ -341,7 +416,7 @@ private struct SwipeableSessionRow: View {
                 .tint(Theme.Swipe.snooze)
             }
         }
-        .contextMenu { SessionContextMenu(session: session, trashing: $trashing) }
+        .contextMenu { SessionContextMenu(session: session, trashing: $trashing, prompts: prompts) }
     }
 }
 
@@ -350,10 +425,12 @@ private struct SearchKey: Hashable {
     let scope: SearchScope
 }
 
-/// The snooze presets, for a dialog or a menu.
+/// The snooze presets, then a time of your own, then Hide — the web UI's snooze menu, for a
+/// dialog or a menu. `custom` opens the picker.
 struct SnoozeButtons: View {
     @EnvironmentObject private var model: AppModel
     let session: SessionSummary
+    let custom: () -> Void
 
     var body: some View {
         ForEach(VisibilityChange.snoozePresets()) { preset in
@@ -362,18 +439,21 @@ struct SnoozeButtons: View {
                 Task { await model.perform("Snoozed until \(until)", on: session.id) { try await $0.setVisibility(session.id, .snoozed(until: preset.until)) } }
             }
         }
+        Button("Custom…", action: custom)
         Button("Hide") {
             Task { await model.perform("Hidden", on: session.id) { try await $0.setVisibility(session.id, .hidden) } }
         }
     }
 }
 
-/// Press and hold a row: the web UI card's actions.
+/// Press and hold a row: the web UI card's actions, with the rename its title's pencil
+/// offers and the refresh beside its status pill.
 private struct SessionContextMenu: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openURL) private var openURL
     let session: SessionSummary
     @Binding var trashing: SessionSummary?
+    let prompts: RowPrompts
 
     var body: some View {
         Button {
@@ -383,7 +463,7 @@ private struct SessionContextMenu: View {
         }
         if session.boardVisibility == .visible {
             Menu {
-                SnoozeButtons(session: session)
+                SnoozeButtons(session: session) { prompts.customSnooze(session) }
             } label: {
                 Label("Snooze until…", systemImage: "moon.zzz")
             }
@@ -399,6 +479,15 @@ private struct SessionContextMenu: View {
         }
         if let url = model.webURL(for: session.id) {
             Button { openURL(url) } label: { Label("Open in browser", systemImage: "safari") }
+        }
+        Button { prompts.rename(session) } label: { Label("Rename", systemImage: "pencil") }
+        // The card hides its refresh on a running session: it is live already.
+        if session.status != .running {
+            Button {
+                Task { await model.run { try await $0.refreshTranscript(session.id) } }
+            } label: {
+                Label("Refresh Transcript", systemImage: "arrow.triangle.2.circlepath")
+            }
         }
         Divider()
         if session.status == .running {
@@ -416,9 +505,7 @@ private struct SessionContextMenu: View {
             }
         }
         if session.status == .failed || session.status == .needsInput {
-            Button {
-                Task { await model.perform("Restarted", on: session.id) { try await $0.restart(session.id) } }
-            } label: {
+            Button { prompts.restart(session) } label: {
                 Label("Restart Session", systemImage: "arrow.clockwise.circle")
             }
         }
@@ -521,6 +608,11 @@ struct SessionRow: View {
                 VisibilityLabel(session: session)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.snooze)
+            }
+            if session.status == .archived {
+                TrashExpiryLabel(session: session)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.inkMute)
             }
         }
         .accessibilityElement(children: .combine)

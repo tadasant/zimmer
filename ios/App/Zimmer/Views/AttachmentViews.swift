@@ -1,11 +1,14 @@
 import ImageIO
 import PhotosUI
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 import ZimmerKit
 
 /// The composer's paperclip: the web composer's *Attach image* and *Attach file*, as the
-/// system photo picker and file browser.
+/// system photo picker and file browser; its camera button, which on a phone opens the rear
+/// camera (`capture="environment"`); and pasting an image, which the web composer takes from
+/// the clipboard into the same attachments.
 struct AttachMenu: View {
     /// What could be attached, and the names of what could not be read at all.
     let add: ([MessageAttachment], [String]) -> Void
@@ -13,12 +16,23 @@ struct AttachMenu: View {
     @State private var photos: [PhotosPickerItem] = []
     @State private var choosingPhotos = false
     @State private var choosingFiles = false
+    @State private var takingPhoto = false
+    /// Whether *Paste Image* is offered. Asking the pasteboard whether it holds an image does
+    /// not read it, so this shows no paste prompt; the prompt comes with the paste itself.
+    @State private var canPasteImage = false
 
     var body: some View {
         HStack {
             Menu {
+                // A device without a camera (the simulator, some iPads) is not offered one.
+                if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    Button { takingPhoto = true } label: { Label("Take Photo", systemImage: "camera") }
+                }
                 Button { choosingPhotos = true } label: { Label("Photo Library", systemImage: "photo.on.rectangle") }
                 Button { choosingFiles = true } label: { Label("Choose Files", systemImage: "folder") }
+                if canPasteImage {
+                    Button { paste() } label: { Label("Paste Image", systemImage: "doc.on.clipboard") }
+                }
             } label: {
                 Image(systemName: "paperclip")
                     .font(.system(size: 18, weight: .medium))
@@ -45,6 +59,55 @@ struct AttachMenu: View {
                 add(loaded, failed)
             }
         }
+        .fullScreenCover(isPresented: $takingPhoto) {
+            CameraPicker { data in
+                takingPhoto = false
+                guard let data else { return }
+                let stamp = Int(Date().timeIntervalSince1970)
+                Task {
+                    let (taken, failed) = await Self.images([data], named: { _ in "Photo \(stamp).jpg" })
+                    add(taken, failed)
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .onAppear { canPasteImage = UIPasteboard.general.hasImages }
+        // Copied here, or in another app while this one was in the background.
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+            canPasteImage = UIPasteboard.general.hasImages
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            canPasteImage = UIPasteboard.general.hasImages
+        }
+    }
+
+    /// The images on the pasteboard, through the photo pipeline: as JPEG, scaled to fit.
+    private func paste() {
+        let pasted = (UIPasteboard.general.images ?? []).compactMap { $0.jpegData(compressionQuality: 0.9) }
+        let stamp = Int(Date().timeIntervalSince1970)
+        guard !pasted.isEmpty else {
+            add([], ["The pasted image"])
+            return
+        }
+        Task {
+            let (read, failed) = await Self.images(pasted, named: { "Pasted image \(stamp)-\($0 + 1).jpg" })
+            add(read, failed)
+        }
+    }
+
+    /// Image bytes from the camera or the pasteboard as attachments, re-encoded and scaled off
+    /// the main thread as a library photo is.
+    nonisolated static func images(_ data: [Data], named name: @Sendable (Int) -> String) async -> ([MessageAttachment], [String]) {
+        var images: [MessageAttachment] = []
+        var failed: [String] = []
+        for (index, bytes) in data.enumerated() {
+            guard let jpeg = jpeg(from: bytes) else {
+                failed.append(name(index))
+                continue
+            }
+            images.append(MessageAttachment(filename: name(index), mediaType: "image/jpeg", data: jpeg))
+        }
+        return (images, failed)
     }
 
     /// Photos as JPEG, decoded and downsampled off the main thread: the library hands back
@@ -111,6 +174,42 @@ struct AttachMenu: View {
             read.append(MessageAttachment(filename: url.lastPathComponent, mediaType: type, data: data))
         }
         return (read, unreadable)
+    }
+}
+
+/// The rear camera, for one photo: the web composer's camera button. `finish` gets the
+/// photo's bytes, or nil when the person cancelled.
+struct CameraPicker: UIViewControllerRepresentable {
+    let finish: (Data?) -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.cameraDevice = .rear
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(finish: finish) }
+
+    @MainActor
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let finish: (Data?) -> Void
+
+        init(finish: @escaping (Data?) -> Void) {
+            self.finish = finish
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            let image = info[.originalImage] as? UIImage
+            finish(image?.jpegData(compressionQuality: 0.9))
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            finish(nil)
+        }
     }
 }
 
