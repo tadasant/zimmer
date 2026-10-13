@@ -1050,12 +1050,16 @@ class Api::V1::SessionsController < Api::BaseController
   #     is where the page starts, which is the `before` of the page above it — so a
   #     reader can go back past the cap a page at a time, as the dashboard's
   #     transcript reads back as you scroll up.
-  #   - full_content: "true" sends each message whole. Otherwise each is cut at
-  #     4,000 characters, which keeps an agent reading a session from spending its
-  #     context on one long tool result.
+  #   - full_content: "true" sends each message up to 100,000 characters — whole, for
+  #     anything a person reads. Otherwise each is cut at 4,000, which keeps an agent
+  #     reading a session from spending its context on one long tool result.
+  #
+  # Positions count the messages in this list. They are not `transcript_index`,
+  # which counts the transcript's events and is what `fork` takes.
   CONVERSATION_DEFAULT_LIMIT = 50
   CONVERSATION_MAX_LIMIT = 200
   CONVERSATION_CONTENT_LIMIT = 4_000
+  CONVERSATION_FULL_CONTENT_LIMIT = 100_000
 
   def conversation
     limit = params[:limit].present? ? params[:limit].to_i.clamp(1, CONVERSATION_MAX_LIMIT) : CONVERSATION_DEFAULT_LIMIT
@@ -1067,7 +1071,7 @@ class Api::V1::SessionsController < Api::BaseController
       messages: messages[first...ending].map do |message|
         content = message[:content].to_s
         message.slice(:role, :timestamp, :has_tool_use, :has_tool_result)
-          .merge(content: full ? content : content.truncate(CONVERSATION_CONTENT_LIMIT, omission: "\n…[truncated]"))
+          .merge(content: content.truncate(full ? CONVERSATION_FULL_CONTENT_LIMIT : CONVERSATION_CONTENT_LIMIT, omission: "\n…[truncated]"))
       end,
       total: messages.size,
       first_position: first,
