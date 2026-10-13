@@ -222,7 +222,10 @@ message sits in the transcript the fork service counts, and no route lists a ses
 elicitations — and come in their own change. So does the rest of the web card's refresh: on the
 web it also resumes a failed session and sends the continue nudge to a stalled waiting one, but
 `POST /api/v1/sessions/:id/refresh` only re-reads the transcript, so the row's refresh is
-*Refresh Transcript* and a failed session is restarted with *Restart Session*. The admin pages (API keys, inference accounts, connectors,
+*Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
+the web says why a row is *drawn under* a session that did not spawn it — reached through a senior,
+or placed there because the tree was cut short — and the app says only that it is: the hierarchy
+nodes do not carry `ceiling_placed`. The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.
 
 ## Two origins

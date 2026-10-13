@@ -49,6 +49,7 @@ final class SessionDetailModel: ObservableObject {
     /// The catalog (`GET /api/v1/configs`), read once: what names the session's goal and
     /// what the goal picker offers. Nil until it reads, and the page works without it.
     @Published private(set) var configs: AppConfigs?
+    private var loadingConfigs = false
 
     init(id: Int, api: ZimmerAPI) {
         self.id = id
@@ -57,6 +58,11 @@ final class SessionDetailModel: ObservableObject {
     }
 
     func load() async {
+        // Beside the page's own reads, not before them: the catalog only names the goal.
+        if configs == nil, !loadingConfigs {
+            loadingConfigs = true
+            Task { await loadConfigs() }
+        }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -76,18 +82,21 @@ final class SessionDetailModel: ObservableObject {
             } catch ZimmerError.unauthorized {
                 report(.unauthorized)
             } catch {}
-            // The catalog only names the goal: one that will not read leaves the words.
-            if configs == nil {
-                do {
-                    configs = try await api.configs()
-                } catch ZimmerError.unauthorized {
-                    report(.unauthorized)
-                } catch {}
-            }
             error = nil
         } catch {
             fail(error)
         }
+    }
+
+    /// The catalog, once. One that will not read leaves the goal's words, and the next load
+    /// tries again.
+    private func loadConfigs() async {
+        defer { loadingConfigs = false }
+        do {
+            configs = try await api.configs()
+        } catch ZimmerError.unauthorized {
+            report(.unauthorized)
+        } catch {}
     }
 
     /// Read everything again without showing it: the web UI's page updates as the session
@@ -428,6 +437,7 @@ struct SessionDetailView: View {
                     DetailsCard(
                         detail: detail,
                         goal: model.configs?.goal(matching: detail.session.goal),
+                        catalogRead: model.configs != nil,
                         expanded: fixtureOpensPanels,
                         edit: { editing = $0 },
                         editMcpServers: { editingCatalog = .mcpServers }
@@ -514,7 +524,11 @@ struct SessionDetailView: View {
                 GoalPickerSheet(goals: model.configs?.goals ?? [], current: model.detail?.session.goal) { text in
                     let name = model.configs?.goal(matching: text)?.title
                     let done: String = text.isEmpty ? "Goal cleared" : name.map { "Goal: \($0)" } ?? "Goal updated"
-                    return await model.apply(done) { try await $0.updateGoal(model.id, goal: text) }
+                    let saved = await model.apply(done) { try await $0.updateGoal(model.id, goal: text) }
+                    // The goal check rides on the session's page, not the PATCH's answer: read
+                    // it again so it follows the goal, without holding the sheet open for it.
+                    if saved { Task { await model.load() } }
+                    return saved
                 }
             }
         }
