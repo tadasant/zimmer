@@ -38,7 +38,8 @@ final class WaitingUITests: XCTestCase {
 
         app.buttons["waiting.action.queued_turn"].tap()
         // The web page's confirmation, naming the turn that stops.
-        let confirm = app.buttons["waiting.force.confirm"].firstMatch
+        // In the sheet, by its label: a confirmation's identifier does not reach the sheet.
+        let confirm = app.sheets.buttons["Force"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Stop session #1042's turn")).firstMatch.exists)
         confirm.tap()
