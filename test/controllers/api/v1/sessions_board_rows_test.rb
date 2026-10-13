@@ -41,7 +41,11 @@ class Api::V1::SessionsBoardRowsTest < ActionDispatch::IntegrationTest
   end
 
   test "the user view and search carry them too" do
-    assert_includes rows("/api/v1/sessions", include: "board_row", view: "user").keys, @summarised.id.to_s
+    # The User view reads its rows without the transcript column; the summary still
+    # counts how far behind it is.
+    user_row = rows("/api/v1/sessions", include: "board_row", view: "user").fetch(@summarised.id.to_s)
+    assert_equal "The PR is [open](https://github.com/t/r/pull/1).", user_row.dig("status_summary", "summary")
+    assert_equal 0, user_row.dig("status_summary", "messages_since_generated")
     assert_includes rows("/api/v1/sessions/search", include: "board_row", q: "summarised").keys, @summarised.id.to_s
     assert_includes rows("/api/v1/sessions", include: %w[board_row]).keys, @summarised.id.to_s
   end
