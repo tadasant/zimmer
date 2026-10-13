@@ -59,6 +59,7 @@ struct SessionListView: View {
                 Task { await model.refresh() }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
+            .modifier(QueuedTrashQuestion { _ in model.path.isEmpty })
     }
 
     private var list: some View {
@@ -596,6 +597,34 @@ struct Toast: View {
                     guard !Task.isCancelled else { return }
                     withAnimation { self.text = nil }
                 }
+        }
+    }
+}
+
+/// The web UI's *Archive anyway*: a trash refused because messages are queued for the
+/// session, asked again naming the discard. Shown by the screen the trash came from — the
+/// board, or that session's page — since a dialog on the navigation stack would stand over
+/// the page's own dialogs and keep them from presenting.
+struct QueuedTrashQuestion: ViewModifier {
+    @EnvironmentObject private var app: AppModel
+    /// Whether this screen is the one that asks about `session`.
+    let asks: (SessionSummary) -> Bool
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            "Discard its queued messages?",
+            isPresented: Binding(
+                get: { app.queuedTrash.map(asks) ?? false },
+                set: { if !$0 { app.queuedTrash = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: app.queuedTrash
+        ) { session in
+            Button("Trash anyway", role: .destructive) {
+                Task { await app.trash(session, force: true) }
+            }
+        } message: { _ in
+            Text("Messages are waiting to be delivered to this session. Trashing it discards them.")
         }
     }
 }
