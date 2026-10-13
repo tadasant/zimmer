@@ -1310,14 +1310,28 @@ class AgentSessionJob < ApplicationJob
               "[DIAGNOSTIC] Calling GitCloneService.create_clone with git_root=#{session.git_root}, branch=#{session.branch}",
               level: "debug"
             )
+            # A router session (every Quick Router entry point) takes a
+            # ready-made clone from the warm pool when there is one: the clone is
+            # most of a cold start, and nothing in it depends on the request.
+            warm_eligible = WarmClonePool.serves?(session)
             clone_result = GitCloneService.create_clone(
               session.git_root,
               branch: session.branch,
               subdirectory: session.subdirectory,
-              fallback_subdirectory: session.catalog_subdirectory
+              fallback_subdirectory: session.catalog_subdirectory,
+              warm: warm_eligible
             )
             clone_path = clone_result[:clone_path]
             working_directory = clone_result[:working_directory]
+
+            if warm_eligible
+              session.merge_metadata!("warm_clone" => clone_result[:warm] ? "claimed" : "missed")
+              log_buffer.add(
+                clone_result[:warm] ? "Claimed a pre-warmed clone from the pool" : "No pre-warmed clone was ready; cloned cold",
+                level: "info"
+              )
+              WarmClonePoolReplenishJob.perform_later
+            end
 
             # A session that was created before its agent root's directory was
             # renamed — and only started afterwards — asks for a path this commit

@@ -470,6 +470,52 @@ If images are attached, or the prompt exceeds `LARGE_PROMPT_THRESHOLD` (100 KB),
 adapter switches to stream-json mode and feeds the payload through an `IO.pipe` written on a
 background thread. A regular file doesn't work here — the CLI reads nothing from it.
 
+## The warm clone pool
+
+A Quick Router request spends most of its cold start on one step: the `git clone` of the router
+root's repository. Measured across a dozen router sessions in October 2026, a request took a median
+of about 19.5 seconds from creation to the router's first model output, and the clone was about 13
+seconds of that. `air prepare`, the OAuth gate and the system prompt together took under a second.
+Claude Code's boot and MCP handshake took about 2 seconds, and the first model token about 2 more.
+
+`WarmClonePool` does that clone ahead of time. It keeps one ready clone of the router root's
+repository in `<clones base>/.warm-clones/<key>/`. On a fresh start, a session on the router root
+(every Quick Router entry point creates one) passes `warm: true` to `GitCloneService.create_clone`,
+which:
+
+1. **Claims** the newest ready clone by renaming it onto the session's own generated clone path.
+   `rename` is atomic, so of two requests racing for one clone exactly one gets it.
+2. **Catches it up** with `git fetch origin <branch>` and `git reset --hard FETCH_HEAD`, so the
+   claimed clone is as fresh as a cold one. That is well under a second for a clone at most an hour
+   old.
+3. Carries on exactly as the cold path does: subdirectory resolution, `.env`, `air prepare` for the
+   session's own runtime and artifacts, OAuth, the system prompt, the spawn.
+
+Nothing in the clone depends on the request. The model, the runtime, the spot class, attachments and
+the human-message record are all applied after the claim, the same as on a cold start. The pool has
+no session row and no agent process, so it holds no fleet slot, spends no Claude quota, and never
+reaches the homepage action queue.
+
+Anything that goes wrong falls back to today's behaviour. An empty pool, a lost race, a failed
+catch-up fetch or an unexpected filesystem error all end in an ordinary `git clone` at the same
+path. The session records which happened in `metadata["warm_clone"]` (`claimed` or `missed`), with a
+matching line in its log.
+
+`WarmClonePoolReplenishJob` refills the pool. `AgentSessionJob` enqueues it on every claim, and a
+one-minute cron entry is the backstop. A pass builds a clone when the pool is short, recycles ready
+clones older than an hour, deletes builds abandoned for more than 30 minutes, and drops the pool for
+any repository the router root no longer lives in. The pool sits under a dot-prefixed directory
+because the orphan clone sweep skips dot entries: a pooled clone has no owning session by design. A
+claimed clone's mtime is restamped so that age-based sweeps date it from its session.
+
+| Knob | Default | What it does |
+| --- | --- | --- |
+| `QUICK_ROUTER_WARM_CLONES` | `1` in production and staging, `0` elsewhere | Ready clones to keep (clamped to 0–5). `0` turns the pool off: nothing is built and nothing is claimed |
+
+With a pool of one, the second of two requests a few seconds apart clones cold, because the refill
+takes about as long as a clone. The cost is one clone's worth of disk, about 160 MB for
+tadasant-internal, plus one extra clone from GitHub per claim and per hourly recycle.
+
 ## The pre-clone disk guard
 
 Every session's working directory is a git clone under `ClonesDirectory.base`, created by
