@@ -38,10 +38,11 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   (`GET /api/v1/sessions?view=`), so the app shows the same sessions the web board does: the first
   500 by Last Touched or Created, or the top 500 of Your board and Ranked; when more match, the list
   says so. In Ranked, *Reorder Spot Queue* (view menu) puts drag handles on the spot queue; on
-  Your board, *Reorder Board* puts them on every row, as the web UI's Your board has. A drop tells
-  the server the nearest rows of its own class it landed between, as the web UI's drag-and-drop
-  does, and the list is read again: a row dropped among the other class settles back into its
-  own block, since precedence cannot lift it out. *Start Now*
+  Your board, *Reorder Board* puts them on its spot rows. A drop tells the server the nearest spot
+  rows it landed between, as the web UI's drag-and-drop does, and the list is read again: a row
+  dropped among the priority rows settles back into the spot block, since precedence cannot lift
+  it out. Priority rows do not drag: the server places a drop by its spot neighbours only, so a
+  priority row would lose its precedence. *Start Now*
   (press and hold a waiting session, or its session menu) takes its next turn now.
 - **Filters** as the web UI's filter form does, every filter combining with every other. The
   chips are one-tap presets: *Needs input* (the default), *Active* (everything not archived),

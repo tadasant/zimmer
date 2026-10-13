@@ -106,6 +106,9 @@ struct SessionListView: View {
                 Section {
                     ForEach(section.sessions) { session in
                         SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing)
+                            // Only spot rows move: the server places a drop by its spot neighbours,
+                            // and a priority row has none, so a drag would reset its precedence.
+                            .moveDisabled(session.isPriority)
                     }
                     .onMove(perform: moveHandler(for: section))
                     if section.sessions.isEmpty {
@@ -140,8 +143,7 @@ struct SessionListView: View {
 
     private var isSelecting: Bool { editMode.isEditing && !reordering }
 
-    /// Drag handles while reordering: on Your board, every row, as the web UI's has; on Ranked,
-    /// the spot queue.
+    /// Drag handles while reordering: on Your board, its spot rows; on Ranked, the spot queue.
     private func moveHandler(for section: BoardSection) -> ((IndexSet, Int) -> Void)? {
         guard reordering, model.view == .yourBoard || section.title == "Spot queue" else { return nil }
         return { source, destination in drop(section.sessions, from: source, to: destination) }
