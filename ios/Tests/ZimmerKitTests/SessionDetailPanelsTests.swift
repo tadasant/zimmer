@@ -44,8 +44,13 @@ final class SessionDetailPanelsTests: XCTestCase {
         let fake = FakeZimmerAPI()
         let configs = try await fake.configs()
         let question = try XCTUnwrap(configs.goals.first { $0.id == "codebase-question" })
+        let before = try await fake.session(1038)
+        XCTAssertEqual(before.goalCheck?.goalID, "open-reviewed-green-pr")
         let session = try await fake.updateGoal(1038, goal: question.storedValue)
         XCTAssertEqual(configs.goal(matching: session.goal)?.title, "Codebase Question")
+        // The check read back the old goal; the page read again carries none for the new one.
+        let reread = try await fake.session(1038)
+        XCTAssertNil(reread.goalCheck, "the goal check follows the goal")
     }
 
     // MARK: - The goal check's delegated sessions
@@ -102,7 +107,7 @@ final class SessionDetailPanelsTests: XCTestCase {
         XCTAssertEqual(hierarchy.nodes.map(\.spawnEdge), [true, true, false, true])
         XCTAssertEqual(hierarchy.nodes[2].renderParentID, 1044)
         XCTAssertTrue(hierarchy.hasRedrawnEdges)
-        XCTAssertEqual(hierarchy.summary, "4 sessions, origin #1040", "the parent is the origin, so it is named once")
+        XCTAssertEqual(hierarchy.summary, "4 sessions, origin #1040", "the web panel's summary, word for word")
     }
 
     func testAHierarchyFromBeforeTheFieldsReadsAsSpawnedAndNamesTheParentByDepth() throws {
@@ -117,7 +122,7 @@ final class SessionDetailPanelsTests: XCTestCase {
         let hierarchy = try XCTUnwrap(detail.hierarchy)
         XCTAssertFalse(hierarchy.hasRedrawnEdges)
         XCTAssertNil(hierarchy.originID)
-        XCTAssertEqual(hierarchy.summary, "3 sessions · parent #2")
+        XCTAssertEqual(hierarchy.summary, "3 sessions")
     }
 
     // MARK: - Human messages and capture gaps
@@ -168,6 +173,13 @@ final class SessionDetailPanelsTests: XCTestCase {
         ])
         XCTAssertEqual(blind.humanMessagesSummary, "none recorded anywhere in this hierarchy — and capture is not configured for this hierarchy's channels")
         XCTAssertEqual(blind.captureGaps.first?.headline, "Capture is not configured for Slack — which 2 sessions in this hierarchy came in through.")
+
+        XCTAssertEqual(blind.uncapturedChannels, "Slack and the Zimmer web UI")
+        let three = SessionDetail(session: SessionSummary(id: 1, status: .running), captureGaps: [
+            HumanMessageCaptureGap(channel: "a", channelLabel: "A"), HumanMessageCaptureGap(channel: "b", channelLabel: "B"),
+            HumanMessageCaptureGap(channel: "c", channelLabel: "C"),
+        ])
+        XCTAssertEqual(three.uncapturedChannels, "A, B, and C", "as Rails' to_sentence")
 
         let nobody = try decode(["session": ["id": 1, "status": "running"]])
         XCTAssertEqual(nobody.humanMessagesSummary, "none recorded anywhere in this hierarchy")
