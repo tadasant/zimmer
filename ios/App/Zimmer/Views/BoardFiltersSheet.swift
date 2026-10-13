@@ -98,10 +98,7 @@ struct BoardFiltersSheet: View {
                         let filters = draft
                         let visibility = board
                         dismiss()
-                        Task {
-                            await model.select(visibility)
-                            await model.apply(filters)
-                        }
+                        Task { await model.apply(filters, board: visibility) }
                     }
                     .bold()
                     .accessibilityIdentifier("filters.apply")
