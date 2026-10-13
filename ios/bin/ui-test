@@ -241,6 +241,11 @@ if [ -d "$app" ]; then
   # failed one with its failure details: what the page has to stay legible on.
   shoot session-detail-long -ZimmerFixture -ZimmerFixtureOpenSession 1044
   shoot session-detail-failed -ZimmerFixture -ZimmerFixtureOpenSession 1027
+  # Why a session is waiting: the spot gate's hold with "Make this session priority", a turn
+  # queued for a worker with Force, and a renewed MCP grant beside a message never delivered.
+  shoot session-detail-waiting -ZimmerFixture -ZimmerFixtureOpenSession 1031
+  shoot session-detail-queued -ZimmerFixture -ZimmerFixtureOpenSession 1029
+  shoot session-detail-reconnect -ZimmerFixture -ZimmerFixtureOpenSession 1035
   shoot composer-attachment -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
   shoot quick-router-advanced -ZimmerFixture -ZimmerFixtureQuickRouter -ZimmerFixtureQuickRouterAdvanced
@@ -257,6 +262,7 @@ if [ -d "$app" ]; then
   shoot sessions-ranked-dark -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView ranked
   shoot session-detail-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038
   shoot session-detail-long-dark -ZimmerFixture -ZimmerFixtureOpenSession 1044
+  shoot session-detail-waiting-dark -ZimmerFixture -ZimmerFixtureOpenSession 1031
   shoot composer-attachment-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   shoot new-session-dark -ZimmerFixture -ZimmerFixtureNewSession
   shoot inbox-dark -ZimmerFixture -ZimmerFixtureTab inbox

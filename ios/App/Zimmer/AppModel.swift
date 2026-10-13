@@ -305,8 +305,14 @@ final class AppModel: ObservableObject {
 
     /// The web UI's page for a session, for what the app does not do itself.
     func webURL(for id: Int) -> URL? {
+        webURL(path: "/sessions/\(id)")
+    }
+
+    /// A page of the web UI, by its path: where a banner sends a flow only a browser can
+    /// finish, such as authorizing an MCP server.
+    func webURL(path: String) -> URL? {
         guard let web = signedInOrigins?.web else { return nil }
-        return ServerURL.join(web, "/sessions/\(id)")
+        return ServerURL.join(web, path)
     }
 
     /// Sign in to a deployment: the edge first when machine calls go to a separate app
