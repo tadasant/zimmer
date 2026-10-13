@@ -1310,9 +1310,11 @@ class AgentSessionJob < ApplicationJob
               "[DIAGNOSTIC] Calling GitCloneService.create_clone with git_root=#{session.git_root}, branch=#{session.branch}",
               level: "debug"
             )
-            # A router session (every Quick Router entry point) takes a
-            # ready-made clone from the warm pool when there is one: the clone is
-            # most of a cold start, and nothing in it depends on the request.
+            # A session whose repository and branch the warm pool serves (the
+            # router's under the `router` scope, every recently active root's
+            # under `active` — WarmPoolPolicy) takes a ready-made clone when there
+            # is one: the clone is most of a cold start, and nothing in it depends
+            # on the request.
             warm_eligible = WarmClonePool.serves?(session)
             clone_result = GitCloneService.create_clone(
               session.git_root,
@@ -2806,6 +2808,20 @@ class AgentSessionJob < ApplicationJob
     detail.presence&.truncate(EXCEPTION_MESSAGE_MAX_CHARS) || "unknown failure"
   end
 
+  # Note on a session the pool serves whether its clone came from the pool, and ask
+  # for the pool to be refilled. Bookkeeping only: the clone already exists, so
+  # nothing here may fail the session's start.
+  def record_warm_clone(session, claimed, log_buffer)
+    log_buffer.add(
+      claimed ? "Claimed a pre-warmed clone from the pool" : "No pre-warmed clone was ready; cloned cold",
+      level: "info"
+    )
+    session.merge_metadata!("warm_clone" => claimed ? "claimed" : "missed")
+    WarmClonePoolReplenishJob.perform_later
+  rescue StandardError => e
+    log_buffer.add("Could not record the warm clone outcome: #{e.class}: #{e.message}", level: "warning")
+  end
+
   # Attempt to recover from a transient git clone failure during session startup
   # by re-enqueuing the whole job on a backed-off horizon, instead of hard-failing
   # the session. Returns true if a retry was scheduled (the caller should stop and
@@ -2828,20 +2844,6 @@ class AgentSessionJob < ApplicationJob
   # @yield [Integer] the delay in seconds; the block must enqueue the retry job and
   #   return the enqueued job (responding to #job_id)
   # @return [Boolean]
-  # Note on a router session whether its clone came from the warm pool, and ask
-  # for the pool to be refilled. Bookkeeping only: the clone already exists, so
-  # nothing here may fail the session's start.
-  def record_warm_clone(session, claimed, log_buffer)
-    log_buffer.add(
-      claimed ? "Claimed a pre-warmed clone from the pool" : "No pre-warmed clone was ready; cloned cold",
-      level: "info"
-    )
-    session.merge_metadata!("warm_clone" => claimed ? "claimed" : "missed")
-    WarmClonePoolReplenishJob.perform_later
-  rescue StandardError => e
-    log_buffer.add("Could not record the warm clone outcome: #{e.class}: #{e.message}", level: "warning")
-  end
-
   def schedule_transient_clone_retry(session, error, log_buffer, kind:)
     attempts = session.metadata&.dig("clone_retry_count").to_i
 

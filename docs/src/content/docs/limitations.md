@@ -7983,8 +7983,8 @@ record stays.
 
 ## The warm clone pool serves one request at a time
 
-`WarmClonePool` (`app/services/warm_clone_pool.rb`) keeps one ready clone of the router root's
-repository by default. Two Quick Router requests a few seconds apart get one warm start and one cold
+`WarmClonePool` (`app/services/warm_clone_pool.rb`) keeps one ready clone per pooled key by default.
+Under the `active` scope, a key with 150 or more starts a week gets two. Two Quick Router requests a few seconds apart get one warm start and one cold
 one, because the refill `WarmClonePoolReplenishJob` enqueues on the claim takes about as long as the
 clone it replaces. Raising `QUICK_ROUTER_WARM_CLONES` trades disk (about 160 MB per clone of
 tadasant-internal) for that case. The refill also runs on the `maintenance` lane, so a backed-up
@@ -7997,6 +7997,26 @@ session is projected from those numbers and from measured phase timings; it has 
 on a production router session that claimed a clone. `metadata["warm_clone"]` on each router session
 records `claimed` or `missed`, so comparing router session start times before and after is the
 production proof. This is a deliberate first step, not a tracked defect.
+
+The `active` scope (`WarmPoolPolicy`) ships **off** and has not run in production. Its ranking,
+caps, per-key isolation and fallbacks are covered against real local repositories. The 8–15 seconds it
+should save each non-router start is a projection from the clone times above. The claimed/missed
+counts on `/health` are the evidence for turning it on, and for keeping it on. Three costs come with
+it:
+
+- **Clones from GitHub.** Every pooled clone is rebuilt about every 45 minutes whether or not anyone
+  claims it, so each one is about 32 clones a day. With ten clones of a repository the size of
+  tadasant-internal, that is roughly 50 GB a day of clone traffic for the pool alone. `MIN_STARTS` (7 a week) keeps
+  rarely used keys out, and `WARM_CLONE_POOL_MAX_CLONES` bounds the total.
+- **Roots that share a repository share its clone.** Under `active`, every root on the router's key
+  claims from the router's pool. The key is sized for all of them, but a burst of other roots'
+  starts can still leave a Quick Router request to clone cold.
+- **Only the default branch.** A key is a root's catalog `url` and `default_branch`. A session started
+  on any other branch clones cold.
+- **The first pass after turning it on is slow.** A refill builds keys one after another, and
+  `WarmClonePoolReplenishJob` runs one at a time. The first pass under `active` can spend minutes
+  building up to ten clones. Refills that claims enqueue during that pass are absorbed, so a claimed
+  clone is replaced on the next one-minute tick after the pass ends.
 
 ## A `sync: true` MCP call holds a web thread, and only one runs at a time
 

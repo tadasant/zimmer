@@ -357,7 +357,7 @@ module CronSchedule
     warm_clone_pool_replenish: {
       cron: "* * * * *", # Every minute — the backstop; a claim enqueues a refill itself
       class: "WarmClonePoolReplenishJob",
-      description: "Keep a ready clone of the router root's repository so a Quick Router request skips the git clone",
+      description: "Keep ready clones of the router root's repository (or every active root's, per WarmPoolPolicy) so a starting session skips the git clone",
       environments: %i[production staging]
     },
     spot_ceiling_sweep: {
