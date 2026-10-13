@@ -29,6 +29,8 @@ class AppSettingDashboard < Administrate::BaseDashboard
     # verbatim. /health is where an operator normally reads this.
     queue_recovery_mode: Field::String.with_options(searchable: false),
     mcp_tool_search_enabled: Field::Boolean,
+    # Settings → Experimental: whether WarmClonePool serves every active root.
+    warm_clone_pool_active_roots_enabled: Field::Boolean,
     # The MCP Apps trust boundary: the master switch, and the JSONB list of MCP
     # servers whose `ui://` fragments may be rendered. /settings is the
     # purpose-built surface for both. See McpApps::Policy.
@@ -45,6 +47,7 @@ class AppSettingDashboard < Administrate::BaseDashboard
     fleet_idle_threshold_minutes: Field::Number,
     fleet_idle_max_sessions: Field::Number,
     fleet_idle_min_fire_interval_minutes: Field::Number,
+    fleet_idle_quiet_backlog_interval_minutes: Field::Number,
     fleet_idle_since: Field::DateTime,
     fleet_idle_event_fired_at: Field::DateTime,
     created_at: Field::DateTime,

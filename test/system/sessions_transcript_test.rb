@@ -113,26 +113,36 @@ class SessionsTranscriptTest < ApplicationSystemTestCase
     assert_selector "details[data-controller~='transcript-panel']", visible: :all
 
     # Stated rather than assumed. A reader who has not scrolled is at the top of
-    # the page, which is the position both tests are about; leaving it to
-    # whatever the composer's autofocus and the sticky footer settle on would
-    # make the precondition an accident of layout rather than the case under
-    # test.
-    page.execute_script("window.scrollTo(0, 0)")
-
-    viewport_height = page.evaluate_script("window.innerHeight")
-    offset = panel_viewport_offset
+    # the page, which is the position both tests are about.
+    #
+    # The scroll and the measurement are one script, not two round-trips, because
+    # the page scrolls itself in between. A panel rendered open is a panel the
+    # app pins to the newest row: session-scroll and auto-scroll do it after
+    # connect, and the disclosure's parser-fired `toggle` queues
+    # transcript-panel#scrollToBottom for whenever the eager frame lands. A frame landing between a separate
+    # scrollTo and the read puts the disclosure hundreds of pixels ABOVE the
+    # viewport and fails the precondition on a layout that satisfies it
+    # ([CI run 38169570425](https://github.com/tadasant/zimmer/actions/runs/38169570425)).
+    # Inside one script no other task can run, so the read is of the top of the
+    # page whatever the app has queued.
+    viewport_height, offset = panel_offset_from_the_top
 
     assert offset >= viewport_height,
       "the Transcript disclosure has to start outside the viewport for this to test anything; " \
       "it is at #{offset}px in a #{viewport_height}px viewport"
   end
 
-  # How far below the top of the viewport the Transcript disclosure sits, in CSS
-  # pixels. Read from the document rather than from a Capybara node: the question
-  # is about position, and Capybara's own visibility has nothing to say about it.
-  def panel_viewport_offset
+  # The viewport height, and how far below the top of the viewport the
+  # Transcript disclosure sits with the page scrolled to the top, in CSS pixels.
+  # Read from the document rather than from a Capybara node: the question is
+  # about position, and Capybara's own visibility has nothing to say about it.
+  def panel_offset_from_the_top
     page.evaluate_script(<<~JS)
-      document.querySelector("details[data-controller~='transcript-panel']").getBoundingClientRect().top
+      (() => {
+        window.scrollTo({ top: 0, left: 0, behavior: "instant" })
+        const panel = document.querySelector("details[data-controller~='transcript-panel']")
+        return [window.innerHeight, panel.getBoundingClientRect().top]
+      })()
     JS
   end
 end

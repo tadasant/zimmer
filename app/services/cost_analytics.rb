@@ -2,9 +2,15 @@
 
 # Rollups behind the Costs page, the REST endpoints, and the MCP tool.
 #
-# Every figure is computed in SQL over a time window. Nothing loads rows into
-# Ruby to add them up — the usage tables grow by thousands of rows a day, and a
-# year of history is millions.
+# Token volumes are summed in SQL over a time window; nothing loads usage rows
+# into Ruby to add them up — the usage tables grow by thousands of rows a day,
+# and a year of history is millions.
+#
+# The whole report is FIVE grouped scans (see the rollups below), each summing
+# plain token columns per (group, model), with dollars applied in Ruby by
+# CostRollup. Every section is folded out of those five. A section with its own
+# query, or one that prices rows in SQL, multiplies the cost of a long window
+# past the proxy timeout — test/services/cost_analytics_test.rb pins the shape.
 #
 # Money is applied at read time from TokenPricing, never stored. That is what
 # lets this answer "re-price last month at today's rates" and "what would this
@@ -47,11 +53,9 @@ class CostAnalytics
   # Everything the Costs page and the REST rollup endpoint render, in one
   # memoizable bundle.
   #
-  # There are a dozen separate aggregates here and each one scans the window. That
-  # is fine at a week and ruinous at a year: this table grows by thousands of rows
-  # a day, so a 365-day window is millions of rows read a dozen times over, per
-  # request, by every viewer. Computing them together and caching the result makes
-  # the expensive case pay once per ingestion cycle instead of once per page view.
+  # Five grouped scans of the window, each of which reads every row in it. At a
+  # year that is millions of rows read five times over, so the bundle is cached:
+  # the expensive case pays once per ingestion cycle instead of once per viewer.
   def snapshot
     Rails.cache.fetch(cache_key, expires_in: CACHE_TTL) do
       {
@@ -80,7 +84,7 @@ class CostAnalytics
       # The scope is part of the key, not a filter applied after it. Leave it out
       # and a page narrowed to one agent root reads the fleet's cached snapshot
       # back under the root's heading — every figure wrong, nothing to show for it.
-      "cost-analytics/v5", scope.cache_token, from.to_i, to.to_i,
+      "cost-analytics/v6", scope.cache_token, from.to_i, to.to_i,
       SessionTokenUsage.maximum(:id).to_i, AdhocTokenUsage.maximum(:id).to_i,
       TokenUsageFeature.maximum(:id).to_i,
       # `updated_at`, not `id`: a session's SECOND observation is an update, so a
@@ -110,8 +114,8 @@ class CostAnalytics
 
   # Headline numbers, both tables combined.
   def totals
-    session = session_scope.totals
-    adhoc = adhoc_scope.totals
+    session = usage_rollup.total
+    adhoc = adhoc_rollup.total
 
     combined = session.merge(adhoc) { |_k, a, b| a + b }
     combined.merge(
@@ -125,7 +129,11 @@ class CostAnalytics
   # item, several times the cost of everything the models actually produced, and
   # a total alone never shows that.
   def cost_breakdown
-    rates = both_tables_sum_by_component
+    rates = Hash.new(0.0)
+    [ usage_rollup, adhoc_rollup ].each do |rollup|
+      rollup.rows.each { |row| rollup.components(row).each { |component, cost| rates[component] += cost } }
+    end
+    rates.reject! { |_, cost| cost.zero? }
     total = rates.values.sum
     rates.map do |component, cost|
       {
@@ -140,14 +148,14 @@ class CostAnalytics
   #
   # `roots` and `models` are what the chart reveals when a bar is hovered or
   # tapped: a total alone says spend doubled on Tuesday, not who doubled it. Both
-  # come from ONE extra grouped query each over the same window, rather than a
-  # query per bar — at a year the chart is 365 bars, and a per-bar query would be
-  # 365 round trips per page view.
+  # come out of the same (day, agent root, model) rollup as the bars themselves,
+  # rather than a query per bar — at a year the chart is 365 bars, and a per-bar
+  # query would be 365 round trips per page view.
   def by_day
-    session = grouped(session_scope, day_expression)
-    adhoc = grouped(adhoc_scope, day_expression)
-    roots = nested(session_scope, day_expression, "agent_root")
-    models = nested(session_scope, day_expression, "model")
+    session = slim(daily_rollup.fold { |day, _root, _model| day.to_s })
+    adhoc = slim(adhoc_rollup.fold { |day, _source, _model| day.to_s })
+    roots = nest(daily_rollup.fold { |day, root, _model| [ day.to_s, root.to_s ] })
+    models = nest(daily_rollup.fold { |day, _root, model| [ day.to_s, model.to_s ] })
 
     keys = (session.keys + adhoc.keys).uniq.sort
     keys.map do |day|
@@ -171,9 +179,9 @@ class CostAnalytics
   # to every turn" is. That is the drilldown the whole feature table exists for,
   # and the agent-root breakdown is where it earns its keep.
   def by_agent_root
-    grouped_roots = grouped(session_scope, "agent_root")
+    grouped_roots = slim(usage_rollup.fold { |root, _runtime, _subagent, _model| root.to_s })
     rows = top_rows(grouped_roots, label: :agent_root)
-    features = nested(feature_scope, "agent_root", "feature")
+    features = nest(feature_rollup.fold { |root, feature, _model| [ root.to_s, feature.to_s ] })
 
     # The folded "other (N)" row is not a root, so it has no bucket of its own.
     # Summing the roots it swallowed keeps its drilldown as informative as every
@@ -199,13 +207,18 @@ class CostAnalytics
       row.merge(features: top_pairs(bucket, limit: 6, label: :feature))
     end
   end
-  def by_model = top_rows(merge_grouped(grouped(session_scope, "model"), grouped(adhoc_scope, "model")), label: :model)
-  def by_adhoc_source = top_rows(grouped(adhoc_scope, "source"), label: :source)
+  def by_model
+    session = slim(usage_rollup.fold { |*, model| model.to_s })
+    adhoc = slim(adhoc_rollup.fold { |*, model| model.to_s })
+    top_rows(merge_grouped(session, adhoc), label: :model)
+  end
+
+  def by_adhoc_source = top_rows(slim(adhoc_rollup.fold { |_day, source, _model| source.to_s }), label: :source)
 
   # Main thread vs subagent. Useful for the "should this have been delegated"
   # question later — subagent spend is the cost side of that trade.
   def by_thread_kind
-    rows = grouped(session_scope, "CASE WHEN subagent THEN 'subagent' ELSE 'main' END")
+    rows = slim(usage_rollup.fold { |_root, _runtime, subagent, _model| subagent ? "subagent" : "main" })
     rows.map { |kind, v| v.merge(kind: kind) }.sort_by { |r| -r[:cost_usd] }
   end
 
@@ -222,20 +235,17 @@ class CostAnalytics
   # tell what share of a number is an actual bill, or how much of it is a
   # runtime priced at zero.
   def by_runtime
-    rows = grouped(session_scope, "agent_runtime")
+    rows = slim(usage_rollup.fold { |_root, runtime, _subagent, _model| runtime.to_s })
     rows.map { |runtime, v| v.merge(runtime: runtime) }.sort_by { |r| -r[:cost_usd] }
   end
 
-  # Top individual sessions. The join is left so a row whose session was deleted
-  # still appears, labelled by its stored agent root.
+  # Top individual sessions. A session that was deleted still appears, with no
+  # title, because its usage rows outlive it.
   def top_sessions(limit: TOP_N)
-    session_scope
-      .where.not(session_id: nil)
-      .group(:session_id)
-      .order(SessionTokenUsage.cost_sum_sql.desc)
-      .limit(limit)
-      .pluck(:session_id, SessionTokenUsage.cost_sum_sql, SessionTokenUsage.total_tokens_sql, Arel.sql("COUNT(*)"))
-      .map { |id, cost, tokens, calls| { session_id: id, cost_usd: cost.to_f, tokens: tokens.to_i, api_calls: calls.to_i } }
+    slim(session_rollup.fold { |session_id, _root, _model| session_id })
+      .sort_by { |id, v| [ -v[:cost_usd], id ] }
+      .first(limit)
+      .map { |id, v| v.merge(session_id: id) }
       .then { |rows| attach_session_titles(rows) }
   end
 
@@ -256,10 +266,11 @@ class CostAnalytics
   # move identical volumes for very different money. Dollars is the column that
   # answers "is this worth it"; tokens is the one that answers "how big is it".
   def by_feature
-    attributed = grouped(feature_scope, "feature").map { |key, v| v.merge(feature: key) }
+    attributed = slim(feature_rollup.fold { |_root, feature, _model| feature.to_s }).map { |key, v| v.merge(feature: key) }
     attributed.sort_by! { |r| -r[:cost_usd] }
 
-    session = attributable_scope.totals
+    session = usage_rollup.fold { |_root, runtime, _subagent, _model| :all if runtime == ClaudeAuthProvider::RUNTIME }
+      .fetch(:all) { CostRollup.blank }
     residual_cost = session[:cost_usd] - attributed.sum { |r| r[:cost_usd] }
     residual_tokens = session[:total_tokens] - attributed.sum { |r| r[:tokens] }
 
@@ -284,7 +295,7 @@ class CostAnalytics
   # purely temporal. ExperimentAnalytics documents what it does about that and
   # what it cannot. The view is expected to print the caveats next to the number,
   # not underneath a fold.
-  def by_experiment = ExperimentAnalytics.new(session_scope).reports
+  def by_experiment = ExperimentAnalytics.new(session_scope, per_session: session_rollup).reports
 
   # The feature split for one agent root or one session, for a drilldown that has
   # already narrowed. Same shape as `by_feature`, scoped.
@@ -300,8 +311,9 @@ class CostAnalytics
       usage = usage.where(session_id: session_id)
     end
 
-    attributed = grouped(features, "feature").map { |key, v| v.merge(feature: key) }.sort_by { |r| -r[:cost_usd] }
-    totals = usage.totals
+    attributed = slim(CostRollup.new(features, "feature").fold { |feature, _model| feature.to_s })
+      .map { |key, v| v.merge(feature: key) }.sort_by { |r| -r[:cost_usd] }
+    totals = CostRollup.new(usage).total
 
     {
       rows: attributed,
@@ -317,7 +329,7 @@ class CostAnalytics
   # than swallowed: an unpriced model silently contributes zero to every total on
   # the page, so it has to be visible as something to fix.
   def unpriced_models
-    models = (session_scope.distinct.pluck(:model) + adhoc_scope.distinct.pluck(:model)).uniq
+    models = (usage_rollup.models + adhoc_rollup.models).uniq
     models.reject { |m| TokenPricing.priced?(m) }.sort
   end
 
@@ -327,29 +339,33 @@ class CostAnalytics
 
   def day_expression = "DATE(called_at)"
 
-  # One GROUP BY, three aggregates, keyed by whatever expression is passed.
-  def grouped(scope, expression)
-    klass = scope.model
-    scope
-      .group(Arel.sql(expression))
-      .pluck(Arel.sql(expression), klass.cost_sum_sql, klass.total_tokens_sql, Arel.sql("COUNT(*)"))
-      .to_h { |key, cost, tokens, calls| [ key.to_s, { cost_usd: cost.to_f, tokens: tokens.to_i, api_calls: calls.to_i } ] }
+  # The five scans. Each one is the narrowest grouping that still answers every
+  # section folded out of it, because the cost of a GROUP BY is set by how many
+  # groups it holds as much as by how many rows it reads: one grouping fine
+  # enough to answer everything — day x root x runtime x thread x session — has
+  # more groups than the window has rows, and took longer than the twelve
+  # queries it would have replaced.
+  #
+  # Totals, the token-kind split, and the root / model / thread / runtime tables.
+  def usage_rollup = @usage_rollup ||= CostRollup.new(session_scope, "agent_root", "agent_runtime", "subagent")
+  # The daily chart and what each bar reveals on hover.
+  def daily_rollup = @daily_rollup ||= CostRollup.new(session_scope, day_expression, "agent_root")
+  # Top sessions, and the per-session figures the experiment cohorts are made of.
+  def session_rollup = @session_rollup ||= CostRollup.new(session_scope.where.not(session_id: nil), "session_id", "agent_root")
+  def adhoc_rollup = @adhoc_rollup ||= CostRollup.new(adhoc_scope, day_expression, "source")
+  def feature_rollup = @feature_rollup ||= CostRollup.new(feature_scope, "agent_root", "feature")
+
+  # A fold in the three-figure shape every breakdown row carries.
+  def slim(folded)
+    folded.transform_values { |v| { cost_usd: v[:cost_usd], tokens: v[:total_tokens], api_calls: v[:api_calls] } }
   end
 
-  # One GROUP BY over two expressions, returned as outer key => inner key => row.
-  # This is how a per-bar drilldown stays one query instead of one per bar.
-  def nested(scope, outer, inner)
-    klass = scope.model
-    result = Hash.new { |h, k| h[k] = {} }
-
-    scope
-      .group(Arel.sql(outer), Arel.sql(inner))
-      .pluck(Arel.sql(outer), Arel.sql(inner), klass.cost_sum_sql, klass.total_tokens_sql, Arel.sql("COUNT(*)"))
-      .each do |outer_key, inner_key, cost, tokens, calls|
-        result[outer_key.to_s][inner_key.to_s] = { cost_usd: cost.to_f, tokens: tokens.to_i, api_calls: calls.to_i }
-      end
-
-    result
+  # A fold keyed by [outer, inner], as outer key => inner key => row. This is how
+  # a per-bar drilldown stays one query instead of one per bar.
+  def nest(folded)
+    slim(folded).each_with_object(Hash.new { |h, k| h[k] = {} }) do |((outer, inner), row), result|
+      result[outer][inner] = row
+    end
   end
 
   # The biggest few contributors from a `nested` bucket, as a flat list a view can
@@ -359,7 +375,7 @@ class CostAnalytics
 
     bucket
       .reject { |k, _| k.blank? }
-      .sort_by { |_, v| -v[:cost_usd] }
+      .sort_by { |k, v| [ -v[:cost_usd], k ] }
       .first(limit)
       .map { |k, v| v.merge(label => k) }
   end
@@ -373,7 +389,7 @@ class CostAnalytics
   end
 
   def top_rows(hash, label:, limit: TOP_N)
-    sorted = hash.reject { |k, _| k.blank? }.sort_by { |_, v| -v[:cost_usd] }
+    sorted = hash.reject { |k, _| k.blank? }.sort_by { |k, v| [ -v[:cost_usd], k ] }
     head = sorted.first(limit).map { |key, v| v.merge(label => key) }
     tail = sorted.drop(limit)
     return head if tail.empty?
@@ -384,35 +400,6 @@ class CostAnalytics
       tokens: tail.sum { |_, v| v[:tokens] },
       api_calls: tail.sum { |_, v| v[:api_calls] }
     } ]
-  end
-
-  # Per-component cost across both tables. Each component is priced with the same
-  # rate table the row totals use, so the parts always add to the whole.
-  def both_tables_sum_by_component
-    components = Hash.new(0.0)
-
-    [ session_scope, adhoc_scope ].each do |relation|
-      relation.group(:model).pluck(
-        :model,
-        Arel.sql("COALESCE(SUM(input_tokens), 0)"),
-        Arel.sql("COALESCE(SUM(output_tokens), 0)"),
-        Arel.sql("COALESCE(SUM(cache_read_tokens), 0)"),
-        Arel.sql("COALESCE(SUM(cache_creation_5m_tokens), 0)"),
-        Arel.sql("COALESCE(SUM(cache_creation_1h_tokens), 0)"),
-        Arel.sql("COALESCE(SUM(CASE WHEN cache_creation_5m_tokens + cache_creation_1h_tokens = 0 THEN cache_creation_tokens ELSE 0 END), 0)"),
-        Arel.sql("COALESCE(SUM(web_search_requests), 0)")
-      ).each do |model, input, output, read, write_5m, write_1h, write_unsplit, searches|
-        rate = TokenPricing.rate_for(model)
-        components["fresh input"] += input.to_i * rate.input / 1_000_000.0
-        components["output"] += output.to_i * rate.output / 1_000_000.0
-        components["cache read"] += read.to_i * rate.cache_read / 1_000_000.0
-        components["cache write (5m)"] += write_5m.to_i * rate.cache_write_5m / 1_000_000.0
-        components["cache write (1h)"] += (write_1h.to_i + write_unsplit.to_i) * rate.cache_write_1h / 1_000_000.0
-        components["web search"] += searches.to_i * TokenPricing::WEB_SEARCH_PER_1K_REQUESTS / 1_000.0
-      end
-    end
-
-    components.reject { |_, v| v.zero? }
   end
 
   def attach_session_titles(rows)

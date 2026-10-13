@@ -354,6 +354,12 @@ module CronSchedule
       description: "Fire the no_sessions_in_progress event once the fleet has been running fewer sessions than its ceiling for the configured stretch",
       environments: %i[production staging]
     },
+    warm_clone_pool_replenish: {
+      cron: "* * * * *", # Every minute — the backstop; a claim enqueues a refill itself
+      class: "WarmClonePoolReplenishJob",
+      description: "Keep ready clones of the router root's repository (or every active root's, per WarmPoolPolicy) so a starting session skips the git clone",
+      environments: %i[production staging]
+    },
     spot_ceiling_sweep: {
       cron: "*/5 * * * *", # Every 5 minutes — quota readings land every 15, so this is not the bound
       class: "SpotCeilingSweepJob",

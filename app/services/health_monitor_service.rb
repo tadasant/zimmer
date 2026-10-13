@@ -377,6 +377,8 @@ class HealthMonitorService
       inbound_event_health: inbound_event_health,
       # Also absent — see #root_data_health.
       root_data_health: root_data_health,
+      # Also absent — see #warm_clone_pool_health.
+      warm_clone_pool_health: warm_clone_pool_health,
       overall_status: calculate_overall_status(
         [ process, session, system, egress, auth, post_deploy, cron ].map { |section| section[:status] }
       ),
@@ -555,6 +557,46 @@ class HealthMonitorService
       sources: [],
       status: HealthStatus.new(status: :warning, message: "Webhook delivery status could not be read: #{e.message}")
     }
+  end
+
+  # What WarmClonePool holds, what WarmPoolPolicy chose and left out, and how
+  # often a session start claimed a clone. See WarmClonePool.report.
+  #
+  # Deliberately NOT folded into `overall_status`. An empty or failing pool costs
+  # sessions a `git clone`, which is how they started before the pool existed;
+  # it is never a reason to page anyone.
+  def warm_clone_pool_health
+    report = WarmClonePool.report
+    report.merge(status: warm_clone_pool_status(report))
+  rescue StandardError => e
+    @logger.warn("Warm clone pool health could not be read", error: e.message)
+    {
+      enabled: false, scope: nil, size: 0, max_clones: 0, window_days: 0, targets: [], passed_over: [],
+      last_pass: nil, outcome_window_hours: 0, outcomes: {},
+      status: HealthStatus.new(status: :warning, message: "Warm clone pool status could not be read: #{e.message}")
+    }
+  end
+
+  def warm_clone_pool_status(report)
+    unless report[:enabled]
+      return HealthStatus.new(status: :healthy, message: "Off: QUICK_ROUTER_WARM_CLONES is 0, so every session clones cold.")
+    end
+
+    failing = report[:targets].select { |target| target[:error].present? }
+    if failing.any?
+      return HealthStatus.new(
+        status: :warning,
+        message: "The last refill could not build #{failing.size} of #{report[:targets].size} pooled " \
+                 "#{'key'.pluralize(report[:targets].size)}; sessions on #{failing.size == 1 ? 'it' : 'them'} clone cold until it can."
+      )
+    end
+
+    ready = report[:targets].count { |target| target[:ready].positive? }
+    HealthStatus.new(
+      status: :healthy,
+      message: "#{ready} of #{report[:targets].size} pooled #{'key'.pluralize(report[:targets].size)} " \
+               "#{ready == 1 ? 'has' : 'have'} a ready clone (#{report[:scope]} scope)."
+    )
   end
 
   # How big `logs` is, and whether LogRetentionJob is keeping up.

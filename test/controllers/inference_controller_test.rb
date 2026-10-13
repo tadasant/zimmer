@@ -467,9 +467,10 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
 
   # The backlog top-up card sits below the gate, beside the populations its
   # ceiling counts. Its two clocks were previously visible nowhere at all.
-  test "show renders the backlog top-up card with its three knobs and both clocks" do
+  test "show renders the backlog top-up card with its four knobs and both clocks" do
     AppSetting.editable.update!(fleet_idle_max_sessions: 4, fleet_idle_threshold_minutes: 7,
-                                fleet_idle_min_fire_interval_minutes: 30)
+                                fleet_idle_min_fire_interval_minutes: 30,
+                                fleet_idle_quiet_backlog_interval_minutes: 180)
 
     get inference_url
 
@@ -480,6 +481,7 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='app_setting[fleet_idle_max_sessions]'][value=?]", "4"
     assert_select "input[name='app_setting[fleet_idle_threshold_minutes]'][value=?]", "7"
     assert_select "input[name='app_setting[fleet_idle_min_fire_interval_minutes]'][value=?]", "30"
+    assert_select "input[name='app_setting[fleet_idle_quiet_backlog_interval_minutes]'][value=?]", "180"
     assert_select "#fleet-top-up-status"
     assert_select "#fleet-top-up-sentence"
     assert_select "#fleet-top-up-running"

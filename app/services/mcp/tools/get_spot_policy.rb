@@ -77,7 +77,8 @@ module Mcp
 
         Also reports the BACKLOG TOP-UP policy, which is the other half of how busy the fleet gets: the
         `no_sessions_in_progress` trigger event fires when the fleet has had fewer turns ON A WORKER than
-        a configured ceiling for a configured stretch, and at most once per cooldown. Sessions merely
+        a configured ceiling for a configured stretch, at most once per cooldown, and at most once per
+        longer quiet interval while the work backlog has had nothing new since the last fire. Sessions merely
         `waiting` do not count against that ceiling, of any class, and neither does a turn queued for a
         worker. That is what hands a fleet with spare capacity more work. Change it
         with `action_spot_policy` `set_top_up`.
@@ -85,9 +86,10 @@ module Mcp
         Returns:
         - the gate setting (on/off, both priority reserves as a percentage AND as dollars, and the max
           sessions at once)
-        - the backlog top-up policy: the ceiling, the stretch, the cooldown, and where the fleet sits
-          against them right now — including which of the four "not fired yet" states it is in, since
-          they look identical from outside and clear in four different ways
+        - the backlog top-up policy: the ceiling, the stretch, the cooldown, the quiet-backlog
+          interval, and where the fleet sits against them right now — including which of the five "not
+          fired yet" states it is in, since they look identical from outside and clear in five different
+          ways
         - the current decision: running or held, the reason, which ceiling is holding, and how many
           sessions are running
         - when the hold lifts, as far as the model can honestly say — for two of the three ceilings that
@@ -271,7 +273,11 @@ module Mcp
           "- **At most once every:** #{status.min_fire_interval.inspect} " \
           "(#{status.cadence_phrase} — on a fleet that stays under its ceiling this, not the ceiling, is " \
           "the whole of the cadence: the stretch runs on through a fire, so only the cooldown decides " \
-          "when the next one is allowed)",
+          "when the next one is allowed, while the work backlog has something new)",
+          "- **With nothing new on the backlog, at most once every:** " \
+          "#{status.quiet_backlog_interval.inspect} (#{status.quiet_cadence_phrase} — applies while " \
+          "nothing has been queued since the last fire and nothing started from what is left; a newly " \
+          "queued item lifts it at the next check)",
           "- **Turns on a worker (any runtime):** #{status.running_sessions} of #{status.max_sessions} " \
           "(#{turns_split(status)}#{status.headroom} #{"place".pluralize(status.headroom)} of headroom; " \
           "one fire hands out one session, so filling it takes that many cooldowns)",

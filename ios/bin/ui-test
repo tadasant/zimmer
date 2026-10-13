@@ -237,15 +237,33 @@ if [ -d "$app" ]; then
   shoot sessions-your-board -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView user
   shoot session-detail -ZimmerFixture -ZimmerFixtureOpenSession 1038
   shoot session-detail-hierarchy -ZimmerFixture -ZimmerFixtureOpenSession 1042
+  # The richest session (a long title, four PRs, a long goal, notes, a wide hierarchy) and a
+  # failed one with its failure details: what the page has to stay legible on.
+  shoot session-detail-long -ZimmerFixture -ZimmerFixtureOpenSession 1044
+  shoot session-detail-failed -ZimmerFixture -ZimmerFixtureOpenSession 1027
   shoot composer-attachment -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
+  shoot quick-router-advanced -ZimmerFixture -ZimmerFixtureQuickRouter -ZimmerFixtureQuickRouterAdvanced
   shoot new-session -ZimmerFixture -ZimmerFixtureNewSession
+  shoot trash-undo -ZimmerFixture -ZimmerFixtureTrash 1038
+  shoot trash-queued -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureTrash 1042
   shoot inbox -ZimmerFixture -ZimmerFixtureTab inbox
   shoot triggers -ZimmerFixture -ZimmerFixtureTab triggers
-  # Dark mode, for the two screens a person reads most.
+  shoot more -ZimmerFixture -ZimmerFixtureTab more
+  # Dark mode: the app draws its own (on the PWA manifest's navy), so every main screen is
+  # photographed in it too.
   xcrun simctl ui "$udid" appearance dark >/dev/null 2>&1 || true
+  shoot sign-in-dark -ZimmerFixture -ZimmerFixtureSignedOut
+  shoot sessions-dark -ZimmerFixture
   shoot sessions-active-dark -ZimmerFixture -ZimmerFixtureFilter active
+  shoot sessions-ranked-dark -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView ranked
   shoot session-detail-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038
+  shoot session-detail-long-dark -ZimmerFixture -ZimmerFixtureOpenSession 1044
+  shoot composer-attachment-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
+  shoot new-session-dark -ZimmerFixture -ZimmerFixtureNewSession
+  shoot inbox-dark -ZimmerFixture -ZimmerFixtureTab inbox
+  shoot triggers-dark -ZimmerFixture -ZimmerFixtureTab triggers
+  shoot more-dark -ZimmerFixture -ZimmerFixtureTab more
   xcrun simctl ui "$udid" appearance light >/dev/null 2>&1 || true
 fi
 
