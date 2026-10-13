@@ -102,8 +102,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   What you type and do not send is kept per session for seven days, across leaving the screen and
   relaunching, as the web UI keeps a composer's draft.
 - **Keeps itself current.** A session's page reads again every five seconds while a turn is
-  running or about to start, and every twenty otherwise; the board reads again every thirty
-  seconds while it is the screen in front. Both read at once when the app comes back to the front.
+  running or about to start, and every twenty otherwise (not while the queue's manager is open,
+  and never for a session in the trash); the board reads again every thirty seconds while it is
+  the screen in front and you are not selecting or reordering. Both read at once when the app comes back to the front.
   The web UI streams these changes; the app asks, so a change can take that long to show. A session
   opens at its newest message, as the web UI's transcript does, and follows new ones while you are
   at the end; scrolled back, it stays where you are.

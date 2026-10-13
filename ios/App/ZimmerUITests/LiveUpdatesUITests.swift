@@ -18,6 +18,18 @@ final class LiveUpdatesUITests: XCTestCase {
         XCTAssertTrue(newLine.waitForExistence(timeout: timeout), "a new message appears with nothing touched")
     }
 
+    func test_reading_back_is_not_pulled_to_the_end_by_new_messages() throws {
+        let app = launch(["-ZimmerFixtureLive", "-ZimmerFixtureOpenSession", "1042"])
+        let first = app.descendants(matching: .any)["detail.message.0"]
+        XCTAssertTrue(first.waitForExistence(timeout: timeout))
+        for _ in 0..<8 where !first.isHittable { app.swipeDown(velocity: .fast) }
+        XCTAssertTrue(first.isHittable, "scrolled back to the start")
+        // Two polls' worth of new lines arrive while reading back.
+        let later = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "step 2 done")).firstMatch
+        XCTAssertTrue(later.waitForExistence(timeout: timeout))
+        XCTAssertTrue(first.isHittable, "still where the reader left it")
+    }
+
     func test_a_session_opens_at_its_newest_message() throws {
         let app = launch(["-ZimmerFixtureOpenSession", "1044"])
         let newest = app.descendants(matching: .any)["detail.message.6"]

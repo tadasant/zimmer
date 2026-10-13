@@ -10,8 +10,8 @@ final class SessionDetailModel: ObservableObject {
     /// Hands an error the whole app cares about (a sign-in that ended) to `AppModel`.
     var report: (ZimmerError) -> Void = { _ in }
 
-    @Published private(set) var detail: SessionDetail?
-    @Published private(set) var conversation: Conversation?
+    @Published private(set) var detail: SessionDetail? { didSet { noteChange() } }
+    @Published private(set) var conversation: Conversation? { didSet { noteChange() } }
     /// How far back the conversation reads: a hundred at first, a hundred more on *Show
     /// earlier*, up to what the server returns in one read.
     @Published private(set) var conversationLimit = Conversation.pageSize
@@ -25,7 +25,13 @@ final class SessionDetailModel: ObservableObject {
     }
     private let drafts = DraftStore()
     /// The messages waiting for the turn in flight to end (`QueueCard`).
-    @Published var queue: [QueuedMessage] = []
+    @Published var queue: [QueuedMessage] = [] { didSet { noteChange() } }
+    /// Bumped by every change to what is shown that does not come from a poll, so a poll that
+    /// read before an edit landed throws its stale answer away rather than undoing the edit.
+    private var revision = 0
+    private var applyingPoll = false
+    /// The queue's manager is open: a poll then would move rows under a finger.
+    var pollPaused = false
     /// Photos and files going with the next message.
     @Published var attachments: [MessageAttachment] = []
 
@@ -58,16 +64,29 @@ final class SessionDetailModel: ObservableObject {
     /// moves, and this is that, by asking. A failed read leaves what is on screen, except a
     /// sign-in that ended.
     func poll() async {
-        guard !isLoading, !isSending else { return }
+        guard !isLoading, !isSending, !pollPaused, detail?.session.status != .archived else { return }
+        let started = revision
+        let limit = conversationLimit
         do {
             let latest = try await api.session(id)
-            let messages = try await api.conversation(id, limit: conversationLimit)
-            detail = latest
+            let messages = try await api.conversation(id, limit: limit)
+            let wantsQueue = latest.session.status == .running || latest.session.status == .waiting || !queue.isEmpty
+            let queued = wantsQueue ? try? await api.queue(id) : []
+            // An edit, a send or *Show earlier* landed while this was reading: its answer wins.
+            guard started == revision, limit == conversationLimit, !pollPaused else { return }
+            applyingPoll = true
+            defer { applyingPoll = false }
+            if latest != detail { detail = latest }
             if messages != conversation { conversation = messages }
-            if let queued = try? await api.queue(id), queued != queue { queue = queued }
+            if let queued, queued != queue { queue = queued }
+            error = nil
         } catch ZimmerError.unauthorized {
             report(.unauthorized)
         } catch {}
+    }
+
+    private func noteChange() {
+        if !applyingPoll { revision += 1 }
     }
 
     /// How often to read again: often while a turn is running or about to, rarely otherwise.
@@ -230,9 +249,13 @@ struct SessionDetailView: View {
     @State private var showingSubagents = false
     @State private var newTitle = ""
     @Environment(\.scenePhase) private var scenePhase
-    /// Whether the end of the conversation is on screen: new messages are followed only then,
-    /// so reading back is never yanked to the bottom.
-    @State private var atEnd = false
+    /// Where the end of the conversation sits in the scroll view, and how tall the view is:
+    /// new messages are followed only while the end is in view, so reading back is never
+    /// yanked to the bottom. Read from geometry — in a stack that is not lazy, `onAppear` fires
+    /// when a view is added, not when it scrolls into sight.
+    @State private var endY: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+    private var atEnd: Bool { endY <= viewportHeight + 80 }
     /// Scrolled to the newest message once, on the first load.
     @State private var openedAtNewest = false
 
@@ -258,7 +281,8 @@ struct SessionDetailView: View {
                     // follow new ones only while the end is in view.
                     if !openedAtNewest {
                         openedAtNewest = true
-                        proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+                        // After the layout that adds the messages, or the scroll can miss.
+                        Task { @MainActor in proxy.scrollTo(Self.endAnchor, anchor: .bottom) }
                     } else if atEnd {
                         withAnimation { proxy.scrollTo(Self.endAnchor, anchor: .bottom) }
                     }
@@ -270,6 +294,8 @@ struct SessionDetailView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(for: model.pollInterval)
                 guard !Task.isCancelled else { return }
+                // Only while this session is the screen in front, whatever SwiftUI keeps alive.
+                guard app.path.last == model.id, app.tab == .sessions else { continue }
                 await model.poll()
             }
         }
@@ -312,13 +338,13 @@ struct SessionDetailView: View {
                 Color.clear
                     .frame(height: 1)
                     .id(Self.endAnchor)
-                    .onAppear { atEnd = true }
-                    .onDisappear { atEnd = false }
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .scrollView).minY } action: { endY = $0 }
             }
             .padding(.horizontal, Theme.margin)
             .padding(.vertical, 12)
             .animation(.snappy(duration: 0.3), value: model.detail == nil)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
         .background(Theme.ground)
         .navigationTitle(Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)

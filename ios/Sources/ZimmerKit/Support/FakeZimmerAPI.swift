@@ -34,6 +34,13 @@ public actor FakeZimmerAPI: ZimmerAPI {
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries()
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
+        if live {
+            // Long enough to scroll back through, so following the end can be told from not.
+            conversations[1042] = (0..<30).map { index in
+                ConversationMessage(id: index, role: index.isMultiple(of: 2) ? .assistant : .user,
+                                    content: "Earlier step \(index) of the CarPlay scene.", timestamp: now.addingTimeInterval(Double(index - 30) * 60))
+            }
+        }
         self.nextID = (sessions.map(\.id).max() ?? 0) + 1
     }
 

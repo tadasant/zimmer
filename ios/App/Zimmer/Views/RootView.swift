@@ -105,7 +105,6 @@ private struct BoardPoller: View {
     /// selection or a drag is in hand.
     private func refreshIfInFront() async {
         guard model.tab == .sessions, model.path.isEmpty, !model.isEditingBoard else { return }
-        await model.refresh()
+        await model.refresh(silently: true)
     }
 }
-

@@ -170,9 +170,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func refresh() async {
-        isLoading = true
-        defer { isLoading = false }
+    /// `silently`: a read the board makes on its own — no loading state, and a failure other
+    /// than a sign-in that ended is not shown; the next read tries again.
+    func refresh(silently: Bool = false) async {
+        if !silently { isLoading = true }
+        defer { if !silently { isLoading = false } }
         let requested = filter
         let board = board
         let view = view
@@ -192,7 +194,7 @@ final class AppModel: ObservableObject {
             listIncomplete = !result.complete
             error = nil
         } catch {
-            handle(error)
+            if !silently || (error as? ZimmerError) == .unauthorized { handle(error) }
         }
         await refreshEdgeExpiry()
         await refreshUnreadCount()
