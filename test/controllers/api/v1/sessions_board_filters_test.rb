@@ -78,4 +78,13 @@ class Api::V1::SessionsBoardFiltersTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert_match(/Unknown status sleeping/, JSON.parse(response.body)["message"])
   end
+
+  test "configs lists every genesis the filter takes, with the dashboard's label" do
+    get "/api/v1/configs", headers: @headers
+
+    assert_response :success
+    geneses = JSON.parse(response.body)["geneses"]
+    assert_equal SessionGenesis::KEYS, geneses.map { |g| g["key"] }
+    assert_equal SessionGenesis::KINDS.first.label, geneses.first["label"]
+  end
 end
