@@ -1892,17 +1892,6 @@ class Session < ApplicationRecord
     job
   end
 
-  # Records a human "view" of this session (opening its page or drawer in the
-  # web UI) as user activity. A view is genuine human engagement — "eyes on the
-  # session" — so it shares the same last_user_activity_at marker that
-  # touch_user_activity! writes, which also keeps PollBackoff's notion of
-  # engagement accurate.
-  #
-  # Unlike touch_user_activity!, this writes via update_column so a mere view
-  # does NOT fire the after_update_commit callbacks (should_broadcast_to_index?
-  # treats any metadata change as broadcast-worthy). Without this, every page
-  # view would rebroadcast the session card to every connected dashboard. This
-  # mirrors how last_broadcast_to_index_at is written via update_column.
   # A person opened this session: its unread notifications are read now. The dashboard's
   # session page and the iOS app's open both come here, so the inbox clears the same way
   # from either. Broadcasts the new badge count when anything changed.
@@ -1914,6 +1903,17 @@ class Session < ApplicationRecord
     marked
   end
 
+  # Records a human "view" of this session (opening its page or drawer in the
+  # web UI) as user activity. A view is genuine human engagement — "eyes on the
+  # session" — so it shares the same last_user_activity_at marker that
+  # touch_user_activity! writes, which also keeps PollBackoff's notion of
+  # engagement accurate.
+  #
+  # Unlike touch_user_activity!, this writes via update_column so a mere view
+  # does NOT fire the after_update_commit callbacks (should_broadcast_to_index?
+  # treats any metadata change as broadcast-worthy). Without this, every page
+  # view would rebroadcast the session card to every connected dashboard. This
+  # mirrors how last_broadcast_to_index_at is written via update_column.
   def touch_user_view!
     update_column(
       :metadata, (metadata || {}).merge("last_user_activity_at" => Time.current.iso8601)

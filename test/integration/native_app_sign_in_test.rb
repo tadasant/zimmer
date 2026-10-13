@@ -192,6 +192,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     get "/api/v1/sessions/#{session.id}", headers: bearer(tokens["access_token"])
     assert_response :success
     assert_not unread.reload.read, "a read without viewed=true is the app polling, not a person opening"
+    assert_nil session.reload.metadata["last_user_activity_at"], "nor touched"
 
     get "/api/v1/sessions/#{session.id}", params: { viewed: "true" }, headers: bearer(tokens["access_token"])
     assert_response :success
@@ -237,6 +238,12 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
 
     get "/api/v1/sessions/#{session.id}/conversation", params: { limit: 1, full_content: "true" }, headers: headers
     assert_equal long, JSON.parse(response.body)["messages"].sole["content"]
+
+    get "/api/v1/sessions/#{session.id}/conversation", params: { limit: 3, before: 99 }, headers: headers
+    assert_equal 4, JSON.parse(response.body)["first_position"], "a before past the end is the end"
+
+    get "/api/v1/sessions/#{session.id}/conversation", params: { before: "abc" }, headers: headers
+    assert_equal [], JSON.parse(response.body)["messages"], "a before that is not a number reads as the start: nothing above it"
   end
 
   test "a follow-up from an app that acts on its approver's behalf is recorded as theirs; one over an API key is not" do
