@@ -29,6 +29,7 @@ class MovePendingMaintenanceJobsToLane < ActiveRecord::Migration[8.1]
     TokenUsageBackfillJob
     TranscriptArchiveJob
     TriggerPromotionReleaseJob
+    WarmClonePoolReplenishJob
   ].freeze
 
   def up

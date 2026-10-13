@@ -90,9 +90,9 @@ class GitCloneServiceTest < ActiveSupport::TestCase
   end
 
   # Test git command execution concepts (without actual git calls)
-  test "should have private run_git_command method" do
-    # Verify the private method exists
-    assert GitCloneService.private_methods.include?(:run_git_command)
+  test "run_git_command is public for WarmClonePool and the subprocess spawn stays private" do
+    assert GitCloneService.respond_to?(:run_git_command)
+    assert GitCloneService.private_methods.include?(:run_subprocess)
   end
 
   test "should define GitError exception class" do

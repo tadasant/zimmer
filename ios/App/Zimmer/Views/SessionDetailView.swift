@@ -10,8 +10,8 @@ final class SessionDetailModel: ObservableObject {
     /// Hands an error the whole app cares about (a sign-in that ended) to `AppModel`.
     var report: (ZimmerError) -> Void = { _ in }
 
-    @Published private(set) var detail: SessionDetail?
-    @Published private(set) var conversation: Conversation?
+    @Published private(set) var detail: SessionDetail? { didSet { noteChange() } }
+    @Published private(set) var conversation: Conversation? { didSet { noteChange() } }
     /// How far back the conversation reads: a hundred at first, a hundred more on *Show
     /// earlier*, up to what the server returns in one read.
     @Published private(set) var conversationLimit = Conversation.pageSize
@@ -19,15 +19,26 @@ final class SessionDetailModel: ObservableObject {
     @Published private(set) var isSending = false
     @Published var error: ZimmerError?
     @Published var notice: String?
-    @Published var draft = ""
+    /// What is typed and not yet sent, kept per session across leaving and relaunching.
+    @Published var draft: String {
+        didSet { drafts.save(draft, for: id) }
+    }
+    private let drafts = DraftStore()
     /// The messages waiting for the turn in flight to end (`QueueCard`).
-    @Published var queue: [QueuedMessage] = []
+    @Published var queue: [QueuedMessage] = [] { didSet { noteChange() } }
+    /// Bumped by every change to what is shown that does not come from a poll, so a poll that
+    /// read before an edit landed throws its stale answer away rather than undoing the edit.
+    private var revision = 0
+    private var applyingPoll = false
+    /// The queue's manager is open: a poll then would move rows under a finger.
+    var pollPaused = false
     /// Photos and files going with the next message.
     @Published var attachments: [MessageAttachment] = []
 
     init(id: Int, api: ZimmerAPI) {
         self.id = id
         self.api = api
+        self.draft = DraftStore().draft(for: id)
     }
 
     func load() async {
@@ -46,6 +57,44 @@ final class SessionDetailModel: ObservableObject {
             error = nil
         } catch {
             fail(error)
+        }
+    }
+
+    /// Read everything again without showing it: the web UI's page updates as the session
+    /// moves, and this is that, by asking. A failed read leaves what is on screen, except a
+    /// sign-in that ended.
+    func poll() async {
+        guard !isLoading, !isSending, !pollPaused, detail?.session.status != .archived else { return }
+        let started = revision
+        let limit = conversationLimit
+        do {
+            let latest = try await api.session(id)
+            let messages = try await api.conversation(id, limit: limit)
+            let wantsQueue = latest.session.status == .running || latest.session.status == .waiting || !queue.isEmpty
+            let queued = wantsQueue ? try? await api.queue(id) : []
+            // An edit, a send or *Show earlier* landed while this was reading: its answer wins.
+            guard started == revision, limit == conversationLimit, !pollPaused else { return }
+            applyingPoll = true
+            defer { applyingPoll = false }
+            if latest != detail { detail = latest }
+            if messages != conversation { conversation = messages }
+            if let queued, queued != queue { queue = queued }
+            // The error on screen is an action's (a poll's own failures are never shown), so
+            // a quiet read leaves it for the person to read.
+        } catch ZimmerError.unauthorized {
+            report(.unauthorized)
+        } catch {}
+    }
+
+    private func noteChange() {
+        if !applyingPoll { revision += 1 }
+    }
+
+    /// How often to read again: often while a turn is running or about to, rarely otherwise.
+    var pollInterval: Duration {
+        switch detail?.session.status {
+        case .running, .waiting: return .seconds(5)
+        default: return .seconds(20)
         }
     }
 
@@ -117,17 +166,6 @@ final class SessionDetailModel: ObservableObject {
         }
     }
 
-    func archive() async -> Bool {
-        do {
-            _ = try await api.archive(id)
-            Haptics.success()
-            return true
-        } catch {
-            fail(error)
-            return false
-        }
-    }
-
     /// One action from the session's menu; the server's answer replaces what is shown.
     @discardableResult
     func apply(_ done: String, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
@@ -189,7 +227,6 @@ struct SessionDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @StateObject private var model: SessionDetailModel
-    @State private var confirmingArchive = false
     @State private var choosingModel = false
     @State private var editingCatalog: CatalogKind?
     /// The web UI's log-level filter, as far as the conversation goes. Minimal by default:
@@ -201,6 +238,16 @@ struct SessionDetailView: View {
     @State private var showingLogs = false
     @State private var showingSubagents = false
     @State private var newTitle = ""
+    @Environment(\.scenePhase) private var scenePhase
+    /// Where the end of the conversation sits in the scroll view, and how tall the view is:
+    /// new messages are followed only while the end is in view, so reading back is never
+    /// yanked to the bottom. Read from geometry — in a stack that is not lazy, `onAppear` fires
+    /// when a view is added, not when it scrolls into sight.
+    @State private var endY: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+    private var atEnd: Bool { endY <= viewportHeight + 80 }
+    /// Scrolled to the newest message once, on the first load.
+    @State private var openedAtNewest = false
 
     /// Short answers a person gives most often — on a phone, typing is the expensive part.
     static let quickReplies = ["Yes, go ahead.", "Merge it.", "Not yet — hold off."]
@@ -216,6 +263,40 @@ struct SessionDetailView: View {
     }
 
     var body: some View {
+        ScrollViewReader { proxy in
+            page
+                .onChange(of: model.conversation?.messages.last?.id) { _, _ in
+                    guard model.conversation != nil else { return }
+                    // Open at the newest message, as the web UI's transcript does; afterwards
+                    // follow new ones only while the end is in view.
+                    if !openedAtNewest {
+                        openedAtNewest = true
+                        // After the layout that adds the messages, or the scroll can miss.
+                        Task { @MainActor in proxy.scrollTo(Self.endAnchor, anchor: .bottom) }
+                    } else if atEnd {
+                        withAnimation { proxy.scrollTo(Self.endAnchor, anchor: .bottom) }
+                    }
+                }
+        }
+        // The web UI's page streams as the session moves; this reads again while it is on
+        // screen, and at once when the app comes back to the front.
+        .task(id: model.pollInterval) {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: model.pollInterval)
+                guard !Task.isCancelled else { return }
+                // Only while this session is the screen in front, whatever SwiftUI keeps alive.
+                guard app.path.last == model.id, app.tab == .sessions else { continue }
+                await model.poll()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await model.poll() } }
+        }
+    }
+
+    static let endAnchor = "conversation.end"
+
+    private var page: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 if let detail = model.detail {
@@ -244,11 +325,16 @@ struct SessionDetailView: View {
                 if !model.queue.isEmpty {
                     QueueCard(model: model)
                 }
+                Color.clear
+                    .frame(height: 1)
+                    .id(Self.endAnchor)
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .scrollView).minY } action: { endY = $0 }
             }
             .padding(.horizontal, Theme.margin)
             .padding(.vertical, 12)
             .animation(.snappy(duration: 0.3), value: model.detail == nil)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
         .background(Theme.ground)
         .navigationTitle(Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)
@@ -260,17 +346,10 @@ struct SessionDetailView: View {
         } message: {
             Text("The session is told to check for conflicts, merge, and archive itself. Your tap is the sign-off.")
         }
-        .confirmationDialog("Move to trash?", isPresented: $confirmingArchive, titleVisibility: .visible) {
-            Button("Trash", role: .destructive) {
-                Task {
-                    if await model.archive() {
-                        await app.sessionChanged()
-                        dismiss()
-                    }
-                }
-            }
-        } message: {
-            Text("It moves to the trash. You can restore it from Archived.")
+        .modifier(QueuedTrashQuestion { $0.id == model.id && app.path.last == model.id })
+        // Trashed — here, or after *Trash anyway* — the page goes and the board offers Undo.
+        .onChange(of: app.undoable?.id) { _, trashed in
+            if trashed == model.id { dismiss() }
         }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Title", text: $newTitle)
@@ -346,7 +425,7 @@ struct SessionDetailView: View {
                     .accessibilityLabel("Restore from Trash")
                     .accessibilityIdentifier("detail.restore")
                 } else {
-                    Button(role: .destructive) { confirmingArchive = true } label: {
+                    Button(role: .destructive) { Task { await app.trash(session) { model.fail($0) } } } label: {
                         Image(systemName: "trash")
                     }
                     .accessibilityLabel("Move to trash")

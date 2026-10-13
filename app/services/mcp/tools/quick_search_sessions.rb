@@ -106,6 +106,10 @@ module Mcp
             type: "string",
             description: "Filter results by agent runtime."
           },
+          agent_root: {
+            type: "string",
+            description: "Filter by agent root — its catalog name (get_configs lists them), matched as the dashboard's Advanced filter matches it. A name that is not in the catalog matches nothing."
+          },
           priority_class: {
             type: "string",
             enum: SessionGenesis::CLASSES,
@@ -288,6 +292,7 @@ module Mcp
         end
 
         scope = scope.where(agent_runtime: args["agent_runtime"]) if args["agent_runtime"].present?
+        scope = filter_sessions_by_agent_root(scope, args["agent_root"].to_s.strip) if args["agent_root"].present?
 
         if (klass = args["priority_class"].presence)
           unless SessionGenesis::CLASSES.include?(klass)
