@@ -129,7 +129,14 @@ class Api::V1::SessionsController < Api::BaseController
 
   # GET /api/v1/sessions/:id
   # Get a single session by ID or slug.
+  #
+  # `viewed=true`, from the iOS app's sign-in only, is a person opening the session, as
+  # the dashboard's page is: its unread notifications are marked read and it is touched
+  # as last touched. Only the app's token can say so — an API key is the fleet's, and an
+  # agent reading a session must not clear a person's inbox — and only on an open, not
+  # on the app's reads while the page is up.
   def show
+    record_a_view if params[:viewed] == "true" && native_app_request?
     record = @session.human_message_record
 
     render json: {
@@ -1037,22 +1044,39 @@ class Api::V1::SessionsController < Api::BaseController
   # GET /api/v1/sessions/:id/conversation
   # The user and assistant messages of the transcript, oldest first, as data
   # rather than as rendered text: { messages: [{ role, content, timestamp,
-  # has_tool_use, has_tool_result }], total, truncated }. `limit` (default 50,
-  # max 200) keeps the newest that many; each content is cut at 4,000 characters.
+  # has_tool_use, has_tool_result }], total, first_position, truncated }.
+  #   - limit (default 50, max 200): how many, ending at `before`
+  #   - before: a position in the whole conversation (0 is the first message); the
+  #     page ends just before it. Omitted, the page is the newest. `first_position`
+  #     is where the page starts, which is the `before` of the page above it — so a
+  #     reader can go back past the cap a page at a time, as the dashboard's
+  #     transcript reads back as you scroll up.
+  #   - full_content: "true" sends each message up to 100,000 characters — whole, for
+  #     anything a person reads. Otherwise each is cut at 4,000, which keeps an agent
+  #     reading a session from spending its context on one long tool result.
+  #
+  # Positions count the messages in this list. They are not `transcript_index`,
+  # which counts the transcript's events and is what `fork` takes.
   CONVERSATION_DEFAULT_LIMIT = 50
   CONVERSATION_MAX_LIMIT = 200
   CONVERSATION_CONTENT_LIMIT = 4_000
+  CONVERSATION_FULL_CONTENT_LIMIT = 100_000
 
   def conversation
     limit = params[:limit].present? ? params[:limit].to_i.clamp(1, CONVERSATION_MAX_LIMIT) : CONVERSATION_DEFAULT_LIMIT
     messages = @session.formatted_conversation
+    ending = params[:before].present? ? params[:before].to_i.clamp(0, messages.size) : messages.size
+    first = [ ending - limit, 0 ].max
+    full = params[:full_content] == "true"
     render json: {
-      messages: messages.last(limit).map do |message|
+      messages: messages[first...ending].map do |message|
+        content = message[:content].to_s
         message.slice(:role, :timestamp, :has_tool_use, :has_tool_result)
-          .merge(content: message[:content].to_s.truncate(CONVERSATION_CONTENT_LIMIT, omission: "\n…[truncated]"))
+          .merge(content: content.truncate(full ? CONVERSATION_FULL_CONTENT_LIMIT : CONVERSATION_CONTENT_LIMIT, omission: "\n…[truncated]"))
       end,
       total: messages.size,
-      truncated: messages.size > limit
+      first_position: first,
+      truncated: first.positive?
     }
   end
 
@@ -1399,6 +1423,15 @@ class Api::V1::SessionsController < Api::BaseController
       images: Sessions::AttachmentDescriptors.for_the_record(attachments[:images], keys: Sessions::AttachmentDescriptors::IMAGE_KEYS) || [],
       files: Sessions::AttachmentDescriptors.for_the_record(attachments[:files], keys: Sessions::AttachmentDescriptors::FILE_KEYS) || []
     }
+  end
+
+  # A person opened the session in the app: read and touched, as the dashboard's page
+  # does. Best effort — a failure here must never fail the read it rides on.
+  def record_a_view
+    @session.mark_notifications_read!
+    @session.touch_user_view!
+  rescue => e
+    Rails.logger.info("[Api::V1::SessionsController#show] recording a view of session #{@session.id} failed: #{e.class}: #{e.message}")
   end
 
   # A session started from the iOS app's new-session form begins with a person's
