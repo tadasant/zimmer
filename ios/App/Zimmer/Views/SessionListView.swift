@@ -60,6 +60,8 @@ struct SessionListView: View {
                 Text("Re-reads transcripts, restarts failed sessions, and continues sessions waiting on you that you didn't pause — up to 50 of those. That spends agent turns.")
             }
             .environment(\.editMode, $editMode)
+            // A refresh while rows are selected or being dragged would move them under a finger.
+            .onChange(of: editMode.isEditing) { _, editing in model.isEditingBoard = editing }
             // Selecting hides the tab bar, as Mail does: the Trash bar takes its place at the bottom.
             .toolbar(editMode.isEditing ? .hidden : .visible, for: .tabBar)
             // A selection only ever names rows on screen: a filter, search or view change drops the rest.

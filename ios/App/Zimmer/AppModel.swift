@@ -46,6 +46,8 @@ final class AppModel: ObservableObject {
     /// Unread notifications, for the Inbox tab's badge.
     @Published var unreadCount = 0
     @Published var showingQuickRouter = false
+    /// The board is in select or reorder mode: a refresh then would move rows under a finger.
+    var isEditingBoard = false
     /// The session the Quick Router was opened from, so the new one threads under it, as
     /// the web bubble on a session page sends `parent_session_id`.
     var quickRouterParent: Int?
@@ -91,6 +93,11 @@ final class AppModel: ObservableObject {
         #if DEBUG
         guard environment.isFixture else { return }
         let arguments = ProcessInfo.processInfo.arguments
+        // Drafts outlive a launch by design; every fixture launch starts without any, so one
+        // test's words never appear in another's composer.
+        for key in UserDefaults.standard.dictionaryRepresentation().keys where key.hasPrefix("draft.") {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
         if let flag = arguments.firstIndex(of: "-ZimmerFixtureOpenSession"),
            arguments.indices.contains(flag + 1), let id = Int(arguments[flag + 1]) {
             path = [id]
@@ -163,9 +170,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func refresh() async {
-        isLoading = true
-        defer { isLoading = false }
+    /// `silently`: a read the board makes on its own — no loading state, and a failure other
+    /// than a sign-in that ended is not shown; the next read tries again.
+    func refresh(silently: Bool = false) async {
+        if !silently { isLoading = true }
+        defer { if !silently { isLoading = false } }
         let requested = filter
         let board = board
         let view = view
@@ -185,7 +194,7 @@ final class AppModel: ObservableObject {
             listIncomplete = !result.complete
             error = nil
         } catch {
-            handle(error)
+            if !silently || (error as? ZimmerError) == .unauthorized { handle(error) }
         }
         await refreshEdgeExpiry()
         await refreshUnreadCount()
