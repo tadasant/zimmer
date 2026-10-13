@@ -132,9 +132,14 @@ class GitCloneService
     #   is absent from the cloned tree but this one is present. Callers pass the path the
     #   agent root declares in the *current* catalog, so a root whose directory was renamed
     #   after the session was created still resolves (#921).
-    # @return [Hash] hash with :clone_path, :working_directory and :subdirectory keys
-    #   (:subdirectory is the path the clone actually landed on — the fallback, when one was taken)
-    def create_clone(repo_url, branch: "main", clone_path: nil, subdirectory: nil, fallback_subdirectory: nil)
+    # @param warm [Boolean] take a ready-made clone from WarmClonePool when it has
+    #   one for this repository and branch, instead of cloning. Only honoured for a
+    #   generated path; the pool's absence or a failed claim falls through to an
+    #   ordinary clone.
+    # @return [Hash] hash with :clone_path, :working_directory, :subdirectory and :warm keys
+    #   (:subdirectory is the path the clone actually landed on — the fallback, when one was taken;
+    #   :warm is whether the clone came from the pool)
+    def create_clone(repo_url, branch: "main", clone_path: nil, subdirectory: nil, fallback_subdirectory: nil, warm: false)
       requested_path = clone_path
       # Generate a unique clone path if not provided
       clone_path ||= generate_clone_path(repo_url, branch)
@@ -163,14 +168,18 @@ class GitCloneService
         clone_path = generate_clone_path(repo_url, branch)
       end
 
-      # Refuse to start a clone the volume cannot hold. Prunes orphaned clones
-      # first, so the common "disk filled with abandoned clones" case self-heals;
-      # raises with an actionable message when it cannot.
-      ensure_disk_space!(repo_url, File.dirname(clone_path))
+      claimed_warm = warm && requested_path.nil? && WarmClonePool.claim(repo_url, branch, into: clone_path)
 
-      # Clone the repository directly with the specified branch.
-      # Retries on transient network/server errors (e.g., GitHub 5xx).
-      run_git_clone_with_retry(repo_url, branch, clone_path)
+      unless claimed_warm
+        # Refuse to start a clone the volume cannot hold. Prunes orphaned clones
+        # first, so the common "disk filled with abandoned clones" case self-heals;
+        # raises with an actionable message when it cannot.
+        ensure_disk_space!(repo_url, File.dirname(clone_path))
+
+        # Clone the repository directly with the specified branch.
+        # Retries on transient network/server errors (e.g., GitHub 5xx).
+        run_git_clone_with_retry(repo_url, branch, clone_path)
+      end
 
       # Which subdirectory this clone actually lands on: the requested one, the
       # fallback when the requested one is gone from the tree and the fallback is
@@ -185,7 +194,7 @@ class GitCloneService
         clone_path
       end
 
-      { clone_path: clone_path, working_directory: working_directory, subdirectory: effective_subdirectory }
+      { clone_path: clone_path, working_directory: working_directory, subdirectory: effective_subdirectory, warm: claimed_warm }
     rescue StandardError => e
       # Clean up on failure
       discard_failed_clone(clone_path)
@@ -400,7 +409,10 @@ class GitCloneService
       base_path.join("#{repo_name}-#{safe_branch}-#{timestamp}-#{random}").to_s
     end
 
-    # Run a git command with a hard wall-clock timeout.
+    public
+
+    # Run a git command with a hard wall-clock timeout. Public for WarmClonePool,
+    # whose clones and catch-up fetches need the same watchdog.
     #
     # Uses array syntax to prevent shell injection and a watchdog that kills the
     # subprocess's entire process group if it exceeds GIT_CLONE_TIMEOUT_SECONDS.
@@ -427,6 +439,8 @@ class GitCloneService
       # Combine stdout and stderr for compatibility with existing code
       "#{stdout}#{stderr}"
     end
+
+    private
 
     # Spawn a git subprocess under a wall-clock watchdog (see BoundedSubprocess).
     # The child runs as its own process-group leader so that on timeout the whole
