@@ -350,4 +350,18 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     assert_includes output, "- **Visibility:**"
     assert_includes output, "presentation only"
   end
+
+  test "agent_root narrows to the catalog root, as the dashboard's Advanced filter does" do
+    root = AgentRootsConfig.all.first
+    mine = Session.create!(git_root: "https://github.com/t/r.git", prompt: "p", title: "Rotate the deploy key here", status: :needs_input)
+    mine.update_columns(metadata: mine.metadata.merge("agent_root_key" => root.name))
+    other = Session.create!(git_root: "https://github.com/t/r.git", prompt: "p", title: "Rotate the deploy key there", status: :needs_input)
+    other.update_columns(metadata: other.metadata.merge("agent_root_key" => "some-other-root"))
+
+    output = @tool.call("query" => "Rotate the deploy key", "agent_root" => root.name)
+
+    assert_includes output, "ID: #{mine.id}"
+    refute_includes output, "ID: #{other.id}"
+    assert_match(/No sessions found|found 0|0 sessions/i, @tool.call("query" => "Rotate the deploy key", "agent_root" => "no-such-root"))
+  end
 end

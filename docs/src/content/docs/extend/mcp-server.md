@@ -244,7 +244,10 @@ Assembling the board out of those means a `get_session` per row, and reordering 
 moved since it was read. `reorder_user_view` is what the dashboard's **Reprioritize** button's
 session uses.
 
-`quick_search_sessions` matches session titles plus the `metadata` and `custom_metadata` JSON by
+`quick_search_sessions` narrows by the dashboard's filters, combined: `status` (one or an array),
+`agent_runtime`, `agent_root` (a catalog name, matched as the dashboard's Advanced filter matches
+it), `priority_class`, `genesis`, `visibility` and `show_archived`. It matches session titles plus
+the `metadata` and `custom_metadata` JSON by
 default, and `search_contents: true` widens it to the **transcript** — this is the MCP route to
 finding a session by something said mid-conversation, and it exists so nobody has to `curl` the REST
 API for it. That scan is bounded rather than best-effort (the `transcript` column has no index a
