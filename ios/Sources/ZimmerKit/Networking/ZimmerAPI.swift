@@ -5,15 +5,24 @@ import Foundation
 public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI, OperationsAPI, AttachmentsAPI {
     func sessions(_ filter: SessionFilter) async throws -> [SessionSummary]
     func session(_ id: Int) async throws -> SessionDetail
-    func conversation(_ id: Int) async throws -> Conversation
+    /// The newest `limit` messages (the server caps it at 200), and how many there are.
+    func conversation(_ id: Int, limit: Int) async throws -> Conversation
     func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult
     func archive(_ id: Int) async throws -> SessionSummary
-    /// Start a Quick Router session from a plain-language request; returns its id.
-    func startQuickRouter(_ prompt: String) async throws -> Int
+    /// Start a Quick Router session from a plain-language request, with what the web
+    /// bubble's Advanced accordion and attach buttons add; returns its id.
+    func startQuickRouter(_ request: QuickRouterRequest) async throws -> Int
     /// Register this phone for push notifications (idempotent: an upsert on the token).
     func registerDevice(token: String, environment: APNsEnvironment, deviceName: String?, appVersion: String?) async throws
     /// Unregister it, on sign-out.
     func unregisterDevice(token: String) async throws
+}
+
+extension ZimmerAPI {
+    /// The page's first read: the newest hundred.
+    public func conversation(_ id: Int) async throws -> Conversation {
+        try await conversation(id, limit: Conversation.pageSize)
+    }
 }
 
 /// Zimmer's REST API (`/api/v1`), called with the signed-in grant's access token.
@@ -40,12 +49,12 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     public func session(_ id: Int) async throws -> SessionDetail {
         let segment = ZimmerPathComponent(String(id))
         let response: SessionShowResponse = try await get("/api/v1/sessions/\(segment)")
-        return SessionDetail(session: response.session, statusSummary: response.statusSummary, hierarchy: response.hierarchy)
+        return response.detail
     }
 
-    public func conversation(_ id: Int) async throws -> Conversation {
+    public func conversation(_ id: Int, limit: Int) async throws -> Conversation {
         let segment = ZimmerPathComponent(String(id))
-        let response: ConversationResponse = try await get("/api/v1/sessions/\(segment)/conversation", query: ["limit": "100"])
+        let response: ConversationResponse = try await get("/api/v1/sessions/\(segment)/conversation", query: ["limit": String(limit)])
         return response.conversation
     }
 
@@ -62,8 +71,8 @@ public struct ZimmerHTTPClient: ZimmerAPI {
         return response.session
     }
 
-    public func startQuickRouter(_ prompt: String) async throws -> Int {
-        let response: QuickRouterResponse = try await post("/api/v1/quick_router", json: ["prompt": prompt])
+    public func startQuickRouter(_ request: QuickRouterRequest) async throws -> Int {
+        let response: QuickRouterResponse = try await post("/api/v1/quick_router", json: request.json)
         return response.session_id
     }
 
@@ -135,6 +144,7 @@ public struct ZimmerHTTPClient: ZimmerAPI {
                 throw ZimmerError.unauthorized
             }
             guard (200..<300).contains(response.statusCode) || accepting.contains(response.statusCode) else {
+                if ZimmerError.gatewayTimeoutStatuses.contains(response.statusCode) { throw ZimmerError.timedOut }
                 let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: response.body)
                 throw ZimmerError.http(status: response.statusCode, message: envelope?.message)
             }

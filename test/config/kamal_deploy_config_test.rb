@@ -59,6 +59,19 @@ class KamalDeployConfigTest < ActiveSupport::TestCase
       end
     end
 
+    # MCP's `sync: true` holds a request for up to Sessions::SyncReply's ceiling.
+    # kamal-proxy and Thruster both default to cutting at 30s, which would turn
+    # every long wait into a 504 with no session id in it.
+    test "#{destination}'s web proxies outlast the longest MCP sync wait" do
+      web = kamal_config(destination).role(:web)
+      ceiling = Sessions::SyncReply::MAX_TIMEOUT_SECONDS
+
+      assert_operator web.proxy.deploy_options[:"target-timeout"].to_i, :>, ceiling,
+        "kamal-proxy's response_timeout must exceed the #{ceiling}s sync ceiling"
+      assert_operator web.env(web.hosts.first).clear["THRUSTER_HTTP_WRITE_TIMEOUT"].to_i, :>, ceiling,
+        "Thruster's HTTP_WRITE_TIMEOUT must exceed the #{ceiling}s sync ceiling"
+    end
+
     test "#{destination} runs the worker as an unproxied GoodJob process" do
       worker = kamal_config(destination).role(:worker)
 

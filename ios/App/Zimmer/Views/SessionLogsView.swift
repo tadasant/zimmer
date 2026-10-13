@@ -16,7 +16,7 @@ struct SessionLogsView: View {
     var body: some View {
         NavigationStack {
             List {
-                if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
+                if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
                 ForEach(entries) { entry in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
@@ -25,27 +25,34 @@ struct SessionLogsView: View {
                                 .foregroundStyle(Self.color(for: entry.level))
                             if let date = entry.createdAt {
                                 Text(date, format: .dateTime.month(.abbreviated).day().hour().minute().second())
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(Theme.inkMute)
                             }
                         }
                         Text(entry.content)
                             .font(.footnote.monospaced())
+                            .foregroundStyle(Theme.ink)
                             .textSelection(.enabled)
                     }
+                    .padding(.vertical, 2)
+                    .listRowBackground(Theme.ground)
+                    .listRowSeparatorTint(Theme.rule)
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("log.\(entry.id)")
                 }
                 if hasMore {
                     ProgressView()
                         .frame(maxWidth: .infinity)
+                        .listRowBackground(Theme.ground)
+                        .listRowSeparator(.hidden)
                         .task { await loadMore() }
                 }
             }
             .listStyle(.plain)
+            .themeGround()
             .overlay {
                 if entries.isEmpty && !hasMore && error == nil {
-                    ContentUnavailableView("No logs", systemImage: "doc.plaintext")
+                    EmptyState(title: "No logs", symbol: "doc.plaintext")
                 }
             }
             .refreshable { await reload() }
@@ -86,10 +93,10 @@ struct SessionLogsView: View {
     /// The web UI's log-level colours.
     static func color(for level: String?) -> Color {
         switch level {
-        case "error": return .red
-        case "warning": return .yellow
-        case "debug", "verbose": return .gray
-        default: return .blue
+        case "error": return Theme.danger
+        case "warning": return Theme.warning
+        case "debug", "verbose": return Theme.inkMute
+        default: return Theme.accent
         }
     }
 }
@@ -106,28 +113,30 @@ struct SubagentsView: View {
     var body: some View {
         NavigationStack {
             List {
-                if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
+                if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
                 ForEach(transcripts ?? []) { transcript in
                     NavigationLink {
                         SubagentTranscriptView(id: id, transcript: transcript, api: api)
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(transcript.title).lineLimit(2)
+                            Text(transcript.title).lineLimit(2).foregroundStyle(Theme.ink)
                             HStack(spacing: 6) {
                                 if let status = transcript.status { Text(status.capitalized) }
                                 if let duration = transcript.duration { Text("·"); Text(duration) }
                                 if let tokens = transcript.tokens { Text("·"); Text("\(tokens) tokens") }
                             }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(Theme.inkSoft)
                         }
                     }
                     .accessibilityIdentifier("subagent.\(transcript.id)")
+                    .themeRows()
                 }
             }
+            .themeGround()
             .overlay {
-                if transcripts == nil && error == nil { ProgressView() }
-                if transcripts?.isEmpty == true { ContentUnavailableView("No subagents", systemImage: "person.2") }
+                if transcripts == nil && error == nil { LoadingState() }
+                if transcripts?.isEmpty == true { EmptyState(title: "No subagents", symbol: "person.2") }
             }
             .task {
                 do {
@@ -166,13 +175,14 @@ private struct SubagentTranscriptView: View {
                 }
                 ForEach((messages ?? []).filter { showingToolTraffic || !$0.isToolTraffic }) { MessageBubble(message: $0) }
                 if messages?.isEmpty == true {
-                    Text("No transcript recorded.").foregroundStyle(.secondary)
+                    Text("No transcript recorded.").font(.subheadline).foregroundStyle(Theme.inkMute)
                 }
             }
-            .padding()
+            .padding(.horizontal, Theme.margin)
+            .padding(.vertical, 12)
         }
-        .background(Color(.systemGroupedBackground))
-        .overlay { if messages == nil && error == nil { ProgressView() } }
+        .background(Theme.ground)
+        .overlay { if messages == nil && error == nil { LoadingState() } }
         .navigationTitle(transcript.title)
         .navigationBarTitleDisplayMode(.inline)
         .task {

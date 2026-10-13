@@ -24,11 +24,18 @@ class Api::V1::SessionsController < Api::BaseController
   # forgotten the way a `performed?` check can.
   class PlacementError < StandardError; end
 
+  # A board filter the server cannot apply — an unknown status, say. A 422 naming
+  # the valid values, rather than a listing that silently ignores the filter.
+  class BoardFilterError < StandardError; end
+
   # Raised under the archive lock when a turn is in flight and the caller did
   # not force. See #guarded_rest_archive!.
   class LiveTurnRefused < StandardError; end
 
   rescue_from PlacementError, with: :render_placement_error
+  rescue_from BoardFilterError do |error|
+    render_api_error("Invalid parameter", error.message, status: :unprocessable_entity)
+  end
 
   # The `error` titles the catalog-selection endpoints answer with, keyed by the
   # code Sessions::UpdateCatalogSelection returns. The titles are this surface's
@@ -63,9 +70,15 @@ class Api::V1::SessionsController < Api::BaseController
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
   #
-  # Query parameters:
-  #   - status: Filter by status (waiting, running, needs_input, failed, archived)
+  # Query parameters (every filter combines with every other, as the dashboard's do —
+  # see #apply_board_filters):
+  #   - status: one status or several (`status[]=needs_input&status[]=failed`, or
+  #     comma-separated) of waiting, running, needs_input, failed, archived. Naming
+  #     archived includes archived sessions without show_archived.
   #   - agent_runtime: Filter by agent runtime
+  #   - agent_root: the agent root's catalog name, matched as the dashboard's
+  #     Advanced filter matches it (SessionSearchable#filter_sessions_by_agent_root)
+  #   - priority_class: priority or spot; genesis: a SessionGenesis kind
   #   - show_archived: Include archived sessions (default: false)
   #   - visibility: board visibility, the presentation-only axis. "on_board" for the
   #     sessions a tidied dashboard shows, "off_board" for the hidden and snoozed
@@ -86,22 +99,7 @@ class Api::V1::SessionsController < Api::BaseController
     # dashboard and the MCP search.
     scope = Session.excluding_status_summary_forks.order(created_at: :desc)
 
-    # Filter by status
-    scope = scope.where(status: params[:status]) if params[:status].present?
-
-    # Filter by agent_runtime
-    scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
-
-    # Filter by scheduling class / genesis. A session that carries no class of its
-    # own is classified through SessionGenesis on read, so moving a genesis in
-    # Settings moves those sessions here immediately.
-    scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
-    scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
-
-    scope = apply_visibility_filter(scope)
-
-    # Exclude archived unless requested
-    scope = scope.where.not(status: :archived) unless params[:show_archived] == "true"
+    scope = apply_board_filters(scope)
 
     case params[:view].to_s
     when "", SessionsController::VIEW_MODE_CREATED_DESC
@@ -124,13 +122,21 @@ class Api::V1::SessionsController < Api::BaseController
 
     render json: {
       sessions: result[:records].map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
-      pagination: result[:pagination]
+      pagination: result[:pagination],
+      **board_rows(result[:records])
     }
   end
 
   # GET /api/v1/sessions/:id
   # Get a single session by ID or slug.
+  #
+  # `viewed=true`, from the iOS app's sign-in only, is a person opening the session, as
+  # the dashboard's page is: its unread notifications are marked read and it is touched
+  # as last touched. Only the app's token can say so — an API key is the fleet's, and an
+  # agent reading a session must not clear a person's inbox — and only on an open, not
+  # on the app's reads while the page is up.
   def show
+    record_a_view if params[:viewed] == "true" && native_app_request?
     record = @session.human_message_record
 
     render json: {
@@ -304,12 +310,18 @@ class Api::V1::SessionsController < Api::BaseController
   # discards them, and nothing delivers a queued message once the session is in
   # the trash. `force: true` overrides it for a caller that has read them and is
   # deliberately discarding them. See Sessions::ArchiveGuard.
+  #
+  # Refused with 422 too when a turn is in flight, unless `force` or `end_turn`.
+  # `end_turn: true` lets the turn go and nothing else: the queue is still
+  # checked. It is the web UI's Trash, which ends a running session's turn but
+  # asks before discarding a queue — what the iOS app sends.
   def archive
     force = ActiveModel::Type::Boolean.new.cast(params[:force])
+    end_turn = ActiveModel::Type::Boolean.new.cast(params[:end_turn])
 
     archived =
       begin
-        @session.may_archive? && guarded_rest_archive!(@session, force: force, actor: "the REST API")
+        @session.may_archive? && guarded_rest_archive!(@session, force: force, end_turn: end_turn, actor: "the REST API")
       rescue Sessions::ArchiveGuard::Refused => e
         render_api_error(
           "Queued messages would be discarded",
@@ -1038,24 +1050,41 @@ class Api::V1::SessionsController < Api::BaseController
   # GET /api/v1/sessions/:id/conversation
   # The user and assistant messages of the transcript, oldest first, as data
   # rather than as rendered text: { messages: [{ role, content, timestamp,
-  # has_tool_use, has_tool_result, transcript_index }], total, truncated }.
-  # `limit` (default 50, max 200) keeps the newest that many; each content is cut
-  # at 4,000 characters. `transcript_index` is what `fork` takes as message_index
+  # has_tool_use, has_tool_result, transcript_index }], total, first_position,
+  # truncated }.
+  #   - limit (default 50, max 200): how many, ending at `before`
+  #   - before: a position in the whole conversation (0 is the first message); the
+  #     page ends just before it. Omitted, the page is the newest. `first_position`
+  #     is where the page starts, which is the `before` of the page above it — so a
+  #     reader can go back past the cap a page at a time, as the dashboard's
+  #     transcript reads back as you scroll up.
+  #   - full_content: "true" sends each message up to 100,000 characters — whole, for
+  #     anything a person reads. Otherwise each is cut at 4,000, which keeps an agent
+  #     reading a session from spending its context on one long tool result.
+  #
+  # Positions count the messages in this list. They are not `transcript_index`,
+  # which counts the transcript's events and is what `fork` takes as message_index
   # to fork at that message.
   CONVERSATION_DEFAULT_LIMIT = 50
   CONVERSATION_MAX_LIMIT = 200
   CONVERSATION_CONTENT_LIMIT = 4_000
+  CONVERSATION_FULL_CONTENT_LIMIT = 100_000
 
   def conversation
     limit = params[:limit].present? ? params[:limit].to_i.clamp(1, CONVERSATION_MAX_LIMIT) : CONVERSATION_DEFAULT_LIMIT
     messages = @session.formatted_conversation
+    ending = params[:before].present? ? params[:before].to_i.clamp(0, messages.size) : messages.size
+    first = [ ending - limit, 0 ].max
+    full = params[:full_content] == "true"
     render json: {
-      messages: messages.last(limit).map do |message|
+      messages: messages[first...ending].map do |message|
+        content = message[:content].to_s
         message.slice(:role, :timestamp, :has_tool_use, :has_tool_result, :transcript_index)
-          .merge(content: message[:content].to_s.truncate(CONVERSATION_CONTENT_LIMIT, omission: "\n…[truncated]"))
+          .merge(content: content.truncate(full ? CONVERSATION_FULL_CONTENT_LIMIT : CONVERSATION_CONTENT_LIMIT, omission: "\n…[truncated]"))
       end,
       total: messages.size,
-      truncated: messages.size > limit
+      first_position: first,
+      truncated: first.positive?
     }
   end
 
@@ -1188,11 +1217,13 @@ class Api::V1::SessionsController < Api::BaseController
     errors = []
 
     force = ActiveModel::Type::Boolean.new.cast(params[:force])
+    end_turn = ActiveModel::Type::Boolean.new.cast(params[:end_turn])
 
     # Refusals are reported and skipped rather than aborting the loop, matching
-    # the MCP twin. `force` applies to the whole batch, not one member of it.
+    # the MCP twin. `force` and `end_turn` apply to the whole batch, not one
+    # member of it.
     sessions.each do |session|
-      if guarded_rest_archive!(session, force: force, actor: "the REST API (bulk)")
+      if guarded_rest_archive!(session, force: force, end_turn: end_turn, actor: "the REST API (bulk)")
         archived_count += 1
       else
         errors << { id: session.id, message: "Cannot archive from status: #{session.status}" }
@@ -1213,9 +1244,8 @@ class Api::V1::SessionsController < Api::BaseController
   #   - q (or query): Search query (required) - searches title, metadata, and custom_metadata
   #   - search_contents: "true" or "1" to also search transcript contents
   #   - scan_cursor: resume token from a previous content search's content_scan.next_cursor
-  #   - status: Filter by status (waiting, running, needs_input, failed, archived)
-  #   - agent_runtime: Filter by agent runtime
-  #   - show_archived: Include archived sessions (default: false)
+  #   - status, agent_runtime, agent_root, priority_class, genesis, visibility,
+  #     show_archived: the same board filters as #index, combinable the same way
   #   - page: Page number (default: 1) - ignored when search_contents is set
   #   - per_page: Results per page (default: 25, max: 100)
   #
@@ -1244,22 +1274,7 @@ class Api::V1::SessionsController < Api::BaseController
     # listings must not disagree about which sessions exist.
     scope = Session.excluding_status_summary_forks.order(created_at: :desc)
 
-    # Filter by status
-    scope = scope.where(status: params[:status]) if params[:status].present?
-
-    # Filter by agent_runtime
-    scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
-
-    # Filter by scheduling class / genesis. A session that carries no class of its
-    # own is classified through SessionGenesis on read, so moving a genesis in
-    # Settings moves those sessions here immediately.
-    scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
-    scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
-
-    scope = apply_visibility_filter(scope)
-
-    # Exclude archived unless requested
-    scope = scope.where.not(status: :archived) unless params[:show_archived] == "true"
+    scope = apply_board_filters(scope)
 
     # Apply search filter
     include_contents = SessionSearchable.search_contents?(params[:search_contents])
@@ -1272,7 +1287,8 @@ class Api::V1::SessionsController < Api::BaseController
         query: query,
         search_contents: false,
         sessions: result[:records].map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
-        pagination: result[:pagination]
+        pagination: result[:pagination],
+        **board_rows(result[:records])
       }
       return
     end
@@ -1286,6 +1302,7 @@ class Api::V1::SessionsController < Api::BaseController
       query: query,
       search_contents: true,
       sessions: sessions.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
+      **board_rows(sessions),
       pagination: {
         page: 1,
         per_page: per_page,
@@ -1324,8 +1341,30 @@ class Api::V1::SessionsController < Api::BaseController
     render json: {
       sessions: rows.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
       pagination: { page: 1, per_page: limit, total_count: scope.count, total_pages: 1 },
-      truncated: fetched.size > limit
+      truncated: fetched.size > limit,
+      **board_rows(rows)
     }
+  end
+
+  # What a dashboard row shows that the `session` object does not carry — the
+  # agent root's catalog name and the cached status summary — keyed by id, when
+  # the caller asks with `include=board_row`. A sibling of `sessions` for the
+  # reason `status_summary` is one on #show: `session` keeps one shape everywhere.
+  # The summaries are read in one query for the page, as the dashboard's rows read
+  # them off an eager load.
+  #
+  # @param records [Array<Session>]
+  # @return [Hash] `{ board_rows: { "<id>" => {...} } }`, or `{}` when not asked
+  def board_rows(records)
+    included = Array.wrap(params[:include]).flat_map { |value| value.to_s.split(",") }.map(&:strip)
+    return {} unless included.include?("board_row")
+
+    records = records.to_a
+    ActiveRecord::Associations::Preloader.new(records: records, associations: :status_summary).call
+    rows = records.to_h do |session|
+      [ session.id.to_s, { agent_root: session.agent_root_key, status_summary: session_status_summary_json(session) } ]
+    end
+    { board_rows: rows }
   end
 
   # The dashboard's User-view cap, which MCP `get_user_view` reads too.
@@ -1346,13 +1385,10 @@ class Api::V1::SessionsController < Api::BaseController
     Session.where.not(status: :archived).spot.find_by(id: id)
   end
 
-  # The most attachments one follow-up carries: the web composer's image cap.
-  FOLLOW_UP_ATTACHMENT_LIMIT = 20
-  # The most their decoded bytes may add up to, and the most a follow-up's body may
-  # be: base64 is four bytes for every three, and a JSON encoder may escape its
-  # slashes, so 75 MB of attachments needs a little over 100 MB of body.
-  FOLLOW_UP_ATTACHMENT_BYTES = 75.megabytes
-  def self.follow_up_body_limit = 110.megabytes
+  # The most attachments one follow-up carries, and the most its body may be:
+  # `InlineAttachments`' caps, which the Quick Router start shares.
+  FOLLOW_UP_ATTACHMENT_LIMIT = InlineAttachments::LIMIT
+  def self.follow_up_body_limit = InlineAttachments::BODY_LIMIT
 
   def refuse_an_oversized_follow_up
     return unless request.content_length.to_i > self.class.follow_up_body_limit
@@ -1361,78 +1397,20 @@ class Api::V1::SessionsController < Api::BaseController
       status: :content_too_large)
   end
 
-  # Store a follow-up's inline `attachments` in the session's own storage, as the
-  # web composer's upload endpoints do, and return the descriptors the turn reads:
-  # `{ images:, files: }`, each nil when there are none. nil after rendering a
-  # refusal. One bad attachment refuses the message rather than sending it
-  # without, because an agent answering about a file it never received is the
-  # failure the person would not see; what was stored before it is removed.
-  #
-  # Which it is goes by the bytes, as ImageStorageService reads them: a PNG,
-  # JPEG, GIF or WebP is an image whatever `media_type` says, and anything else a
-  # file. `data` is base64, with or without a `data:<type>;base64,` prefix.
+  # Store a follow-up's inline `attachments` in the session's own storage and return the
+  # descriptors the turn reads: `{ images:, files: }`, each nil when there are none. nil
+  # after rendering a refusal. The rules are `InlineAttachments`'.
   def stage_follow_up_attachments
-    raw = params[:attachments]
-    return { images: nil, files: nil } if raw.blank?
-
-    staged = { images: [], files: [] }
-    unless raw.is_a?(Array)
-      render_api_error("Invalid attachment", "attachments must be a list", status: :unprocessable_entity)
-      return nil
-    end
-    if raw.size > FOLLOW_UP_ATTACHMENT_LIMIT
-      render_api_error("Too many attachments", "A follow-up carries at most #{FOLLOW_UP_ATTACHMENT_LIMIT} attachments", status: :unprocessable_entity)
-      return nil
-    end
-
-    total = 0
-    raw.each do |entry|
-      unless entry.is_a?(ActionController::Parameters) || entry.is_a?(Hash)
-        raise FileStorageService::InvalidFileError, "Each attachment is an object with a filename and data"
-      end
-
-      filename = entry["filename"].to_s
-      bytes = decode_attachment(entry["data"].to_s)
-      raise FileStorageService::InvalidFileError, "Each attachment needs a filename and data" if filename.blank? || bytes.empty?
-
-      total += bytes.bytesize
-      if total > FOLLOW_UP_ATTACHMENT_BYTES
-        raise FileStorageService::InvalidFileError, "A follow-up's attachments may add up to at most #{FOLLOW_UP_ATTACHMENT_BYTES / 1.megabyte} MB"
-      end
-
-      images_store = ImageStorageService.new(session_id: @session.id)
-      if images_store.media_type_of(bytes)
-        stored = images_store.store(bytes: bytes, filename: filename)
-        staged[:images] << { path: stored[:path], media_type: stored[:media_type] }
-      else
-        stored = FileStorageService.new(session_id: @session.id).store(data: bytes, filename: filename)
-        staged[:files] << { path: stored[:path], original_filename: stored[:original_filename], size: stored[:size] }
-      end
-    end
-    { images: staged[:images].presence, files: staged[:files].presence }
-  rescue ImageStorageService::InvalidImageError, FileStorageService::InvalidFileError => e
-    discard_staged_attachments(staged)
-    render_api_error("Invalid attachment", e.message, status: :unprocessable_entity)
+    InlineAttachments.stage(params[:attachments], session_id: @session.id)
+  rescue InlineAttachments::Invalid => e
+    render_api_error(e.title, e.message, status: :unprocessable_entity)
     nil
-  end
-
-  def decode_attachment(data)
-    Base64.strict_decode64(data.sub(/\Adata:[^;,]+;base64,/, ""))
-  rescue ArgumentError
-    raise FileStorageService::InvalidFileError, "An attachment's data is not valid base64"
   end
 
   # Remove what a follow-up stored when the follow-up itself is refused, so a
   # client that retries does not pile copies into the session's storage.
   def discard_staged_attachments(attachments)
-    return if attachments.nil?
-
-    (Array(attachments[:images]) + Array(attachments[:files])).each do |descriptor|
-      path = descriptor[:path]
-      File.delete(path) if path && File.exist?(path)
-    end
-  rescue SystemCallError => e
-    Rails.logger.warn("[Api::V1::SessionsController] Could not remove a refused follow-up's attachment: #{e.message}")
+    InlineAttachments.discard(attachments)
   end
 
   # A line on the session's log, as the web composer writes one, so the timeline
@@ -1455,6 +1433,15 @@ class Api::V1::SessionsController < Api::BaseController
       images: Sessions::AttachmentDescriptors.for_the_record(attachments[:images], keys: Sessions::AttachmentDescriptors::IMAGE_KEYS) || [],
       files: Sessions::AttachmentDescriptors.for_the_record(attachments[:files], keys: Sessions::AttachmentDescriptors::FILE_KEYS) || []
     }
+  end
+
+  # A person opened the session in the app: read and touched, as the dashboard's page
+  # does. Best effort — a failure here must never fail the read it rides on.
+  def record_a_view
+    @session.mark_notifications_read!
+    @session.touch_user_view!
+  rescue => e
+    Rails.logger.info("[Api::V1::SessionsController#show] recording a view of session #{@session.id} failed: #{e.class}: #{e.message}")
   end
 
   # A session started from the iOS app's new-session form begins with a person's
@@ -1486,7 +1473,8 @@ class Api::V1::SessionsController < Api::BaseController
   # A live turn is the other thing an archive discards, and this endpoint
   # carries no caller identity at all — the API key is the fleet's. So it takes
   # the same answer the MCP tool gives an unidentified connection: refuse, and
-  # let `force` through. See Sessions::LiveTurn.
+  # let `force` through — or `end_turn`, which lets the turn go and still
+  # refuses a queue. See Sessions::LiveTurn.
   #
   # The live turn is read before the lock and only acted on under it: the read
   # is a GoodJob query that swallows its own errors, and a failed statement
@@ -1494,10 +1482,10 @@ class Api::V1::SessionsController < Api::BaseController
   #
   # @return [Boolean] whether it archived
   # @raise [Sessions::ArchiveGuard::Refused, LiveTurnRefused]
-  def guarded_rest_archive!(session, force:, actor:)
+  def guarded_rest_archive!(session, force:, end_turn: false, actor:)
     live_turn = Sessions::LiveTurn.in_flight?(session)
     archived = Sessions::ArchiveGuard.guarded_archive!(session, force: force, actor: actor) do
-      raise LiveTurnRefused if live_turn && !force
+      raise LiveTurnRefused if live_turn && !force && !end_turn
     end
     note_archive_over_live_turn(session, actor) if archived && live_turn
     archived
@@ -1587,6 +1575,52 @@ class Api::V1::SessionsController < Api::BaseController
     end
 
     render json: { session: session_json(session.reload), message: "Session restarted from scratch" }
+  end
+
+  # The dashboard's board filters, shared by #index and #search so the two cannot
+  # disagree, and all combinable: statuses (any number), runtime, agent root,
+  # scheduling class, genesis and board visibility. Archived sessions are left out
+  # unless asked for — by show_archived, or by naming archived among the statuses.
+  # That is where this differs from the dashboard, which reads ticking no status as
+  # every status, archived included: here no status keeps this listing's
+  # long-standing default, the sessions that are not in the trash.
+  #
+  # Only `status` is strict. A misspelled status used to filter on nonsense and
+  # answer "nothing found", which reads as a missing session; an unknown class,
+  # genesis or visibility narrows nothing, as it always has.
+  #
+  # @raise [BoardFilterError] on a status that is not one
+  def apply_board_filters(scope)
+    statuses = requested_statuses
+    scope = scope.where(status: statuses) if statuses.any?
+    scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
+
+    # A session that carries no class of its own is classified through
+    # SessionGenesis on read, so moving a genesis in Settings moves those sessions
+    # here immediately.
+    scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
+    scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
+
+    agent_root = params[:agent_root].to_s.strip
+    scope = filter_sessions_by_agent_root(scope, agent_root) if agent_root.present?
+
+    scope = apply_visibility_filter(scope)
+    scope = scope.where.not(status: :archived) unless params[:show_archived] == "true" || statuses.include?("archived")
+    scope
+  end
+
+  # `status` as a list: repeated (`status[]=`), comma-separated, or a single value.
+  def requested_statuses
+    raw = params[:status]
+    raise BoardFilterError, "status must be a status or a list of them" if raw.is_a?(ActionController::Parameters) || raw.is_a?(Hash)
+
+    statuses = Array(raw).flat_map { |value| value.to_s.split(",") }.map(&:strip).reject(&:blank?).uniq
+    unknown = statuses - Session.statuses.keys
+    if unknown.any?
+      raise BoardFilterError, "Unknown status #{unknown.join(', ')}. Valid: #{Session.statuses.keys.join(', ')}."
+    end
+
+    statuses
   end
 
   # Board visibility — the presentation-only axis — applied to a listing scope.

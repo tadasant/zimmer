@@ -46,7 +46,8 @@ class AppSettingFleetPolicyAuditTest < ActiveSupport::TestCase
       spot_starvation_age_ceiling_hours: 24,
       fleet_idle_max_sessions: 3,
       fleet_idle_threshold_minutes: 5,
-      fleet_idle_min_fire_interval_minutes: 60
+      fleet_idle_min_fire_interval_minutes: 60,
+      fleet_idle_quiet_backlog_interval_minutes: 240
     )
 
     entries = capture_log_entries do
@@ -59,7 +60,8 @@ class AppSettingFleetPolicyAuditTest < ActiveSupport::TestCase
         spot_starvation_age_ceiling_hours: 48,
         fleet_idle_max_sessions: 12,
         fleet_idle_threshold_minutes: 7,
-        fleet_idle_min_fire_interval_minutes: 10
+        fleet_idle_min_fire_interval_minutes: 10,
+        fleet_idle_quiet_backlog_interval_minutes: 180
       )
     end
 
