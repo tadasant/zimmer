@@ -54,7 +54,10 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   as the web board's Your board and Ranked rows do: the title on up to two lines, then one line
   with the status pill, a *Priority* tag, `#id`, a compact age ("41m", "3h"), the latest PR with
   its CI dot and a notes marker; a star for a favourite; and a snoozed or hidden one adds when
-  the snooze ends. A trashed session reads in the quieter ink.
+  the snooze ends. A trashed session reads in the quieter ink. On *Your board*, as on the web
+  board's, each row also carries the session's "where things stand" as inline markdown on up to
+  three lines, then how current it is (*Up to date*, *Stale* with the messages since, or
+  *Regenerating*), when it was written, and the agent root (`GET /api/v1/sessions?view=user&include=board_row`).
 - **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn or with
   queued messages is refused with the server's reason and stays; the rest go.
 - **Refresh All**, after a confirmation, through `POST /api/v1/sessions/refresh_all`: re-reads

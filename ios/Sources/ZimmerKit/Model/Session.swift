@@ -112,6 +112,9 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var catalogSkills: [String]?
     public var catalogHooks: [String]?
     public var catalogPlugins: [String]?
+    /// What the dashboard's row shows that the session object does not carry, when the list
+    /// was read with `include=board_row` (Your board and Ranked). Not part of `session`.
+    public var boardRow: BoardRow? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, slug, title, status, prompt, goal, favorited, visibility, precedence, effort, config, metadata, genesis
@@ -176,7 +179,8 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var isFavorite: Bool { favorited ?? false }
     public var isPriority: Bool { priorityClass == "priority" }
     public var model: String? { config?.model }
-    public var agentRoot: String? { metadata?.agentRoot }
+    /// The agent root's catalog name: as recorded at creation, else as the server resolves it.
+    public var agentRoot: String? { metadata?.agentRoot ?? boardRow?.agentRoot }
     /// When a person last did something to this session — the web UI's "Last Touched" key,
     /// which falls back to when the session was created.
     public var lastTouchedAt: Date? { metadata?.lastUserActivityAt ?? createdAt }
@@ -366,4 +370,65 @@ struct SessionListResponse: Decodable {
     let pagination: Pagination?
     /// `view=user` / `view=ranked`: more matched than the one page holds.
     let truncated: Bool?
+    /// `include=board_row`, keyed by session id.
+    let board_rows: [String: BoardRow]?
+
+    /// The sessions, each with its board row when the server sent one.
+    var rows: [SessionSummary] {
+        guard let board_rows else { return sessions }
+        return sessions.map { session in
+            var session = session
+            session.boardRow = board_rows[String(session.id)]
+            return session
+        }
+    }
+}
+
+/// What a dashboard row shows that `session` does not carry (`include=board_row`).
+public struct BoardRow: Hashable, Sendable, Codable {
+    public var agentRoot: String?
+    public var statusSummary: StatusSummary?
+
+    public init(agentRoot: String? = nil, statusSummary: StatusSummary? = nil) {
+        self.agentRoot = agentRoot
+        self.statusSummary = statusSummary
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case agentRoot = "agent_root"
+        case statusSummary = "status_summary"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        agentRoot = try? container.decodeIfPresent(String.self, forKey: .agentRoot)
+        statusSummary = try? container.decodeIfPresent(StatusSummary.self, forKey: .statusSummary)
+    }
+}
+
+/// How current a row's status summary is, as the dashboard's chip says it.
+public enum SummaryFreshness: Hashable, Sendable {
+    /// A new one is being written.
+    case regenerating
+    /// Messages landed after it was written: it describes an earlier point.
+    case stale(messages: Int)
+    case current
+
+    public init(_ summary: StatusSummary) {
+        if summary.generating == true {
+            self = .regenerating
+        } else if let behind = summary.messagesSinceGenerated, behind > 0 {
+            self = .stale(messages: behind)
+        } else {
+            self = .current
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .regenerating: return "Regenerating"
+        case .stale: return "Stale"
+        case .current: return "Up to date"
+        }
+    }
 }

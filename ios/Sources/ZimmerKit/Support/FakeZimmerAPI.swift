@@ -480,7 +480,14 @@ extension FakeZimmerAPI {
 // a spot session to the midpoint of the neighbours it was dropped between.
 extension FakeZimmerAPI {
     public func sessions(_ filters: BoardFilters, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
-        let rows = try await sessions(filters, board: board).sessions
+        var rows = try await sessions(filters, board: board).sessions
+        if view == .yourBoard || view == .ranked {
+            rows = rows.map { session in
+                var session = session
+                session.boardRow = BoardRow(agentRoot: session.agentRoot, statusSummary: summaries[session.id])
+                return session
+            }
+        }
         return SessionSearchResult(sessions: view.sections(rows).flatMap(\.sessions))
     }
 

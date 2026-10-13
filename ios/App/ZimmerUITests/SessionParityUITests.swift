@@ -205,6 +205,15 @@ final class BoardViewUITests: XCTestCase {
         XCTAssertTrue(running.exists, "the refused session stays")
     }
 
+    /// Your board's rows carry "where things stand" and how current it is, as the web UI's do.
+    func test_your_board_rows_carry_the_status_summary() throws {
+        let app = launch(["-ZimmerFixtureView", "user"])
+        let summarised = row(app, 1038)
+        XCTAssertTrue(summarised.waitForExistence(timeout: timeout))
+        XCTAssertTrue(summarised.label.contains("needs your go-ahead to merge"), summarised.label)
+        XCTAssertTrue(summarised.label.contains("Up to date"), summarised.label)
+    }
+
     func test_refresh_all_reports_what_it_did() throws {
         let app = launch(["-ZimmerFixtureFilter", "active"])
         app.buttons["board.menu"].tap()
