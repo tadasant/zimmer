@@ -38,6 +38,26 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_includes result, "`zimmer`: 7 record(s) in 2 collection(s), 2 KB"
   end
 
+  test "names each pooled warm clone key and the claim counts" do
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "healthy",
+        warm_clone_pool_health: {
+          scope: "active", window_days: 7, outcome_window_hours: 24,
+          outcomes: { router: { "claimed" => 12, "missed" => 3 }, other: { "claimed" => 5, "missed" => 4 } },
+          targets: [ { repo_url: "https://github.com/acme/internal.git", branch: "main", size: 2, ready: 1, starts: 300, error: nil },
+                     { repo_url: "https://github.com/acme/app.git", branch: "main", size: 1, ready: 0, starts: 30, error: "denied" } ],
+          status: HealthMonitorService::HealthStatus.new(status: :warning, message: "The last refill could not build 1 of 2 pooled keys.")
+        } }
+    )
+
+    result = @tool.call({})
+
+    assert_includes result, "- **Warm clone pool (active scope):** The last refill could not build 1 of 2 pooled keys. " \
+                            "Last 24h: router 12 claimed / 3 missed, other 5 claimed / 4 missed."
+    assert_includes result, "  - `internal@main`: 1/2 ready, 300 starts in 7d"
+    assert_includes result, "  - `app@main`: 0/1 ready, 30 starts in 7d — denied"
+  end
+
   test "include_cli_status appends the cli report" do
     CliStatusService.stubs(:unauthenticated_count).returns(2)
     CliStatusService.stubs(:cached_report).returns({ tools: { claude: { authenticated: false } } })

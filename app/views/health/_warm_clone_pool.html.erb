@@ -1,0 +1,99 @@
+<%# Warm clone pool: what is pooled, how fresh it is, and how often a start claimed a clone. %>
+<%#
+  WarmClonePool.report, wrapped by HealthMonitorService#warm_clone_pool_health.
+  Same object as the REST health report and `get_system_health`, so whether to
+  widen the pool's scope can be decided from any of the three.
+%>
+<% pool = health_report[:warm_clone_pool_health] %>
+<% if pool %>
+<div class="mt-6 bg-white rounded-lg shadow" id="warm-clone-pool">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0">
+        <h3 class="text-lg font-medium text-gray-900">Warm Clone Pool</h3>
+        <p class="mt-1 text-sm text-gray-500">
+          Ready-made git clones a starting session claims instead of cloning.
+          Scope <code class="font-mono text-xs"><%= pool[:scope] || "unknown" %></code>; switch it under
+          <%= link_to "Settings → Experimental", settings_path, class: "text-blue-600 hover:text-blue-800" %>.
+        </p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
+        <%= status_badge(pool[:status]) %>
+      </div>
+    </div>
+  </div>
+
+  <div class="px-4 py-5 sm:p-6">
+    <% outcomes = pool[:outcomes] || {} %>
+    <dl class="grid grid-cols-2 gap-4 mb-6 sm:grid-cols-4">
+      <% [ [ :router, "Router" ], [ :other, "Other roots" ] ].each do |side, label| %>
+        <% counts = outcomes[side] || {} %>
+        <div class="text-center">
+          <dt class="text-sm font-medium text-gray-500"><%= label %> claimed</dt>
+          <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= number_with_delimiter(counts["claimed"].to_i) %></dd>
+        </div>
+        <div class="text-center">
+          <dt class="text-sm font-medium text-gray-500"><%= label %> missed</dt>
+          <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= number_with_delimiter(counts["missed"].to_i) %></dd>
+        </div>
+      <% end %>
+    </dl>
+
+    <p class="text-sm text-gray-600 mb-4 break-words">
+      <%= pool[:status].message %>
+      Counts are session starts in the last <%= pool[:outcome_window_hours] %> hours.
+      <% if (pass = pool[:last_pass]) && pass[:at] %>
+        Last refill <%= time_ago_in_words(pass[:at]) %> ago: <%= pass[:built] %> built, <%= pass[:recycled] %> recycled.
+      <% end %>
+    </p>
+
+    <% if pool[:targets].any? %>
+      <div class="overflow-x-auto -mx-4 sm:mx-0">
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+          <thead>
+            <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th class="px-4 py-2">Repository</th>
+              <th class="px-4 py-2">Ready</th>
+              <th class="px-4 py-2">Newest</th>
+              <th class="px-4 py-2">Starts (<%= pool[:window_days] %>d)</th>
+              <th class="px-4 py-2">Roots</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <% pool[:targets].each do |target| %>
+              <tr>
+                <td class="px-4 py-3 font-mono text-xs text-gray-900 break-all">
+                  <%= File.basename(target[:repo_url].to_s, ".git") %>@<%= target[:branch] %>
+                  <% if target[:error].present? %>
+                    <div class="mt-1 font-sans text-yellow-700 break-words"><%= target[:error] %></div>
+                  <% end %>
+                </td>
+                <td class="px-4 py-3 text-gray-600 whitespace-nowrap"><%= target[:ready] %> / <%= target[:size] %></td>
+                <td class="px-4 py-3 text-gray-600 whitespace-nowrap">
+                  <%= target[:newest_age_seconds] ? "#{distance_of_time_in_words(target[:newest_age_seconds])} old" : "—" %>
+                </td>
+                <td class="px-4 py-3 text-gray-600"><%= number_with_delimiter(target[:starts]) %></td>
+                <td class="px-4 py-3 text-gray-600 break-words"><%= target[:roots].keys.first(5).join(", ") %><%= " +#{target[:roots].size - 5}" if target[:roots].size > 5 %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% end %>
+
+    <% if pool[:passed_over].any? %>
+      <details class="mt-4 text-sm text-gray-600">
+        <summary class="cursor-pointer">Ranked and not pooled (<%= pool[:passed_over].size %>)</summary>
+        <ul class="mt-2 list-disc pl-5">
+          <% pool[:passed_over].each do |candidate| %>
+            <li class="break-words">
+              <code class="font-mono text-xs"><%= File.basename(candidate[:repo_url].to_s, ".git") %>@<%= candidate[:branch] %></code>:
+              <%= candidate[:starts] %> starts — <%= candidate[:reason] %>
+            </li>
+          <% end %>
+        </ul>
+      </details>
+    <% end %>
+  </div>
+</div>
+<% end %>
