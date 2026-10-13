@@ -122,7 +122,8 @@ class Api::V1::SessionsController < Api::BaseController
 
     render json: {
       sessions: result[:records].map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
-      pagination: result[:pagination]
+      pagination: result[:pagination],
+      **board_rows(result[:records])
     }
   end
 
@@ -1252,7 +1253,8 @@ class Api::V1::SessionsController < Api::BaseController
         query: query,
         search_contents: false,
         sessions: result[:records].map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
-        pagination: result[:pagination]
+        pagination: result[:pagination],
+        **board_rows(result[:records])
       }
       return
     end
@@ -1266,6 +1268,7 @@ class Api::V1::SessionsController < Api::BaseController
       query: query,
       search_contents: true,
       sessions: sessions.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
+      **board_rows(sessions),
       pagination: {
         page: 1,
         per_page: per_page,
@@ -1304,8 +1307,30 @@ class Api::V1::SessionsController < Api::BaseController
     render json: {
       sessions: rows.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
       pagination: { page: 1, per_page: limit, total_count: scope.count, total_pages: 1 },
-      truncated: fetched.size > limit
+      truncated: fetched.size > limit,
+      **board_rows(rows)
     }
+  end
+
+  # What a dashboard row shows that the `session` object does not carry — the
+  # agent root's catalog name and the cached status summary — keyed by id, when
+  # the caller asks with `include=board_row`. A sibling of `sessions` for the
+  # reason `status_summary` is one on #show: `session` keeps one shape everywhere.
+  # The summaries are read in one query for the page, as the dashboard's rows read
+  # them off an eager load.
+  #
+  # @param records [Array<Session>]
+  # @return [Hash] `{ board_rows: { "<id>" => {...} } }`, or `{}` when not asked
+  def board_rows(records)
+    included = Array.wrap(params[:include]).flat_map { |value| value.to_s.split(",") }.map(&:strip)
+    return {} unless included.include?("board_row")
+
+    records = records.to_a
+    ActiveRecord::Associations::Preloader.new(records: records, associations: :status_summary).call
+    rows = records.to_h do |session|
+      [ session.id.to_s, { agent_root: session.agent_root_key, status_summary: session_status_summary_json(session) } ]
+    end
+    { board_rows: rows }
   end
 
   # The dashboard's User-view cap, which MCP `get_user_view` reads too.
