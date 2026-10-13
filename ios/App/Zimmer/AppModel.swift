@@ -58,6 +58,9 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
     /// since a UI test cannot drive the system photo and file pickers.
     var fixtureAttachesFile = false
+    /// `-ZimmerFixtureCustomSnooze`: the opened session's custom snooze sheet starts open, so
+    /// `ios/bin/ui-test` can photograph the date picker.
+    var fixtureOpensCustomSnooze = false
 
     let environment: AppEnvironment
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
@@ -105,6 +108,7 @@ final class AppModel: ObservableObject {
         if arguments.contains("-ZimmerFixtureQuickRouter") { showingQuickRouter = true }
         if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
+        fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
         func value(_ flag: String) -> String? {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
@@ -269,6 +273,20 @@ final class AppModel: ObservableObject {
             let summary = try await connection.api.refreshAll()
             await refresh()
             notice = summary
+            Haptics.success()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
+    /// An action the server answers with a sentence rather than the session — a row's
+    /// *Refresh Transcript* — then the list as it now stands, and the sentence as the toast.
+    func run(_ action: (ZimmerAPI) async throws -> String) async {
+        do {
+            let message = try await action(connection.api)
+            await refresh()
+            notice = message
             Haptics.success()
         } catch {
             handle(error)

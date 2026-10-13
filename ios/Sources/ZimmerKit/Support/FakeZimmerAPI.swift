@@ -145,6 +145,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
         }
         session.status = .archived
         session.archivedAt = Date()
+        // The server holds the clone for `TRASH_RETENTION_PERIOD`, four days, for a restore.
+        session.trashAfter = Date().addingTimeInterval(4 * 86_400)
         session.updatedAt = Date()
         replace(session)
         return session
@@ -204,7 +206,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// one finished. Times are relative to `now` so a screenshot never shows a stale date.
     public static func sampleSessions(now: Date = Date()) -> [SessionSummary] {
         func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
-        return [
+        return ran(trashed([
             SessionSummary(id: 1042, title: "Add a CarPlay scene to the iOS app", status: .running,
                            agentRuntime: "claude_code", createdAt: ago(90), updatedAt: ago(2),
                            priorityClass: "spot", precedence: 30, lastUserActivityAt: ago(70)),
@@ -251,7 +253,28 @@ public actor FakeZimmerAPI: ZimmerAPI {
             SessionSummary(id: 1019, title: "Fix the flaky transcript poller test", status: .archived,
                            agentRuntime: "claude_code", createdAt: ago(2_000), updatedAt: ago(1_400),
                            archivedAt: ago(1_400)),
-        ]
+        ]))
+    }
+
+    /// Every sample but the sweep (1031, held at the starting line) has had its agent launch,
+    /// so a restart from Needs input continues its conversation rather than starting over.
+    private static func ran(_ sessions: [SessionSummary]) -> [SessionSummary] {
+        sessions.map { session in
+            var session = session
+            if session.id != 1031 { session.runtimeSessionID = "fixture-\(session.id)" }
+            return session
+        }
+    }
+
+    /// The trashed sample keeps its clone for a restore, until four days after it was trashed.
+    private static func trashed(_ sessions: [SessionSummary]) -> [SessionSummary] {
+        sessions.map { session in
+            var session = session
+            if session.status == .archived, let archivedAt = session.archivedAt {
+                session.trashAfter = archivedAt.addingTimeInterval(4 * 86_400)
+            }
+            return session
+        }
     }
 
     /// The failure the web UI's failure details read: a reason, an exception, an exit status.
@@ -373,6 +396,7 @@ extension FakeZimmerAPI {
         try change(id, refusal: "Session is not in trash", when: { $0.status != .archived }) {
             $0.status = .needsInput
             $0.archivedAt = nil
+            $0.trashAfter = nil
         }
     }
 
@@ -448,6 +472,14 @@ extension FakeZimmerAPI {
 
     public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {
         try change(id) { $0.heartbeatEnabled = enabled }
+    }
+
+    /// As `Sessions::UpdateHeartbeat`: 30 seconds to a day, and on or off is left as it is.
+    public func setHeartbeatInterval(_ id: Int, seconds: Int) async throws -> SessionSummary {
+        guard (30...86_400).contains(seconds) else {
+            throw ZimmerError.http(status: 422, message: "Heartbeat interval seconds must be between 30 and 86400")
+        }
+        return try change(id) { $0.heartbeatIntervalSeconds = seconds }
     }
 
     public func transcriptText(_ id: Int) async throws -> String {

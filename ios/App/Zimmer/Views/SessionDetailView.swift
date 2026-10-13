@@ -302,6 +302,11 @@ struct SessionDetailView: View {
     @State private var forcing: (victim: Int, confirm: String)?
     /// A banner's action is in flight.
     @State private var acting = false
+    /// The snooze menu's *Custom…*, open in its sheet.
+    @State private var customSnoozing = false
+    /// A restart that takes this session over, waiting on its confirmation: the web UI's words
+    /// for what it will do.
+    @State private var confirmingRestart: String?
     @Environment(\.scenePhase) private var scenePhase
     /// Where the end of the conversation sits in the scroll view, and how tall the view is:
     /// new messages are followed only while the end is in view, so reading back is never
@@ -355,6 +360,26 @@ struct SessionDetailView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await model.poll() } }
+        }
+        .sheet(isPresented: $customSnoozing) {
+            CustomSnoozeSheet { until in
+                let label = until.formatted(date: .abbreviated, time: .shortened)
+                let id = model.id
+                return await model.apply("Snoozed until \(label)") { try await $0.setVisibility(id, .snoozed(until: until)) }
+            }
+        }
+        .confirmationDialog(
+            "Restart this session?",
+            isPresented: Binding(get: { confirmingRestart != nil }, set: { if !$0 { confirmingRestart = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Restart") {
+                let id = model.id
+                Task { await model.apply("Restarted") { try await $0.restart(id) } }
+            }
+        } message: {
+            // The web page's own confirm text for this session's restart.
+            Text(confirmingRestart ?? "")
         }
     }
 
@@ -482,6 +507,10 @@ struct SessionDetailView: View {
             if app.fixtureAttachesFile {
                 app.fixtureAttachesFile = false
                 model.attach([MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8))])
+            }
+            if app.fixtureOpensCustomSnooze {
+                app.fixtureOpensCustomSnooze = false
+                customSnoozing = true
             }
         }
         .onDisappear {
@@ -613,6 +642,10 @@ struct SessionDetailView: View {
                 VisibilityLabel(session: session)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Theme.snooze)
+                TrashExpiryLabel(session: session, withTime: true)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.inkSoft)
+                    .accessibilityIdentifier("detail.trashexpiry")
             }
             metadataLine(session)
         }
@@ -680,6 +713,7 @@ struct SessionDetailView: View {
                                 Task { await model.apply("Snoozed until \(until)") { try await $0.setVisibility(session.id, .snoozed(until: preset.until)) } }
                             }
                         }
+                        Button("Custom…") { customSnoozing = true }
                     } label: {
                         Label("Snooze until…", systemImage: "moon.zzz")
                     }
@@ -721,7 +755,13 @@ struct SessionDetailView: View {
                 }
                 if session.status == .failed || session.status == .needsInput {
                     Button {
-                        Task { await model.apply("Restarted") { try await $0.restart(session.id) } }
+                        // A failed session restarts at once; one waiting on you is taken over,
+                        // so the web UI asks first.
+                        if let confirmation = session.restartConfirmation {
+                            confirmingRestart = confirmation
+                        } else {
+                            Task { await model.apply("Restarted") { try await $0.restart(session.id) } }
+                        }
                     } label: {
                         Label("Restart Session", systemImage: "arrow.clockwise.circle")
                     }
@@ -776,12 +816,7 @@ struct SessionDetailView: View {
                         Label("Promote to priority", systemImage: "arrow.up.circle")
                     }
                 }
-                Button {
-                    let enabled = !(session.heartbeatEnabled ?? false)
-                    Task { await model.apply(enabled ? "Heartbeat on" : "Heartbeat off") { try await $0.setHeartbeat(session.id, enabled: enabled) } }
-                } label: {
-                    Label((session.heartbeatEnabled ?? false) ? "Turn Heartbeat Off" : "Turn Heartbeat On", systemImage: "heart")
-                }
+                heartbeatMenu(session)
                 if model.detail?.statusSummary?.summary == nil {
                     Button {
                         Task { await model.run { try await $0.regenerateStatusSummary(session.id) } }
@@ -798,6 +833,39 @@ struct SessionDetailView: View {
         }
         .accessibilityLabel("Session actions")
         .accessibilityIdentifier("detail.actions")
+    }
+
+    /// The web UI's heart and its popout: on or off, and "Beat every" from its intervals. When
+    /// on, a session waiting for input is nudged to keep working toward its goal on that
+    /// cadence. A new interval leaves the heartbeat on or off, as the popout's select does.
+    private func heartbeatMenu(_ session: SessionSummary) -> some View {
+        let enabled = session.heartbeatEnabled ?? false
+        let interval = Binding<Int>(
+            get: { session.heartbeatInterval },
+            set: { seconds in
+                Task {
+                    await model.apply("Heartbeat every \(HeartbeatInterval.label(for: seconds))") { try await $0.setHeartbeatInterval(session.id, seconds: seconds) }
+                }
+            }
+        )
+        return Menu {
+            Button {
+                Task { await model.apply(enabled ? "Heartbeat off" : "Heartbeat on") { try await $0.setHeartbeat(session.id, enabled: !enabled) } }
+            } label: {
+                Label(enabled ? "Turn Off" : "Turn On", systemImage: enabled ? "heart.slash" : "heart")
+            }
+            Picker("Beat every", selection: interval) {
+                ForEach(HeartbeatInterval.choices(including: session.heartbeatInterval)) { option in
+                    Text(option.label).tag(option.seconds)
+                }
+            }
+            .pickerStyle(.menu)
+        } label: {
+            Label(
+                enabled ? "Heartbeat: every \(HeartbeatInterval.label(for: session.heartbeatInterval))" : "Heartbeat: off",
+                systemImage: enabled ? "heart.fill" : "heart"
+            )
+        }
     }
 
     @ViewBuilder

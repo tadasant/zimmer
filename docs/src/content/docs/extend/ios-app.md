@@ -47,7 +47,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   as the web board's Your board and Ranked rows do: the title on up to two lines, then one line
   with the status pill, a *Priority* tag, `#id`, a compact age ("41m", "3h"), the latest PR with
   its CI dot and a notes marker; a star for a favourite; and a snoozed or hidden one adds when
-  the snooze ends. A trashed session reads in the quieter ink.
+  the snooze ends. A trashed session reads in the quieter ink and says when the trash deletes
+  what it holds for a restore ("Deleted on Oct 16", from `trash_after`; "Deletion pending" once
+  that date has passed), where the web page says "Expires 3 days from now".
 - **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn or with
   queued messages is refused with the server's reason and stays; the rest go.
 - **Refresh All**, after a confirmation, through `POST /api/v1/sessions/refresh_all`: re-reads
@@ -58,8 +60,18 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   scan, and the list says so when the scan stopped before reading every session).
 - **Acts on a row.** Swipe right to star or unstar. Swipe left to trash (or restore, in Archived)
   and to snooze (*Later today*, *Tomorrow*, *In 3 days*, *This weekend*, *Next week*, the web UI's
-  presets, worked out in the phone's time zone) or hide. Press and hold for the rest: pause,
-  restart, view the PR, open the session in the browser.
+  presets, worked out in the phone's time zone; or *Custom…*, a date and time of your own from
+  the next whole minute on, the web menu's picker) or hide. Press and hold for the rest: pause,
+  restart, rename, *Refresh Transcript* (not on a running session, which is live already, as the
+  web card hides its refresh), view the PR, open the session in the browser.
+- **Asks before a restart that takes a session over.** Restarting a failed session goes at once.
+  Restarting one waiting on you takes it over, so the app asks first in the web UI's words for
+  what the restart will do: send an automated "continue" into its conversation, re-send a prompt
+  its turn never delivered, or start over when its setup never finished. The server does not send
+  its answer, so the app works it out from the fields it is made from (`session_id`,
+  `metadata.clone_path`, `metadata.failure_reason`, `prompt`); the server's "never ran" also
+  checks that no transcript was stored, which the API does not say, and the app reads a blank
+  `session_id` for both.
 - **Opens a session**, laid out the way the web UI's phone page is: the title, then one line of
   chips (status, priority class, `#id` and age, each PR coloured by state with its CI dot, board
   visibility) and one line of what runs it (agent root, runtime, model, effort). Then *Where
@@ -116,8 +128,11 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   Transcript, Copy Transcript (the whole transcript as text), Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
   edit: Rename, Modify Goal, Effort (the levels the session's model accepts, or the model
   default), Model (the models the session's runtime lists), MCP Servers, Skills, Hooks and Plugins
-  (each a checklist of its catalog, from the next turn), Promote to priority / Demote to spot (to the head of the spot queue), the heartbeat on
-  or off, Generate Status Summary when there is none, and Open in browser. A promotion that could
+  (each a checklist of its catalog, from the next turn), Promote to priority / Demote to spot (to the head of the spot queue), the
+  heartbeat (the web's heart and its popout: on or off, and *Beat every* from 30 seconds to an
+  hour, `PATCH /api/v1/sessions/:id/heartbeat` with `interval_seconds`, which leaves it on or off
+  as it is), Generate Status Summary when there is none, and Open in browser. *Snooze until…*
+  ends in *Custom…*, as on the row. A trashed session's header says when it is deleted. A promotion that could
   not start the session says why. The star and the trash (or restore) are in the toolbar.
 - **Sends a follow-up** from a box at the bottom, with quick replies for the common answers. A
   follow-up to a session mid-turn is queued, and the app says so; touch and hold the button to
@@ -132,9 +147,12 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   The web UI streams these changes; the app asks, so a change can take that long to show. A session
   opens at its newest message, as the web UI's transcript does, and follows new ones while you are
   at the end; scrolled back, it stays where you are.
-- **Attaches photos and files** to a message with the paperclip beside the box: *Photo Library* or
-  *Choose Files*, up to 20 and 75 MB altogether, shown as chips you can remove before sending. Photos
-  go as JPEG, scaled down if needed to fit the 10 MB image limit; the library's own HEIC is not a
+- **Attaches photos and files** to a message with the paperclip beside the box: *Take Photo* (the
+  rear camera, the web composer's camera button; not offered on a device without one, such as the
+  simulator), *Photo Library*, *Choose Files*, or *Paste Image* when the clipboard holds one (the
+  web composer takes a pasted image; iOS asks whether Zimmer may paste from the app it came
+  from), up to 20 and 75 MB altogether, shown as chips you can remove before sending. Photos,
+  taken or pasted, go as JPEG, scaled down if needed to fit the 10 MB image limit; the library's own HEIC is not a
   type the server keeps as an image. A file from Files whose bytes are a PNG, JPEG, GIF or WebP goes
   as an image, anything else as a file the agent is told to read, as the web composer's two pickers
   send them. Anything that would be refused, or could not be read, is named rather than dropped
@@ -179,7 +197,10 @@ of them widened what the phone can do on the server.
 *Reprioritize* and *Authorize merge* are not in the app yet. Fork from a message and answering an
 elicitation each need a server change first — the conversation endpoint does not say where a
 message sits in the transcript the fork service counts, and no route lists a session's pending
-elicitations — and come in their own change. The admin pages (API keys, inference accounts, connectors,
+elicitations — and come in their own change. So does the rest of the web card's refresh: on the
+web it also resumes a failed session and sends the continue nudge to a stalled waiting one, but
+`POST /api/v1/sessions/:id/refresh` only re-reads the transcript, so the row's refresh is
+*Refresh Transcript* and a failed session is restarted with *Restart Session*. The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.
 
 ## Two origins
