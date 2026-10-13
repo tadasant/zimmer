@@ -54,12 +54,23 @@ module WarmPoolPolicy
   # to matter.
   BUSY_STARTS = 150
 
-  # The most clones `active` keeps of one key.
-  MAX_PER_KEY = 2
+  # Clones a busy key gets under `active`, unless QUICK_ROUTER_WARM_CLONES
+  # already gives every key more.
+  BUSY_SIZE = 2
+
+  # A key that is pooled already stays pooled down to this many starts, and
+  # ranks as though its score were INCUMBENT_BONUS times higher. Scores decay
+  # continuously and the plan is rebuilt every CACHE_TTL, so without the margin a
+  # key at MIN_STARTS or at the cap would drop in and out — and every drop deletes
+  # its clones, which the next rise rebuilds from the git host.
+  INCUMBENT_MIN_STARTS = 4
+  INCUMBENT_BONUS = 1.25
 
   # The most clones `active` keeps altogether. WARM_CLONE_POOL_MAX_CLONES overrides.
   DEFAULT_MAX_CLONES = 10
 
+  # How long a plan is reused. Also how long a catalog change — a root's url,
+  # its default branch, which name the router answers to — takes to reach it.
   CACHE_TTL = 5.minutes
 
   # One pooled key.
@@ -87,28 +98,35 @@ module WarmPoolPolicy
 
   # The keys to keep clones of, in the order they are built.
   # @param base_size [Integer] WarmClonePool.size, the router-scope clone count
+  # @param scope [String] the scope already read, so a caller that has one does
+  #   not read the settings row twice
   # @return [Array<Target>]
-  def targets(base_size:)
+  def targets(base_size:, scope: self.scope)
     return [] unless base_size.positive?
 
-    plan(base_size: base_size)[:targets].map { |attrs| Target.new(**attrs) }
+    plan(base_size: base_size, scope: scope)[:targets].map { |attrs| Target.new(**attrs) }
   end
 
-  # Targets plus what was ranked and left out, for the health report.
+  # Targets plus what was ranked and left out.
+  #
+  # `ranked: true` is the health report's: it ranks under `router` too, so the
+  # report can show what `active` would pool before anyone turns it on. Every
+  # other caller leaves it false, and under `router` the plan is then the router
+  # root's catalog entry and nothing else — no query, as before the policy
+  # existed, since `serves?` asks on every session start.
+  #
   # @return [Hash] { scope:, max_clones:, targets: [Hash], passed_over: [Hash] }
-  def plan(base_size:)
-    current_scope = scope
-    Rails.cache.fetch([ "warm_pool_policy", current_scope, base_size, max_clones ], expires_in: CACHE_TTL) do
-      build_plan(current_scope, base_size)
+  def plan(base_size:, scope: self.scope, ranked: false)
+    ranked ||= scope == "active"
+    Rails.cache.fetch([ "warm_pool_policy", scope, ranked, base_size, max_clones ], expires_in: CACHE_TTL) do
+      build_plan(scope, base_size, ranked: ranked)
     end
   end
 
-  def build_plan(current_scope, base_size, now: Time.current)
+  def build_plan(current_scope, base_size, ranked: true, now: Time.current)
     roots = AgentRootsConfig.all
     router = router_target(roots, base_size)
-    # Ranked under either scope, so the health report can show what `active`
-    # would pool before anyone turns it on.
-    ranked = rank(roots, now: now)
+    ranked = ranked ? rank(roots, now: now) : []
 
     targets = []
     passed_over = []
@@ -131,9 +149,9 @@ module WarmPoolPolicy
       clones += router[:size]
     end
 
-    ranked.each do |candidate|
+    ranked.sort_by { |candidate| [ -effective_score(candidate), candidate[:repo_url], candidate[:branch] ] }.each do |candidate|
       candidate = candidate.except(:size)
-      if candidate[:starts] < MIN_STARTS
+      if candidate[:starts] < (pooled?(candidate) ? INCUMBENT_MIN_STARTS : MIN_STARTS)
         passed_over << candidate.merge(reason: "fewer than #{MIN_STARTS} starts in #{WINDOW.inspect}")
         next
       end
@@ -158,12 +176,20 @@ module WarmPoolPolicy
 
   # The router root's key, exactly as the router-only pool always had it.
   def router_target(roots, base_size)
-    name = AgentRootsConfig.router_root_name
-    root = ArtifactIdentity.find(roots, name)
+    root = ArtifactIdentity.find(roots, AgentRootsConfig.router_root_name)
     return nil if root.nil? || root.url.blank?
 
     { repo_url: root.url, branch: root.default_branch.presence || "main", size: base_size,
-      roots: { name => 0 }, starts: 0, score: 0.0 }
+      roots: { root.name => 0 }, starts: 0, score: 0.0 }
+  end
+
+  # Whether the pool holds this key already. A directory listing, once per plan.
+  def pooled?(candidate)
+    Dir.exist?(WarmClonePool.key_dir(candidate[:repo_url], candidate[:branch]))
+  end
+
+  def effective_score(candidate)
+    pooled?(candidate) ? candidate[:score] * INCUMBENT_BONUS : candidate[:score]
   end
 
   # Every catalog key that started a session in WINDOW, highest score first.
@@ -200,6 +226,6 @@ module WarmPoolPolicy
   end
 
   def size_for(starts, base_size)
-    starts >= BUSY_STARTS ? [ base_size, MAX_PER_KEY ].max : base_size
+    starts >= BUSY_STARTS ? [ base_size, BUSY_SIZE ].max : base_size
   end
 end

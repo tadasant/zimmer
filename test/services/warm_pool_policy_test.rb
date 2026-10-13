@@ -31,10 +31,20 @@ class WarmPoolPolicyTest < ActiveSupport::TestCase
     ENV["WARM_CLONE_POOL_MAX_CLONES"] = @previous_max
   end
 
-  test "the router scope is the router's key alone, at the base size, whatever else is busy" do
+  test "the router scope is the router's key alone, read from the catalog without a query" do
     record_starts("zimmer", 40)
+    Session.expects(:where).never
 
     plan = WarmPoolPolicy.plan(base_size: 1)
+
+    assert_equal [ [ ROUTER, "main", 1 ] ], plan[:targets].map { |t| t.values_at(:repo_url, :branch, :size) }
+    assert_empty plan[:passed_over]
+  end
+
+  test "ranked under the router scope, the plan shows what active would add, and still pools the router alone" do
+    record_starts("zimmer", 40)
+
+    plan = WarmPoolPolicy.plan(base_size: 1, ranked: true)
 
     assert_equal "router", plan[:scope]
     assert_equal [ [ ROUTER, "main", 1 ] ], plan[:targets].map { |t| t.values_at(:repo_url, :branch, :size) }
@@ -107,7 +117,7 @@ class WarmPoolPolicyTest < ActiveSupport::TestCase
     assert_equal "over the 3-clone cap", plan[:passed_over].sole[:reason]
   end
 
-  test "a base size above MAX_PER_KEY is kept, never lowered" do
+  test "a base size above BUSY_SIZE is kept, never lowered" do
     activate!
     record_starts("zimmer", 20)
 
@@ -148,6 +158,39 @@ class WarmPoolPolicyTest < ActiveSupport::TestCase
     assert_equal 30, WarmPoolPolicy.max_clones
     ENV["WARM_CLONE_POOL_MAX_CLONES"] = "many"
     assert_equal WarmPoolPolicy::DEFAULT_MAX_CLONES, WarmPoolPolicy.max_clones
+  end
+
+  test "a key already pooled stays pooled below MIN_STARTS, down to INCUMBENT_MIN_STARTS" do
+    activate!
+    record_starts("zimmer", WarmPoolPolicy::INCUMBENT_MIN_STARTS)
+    assert_equal [ ROUTER ], WarmPoolPolicy.plan(base_size: 1)[:targets].map { |t| t[:repo_url] }
+
+    WarmPoolPolicy.stubs(:pooled?).returns(false)
+    WarmPoolPolicy.stubs(:pooled?).with(has_entry(repo_url: APP)).returns(true)
+    assert_equal [ ROUTER, APP ], WarmPoolPolicy.plan(base_size: 1)[:targets].map { |t| t[:repo_url] }
+  end
+
+  test "at the cap, a key already pooled keeps its place against a slightly busier newcomer" do
+    activate!
+    ENV["WARM_CLONE_POOL_MAX_CLONES"] = "2"
+    record_starts("wedding-website", 11)
+    record_starts("zimmer", 10)
+    WarmPoolPolicy.stubs(:pooled?).returns(false)
+    WarmPoolPolicy.stubs(:pooled?).with(has_entry(repo_url: APP)).returns(true)
+
+    plan = WarmPoolPolicy.plan(base_size: 1)
+
+    assert_equal [ ROUTER, APP ], plan[:targets].map { |t| t[:repo_url] }
+    assert_equal [ SITE ], plan[:passed_over].map { |t| t[:repo_url] }
+  end
+
+  test "the cached plan is keyed by scope, so flipping the toggle takes effect at once" do
+    Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
+    record_starts("zimmer", 20)
+
+    assert_equal [ ROUTER ], WarmPoolPolicy.plan(base_size: 1)[:targets].map { |t| t[:repo_url] }
+    activate!
+    assert_equal [ ROUTER, APP ], WarmPoolPolicy.plan(base_size: 1)[:targets].map { |t| t[:repo_url] }
   end
 
   private

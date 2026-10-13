@@ -8013,6 +8013,10 @@ it:
   starts can still leave a Quick Router request to clone cold.
 - **Only the default branch.** A key is a root's catalog `url` and `default_branch`. A session started
   on any other branch clones cold.
+- **The first pass after turning it on is slow.** A refill builds keys one after another, and
+  `WarmClonePoolReplenishJob` runs one at a time. The first pass under `active` can spend minutes
+  building up to ten clones. Refills that claims enqueue during that pass are absorbed, so a claimed
+  clone is replaced on the next one-minute tick after the pass ends.
 
 ## A `sync: true` MCP call holds a web thread, and only one runs at a time
 
