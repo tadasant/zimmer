@@ -87,4 +87,28 @@ class Api::V1::SessionsBoardFiltersTest < ActionDispatch::IntegrationTest
     assert_equal SessionGenesis::KEYS, geneses.map { |g| g["key"] }
     assert_equal SessionGenesis::KINDS.first.label, geneses.first["label"]
   end
+
+  test "the Archived chip's query, status=archived with show_archived, lists the trash" do
+    make("asked", status: :needs_input)
+    make("binned", status: :archived)
+
+    assert_equal %w[binned], titles("/api/v1/sessions", status: "archived", show_archived: "true")
+  end
+
+  test "combined filters apply to the User view too" do
+    make("asked priority", status: :needs_input, scheduling_class: "priority", root: @root.name)
+    make("asked spot", status: :needs_input, scheduling_class: "spot", root: @root.name)
+
+    assert_equal [ "asked priority" ], titles("/api/v1/sessions", view: "user", status: "needs_input", priority_class: "priority")
+  end
+
+  test "search refuses an unknown status, and a status that is not a list, with a 422" do
+    get "/api/v1/sessions/search", params: { q: "x", status: "sleeping" }, headers: @headers
+    assert_response :unprocessable_entity
+
+    get "/api/v1/sessions", params: { status: { a: "needs_input" } }, headers: @headers
+    assert_response :unprocessable_entity
+    assert_match(/a status or a list/, JSON.parse(response.body)["message"])
+  end
 end
+

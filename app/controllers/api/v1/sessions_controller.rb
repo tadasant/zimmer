@@ -1508,17 +1508,17 @@ class Api::V1::SessionsController < Api::BaseController
     render json: { session: session_json(session.reload), message: "Session restarted from scratch" }
   end
 
-  # Board visibility — the presentation-only axis — applied to a listing scope.
-  #
-  # OPTIONAL, and unfiltered when the caller says nothing. Both listings are read
-  # by agents as often as by the dashboard, and an agent checking whether a piece
-  # of work already has a session must not have that session hidden from it
-  # because a human tidied their board: that produces duplicate work with no
-  # visible cause. An unrecognized value narrows nothing, for the same reason.
   # The dashboard's board filters, shared by #index and #search so the two cannot
   # disagree, and all combinable: statuses (any number), runtime, agent root,
   # scheduling class, genesis and board visibility. Archived sessions are left out
   # unless asked for — by show_archived, or by naming archived among the statuses.
+  # That is where this differs from the dashboard, which reads ticking no status as
+  # every status, archived included: here no status keeps this listing's
+  # long-standing default, the sessions that are not in the trash.
+  #
+  # Only `status` is strict. A misspelled status used to filter on nonsense and
+  # answer "nothing found", which reads as a missing session; an unknown class,
+  # genesis or visibility narrows nothing, as it always has.
   #
   # @raise [BoardFilterError] on a status that is not one
   def apply_board_filters(scope)
@@ -1542,7 +1542,10 @@ class Api::V1::SessionsController < Api::BaseController
 
   # `status` as a list: repeated (`status[]=`), comma-separated, or a single value.
   def requested_statuses
-    statuses = Array(params[:status]).flat_map { |value| value.to_s.split(",") }.map(&:strip).reject(&:blank?).uniq
+    raw = params[:status]
+    raise BoardFilterError, "status must be a status or a list of them" if raw.is_a?(ActionController::Parameters) || raw.is_a?(Hash)
+
+    statuses = Array(raw).flat_map { |value| value.to_s.split(",") }.map(&:strip).reject(&:blank?).uniq
     unknown = statuses - Session.statuses.keys
     if unknown.any?
       raise BoardFilterError, "Unknown status #{unknown.join(', ')}. Valid: #{Session.statuses.keys.join(', ')}."
@@ -1551,6 +1554,13 @@ class Api::V1::SessionsController < Api::BaseController
     statuses
   end
 
+  # Board visibility — the presentation-only axis — applied to a listing scope.
+  #
+  # OPTIONAL, and unfiltered when the caller says nothing. Both listings are read
+  # by agents as often as by the dashboard, and an agent checking whether a piece
+  # of work already has a session must not have that session hidden from it
+  # because a human tidied their board: that produces duplicate work with no
+  # visible cause. An unrecognized value narrows nothing, for the same reason.
   def apply_visibility_filter(scope)
     case params[:visibility].to_s
     when SessionVisibility::FILTER_ON_BOARD then scope.board_visible
