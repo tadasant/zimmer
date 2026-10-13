@@ -14,6 +14,7 @@ module Mcp
     # self-management subset; the action bodies below are the single copy.
     class ActionSession < Tool
       include PrecedenceArgument
+      include SyncMode
 
       tool_name "action_session"
 
@@ -162,7 +163,7 @@ module Mcp
         Perform an action on an agent session.
 
         **Actions:**
-        - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one.
+        - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one. Pass "sync": true to wait for the session's answer to THIS prompt and get it back inline (reply text, sessions it started, resulting status) instead of polling `get_session` — a queued prompt is waited on through the turn ahead of it, and the wait is capped at #{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}s ("sync_timeout_seconds"), after which you get the session's state so far.
         - **pause**: Pause a running session, transitioning it to idle "needs_input" status
         - **pause_into_spot_queue**: Put this session to sleep in the spot queue instead of at a wall-clock time — the counterpart of `wake_me_up_later` when there is no time worth naming. The session goes dormant in "waiting" with NO wake-up trigger and no time attached, and resumes when the spot scheduler reaches it: a Claude Code account under both quota targets, a free session slot, highest precedence first. Any unfired one-time wake this session had is cancelled, since it was replaced by this. A session that resolves to "priority" is set to "spot" (a priority session cannot sit in the queue) — reverse it with `change_scheduling_class`, which resumes it on the next sweep. Optionally takes "prompt": what the session should be resumed with, in place of the default recovery nudge. A running session sleeps when its current turn ends, not mid-turn — pass "halt": true to stop the turn where it stands instead. Only use "halt" on a session that is NOT you: it terminates the agent process, so a session halting itself never gets a reply to this call. Any message still queued for the session waits with it, and unlike a timed pause nothing bounds how long — drain the queue first if that matters. Use this instead of a made-up wake time when the answer to "when should this come back" is "whenever there is quota headroom for it".
         - **restart**: Restart an idle or failed session without providing new input. On a connection restricted to specific agent roots, only sessions belonging to one of those roots can be restarted
@@ -245,7 +246,9 @@ module Mcp
           timezone: { type: "string", description: TIMEZONE_DESC },
           uncle_session_id: { type: [ "number", "string" ], description: UNCLE_SESSION_ID_DESC },
           acting_session_id: { type: [ "number", "string" ], description: ACTING_SESSION_ID_DESC },
-          expected_victim_id: { type: [ "number", "string" ], description: EXPECTED_VICTIM_ID_DESC }
+          expected_victim_id: { type: [ "number", "string" ], description: EXPECTED_VICTIM_ID_DESC },
+          sync: { type: "boolean", description: "Optional for \"follow_up\". #{SyncMode::SYNC_DESC}" },
+          sync_timeout_seconds: { type: "number", description: SyncMode::SYNC_TIMEOUT_DESC }
         },
         required: [ "action" ]
       })
@@ -382,6 +385,8 @@ module Mcp
         if goal != session.goal && GoalsConfig.unknown_id?(goal)
           raise ToolError, GoalsConfig.unknown_id_message(goal)
         end
+        wait_for = follow_up_sync_wait(session, args)
+        @queued_follow_up = nil
 
         # The edge is recorded only after the message has actually landed — every
         # branch below raises rather than returning on failure, so an edge is
@@ -391,21 +396,44 @@ module Mcp
         # transaction instead: it enqueues the job that will build the very next
         # prompt, and a job that starts before the edge is visible would render a
         # hierarchy missing exactly the human context the edge exists to carry.
-        if boolean(args["force_immediate"])
-          force_immediate_follow_up(session, prompt, goal).tap do
-            record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
+        direct_waiter = nil
+        text =
+          if boolean(args["force_immediate"])
+            force_immediate_follow_up(session, prompt, goal).tap do
+              record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
+            end
+          elsif Sessions::LiveTurn.underway?(session)
+            # `underway?` and not `session.running?`: since #1040 a turn that has been
+            # handed over but is still queued for one of the `agents` lane's worker
+            # threads reads `waiting`, and sending it down the direct branch would
+            # enqueue a rival job against one clone (#400).
+            queue_follow_up(session, prompt, goal).tap do
+              record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
+            end
+          else
+            # Coordinates read before the send, while nothing of this turn exists.
+            direct_waiter = Sessions::SyncReply.direct(session, prompt: prompt) if wait_for
+            direct_follow_up(session, prompt, goal, args)
           end
-        elsif Sessions::LiveTurn.underway?(session)
-          # `underway?` and not `session.running?`: since #1040 a turn that has been
-          # handed over but is still queued for one of the `agents` lane's worker
-          # threads reads `waiting`, and sending it down the direct branch would
-          # enqueue a rival job against one clone (#400).
-          queue_follow_up(session, prompt, goal).tap do
-            record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
-          end
-        else
-          direct_follow_up(session, prompt, goal, args)
+        return text unless wait_for
+
+        waiter = direct_waiter ||
+          Sessions::SyncReply.queued(session, prompt: prompt, enqueued_message: @queued_follow_up)
+        "#{text}\n\n#{format_sync_result(await_reply(waiter, wait_for), heading: 'Reply')}"
+      end
+
+      # Checked before anything is sent. A session cannot wait on its own reply:
+      # its turn is the one holding this call open, so the prompt would sit in
+      # its queue until the wait gave up.
+      def follow_up_sync_wait(session, args)
+        return nil unless sync_requested?(args)
+
+        if context.self_session_id.present? && context.self_session_id.to_s == session.id.to_s
+          raise ToolError, "sync: true cannot wait on your own session — your turn is the one this call " \
+                           "would be holding open. Send the follow-up without sync."
         end
+
+        sync_timeout(args)
       end
 
       # An idle session takes the prompt directly. This still records an uncle
@@ -490,6 +518,7 @@ module Mcp
             status: "pending"
           )
         end
+        @queued_follow_up = enqueued_message
 
         # Before the interrupt, as SessionsController does for the browser: the
         # turn it starts must already see these words as the human's.
@@ -526,6 +555,7 @@ module Mcp
           position: max_position + 1,
           status: "pending"
         )
+        @queued_follow_up = enqueued_message
         session.logs.create!(
           content: "Message queued at position #{enqueued_message.position} (session is running)",
           level: "info"
