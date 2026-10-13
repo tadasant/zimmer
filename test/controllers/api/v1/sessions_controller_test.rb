@@ -1208,6 +1208,48 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert session.logs.where(level: "warning").where("content LIKE ?", "Archived by the REST API while an agent turn was in flight%").exists?
   end
 
+  test "end_turn archives over a live turn and records the loss" do
+    session = sessions(:running)
+    Sessions::LiveTurn.stubs(:in_flight?).returns(true)
+
+    post archive_api_v1_session_path(session.id), params: { end_turn: true }, headers: @headers
+
+    assert_response :success
+    assert_equal "archived", session.reload.status
+    assert session.logs.where(level: "warning").where("content LIKE ?", "Archived by the REST API while an agent turn was in flight%").exists?
+  end
+
+  test "end_turn still refuses a queue" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+    Sessions::LiveTurn.stubs(:in_flight?).returns(true)
+
+    post archive_api_v1_session_path(session.id), params: { end_turn: true }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_includes response.body, "Queued messages would be discarded"
+    assert_equal "running", session.reload.status
+    assert_equal "pending", session.enqueued_messages.sole.status
+  end
+
+  test "bulk_archive with end_turn archives a session mid-turn and still refuses a queue" do
+    live = sessions(:running)
+    queued = sessions(:needs_input)
+    queued.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+    Sessions::LiveTurn.stubs(:in_flight?).returns(true)
+
+    post bulk_archive_api_v1_sessions_path,
+      params: { session_ids: [ live.id, queued.id ], end_turn: true },
+      headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal 1, json["archived_count"]
+    assert_equal [ queued.id ], json["errors"].map { |e| e["id"] }
+    assert_equal "archived", live.reload.status
+    assert_equal "needs_input", queued.reload.status
+  end
+
   test "bulk_archive reports a session with a turn in flight and archives the rest" do
     live = sessions(:running)
     idle = sessions(:needs_input)
