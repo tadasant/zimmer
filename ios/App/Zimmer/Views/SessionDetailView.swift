@@ -19,7 +19,11 @@ final class SessionDetailModel: ObservableObject {
     @Published private(set) var isSending = false
     @Published var error: ZimmerError?
     @Published var notice: String?
-    @Published var draft = ""
+    /// What is typed and not yet sent, kept per session across leaving and relaunching.
+    @Published var draft: String {
+        didSet { drafts.save(draft, for: id) }
+    }
+    private let drafts = DraftStore()
     /// The messages waiting for the turn in flight to end (`QueueCard`).
     @Published var queue: [QueuedMessage] = []
     /// Photos and files going with the next message.
@@ -28,6 +32,7 @@ final class SessionDetailModel: ObservableObject {
     init(id: Int, api: ZimmerAPI) {
         self.id = id
         self.api = api
+        self.draft = DraftStore().draft(for: id)
     }
 
     func load() async {
@@ -46,6 +51,30 @@ final class SessionDetailModel: ObservableObject {
             error = nil
         } catch {
             fail(error)
+        }
+    }
+
+    /// Read everything again without showing it: the web UI's page updates as the session
+    /// moves, and this is that, by asking. A failed read leaves what is on screen, except a
+    /// sign-in that ended.
+    func poll() async {
+        guard !isLoading, !isSending else { return }
+        do {
+            let latest = try await api.session(id)
+            let messages = try await api.conversation(id, limit: conversationLimit)
+            detail = latest
+            if messages != conversation { conversation = messages }
+            if let queued = try? await api.queue(id), queued != queue { queue = queued }
+        } catch ZimmerError.unauthorized {
+            report(.unauthorized)
+        } catch {}
+    }
+
+    /// How often to read again: often while a turn is running or about to, rarely otherwise.
+    var pollInterval: Duration {
+        switch detail?.session.status {
+        case .running, .waiting: return .seconds(5)
+        default: return .seconds(20)
         }
     }
 
@@ -200,6 +229,12 @@ struct SessionDetailView: View {
     @State private var showingLogs = false
     @State private var showingSubagents = false
     @State private var newTitle = ""
+    @Environment(\.scenePhase) private var scenePhase
+    /// Whether the end of the conversation is on screen: new messages are followed only then,
+    /// so reading back is never yanked to the bottom.
+    @State private var atEnd = false
+    /// Scrolled to the newest message once, on the first load.
+    @State private var openedAtNewest = false
 
     /// Short answers a person gives most often — on a phone, typing is the expensive part.
     static let quickReplies = ["Yes, go ahead.", "Merge it.", "Not yet — hold off."]
@@ -215,6 +250,37 @@ struct SessionDetailView: View {
     }
 
     var body: some View {
+        ScrollViewReader { proxy in
+            page
+                .onChange(of: model.conversation?.messages.last?.id) { _, _ in
+                    guard model.conversation != nil else { return }
+                    // Open at the newest message, as the web UI's transcript does; afterwards
+                    // follow new ones only while the end is in view.
+                    if !openedAtNewest {
+                        openedAtNewest = true
+                        proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+                    } else if atEnd {
+                        withAnimation { proxy.scrollTo(Self.endAnchor, anchor: .bottom) }
+                    }
+                }
+        }
+        // The web UI's page streams as the session moves; this reads again while it is on
+        // screen, and at once when the app comes back to the front.
+        .task(id: model.pollInterval) {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: model.pollInterval)
+                guard !Task.isCancelled else { return }
+                await model.poll()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await model.poll() } }
+        }
+    }
+
+    static let endAnchor = "conversation.end"
+
+    private var page: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 if let detail = model.detail {
@@ -243,6 +309,11 @@ struct SessionDetailView: View {
                 if !model.queue.isEmpty {
                     QueueCard(model: model)
                 }
+                Color.clear
+                    .frame(height: 1)
+                    .id(Self.endAnchor)
+                    .onAppear { atEnd = true }
+                    .onDisappear { atEnd = false }
             }
             .padding(.horizontal, Theme.margin)
             .padding(.vertical, 12)
