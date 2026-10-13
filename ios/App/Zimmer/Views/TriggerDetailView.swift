@@ -76,8 +76,9 @@ struct TriggerDetailView: View {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(failedHeadline(trigger)).font(.subheadline.weight(.medium)).foregroundStyle(Theme.danger)
-                    // The page's own words: it will not retry by itself.
-                    Text("It has not retried and will not on its own. Fix the cause if there is one, then re-arm it.")
+                    // Whether re-arming fires it again depends on whether a one-time wake was
+                    // already spent, which the API does not say; the web page does.
+                    Text("It will not retry on its own. The trigger's page in the browser says whether re-arming fires it again.")
                         .font(.caption)
                         .foregroundStyle(Theme.inkSoft)
                     if let lastError = trigger.lastError {

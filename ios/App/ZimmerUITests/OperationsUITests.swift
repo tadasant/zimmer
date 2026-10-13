@@ -78,28 +78,39 @@ final class OperationsUITests: XCTestCase {
         let app = launch()
         app.tabBars.buttons["More"].tap()
         app.descendants(matching: .any)["more.costs"].firstMatch.tap()
+        // The range's fields sit above the figures, so the roots may start below the fold.
         let root = app.buttons["costs.root.zimmer"]
-        XCTAssertTrue(root.waitForExistence(timeout: timeout))
+        XCTAssertTrue(app.staticTexts["costs.total"].waitForExistence(timeout: timeout))
+        var swipes = 0
+        while !(root.exists && root.isHittable) && swipes < 6 { app.swipeUp(); swipes += 1 }
         root.tap()
         XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].waitForExistence(timeout: timeout), "the page says what it is narrowed to")
         XCTAssertTrue(waitForDisappearance(app.buttons["costs.root.motet"]), "only the narrowed root is left")
-        app.buttons["costs.scope.clear"].tap()
+        let clear = app.buttons["costs.scope.clear"]
+        swipes = 0
+        while !(clear.exists && clear.isHittable) && swipes < 6 { app.swipeDown(); swipes += 1 }
+        clear.tap()
         XCTAssertTrue(app.buttons["costs.root.motet"].waitForExistence(timeout: timeout), "back to every root")
 
+        let window = app.segmentedControls["costs.window"]
+        swipes = 0
+        while !(window.exists && window.isHittable) && swipes < 6 { app.swipeDown(); swipes += 1 }
         let showing = app.staticTexts["costs.showing"]
-        app.segmentedControls["costs.window"].buttons["30d"].tap()
+        window.buttons["30d"].tap()
         XCTAssertTrue(waitForLabel(showing, "Showing 30 days"))
         app.buttons["costs.range.apply"].tap()
         let range = expectation(for: NSPredicate(format: "label CONTAINS %@", "–"), evaluatedWith: showing)
         XCTAssertEqual(XCTWaiter().wait(for: [range], timeout: timeout), .completed, "the calendar range, from the fields the horizon filled")
 
         let session = app.buttons["costs.session.1042"]
-        for _ in 0..<4 where !session.isHittable { app.swipeUp() }
+        swipes = 0
+        while !(session.exists && session.isHittable) && swipes < 6 { app.swipeUp(); swipes += 1 }
         session.swipeLeft()
         app.buttons["Only This"].firstMatch.tap()
         // The banner heads the page, which is still scrolled to the sessions.
         let scope = app.descendants(matching: .any)["costs.scope"]
-        for _ in 0..<4 where !scope.waitForExistence(timeout: 2) { app.swipeDown() }
+        swipes = 0
+        while !(scope.waitForExistence(timeout: 2) && scope.isHittable) && swipes < 6 { app.swipeDown(); swipes += 1 }
         XCTAssertTrue(scope.exists, "narrowed to the session")
     }
 

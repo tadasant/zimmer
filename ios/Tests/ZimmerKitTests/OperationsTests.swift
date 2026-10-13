@@ -158,6 +158,9 @@ final class OperationsTests: XCTestCase {
         XCTAssertEqual(trigger.missedFireCount, 0)
         XCTAssertEqual(trigger.badges, [])
         XCTAssertEqual(trigger.toggleLabel, "Turn On")
+        XCTAssertEqual(TriggerSummary(id: 7, name: "x", status: "enabled", coalesceWindowSeconds: 0).badges, ["No coalescing"],
+                       "a window of 0 is the web page's No coalescing")
+        XCTAssertEqual(TriggerSummary(id: 7, name: "x", status: "enabled", coalesceWindowSeconds: 60).badges, [])
     }
 
     func testEachInvokeOutcomeHasItsOwnNotice() {
@@ -201,8 +204,32 @@ final class OperationsTests: XCTestCase {
         XCTAssertNotNil(range["from"])
         XCTAssertNotNil(range["to"])
         let window = CostWindow.custom(from: day("2026-08-01"), to: day("2026-08-03"), calendar: pacific).query(calendar: pacific)
-        XCTAssertEqual(window["from"], "2026-08-01T00:00:00.000-07:00")
-        XCTAssertEqual(window["to"], "2026-08-03T23:59:59.999-07:00")
+        XCTAssertEqual(window["from"], "2026-08-01T07:00:00.000Z", "the day's start in the phone's zone, written in UTC")
+        XCTAssertEqual(window["to"], "2026-08-04T06:59:59.999Z")
+    }
+
+    func testARangeEastOfUTCReachesTheServerAsTheSameInstants() throws {
+        var kolkata = Calendar(identifier: .gregorian)
+        kolkata.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = kolkata.timeZone
+        formatter.formatOptions = [.withFullDate]
+        let first = formatter.date(from: "2026-08-01")!
+
+        let query = CostWindow.custom(from: first, to: first, calendar: kolkata).query(calendar: kolkata)
+        let url = try XCTUnwrap(HTTPEndpoint(method: "GET", path: "/api/v1/costs", query: query).url(relativeTo: Fixtures.base))
+
+        // Midnight in Kolkata is 18:30 the evening before in UTC; no `+` is left for Rack to
+        // read as a space.
+        XCTAssertEqual(url.query, "from=2026-07-31T18:30:00.000Z&to=2026-08-01T18:29:59.999Z")
+    }
+
+    func testAPlusInAQueryValueIsSentEscaped() throws {
+        let url = try XCTUnwrap(HTTPEndpoint(method: "GET", path: "/api/v1/costs", query: ["to": "2026-08-01T00:00:00+05:30", "q": "a b"])
+            .url(relativeTo: Fixtures.base))
+        XCTAssertEqual(url.query, "q=a%20b&to=2026-08-01T00:00:00%2B05:30", "a bare + would reach Rails as a space")
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        XCTAssertEqual(items?.first(where: { $0.name == "to" })?.value, "2026-08-01T00:00:00+05:30", "and still decodes to itself")
     }
 
     func testACustomRangeIsResolvedAsTheWebFormResolvesIt() {

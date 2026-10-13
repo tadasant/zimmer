@@ -143,7 +143,8 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   model, and the most expensive sessions with their titles, calls and tokens, each a tap away. Its
   window is one of the web page's horizons (24 hours to a year) or a range of calendar days from
   the two date fields, both ends included, in the phone's time zone. Tap an agent root to narrow
-  the whole page to it, or swipe a session and choose *Only This*, the web page's drilldown; the
+  the whole page to it, or, on the page for every root, swipe a session and choose *Only This*,
+  the web page's drilldown; the
   page then says what it covers, and *All agent roots* widens it again. The burn rate by harness
   and model is on the web page only: `GET /api/v1/costs` does not return it. *Health* is the
   overall status and each section's; its operator actions stay in the browser.
@@ -159,7 +160,9 @@ of them widened what the phone can do on the server.
 elicitation each need a server change first — the conversation endpoint does not say where a
 message sits in the transcript the fork service counts, and no route lists a session's pending
 elicitations — and come in their own change. So do switching a trigger's *Enqueue messages* and
-*Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update) and
+*Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update),
+saying whether re-arming a failed trigger fires it again (the trigger JSON does not say whether a
+one-time wake was already spent; the web page does), and
 the Costs page's burn rate (not in `GET /api/v1/costs`). The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.
 
