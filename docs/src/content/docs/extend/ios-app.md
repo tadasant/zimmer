@@ -105,8 +105,10 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   link, and which plugin brought an MCP server. The
   conversation follows, newest last, each message with its age, rendered the way the web renders
   it as far as a phone's text goes: inline markdown (emphasis, code spans, links) and fenced code
-  in the monospaced face; list markers and headings stay as typed, where the web draws them as
-  structure. The web UI's log-level filter is a menu on it: *Minimal* (the words alone, the
+  in the monospaced face, scrolling sideways rather than wrapping, with a *Copy* button in the
+  block's corner that puts the code on the clipboard, as the web's code blocks have; list markers
+  and headings stay as typed, where the web draws them as structure, and the code is one colour
+  where the web colours it by language. The web UI's log-level filter is a menu on it: *Minimal* (the words alone, the
   default on a phone), *Condensed* (each tool call as one line naming the tool and what it was
   given) and *Verbose* (the tool traffic whole, rendered the same way); the web's *Show Logs* is
   the logs screen in the menu. The page reads the newest hundred messages, each whole up to
@@ -149,13 +151,23 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   Transcript, Copy Transcript (the whole transcript as text), Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
   edit: Rename, Modify Goal (the catalog's goals by name, or your own words), Effort (the levels the session's model accepts, or the model
   default), Model (the models the session's runtime lists), MCP Servers, Skills, Hooks and Plugins
-  (each a checklist of its catalog, from the next turn), Promote to priority / Demote to spot (to the head of the spot queue), the
+  (each a checklist of its catalog, from the next turn), the web page's *Scheduling class* select
+  (*Derive it*, which clears the class chosen for the session so its genesis decides again and
+  names the class that gives; *Priority*, which starts a waiting session; *Spot*, which on a
+  priority session demotes it to the head of the spot queue as the Ranked view's Demote does, and
+  on a spot one only makes the class its own; all `PATCH /api/v1/sessions/:id` with
+  `scheduling_class`, `null` for *Derive it*), *Precedence* (the session's rank in the spot queue,
+  higher worked first, with the web page's note on what it does for this session), the
   heartbeat (the web's heart and its popout: on or off, and *Beat every* from 30 seconds to an
   hour, `PATCH /api/v1/sessions/:id/heartbeat` with `interval_seconds`, which leaves it on or off
   as it is), Generate Status Summary when there is none, and Open in browser. *Snooze until…*
   ends in *Custom…*, as on the row. A trashed session's header says when its restore window closes. A promotion that could
   not start the session says why. The star and the trash (or restore) are in the toolbar.
-- **Sends a follow-up** from a box at the bottom, with quick replies for the common answers. A
+- **Sends a follow-up** from a box at the bottom, with quick replies for the common answers.
+  Typing "/" at the start of a line or after a space opens the web composer's typeahead in the
+  quick replies' place: the session's own catalog skills that a person may invoke
+  (`user_invocable`, from `GET /api/v1/skills`), narrowed as you type by name or description,
+  names starting with what you typed first, ten at a time; a tap puts `/name ` in the box. A
   follow-up to a session mid-turn is queued, and the app says so; touch and hold the button to
   *Send Now* instead, which ends the turn in flight (`force_immediate`, the web UI's Send Now).
   It is recorded as your message if the app's connection acts on your behalf (below).
@@ -222,7 +234,17 @@ message sits in the transcript the fork service counts, and no route lists a ses
 elicitations — and come in their own change. So does the rest of the web card's refresh: on the
 web it also resumes a failed session and sends the continue nudge to a stalled waiting one, but
 `POST /api/v1/sessions/:id/refresh` only re-reads the transcript, so the row's refresh is
-*Refresh Transcript* and a failed session is restarted with *Restart Session*. The admin pages (API keys, inference accounts, connectors,
+*Refresh Transcript* and a failed session is restarted with *Restart Session*.
+
+Parts of the web session page wait on the API carrying them. The conversation endpoint returns
+each message's role, words, time and whether it holds a tool call or result, and nothing else, so
+the transcript's thinking blocks, compaction markers, errors, runtime notices, queue events and
+image badges are not on the phone. The web composer's "/" also offers the skills and commands
+found in the session's own clone (`.claude/skills`, `.claude/commands`), which no API route
+returns; the app offers the session's catalog skills alone. The web header's per-session push
+notifications bell and the *Context window* (auto-compact window) editor have no API route, and the
+session JSON does not say whether push is on; *Derive it* cannot name the genesis's class while a
+class is chosen, because the API reports only the class in force. The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.
 
 ## Two origins

@@ -99,6 +99,9 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var snoozedUntil: Date?
     /// `priority` or `spot`: the class the session actually runs under.
     public var priorityClass: String?
+    /// The class chosen for this one session, or nil when its genesis decides — the web
+    /// page's *Derive it*. `priorityClass` is the answer either way.
+    public var schedulingClass: String?
     public var heartbeatEnabled: Bool?
     /// How often the heartbeat nudges a session waiting for input, in seconds.
     public var heartbeatIntervalSeconds: Int?
@@ -132,6 +135,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         case effectiveVisibility = "effective_visibility"
         case snoozedUntil = "snoozed_until"
         case priorityClass = "priority_class"
+        case schedulingClass = "scheduling_class"
         case heartbeatEnabled = "heartbeat_enabled"
         case heartbeatIntervalSeconds = "heartbeat_interval_seconds"
         case runtimeSessionID = "session_id"
@@ -185,6 +189,8 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
 
     public var isFavorite: Bool { favorited ?? false }
     public var isPriority: Bool { priorityClass == "priority" }
+    /// The class is the genesis's, not one chosen for this session.
+    public var schedulingClassDerived: Bool { (schedulingClass ?? "").isEmpty }
     public var model: String? { config?.model }
     public var agentRoot: String? { metadata?.agentRoot }
     /// When a person last did something to this session — the web UI's "Last Touched" key,

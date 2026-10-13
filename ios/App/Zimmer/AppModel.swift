@@ -64,6 +64,9 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureOpenPanels`: the opened session starts at its details card with the
     /// hierarchy and the human messages open, so `ios/bin/ui-test` can photograph them.
     var fixtureOpensPanels = false
+    /// `-ZimmerFixtureSlash`: the opened session's composer starts with "/" typed, so
+    /// `ios/bin/ui-test` can photograph the skills it offers.
+    var fixtureTypesSlash = false
 
     let environment: AppEnvironment
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
@@ -113,6 +116,7 @@ final class AppModel: ObservableObject {
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
         fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
+        fixtureTypesSlash = arguments.contains("-ZimmerFixtureSlash")
         func value(_ flag: String) -> String? {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
