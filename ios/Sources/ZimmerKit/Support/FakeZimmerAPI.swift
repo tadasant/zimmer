@@ -24,11 +24,23 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// Every Quick Router start, in order, so a test can see what went with the words.
     public private(set) var quickRouterRequests: [QuickRouterRequest] = []
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
+    private let live: Bool
+    private var conversationReads: [Int: Int] = [:]
 
-    public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date()) {
+    /// `live`: a running session's agent keeps talking, a line per read of its conversation
+    /// after the first, so a screen that reads again can be seen to.
+    public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false) {
+        self.live = live
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries()
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
+        if live {
+            // Long enough to scroll back through, so following the end can be told from not.
+            conversations[1042] = (0..<30).map { index in
+                ConversationMessage(id: index, role: index.isMultiple(of: 2) ? .assistant : .user,
+                                    content: "Earlier step \(index) of the CarPlay scene.", timestamp: now.addingTimeInterval(Double(index - 30) * 60))
+            }
+        }
         self.nextID = (sessions.map(\.id).max() ?? 0) + 1
     }
 
@@ -61,7 +73,16 @@ public actor FakeZimmerAPI: ZimmerAPI {
 
     /// As the server: the newest `limit`, positions counted from the start, capped at 200.
     public func conversation(_ id: Int, limit: Int) async throws -> Conversation {
-        _ = try find(id)
+        let session = try find(id)
+        if live, session.status == .running {
+            let reads = conversationReads[id, default: 0]
+            conversationReads[id] = reads + 1
+            if reads > 0 {
+                var messages = conversations[id] ?? []
+                messages.append(ConversationMessage(id: messages.count, role: .assistant, content: "Still working — step \(reads) done.", timestamp: Date()))
+                conversations[id] = messages
+            }
+        }
         let all = conversations[id] ?? []
         let window = min(max(limit, 1), Conversation.maxLimit)
         return Conversation(messages: Array(all.suffix(window)), total: all.count, truncated: all.count > window)
