@@ -7981,6 +7981,23 @@ an hour, each once it has been quiet for an hour. Until then a too-high count ca
 the row cap. Deleting a session does not touch its records: `writing_session_id` is nulled and the
 record stays.
 
+## The warm clone pool serves one request at a time
+
+`WarmClonePool` (`app/services/warm_clone_pool.rb`) keeps one ready clone of the router root's
+repository by default. Two Quick Router requests a few seconds apart get one warm start and one cold
+one, because the refill `WarmClonePoolReplenishJob` enqueues on the claim takes about as long as the
+clone it replaces. Raising `QUICK_ROUTER_WARM_CLONES` trades disk (about 160 MB per clone of
+tadasant-internal) for that case. The refill also runs on the `maintenance` lane, so a backed-up
+`maintenance` queue delays it, and requests clone cold until it drains. A volume short of space skips the build, so the pool is empty exactly when a disk is filling.
+
+The claim, the catch-up fetch, the refill and the fallbacks are covered against real local git
+repositories in the test suite. On the production host, against tadasant-internal (the router root's repository in the production catalog), a cold
+`create_clone` took about 7 seconds and a warm one 0.7–1.6 seconds. The end-to-end win for a router
+session is projected from those numbers and from measured phase timings; it has not yet been measured
+on a production router session that claimed a clone. `metadata["warm_clone"]` on each router session
+records `claimed` or `missed`, so comparing router session start times before and after is the
+production proof. This is a deliberate first step, not a tracked defect.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

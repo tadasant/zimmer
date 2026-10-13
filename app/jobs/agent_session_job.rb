@@ -1310,14 +1310,21 @@ class AgentSessionJob < ApplicationJob
               "[DIAGNOSTIC] Calling GitCloneService.create_clone with git_root=#{session.git_root}, branch=#{session.branch}",
               level: "debug"
             )
+            # A router session (every Quick Router entry point) takes a
+            # ready-made clone from the warm pool when there is one: the clone is
+            # most of a cold start, and nothing in it depends on the request.
+            warm_eligible = WarmClonePool.serves?(session)
             clone_result = GitCloneService.create_clone(
               session.git_root,
               branch: session.branch,
               subdirectory: session.subdirectory,
-              fallback_subdirectory: session.catalog_subdirectory
+              fallback_subdirectory: session.catalog_subdirectory,
+              warm: warm_eligible
             )
             clone_path = clone_result[:clone_path]
             working_directory = clone_result[:working_directory]
+
+            record_warm_clone(session, clone_result[:warm], log_buffer) if warm_eligible
 
             # A session that was created before its agent root's directory was
             # renamed — and only started afterwards — asks for a path this commit
@@ -2821,6 +2828,20 @@ class AgentSessionJob < ApplicationJob
   # @yield [Integer] the delay in seconds; the block must enqueue the retry job and
   #   return the enqueued job (responding to #job_id)
   # @return [Boolean]
+  # Note on a router session whether its clone came from the warm pool, and ask
+  # for the pool to be refilled. Bookkeeping only: the clone already exists, so
+  # nothing here may fail the session's start.
+  def record_warm_clone(session, claimed, log_buffer)
+    log_buffer.add(
+      claimed ? "Claimed a pre-warmed clone from the pool" : "No pre-warmed clone was ready; cloned cold",
+      level: "info"
+    )
+    session.merge_metadata!("warm_clone" => claimed ? "claimed" : "missed")
+    WarmClonePoolReplenishJob.perform_later
+  rescue StandardError => e
+    log_buffer.add("Could not record the warm clone outcome: #{e.class}: #{e.message}", level: "warning")
+  end
+
   def schedule_transient_clone_retry(session, error, log_buffer, kind:)
     attempts = session.metadata&.dig("clone_retry_count").to_i
 
