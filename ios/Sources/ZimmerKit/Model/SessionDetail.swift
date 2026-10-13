@@ -323,11 +323,15 @@ public struct Conversation: Hashable, Sendable {
     public var messages: [ConversationMessage]
     public var total: Int
     public var truncated: Bool
+    /// Where the first of `messages` sits in the whole conversation (0 is the first message):
+    /// what *Show earlier* reads back from.
+    public var firstPosition: Int
 
-    public init(messages: [ConversationMessage], total: Int? = nil, truncated: Bool = false) {
+    public init(messages: [ConversationMessage], total: Int? = nil, truncated: Bool = false, firstPosition: Int? = nil) {
         self.messages = messages
         self.total = total ?? messages.count
         self.truncated = truncated
+        self.firstPosition = firstPosition ?? max((total ?? messages.count) - messages.count, 0)
     }
 
     /// The last thing the agent said: what a person deciding a follow-up wants first.
@@ -348,9 +352,10 @@ struct ConversationResponse: Decodable {
     let messages: [Wire]
     let total: Int?
     let truncated: Bool?
+    let first_position: Int?
 
     var conversation: Conversation {
-        let offset = (total ?? messages.count) - messages.count
+        let offset = first_position ?? ((total ?? messages.count) - messages.count)
         let decoded = messages.enumerated().compactMap { index, wire -> ConversationMessage? in
             guard let role = ConversationMessage.Role(rawValue: wire.role) else { return nil }
             return ConversationMessage(
@@ -362,7 +367,7 @@ struct ConversationResponse: Decodable {
                 hasToolResult: wire.has_tool_result ?? false
             )
         }
-        return Conversation(messages: decoded, total: total, truncated: truncated ?? false)
+        return Conversation(messages: decoded, total: total, truncated: truncated ?? false, firstPosition: offset)
     }
 }
 

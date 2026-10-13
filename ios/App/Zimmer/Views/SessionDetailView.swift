@@ -15,6 +15,14 @@ final class SessionDetailModel: ObservableObject {
     /// How far back the conversation reads: a hundred at first, a hundred more on *Show
     /// earlier*, up to what the server returns in one read.
     @Published private(set) var conversationLimit = Conversation.pageSize
+    /// Pages read back past the server's one-read cap, oldest first: kept apart from the
+    /// newest window, which the page's reads replace.
+    @Published private(set) var earlier: [ConversationMessage] = []
+    /// The session has been opened once, as a person opening it (`viewed=true`); later
+    /// reads are the page keeping current and record nothing.
+    private var opened = false
+    /// Called once the open has marked the session's notifications read, for the badge.
+    var onOpened: () -> Void = {}
     @Published private(set) var isLoading = false
     @Published private(set) var isSending = false
     @Published var error: ZimmerError?
@@ -45,7 +53,13 @@ final class SessionDetailModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            detail = try await api.session(id)
+            if opened {
+                detail = try await api.session(id)
+            } else {
+                detail = try await api.openSession(id)
+                opened = true
+                onOpened()
+            }
             conversation = try await api.conversation(id, limit: conversationLimit)
             // The queue is a panel, not the page: one that will not load keeps what it last
             // showed rather than failing the session — unless the sign-in has ended.
@@ -100,16 +114,37 @@ final class SessionDetailModel: ObservableObject {
     /// Widen the window by a page and read again: the web UI's transcript reading back as
     /// you scroll up.
     func showEarlier() async {
-        guard conversationLimit < Conversation.maxLimit else { return }
-        let next = min(conversationLimit + Conversation.pageSize, Conversation.maxLimit)
+        if conversationLimit < Conversation.maxLimit {
+            let next = min(conversationLimit + Conversation.pageSize, Conversation.maxLimit)
+            do {
+                conversation = try await api.conversation(id, limit: next)
+                // Only once the wider read is on screen: a read that failed leaves the button.
+                conversationLimit = next
+                error = nil
+            } catch {
+                fail(error)
+            }
+            return
+        }
+        // Past the cap, a page at a time from the oldest message on screen, as the web UI's
+        // transcript reads back as you scroll up.
+        guard let shown = shownConversation, shown.firstPosition > 0 else { return }
         do {
-            conversation = try await api.conversation(id, limit: next)
-            // Only once the wider read is on screen: a read that failed leaves the button.
-            conversationLimit = next
+            let page = try await api.earlierMessages(id, before: shown.firstPosition, limit: Conversation.pageSize)
+            earlier = page.messages + earlier
             error = nil
         } catch {
             fail(error)
         }
+    }
+
+    /// What the page shows: the pages read back, then the newest window.
+    var shownConversation: Conversation? {
+        guard let conversation else { return nil }
+        guard !earlier.isEmpty else { return conversation }
+        let first = earlier.first?.id ?? conversation.firstPosition
+        let newest = conversation.messages.filter { $0.id > (earlier.last?.id ?? -1) }
+        return Conversation(messages: earlier + newest, total: conversation.total, truncated: first > 0, firstPosition: first)
     }
 
     func fail(_ error: Error) {
@@ -328,7 +363,7 @@ struct SessionDetailView: View {
                     LoadingState(text: "Loading session…").padding(.top, 60)
                 }
                 if let error = model.error { ErrorBanner(error: error) }
-                if let conversation = model.conversation {
+                if let conversation = model.shownConversation {
                     conversationSection(conversation)
                 }
                 // Under the conversation and above the composer, where the web UI puts it.
@@ -400,6 +435,8 @@ struct SessionDetailView: View {
         .refreshable { await model.load() }
         .task {
             model.report = { [weak app] error in app?.noteError(error) }
+            // Opening marks the session's notifications read: the Inbox badge follows.
+            model.onOpened = { [weak app] in Task { await app?.refreshUnreadCount() } }
             await model.load()
             if app.fixtureAttachesFile {
                 app.fixtureAttachesFile = false
@@ -725,10 +762,10 @@ struct SessionDetailView: View {
             .padding(.bottom, 4)
             if conversation.truncated {
                 // The web UI reads the transcript back as you scroll up; here a tap reads a
-                // hundred more, up to the server's one-read cap.
+                // hundred more each time, back to the first message.
                 HStack(spacing: 6) {
                     Text("The last \(conversation.messages.count) of \(conversation.total).")
-                    if model.conversationLimit < Conversation.maxLimit {
+                    if conversation.firstPosition > 0 {
                         Button("Show earlier") { Task { await model.showEarlier() } }
                             .font(.caption.weight(.medium))
                             .foregroundStyle(Theme.accent)
