@@ -126,6 +126,65 @@ class WarmClonePoolTest < ActiveSupport::TestCase
     assert_empty Dir.exist?(dir) ? Dir.children(dir) : []
   end
 
+  test "a clone past RECYCLE_AGE is replaced before it is removed, and stays claimable meanwhile" do
+    WarmClonePool.replenish!
+    aging = age_entry(WarmClonePool.ready_entries(@repo, @branch).first, WarmClonePool::RECYCLE_AGE + 1.minute)
+
+    into = File.join(@clones_base, "repo-main-#{Time.now.to_i}-77777777")
+    assert WarmClonePool.claim(@repo, @branch, into: into), "a clone younger than MAX_AGE is still claimable"
+    FileUtils.rm_rf(into)
+
+    WarmClonePool.replenish!
+    aging = age_entry(WarmClonePool.ready_entries(@repo, @branch).first, WarmClonePool::RECYCLE_AGE + 1.minute)
+    result = WarmClonePool.replenish!
+
+    assert_equal({ built: 1, recycled: 1, failed: nil }, result)
+    assert_not File.exist?(aging)
+    assert_equal 1, WarmClonePool.ready_entries(@repo, @branch).size
+  end
+
+  test "replenish builds nothing when the volume could not also hold an ordinary clone" do
+    WarmClonePool.stubs(:room_to_build?).returns(false)
+
+    result = WarmClonePool.replenish!
+
+    assert_equal 0, result[:built]
+    assert_match(/not enough free disk/, result[:failed])
+    assert_empty WarmClonePool.ready_entries(@repo, @branch)
+  end
+
+  test "room_to_build? asks for twice what an ordinary clone needs, and never reclaims" do
+    CloneDiskGuard.expects(:reclaim_space).never
+    CloneDiskGuard.stubs(:required_bytes).returns(3.gigabytes)
+
+    CloneDiskGuard.stubs(:volume_stats).returns({ total: 100.gigabytes, available: 5.gigabytes })
+    assert_not WarmClonePool.room_to_build?(@repo)
+
+    CloneDiskGuard.stubs(:volume_stats).returns({ total: 100.gigabytes, available: 7.gigabytes })
+    assert WarmClonePool.room_to_build?(@repo)
+
+    CloneDiskGuard.stubs(:volume_stats).returns(nil)
+    assert WarmClonePool.room_to_build?(@repo), "an unmeasurable volume fails open, as CloneDiskGuard does"
+  end
+
+  test "dropping an untargeted pool removes it atomically" do
+    old = File.join(WarmClonePool.root_dir, "old-repo-main-0123456789ab")
+    FileUtils.mkdir_p(File.join(old, "#{Time.now.to_i}-cccccccc"))
+    AtomicCloneRemoval.expects(:remove).with(old).returns(true)
+
+    WarmClonePool.replenish!
+  end
+
+  test "the orphan clone sweep never sees the pool" do
+    WarmClonePool.replenish!
+    control = File.join(@clones_base, "repo-main-#{Time.now.to_i}-99999999")
+    FileUtils.mkdir_p(control)
+
+    orphans = OrphanCloneFilesystemCleanupJob.new.send(:find_orphan_directories, @clones_base, cutoff: 1.minute.from_now)
+
+    assert_equal [ control ], orphans, "the sweep sees an unowned clone beside the pool, and not the pool"
+  end
+
   # --- claim ------------------------------------------------------------------
 
   test "claim moves the ready clone onto the session path and catches it up to the branch tip" do
@@ -194,6 +253,16 @@ class WarmClonePoolTest < ActiveSupport::TestCase
     assert_not File.exist?(into)
   end
 
+  test "a claimed directory with no .git is discarded rather than letting git find an enclosing repository" do
+    WarmClonePool.replenish!
+    FileUtils.rm_rf(File.join(WarmClonePool.ready_entries(@repo, @branch).first, ".git"))
+    GitCloneService.expects(:run_git_command).never
+    into = File.join(@clones_base, "repo-main-#{Time.now.to_i}-88888888")
+
+    assert_not WarmClonePool.claim(@repo, @branch, into: into)
+    assert_not File.exist?(into)
+  end
+
   # --- GitCloneService integration ---------------------------------------------
 
   test "create_clone with warm: true takes the pooled clone and skips git clone" do
@@ -241,6 +310,17 @@ class WarmClonePoolTest < ActiveSupport::TestCase
 
     assert result[:warm]
     assert_equal File.join(result[:clone_path], "roots/router"), result[:working_directory]
+  end
+
+  test "create_clone with warm: true whose catch-up fails clones cold at the same path" do
+    WarmClonePool.replenish!
+    WarmClonePool.stubs(:catch_up!).raises(GitCloneService::GitError, "fetch failed")
+
+    result = GitCloneService.create_clone(@repo, branch: @branch, warm: true)
+
+    assert_not result[:warm]
+    assert File.exist?(File.join(result[:clone_path], "README.md"))
+    assert_equal "", git(result[:clone_path], "status", "--porcelain")
   end
 
   # --- the job ------------------------------------------------------------------

@@ -62,6 +62,17 @@ class AgentSessionJobWarmCloneTest < ActiveJob::TestCase
     assert_nil session.reload.metadata["warm_clone"]
   end
 
+  test "bookkeeping that fails never fails the session's start" do
+    session = create_session(agent_root_key: "zimmer-orchestrator")
+    GitCloneService.expects(:create_clone).with(anything, has_entry(warm: true)).returns(clone_result(warm: true))
+    WarmClonePoolReplenishJob.stubs(:perform_later).raises(ActiveRecord::ConnectionNotEstablished)
+
+    run_clone_setup(session)
+
+    assert_not_equal "failed", session.reload.status
+    assert_includes all_log_content(session), "Could not record the warm clone outcome"
+  end
+
   private
 
   def create_session(agent_root_key:)
