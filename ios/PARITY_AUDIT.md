@@ -4,7 +4,7 @@ A screen-by-screen comparison of the iOS app against the web UI, as a person use
 (the PWA), plus a judgement of each screen's density and look against the Motet iOS app. Each
 finding is tagged **parity** (the PWA can do it, the app cannot), **density** (the app spends
 more screen on it than it should) or **design** (it does not look the way Motet does). Findings
-are grouped into slices, one PR each, and the status column is kept current as they land.
+are grouped into slices, each one PR or a server PR and an app PR, and the status column is kept current as they land.
 
 The web UI's inventory behind this: the Quick Router is `shared/_chat_bubble.html.erb` (on every
 page, `fixed bottom-4 right-4`), the board's phone prompt box is `sessions/index.html.erb`
@@ -116,7 +116,7 @@ two screens down.
   inline-only parsing, and code blocks in the monospaced face. **Slice 6.**
 - **P7 — parity.** The PWA's transcript loads tail-first and reads back as you scroll up. The app
   shows the last 100 and says how many it left out. Plan: a *Show earlier* row that raises the
-  limit. **Slice 6.**
+  limit. **Slice 6.** It stops at the server's 200-message cap; see G6.
 - **P12 — parity.** The PWA's transcript has a log-level filter (Minimal / Condensed / Show Logs /
   Verbose). The app folds tool calls behind one toggle and keeps logs on their own screen. Plan:
   Minimal, Condensed and Verbose on the conversation; Show Logs is the logs screen. **Slice 6.**
@@ -139,10 +139,11 @@ two screens down.
 
 The first pass matched on feature names. "Filters ✅" was true of the word and false of the control:
 the app had one status chip at a time where the web UI's form ticks any number of statuses and
-narrows them by scheduling class, agent root and genesis together. Tadas found it in use. The
+narrows them by scheduling class, agent root and genesis together. Tadas hit it on his phone. The
 control-by-control re-audit below replaces the "already at parity" list that stood here, which
 also claimed search, goal, heartbeat, snooze, trash, reorder and promote/demote. Each of those
-turned out partial.
+turned out partial. The rest of that list (views, swipes, long press, bulk trash, refresh all,
+rename, notes, effort, model, catalog, start now) was checked again and holds.
 
 Owned elsewhere, and still true: push and CarPlay (#1265, #1266); attachments on a follow-up and
 the new-session form (#1286, #1287, #1278).
@@ -150,7 +151,6 @@ the new-session form (#1286, #1287, #1278).
 ### Known limitations kept
 
 - The Running badge does not age as the web's does (no last-activity time in the list).
-- Quick Router sessions from the app are always priority; the PWA's *Run as spot* comes with P3.
 
 ## Control-by-control re-audit (2026-10-13)
 
@@ -160,16 +160,22 @@ ordered by how often a person using Zimmer on a phone would hit it. **Server** m
 needs an API change first, which is its own clearly-labelled PR. **Held** marks one waiting on a PR
 the merge gate holds for Tadas.
 
+The letters group gaps into slices, each one or two PRs (a server half first where one is needed):
+**A** board filters · **B** keeping current · **C** opening a session (read marks, full content) ·
+**D** the board's rows and trash · **E** waiting and recovery banners · **F** session-page detail
+and the composer · **G** transcript rows, slash commands, desktop-only settings · **H** triggers and
+costs.
+
 | # | Gap | PWA | App today | Server? | Slice / status |
 | --- | --- | --- | --- | --- | --- |
-| G1 | Board filters don't combine | Status checkboxes (any number, *Waiting* included), scheduling class, agent root, genesis, quick filters *All* / *All Unarchived* / *All Priority Unarchived*, remembered in a cookie; Ranked opens on waiting+running+needs_input+failed | One status chip at a time, no *Waiting*, no class/root/genesis, nothing remembered, Ranked opens on needs_input | Yes: `agent_root`, several statuses | A: #1304 (server), #1305 (app) |
+| G1 | Board filters don't combine | Status checkboxes (any number, *Waiting* included), scheduling class, agent root, genesis, quick filters *All* / *All Unarchived* / *All Priority Unarchived*, remembered in a cookie; Ranked opens on waiting+running+needs_input+failed | One status chip at a time, no *Waiting*, no class/root/genesis, the filter not remembered (the view is), Ranked opens on needs_input | Yes: `agent_root`, several statuses | A: #1304 (server), #1305 (app) |
 | G2 | Nothing updates live | Turbo streams on the board and the session page | Loads once; refreshes only on pull, a filter change or your own action, and not on returning to the app | No (poll and refresh on foreground) | B |
 | G3 | A session opens at the top | Opens at the newest message and follows it | Opens at the header; the conversation is below the cards | No | B |
-| G4 | MCP prompts can't be answered | Approval banner with the prompt's form | Not shown | Yes | Held: #1281, #1282 |
-| G5 | Opening a session doesn't mark it read | Marks its notifications read and touches *last touched* | Neither; the inbox stays unread | Yes | C |
+| G4 | MCP prompts can't be answered; no *Fork from here* | Approval banner with the prompt's form; fork from any message | Neither | Yes | Held: #1281, #1282 |
+| G5 | Opening a session doesn't mark it read | Marks all of the session's notifications read and touches *last touched* | From the Inbox, that one notification is marked read; from the board or a push, nothing is, and *last touched* is never set | Yes | C |
 | G6 | Long messages and long histories cut off | Full text; scroll back to the start | Each message cut at 4,000 characters; history stops at 200 messages | Yes: full content, a cursor | C |
 | G7 | Drafts lost | Composer drafts kept for 7 days; an undelivered prompt put back | Lost on leaving the screen | No | B |
-| G8 | Trash refuses running or queued sessions, no Undo | *Archive anyway* (force); an Undo toast | 422 from the server, shown as an error; no undo | No (`force`, `unarchive` exist) | D |
+| G8 | Trash refuses running or queued sessions, no Undo | Trashes a running session outright; *Archive anyway* only when messages are queued; an Undo toast | The API refuses a live turn or a non-empty queue without `force` (a 422 shown as an error); no undo | No (`force`, `unarchive` exist) | D |
 | G9 | Status summary unreadable | Markdown with live links (`#message-N`, PRs, sessions); on every *Your board* row | Raw markdown on the session page; not on rows | Yes, for rows: `status_summary` in the list | D |
 | G10 | No "why is it waiting" | Spot hold, queued turn with *Force start*, auth outage with reset time, starvation banners | None | Yes: waiting reason, `force_start` | E |
 | G11 | Merge and Reprioritize | Row *Merge* on *Your board*; *Reprioritize* | Missing | Yes | Held: #1283, #1284 |
