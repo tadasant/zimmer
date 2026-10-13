@@ -256,6 +256,9 @@ if [ -d "$app" ]; then
   shoot composer-attachment -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   # A snooze to a time of your own, and when a trashed session is deleted, on its row and page.
   shoot session-detail-custom-snooze -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCustomSnooze
+  # A code block with its Copy button, and the composer's "/" offering the session's skills.
+  shoot session-detail-code -ZimmerFixture -ZimmerFixtureOpenSession 1035
+  shoot composer-slash -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureSlash
   shoot sessions-trash -ZimmerFixture -ZimmerFixtureFilter archived
   shoot session-detail-trashed -ZimmerFixture -ZimmerFixtureOpenSession 1019
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
@@ -277,6 +280,8 @@ if [ -d "$app" ]; then
   shoot session-detail-waiting-dark -ZimmerFixture -ZimmerFixtureOpenSession 1031
   shoot composer-attachment-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   shoot session-detail-custom-snooze-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCustomSnooze
+  shoot session-detail-code-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035
+  shoot composer-slash-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureSlash
   shoot new-session-dark -ZimmerFixture -ZimmerFixtureNewSession
   shoot inbox-dark -ZimmerFixture -ZimmerFixtureTab inbox
   shoot triggers-dark -ZimmerFixture -ZimmerFixtureTab triggers

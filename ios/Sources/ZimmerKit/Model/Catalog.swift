@@ -173,17 +173,25 @@ public struct CatalogItem: Hashable, Sendable, Decodable, Identifiable {
     public var description: String?
     /// An MCP server that cannot be used right now (it needs authorizing, say), and why.
     public var unavailableReason: String?
+    /// The entry's name where the list gives one beside its id: a skill's is what "/" invokes.
+    public var name: String?
+    /// A skill a person may invoke by name (`user_invocable`); nil where the list does not say.
+    public var userInvocable: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, name, title, description, unavailable
         case unavailableReason = "unavailable_reason"
+        case userInvocable = "user_invocable"
     }
 
-    public init(id: String, title: String? = nil, description: String? = nil, unavailableReason: String? = nil) {
+    public init(id: String, title: String? = nil, description: String? = nil, unavailableReason: String? = nil,
+                name: String? = nil, userInvocable: Bool? = nil) {
         self.id = id
         self.title = title
         self.description = description
         self.unavailableReason = unavailableReason
+        self.name = name
+        self.userInvocable = userInvocable
     }
 
     public init(from decoder: Decoder) throws {
@@ -198,6 +206,8 @@ public struct CatalogItem: Hashable, Sendable, Decodable, Identifiable {
         description = try? container.decodeIfPresent(String.self, forKey: .description)
         let unavailable = (try? container.decodeIfPresent(Bool.self, forKey: .unavailable)) ?? false
         unavailableReason = unavailable ? ((try? container.decodeIfPresent(String.self, forKey: .unavailableReason)) ?? "Unavailable") : nil
+        name = (try? container.decodeIfPresent(String.self, forKey: .name)) ?? nil
+        userInvocable = (try? container.decodeIfPresent(Bool.self, forKey: .userInvocable)) ?? nil
     }
 
     public var displayTitle: String { title?.isEmpty == false ? title! : id }

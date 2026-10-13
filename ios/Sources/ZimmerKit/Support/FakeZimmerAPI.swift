@@ -34,6 +34,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var reconnectServers: [Int: [String]] = [1035: ["Linear"]]
     /// …and a poller notice Zimmer retired before it was delivered.
     private var undelivered: [Int: [QueuedMessage]] = FakeZimmerAPI.sampleUndelivered()
+    /// The class each session's genesis gives it: what *Derive it* goes back to. The samples
+    /// choose no class of their own, so it is the class each starts with.
+    private var derivedClasses: [Int: String]
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to.
@@ -42,6 +45,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries()
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
+        self.derivedClasses = sessions.reduce(into: [:]) { $0[$1.id] = $1.priorityClass ?? "priority" }
         if live {
             // Long enough to scroll back through, so following the end can be told from not.
             conversations[1042] = (0..<30).map { index in
@@ -263,11 +267,14 @@ public actor FakeZimmerAPI: ZimmerAPI {
 
     /// The MCP servers the web UI draws a connection chip for: 1038's chosen server and the
     /// injected self-session server, both connected; 1044's three, one of them failed with
-    /// the poller's error and the injected one not reached yet.
+    /// the poller's error and the injected one not reached yet. And 1035's skills, which its
+    /// composer's "/" offers.
     private static func wired(_ sessions: [SessionSummary]) -> [SessionSummary] {
         sessions.map { session in
             var session = session
             switch session.id {
+            case 1035:
+                session.catalogSkills = ["open-pr", "wait-for-ci", "zimmer-qa-mobile-screens"]
             case 1038:
                 session.mcpServers = ["playwright-custom"]
                 session.allMcpServers = ["playwright-custom", "zimmer-self-session"]
@@ -547,11 +554,37 @@ extension FakeZimmerAPI {
         let starts = priority && current.status == .waiting && !current.isPriority
         let session = try change(id) { session in
             session.priorityClass = priority ? "priority" : "spot"
+            session.schedulingClass = session.priorityClass
             // Promoting a waiting session starts it, as the server's PATCH does.
             if starts { session.status = .running }
         }
         return SchedulingChange(session: session, startOutcome: starts ? "started" : nil,
                                 startMessage: starts ? "Session \(id)'s next turn is due now: resumed from the spot queue." : nil)
+    }
+
+    /// *Derive it* goes back to the genesis's class; a waiting session the change makes
+    /// priority starts, as the server's PATCH starts one on any change into priority.
+    public func setSchedulingClass(_ id: Int, to choice: SchedulingClassChoice) async throws -> SchedulingChange {
+        let current = try find(id)
+        let chosen = choice == .derive ? nil : choice.rawValue
+        let effective = chosen ?? derivedClasses[id] ?? "priority"
+        let starts = effective == "priority" && current.status == .waiting && !current.isPriority
+        let session = try change(id) { session in
+            session.schedulingClass = chosen
+            session.priorityClass = effective
+            if starts { session.status = .running }
+        }
+        return SchedulingChange(session: session, startOutcome: starts ? "started" : nil,
+                                startMessage: starts ? "Session \(id)'s next turn is due now: resumed from the spot queue." : nil)
+    }
+
+    /// As `SessionPrecedence`: an integer within a billion either way.
+    public func setPrecedence(_ id: Int, _ precedence: Int) async throws -> SessionSummary {
+        guard (-1_000_000_000...1_000_000_000).contains(precedence) else {
+            let bound = precedence > 0 ? "less than or equal to 1000000000" : "greater than or equal to -1000000000"
+            throw ZimmerError.http(status: 422, message: "Precedence must be \(bound)")
+        }
+        return try change(id) { $0.precedence = precedence }
     }
 
     public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {
@@ -890,8 +923,14 @@ extension FakeZimmerAPI {
 
     static let sampleCatalogs: [CatalogKind: [CatalogItem]] = [
         .mcpServers: sampleConfigs.mcpServers,
-        .skills: [CatalogItem(id: "open-pr", title: "Open a PR"), CatalogItem(id: "wait-for-ci", title: "Wait for CI"),
-                  CatalogItem(id: "zimmer-qa-mobile-screens", title: "QA mobile screens")],
+        // As `GET /api/v1/skills` lists them: the two workflow skills a person may invoke with
+        // "/", and one only an agent invokes.
+        .skills: [CatalogItem(id: "open-pr", title: "Open a PR", description: "Commit, push a branch, open the PR and wait for CI.",
+                              name: "open-pr", userInvocable: true),
+                  CatalogItem(id: "wait-for-ci", title: "Wait for CI", description: "Block until CI passes or fails on the current PR.",
+                              name: "wait-for-ci", userInvocable: true),
+                  CatalogItem(id: "zimmer-qa-mobile-screens", title: "QA mobile screens", description: "Render a changed screen at a phone's width.",
+                              name: "zimmer-qa-mobile-screens", userInvocable: false)],
         .hooks: [CatalogItem(id: "block-force-push", title: "Block force-push")],
         .plugins: [CatalogItem(id: "screenshots-videos", title: "Screenshots and videos")],
     ]
