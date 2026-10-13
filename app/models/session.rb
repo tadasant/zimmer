@@ -1892,6 +1892,17 @@ class Session < ApplicationRecord
     job
   end
 
+  # A person opened this session: its unread notifications are read now. The dashboard's
+  # session page and the iOS app's open both come here, so the inbox clears the same way
+  # from either. Broadcasts the new badge count when anything changed.
+  #
+  # @return [Integer] how many were marked
+  def mark_notifications_read!
+    marked = notifications.pending.update_all(read: true, updated_at: Time.current)
+    BroadcastService.new.notification_badge(Notification.pending_count) if marked.positive?
+    marked
+  end
+
   # Records a human "view" of this session (opening its page or drawer in the
   # web UI) as user activity. A view is genuine human engagement — "eyes on the
   # session" — so it shares the same last_user_activity_at marker that
