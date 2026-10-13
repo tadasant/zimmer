@@ -111,4 +111,3 @@ class Api::V1::SessionsBoardFiltersTest < ActionDispatch::IntegrationTest
     assert_match(/a status or a list/, JSON.parse(response.body)["message"])
   end
 end
-

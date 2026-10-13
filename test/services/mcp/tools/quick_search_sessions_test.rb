@@ -365,4 +365,3 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     assert_match(/No sessions found|found 0|0 sessions/i, @tool.call("query" => "Rotate the deploy key", "agent_root" => "no-such-root"))
   end
 end
-
