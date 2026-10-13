@@ -27,8 +27,8 @@ public protocol SessionActionsAPI: Sendable {
     /// Deliver now, ending the turn in flight — the web UI's "Send Now".
     func sendNow(_ id: Int, prompt: String) async throws -> FollowUpResult
     /// Move to the trash as the web UI's Trash does: a session with a turn in flight goes
-    /// outright, ending the turn; one with messages queued for it is refused until `force`,
-    /// the web UI's *Archive anyway*.
+    /// outright, ending the turn (`end_turn`); one with messages queued for it is refused
+    /// until `force`, the web UI's *Archive anyway*.
     func trash(_ id: Int, force: Bool) async throws -> TrashOutcome
     /// Restore from the trash.
     func unarchive(_ id: Int) async throws -> SessionSummary
@@ -224,7 +224,8 @@ extension ZimmerHTTPClient {
     public func trash(_ id: Int, force: Bool) async throws -> TrashOutcome {
         let segment = ZimmerPathComponent(String(id))
         let raw = try await perform(method: "POST", path: "/api/v1/sessions/\(segment)/archive", query: [:],
-                                    body: try JSONSerialization.data(withJSONObject: ["force": force]), accepting: [422])
+                                    body: try JSONSerialization.data(withJSONObject: ["force": force, "end_turn": true], options: [.sortedKeys]),
+                                    accepting: [422])
         guard raw.statusCode == 422 else {
             do {
                 return .trashed(try ZimmerJSON.decoder.decode(ArchiveResponse.self, from: raw.body).session)
@@ -236,10 +237,9 @@ extension ZimmerHTTPClient {
         switch refusal?.error {
         case TrashOutcome.queuedRefusal:
             return .queued
-        case TrashOutcome.liveTurnRefusal where !force:
-            // The server checks the queue before the turn, so nothing is queued: the web UI
-            // trashes it outright, and so does this.
-            return try await trash(id, force: true)
+        case TrashOutcome.liveTurnRefusal:
+            // A server from before `end_turn`. Its message is written for an agent.
+            throw ZimmerError.http(status: 422, message: "A turn is in flight. Pause the session first, or trash it once the turn ends.")
         default:
             throw ZimmerError.http(status: 422, message: refusal?.message)
         }
@@ -327,7 +327,9 @@ extension ZimmerHTTPClient {
     }
 
     public func bulkArchive(_ ids: [Int]) async throws -> BulkArchiveResult {
-        let response: BulkArchiveResult = try await post("/api/v1/sessions/bulk_archive", json: ["session_ids": ids])
+        // `end_turn`, as the web UI's bulk Trash: a session mid-turn goes, one with a queue
+        // is reported.
+        let response: BulkArchiveResult = try await post("/api/v1/sessions/bulk_archive", json: ["session_ids": ids, "end_turn": true])
         return response
     }
 

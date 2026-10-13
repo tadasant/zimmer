@@ -11,7 +11,7 @@ final class SessionActionsUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func test_open_a_session_answer_it_and_archive_it() throws {
+    func test_open_a_session_answer_it_and_trash_it() throws {
         let app = launch()
 
         let row = app.descendants(matching: .any)["session.row.1038"]
@@ -57,7 +57,7 @@ final class SessionActionsUITests: XCTestCase {
         queued.tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.summary"].waitForExistence(timeout: timeout))
         app.buttons["detail.archive"].tap()
-        let anyway = app.buttons["trash.anyway"]
+        let anyway = app.buttons["Trash anyway"].firstMatch
         XCTAssertTrue(anyway.waitForExistence(timeout: timeout))
         attachScreenshot(app, named: "trash-queued")
         anyway.tap()

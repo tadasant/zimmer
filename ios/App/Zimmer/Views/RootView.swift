@@ -45,7 +45,6 @@ extension RootView {
                 Button("Trash anyway", role: .destructive) {
                     Task { await model.trash(session, force: true) }
                 }
-                .accessibilityIdentifier("trash.anyway")
             } message: { _ in
                 Text("Messages are waiting to be delivered to this session. Trashing it discards them.")
             }
