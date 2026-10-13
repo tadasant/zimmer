@@ -71,6 +71,9 @@ struct QueueCard: View {
             }
         }
         .sheet(isPresented: $managing) { QueueManager(model: model) }
+        // A read while the manager is open would move rows under a finger.
+        .onChange(of: managing) { _, open in model.pollPaused = open || editing != nil }
+        .onChange(of: editing) { _, message in model.pollPaused = message != nil || managing }
     }
 }
 
