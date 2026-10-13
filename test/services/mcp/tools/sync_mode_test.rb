@@ -109,6 +109,18 @@ class Mcp::Tools::SyncModeTest < ActiveSupport::TestCase
     assert_includes result, "The prompt was sent all the same"
   end
 
+  test "a wait that fails after the prompt was sent still hands back the session" do
+    Sessions::SyncReply.any_instance.stubs(:wait).raises(ActiveRecord::ConnectionTimeoutError)
+
+    result = Mcp::Tools::QuickRouter.new(context: context(base_url: "https://zimmer.example"))
+      .call("prompt" => "hello", "sync" => true)
+
+    session = Session.order(:id).last
+    assert_includes result, "- **ID:** #{session.id}"
+    assert_includes result, "https://zimmer.example/sessions/#{session.id}"
+    assert_includes result, "the wait failed (ActiveRecord::ConnectionTimeoutError)"
+  end
+
   # --- action_session follow_up -----------------------------------------------
 
   test "follow_up with sync to an idle session returns that turn's reply, not the previous one" do

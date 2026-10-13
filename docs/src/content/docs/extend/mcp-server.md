@@ -774,10 +774,12 @@ web thread while you wait, and `follow_up` refuses `sync` on the calling session
 
 **Which turn is "the answer".** For a new session it is the first turn. For a follow-up to an idle
 session it is the turn the follow-up starts. A follow-up to a running session goes into its queue, and
-the wait runs through the turn already underway, then through the queued prompt's own turn. A pause that
-ended an earlier turn is never mistaken for the answer, and neither is an earlier turn's reply.
-`needs_input_count` marks where a turn ends and the transcript says what it said; both are read at the
-moment the prompt is delivered.
+the wait runs through the turn already underway, then through the queued prompt's own turn. With
+`force_immediate` the running turn is interrupted and the wait starts with the prompt's turn. The pause
+that ended an earlier turn does not count as the answer, and neither does that turn's reply.
+`needs_input_count` (bumped by every pause) marks where a turn ends, and the transcript says what it
+said. A turn handed straight to a queued message ends without a pause, so the start of the next turn
+in the transcript ends it instead. Zimmer's own recovery nudges continue the turn rather than end it.
 
 **How the turn can end**, each said in the result:
 
@@ -787,16 +789,20 @@ moment the prompt is delivered.
 | `waiting`, asleep | It armed a wake-up of its own and went to sleep; it resumes itself. |
 | moved on | It finished this turn and has already started the next, from a queued message or a resumed turn. The reply is still this turn's. |
 | blocked on an approval | It is paused mid-turn on an MCP elicitation. Answer it with `respond_to_elicitation`. |
+| stood down | Zimmer parked the turn before the agent ran it, for example because no Claude account was usable. It is retried on its own. |
 | `archived` | It finished and archived itself, including straight from `running`. |
 | `failed` | `get_session` says why. |
-| undelivered | The queued prompt was marked undelivered and never reached the session. |
+| undelivered | The queued prompt never reached the session: it was marked undelivered, or removed from the queue. |
 
 A Zimmer restart of a lost process (`paused_by: "recovery"`) is not the end of the turn, and the wait
 continues. A Quick Router usually answers by starting a session for the real work. That session is listed
 and **not** waited on: its work can take an hour, and the router's reply already says what it started.
 
-**Timeout.** `sync_timeout_seconds` defaults to and is capped at 90, the longest a request survives the
-proxies in front of production ([How long a request may take](/operate/deploying/#how-long-a-request-may-take)).
+**Timeout.** `sync_timeout_seconds` defaults to 55, under the 60-second request timeout the MCP
+TypeScript SDK and many clients default to: a client that gives up first never sees the session id it
+needs to fall back. It is capped at 90, the longest a request survives the proxies in front of production
+([How long a request may take](/operate/deploying/#how-long-a-request-may-take)). Ask for more only when
+your client waits that long.
 When it runs out, the result says the session is still working and gives its id, URL, status and
 anything it has said so far. The caller goes back to polling `get_session`; the session itself is not
 touched.

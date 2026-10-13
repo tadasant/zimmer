@@ -16,18 +16,22 @@ module Sessions
   #   directly, and on first sight of its EnqueuedMessage leaving the queue for
   #   one that was queued behind a running turn. Any later bump is this turn
   #   ending, so a pause that ended the turn BEFORE ours — the common shape of a
-  #   queued follow-up — is never mistaken for our answer. `archived` and
-  #   `failed` end it whatever the count says; a session that archives itself
-  #   straight from `running` never pauses at all.
-  # * **What it said** — the transcript from the event index snapshotted at the
-  #   same moment: the first user message from there (ours) up to the next one.
-  #   The reply is the last assistant text in that window, so an earlier turn's
-  #   reply is never returned, and neither is a later one when a queued message
-  #   took the next turn before we looked.
+  #   queued follow-up — is never mistaken for our answer. Two endings bump
+  #   nothing and are caught directly: `archived` / `failed` (a session that
+  #   archives itself straight from `running` never pauses), and a turn handed
+  #   straight to a queued message, which shows as a later turn beginning in
+  #   the transcript.
+  # * **What it said** — the transcript from an index read before the send: our
+  #   user message (for a queued prompt, the first one carrying our words) up to
+  #   the next user message that is not a recovery continuation. The reply is
+  #   the last assistant text in that window, so neither an earlier turn's reply
+  #   nor a later one is returned.
   #
-  # A recovery pause (`paused_by: "recovery"`) is Zimmer restarting a process
-  # it lost mid-turn, not the turn ending, so it moves the baseline and the wait
-  # goes on.
+  # Not every pause is an answer. A recovery pause (`paused_by: "recovery"`) is
+  # Zimmer restarting a process it lost mid-turn: it moves the baseline and the
+  # wait goes on. A turn parked before it ran (an empty account pool, a setup
+  # that could not deliver) is reported as stood down, and an MCP approval
+  # request as blocked, not as answered.
   #
   # NO RECURSION. A Quick Router answers by starting a child session. The child
   # is listed — id, title, status, URL — and not waited on: its work can take
@@ -59,7 +63,13 @@ module Sessions
     # config/deploy.yml so that they are not the tighter one. 90 leaves the
     # create, the render and the hops their margin.
     MAX_TIMEOUT_SECONDS = Integer(ENV.fetch("MCP_SYNC_MAX_TIMEOUT_SECONDS", "90"))
-    DEFAULT_TIMEOUT_SECONDS = MAX_TIMEOUT_SECONDS
+
+    # What a caller gets without asking. Lower than the ceiling because the
+    # client has a clock too: the MCP TypeScript SDK gives up on a request after
+    # 60s by default, and a client that gives up never sees the session id —
+    # the one thing it needs to fall back to polling. A caller that knows its
+    # client waits longer asks for more.
+    DEFAULT_TIMEOUT_SECONDS = [ Integer(ENV.fetch("MCP_SYNC_DEFAULT_TIMEOUT_SECONDS", "55")), MAX_TIMEOUT_SECONDS ].min
     MIN_TIMEOUT_SECONDS = 1
 
     MAX_CONCURRENT_WAITS = Integer(ENV.fetch("MCP_SYNC_MAX_CONCURRENT_WAITS", "1"))
@@ -75,8 +85,24 @@ module Sessions
     # How a wait ended. Everything but :timed_out and :over_capacity means the
     # turn is over.
     OUTCOMES = %i[
-      needs_input asleep moved_on blocked_on_elicitation archived failed undelivered timed_out over_capacity
+      needs_input asleep moved_on blocked_on_elicitation stood_down archived failed undelivered timed_out
+      over_capacity
     ].freeze
+
+    # User messages Zimmer writes to resume a turn it lost (a restarted process,
+    # an OOM kill, a rebuilt clone). They continue our turn rather than start the
+    # next one, so the reply window runs on through them. Matched on each
+    # template's fixed opening, up to its first placeholder.
+    CONTINUATION_PREFIXES = [
+      AutomatedPrompts::SYSTEM_RECOVERY,
+      AutomatedPrompts::MEMORY_LIMIT_RECOVERY_TEMPLATE,
+      AutomatedPrompts::SHARED_MEMORY_LIMIT_RECOVERY_TEMPLATE,
+      AutomatedPrompts::LOST_CLONE_RECOVERY_TEMPLATE
+    ].map { |template| template.split("%{").first.squish.first(160) }.freeze
+
+    # What the transcript says about our turn: whether our prompt has arrived,
+    # whether a later turn has begun after it, and what was said in between.
+    TurnWindow = Struct.new(:started, :over, :texts)
 
     Result = Struct.new(:session, :outcome, :reply, :reply_truncated, :children, :elapsed_seconds,
                         :queued_position, keyword_init: true) do
@@ -117,9 +143,11 @@ module Sessions
 
     # A new session's first turn: nothing has paused and nothing is in the
     # transcript before it. The same coordinates serve an idempotent replay of
-    # the create, however far that session has got since.
+    # the create, however far that session has got since — and so do the
+    # sessions it started, counted from its creation rather than the replay.
     def self.first_turn(session, prompt:)
-      new(session: session, prompt: prompt, needs_input_count: 0, transcript_index: 0)
+      new(session: session, prompt: prompt, needs_input_count: 0, transcript_index: 0,
+          children_since: session.created_at)
     end
 
     # The coordinates for a prompt that starts an existing session's next turn
@@ -130,23 +158,31 @@ module Sessions
           transcript_index: session.transcript_line_count)
     end
 
-    # The coordinates for a prompt that went into the session's queue: they are
-    # read when the message is seen to leave it.
-    def self.queued(session, prompt:, enqueued_message:)
-      new(session: session, prompt: prompt, enqueued_message_id: enqueued_message.id)
+    # The coordinates for a prompt that went into the session's queue. The
+    # pause baseline is read when the message is seen to leave the queue. The
+    # transcript is read from where it stood at the enqueue, and our turn starts
+    # at the first user message carrying our words — however late the waiter
+    # notices the delivery, the window cannot begin after our prompt.
+    # `transcript_index` is read by the caller BEFORE it queues the message.
+    def self.queued(session, prompt:, enqueued_message:, transcript_index:)
+      new(session: session, prompt: prompt, enqueued_message_id: enqueued_message.id,
+          transcript_index: transcript_index, match_prompt: true)
     end
 
     def initialize(session:, prompt:, needs_input_count: nil, transcript_index: nil, enqueued_message_id: nil,
-                   clock: Process)
+                   match_prompt: false, children_since: nil, clock: Process)
       @session_id = session.id
       @session = session
       @prompt = prompt.to_s
       @needs_input_count = needs_input_count
       @transcript_index = transcript_index
       @enqueued_message_id = enqueued_message_id
+      @match_prompt = match_prompt
       @clock = clock
-      @sent_at = Time.current
+      @children_since = children_since || (Time.current - 1.second)
     end
+
+    attr_reader :session_id
 
     # Wait up to `timeout` seconds. Always returns a Result; never raises for a
     # session that misbehaves, because the prompt has already been delivered and
@@ -192,25 +228,49 @@ module Sessions
 
       count = @session.needs_input_transition_count
       if count > @needs_input_count
+        # Zimmer restarting a process it lost: the same turn, carried on.
         if @session.needs_input? && @session.recovery_pause?
           @needs_input_count = count
           return nil
         end
 
-        return :needs_input if @session.needs_input?
-        return :asleep if @session.waiting? && @session.armed_one_time_wake?
-
-        return :moved_on
+        return answered(paused_outcome)
       end
 
+      # Paused mid-turn on an approval, without the turn ending.
       return :blocked_on_elicitation if @session.needs_input? && @session.blocked_on_elicitation?
+      # A turn handed straight to a queued message ends without a pause, so the
+      # count cannot say so; the transcript can, by a later turn beginning.
+      return answered(:moved_on) if turn_window.over
 
       nil
     end
 
-    # For a queued prompt: has it left the queue? The baseline is read at the
-    # first sight of that, before the turn it starts can have ended — the spawn
-    # alone takes longer than a backstop interval.
+    # How a turn that paused came to rest.
+    def paused_outcome
+      # A turn Zimmer parked before the agent ever ran it (an empty account pool,
+      # an undeliverable setup) pauses like any other, with nothing said.
+      return :stood_down if @session.turn_stood_down_before_it_ran?
+      # `block_on_elicitation` counts as a pause too.
+      return :blocked_on_elicitation if @session.needs_input? && @session.blocked_on_elicitation?
+      return :needs_input if @session.needs_input?
+      return :moved_on if @session.running?
+      return :asleep if @session.armed_one_time_wake? || !Sessions::LiveTurn.coming?(@session)
+
+      :moved_on
+    end
+
+    # A queued prompt that the turn it should have started never carried —
+    # cancelled from the queue, say — is not an answer.
+    def answered(outcome)
+      return :undelivered if @match_prompt && !turn_window.started
+
+      outcome
+    end
+
+    # For a queued prompt: has it left the queue? The pause baseline is read at
+    # the first sight of that. Every move the handoff makes is a status change,
+    # so the sight comes on a ring, long before the turn it starts can end.
     def delivered?
       return true if @needs_input_count
 
@@ -222,13 +282,12 @@ module Sessions
       return false if message && %w[pending processing].include?(message.status)
 
       @needs_input_count = @session.needs_input_transition_count
-      @transcript_index = @session.transcript_line_count
       true
     end
 
     def result(outcome, started)
       @session = Session.find(@session_id)
-      reply, truncated = reply_text
+      reply, truncated = finish_reply(turn_window.texts)
       Result.new(
         session: @session,
         outcome: outcome,
@@ -240,34 +299,48 @@ module Sessions
       )
     end
 
-    # The last assistant text of our turn — or, while it is still running, of
-    # what it has said so far. Nil when nothing has been said, or when the
-    # prompt never left the queue.
-    def reply_text
-      return [ nil, false ] if @transcript_index.nil?
+    # Scanned again only when the transcript has grown since the last look.
+    def turn_window
+      lines = @session.transcript_line_count
+      return @turn_window if @turn_window && @scanned_lines == lines
 
-      texts = []
-      started = false
+      @scanned_lines = lines
+      @turn_window = scan_transcript(lines)
+    end
+
+    # From the baseline index: our turn opens at the first user message (or,
+    # for a queued prompt, the first carrying our words) and runs until a user
+    # message that is neither ours nor a recovery continuation. The reply is
+    # the last assistant text in between — or, mid-turn, the latest so far.
+    def scan_transcript(lines)
+      window = TurnWindow.new(false, false, [])
+      return window if @transcript_index.nil? || lines <= @transcript_index
+
       normalizer = TranscriptRuntime.normalizer_for(@session)
       source = TranscriptRuntime.source_for(@session)
       catch(:turn_over) do
-        @session.each_transcript_line(@transcript_index, @session.transcript_line_count) do |index, line|
+        @session.each_transcript_line(@transcript_index, lines) do |index, line|
           source.parse_events(line).each do |raw|
             normalizer.normalize(raw, session: @session, transcript_index: index).each do |event|
               next if OpenTranscript.blank_message?(event)
 
               case event[:type]
               when OpenTranscript::Types::USER_MESSAGE
-                throw :turn_over if started && !own_prompt?(event)
-                started = true
+                text = TranscriptTextRenderer.content_text(event[:content]).squish
+                if !window.started
+                  window.started = true if !@match_prompt || own_prompt?(text)
+                elsif !own_prompt?(text) && !continuation?(text)
+                  window.over = true
+                  throw :turn_over
+                end
               when OpenTranscript::Types::ASSISTANT_MESSAGE
-                texts << TranscriptTextRenderer.content_text(event[:content]).strip if started
+                window.texts << TranscriptTextRenderer.content_text(event[:content]).strip if window.started
               end
             end
           end
         end
       end
-      finish_reply(texts)
+      window
     end
 
     def finish_reply(texts)
@@ -278,17 +351,20 @@ module Sessions
       [ "…#{text[-REPLY_MAX_CHARS..]}", true ]
     end
 
-    # A second user message that carries our own words is the same turn (a
-    # resumed delivery can repeat the prompt); any other user message is the
-    # next turn starting.
-    def own_prompt?(event)
+    # Our words, possibly inside a wrapper Zimmer adds. A resumed delivery can
+    # repeat them, and that is still our turn.
+    def own_prompt?(text)
       head = @prompt.squish.first(80)
-      head.present? && TranscriptTextRenderer.content_text(event[:content]).squish.include?(head)
+      head.present? && text.include?(head)
+    end
+
+    def continuation?(text)
+      CONTINUATION_PREFIXES.any? { |prefix| text.start_with?(prefix) }
     end
 
     def children
       Session.where(parent_session_id: @session_id)
-        .where(created_at: (@sent_at - 1.second)..)
+        .where(created_at: @children_since..)
         .order(:id)
         .limit(CHILDREN_LIMIT)
         .to_a

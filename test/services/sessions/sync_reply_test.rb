@@ -55,6 +55,20 @@ module Sessions
       assert_equal "needs_input", result.session.status
     end
 
+    # The real state machine, not a hand-written status: `pause!` is what
+    # AgentSessionJob calls when a turn ends, and its counter bump is the signal.
+    test "a real pause! ends the wait" do
+      session = create_session(status: :running, prompt: "say pong")
+      waiter = SyncReply.first_turn(session, prompt: "say pong")
+      with_transcript(session, user_line("say pong"), assistant_line("pong"))
+      session.reload.pause!
+
+      result = waiter.wait(timeout: 2)
+
+      assert_equal :needs_input, result.outcome
+      assert_equal "pong", result.reply
+    end
+
     test "never returns an earlier turn's reply for a follow-up" do
       session = create_session(status: :needs_input, prompt: "first")
       with_transcript(session, user_line("first"), assistant_line("old answer"))
@@ -142,11 +156,13 @@ module Sessions
       assert_equal "finished after the restart", result.reply
     end
 
+    # `block_on_elicitation` bumps the pause count like any pause, so the blocked
+    # check has to come before "rests in needs_input".
     test "a session blocked on an approval request returns what it has said" do
       session = create_session(status: :running, prompt: "send it")
       waiter = SyncReply.first_turn(session, prompt: "send it")
       with_transcript(session, user_line("send it"), assistant_line("asking for approval"))
-      session.update!(status: :needs_input)
+      end_turn!(session)
       Session.any_instance.stubs(:blocked_on_elicitation?).returns(true)
 
       result = waiter.wait(timeout: 2)
@@ -188,7 +204,8 @@ module Sessions
       session.update!(custom_metadata: { "needs_input_count" => 3 })
       with_transcript(session, user_line("earlier work"))
       message = session.enqueued_messages.create!(content: "queued question", position: 1, status: "pending")
-      waiter = SyncReply.queued(session, prompt: "queued question", enqueued_message: message)
+      waiter = SyncReply.queued(session, prompt: "queued question", enqueued_message: message,
+                                transcript_index: session.transcript_line_count)
 
       # The turn ahead ends and pauses before the queue drains. Not our answer.
       with_transcript(session.reload, user_line("earlier work"), assistant_line("earlier answer"))
@@ -215,7 +232,7 @@ module Sessions
     test "a queued prompt marked undelivered ends the wait" do
       session = create_session(status: :running, prompt: "earlier")
       message = session.enqueued_messages.create!(content: "never sent", position: 1, status: "pending")
-      waiter = SyncReply.queued(session, prompt: "never sent", enqueued_message: message)
+      waiter = SyncReply.queued(session, prompt: "never sent", enqueued_message: message, transcript_index: 0)
       message.update_columns(status: "undelivered")
 
       assert_equal :undelivered, waiter.wait(timeout: 2).outcome
@@ -263,11 +280,108 @@ module Sessions
     end
 
     test "the timeout is clamped to what the transport tolerates" do
+      assert_equal 55, SyncReply::DEFAULT_TIMEOUT_SECONDS
       assert_equal SyncReply::DEFAULT_TIMEOUT_SECONDS, SyncReply.timeout_from(nil)
       assert_equal SyncReply::MAX_TIMEOUT_SECONDS, SyncReply.timeout_from(600)
       assert_equal 30.0, SyncReply.timeout_from("30")
       assert_raises(ArgumentError) { SyncReply.timeout_from("soon") }
       assert_raises(ArgumentError) { SyncReply.timeout_from(-1) }
+    end
+
+    # The enqueued-message handoff ends a turn without pausing: no count bump,
+    # and the session goes straight on to the next turn.
+    test "a turn handed straight to a queued message is over when the next turn begins" do
+      session = create_session(status: :running, prompt: "mine")
+      waiter = SyncReply.first_turn(session, prompt: "mine")
+      with_transcript(session, user_line("mine"), assistant_line("my answer"))
+      assert_equal :timed_out, waiter.wait(timeout: 0.2).outcome
+
+      with_transcript(session.reload, user_line("mine"), assistant_line("my answer"), user_line("the queued one"))
+      session.update!(status: :waiting)
+
+      result = waiter.wait(timeout: 2)
+      assert_equal :moved_on, result.outcome
+      assert_equal "my answer", result.reply
+    end
+
+    test "a recovery nudge continues the turn rather than ending it" do
+      session = create_session(status: :running, prompt: "long job")
+      waiter = SyncReply.first_turn(session, prompt: "long job")
+      with_transcript(session, user_line("long job"), assistant_line("halfway"),
+                      user_line(AutomatedPrompts.system_recovery), assistant_line("done after the restart"))
+      end_turn!(session)
+
+      result = waiter.wait(timeout: 2)
+      assert_equal :needs_input, result.outcome
+      assert_equal "done after the restart", result.reply
+    end
+
+    test "a turn parked before it ran is stood down, not answered" do
+      session = create_session(status: :waiting, prompt: "do it")
+      waiter = SyncReply.first_turn(session, prompt: "do it")
+      end_turn!(session, metadata: { "auth_outage_reason" => "pool_empty" })
+
+      result = waiter.wait(timeout: 2)
+      assert_equal :stood_down, result.outcome
+      assert_nil result.reply
+    end
+
+    test "a session put to sleep with no wake and no turn coming is asleep, not moved on" do
+      session = create_session(status: :running, prompt: "later")
+      waiter = SyncReply.first_turn(session, prompt: "later")
+      with_transcript(session, user_line("later"), assistant_line("parking in the spot queue"))
+      end_turn!(session, status: :waiting)
+      Sessions::LiveTurn.stubs(:coming?).returns(false)
+
+      assert_equal :asleep, waiter.wait(timeout: 2).outcome
+    end
+
+    test "a queued prompt noticed late still finds its own turn" do
+      session = create_session(status: :running, prompt: "earlier")
+      with_transcript(session, user_line("earlier"))
+      floor = session.transcript_line_count
+      message = session.enqueued_messages.create!(content: "queued question", position: 1, status: "pending")
+      waiter = SyncReply.queued(session, prompt: "queued question", enqueued_message: message, transcript_index: floor)
+
+      # By the first look the queue has drained, our turn has run, and its pause
+      # is already counted — the baseline is read after it.
+      message.destroy!
+      with_transcript(session.reload, user_line("earlier"), assistant_line("earlier answer"),
+                      user_line("queued question"), assistant_line("queued answer"))
+      assert_equal :timed_out, waiter.wait(timeout: 0.2).outcome
+
+      with_transcript(session.reload, user_line("earlier"), assistant_line("earlier answer"),
+                      user_line("queued question"), assistant_line("queued answer"), user_line("next"))
+      session.update!(status: :running)
+
+      result = waiter.wait(timeout: 2)
+      assert_equal :moved_on, result.outcome
+      assert_equal "queued answer", result.reply
+    end
+
+    test "a queued prompt removed from the queue is undelivered, not answered by someone else's turn" do
+      session = create_session(status: :running, prompt: "earlier")
+      session.update!(custom_metadata: { "needs_input_count" => 1 })
+      message = session.enqueued_messages.create!(content: "cancelled one", position: 1, status: "pending")
+      waiter = SyncReply.queued(session, prompt: "cancelled one", enqueued_message: message, transcript_index: 0)
+
+      message.destroy!
+      assert_equal :timed_out, waiter.wait(timeout: 0.2).outcome
+      with_transcript(session.reload, user_line("earlier"), assistant_line("earlier answer"))
+      end_turn!(session)
+
+      result = waiter.wait(timeout: 2)
+      assert_equal :undelivered, result.outcome
+      assert_nil result.reply
+    end
+
+    test "a replayed first-turn wait still lists the sessions the original call's turn started" do
+      router = create_session(status: :running, prompt: "fix it", created_at: 2.minutes.ago)
+      child = create_session(status: :running, parent_session_id: router.id, created_at: 1.minute.ago)
+      waiter = SyncReply.first_turn(router, prompt: "fix it")
+      end_turn!(router)
+
+      assert_equal [ child.id ], waiter.wait(timeout: 2).children.map(&:id)
     end
 
     test "cuts a very long reply from the front" do

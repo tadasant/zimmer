@@ -176,7 +176,7 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         - **With an `idempotency_key`:** on any error, including a timeout, retry with the same key. You get the existing session back, or a new one if the first call really did not land. That is the guarantee; you do not need to go looking. The replayed result reports whether an agent job is queued on that session — if it says none is, the session exists but never started, and `action_session` with `restart` starts it.
         - **Without one:** do NOT retry — a retry duplicates the session, the clone, and the agent's quota slot. Call `quick_search_sessions` with the title you passed and check whether the session already exists.
 
-        **Waiting for the answer — `sync: true`:** with a `prompt`, this call can wait until the session has answered it and return the reply inline, with any sessions it started (listed, not waited on) and its status. The wait is capped at #{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}s (`sync_timeout_seconds`); past it you get the id, URL and anything said so far, and follow with `get_session`. It holds one of the web server's few threads while it waits, so a Zimmer session spawning work should keep using `wake_me_up_when_session_changes_state` instead.
+        **Waiting for the answer — `sync: true`:** with a `prompt`, this call can wait until the session has answered it and return the reply inline, with any sessions it started (listed, not waited on) and its status. The wait lasts `sync_timeout_seconds` (default #{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, at most #{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}); past it you get the id, URL and anything said so far, and follow with `get_session`. It holds one of the web server's few threads while it waits, so a Zimmer session spawning work should keep using `wake_me_up_when_session_changes_state` instead.
 
         **Use cases:**
         - Start a new agent task on a repository
@@ -297,10 +297,11 @@ On a connection restricted to specific agent roots this parameter is rejected ou
       # The usual result, then the session's answer to its first turn. A replay
       # waits on that same turn: it is the one the original call started.
       def with_sync_reply(text, session, wait_for)
-        return text unless wait_for && session.prompt.present?
+        return text unless wait_for
+        return "#{text}\n\n_Not waited on: this session was created without a prompt, so it has no turn to answer._" if session.prompt.blank?
 
         waiter = Sessions::SyncReply.first_turn(session, prompt: session.prompt)
-        "#{text}\n\n#{format_sync_result(await_reply(waiter, wait_for), heading: 'Reply')}"
+        "#{text}\n\n#{sync_reply_section(waiter, wait_for, heading: 'Reply')}"
       end
 
       # A restricted connection must name an allowed root, take that root's
