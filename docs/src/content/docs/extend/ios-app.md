@@ -153,10 +153,10 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   default), Model (the models the session's runtime lists), MCP Servers, Skills, Hooks and Plugins
   (each a checklist of its catalog, from the next turn), the web page's *Scheduling class* select
   (*Derive it*, which clears the class chosen for the session so its genesis decides again and
-  names the class that gives; *Priority*, which starts a waiting session; *Spot*, which on a
-  priority session demotes it to the head of the spot queue as the Ranked view's Demote does, and
-  on a spot one only makes the class its own; all `PATCH /api/v1/sessions/:id` with
-  `scheduling_class`, `null` for *Derive it*), *Precedence* (the session's rank in the spot queue,
+  names the class that gives; *Priority*; *Spot*; each sent as the web select sends it, the class
+  alone with the precedence left as it is, `PATCH /api/v1/sessions/:id` with `scheduling_class`,
+  `null` for *Derive it*; a change that makes a waiting session priority starts it, as the
+  server does on any change into priority), *Precedence* (the session's rank in the spot queue,
   higher worked first, with the web page's note on what it does for this session), the
   heartbeat (the web's heart and its popout: on or off, and *Beat every* from 30 seconds to an
   hour, `PATCH /api/v1/sessions/:id/heartbeat` with `interval_seconds`, which leaves it on or off
@@ -234,7 +234,11 @@ message sits in the transcript the fork service counts, and no route lists a ses
 elicitations — and come in their own change. So does the rest of the web card's refresh: on the
 web it also resumes a failed session and sends the continue nudge to a stalled waiting one, but
 `POST /api/v1/sessions/:id/refresh` only re-reads the transcript, so the row's refresh is
-*Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy, the web says why a row is *drawn under* a session that did not spawn it — reached through a senior, or placed there because the tree was cut short — and the app says only that it is: the hierarchy nodes do not carry `ceiling_placed`.
+*Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
+the web says why a row is *drawn under* a session that did not spawn it — reached through a
+senior, or placed there because the tree was cut short — and the app says only that it is: the
+hierarchy nodes do not carry `ceiling_placed`. The admin pages (API keys, inference accounts,
+connectors, settings) stay in the browser; *Open in browser* on any session gets you there.
 
 Parts of the web session page wait on the API carrying them. The conversation endpoint returns
 each message's role, words, time and whether it holds a tool call or result, and nothing else, so
@@ -244,8 +248,9 @@ found in the session's own clone (`.claude/skills`, `.claude/commands`), which n
 returns; the app offers the session's catalog skills alone. The web header's per-session push
 notifications bell and the *Context window* (auto-compact window) editor have no API route, and the
 session JSON does not say whether push is on; *Derive it* cannot name the genesis's class while a
-class is chosen, because the API reports only the class in force. The admin pages (API keys, inference accounts, connectors,
-settings) stay in the browser; *Open in browser* on any session gets you there.
+class is chosen, because the API reports only the class in force. A class or precedence changed
+from the app is not in the session's log: the web page writes "Scheduling class set to … (was …)"
+and "Precedence set to … (was …)" there, and `PATCH /api/v1/sessions/:id` writes neither.
 
 ## Two origins
 
