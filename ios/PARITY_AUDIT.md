@@ -4,7 +4,7 @@ A screen-by-screen comparison of the iOS app against the web UI, as a person use
 (the PWA), plus a judgement of each screen's density and look against the Motet iOS app. Each
 finding is tagged **parity** (the PWA can do it, the app cannot), **density** (the app spends
 more screen on it than it should) or **design** (it does not look the way Motet does). Findings
-are grouped into slices, one PR each, and the status column is kept current as they land.
+are grouped into slices, each one PR or a server PR and an app PR, and the status column is kept current as they land.
 
 The web UI's inventory behind this: the Quick Router is `shared/_chat_bubble.html.erb` (on every
 page, `fixed bottom-4 right-4`), the board's phone prompt box is `sessions/index.html.erb`
@@ -24,7 +24,7 @@ tabular digits everywhere, read state shown by dimming rather than by a badge.
 | 3. Board density and type | D10, D11, D13 (D12's search and D14 kept as they were, on reflection) | merged, #1295 |
 | 4. Quick Router advanced and attachments | P3, P4, P5 | merged, #1296 (a parameter change on the same route, no auth change) |
 | 5. The other tabs | D15–D18 (P11 needs a server field; recorded) | merged, #1297 |
-| 6. Transcript parity | P6, P7, P12 | this PR |
+| 6. Transcript parity | P6, P7, P12 | merged, #1298 |
 
 ## Findings, by priority
 
@@ -116,7 +116,7 @@ two screens down.
   inline-only parsing, and code blocks in the monospaced face. **Slice 6.**
 - **P7 — parity.** The PWA's transcript loads tail-first and reads back as you scroll up. The app
   shows the last 100 and says how many it left out. Plan: a *Show earlier* row that raises the
-  limit. **Slice 6.**
+  limit. **Slice 6.** It stops at the server's 200-message cap; see G6.
 - **P12 — parity.** The PWA's transcript has a log-level filter (Minimal / Condensed / Show Logs /
   Verbose). The app folds tool calls behind one toggle and keeps logs on their own screen. Plan:
   Minimal, Condensed and Verbose on the conversation; Show Logs is the logs screen. **Slice 6.**
@@ -135,18 +135,62 @@ two screens down.
   (`session_cost_badge`); the app has it only on the Costs tab. The session JSON carries no cost,
   so this needs a server field first. Recorded; not planned.
 
-### Already at parity or owned elsewhere
+### What this audit got wrong
 
-- Board views, filters, search, swipes, long press, snooze, trash, bulk trash, refresh all, rename,
-  goal, notes, effort, model, catalog, heartbeat, promote/demote, start now, reorder: #1270,
-  #1271, #1274–#1279.
-- Attachments on a follow-up and the new-session form: #1286, #1287.
-- Elicitations and Fork from here: #1281, #1282 (held). Merge and Reprioritize: #1283, #1284
-  (held). Not touched here.
-- Push and CarPlay: #1265, #1266.
-- The admin pages, triggers' create and edit, Health's operator actions: browser by design.
+The first pass matched on feature names. "Filters ✅" was true of the word and false of the control:
+the app had one status chip at a time where the web UI's form ticks any number of statuses and
+narrows them by scheduling class, agent root and genesis together. Tadas hit it on his phone. The
+control-by-control re-audit below replaces the "already at parity" list that stood here, which
+also claimed search, goal, heartbeat, snooze, trash, reorder and promote/demote. Each of those
+turned out partial. The rest of that list (views, swipes, long press, bulk trash, refresh all,
+rename, notes, effort, model, catalog, start now) was checked again and holds.
+
+Owned elsewhere, and still true: push and CarPlay (#1265, #1266); attachments on a follow-up and
+the new-session form (#1286, #1287, #1278).
 
 ### Known limitations kept
 
 - The Running badge does not age as the web's does (no last-activity time in the list).
-- Quick Router sessions from the app are always priority; the PWA's *Run as spot* comes with P3.
+
+## Control-by-control re-audit (2026-10-13)
+
+Every control on every PWA screen, checked against the app and against what the REST API answers
+the app's token. The PWA's views and Stimulus controllers are the reference. One row per gap,
+ordered by how often a person using Zimmer on a phone would hit it. **Server** marks a gap that
+needs an API change first, which is its own clearly-labelled PR. **Held** marks one waiting on a PR
+the merge gate holds for Tadas.
+
+The letters group gaps into slices, each one or two PRs (a server half first where one is needed):
+**A** board filters · **B** keeping current · **C** opening a session (read marks, full content) ·
+**D** the board's rows and trash · **E** waiting and recovery banners · **F** session-page detail
+and the composer · **G** transcript rows, slash commands, desktop-only settings · **H** triggers and
+costs.
+
+| # | Gap | PWA | App today | Server? | Slice / status |
+| --- | --- | --- | --- | --- | --- |
+| G1 | Board filters don't combine | Status checkboxes (any number, *Waiting* included), scheduling class, agent root, genesis, quick filters *All* / *All Unarchived* / *All Priority Unarchived*, remembered in a cookie; Ranked opens on waiting+running+needs_input+failed | One status chip at a time, no *Waiting*, no class/root/genesis, the filter not remembered (the view is), Ranked opens on needs_input | Yes: `agent_root`, several statuses | A: #1304 (server), #1305 (app) |
+| G2 | Nothing updates live | Turbo streams on the board and the session page | Loads once; refreshes only on pull, a filter change or your own action, and not on returning to the app | No (poll and refresh on foreground) | B: #1307 |
+| G3 | A session opens at the top | Opens at the newest message and follows it | Opens at the header; the conversation is below the cards | No | B: #1307 |
+| G4 | MCP prompts can't be answered; no *Fork from here* | Approval banner with the prompt's form; fork from any message | Neither | Yes | Held: #1281, #1282 |
+| G5 | Opening a session doesn't mark it read | Marks all of the session's notifications read and touches *last touched* | From the Inbox, that one notification is marked read; from the board or a push, nothing is, and *last touched* is never set | Yes | C: #1308 (server), #1309 (app) |
+| G6 | Long messages and long histories cut off | Full text; scroll back to the start | Each message cut at 4,000 characters; history stops at 200 messages | Yes: full content, a cursor | C: #1308 (server), #1309 (app) |
+| G7 | Drafts lost | Composer drafts kept for 7 days; an undelivered prompt put back | Lost on leaving the screen | No | B: #1307 |
+| G8 | Trash refuses running or queued sessions, no Undo | Trashes a running session outright; *Archive anyway* only when messages are queued; an Undo toast | The API refuses a live turn or a non-empty queue without `force` (a 422 shown as an error); no undo | Yes: `end_turn` | D: #1312 (server), #1310 (app) |
+| G9 | Status summary unreadable | Markdown with live links (`#message-N`, PRs, sessions); on every *Your board* row | Raw markdown on the session page; not on rows | Yes: `include=board_row` | D: #1311 (server), #1313 (app) |
+| G10 | No "why is it waiting" | Spot hold, queued turn with *Force start*, auth outage with reset time, starvation banners | None | Yes: waiting reason, `force_start` | E |
+| G11 | Merge and Reprioritize | Row *Merge* on *Your board*; *Reprioritize* | Missing | Yes | Held: #1283, #1284 |
+| G12 | Title search silently capped | Pages through every match | 100 matches, no notice | No | A: #1305 says when there are more |
+| G13 | Rows thin | Agent root, Spot/Priority, genesis, precedence, cost, running elapsed | Status, Priority, `#id`, age, PR | Cost and elapsed: yes | D |
+| G14 | Recovery banners missing | MCP OAuth reconnect, lost approval request, undelivered messages | None | No | E |
+| G15 | Board ordering controls | Drag on *Your board*; inline precedence and promote/demote on Ranked rows | Drag only in Ranked's spot queue | No | D: #1313 (Your board drag) |
+| G16 | Session page detail | Goal picked from the catalog with its name; goal check's delegated sessions; hierarchy root, genesis, markers; human messages here/elsewhere and capture gaps; MCP connection status per server | Free-text goal, raw ids, less detail | Mostly no | F |
+| G17 | Composer capture | Camera; paste an image | Photo library and files only | No | F |
+| G18 | Small controls | Custom snooze time, heartbeat interval, per-row refresh and rename, trash expiry date, restart confirm on a takeover | Missing | No | F |
+| G19 | Transcript rows | Thinking, compaction, errors, runtime notices, queue events, image badges; highlighted code with copy | Text and tool calls only; plain code | Yes, for rows | G |
+| G20 | Slash commands | Typeahead from the repo's skills and commands | None | Yes | G |
+| G21 | Desktop-only session settings | Per-session push, auto-compact window, precedence, *Derive* class | Partial | Push, auto-compact: yes | G |
+| G22 | Triggers beyond on/off | Show page toggles for *Enqueue messages* and *Resuscitate archived*; create and edit | List, on/off, invoke | Yes | H (create/edit stays in the browser by choice) |
+| G23 | Costs drill-down | Custom date range, scope to an agent root or a session, burn rate | Fixed windows, fleet only | Burn rate: yes | H |
+| G24 | Outcomes, backlog, gate decisions | Pages of their own | Not in the app | Yes (no token reach) | Not planned: operator surfaces, *Open in browser* |
+| G25 | Settings, API keys, inference, connectors, models, Health's operator actions | Admin pages | Browser | — | Browser by choice |
+
