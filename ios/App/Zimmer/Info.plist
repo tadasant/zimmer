@@ -27,8 +27,6 @@
   * `NSMicrophoneUsageDescription` / `NSSpeechRecognitionUsageDescription` — the CarPlay
     conversation listens for the driver's answer. Without the keys iOS terminates the app
     the first time it asks, rather than showing the permission prompt.
-  * `NSCameraUsageDescription` — the composer's *Take Photo*, the web composer's camera
-    button. The same rule: without it the app is terminated when the camera opens.
 -->
 <plist version="1.0">
 <dict>
@@ -70,8 +68,6 @@
 	<string>In the car, Zimmer listens for your answer to a session that needs you.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>In the car, Zimmer turns what you say into a reply to the session that asked. Recognition stays on this iPhone.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Zimmer takes a photo when you attach one to a message for a session.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

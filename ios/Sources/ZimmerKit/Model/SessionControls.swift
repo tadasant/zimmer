@@ -71,24 +71,30 @@ extension SessionSummary {
     /// takes it over, so the web asks first, in one of three sentences for what the restart
     /// will actually do.
     ///
-    /// The server does not send its answer, so this reads it from the fields it is derived
-    /// from: `session_id` (blank until the agent launches), `metadata.clone_path`,
-    /// `metadata.failure_reason` and `prompt`. One approximation: the server's "never ran"
-    /// also checks that no transcript was stored, which the API does not say; a blank
-    /// `session_id` stands for both, as the spawn pipeline stamps it before the agent writes
-    /// anything.
-    public var restartConfirmation: String? {
+    /// The server does not send its answer, so this works it out from the fields it is derived
+    /// from: `session_id`, `metadata.clone_path`, `metadata.failure_reason` and `prompt`, blank
+    /// when empty or whitespace as Ruby's `present?` reads them. The server's "never ran" is a
+    /// blank `session_id` *and* no stored transcript, and the API does not say whether there
+    /// is a transcript: a session whose runtime id was released as stale keeps its whole
+    /// transcript with a blank id. So `transcriptPresent` is what the caller knows — the session
+    /// page knows whether the conversation it read has messages; the board does not (nil) — and
+    /// a blank id reads as "never ran" only when the transcript is known to be absent.
+    /// Otherwise the takeover is described as continuing the conversation.
+    public func restartConfirmation(transcriptPresent: Bool?) -> String? {
         guard status != .failed else { return nil }
-        let runtimeID = runtimeSessionID ?? ""
-        let failedBeforeInitialPrompt = metadata?.failureReason.map(Self.prePromptFailureReasons.contains) ?? false
-        let setupComplete = !runtimeID.isEmpty && !(metadata?.clonePath ?? "").isEmpty
-        let needsRestartFromScratch = (failedBeforeInitialPrompt && !setupComplete) || (runtimeID.isEmpty && status != .waiting)
+        func present(_ value: String?) -> Bool {
+            !(value ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let failedBeforeInitialPrompt = metadata?.failureReason.map(Self.prePromptFailureReasons.contains) == true
+        let setupComplete = present(runtimeSessionID) && present(metadata?.clonePath)
+        let neverRan = !present(runtimeSessionID) && transcriptPresent == false
+        let needsRestartFromScratch = (failedBeforeInitialPrompt && !setupComplete) || (neverRan && status != .waiting)
         if needsRestartFromScratch {
             return "There is no conversation to continue here — this session's setup never finished. "
                 + "Restarting throws away whatever was set up for it and re-runs the whole pipeline — a "
                 + "fresh clone, a fresh process — with its original prompt. Restart it?"
         }
-        if failedBeforeInitialPrompt, !(prompt ?? "").isEmpty {
+        if failedBeforeInitialPrompt, present(prompt) {
             return "This session's turn died before its prompt was ever delivered. Restarting takes it over "
                 + "and sends that original prompt again, into a freshly spawned runtime. Restart it?"
         }

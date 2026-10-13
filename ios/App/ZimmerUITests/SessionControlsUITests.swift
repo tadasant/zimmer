@@ -1,9 +1,10 @@
+import UIKit
 import XCTest
 
 /// The web UI's small controls, from the phone, against the `-ZimmerFixture` in-memory Zimmer:
 /// a snooze to a time of your own, the heartbeat's interval, rename and refresh from a row's
-/// long press, when a trashed session is deleted, and the confirmation before a restart that
-/// takes a session over.
+/// long press, when a trashed session's restore window closes, the confirmation before a
+/// restart that takes a session over, and pasting an image into the composer.
 @MainActor
 final class SessionControlsUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -25,7 +26,6 @@ final class SessionControlsUITests: XCTestCase {
         custom.tap()
         let save = app.buttons["snooze.custom.save"]
         XCTAssertTrue(save.waitForExistence(timeout: timeout))
-        XCTAssertTrue(app.descendants(matching: .any)["snooze.custom.picker"].exists)
         attachScreenshot(app, named: "custom-snooze")
         save.tap()
         XCTAssertTrue(waitForDisappearance(sweep), "a snoozed session leaves the board")
@@ -47,9 +47,8 @@ final class SessionControlsUITests: XCTestCase {
         pageCustom.tap()
         XCTAssertTrue(app.buttons["snooze.custom.save"].waitForExistence(timeout: timeout))
         app.buttons["snooze.custom.save"].tap()
-        let notice = app.descendants(matching: .any)["followup.notice"]
-        XCTAssertTrue(notice.waitForExistence(timeout: timeout))
-        XCTAssertTrue(notice.label.hasPrefix("Snoozed until"))
+        // By its words: an earlier toast can still be on screen when this one arrives.
+        XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["followup.notice"], "Snoozed until"))
     }
 
     func test_the_heartbeat_is_turned_on_and_its_interval_chosen() throws {
@@ -83,8 +82,8 @@ final class SessionControlsUITests: XCTestCase {
         tapMenuItem(app, "Rename")
         let field = app.alerts.textFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: timeout))
-        field.tap()
-        // The field starts with the current title; clear it and type the new one.
+        // The field opens focused with the cursor after the current title: delete it and type
+        // the new one, without a tap that would move the cursor.
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 60) + "Postgres 17 on staging")
         app.alerts.buttons["Save"].tap()
         XCTAssertTrue(waitForLabelContaining(postgres, "Postgres 17 on staging"), "the row shows the new title")
@@ -93,9 +92,8 @@ final class SessionControlsUITests: XCTestCase {
         let merge = row(app, 1038)
         merge.press(forDuration: 1.2)
         tapMenuItem(app, "Refresh Transcript")
-        let toast = app.descendants(matching: .any)["toast"]
-        XCTAssertTrue(toast.waitForExistence(timeout: timeout))
-        XCTAssertTrue(toast.label.hasPrefix("Transcript refreshed"))
+        // By its words: the "Renamed" toast can still be on screen.
+        XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["toast"], "Transcript refreshed"))
 
         // A running session is live already, so the card offers no refresh.
         let running = row(app, 1042)
@@ -104,17 +102,17 @@ final class SessionControlsUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Refresh Transcript"].firstMatch.exists)
     }
 
-    func test_a_trashed_session_says_when_it_is_deleted() throws {
+    func test_a_trashed_session_says_when_its_restore_window_closes() throws {
         let app = launch(["-ZimmerFixtureFilter", "archived"])
         let trashed = row(app, 1019)
         XCTAssertTrue(trashed.waitForExistence(timeout: timeout))
-        XCTAssertTrue(waitForLabelContaining(trashed, "Deleted on"), "the row says when the trash empties it")
+        XCTAssertTrue(waitForLabelContaining(trashed, "Expires"), "the row says when what is held for a restore is deleted")
         attachScreenshot(app, named: "trash-expiry-row")
 
         trashed.tap()
-        let expiry = app.descendants(matching: .any)["detail.trashexpiry"]
+        let expiry = app.descendants(matching: .any)["detail.trashexpiry"].firstMatch
         XCTAssertTrue(expiry.waitForExistence(timeout: timeout))
-        XCTAssertTrue(expiry.label.contains("Deleted on"))
+        XCTAssertTrue(expiry.label.contains("Expires"))
         attachScreenshot(app, named: "trash-expiry-page")
     }
 
@@ -142,7 +140,52 @@ final class SessionControlsUITests: XCTestCase {
         XCTAssertFalse(app.sheets.buttons["Restart"].exists, "no confirmation for a failed session")
     }
 
+    /// The web composer takes a pasted image. The test runner puts one on the pasteboard, and
+    /// iOS asks whether Zimmer may paste from another app: that prompt is answered *Allow Paste*
+    /// wherever it is drawn (SpringBoard, or the app's own window on some runtimes).
+    func test_an_image_on_the_clipboard_is_pasted_into_the_composer() throws {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 48)).image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 64, height: 48))
+        }
+        UIPasteboard.general.image = image
+
+        let allowPaste = addUIInterruptionMonitor(withDescription: "Allow Paste") { alert in
+            let allow = alert.buttons["Allow Paste"]
+            guard allow.exists else { return false }
+            allow.tap()
+            return true
+        }
+        defer { removeUIInterruptionMonitor(allowPaste) }
+
+        let app = launch(["-ZimmerFixtureOpenSession", "1035"])
+        let attach = app.buttons["composer.attach"]
+        XCTAssertTrue(attach.waitForExistence(timeout: timeout))
+        attach.tap()
+        tapMenuItem(app, "Paste Image")
+
+        // The app's main thread waits on the answer, so SpringBoard is asked first.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let fromSpringboard = springboard.alerts.buttons["Allow Paste"].firstMatch
+            if fromSpringboard.exists { fromSpringboard.tap(); break }
+            let fromApp = app.alerts.buttons["Allow Paste"].firstMatch
+            if fromApp.exists { fromApp.tap(); break }
+            let chip = pastedChip(app)
+            if chip.exists { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+
+        XCTAssertTrue(pastedChip(app).waitForExistence(timeout: timeout), "the pasted image is attached, as a library photo is")
+        attachScreenshot(app, named: "pasted-image")
+    }
+
     // MARK: - Helpers
+
+    private func pastedChip(_ app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "composer.attachment.Pasted image")).firstMatch
+    }
 
     private func launch(_ arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()

@@ -6,17 +6,15 @@ import UniformTypeIdentifiers
 import ZimmerKit
 
 /// The composer's paperclip: the web composer's *Attach image* and *Attach file*, as the
-/// system photo picker and file browser; its camera button, which on a phone opens the rear
-/// camera (`capture="environment"`); and pasting an image, which the web composer takes from
-/// the clipboard into the same attachments.
+/// system photo picker and file browser, and pasting an image, which the web composer takes
+/// from the clipboard into the same attachments.
 struct AttachMenu: View {
-    /// What could be attached, and the names of what could not be read at all.
+    /// What could be attached, and a sentence for each thing that could not be, to show.
     let add: ([MessageAttachment], [String]) -> Void
 
     @State private var photos: [PhotosPickerItem] = []
     @State private var choosingPhotos = false
     @State private var choosingFiles = false
-    @State private var takingPhoto = false
     /// Whether *Paste Image* is offered. Asking the pasteboard whether it holds an image does
     /// not read it, so this shows no paste prompt; the prompt comes with the paste itself.
     @State private var canPasteImage = false
@@ -24,10 +22,6 @@ struct AttachMenu: View {
     var body: some View {
         HStack {
             Menu {
-                // A device without a camera (the simulator, some iPads) is not offered one.
-                if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                    Button { takingPhoto = true } label: { Label("Take Photo", systemImage: "camera") }
-                }
                 Button { choosingPhotos = true } label: { Label("Photo Library", systemImage: "photo.on.rectangle") }
                 Button { choosingFiles = true } label: { Label("Choose Files", systemImage: "folder") }
                 if canPasteImage {
@@ -48,7 +42,7 @@ struct AttachMenu: View {
             guard case let .success(urls) = result else { return }
             Task {
                 let (read, unreadable) = await Self.read(urls)
-                add(read, unreadable)
+                add(read, Self.unreadable(unreadable))
             }
         }
         .onChange(of: photos) { _, items in
@@ -56,20 +50,8 @@ struct AttachMenu: View {
             photos = []
             Task {
                 let (loaded, failed) = await Self.load(items)
-                add(loaded, failed)
+                add(loaded, Self.unreadable(failed))
             }
-        }
-        .fullScreenCover(isPresented: $takingPhoto) {
-            CameraPicker { data in
-                takingPhoto = false
-                guard let data else { return }
-                let stamp = Int(Date().timeIntervalSince1970)
-                Task {
-                    let (taken, failed) = await Self.images([data], named: { _ in "Photo \(stamp).jpg" })
-                    add(taken, failed)
-                }
-            }
-            .ignoresSafeArea()
         }
         .onAppear { canPasteImage = UIPasteboard.general.hasImages }
         // Copied here, or in another app while this one was in the background.
@@ -81,33 +63,46 @@ struct AttachMenu: View {
         }
     }
 
-    /// The images on the pasteboard, through the photo pipeline: as JPEG, scaled to fit.
+    /// The images on the pasteboard, through the photo pipeline: as JPEG, scaled to fit. Reading
+    /// them is what asks the person to allow the paste; a refusal reads as no images.
     private func paste() {
-        let pasted = (UIPasteboard.general.images ?? []).compactMap { $0.jpegData(compressionQuality: 0.9) }
-        let stamp = Int(Date().timeIntervalSince1970)
+        let pasted = (UIPasteboard.general.images ?? []).map(PastedImage.init)
         guard !pasted.isEmpty else {
-            add([], ["The pasted image"])
+            add([], ["Paste not allowed."])
             return
         }
+        let stamp = Int(Date().timeIntervalSince1970)
         Task {
-            let (read, failed) = await Self.images(pasted, named: { "Pasted image \(stamp)-\($0 + 1).jpg" })
-            add(read, failed)
+            let (read, failed) = await Self.images(pasted, stamp: stamp)
+            add(read, Self.unreadable(failed))
         }
     }
 
-    /// Image bytes from the camera or the pasteboard as attachments, re-encoded and scaled off
-    /// the main thread as a library photo is.
-    nonisolated static func images(_ data: [Data], named name: @Sendable (Int) -> String) async -> ([MessageAttachment], [String]) {
+    /// A pasted image, handed off the main thread to be encoded. `UIImage` is immutable and
+    /// documented as safe to use from any thread.
+    struct PastedImage: @unchecked Sendable {
+        let image: UIImage
+    }
+
+    /// Pasted images as attachments, encoded and scaled off the main thread as a library photo
+    /// is: a pasted photo can be twelve megapixels.
+    nonisolated static func images(_ pasted: [PastedImage], stamp: Int) async -> ([MessageAttachment], [String]) {
         var images: [MessageAttachment] = []
         var failed: [String] = []
-        for (index, bytes) in data.enumerated() {
-            guard let jpeg = jpeg(from: bytes) else {
-                failed.append(name(index))
+        for (index, item) in pasted.enumerated() {
+            let name = "Pasted image \(stamp)-\(index + 1).jpg"
+            guard let data = item.image.jpegData(compressionQuality: 0.9), let jpeg = jpeg(from: data) else {
+                failed.append(name)
                 continue
             }
-            images.append(MessageAttachment(filename: name(index), mediaType: "image/jpeg", data: jpeg))
+            images.append(MessageAttachment(filename: name, mediaType: "image/jpeg", data: jpeg))
         }
         return (images, failed)
+    }
+
+    /// What is said about each thing that could not be read at all.
+    nonisolated static func unreadable(_ names: [String]) -> [String] {
+        names.map { "\($0) couldn't be read." }
     }
 
     /// Photos as JPEG, decoded and downsampled off the main thread: the library hands back
@@ -174,42 +169,6 @@ struct AttachMenu: View {
             read.append(MessageAttachment(filename: url.lastPathComponent, mediaType: type, data: data))
         }
         return (read, unreadable)
-    }
-}
-
-/// The rear camera, for one photo: the web composer's camera button. `finish` gets the
-/// photo's bytes, or nil when the person cancelled.
-struct CameraPicker: UIViewControllerRepresentable {
-    let finish: (Data?) -> Void
-
-    func makeUIViewController(context: Context) -> UIImagePickerController {
-        let picker = UIImagePickerController()
-        picker.sourceType = .camera
-        picker.cameraDevice = .rear
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateUIViewController(_ picker: UIImagePickerController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(finish: finish) }
-
-    @MainActor
-    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
-        let finish: (Data?) -> Void
-
-        init(finish: @escaping (Data?) -> Void) {
-            self.finish = finish
-        }
-
-        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
-            let image = info[.originalImage] as? UIImage
-            finish(image?.jpegData(compressionQuality: 0.9))
-        }
-
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            finish(nil)
-        }
     }
 }
 
