@@ -394,7 +394,7 @@ struct CostsView: View {
     var body: some View {
         List {
             windowPicker
-            if !scope.isFleet { scopeBanner }
+            if !shownScope.isFleet { scopeBanner }
             if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
             if let snapshot {
                 Section {
@@ -463,7 +463,7 @@ struct CostsView: View {
                 .accessibilityIdentifier("costs.range.from")
             DatePicker("To", selection: $rangeTo, in: ...Date(), displayedComponents: .date)
                 .accessibilityIdentifier("costs.range.to")
-            Button("Show This Range") { window = .custom(from: rangeFrom, to: rangeTo) }
+            Button("Show This Range") { showRange() }
                 .foregroundStyle(Theme.accent)
                 .accessibilityIdentifier("costs.range.apply")
         } footer: {
@@ -482,8 +482,25 @@ struct CostsView: View {
             if case let .days(days) = window { return days }
             return 0
         } set: { days in
-            window = days == 0 ? .custom(from: rangeFrom, to: rangeTo) : .days(days)
+            if days == 0 { showRange() } else { window = .days(days) }
         }
+    }
+
+    /// The two fields as a window, and the fields set to what it resolved to: swapped if
+    /// they were the wrong way round, a year at most.
+    private func showRange() {
+        let range = CostWindow.custom(from: rangeFrom, to: rangeTo)
+        if case let .range(from, to) = range {
+            rangeFrom = from
+            rangeTo = to
+        }
+        window = range
+    }
+
+    /// What the figures on screen cover, as the server read the request: until a new
+    /// scope's figures arrive, the banner keeps describing the ones still showing.
+    private var shownScope: CostScope {
+        snapshot?.scope ?? scope
     }
 
     /// The drilldown's own statement of what it is, without which a narrowed page reads as a
@@ -491,7 +508,7 @@ struct CostsView: View {
     private var scopeBanner: some View {
         Section {
             VStack(alignment: .leading, spacing: 4) {
-                switch scope {
+                switch shownScope {
                 case let .agentRoot(root):
                     HStack(spacing: 5) {
                         Text("Agent root").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
@@ -527,6 +544,7 @@ struct CostsView: View {
                 .accessibilityIdentifier("costs.scope.clear")
             }
             .padding(.vertical, 2)
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("costs.scope")
         }
         .themeRows()

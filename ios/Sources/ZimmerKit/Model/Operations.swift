@@ -122,6 +122,8 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
     /// Over its sessions-per-minute cap: spawns are suppressed until the burst subsides.
     public var bursting: Bool
     public var maxSessionsPerMinute: Int?
+    /// Seconds within which Slack messages are one event; nil inherits the default, 0 is off.
+    public var coalesceWindowSeconds: Int?
     public var promptTemplate: String?
     public var goal: String?
 
@@ -140,6 +142,7 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
         case skipIfPendingSession = "skip_if_pending_session"
         case missedFireCount = "missed_fire_count"
         case maxSessionsPerMinute = "max_sessions_per_minute"
+        case coalesceWindowSeconds = "coalesce_window_seconds"
         case promptTemplate = "prompt_template"
     }
 
@@ -147,7 +150,7 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
                 lastTriggeredAt: Date? = nil, lastSessionID: Int? = nil, sessionsCreated: Int? = nil, conditions: [Condition] = [],
                 failedAt: Date? = nil, agentRootMissing: Bool = false, reuseSession: Bool = false, enqueueMessages: Bool = false,
                 resuscitateArchived: Bool = false, skipIfPendingSession: Bool = false, missedFireCount: Int = 0,
-                bursting: Bool = false, maxSessionsPerMinute: Int? = nil, promptTemplate: String? = nil, goal: String? = nil) {
+                bursting: Bool = false, maxSessionsPerMinute: Int? = nil, coalesceWindowSeconds: Int? = nil, promptTemplate: String? = nil, goal: String? = nil) {
         self.id = id
         self.name = name
         self.status = status
@@ -166,6 +169,7 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
         self.missedFireCount = missedFireCount
         self.bursting = bursting
         self.maxSessionsPerMinute = maxSessionsPerMinute
+        self.coalesceWindowSeconds = coalesceWindowSeconds
         self.promptTemplate = promptTemplate
         self.goal = goal
     }
@@ -191,6 +195,7 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
         bursting = flag(.bursting)
         missedFireCount = ((try? container.decodeIfPresent(Int.self, forKey: .missedFireCount)) ?? nil) ?? 0
         maxSessionsPerMinute = try? container.decodeIfPresent(Int.self, forKey: .maxSessionsPerMinute)
+        coalesceWindowSeconds = try? container.decodeIfPresent(Int.self, forKey: .coalesceWindowSeconds)
         promptTemplate = try? container.decodeIfPresent(String.self, forKey: .promptTemplate)
         goal = try? container.decodeIfPresent(String.self, forKey: .goal)
     }
@@ -211,6 +216,7 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
         if enqueueMessages { badges.append("Enqueues messages") }
         if resuscitateArchived { badges.append("Resuscitates archived") }
         if skipIfPendingSession { badges.append("Skips while pending") }
+        if coalesceWindowSeconds == 0 { badges.append("No coalescing") }
         if missedFireCount > 0 { badges.append(missedFireCount == 1 ? "1 missed fire" : "\(missedFireCount) missed fires") }
         if bursting { badges.append("Bursting") }
         return badges
@@ -347,8 +353,9 @@ public enum CostWindow: Hashable, Sendable {
     }
 
     /// `days`, or `from` and `to` as instants: the start of the first day and the last
-    /// moment of the last, as the web UI reads its two dates. The API parses bare dates as
-    /// midnight, which would drop the last day, so the bounds go as timestamps.
+    /// moment of the last in `calendar`'s zone, as the web UI reads its two dates. The API
+    /// parses bare dates as midnight, which would drop the last day, so the bounds go as
+    /// timestamps — written in UTC, so no offset's sign has to survive the query string.
     public func query(calendar: Calendar = .current) -> [String: String] {
         switch self {
         case let .days(days):
@@ -356,7 +363,7 @@ public enum CostWindow: Hashable, Sendable {
         case let .range(from, to):
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            formatter.timeZone = calendar.timeZone
+            formatter.timeZone = TimeZone(identifier: "UTC")
             let start = calendar.startOfDay(for: from)
             let nextDay = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: to)) ?? to
             return ["from": formatter.string(from: start), "to": formatter.string(from: nextDay.addingTimeInterval(-0.001))]
