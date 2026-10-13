@@ -1,9 +1,10 @@
 # frozen_string_literal: true
 
-# Keeps WarmClonePool full: builds a ready clone of the router root's repository
-# when the pool is short, and recycles clones that have aged out.
+# Keeps WarmClonePool full: builds a ready clone of each repository
+# WarmPoolPolicy names when the pool is short of it, and recycles clones that
+# have aged out.
 #
-# Enqueued by AgentSessionJob on every claim, so the next Quick Router request
+# Enqueued by AgentSessionJob on every claim, so the next session on that key
 # finds a clone within one build (~10s), and on a one-minute cron as the
 # backstop that converges after a deploy, a failed build, or a claim whose
 # enqueue was absorbed by the singleton guard while a pass was already running.

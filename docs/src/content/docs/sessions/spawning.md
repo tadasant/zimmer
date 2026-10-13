@@ -480,10 +480,9 @@ about 19.5 seconds from creation to the router's first model output, and the clo
 seconds of that (9.6–28 seconds; the same clone takes about 7 seconds on an otherwise idle host). `air prepare`, the OAuth gate and the system prompt together took under a second.
 Claude Code's boot and MCP handshake took about 2 seconds, and the first model token about 2 more.
 
-`WarmClonePool` does that clone ahead of time. It keeps one ready clone of the router root's
-repository in `<clones base>/.warm-clones/<key>/`. On a fresh start, a session on the router root
-(every Quick Router entry point creates one) passes `warm: true` to `GitCloneService.create_clone`,
-which:
+`WarmClonePool` does that clone ahead of time. It keeps ready clones in
+`<clones base>/.warm-clones/<key>/`, one directory per (repository, branch) key. On a fresh start, a
+session the pool serves passes `warm: true` to `GitCloneService.create_clone`, which:
 
 1. **Claims** the newest ready clone by renaming it onto the session's own generated clone path.
    `rename` is atomic, so of two requests racing for one clone exactly one gets it.
@@ -498,34 +497,77 @@ the human-message record are all applied after the claim, the same as on a cold 
 no session row and no agent process, so it holds no fleet slot, spends no Claude quota, and never
 reaches the homepage action queue.
 
+### Which repositories it keeps: the scope
+
+`WarmPoolPolicy` decides which keys are pooled, how many clones each gets, and which sessions may
+claim them. It has two scopes, switched by the **Warm clones for every active root** toggle under
+Settings → Experimental (`AppSetting#warm_clone_pool_active_roots_enabled`, also settable through
+`action_app_settings`):
+
+- **`router`** (off, the default): one key, the router root's repository and default branch, at
+  `QUICK_ROUTER_WARM_CLONES` clones. Only router sessions claim it. On a deployment where other roots
+  live in the router's repository, as about twenty do in tadasant-internal, they still clone cold, so
+  they cannot take the router's one clone.
+- **`active`** (on): every key a catalog agent root started sessions on in the last 7 days, with
+  at least 7 starts. Any session whose `git_root` and `branch` are a pooled key claims from it. Each
+  root's starts are mapped to its catalog `url` and `default_branch` and summed per key. The
+  deprecated `zimmer-router` alias counts toward the router, and a root that has left the catalog
+  counts toward nothing. Keys are ranked by starts weighted with a two-day half-life. The router's key
+  always comes first, so it is never served worse than under `router`. A key with 150 or more starts
+  in the window (about one an hour) gets a second clone. Keys are added in rank order until the next
+  one would take the total past `WARM_CLONE_POOL_MAX_CLONES` clones (default 10).
+
+On the Tadasant deployment a non-router session spends 7–28 seconds in `git clone`, and `active` is
+for those sessions. The ranking is cached for
+five minutes, because every session start asks for it. Under either scope, `/health` lists the keys
+`active` would add and why each one is left out, so the switch can be judged before it is flipped.
+
 Anything that goes wrong falls back to an ordinary `git clone` at the same path: an empty pool, a
 lost race, a failed catch-up fetch, a claimed directory with no `.git`, or an unexpected filesystem
-error. Recording the outcome and enqueueing the refill are rescued too, so the pool is never why a
-session fails to start. The session records which happened in `metadata["warm_clone"]` (`claimed` or `missed`), with a
-matching line in its log.
+error. Deciding whether the pool serves a session, recording the outcome and enqueueing the refill
+are rescued too, so the pool is never why a session fails to start. Every session the pool serves
+records which happened in `metadata["warm_clone"]` (`claimed` or `missed`), with a matching line in
+its log.
 
 `WarmClonePoolReplenishJob` refills the pool. `AgentSessionJob` enqueues it on every claim, and a
 one-minute cron entry is the backstop. A pass:
 
-- builds a clone when the pool has fewer clones younger than 45 minutes than it wants;
+- goes through the keys in rank order, and builds a clone for each key that has fewer clones
+  younger than 45 minutes than it wants. A key that fails to build is recorded and skipped, and the
+  keys after it still build;
 - then removes clones past 45 minutes, now that their replacement exists. A claim takes a clone up
   to an hour old, so the pool does not go empty while the replacement builds;
 - deletes builds abandoned for more than 30 minutes;
-- atomically drops the pool for any repository the router root no longer lives in.
+- atomically drops the pool for any key that is no longer a target: a root that went cold, a root
+  that moved repository, or every non-router key when the scope goes back to `router`.
 
 A build is skipped when the volume could not hold it and still have twice what an ordinary clone of
-that repository needs. It never triggers orphan reclamation: the pool is invisible to that sweep, so
+that repository needs. Keys are built in rank order, so on a disk that is filling up the least-used
+keys go without first. The guard never triggers orphan reclamation: the pool is invisible to that sweep, so
 pruning to make room for it would spend space the sessions' own clones are counting on. The pool sits under a dot-prefixed directory
 because the orphan clone sweep skips dot entries: a pooled clone has no owning session by design. A
 claimed clone's mtime is restamped so that age-based sweeps date it from its session.
 
 | Knob | Default | What it does |
 | --- | --- | --- |
-| `QUICK_ROUTER_WARM_CLONES` | `1` in production and staging, `0` elsewhere | Ready clones to keep (clamped to 0–5). `0` turns the pool off: nothing is built and nothing is claimed |
+| `QUICK_ROUTER_WARM_CLONES` | `1` in production and staging, `0` elsewhere | Ready clones to keep per key (clamped to 0–5); a busy key under `active` gets at least 2. `0` turns the whole pool off: nothing is built and nothing is claimed |
+| Warm clones for every active root (Settings → Experimental) | off | The scope: off is `router`, on is `active` |
+| `WARM_CLONE_POOL_MAX_CLONES` | `10` | The most clones `active` keeps across every key (clamped to 1–30) |
 
 With a pool of one, the second of two requests a few seconds apart clones cold, because the refill
-takes about as long as a clone. The cost is one clone's worth of disk, about 160 MB for
-tadasant-internal, plus one extra clone from GitHub per claim and per hourly recycle.
+takes about as long as a clone. Under `router` the cost is one clone's worth of disk, about 160 MB
+for tadasant-internal, plus one extra clone from GitHub per claim and per recycle (about every
+45 minutes). Under `active` that is multiplied by the number of pooled clones: the design study
+estimated about 7 keys and 1 GB on the Tadasant deployment.
+
+**Seeing it.** `/health` has a Warm Clone Pool card that shows the scope, each pooled key with its
+ready and wanted clones, the newest clone's age, its starts and roots, and the last refill's error
+for that key. It also shows how many router and non-router session starts claimed or missed a clone
+in the last 24 hours, and the keys that were ranked but not pooled, with the reason for each.
+`GET /api/v1/health` and `get_system_health` carry the same object as `warm_clone_pool_health`. It is
+not part of `overall_status`: an empty pool costs a `git clone`, which is how every session started
+before the pool existed. The last refill pass is kept in the Rails cache, because the report is served
+by the web container and the refill runs on the worker.
 
 ## The pre-clone disk guard
 
