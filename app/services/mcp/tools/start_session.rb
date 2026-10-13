@@ -20,6 +20,7 @@ module Mcp
     # choosing repositories is exactly what allowed_agent_roots decides.
     class StartSession < Tool
       include PrecedenceArgument
+      include SyncMode
 
       tool_name "start_session"
 
@@ -175,6 +176,8 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         - **With an `idempotency_key`:** on any error, including a timeout, retry with the same key. You get the existing session back, or a new one if the first call really did not land. That is the guarantee; you do not need to go looking. The replayed result reports whether an agent job is queued on that session — if it says none is, the session exists but never started, and `action_session` with `restart` starts it.
         - **Without one:** do NOT retry — a retry duplicates the session, the clone, and the agent's quota slot. Call `quick_search_sessions` with the title you passed and check whether the session already exists.
 
+        **Waiting for the answer — `sync: true`:** with a `prompt`, this call can wait until the session has answered it and return the reply inline, with any sessions it started (listed, not waited on) and its status. The wait lasts `sync_timeout_seconds` (default #{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, at most #{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}); past it you get the id, URL and anything said so far, and follow with `get_session`. It holds one of the web server's few threads while it waits, so a Zimmer session spawning work should keep using `wake_me_up_when_session_changes_state` instead.
+
         **Use cases:**
         - Start a new agent task on a repository
         - Create a session to work on a specific branch
@@ -209,7 +212,8 @@ On a connection restricted to specific agent roots this parameter is rejected ou
           precedence: { type: "integer", description: PRECEDENCE_DESC },
           place: { type: "string", enum: SessionPrecedence::PLACES, description: PLACE_DESC },
           idempotency_key: { type: "string", description: IDEMPOTENCY_KEY_DESC },
-          auto_compact_window: { type: "integer", description: AUTO_COMPACT_WINDOW_DESC }
+          auto_compact_window: { type: "integer", description: AUTO_COMPACT_WINDOW_DESC },
+          **SyncMode::SCHEMA_PROPERTIES
         },
         required: []
       })
@@ -217,6 +221,7 @@ On a connection restricted to specific agent roots this parameter is rejected ou
       def call(args)
         agent_root_name = args["agent_root"].presence
         enforce_root_constraints!(agent_root_name, args)
+        wait_for = sync_wait(args)
 
         # Answered before any of the create work — the retry this exists for is a
         # caller that already got its session and does not know it, so the cheap
@@ -227,7 +232,7 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         # session by id.
         idempotency_key = args["idempotency_key"].presence
         replayed = Sessions::IdempotentCreate.existing(idempotency_key)
-        return format_session(replayed, reused: true) if replayed
+        return with_sync_reply(format_session(replayed, reused: true), replayed, wait_for) if replayed
 
         # Below the replay, unlike the restriction check above it: this one is a
         # contract check rather than a fence, and a caller retrying a lost response
@@ -254,7 +259,7 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         # queueing a second one is the duplicate this whole path exists to avoid.
         result = Sessions::IdempotentCreate.save(session, idempotency_key)
         raise ActiveRecord::RecordInvalid, session unless result
-        return format_session(result.session, reused: true) if result.reused?
+        return with_sync_reply(format_session(result.session, reused: true), result.session, wait_for) if result.reused?
 
         # Before the job is queued, so the session's first turn can already find
         # the record when it checks its provenance.
@@ -273,12 +278,31 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         # which is required to pass its root's defaults exactly and so has no
         # legal way to drop an unavailable one; refusing there would make the
         # root unspawnable, while a warning still names the server and the fix.
-        format_session(session, warning: McpServerReadiness.warn_for_session(session))
+        with_sync_reply(format_session(session, warning: McpServerReadiness.warn_for_session(session)), session, wait_for)
       rescue AgentRootsConfig::AgentRootNotFoundError => e
         raise ToolError, "Invalid agent_root: #{e.message}"
       end
 
       private
+
+      # Refused before anything is created: with no prompt there is no turn to
+      # wait for.
+      def sync_wait(args)
+        return nil unless sync_requested?(args)
+        raise ToolError, "sync: true needs a prompt — a session started without one has no turn to wait for." if args["prompt"].blank?
+
+        sync_timeout(args)
+      end
+
+      # The usual result, then the session's answer to its first turn. A replay
+      # waits on that same turn: it is the one the original call started.
+      def with_sync_reply(text, session, wait_for)
+        return text unless wait_for
+        return "#{text}\n\n_Not waited on: this session was created without a prompt, so it has no turn to answer._" if session.prompt.blank?
+
+        waiter = Sessions::SyncReply.first_turn(session, prompt: session.prompt)
+        "#{text}\n\n#{sync_reply_section(waiter, wait_for, heading: 'Reply')}"
+      end
 
       # A restricted connection must name an allowed root, take that root's
       # repository coordinates as the catalog declares them, AND take that root's

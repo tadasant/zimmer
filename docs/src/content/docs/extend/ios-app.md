@@ -24,6 +24,13 @@ The app follows the web UI's board and session page: the same words, the same st
 (needs input blue, running green, waiting purple, failed orange, trashed gray), the same actions.
 Where the web UI has a button, the app has a swipe, a long press, or a menu item.
 
+It looks like the web UI, too. The colours are the web UI's: a gray-50 page, white cards with
+hairline borders, indigo as the one accent, and the web's pastel status badges. The web UI has no
+dark mode, so the app's dark mode is built on the PWA's navy (the manifest's `#000e2b` and
+`#031942`, the same navy as the otter mark). The gold of the mark shows up in a few small places:
+the sign-in screen, empty states, the status summary's edge, the favourite star. Every token is in one file,
+`ios/App/Zimmer/Support/Theme.swift`. It is laid out the way the Motet app's design layer is.
+
 - **Lists sessions** in one of the web UI's four board views, from the view menu: *Your board*
   (priority above spot, then precedence, then oldest first — `Sessions::UserView`), *Last
   Touched* (the default, as it is on the web UI on a phone), *Created*, and *Ranked* (the same
@@ -36,10 +43,14 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
 - **Filters** by status and by board visibility. *Needs input* is the default status filter; the
   others are *Active* (everything not archived), *Running*, *Failed* and *Archived*. Board
   visibility is *On board* by default, like the web UI's board, with *Snoozed & hidden* and
-  *Both* in the view menu. Pull to refresh. Rows carry the status pill, a *Priority* tag, a star
-  for a favourite, the latest PR, a notes marker, and when a snooze ends.
-- **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn or with
-  queued messages is refused with the server's reason and stays; the rest go.
+  *Both* in the view menu. Pull to refresh. Rows sit on one surface with hairlines between them,
+  as the web board's Your board and Ranked rows do: the title on up to two lines, then one line
+  with the status pill, a *Priority* tag, `#id`, a compact age ("41m", "3h"), the latest PR with
+  its CI dot and a notes marker; a star for a favourite; and a snoozed or hidden one adds when
+  the snooze ends. A trashed session reads in the quieter ink.
+- **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn goes, ending
+  the turn, as in the web UI's bulk Trash (`end_turn`); one with queued messages is refused with the
+  server's reason and stays; the rest go.
 - **Refresh All**, after a confirmation, through `POST /api/v1/sessions/refresh_all`: re-reads
   transcripts, restarts failed sessions, and continues sessions waiting on you that you did not
   pause, up to 50 of those together.
@@ -50,11 +61,25 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   and to snooze (*Later today*, *Tomorrow*, *In 3 days*, *This weekend*, *Next week*, the web UI's
   presets, worked out in the phone's time zone) or hide. Press and hold for the rest: pause,
   restart, view the PR, open the session in the browser.
-- **Opens a session**: its hierarchy (who spawned it and what it spawned, each a tap away); its
-  status, priority class and board visibility; its agent root, runtime,
-  model and effort; its PRs, coloured by state with the CI dot; the *Status summary* ("where
-  things stand") with *Regenerate*; its goal and notes; and the conversation, newest last, with
-  tool calls folded away until asked for (`GET /api/v1/sessions/:id/conversation`).
+- **Opens a session**, laid out the way the web UI's phone page is: the title, then one line of
+  chips (status, priority class, `#id` and age, each PR coloured by state with its CI dot, board
+  visibility) and one line of what runs it (agent root, runtime, model, effort). Then *Where
+  things stand* with how fresh it is ("as of 12m · 2 new since", the web's "messages since summary
+  generated") and *Regenerate*; for a failed session, why it failed (`metadata.failure_reason`,
+  the exception and exit status, the web's failure details); then one divided card: the **Goal
+  check** (the web panel's verdict and one line per criterion, when the goal is a catalog goal
+  with checks), the goal and notes (two lines each until tapped), the hierarchy (who spawned it
+  and what it spawned, each a tap away; folded when wider than four sessions) and the **Human
+  messages** (who said what to this session and its family, through which channel; folded). The
+  conversation follows, newest last, each message with its age, rendered the way the web renders
+  it as far as a phone's text goes: inline markdown (emphasis, code spans, links) and fenced code
+  in the monospaced face; list markers and headings stay as typed, where the web draws them as
+  structure. The web UI's log-level filter is a menu on it: *Minimal* (the words alone, the
+  default on a phone), *Condensed* (each tool call as one line naming the tool and what it was
+  given) and *Verbose* (the tool traffic whole, rendered the same way); the web's *Show Logs* is
+  the logs screen in the menu. The page reads the newest hundred messages
+  (`GET /api/v1/sessions/:id/conversation?limit=`), and *Show earlier* reads a hundred more, up to
+  the two hundred the server returns in one read.
 - **Manages the queue**: the messages waiting for the turn in flight to end, in delivery order,
   each with *Send Now* (ending the turn), *Edit* and *Delete*; *Manage* opens the whole queue to
   drag into a new order or swipe away. An edit is recorded as your message when the app acts on
@@ -75,6 +100,15 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   follow-up to a session mid-turn is queued, and the app says so; touch and hold the button to
   *Send Now* instead, which ends the turn in flight (`force_immediate`, the web UI's Send Now).
   It is recorded as your message if the app's connection acts on your behalf (below).
+  What you type and do not send is kept per session for seven days, across leaving the screen and
+  relaunching, as the web UI keeps a composer's draft.
+- **Keeps itself current.** A session's page reads again every five seconds while a turn is
+  running or about to start, and every twenty otherwise (not while the queue's manager is open,
+  and never for a session in the trash); the board reads again every thirty seconds while it is
+  the screen in front and you are not selecting or reordering. Both read at once when the app comes back to the front.
+  The web UI streams these changes; the app asks, so a change can take that long to show. A session
+  opens at its newest message, as the web UI's transcript does, and follows new ones while you are
+  at the end; scrolled back, it stays where you are.
 - **Attaches photos and files** to a message with the paperclip beside the box: *Photo Library* or
   *Choose Files*, up to 20 and 75 MB altogether, shown as chips you can remove before sending. Photos
   go as JPEG, scaled down if needed to fit the 10 MB image limit; the library's own HEIC is not a
@@ -83,21 +117,40 @@ Where the web UI has a button, the app has a swipe, a long press, or a menu item
   send them. Anything that would be refused, or could not be read, is named rather than dropped
   quietly. They go with the message however it is delivered: now, queued behind a turn, or with
   *Send Now*.
-- **Trashes** a session, after a confirmation, and restores one from the trash.
-- **Starts a session from a sentence** through the Quick Router (tap the pencil), then opens it,
-  **or from the full form** (touch and hold the pencil → *New Session…*): the web UI's new-session
+- **Trashes** a session as the web UI's Trash does: no question first, and an *Undo* on the board,
+  shown for 30 seconds as the web UI shows it (`UNDO_ARCHIVE_WINDOW`), which restores the session.
+  A session with a turn in flight goes outright, ending the turn
+  (`POST /api/v1/sessions/:id/archive` with `end_turn`). A session with messages queued for it is
+  asked about first, naming the discard: the web UI's *Archive anyway* (`force`). Undo does not
+  bring back discarded messages or resume an ended turn.
+  Restores one from the trash.
+- **Starts a session from a sentence** through the Quick Router, then opens it. The Quick Router is
+  where the web UI puts it: a field pinned to the foot of the Sessions screen ("What do you want
+  to do?", the web board's prompt box), and a button in the bottom-right corner of every other
+  screen (the web's bubble), which opens the sheet. The sheet is the web bubble's panel: the
+  words, photos and files from the paperclip, and under *Advanced* the harness, the model and
+  *Run as spot* (wait for quota room, at the top of the spot queue), each picker leading with
+  the default rather than preselecting it. The sparkles in the bar open the sheet with the words
+  typed so far. Opened from a session, the new one threads under it (*Thread under #id*, the
+  bubble's `parent_session_id`), which you can switch off. All of it goes to
+  `POST /api/v1/quick_router`. **Or from the full form** (the
+  pencil in the Sessions toolbar): the web UI's new-session
   form, with agent root, runtime, model, reasoning effort, prompt, title, goal (a predefined one or
   your own words), scheduling class, and the MCP servers, skills, hooks and plugins, each starting
   at the root's defaults. The create is retry-safe (`idempotency_key`), and its prompt is recorded
   as your message when the app acts on your behalf.
-- **Has the web UI's other pages as tabs.** *Inbox* is the notifications inbox, with the unread
-  count on its badge: tap one to open its session (and mark it read), swipe to mark one read or
+- **Has the web UI's other pages as tabs**, their rows in the board's shape (one surface, hairlines,
+  compact ages). *Inbox* is the notifications inbox, with the unread count on its badge: each row
+  is the kind as a small label, the session's title, and its status, id and age; unread rows are in
+  the full ink with a dot. Tap one to open its session (and mark it read), swipe to mark one read or
   dismiss a read one, and mark all read or dismiss all read from its menu. *Triggers* lists each
-  trigger with what fires it and when it last did; turn one on or off, invoke it now (after a
+  trigger with what fires it on one line (two at most), its root, when it last fired and how many
+  sessions it has made; turn one on or off (a trigger that is off reads in the quieter ink), invoke it now (after a
   confirmation, then open the session it started), or open its last session. Creating and editing a
   trigger stay in the browser. *More* holds *Costs* (the window's total, spend by day as a chart, by
-  agent root and by model, and the most expensive sessions, each a tap away) and *Health* (the
-  overall status and each section's), read-only; Health's operator actions stay in the browser.
+  agent root and by model, and the most expensive sessions with their tokens, each a tap away) and
+  *Health* (the overall status and each section's), read-only; Health's operator actions stay in
+  the browser.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 

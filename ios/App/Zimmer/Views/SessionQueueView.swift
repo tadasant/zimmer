@@ -13,19 +13,20 @@ struct QueueCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Queued messages (\(model.queue.count))").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("Queued messages (\(model.queue.count))").themeLabel()
                 Spacer()
                 Button("Manage") { managing = true }
-                    .font(.caption)
+                    .font(.footnote.weight(.medium))
                     .accessibilityIdentifier("queue.manage")
             }
             ForEach(model.queue) { message in
                 HStack(alignment: .top, spacing: 8) {
                     Text(verbatim: "\(message.position).")
-                        .font(.footnote.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .font(Theme.mono)
+                        .foregroundStyle(Theme.inkMute)
                     Text(message.content)
                         .font(.subheadline)
+                        .foregroundStyle(Theme.ink)
                         .lineLimit(4)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("queue.message.\(message.id)")
@@ -43,7 +44,7 @@ struct QueueCard: View {
                             Label("Delete", systemImage: "trash")
                         }
                     } label: {
-                        Image(systemName: "ellipsis.circle").foregroundStyle(.secondary)
+                        Image(systemName: "ellipsis.circle").foregroundStyle(Theme.inkSoft)
                     }
                     .accessibilityLabel("Queued message actions")
                     .accessibilityIdentifier("queue.actions.\(message.id)")
@@ -51,8 +52,8 @@ struct QueueCard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+        .padding(16)
+        .themeCard()
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail.queue")
         .confirmationDialog(
@@ -70,6 +71,9 @@ struct QueueCard: View {
             }
         }
         .sheet(isPresented: $managing) { QueueManager(model: model) }
+        // A read while the manager is open would move rows under a finger.
+        .onChange(of: managing) { _, open in model.pollPaused = open || editing != nil }
+        .onChange(of: editing) { _, message in model.pollPaused = message != nil || managing }
     }
 }
 
@@ -83,9 +87,9 @@ private struct QueueManager: View {
         NavigationStack {
             List {
                 // Here, not on the page behind the sheet.
-                if let error = model.error { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
+                if let error = model.error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
                 ForEach(model.queue) { message in
-                    Text(message.content).lineLimit(3)
+                    Text(message.content).lineLimit(3).foregroundStyle(Theme.ink).themeRows()
                 }
                 .onMove { source, destination in
                     guard let from = source.first, destination != from, destination != from + 1 else { return }
@@ -104,8 +108,9 @@ private struct QueueManager: View {
                 }
             }
             .environment(\.editMode, .constant(.active))
+            .themeGround()
             .overlay {
-                if model.queue.isEmpty { ContentUnavailableView("Nothing queued", systemImage: "tray") }
+                if model.queue.isEmpty { EmptyState(title: "Nothing queued", symbol: "tray") }
             }
             .navigationTitle("Queued messages")
             .navigationBarTitleDisplayMode(.inline)
@@ -131,9 +136,14 @@ private struct QueuedMessageEditor: View {
             VStack(spacing: 0) {
                 if let error { ErrorBanner(error: error).padding([.horizontal, .top]) }
                 TextEditor(text: $text)
+                    .scrollContentBackground(.hidden)
+                    .padding(12)
+                    .themeCard(radius: Theme.smallRadius)
                     .padding()
                     .accessibilityIdentifier("queue.edit.text")
             }
+            .frame(maxHeight: .infinity, alignment: .top)
+            .background(Theme.ground)
                 .navigationTitle("Edit queued message")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {

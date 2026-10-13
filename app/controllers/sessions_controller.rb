@@ -3076,18 +3076,7 @@ class SessionsController < ApplicationController
   #
   # @param session [Session] The session being viewed
   def mark_session_notifications_read(session)
-    # Find all unread, non-stale notifications for this session
-    unread_notifications = session.notifications.pending
-
-    return if unread_notifications.empty?
-
-    # Mark them all as read with retry logic for database resilience
-    with_db_retry do
-      unread_notifications.update_all(read: true)
-    end
-
-    # Broadcast updated badge count to all connected clients
-    BroadcastService.new.notification_badge(Notification.pending_count)
+    with_db_retry { session.mark_notifications_read! }
   end
 
   # Respond to follow-up form errors with appropriate format

@@ -539,22 +539,25 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
   # --- backlog top-up ---------------------------------------------------------
   #
-  # Parity: the three knobs are on the /inference card, so an agent has to be
+  # Parity: the four knobs are on the /inference card, so an agent has to be
   # able to set them and read them back without a human at the page.
 
-  test "set_top_up writes all three knobs, and get reports them" do
+  test "set_top_up writes all four knobs, and get reports them" do
     action(action: "set_top_up", max_running_sessions: 5, idle_minutes: 10,
-           min_fire_interval_minutes: 30)
+           min_fire_interval_minutes: 30, quiet_backlog_interval_minutes: 180)
 
     setting = AppSetting.current
     assert_equal 5, setting.fleet_idle_max_sessions
     assert_equal 10, setting.fleet_idle_threshold_minutes
     assert_equal 30, setting.fleet_idle_min_fire_interval_minutes
+    assert_equal 180, setting.fleet_idle_quiet_backlog_interval_minutes
 
     policy = get_policy
     assert_match(/Fires while the fleet has fewer turns on a worker than:\*\* 5 sessions/, policy)
     assert_match(/For at least:\*\* 10 minutes/, policy)
     assert_match(/At most once every:\*\* 30 minutes \(at most 48 top-ups a day/, policy)
+    assert_match(/With nothing new on the backlog, at most once every:\*\* 180 minutes \(at most 8 top-ups a day/,
+                 policy)
   end
 
   # UI/MCP parity for the disclosure both /inference cards render: a ceiling above
@@ -646,10 +649,16 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
     assert_match(/State:\*\* `clock_not_started`/, get_policy)
 
+    # An empty backlog since that fire: the longer quiet interval is the clock.
+    WorkBacklogItem.delete_all
     AppSetting.editable.update!(fleet_idle_since: 30.minutes.ago, fleet_idle_event_fired_at: 25.minutes.ago)
     policy = get_policy
-    assert_match(/State:\*\* `cooling_down`/, policy)
+    assert_match(/State:\*\* `backlog_quiet`/, policy)
     assert_match(/under its ceiling of 100 for 30 minutes/, policy)
+
+    # With the quiet interval at the floor, the cooldown is what is left.
+    AppSetting.editable.update!(fleet_idle_quiet_backlog_interval_minutes: 1)
+    assert_match(/State:\*\* `cooling_down`/, get_policy)
 
     AppSetting.editable.update!(fleet_idle_since: 2.minutes.ago, fleet_idle_event_fired_at: nil)
     assert_match(/State:\*\* `inside_threshold`/, get_policy)

@@ -12,8 +12,11 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
     # what the monitor reads.
     Session.delete_all
     GoodJob::Job.where(job_class: "AgentSessionJob").delete_all
+    # The quiet-backlog interval at 1 never binds below the cooldown, so the
+    # cases here pin the cooldown; the reported empty-backlog loop sets it back.
     AppSetting.editable.update!(fleet_idle_since: nil, fleet_idle_event_fired_at: nil,
-                                quota_pool_available: true)
+                                quota_pool_available: true,
+                                fleet_idle_quiet_backlog_interval_minutes: 1)
   end
 
   def idle_trigger(status: "enabled", skip_if_pending_session: false)
@@ -169,6 +172,52 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
 
       assert_equal crossing.to_i, AppSetting.current.reload.fleet_idle_since.to_i,
         "nothing crossed the ceiling of 12, so nothing moved the clock"
+    end
+  end
+
+  # The loop the board showed, end to end: trigger 13507 on an idle fleet with an
+  # empty backlog and a 10-minute cooldown. Each top-up runs two minutes, finds
+  # nothing to pull and archives, and the event fired again ten minutes later —
+  # ~130 sessions a day. With the quiet-backlog interval it is one per four
+  # hours, and a newly queued item is still picked up at the next check.
+  test "an idle fleet with an empty backlog no longer polls itself every cooldown" do
+    WorkBacklogItem.delete_all
+    AppSetting.editable.update!(fleet_idle_min_fire_interval_minutes: 10,
+                                fleet_idle_quiet_backlog_interval_minutes:
+                                  AppSetting::DEFAULT_FLEET_IDLE_QUIET_BACKLOG_INTERVAL_MINUTES)
+    idle_trigger(skip_if_pending_session: true)
+    spawned = -> { Session.where(genesis: SessionGenesis::SYSTEM_EVENT) }
+
+    freeze_time do
+      FleetIdleCheckerJob.perform_now
+
+      assert_difference -> { spawned.call.count }, 6 do
+        (24 * 60).times do
+          travel 1.minute
+          # Each top-up runs for two minutes on a worker and then archives,
+          # having found nothing to pull.
+          spawned.call.where(status: :waiting).find_each { |s| on_a_worker!(s).update!(status: :running) }
+          spawned.call.where(status: :running).where(updated_at: ..2.minutes.ago).find_each do |s|
+            s.update!(status: :archived)
+          end
+          perform_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
+        end
+      end
+
+      # Work arrives on the backlog: the next check past the cooldown hands it
+      # out rather than waiting for the rest of the four hours.
+      travel 15.minutes
+      spawned.call.where.not(status: :archived).find_each { |s| s.update!(status: :archived) }
+      WorkBacklogItem.create!(
+        key: "zimmer#1", issue_url: "https://github.com/tadasant/zimmer/issues/1", repo: "tadasant/zimmer",
+        surface: "zimmer", title: "New work", kind: "bug", scope_direction: "convergent",
+        estimated_cost: "small", gate_verdict: "auto-proceed", decided_at: Date.current,
+        added_at: Time.current, added_by: "issue-work-gate", added_via: WorkBacklogItem::MCP,
+        precedence: WorkBacklog::Ranking.band_for("small").base, status: WorkBacklogItem::QUEUED
+      )
+      assert_difference -> { spawned.call.count }, 1 do
+        perform_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
+      end
     end
   end
 end

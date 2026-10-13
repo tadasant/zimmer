@@ -6,11 +6,12 @@ require "test_helper"
 class FleetTopUpPoliciesControllerTest < ActionDispatch::IntegrationTest
   setup { AppSetting.delete_all }
 
-  test "persists all three knobs" do
+  test "persists all four knobs" do
     patch fleet_top_up_policy_path, params: { app_setting: {
       fleet_idle_max_sessions: "5",
       fleet_idle_threshold_minutes: "10",
-      fleet_idle_min_fire_interval_minutes: "20"
+      fleet_idle_min_fire_interval_minutes: "20",
+      fleet_idle_quiet_backlog_interval_minutes: "180"
     } }
 
     assert_redirected_to inference_path(anchor: "fleet-top-up")
@@ -19,6 +20,7 @@ class FleetTopUpPoliciesControllerTest < ActionDispatch::IntegrationTest
     assert_equal 5, setting.fleet_idle_max_sessions
     assert_equal 10, setting.fleet_idle_threshold_minutes
     assert_equal 20, setting.fleet_idle_min_fire_interval_minutes
+    assert_equal 180, setting.fleet_idle_quiet_backlog_interval_minutes
   end
 
   # A ceiling of 0 could never be satisfied — the test is `running_sessions < ceiling` —

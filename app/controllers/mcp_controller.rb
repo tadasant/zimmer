@@ -112,8 +112,10 @@ class McpController < Api::BaseController
       stateless: true,
       # Respond with plain JSON rather than an SSE frame, and accept a client that
       # asks only for `Accept: application/json`. Nothing this server does needs a
-      # stream: there are no long-running tools, no progress notifications, and no
-      # server-initiated messages.
+      # stream: there are no progress notifications and no server-initiated
+      # messages. The one long call — `sync: true`, which holds until a session
+      # answers — is bounded by Sessions::SyncReply::MAX_TIMEOUT_SECONDS, under
+      # every proxy timeout in front of this, and answers in one JSON body too.
       enable_json_response: true,
       # The SDK's Host/Origin check defends a locally-bound server against DNS
       # rebinding by a browser. Zimmer is a deployed Rails app: Rails' own

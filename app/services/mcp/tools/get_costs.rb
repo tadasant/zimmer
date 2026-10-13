@@ -147,8 +147,12 @@ module Mcp
 
       private
 
+      # Read from the same cached snapshot the Costs page and `GET /api/v1/costs`
+      # render, so the three surfaces pay for a window once between them, not once
+      # each — and a long window costs this tool no more than it costs the page.
       def fleet_report(analytics, window)
-        totals = analytics.totals
+        report = analytics.snapshot
+        totals = report[:totals]
         return empty_notice(window) if totals[:api_calls].zero?
 
         lines = [
@@ -165,31 +169,31 @@ module Mcp
           "|---|---:|---:|"
         ]
 
-        analytics.cost_breakdown.each do |row|
+        report[:cost_breakdown].each do |row|
           lines << "| #{row[:component]} | #{money(row[:cost_usd])} | #{pct(row[:share])} |"
         end
 
-        lines.concat(table("By agent root", "Agent root", analytics.by_agent_root, :agent_root, totals[:cost_usd]))
-        lines.concat(table("By model", "Model", analytics.by_model, :model, totals[:cost_usd]))
-        lines.concat(table("Main thread vs subagents", "Thread", analytics.by_thread_kind, :kind, totals[:cost_usd]))
+        lines.concat(table("By agent root", "Agent root", report[:by_agent_root], :agent_root, totals[:cost_usd]))
+        lines.concat(table("By model", "Model", report[:by_model], :model, totals[:cost_usd]))
+        lines.concat(table("Main thread vs subagents", "Thread", report[:by_thread_kind], :kind, totals[:cost_usd]))
         # By billing relationship, not just by harness: `claude_code` is
         # subscription spend priced at list, `pi` is a metered OpenRouter invoice,
         # `codex` is subscription spend whose models have no rate yet. Every other
         # figure in this report adds them together.
         lines.concat(table("By runtime — `claude_code` is subscription-billed; `pi` is metered by OpenRouter, so its " \
                            "share is money actually owed; `codex` carries tokens at $0 because its models are unpriced",
-                           "Runtime", analytics.by_runtime, :runtime, totals[:cost_usd]))
+                           "Runtime", report[:by_runtime], :runtime, totals[:cost_usd]))
 
-        adhoc = analytics.by_adhoc_source
+        adhoc = report[:by_adhoc_source]
         lines.concat(table("Ad hoc calls from Zimmer's own code", "Source", adhoc, :source, totals[:cost_usd])) if adhoc.any?
 
         lines.concat(burn_rate_lines)
         lines.concat(coverage_lines)
-        lines.concat(feature_lines(analytics.by_feature))
-        lines.concat(experiment_lines(analytics.by_experiment))
-        lines.concat(by_day_lines(analytics))
-        lines.concat(top_sessions_lines(analytics))
-        lines.concat(unpriced_lines(analytics))
+        lines.concat(feature_lines(report[:by_feature]))
+        lines.concat(experiment_lines(report[:by_experiment]))
+        lines.concat(by_day_lines(report[:by_day]))
+        lines.concat(top_sessions_lines(report[:top_sessions]))
+        lines.concat(unpriced_lines(report[:unpriced_models]))
         lines << ""
         lines << "_List price, applied on read. Subscription-billed accounts — a comparable unit, not a bill._"
         lines.join("\n")
@@ -239,8 +243,11 @@ module Mcp
       end
 
       def agent_root_report(root, analytics, window)
-        scope = analytics.session_scope.for_agent_root(root)
-        totals = scope.totals
+        # Per-model sums priced in Ruby, not `scope.totals`: a root can carry most
+        # of the fleet's spend, and pricing each of its rows in SQL is what makes a
+        # long window slow. See CostRollup.
+        by_model = CostRollup.new(analytics.session_scope.for_agent_root(root)).fold { |model| model.to_s }
+        totals = by_model.values.reduce(CostRollup.blank) { |sum, row| sum.merge(row) { |_, a, b| a + b } }
         return "No spend recorded for agent root `#{root}` over #{window.label}." if totals[:api_calls].zero?
 
         fleet = analytics.totals[:cost_usd]
@@ -257,9 +264,8 @@ module Mcp
           "",
           "| Model | Cost | Calls |",
           "|---|---:|---:|",
-          *scope.group(:model).order(SessionTokenUsage.cost_sum_sql.desc)
-            .pluck(:model, SessionTokenUsage.cost_sum_sql, Arel.sql("COUNT(*)"))
-            .map { |model, cost, calls| "| `#{model}` | #{money(cost.to_f)} | #{number(calls)} |" },
+          *by_model.sort_by { |model, row| [ -row[:cost_usd], model ] }
+            .map { |model, row| "| `#{model}` | #{money(row[:cost_usd])} | #{number(row[:api_calls])} |" },
           # The drilldown this root-scoped report exists for: which of the bytes
           # this root carries were context management rather than the work.
           *feature_lines(analytics.feature_breakdown(agent_root: root))
@@ -267,13 +273,14 @@ module Mcp
       end
 
       def session_report(session_id, analytics, window)
-        scope = analytics.session_scope.where(session_id: session_id)
-        totals = scope.totals
+        by_thread = CostRollup.new(analytics.session_scope.where(session_id: session_id), "subagent")
+          .fold { |subagent, _model| subagent ? :sub : :main }
+        main = by_thread.fetch(:main) { CostRollup.blank }
+        sub = by_thread.fetch(:sub) { CostRollup.blank }
+        totals = main.merge(sub) { |_, a, b| a + b }
         return "No spend recorded for session ##{session_id} over #{window.label}." if totals[:api_calls].zero?
 
         session = Session.find_by(id: session_id)
-        main = scope.main_thread.totals
-        sub = scope.subagents.totals
 
         [
           "## Session ##{session_id}#{session&.title ? " — #{session.title}" : ""}",
@@ -396,8 +403,7 @@ module Mcp
       # The page and the REST API both carry a daily series; without it here an
       # agent can see a total but not that it doubled on Tuesday, which is the
       # question a spend spike actually raises.
-      def by_day_lines(analytics)
-        rows = analytics.by_day
+      def by_day_lines(rows)
         return [] if rows.blank?
 
         [
@@ -407,8 +413,8 @@ module Mcp
         ]
       end
 
-      def top_sessions_lines(analytics)
-        rows = analytics.top_sessions(limit: TOP_N)
+      def top_sessions_lines(rows)
+        rows = Array(rows).first(TOP_N)
         return [] if rows.blank?
 
         [
@@ -447,8 +453,7 @@ module Mcp
         end
       end
 
-      def unpriced_lines(analytics)
-        unpriced = analytics.unpriced_models
+      def unpriced_lines(unpriced)
         return [] if unpriced.empty?
 
         [

@@ -5,12 +5,12 @@ import ZimmerKit
 /// visibility as the web UI's board is. "Needs input" is the default filter and the first
 /// chip: the phone is for the sessions waiting on a person. Swipe right to star, left to
 /// trash or snooze; press and hold for everything else the web UI's card offers; Select to
-/// trash several at once.
+/// trash several at once. The Quick Router bar is pinned to the foot: the board is where
+/// work starts.
 struct SessionListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingSettings = false
     @State private var snoozing: SessionSummary?
-    @State private var trashing: SessionSummary?
     /// The search the list last loaded, so appearing does not reload a list `start()` just loaded.
     @State private var appliedSearch = SearchKey(text: "", scope: .titles)
     @State private var editMode: EditMode = .inactive
@@ -31,16 +31,6 @@ struct SessionListView: View {
             } message: { _ in
                 Text("Visual only — it does not pause, start or stop the session.")
             }
-            .confirmationDialog(
-                "Move to trash?", isPresented: isTrashing,
-                titleVisibility: .visible, presenting: trashing
-            ) { session in
-                Button("Trash", role: .destructive) {
-                    Task { await model.perform("Moved to trash", on: session.id) { try await $0.archive(session.id) } }
-                }
-            } message: { _ in
-                Text("It moves to the trash. You can restore it from Archived.")
-            }
             .confirmationDialog("Move \(selection.count) to trash?", isPresented: $confirmingBulkTrash, titleVisibility: .visible) {
                 Button("Trash \(selection.count)", role: .destructive) {
                     let ids = selection
@@ -59,6 +49,8 @@ struct SessionListView: View {
                 Text("Re-reads transcripts, restarts failed sessions, and continues sessions waiting on you that you didn't pause — up to 50 of those. That spends agent turns.")
             }
             .environment(\.editMode, $editMode)
+            // A refresh while rows are selected or being dragged would move them under a finger.
+            .onChange(of: editMode.isEditing) { _, editing in model.isEditingBoard = editing }
             // Selecting hides the tab bar, as Mail does: the Trash bar takes its place at the bottom.
             .toolbar(editMode.isEditing ? .hidden : .visible, for: .tabBar)
             // A selection only ever names rows on screen: a filter, search or view change drops the rest.
@@ -69,8 +61,7 @@ struct SessionListView: View {
                 Task { await model.refresh() }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
-            .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
-            .sheet(isPresented: $model.showingNewSession) { NewSessionView() }
+            .modifier(QueuedTrashQuestion { _ in model.path.isEmpty })
     }
 
     private var list: some View {
@@ -81,30 +72,46 @@ struct SessionListView: View {
                 FilterBar()
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             } footer: {
                 if model.board != .onBoard {
                     Label("Showing: \(model.board.label)", systemImage: "eye")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(Theme.snooze)
                         .accessibilityIdentifier("board.current")
                 }
             }
             if let error = model.error {
-                Section { ErrorBanner(error: error).listRowInsets(EdgeInsets()) }
+                Section {
+                    ErrorBanner(error: error)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                }
             }
             if model.sessions.isEmpty && !model.isLoading {
-                Section { EmptyListRow(filter: model.filter, searching: !model.searchText.isEmpty) }
+                Section {
+                    EmptyListRow(filter: model.filter, searching: !model.searchText.isEmpty)
+                        .listRowBackground(Color.clear)
+                }
             }
             ForEach(model.sessions.isEmpty ? [] : model.sections) { section in
                 Section {
                     ForEach(section.sessions) { session in
-                        SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing)
+                        SwipeableSessionRow(session: session, snoozing: $snoozing)
                     }
                     .onMove(perform: moveHandler(for: section))
                     if section.sessions.isEmpty {
-                        Text("None.").foregroundStyle(.secondary)
+                        Text("None.")
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.inkMute)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
                     }
                 } header: {
                     if let title = section.title {
-                        Text(title).accessibilityIdentifier("section.\(title)")
+                        Text(title)
+                            .themeLabel()
+                            .accessibilityIdentifier("section.\(title)")
                     }
                 }
             }
@@ -115,6 +122,10 @@ struct SessionListView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
+        .themeGround()
+        // Rows arriving, leaving and reordering slide rather than jump.
+        .animation(.snappy(duration: 0.3), value: model.sessions.map(\.id))
         .navigationTitle("Sessions")
         .navigationBarTitleDisplayMode(.large)
     }
@@ -151,15 +162,25 @@ struct SessionListView: View {
 
     private var searchableList: some View {
         list
+            // Above the Quick Router bar rather than over it: the Undo toast takes taps.
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 0) {
+                    UndoToast(session: $model.undoable) { Task { await model.undoTrash() } }
+                    Toast(text: $model.notice)
+                }
+            }
+            // The web UI's prompt box, at the foot of the board where a thumb reaches it.
+            // Inside the searchable scope, so the bar knows when the search box has the
+            // keyboard and steps aside.
+            .safeAreaInset(edge: .bottom) { QuickRouterBar(editing: editMode.isEditing) }
             .searchable(text: $model.searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions...")
             .searchScopes($model.searchScope) { scopeTabs }
             // Debounced: a refresh per keystroke would be a request per keystroke.
             .task(id: SearchKey(text: model.searchText, scope: model.searchScope)) { await search() }
             .refreshable { await model.refresh() }
             .overlay {
-                if model.isLoading && model.sessions.isEmpty { ProgressView() }
+                if model.isLoading && model.sessions.isEmpty { LoadingState(text: "Loading sessions…") }
             }
-            .overlay(alignment: .bottom) { Toast(text: $model.notice) }
     }
 
     private func search() async {
@@ -197,7 +218,7 @@ struct SessionListView: View {
             if isSelecting {
                 Text(selectionLabel)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.inkSoft)
                 Spacer()
                 Button(role: .destructive) { confirmingBulkTrash = true } label: {
                     Label("Trash", systemImage: "trash")
@@ -241,27 +262,15 @@ struct SessionListView: View {
             }
             .accessibilityLabel("View options")
             .accessibilityIdentifier("board.menu")
-            // Tap: the Quick Router, a sentence. Touch and hold: the full form.
-            Menu {
-                Button { model.showingQuickRouter = true } label: { Label("Quick Router", systemImage: "sparkles") }
-                Button { model.showingNewSession = true } label: { Label("New Session…", systemImage: "square.and.pencil") }
-                    .accessibilityIdentifier("newsession.open")
-            } label: {
-                Image(systemName: "square.and.pencil")
-            } primaryAction: {
-                model.showingQuickRouter = true
-            }
-            .accessibilityLabel("New session")
-            .accessibilityIdentifier("quickrouter.open")
+            // The full form. The Quick Router is the bar at the foot of the screen.
+            Button { model.showingNewSession = true } label: { Image(systemName: "square.and.pencil") }
+                .accessibilityLabel("New session")
+                .accessibilityIdentifier("newsession.open")
         }
     }
 
     private var isSnoozing: Binding<Bool> {
         Binding(get: { snoozing != nil }, set: { if !$0 { snoozing = nil } })
-    }
-
-    private var isTrashing: Binding<Bool> {
-        Binding(get: { trashing != nil }, set: { if !$0 { trashing = nil } })
     }
 
     private var boardSelection: Binding<BoardFilter> {
@@ -274,12 +283,16 @@ private struct SwipeableSessionRow: View {
     @EnvironmentObject private var model: AppModel
     let session: SessionSummary
     @Binding var snoozing: SessionSummary?
-    @Binding var trashing: SessionSummary?
 
     var body: some View {
         NavigationLink(value: session.id) {
             SessionRow(session: session)
         }
+        // Rows share one surface with hairlines between them, as the web UI's Your board and
+        // Ranked views draw theirs: a card per row spent a third of the screen on margins.
+        .themeRows()
+        // 20 leading, where the section headers' text sits, so titles line up under them.
+        .listRowInsets(EdgeInsets(top: 9, leading: 20, bottom: 9, trailing: 10))
         .accessibilityIdentifier("session.row.\(session.id)")
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
@@ -287,7 +300,7 @@ private struct SwipeableSessionRow: View {
             } label: {
                 Label(session.isFavorite ? "Unfavorite" : "Favorite", systemImage: session.isFavorite ? "star.slash" : "star.fill")
             }
-            .tint(.yellow)
+            .tint(Theme.Swipe.favorite)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if session.status == .archived {
@@ -296,30 +309,30 @@ private struct SwipeableSessionRow: View {
                 } label: {
                     Label("Restore", systemImage: "arrow.uturn.backward")
                 }
-                .tint(.green)
+                .tint(Theme.Swipe.restore)
             } else {
                 // Not `role: .destructive`: that animates the row away on the tap, before
-                // the confirmation has been answered.
-                Button { trashing = session } label: {
+                // the server has answered (and it may ask about queued messages first).
+                Button { Task { await model.trash(session) } } label: {
                     Label("Trash", systemImage: "trash")
                 }
-                .tint(.red)
+                .tint(Theme.Swipe.trash)
             }
             if session.boardVisibility == .visible {
                 Button { snoozing = session } label: {
                     Label("Snooze", systemImage: "moon.zzz")
                 }
-                .tint(.indigo)
+                .tint(Theme.Swipe.snooze)
             } else {
                 Button {
                     Task { await model.perform("Back on the board", on: session.id) { try await $0.setVisibility(session.id, .visible) } }
                 } label: {
                     Label("Put back", systemImage: "eye")
                 }
-                .tint(.indigo)
+                .tint(Theme.Swipe.snooze)
             }
         }
-        .contextMenu { SessionContextMenu(session: session, trashing: $trashing) }
+        .contextMenu { SessionContextMenu(session: session) }
     }
 }
 
@@ -351,7 +364,6 @@ private struct SessionContextMenu: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openURL) private var openURL
     let session: SessionSummary
-    @Binding var trashing: SessionSummary?
 
     var body: some View {
         Button {
@@ -407,7 +419,7 @@ private struct SessionContextMenu: View {
                 Label("Restore from Trash", systemImage: "arrow.uturn.backward")
             }
         } else {
-            Button(role: .destructive) { trashing = session } label: { Label("Trash", systemImage: "trash") }
+            Button(role: .destructive) { Task { await model.trash(session) } } label: { Label("Trash", systemImage: "trash") }
         }
     }
 }
@@ -417,80 +429,90 @@ private struct FilterBar: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 ForEach(SessionFilter.allCases) { filter in
                     let selected = filter == model.filter
                     Button {
                         Haptics.selection()
                         Task { await model.select(filter) }
                     } label: {
-                        Text(filter.label)
-                            .font(.subheadline.weight(selected ? .semibold : .regular))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(selected ? Color.accentColor : Color(.secondarySystemBackground), in: Capsule())
-                            .foregroundStyle(selected ? Color.white : Color.primary)
+                        Pill(selected: selected, compact: true) { Text(filter.label) }
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("filter.\(filter.rawValue)")
                     .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 2)
+            .animation(.snappy(duration: 0.25), value: model.filter)
         }
     }
 }
 
-/// One card of the web UI's board, as a row: title, the status pill, `#id`, when it last
-/// moved, and the markers the card carries — a star, a PR, notes, a snooze.
+/// One row of the web UI's board: the title on two lines at most, then one line of what the
+/// card carries — the status pill, Priority, `#id`, a compact age, the latest PR, a notes
+/// mark — and a star when it is a favourite. A trashed session reads in the quieter ink, as
+/// Motet dims what is done, so the ones waiting on you stand out without a heavier face.
 struct SessionRow: View {
     let session: SessionSummary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let quiet = session.status == .archived
+        VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(session.displayTitle)
-                    .font(.body.weight(session.status == .needsInput ? .semibold : .regular))
+                    .font(.system(.subheadline, weight: session.status == .needsInput ? .semibold : .medium))
+                    .foregroundStyle(quiet ? Theme.inkSoft : Theme.ink)
                     .lineLimit(2)
                 Spacer(minLength: 4)
                 if session.isFavorite {
                     Image(systemName: "star.fill")
-                        .font(.caption)
-                        .foregroundStyle(.yellow)
+                        .font(.caption2)
+                        .foregroundStyle(Theme.gold)
                         .accessibilityLabel("Favorite")
                 }
             }
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 StatusBadge(status: session.status, compact: true)
                 if session.isPriority {
-                    Text("Priority").foregroundStyle(.red)
+                    Text("Priority")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Theme.danger)
                 }
-                // Verbatim: a session id is an identifier, not a quantity to group.
+                // Verbatim: a session id is an identifier, not a quantity to group. Monospaced,
+                // as the web UI's `font-mono` ids are.
                 Text(verbatim: "#\(session.id)")
+                    .font(Theme.mono)
+                    .foregroundStyle(Theme.inkMute)
                 if let date = session.updatedAt ?? session.createdAt {
-                    Text("·")
-                    Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
+                    Text("·").foregroundStyle(Theme.inkMute)
+                    // Compact on screen; VoiceOver still hears "41 minutes ago".
+                    Text(verbatim: Format.age(date))
+                        .accessibilityLabel(date.formatted(.relative(presentation: .named)))
                 }
                 if let pr = session.pullRequests.last {
-                    Text("·")
+                    Text("·").foregroundStyle(Theme.inkMute)
                     Image(systemName: PullRequestChip.symbol(for: pr.state))
                         .foregroundStyle(PullRequestChip.color(for: pr.state))
                     Text(pr.label)
+                    if pr.state == "open", let ci = pr.ci {
+                        Circle().fill(PullRequestChip.ciColor(ci)).frame(width: 6, height: 6)
+                            .accessibilityLabel("CI \(ci)")
+                    }
                 }
                 if session.hasNotes {
                     Image(systemName: "note.text").accessibilityLabel("Has notes")
                 }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(Theme.inkSoft)
             .lineLimit(1)
             if session.boardVisibility != .visible {
                 VisibilityLabel(session: session)
-                    .font(.caption)
-                    .foregroundStyle(.indigo)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.snooze)
             }
         }
-        .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
     }
 }
@@ -500,21 +522,57 @@ private struct EmptyListRow: View {
     let searching: Bool
 
     var body: some View {
-        VStack(spacing: 6) {
-            Image(systemName: searching ? "magnifyingglass" : (filter == .needsInput ? "checkmark.circle" : "tray"))
-                .font(.title2)
-                .foregroundStyle(.secondary)
-            Text(message)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
+        EmptyState(
+            title: message,
+            symbol: searching ? "magnifyingglass" : (filter == .needsInput ? "checkmark" : "tray"),
+            message: detail
+        )
+        .accessibilityElement(children: .combine)
         .accessibilityIdentifier("sessions.empty")
     }
 
     private var message: String {
         if searching { return "No sessions match." }
         return filter == .needsInput ? "Nothing needs you right now." : "No \(filter.label.lowercased()) sessions."
+    }
+
+    private var detail: String? {
+        if searching { return "Try other words, or search transcripts." }
+        return filter == .needsInput ? "Sessions waiting on you land here." : nil
+    }
+}
+
+/// The web UI's Undo toast after a trash: on screen for as long as the server would still
+/// undo it, with the button that does.
+struct UndoToast: View {
+    @Binding var session: SessionSummary?
+    let undo: () -> Void
+
+    var body: some View {
+        if let session {
+            HStack(spacing: 14) {
+                Text("Moved to trash")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.ink)
+                Button("Undo", action: undo)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+                    .accessibilityIdentifier("toast.undo")
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 11)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.rule, lineWidth: 1))
+            .padding(.bottom, 12)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("toast")
+            .task(id: session.id) {
+                try? await Task.sleep(for: TrashOutcome.undoWindow)
+                guard !Task.isCancelled else { return }
+                withAnimation { self.session = nil }
+            }
+        }
     }
 }
 
@@ -527,9 +585,11 @@ struct Toast: View {
         if let text {
             Text(text)
                 .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(.thinMaterial, in: Capsule())
+                .foregroundStyle(Theme.ink)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 11)
+                .background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(Theme.rule, lineWidth: 1))
                 .padding(.bottom, 12)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .accessibilityIdentifier(identifier)
@@ -539,6 +599,34 @@ struct Toast: View {
                     guard !Task.isCancelled else { return }
                     withAnimation { self.text = nil }
                 }
+        }
+    }
+}
+
+/// The web UI's *Archive anyway*: a trash refused because messages are queued for the
+/// session, asked again naming the discard. Shown by the screen the trash came from — the
+/// board, or that session's page — since a dialog on the navigation stack would stand over
+/// the page's own dialogs and keep them from presenting.
+struct QueuedTrashQuestion: ViewModifier {
+    @EnvironmentObject private var app: AppModel
+    /// Whether this screen is the one that asks about `session`.
+    let asks: (SessionSummary) -> Bool
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            "Discard its queued messages?",
+            isPresented: Binding(
+                get: { app.queuedTrash.map(asks) ?? false },
+                set: { if !$0 { app.queuedTrash = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: app.queuedTrash
+        ) { session in
+            Button("Trash anyway", role: .destructive) {
+                Task { await app.trash(session, force: true) }
+            }
+        } message: { _ in
+            Text("Messages are waiting to be delivered to this session. Trashing it discards them.")
         }
     }
 }

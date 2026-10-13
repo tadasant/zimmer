@@ -1094,7 +1094,9 @@ finds an unspent level and fires normally.
 Fires when the deployment has been **running fewer sessions on a worker than its configured ceiling**
 for the whole of a configured stretch — three and five minutes by default. It is the "the fleet has room for
 more work" signal, so a job that hands work out has a second way to be started besides its daily
-schedule.
+schedule. Repeat fires are paced by a cooldown (an hour by default), and by a longer quiet interval
+(four hours by default) while the work backlog has had nothing new since the last fire — see
+[Why an unchanged backlog backs off](#why-an-unchanged-backlog-backs-off).
 
 Only sessions a **worker is running** count. Sessions in `waiting` do not, of any class, and neither
 does a turn queued behind the `agents` pool waiting for a worker, nor a `running` row asleep on its
@@ -1103,9 +1105,9 @@ own future wake — see [What counts as idle](#what-counts-as-idle).
 The name is a wire name: it is stored as a condition on live trigger rows, so it kept its original
 spelling when the boolean behind it became a number. Read it as *few enough* sessions in progress.
 
-##### The three knobs
+##### The four knobs
 
-All three live on `app_settings` and are set from the **Backlog top-up** card on `/inference`, or over
+All four live on `app_settings` and are set from the **Backlog top-up** card on `/inference`, or over
 MCP with `action_spot_policy` `set_top_up`. `FleetIdleMonitor` re-reads them on every sweep, so a
 change takes effect within the minute and needs no deploy.
 
@@ -1114,6 +1116,7 @@ change takes effect within the minute and needs no deploy.
 | `fleet_idle_max_sessions` | 3 | the fleet counts as idle enough while **fewer than** this many sessions are **running on a worker**. A value above `GOOD_JOB_AGENTS_THREADS` (default 8) can never be reached, so the fleet always reads as having room — `/inference` says so on the card |
 | `fleet_idle_threshold_minutes` | 5 | how long it must stay under that ceiling first |
 | `fleet_idle_min_fire_interval_minutes` | 60 | the floor between two fires |
+| `fleet_idle_quiet_backlog_interval_minutes` | 240 | the longer floor that applies instead while the work backlog has had nothing new since the last fire. See [Why an unchanged backlog backs off](#why-an-unchanged-backlog-backs-off) |
 
 **`fleet_idle_max_sessions = 1` means simply "nothing running"** — the boolean this replaced. The
 reason the default is 3 rather than 1 is that requiring literally zero made the event a poor fit for
@@ -1218,10 +1221,11 @@ it was before.
 The dwell cannot pace a fleet that stays quiet. Once a stretch is past its threshold it *stays* past
 it, for hours, so the threshold answers "may this stretch fire at all" and never "may it fire again".
 
-`fleet_idle_min_fire_interval_minutes` — one hour by default — is what answers the second question,
-and it is the only thing that does. On a fleet permanently under its ceiling the cadence is exactly
-that interval: at the shipped 60 minutes, at most **24 top-ups a day**, whatever the ceiling is set
-to. Retune the interval, not the ceiling, to change how often work gets started.
+`fleet_idle_min_fire_interval_minutes` — one hour by default — is what answers the second question.
+On a fleet permanently under its ceiling, with a backlog that keeps getting work, the cadence is
+exactly that interval: at the shipped 60 minutes, at most **24 top-ups a day**, whatever the ceiling
+is set to. Retune the interval, not the ceiling, to change how quickly new work gets started. When the
+backlog has nothing new, the quiet interval below takes over.
 
 It has to be a clock the fleet cannot touch, for a reason that is circular and easy to miss: **the
 fire spawns a session, and that session is itself work on the fleet.** Anything that read the fleet's
@@ -1251,6 +1255,38 @@ One more asymmetry. An undelivered `quota_available` fire **re-arms** its edge, 
 it exists to wake are still parked and the next sweep should try again. An undelivered
 `no_sessions_in_progress` fire does not: nothing is waiting on it, and re-arming would produce one
 fire per tick for as long as the quiet lasted — the exact loop the cooldown exists to prevent.
+
+##### Why an unchanged backlog backs off
+
+The cooldown alone still lets an idle deployment poll itself. On a fleet that is quiet *because* the
+backlog is empty, every fire spawns a top-up session that finds nothing to pull and archives. That
+session never takes the fleet to its ceiling, so the stretch runs on and the next fire comes one
+cooldown later: at a 10-minute cooldown, 144 empty top-ups a day.
+
+So a fire past the cooldown also asks whether the [work backlog](/operate/work-backlog/) has **news**
+since the last fire. Either of these counts:
+
+- an item queued **after** the last fire. Rows only enter `queued` by being created, so `created_at`
+  is the arrival;
+- items still queued **and** an item started since the last fire. The last top-up was productive and
+  the fleet ran out of room before the queue ran out of items, so the next quiet stretch should finish
+  draining it;
+- a queued item whose hold lapsed since the last fire, which the last top-up could not pull and the
+  next one can.
+
+With no news, the next fire waits out `fleet_idle_quiet_backlog_interval_minutes` instead: four hours
+by default, so **at most six top-ups a day** on an idle fleet with an empty backlog. A new item lifts
+that floor at the next check past the cooldown, so the cooldown is how quickly new work is picked up,
+and the quiet interval is how often an unchanged backlog gets checked again. Queued items with neither
+signal are ones the last top-up looked at and left (declined, or still held). Firing on them every cooldown
+would be the same loop with a non-empty queue. The quiet interval is the safety net for what this
+reading cannot see, such as a listening trigger that finds new work for the backlog itself.
+
+Like the cooldown, this reads only things the event's own session cannot fake: a top-up that pulls
+nothing writes nothing to the backlog. An unreadable backlog counts as no news, so a broken read
+waits for the quiet interval. It neither silences top-up nor lets it run at the cooldown.
+
+`/inference` and `get_spot_policy` report this as the `backlog_quiet` state, with the time left.
 
 ### `github_label`
 
