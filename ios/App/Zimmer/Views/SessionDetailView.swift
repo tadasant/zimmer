@@ -79,7 +79,8 @@ final class SessionDetailModel: ObservableObject {
             if latest != detail { detail = latest }
             if messages != conversation { conversation = messages }
             if let queued, queued != queue { queue = queued }
-            error = nil
+            // The error on screen is an action's (a poll's own failures are never shown), so
+            // a quiet read leaves it for the person to read.
         } catch ZimmerError.unauthorized {
             report(.unauthorized)
         } catch {}
