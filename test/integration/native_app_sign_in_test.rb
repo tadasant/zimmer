@@ -184,6 +184,61 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert body["truncated"]
   end
 
+  test "opening a session in the app marks its notifications read and touches it; a read while open does not" do
+    tokens = sign_in
+    session = build_zimmer_session(status: :needs_input)
+    unread = Notification.create!(session: session, notification_type: "needs_input")
+
+    get "/api/v1/sessions/#{session.id}", headers: bearer(tokens["access_token"])
+    assert_response :success
+    assert_not unread.reload.read, "a read without viewed=true is the app polling, not a person opening"
+
+    get "/api/v1/sessions/#{session.id}", params: { viewed: "true" }, headers: bearer(tokens["access_token"])
+    assert_response :success
+    assert unread.reload.read
+    assert session.reload.metadata["last_user_activity_at"].present?, "touched as last touched"
+  end
+
+  test "an API key saying viewed=true clears nobody's inbox" do
+    session = build_zimmer_session(status: :needs_input)
+    unread = Notification.create!(session: session, notification_type: "needs_input")
+
+    get "/api/v1/sessions/#{session.id}", params: { viewed: "true" }, headers: { "X-API-Key" => "test_api_key_native_app" }
+
+    assert_response :success
+    assert_not unread.reload.read
+    assert_nil session.reload.metadata["last_user_activity_at"]
+  end
+
+  test "the conversation reads back past its cap a page at a time, and whole when asked" do
+    tokens = sign_in
+    long = "x" * 5_000
+    lines = (0...7).map do |i|
+      { type: (i.even? ? "user" : "assistant"), message: { role: (i.even? ? "user" : "assistant"), content: (i == 6 ? long : "message #{i}") } }.to_json
+    end
+    session = build_zimmer_session(status: :needs_input, transcript: lines.join("\n") + "\n")
+    headers = bearer(tokens["access_token"])
+
+    get "/api/v1/sessions/#{session.id}/conversation", params: { limit: 3 }, headers: headers
+    newest = JSON.parse(response.body)
+    assert_equal 4, newest["first_position"]
+    assert newest["truncated"]
+    assert newest["messages"].last["content"].length < 5_000, "cut by default"
+
+    get "/api/v1/sessions/#{session.id}/conversation", params: { limit: 3, before: newest["first_position"] }, headers: headers
+    earlier = JSON.parse(response.body)
+    assert_equal [ "message 1", "message 2", "message 3" ], earlier["messages"].map { |m| m["content"] }
+    assert_equal 1, earlier["first_position"]
+
+    get "/api/v1/sessions/#{session.id}/conversation", params: { limit: 3, before: 1 }, headers: headers
+    first = JSON.parse(response.body)
+    assert_equal [ "message 0" ], first["messages"].map { |m| m["content"] }
+    assert_equal false, first["truncated"], "nothing above the first message"
+
+    get "/api/v1/sessions/#{session.id}/conversation", params: { limit: 1, full_content: "true" }, headers: headers
+    assert_equal long, JSON.parse(response.body)["messages"].sole["content"]
+  end
+
   test "a follow-up from an app that acts on its approver's behalf is recorded as theirs; one over an API key is not" do
     tokens = sign_in(privilege: OauthServer::ACT_AS_HUMAN)
     AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-1"))

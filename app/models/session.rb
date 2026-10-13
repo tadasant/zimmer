@@ -1903,6 +1903,17 @@ class Session < ApplicationRecord
   # treats any metadata change as broadcast-worthy). Without this, every page
   # view would rebroadcast the session card to every connected dashboard. This
   # mirrors how last_broadcast_to_index_at is written via update_column.
+  # A person opened this session: its unread notifications are read now. The dashboard's
+  # session page and the iOS app's open both come here, so the inbox clears the same way
+  # from either. Broadcasts the new badge count when anything changed.
+  #
+  # @return [Integer] how many were marked
+  def mark_notifications_read!
+    marked = notifications.pending.update_all(read: true, updated_at: Time.current)
+    BroadcastService.new.notification_badge(Notification.pending_count) if marked.positive?
+    marked
+  end
+
   def touch_user_view!
     update_column(
       :metadata, (metadata || {}).merge("last_user_activity_at" => Time.current.iso8601)
