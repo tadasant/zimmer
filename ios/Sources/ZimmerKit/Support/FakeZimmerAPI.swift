@@ -19,6 +19,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var uncles: [Int: [Int]] = [1031: [1035]]
     private var inbox: [InboxNotification] = FakeZimmerAPI.sampleNotifications()
     private var triggerList: [TriggerSummary] = FakeZimmerAPI.sampleTriggers()
+    /// The sessions each trigger has made, oldest first.
+    private var triggerSessions: [Int: [Int]] = [5: [1031]]
     /// What each follow-up carried, newest last, so a test can see attachments arrive.
     public private(set) var sentAttachments: [Int: [[MessageAttachment]]] = [:]
     /// Every Quick Router start, in order, so a test can see what went with the words.
@@ -754,6 +756,14 @@ extension FakeZimmerAPI {
 
     public func triggers() async throws -> [TriggerSummary] { triggerList }
 
+    public func trigger(_ id: Int) async throws -> TriggerDetail {
+        guard let trigger = triggerList.first(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        let recent = (triggerSessions[id] ?? []).reversed().prefix(10).compactMap { sessionID in
+            all.first(where: { $0.id == sessionID }).map { TriggerDetail.RecentSession(id: $0.id, title: $0.title, status: $0.status, createdAt: $0.createdAt) }
+        }
+        return TriggerDetail(trigger: trigger, recentSessions: Array(recent))
+    }
+
     public func toggleTrigger(_ id: Int) async throws -> TriggerSummary {
         guard let index = triggerList.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
         triggerList[index].status = triggerList[index].isEnabled ? "disabled" : "enabled"
@@ -764,23 +774,56 @@ extension FakeZimmerAPI {
         guard let trigger = triggerList.first(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
         // A disabled trigger can still be fired by hand, as the server allows.
         let started = try await startQuickRouter("\(trigger.name): run now")
+        triggerSessions[id, default: []].append(started)
+        if let index = triggerList.firstIndex(where: { $0.id == id }) {
+            triggerList[index].lastSessionID = started
+            triggerList[index].lastTriggeredAt = Date()
+            triggerList[index].sessionsCreated = (triggerList[index].sessionsCreated ?? 0) + 1
+        }
         return TriggerInvocation(sessionID: started, message: "Trigger '\(trigger.name)' fired: session \(started) started")
     }
 
-    public func costs(days: Int) async throws -> CostSnapshot {
+    /// One week of spend whatever the window, narrowed as the server narrows: a root keeps
+    /// its own share of every figure, a session only its own.
+    public func costs(_ window: CostWindow, scope: CostScope) async throws -> CostSnapshot {
         let now = Date()
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        let spend = [41.2, 55.0, 38.7, 62.3, 70.1, 48.9, 53.4]
+        let roots: [CostSnapshot.Row] = [.init(label: "zimmer", costUSD: 201.4), .init(label: "zimmer-orchestrator", costUSD: 88.2), .init(label: "motet", costUSD: 80.0)]
+        let fleet = roots.reduce(0) { $0 + $1.costUSD }
+        let top: [CostSnapshot.TopSession] = [
+            .init(sessionID: 1042, costUSD: 23.81, tokens: 1_204_331, title: "Add a CarPlay scene to the iOS app", apiCalls: 212),
+            .init(sessionID: 1038, costUSD: 17.02, tokens: 880_120, title: "PR #1261 is green and ready — merge it?", apiCalls: 140),
+        ]
+        let share: Double
+        var shownRoots = roots
+        var shownTop = top
+        switch scope {
+        case .fleet:
+            share = 1
+        case let .agentRoot(root):
+            shownRoots = roots.filter { $0.label == root }
+            share = (shownRoots.first?.costUSD ?? 0) / fleet
+            shownTop = root == "zimmer" ? top : []
+        case let .session(id):
+            shownTop = top.filter { $0.sessionID == id }
+            shownRoots = shownTop.isEmpty ? [] : [.init(label: "zimmer", costUSD: shownTop[0].costUSD)]
+            share = (shownTop.first?.costUSD ?? 0) / fleet
+        }
+        let spend = [41.2, 55.0, 38.7, 62.3, 70.1, 48.9, 53.4].map { $0 * share }
         let daysShown = spend.enumerated().map { offset, cost in
             CostSnapshot.Day(day: formatter.string(from: now.addingTimeInterval(Double(offset - spend.count + 1) * 86_400)), costUSD: cost)
         }
+        let bounds: (Date, Date)
+        switch window {
+        case let .days(days): bounds = (now.addingTimeInterval(-Double(days) * 86_400), now)
+        case let .range(from, to): bounds = (from, to.addingTimeInterval(86_399))
+        }
         return CostSnapshot(
-            from: now.addingTimeInterval(-Double(days) * 86_400), to: now, totalUSD: spend.reduce(0, +), days: daysShown,
-            agentRoots: [.init(label: "zimmer", costUSD: 201.4), .init(label: "zimmer-orchestrator", costUSD: 88.2), .init(label: "motet", costUSD: 80.0)],
-            models: [.init(label: "opus", costUSD: 330.1), .init(label: "sonnet", costUSD: 39.5)],
-            topSessions: [.init(sessionID: 1042, costUSD: 23.81, tokens: 1_204_331), .init(sessionID: 1038, costUSD: 17.02, tokens: 880_120)]
+            from: bounds.0, to: bounds.1, scope: scope, totalUSD: spend.reduce(0, +), days: daysShown, agentRoots: shownRoots,
+            models: [.init(label: "opus", costUSD: 330.1 * share), .init(label: "sonnet", costUSD: 39.5 * share)],
+            topSessions: shownTop
         )
     }
 
@@ -813,7 +856,10 @@ extension FakeZimmerAPI {
         [
             TriggerSummary(id: 5, name: "Nightly dependency sweep", status: "enabled", agentRoot: "zimmer",
                            lastTriggeredAt: now.addingTimeInterval(-20 * 60), lastSessionID: 1031, sessionsCreated: 31,
-                           conditions: [.init(type: "schedule", description: "Every day at 02:00 UTC")]),
+                           conditions: [.init(type: "schedule", description: "Every day at 02:00 UTC", lastTriggeredAt: now.addingTimeInterval(-20 * 60))],
+                           reuseSession: true, enqueueMessages: true,
+                           promptTemplate: "Sweep the dependencies: bump what is safe, open one PR per ecosystem, and say what you held back on {{date}}.",
+                           goal: "Open a reviewed, green PR for each bump."),
             TriggerSummary(id: 6, name: "Slack #zimmer mentions", status: "disabled", agentRoot: "zimmer-orchestrator",
                            sessionsCreated: 4, conditions: [.init(type: "slack", description: "@zimmer in #zimmer")]),
         ]
