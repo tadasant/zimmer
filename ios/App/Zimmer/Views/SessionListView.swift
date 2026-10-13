@@ -159,6 +159,13 @@ struct SessionListView: View {
 
     private var searchableList: some View {
         list
+            // Above the Quick Router bar rather than over it: the Undo toast takes taps.
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 0) {
+                    UndoToast(session: $model.undoable) { Task { await model.undoTrash() } }
+                    Toast(text: $model.notice)
+                }
+            }
             // The web UI's prompt box, at the foot of the board where a thumb reaches it.
             // Inside the searchable scope, so the bar knows when the search box has the
             // keyboard and steps aside.
@@ -170,13 +177,6 @@ struct SessionListView: View {
             .refreshable { await model.refresh() }
             .overlay {
                 if model.isLoading && model.sessions.isEmpty { LoadingState(text: "Loading sessions…") }
-            }
-            .overlay(alignment: .bottom) {
-                if model.undoable != nil {
-                    UndoToast(session: $model.undoable) { Task { await model.undoTrash() } }
-                } else {
-                    Toast(text: $model.notice)
-                }
             }
     }
 
@@ -539,7 +539,6 @@ private struct EmptyListRow: View {
     }
 }
 
-/// The web UI's toast: one line at the bottom that goes away on its own.
 /// The web UI's Undo toast after a trash: on screen for as long as the server would still
 /// undo it, with the button that does.
 struct UndoToast: View {
@@ -574,6 +573,7 @@ struct UndoToast: View {
     }
 }
 
+/// The web UI's toast: one line at the bottom that goes away on its own.
 struct Toast: View {
     @Binding var text: String?
     var identifier = "toast"

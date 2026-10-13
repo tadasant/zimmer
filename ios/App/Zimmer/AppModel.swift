@@ -123,8 +123,8 @@ final class AppModel: ObservableObject {
         // the question before they are discarded.
         if let id = value("-ZimmerFixtureTrash").flatMap(Int.init) {
             Task {
-                await refresh()
-                if let session = sessions.first(where: { $0.id == id }) { await trash(session) }
+                guard let session = try? await connection.api.session(id).session else { return }
+                await trash(session)
             }
         }
         #endif
@@ -253,9 +253,10 @@ final class AppModel: ObservableObject {
     var sections: [BoardSection] { view.sections(sessions) }
 
     /// Trash one session as the web UI's Trash does: no question first, *Undo* after. One with
-    /// messages queued for it is asked about (`queuedTrash`) unless `force`.
+    /// messages queued for it is asked about (`queuedTrash`) unless `force`. A refusal goes to
+    /// `onError` when the caller shows its own errors (the session's page), else to the board.
     @discardableResult
-    func trash(_ session: SessionSummary, force: Bool = false) async -> Bool {
+    func trash(_ session: SessionSummary, force: Bool = false, onError: ((Error) -> Void)? = nil) async -> Bool {
         do {
             switch try await connection.api.trash(session.id, force: force) {
             case let .trashed(updated):
@@ -274,8 +275,7 @@ final class AppModel: ObservableObject {
                 return false
             }
         } catch {
-            handle(error)
-            Haptics.failure()
+            if let onError { onError(error) } else { handle(error); Haptics.failure() }
             return false
         }
     }

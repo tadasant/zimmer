@@ -318,7 +318,7 @@ struct SessionDetailView: View {
                     .accessibilityLabel("Restore from Trash")
                     .accessibilityIdentifier("detail.restore")
                 } else {
-                    Button(role: .destructive) { Task { await app.trash(session) } } label: {
+                    Button(role: .destructive) { Task { await app.trash(session) { model.fail($0) } } } label: {
                         Image(systemName: "trash")
                     }
                     .accessibilityLabel("Move to trash")

@@ -48,8 +48,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   with the status pill, a *Priority* tag, `#id`, a compact age ("41m", "3h"), the latest PR with
   its CI dot and a notes marker; a star for a favourite; and a snoozed or hidden one adds when
   the snooze ends. A trashed session reads in the quieter ink.
-- **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn or with
-  queued messages is refused with the server's reason and stays; the rest go.
+- **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn goes, ending
+  the turn, as in the web UI's bulk Trash (`end_turn`); one with queued messages is refused with the
+  server's reason and stays; the rest go.
 - **Refresh All**, after a confirmation, through `POST /api/v1/sessions/refresh_all`: re-reads
   transcripts, restarts failed sessions, and continues sessions waiting on you that you did not
   pause, up to 50 of those together.
@@ -107,12 +108,12 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   send them. Anything that would be refused, or could not be read, is named rather than dropped
   quietly. They go with the message however it is delivered: now, queued behind a turn, or with
   *Send Now*.
-- **Trashes** a session as the web UI's Trash does: no question first, and an *Undo* on the board
-  for the 30 seconds the web UI offers it (`UNDO_ARCHIVE_WINDOW`), which restores it. A session
-  with a turn in flight goes outright, ending the turn: the app asks
-  `POST /api/v1/sessions/:id/archive` without `force` first, and when the only refusal is the turn
-  it asks again with `force`, since the server checks the queue before the turn. A session with
-  messages queued for it is asked about first, naming the discard — the web UI's *Archive anyway*.
+- **Trashes** a session as the web UI's Trash does: no question first, and an *Undo* on the board,
+  shown for 30 seconds as the web UI shows it (`UNDO_ARCHIVE_WINDOW`), which restores the session.
+  A session with a turn in flight goes outright, ending the turn
+  (`POST /api/v1/sessions/:id/archive` with `end_turn`). A session with messages queued for it is
+  asked about first, naming the discard: the web UI's *Archive anyway* (`force`). Undo does not
+  bring back discarded messages or resume an ended turn.
   Restores one from the trash.
 - **Starts a session from a sentence** through the Quick Router, then opens it. The Quick Router is
   where the web UI puts it: a field pinned to the foot of the Sessions screen ("What do you want

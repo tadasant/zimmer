@@ -426,10 +426,14 @@ extension FakeZimmerAPI {
     public func bulkArchive(_ ids: [Int]) async throws -> BulkArchiveResult {
         var archived = 0
         var errors: [BulkArchiveResult.Refusal] = []
+        // As the server with `end_turn`: a turn in flight goes, a queue is reported.
         for id in ids {
             do {
-                _ = try await archive(id)
-                archived += 1
+                if try await trash(id, force: false) == .queued {
+                    errors.append(BulkArchiveResult.Refusal(id: id, message: "Cannot archive session \(id): queued messages have not been delivered."))
+                } else {
+                    archived += 1
+                }
             } catch let ZimmerError.http(_, message) {
                 errors.append(BulkArchiveResult.Refusal(id: id, message: message ?? "Cannot archive"))
             }
