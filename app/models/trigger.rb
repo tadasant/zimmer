@@ -1443,7 +1443,7 @@ class Trigger < ApplicationRecord
       return false
     end
 
-    update!(flag => !public_send(flag))
+    update(flag => !public_send(flag))
   end
 
   def clear_enqueue_messages_without_reuse_session

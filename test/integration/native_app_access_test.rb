@@ -163,6 +163,9 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
     delete "/api/v1/triggers/0", headers: headers
     assert_response :unauthorized
+    # Editing a trigger stays in the browser: only its two re-use switches open.
+    patch "/api/v1/triggers/0", params: { enqueue_messages: true }, headers: headers
+    assert_response :unauthorized
     post "/api/v1/triggers", params: { name: "x" }, headers: headers
     assert_response :unauthorized
     post "/api/v1/health/enter_queue_recovery_mode", headers: headers
