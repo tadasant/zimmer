@@ -212,17 +212,6 @@ final class SessionDetailModel: ObservableObject {
         }
     }
 
-    func archive() async -> Bool {
-        do {
-            _ = try await api.archive(id)
-            Haptics.success()
-            return true
-        } catch {
-            fail(error)
-            return false
-        }
-    }
-
     /// One action from the session's menu; the server's answer replaces what is shown.
     @discardableResult
     func apply(_ done: String, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
@@ -286,7 +275,6 @@ struct SessionDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @StateObject private var model: SessionDetailModel
-    @State private var confirmingArchive = false
     @State private var choosingModel = false
     @State private var editingCatalog: CatalogKind?
     /// The web UI's log-level filter, as far as the conversation goes. Minimal by default:
@@ -409,17 +397,10 @@ struct SessionDetailView: View {
         .navigationTitle(Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
-        .confirmationDialog("Move to trash?", isPresented: $confirmingArchive, titleVisibility: .visible) {
-            Button("Trash", role: .destructive) {
-                Task {
-                    if await model.archive() {
-                        await app.sessionChanged()
-                        dismiss()
-                    }
-                }
-            }
-        } message: {
-            Text("It moves to the trash. You can restore it from Archived.")
+        .modifier(QueuedTrashQuestion { $0.id == model.id && app.path.last == model.id })
+        // Trashed — here, or after *Trash anyway* — the page goes and the board offers Undo.
+        .onChange(of: app.undoable?.id) { _, trashed in
+            if trashed == model.id { dismiss() }
         }
         .confirmationDialog(
             "Force a worker thread?",
@@ -513,7 +494,7 @@ struct SessionDetailView: View {
                     .accessibilityLabel("Restore from Trash")
                     .accessibilityIdentifier("detail.restore")
                 } else {
-                    Button(role: .destructive) { confirmingArchive = true } label: {
+                    Button(role: .destructive) { Task { await app.trash(session) { model.fail($0) } } } label: {
                         Image(systemName: "trash")
                     }
                     .accessibilityLabel("Move to trash")
