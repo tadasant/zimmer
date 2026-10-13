@@ -11,13 +11,15 @@ final class SessionDetailModel: ObservableObject {
     var report: (ZimmerError) -> Void = { _ in }
 
     @Published private(set) var detail: SessionDetail? { didSet { noteChange() } }
-    @Published private(set) var conversation: Conversation? { didSet { noteChange() } }
+    /// The newest window and the pages read back past the server's one-read cap.
+    @Published private(set) var pages = ConversationPages() { didSet { noteChange() } }
+    /// The newest window, as last read.
+    var conversation: Conversation? { pages.newest }
     /// How far back the conversation reads: a hundred at first, a hundred more on *Show
     /// earlier*, up to what the server returns in one read.
     @Published private(set) var conversationLimit = Conversation.pageSize
-    /// Pages read back past the server's one-read cap, oldest first: kept apart from the
-    /// newest window, which the page's reads replace.
-    @Published private(set) var earlier: [ConversationMessage] = []
+    /// *Show earlier* is reading: a second tap waits for it, and polls stand aside.
+    @Published private(set) var isLoadingEarlier = false
     /// The session has been opened once, as a person opening it (`viewed=true`); later
     /// reads are the page keeping current and record nothing.
     private var opened = false
@@ -60,7 +62,7 @@ final class SessionDetailModel: ObservableObject {
                 opened = true
                 onOpened()
             }
-            conversation = try await api.conversation(id, limit: conversationLimit)
+            pages.receive(try await api.conversation(id, limit: conversationLimit))
             // The queue is a panel, not the page: one that will not load keeps what it last
             // showed rather than failing the session — unless the sign-in has ended.
             do {
@@ -78,12 +80,17 @@ final class SessionDetailModel: ObservableObject {
     /// moves, and this is that, by asking. A failed read leaves what is on screen, except a
     /// sign-in that ended.
     func poll() async {
-        guard !isLoading, !isSending, !pollPaused, detail?.session.status != .archived else { return }
+        guard !isLoading, !isSending, !isLoadingEarlier, !pollPaused, detail?.session.status != .archived else { return }
         let started = revision
         let limit = conversationLimit
         do {
             let latest = try await api.session(id)
-            let messages = try await api.conversation(id, limit: limit)
+            // The last few messages, joined to what is on screen; the whole window again only
+            // when they cannot be, so a running session is not read in full every few seconds.
+            var read = pages
+            if !read.receiveTail(try await api.conversation(id, limit: ConversationPages.tailSize)) {
+                read.receive(try await api.conversation(id, limit: limit))
+            }
             let wantsQueue = latest.session.status == .running || latest.session.status == .waiting || !queue.isEmpty
             let queued = wantsQueue ? try? await api.queue(id) : []
             // An edit, a send or *Show earlier* landed while this was reading: its answer wins.
@@ -91,7 +98,7 @@ final class SessionDetailModel: ObservableObject {
             applyingPoll = true
             defer { applyingPoll = false }
             if latest != detail { detail = latest }
-            if messages != conversation { conversation = messages }
+            if read != pages { pages = read }
             if let queued, queued != queue { queue = queued }
             error = nil
         } catch ZimmerError.unauthorized {
@@ -114,10 +121,13 @@ final class SessionDetailModel: ObservableObject {
     /// Widen the window by a page and read again: the web UI's transcript reading back as
     /// you scroll up.
     func showEarlier() async {
+        guard !isLoadingEarlier else { return }
+        isLoadingEarlier = true
+        defer { isLoadingEarlier = false }
         if conversationLimit < Conversation.maxLimit {
             let next = min(conversationLimit + Conversation.pageSize, Conversation.maxLimit)
             do {
-                conversation = try await api.conversation(id, limit: next)
+                pages.receive(try await api.conversation(id, limit: next))
                 // Only once the wider read is on screen: a read that failed leaves the button.
                 conversationLimit = next
                 error = nil
@@ -131,7 +141,7 @@ final class SessionDetailModel: ObservableObject {
         guard let shown = shownConversation, shown.firstPosition > 0 else { return }
         do {
             let page = try await api.earlierMessages(id, before: shown.firstPosition, limit: Conversation.pageSize)
-            earlier = page.messages + earlier
+            pages.prepend(page, before: shown.firstPosition)
             error = nil
         } catch {
             fail(error)
@@ -139,13 +149,7 @@ final class SessionDetailModel: ObservableObject {
     }
 
     /// What the page shows: the pages read back, then the newest window.
-    var shownConversation: Conversation? {
-        guard let conversation else { return nil }
-        guard !earlier.isEmpty else { return conversation }
-        let first = earlier.first?.id ?? conversation.firstPosition
-        let newest = conversation.messages.filter { $0.id > (earlier.last?.id ?? -1) }
-        return Conversation(messages: earlier + newest, total: conversation.total, truncated: first > 0, firstPosition: first)
-    }
+    var shownConversation: Conversation? { pages.shown }
 
     func fail(_ error: Error) {
         let zimmerError = error as? ZimmerError ?? .transport(error)
@@ -764,9 +768,10 @@ struct SessionDetailView: View {
                 // The web UI reads the transcript back as you scroll up; here a tap reads a
                 // hundred more each time, back to the first message.
                 HStack(spacing: 6) {
-                    Text("The last \(conversation.messages.count) of \(conversation.total).")
+                    Text("The last \(conversation.total - conversation.firstPosition) of \(conversation.total).")
                     if conversation.firstPosition > 0 {
                         Button("Show earlier") { Task { await model.showEarlier() } }
+                            .disabled(model.isLoadingEarlier)
                             .font(.caption.weight(.medium))
                             .foregroundStyle(Theme.accent)
                             .accessibilityIdentifier("detail.earlier")
