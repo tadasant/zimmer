@@ -90,7 +90,12 @@ final class OperationsUITests: XCTestCase {
         swipes = 0
         while !(clear.exists && clear.isHittable) && swipes < 6 { app.swipeDown(); swipes += 1 }
         clear.tap()
-        XCTAssertTrue(app.buttons["costs.root.motet"].waitForExistence(timeout: timeout), "back to every root")
+        // The banner goes when the fleet's figures arrive; the roots are below the fold again.
+        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["costs.scope"]), "back to the fleet")
+        let motet = app.buttons["costs.root.motet"]
+        swipes = 0
+        while !(motet.exists && motet.isHittable) && swipes < 6 { app.swipeUp(); swipes += 1 }
+        XCTAssertTrue(motet.exists && motet.isHittable, "back to every root")
 
         let window = app.segmentedControls["costs.window"]
         swipes = 0
