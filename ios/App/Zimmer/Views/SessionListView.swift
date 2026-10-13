@@ -66,7 +66,7 @@ struct SessionListView: View {
             .onChange(of: model.sessions.map(\.id)) { _, ids in selection.formIntersection(ids) }
             // The server orders each view, so a new view is a new list.
             .onChange(of: model.view) { _, view in
-                if view != .ranked, reordering { reordering = false; editMode = .inactive }
+                if reordering { reordering = false; editMode = .inactive }
                 Task { await model.viewChanged() }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
@@ -140,22 +140,21 @@ struct SessionListView: View {
 
     private var isSelecting: Bool { editMode.isEditing && !reordering }
 
-    /// Drag handles on the Ranked view's spot queue while reordering, and nowhere else.
+    /// Drag handles while reordering: on Your board, every row, as the web UI's has; on Ranked,
+    /// the spot queue.
     private func moveHandler(for section: BoardSection) -> ((IndexSet, Int) -> Void)? {
-        guard reordering, section.title == "Spot queue" else { return nil }
+        guard reordering, model.view == .yourBoard || section.title == "Spot queue" else { return nil }
         return { source, destination in drop(section.sessions, from: source, to: destination) }
     }
 
-    /// A drop in the spot queue: the server is told the rows it landed between and works out
-    /// the precedence, as the web UI's Ranked view does.
+    /// A drop: the server is told the rows of the same class it landed between and works out
+    /// the precedence, as the web UI's Your board and Ranked views do.
     private func drop(_ rows: [SessionSummary], from source: IndexSet, to destination: Int) {
         var moved = rows
         moved.move(fromOffsets: source, toOffset: destination)
         guard let from = source.first, let index = moved.firstIndex(where: { $0.id == rows[from].id }) else { return }
-        let session = moved[index]
-        let above = index > 0 ? moved[index - 1].id : nil
-        let below = index < moved.count - 1 ? moved[index + 1].id : nil
-        Task { await model.reorder(session.id, above: above, below: below) }
+        let (above, below) = BoardView.dropNeighbours(moved, at: index)
+        Task { await model.reorder(moved[index].id, above: above, below: below) }
     }
 
     private var incompleteNotice: String {
@@ -244,12 +243,12 @@ struct SessionListView: View {
                     } label: {
                         Label("Select Sessions", systemImage: "checkmark.circle")
                     }
-                    if model.view == .ranked {
+                    if model.view.isReorderable {
                         Button {
                             reordering = true
                             editMode = .active
                         } label: {
-                            Label("Reorder Spot Queue", systemImage: "arrow.up.arrow.down")
+                            Label(model.view == .ranked ? "Reorder Spot Queue" : "Reorder Board", systemImage: "arrow.up.arrow.down")
                         }
                         .accessibilityIdentifier("ranked.reorder")
                     }

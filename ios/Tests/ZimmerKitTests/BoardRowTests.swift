@@ -68,4 +68,27 @@ final class BoardRowTests: XCTestCase {
         session.metadata = nil
         XCTAssertEqual(session.agentRoot, "resolved")
     }
+
+    private func row(_ id: Int, priority: Bool) -> SessionSummary {
+        SessionSummary(id: id, status: .waiting, priorityClass: priority ? "priority" : "spot")
+    }
+
+    func testADropNamesTheNearestRowsOfItsOwnClass() {
+        // P1 P2 | S3 S4 S5, with S5 dragged between P1 and P2.
+        let rows = [row(1, priority: true), row(5, priority: false), row(2, priority: true), row(3, priority: false), row(4, priority: false)]
+        let neighbours = BoardView.dropNeighbours(rows, at: 1)
+        XCTAssertNil(neighbours.above, "no spot row above it")
+        XCTAssertEqual(neighbours.below, 3)
+    }
+
+    func testADropWithinItsClassNamesTheRowsBesideIt() {
+        let rows = [row(1, priority: true), row(3, priority: false), row(5, priority: false), row(4, priority: false)]
+        let neighbours = BoardView.dropNeighbours(rows, at: 2)
+        XCTAssertEqual(neighbours.above, 3)
+        XCTAssertEqual(neighbours.below, 4)
+    }
+
+    func testOnlyYourBoardAndRankedAreReordered() {
+        XCTAssertEqual(BoardView.allCases.filter(\.isReorderable), [.yourBoard, .ranked])
+    }
 }
