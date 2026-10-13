@@ -30,6 +30,7 @@ extension RootView {
         TabView(selection: $model.tab) {
             NavigationStack(path: $model.path) {
                 SessionListView()
+                    .background { BoardPoller() }
                     .navigationDestination(for: Int.self) { id in
                         SessionDetailView(id: id, api: model.api)
                     }
@@ -76,5 +77,34 @@ struct BuildBadge: View {
             .background(Theme.signatureGold, ignoresSafeAreaEdges: [])
             .accessibilityIdentifier("build.badge")
             .accessibilityValue(summary)
+    }
+}
+
+/// The board reads itself again every half minute while it is the screen in front, and at
+/// once when the app comes back to the front: the web UI's board streams its rows, and a
+/// list on a phone that only changes when pulled reads as broken.
+private struct BoardPoller: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        Color.clear
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(30))
+                    guard !Task.isCancelled else { return }
+                    await refreshIfInFront()
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await refreshIfInFront() } }
+            }
+    }
+
+    /// Only the board in front, not one under an open session or another tab, and not while a
+    /// selection or a drag is in hand.
+    private func refreshIfInFront() async {
+        guard model.tab == .sessions, model.path.isEmpty, !model.isEditingBoard else { return }
+        await model.refresh(silently: true)
     }
 }
