@@ -183,8 +183,10 @@ extension ZimmerHTTPClient {
             var query = filters.query.merging(board.query) { a, _ in a }
             query["view"] = view.rawValue
             query["per_page"] = nil
+            // The dashboard's User-view rows carry the agent root and the status summary.
+            query["include"] = "board_row"
             let response: SessionListResponse = try await get("/api/v1/sessions", query: query)
-            return SessionSearchResult(sessions: response.sessions, complete: !(response.truncated ?? false))
+            return SessionSearchResult(sessions: response.rows, complete: !(response.truncated ?? false))
         }
     }
 
