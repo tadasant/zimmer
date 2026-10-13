@@ -80,8 +80,13 @@ public actor FakeZimmerAPI: ZimmerAPI {
             }
         }
         let session = try find(id)
+        // As the server: a check reads back the catalog goal the session has now, so a goal
+        // changed to another (or to free text) takes the check with it.
+        let check = Self.sampleGoalChecks()[id].flatMap { check in
+            Self.sampleConfigs.goal(matching: session.goal)?.id == check.goalID ? check : nil
+        }
         return SessionDetail(session: session, statusSummary: summaries[id], hierarchy: hierarchy,
-                             goalCheck: Self.sampleGoalChecks()[id], humanMessages: Self.sampleHumanMessages()[id] ?? [],
+                             goalCheck: check, humanMessages: Self.sampleHumanMessages()[id] ?? [],
                              captureGaps: Self.sampleCaptureGaps()[id] ?? [], waiting: waiting(for: session))
     }
 
@@ -645,8 +650,8 @@ extension FakeZimmerAPI {
                 (1049, "Fresh-eyes review of #1294", .failed, 2),
             ]
             // The router came in over Slack and runs priority; what it spawned is spot. The
-            // review of #1294 was spawned by 1046 and handed to the router to finish, so it
-            // is drawn under 1044, which did not spawn it.
+            // review of #1294 was reached through a senior rather than a spawn edge, so it is
+            // drawn under 1044, which did not spawn it.
             return SessionHierarchy(nodes: family.map { nodeID, title, status, depth in
                 SessionHierarchy.Node(id: nodeID, title: title, agentRoot: depth == 0 ? "zimmer-orchestrator" : "zimmer", status: status, depth: depth,
                                       current: nodeID == id, genesis: "slack", priorityClass: depth == 0 ? "priority" : "spot",

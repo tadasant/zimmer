@@ -8,6 +8,8 @@ struct DetailsCard: View {
     let detail: SessionDetail
     /// The catalog goal the session's goal names, when the catalog has read.
     let goal: GoalOption?
+    /// The catalog has read, so a goal it does not name is free text.
+    var catalogRead = false
     /// Open the folded rows from the start: the fixture's photograph of them.
     var expanded = false
     let edit: (SessionDetailView.EditedText) -> Void
@@ -71,7 +73,9 @@ struct DetailsCard: View {
         case let .goalCheck(check):
             GoalCheckRow(check: check)
         case let .goal(text):
-            GoalRow(text: text, goal: goal, checkedName: detail.goalCheck?.goalName) { edit(.goal) }
+            // The goal check's name stands in only until the catalog reads: after that, a goal
+            // the catalog does not name is free text, whatever an older check said.
+            GoalRow(text: text, goal: goal, checkedName: catalogRead ? nil : detail.goalCheck?.goalName) { edit(.goal) }
         case let .notes(notes):
             ClampedTextRow(title: "Notes", text: notes, identifier: "detail.notes") { edit(.notes) }
         case let .mcpServers(connections):
@@ -111,7 +115,7 @@ private struct GoalCheckRow: View {
                     Text("Judged on PRs recorded by")
                     ForEach(check.delegatedSessionIDs, id: \.self) { id in
                         NavigationLink(value: id) {
-                            Text(verbatim: "#\(id)").underline().foregroundStyle(Theme.accent)
+                            Text(verbatim: "session #\(id)").underline().foregroundStyle(Theme.accent)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Session #\(id)")
@@ -494,7 +498,8 @@ private struct HumanMessagesRow: View {
                     captureGap(gap)
                 }
                 if detail.humanMessages.isEmpty {
-                    Text("Zimmer captured no human message anywhere in this hierarchy, and capture is not configured for \(detail.captureGaps.map(\.channelLabel).joined(separator: ", ")). Read this as the check could not be established, not as \"no human spoke\".")
+                    // The web panel's empty state, in its words.
+                    Text("Zimmer captured no human message anywhere in this hierarchy — and capture is not configured for \(detail.uncapturedChannels), \(detail.captureGaps.count == 1 ? "one of the channels" : "channels") this hierarchy's work arrived over. Read this as the check could not be established, not as \"no human spoke\".")
                         .font(.caption)
                         .foregroundStyle(Theme.inkSoft)
                         .fixedSize(horizontal: false, vertical: true)

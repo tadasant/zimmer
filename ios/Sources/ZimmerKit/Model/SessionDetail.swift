@@ -76,6 +76,18 @@ public struct SessionDetail: Hashable, Sendable {
         }
     }
 
+    /// The channels capture is not configured for, as the web panel's empty state names them:
+    /// "Slack", "Slack and the Zimmer web UI", "A, B, and C" — Rails' `to_sentence`.
+    public var uncapturedChannels: String {
+        let labels = captureGaps.map(\.channelLabel)
+        switch labels.count {
+        case 0: return ""
+        case 1: return labels[0]
+        case 2: return "\(labels[0]) and \(labels[1])"
+        default: return labels.dropLast().joined(separator: ", ") + ", and " + labels[labels.count - 1]
+        }
+    }
+
     /// The Human messages panel's closed row, in the web panel's words: both counts, always,
     /// and what the search could not cover — a cut tree, a channel nothing listens on.
     public var humanMessagesSummary: String {
@@ -490,24 +502,11 @@ public struct SessionHierarchy: Hashable, Sendable, Decodable {
     /// Some row is drawn under a session that did not spawn it.
     public var hasRedrawnEdges: Bool { nodes.contains { !$0.spawnEdge } }
 
-    /// The closed row, as the web panel's summary writes it: "7 sessions, origin #1040", and
-    /// the parent — the node this one is drawn under — since that is the first question.
+    /// The closed row, as the web panel's summary writes it: "7 sessions, origin #1040".
     public var summary: String {
         var line = "\(nodes.count) sessions"
         if let originID { line += ", origin #\(originID)" }
-        if let current = nodes.firstIndex(where: \.current), let parent = parentID(of: current), parent != originID {
-            line += " · parent #\(parent)"
-        }
         return line
-    }
-
-    /// The node at `index` is drawn under: what the server says, or for a server from before
-    /// it, the nearest node above one level shallower, in draw order.
-    private func parentID(of index: Int) -> Int? {
-        let node = nodes[index]
-        if let render = node.renderParentID { return render }
-        guard node.depth > 0 else { return nil }
-        return nodes[..<index].last { $0.depth == node.depth - 1 }?.id
     }
 
     /// Worth a panel only when the session is not alone in it.
