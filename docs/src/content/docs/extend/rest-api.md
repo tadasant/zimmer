@@ -190,7 +190,7 @@ and the model refuses to write one, answering `422`.
 | `POST` | `/sessions/:id/sleep` | `needs_input` → sleeps; `running` → sets `pending_sleep`. Marks the sleep deliberate (`deliberate_sleep_at`), which is what keeps [`StrandedSleepSweepJob`](/operate/background-jobs/) from treating a session slept with nothing armed as one whose wake was lost. Any resume or restart clears the marker |
 | `POST` | `/sessions/:id/restart` | clears stale retry metadata and re-queues the job; re-runs the whole setup pipeline when there is no conversation to prompt into — setup never finished (a failed clone, say), or the session [never ran at all](/sessions/lifecycle/#restoring-a-session-that-never-ran) — and the replacement first turn carries the session's [stored images and files](/limitations/#a-stranded-waiting-session-is-only-rescued-if-it-never-started). 422 `Session has no session_id` is reserved for the session that has a transcript but no id to resume it under. Either branch answers **503** rather than 500 when a dropped database connection survives its retries — the write is retryable, so the caller should retry it |
 | `POST` | `/sessions/:id/start_now` | the Ranked view's *Start now*, with MCP `start_now`'s answers: take a waiting session's next turn now rather than when the scheduler gets to it → `{session, outcome, message}`. It moves *when* the turn is asked for, not *whether* the spot gate allows it. 422 when [`Sessions::StartNow`](/sessions/spot-and-priority/#starting-a-queued-session-now) refuses (asleep on a wake, say) and when the session has no turn queued — send it a follow-up, or restart it |
-| `POST` | `/sessions/:id/force_start` | the queued-for-a-worker banner's *Force*, with MCP `force_start`'s semantics: stop the turn that most recently took one of the `agents` lane's threads, put that turn straight back in the queue, and give the thread to this session's queued turn → `{session, message}`. Pass `expected_victim_id` — the session `waiting`'s `queued_turn` banner named — and a pick that differs (the named turn ended, or somebody forced it first) is refused rather than stopping a turn nobody confirmed. 422 `Cannot force` with [`Sessions::ForceTurnStart`](/sessions/lifecycle/#force-taking-a-thread-off-somebody-elses-turn)'s own sentence when the session has no turn queued, a thread is already free, nothing can be stopped, or the victim changed. A spot turn still meets the spot gate once it has the thread |
+| `POST` | `/sessions/:id/force_start` | the queued-for-a-worker banner's *Force*, with MCP `force_start`'s semantics: stop the turn that most recently took one of the `agents` lane's threads, put that turn straight back in the queue, and give the thread to this session's queued turn → `{session, message}`. `expected_victim_id` is required — the session `waiting`'s `queued_turn` banner named; 422 `Missing parameter` without it — and a pick that differs (the named turn ended, or somebody forced it first) is refused rather than stopping a turn nobody confirmed. An agent passing `acting_session_id` is never the victim, as with MCP. 422 `Cannot force` with [`Sessions::ForceTurnStart`](/sessions/lifecycle/#force-taking-a-thread-off-somebody-elses-turn)'s own sentence when the session has no turn queued, a thread is already free, nothing can be stopped, or the victim changed. A spot turn still meets the spot gate once it has the thread |
 | `PATCH` | `/sessions/:id/reorder_precedence` | the Ranked view's drag-and-drop: `above_id` and/or `below_id`, the spot-queue rows it was dropped between (omit one at an end; a row no longer in the spot queue counts as omitted). The server derives the precedence, nudging a neighbour aside when there is no gap → `{session, changes: [{id, precedence}]}`, every row whose value moved. 422 with the reason on a refusal |
 | `POST` | `/sessions/:id/fork` | `message_index` required → 201 |
 | `POST` | `/sessions/:id/regenerate_status_summary` | → 202. Queues a forced rewrite of the [Status summary](/sessions/status-summary/); it forks the session and spends an agent turn, so it is asynchronous and must not be polled. 422 with the reason, rather than a 202 for work that cannot run, when there is nothing to summarize: no transcript, or a session that is itself a summary fork. An archived session is a normal candidate however long ago it was archived — the fork answers from the conversation, and gets an empty working directory when Zimmer has already reclaimed the clone |
@@ -748,22 +748,24 @@ per card:
   never arrive. `messages_since_generated` counts transcript events since the blurb was written —
   `0` means current. Reading it never generates one; see
   [The Status summary](/sessions/status-summary/).
-- `waiting` — the session page's "why is it waiting" and recovery banners, in the page's own words,
-  so a client shows them without re-deriving any of it. `reasons[]` is
-  [`SessionWaitingReason`](/sessions/spot-and-priority/#three-parks-one-headline)'s ranking — `mechanism` (`spot_hold`,
-  `spot_pause`, `auth_outage_park`, `turn_queued`), `label`, `at`, `current` (exactly one is) and
-  `demoted` (an overdue hold nothing will re-arm). `banners[]` come in the order the page stacks
-  them, each `{key, tone, headline, body, details, action}`: `tone` is `info` or `warning`, `body`
-  is paragraphs of plain text, `details` the structured facts behind them (times in ISO 8601), and
-  `action` is `null` or the banner's one control. The keys: `quota_limit_paused`, `auth_outage`,
-  `spot_hold` (holds and pauses alike, with the superseded-reason lines when another mechanism owns
-  the wait), `starvation_admission`, `queued_turn`, `mcp_oauth_reconnect`, `mcp_oauth_required`,
-  `lost_elicitation` and `pending_wake` — the last the one banner the web page does not draw. The
-  action kinds name the call to make: `update_scheduling_class` (`PATCH /sessions/:id` with its
-  `scheduling_class`), `force_start` (`POST /sessions/:id/force_start` with its
-  `expected_victim_id`; `confirm` is the web page's confirmation text), `follow_up`
-  (`POST /sessions/:id/follow_up` with its `prompt`) and `open_in_browser` (`path` on the web app —
-  MCP OAuth is a browser round-trip). Both arrays are empty when there is nothing to say.
+- `waiting` — the session page's "why is it waiting" and recovery banners, in the page's own words, so
+  a client shows them without re-deriving any of it. `reasons[]` is
+  [`SessionWaitingReason`](/sessions/spot-and-priority/#three-parks-one-headline)'s ranking —
+  `mechanism` (`spot_hold`, `spot_pause`, `auth_outage_park`, `turn_queued`), `label`, `at`, `current`
+  (exactly one is) and `demoted` (an overdue hold nothing will re-arm). `banners[]` come in the order
+  the page stacks them, each `{key, tone, headline, body, details, action}`: `tone` is `info` or
+  `warning`, `body` is paragraphs of plain text, `details` the structured facts behind them (times in
+  ISO 8601), and `action` is `null` or the banner's one control. A banner whose inputs could not be
+  read (the `agents` queue, the account pool, the trigger table) is left out and logged rather than
+  failing the request. The keys: `quota_limit_paused`, `auth_outage`, `spot_hold` (holds and pauses
+  alike, with the superseded-reason lines when another mechanism owns the wait),
+  `starvation_admission`, `queued_turn`, `mcp_oauth_reconnect`, `mcp_oauth_required`,
+  `lost_elicitation` and `pending_wake` — the last the one banner the web page does not draw, shown
+  only on a `waiting` session. The action kinds name the call to make: `update_scheduling_class`
+  (`PATCH /sessions/:id` with its `scheduling_class`), `force_start` (`POST /sessions/:id/force_start`
+  with its `expected_victim_id`; `confirm` is the web page's confirmation text), `follow_up`
+  (`POST /sessions/:id/follow_up` with its `prompt`) and `open_in_browser` (`path` on the web app — MCP OAuth
+  is a browser round-trip). Both arrays are empty when there is nothing to say.
 - `session_hierarchy` — the lineage graph this session belongs to: `origin_session_id`,
   `root_session_ids`, `truncated`, `truncation_reason`, and `nodes[]` each with `id`, `title`,
   `agent_root`, `status`, `depth`, `parent_session_id`, `render_parent_session_id`, `spawn_edge`,
