@@ -475,13 +475,18 @@ private struct FilterBar: View {
                         .font(.caption)
                         .foregroundStyle(Theme.inkSoft)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                         .accessibilityIdentifier("filter.summary")
                     Button("Reset") { Task { await model.apply(.default) } }
                         // Borderless, or the whole list row becomes this button's target.
                         .buttonStyle(.borderless)
                         .font(.caption.weight(.medium))
                         .accessibilityIdentifier("filter.reset")
+                        .fixedSize()
                 }
+                // Bounded and leading, so a long summary truncates at its end rather than
+                // pushing the row wider and losing its first letters off the edge.
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .sheet(isPresented: $model.showingFilters) { BoardFiltersSheet(initial: model.filters) }
