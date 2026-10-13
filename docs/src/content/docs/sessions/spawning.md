@@ -505,9 +505,11 @@ Settings → Experimental (`AppSetting#warm_clone_pool_active_roots_enabled`, al
 `action_app_settings`):
 
 - **`router`** (off, the default): one key, the router root's repository and default branch, at
-  `QUICK_ROUTER_WARM_CLONES` clones. Only router sessions claim it. On a deployment where other roots
-  live in the router's repository, as about twenty do in tadasant-internal, they still clone cold, so
-  they cannot take the router's one clone.
+  `QUICK_ROUTER_WARM_CLONES` clones. Only router sessions claim it, and only when they are on that
+  repository and branch. A router session started on another branch clones cold without recording a
+  miss. On a deployment where other roots live in the router's repository, as about twenty do in
+  tadasant-internal, they still clone cold, so they cannot take the router's one clone. The plan
+  reads the catalog and nothing else, with no session query.
 - **`active`** (on): every key a catalog agent root started sessions on in the last 7 days, with
   at least 7 starts. Any session whose `git_root` and `branch` are a pooled key claims from it. Each
   root's starts are mapped to its catalog `url` and `default_branch` and summed per key. The
@@ -515,11 +517,15 @@ Settings → Experimental (`AppSetting#warm_clone_pool_active_roots_enabled`, al
   counts toward nothing. Keys are ranked by starts weighted with a two-day half-life. The router's key
   always comes first, so it is never served worse than under `router`. A key with 150 or more starts
   in the window (about one an hour) gets a second clone. Keys are added in rank order until the next
-  one would take the total past `WARM_CLONE_POOL_MAX_CLONES` clones (default 10).
+  one would take the total past `WARM_CLONE_POOL_MAX_CLONES` clones (default 10). A key that is
+  already pooled keeps its place down to 4 starts, and ranks as though its score were a quarter
+  higher. Without that margin, a key sitting at the floor or the cap would drop in and out as the
+  window slides, and every drop deletes clones that the next rise rebuilds.
 
 On the Tadasant deployment a non-router session spends 7–28 seconds in `git clone`, and `active` is
 for those sessions. The ranking is cached for
-five minutes, because every session start asks for it. Under either scope, `/health` lists the keys
+five minutes, because every session start asks for it, so a catalog change takes up to five minutes
+to reach the pool. Under either scope, `/health` lists the keys
 `active` would add and why each one is left out, so the switch can be judged before it is flipped.
 
 Anything that goes wrong falls back to an ordinary `git clone` at the same path: an empty pool, a

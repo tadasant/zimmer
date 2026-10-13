@@ -105,11 +105,15 @@ module WarmClonePool
   # fallbacks, and the pool must never be why a session fails.
   def serves?(session)
     return false unless enabled?
-    return false if WarmPoolPolicy.scope == "router" &&
+
+    scope = WarmPoolPolicy.scope
+    return false if scope == "router" &&
       !AgentRootsConfig::ROUTER_ROOT_NAMES.include?(session.metadata&.dig("agent_root_key"))
 
-    key = [ session.git_root, session.branch.presence || "main" ]
-    targets.any? { |target| [ target.repo_url, target.branch ] == key }
+    # The session's branch exactly as GitCloneService will be handed it, so a
+    # session is only served when its claim would look in the key it matched.
+    key = [ session.git_root, session.branch ]
+    WarmPoolPolicy.targets(base_size: size, scope: scope).any? { |target| [ target.repo_url, target.branch ] == key }
   rescue StandardError => e
     logger.warn("Could not decide whether the warm pool serves a session; cloning cold",
                 session_id: session.id, error: "#{e.class}: #{e.message}")
@@ -224,7 +228,7 @@ module WarmClonePool
         end
       rescue GitCloneService::GitError => e
         logger.warn("Warm clone build failed; the next pass retries", repo_url: repo_url, branch: branch, error: e.message)
-        errors[key(repo_url, branch)] = e.message
+        errors[key(repo_url, branch)] = short_error(e.message)
       end
 
       result[:recycled] += prune!(repo_url, branch, size: want)
@@ -236,6 +240,12 @@ module WarmClonePool
   end
 
   LAST_PASS_CACHE_KEY = "warm_clone_pool/last_pass"
+
+  # A git error carries the whole command and its output. The first line says
+  # what failed; the log line above keeps the rest.
+  def short_error(message)
+    message.to_s.lines.first.to_s.strip.truncate(300)
+  end
 
   # Kept where the web container can read it: the health report runs there, and
   # a build error lives only in the worker's memory otherwise.
@@ -261,7 +271,7 @@ module WarmClonePool
   # Read from the web container, which shares the clones volume with the worker,
   # so the ready counts are the worker's own; the last pass comes from the cache.
   def report
-    plan = WarmPoolPolicy.plan(base_size: size)
+    plan = WarmPoolPolicy.plan(base_size: size, ranked: true)
     pass = last_pass
     errors = pass&.dig(:errors) || {}
 

@@ -73,7 +73,7 @@ class WarmClonePoolTest < ActiveSupport::TestCase
   end
 
   test "serves? answers false rather than raising when the policy cannot be read" do
-    WarmPoolPolicy.stubs(:targets).raises(ActiveRecord::ConnectionNotEstablished)
+    WarmPoolPolicy.stubs(:plan).raises(ActiveRecord::ConnectionNotEstablished)
 
     assert_not WarmClonePool.serves?(session_on(@repo, "zimmer-orchestrator"))
   end
@@ -406,6 +406,8 @@ class WarmClonePoolTest < ActiveSupport::TestCase
 
       errors = WarmClonePool.last_pass[:errors]
       assert_equal [ WarmClonePool.key(missing, @branch) ], errors.keys
+      assert_equal 1, errors.values.first.lines.size, "only the first line of git's output is kept"
+      assert_operator errors.values.first.length, :<=, 300
     end
   end
 
