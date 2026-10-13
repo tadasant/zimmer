@@ -473,9 +473,11 @@ background thread. A regular file doesn't work here — the CLI reads nothing fr
 ## The warm clone pool
 
 A Quick Router request spends most of its cold start on one step: the `git clone` of the router
-root's repository. Measured across a dozen router sessions in October 2026, a request took a median
-of about 19.5 seconds from creation to the router's first model output, and the clone was about 13
-seconds of that. `air prepare`, the OAuth gate and the system prompt together took under a second.
+root's repository. On the Tadasant deployment that repository is tadasant-internal (161 MB): the
+production catalog roots `zimmer-orchestrator` there, unlike this repo's development `roots.json`.
+Measured across a dozen production router sessions in October 2026, a request took a median of
+about 19.5 seconds from creation to the router's first model output, and the clone was about 13
+seconds of that (9.6–28 seconds; the same clone takes about 7 seconds on an otherwise idle host). `air prepare`, the OAuth gate and the system prompt together took under a second.
 Claude Code's boot and MCP handshake took about 2 seconds, and the first model token about 2 more.
 
 `WarmClonePool` does that clone ahead of time. It keeps one ready clone of the router root's
@@ -496,15 +498,24 @@ the human-message record are all applied after the claim, the same as on a cold 
 no session row and no agent process, so it holds no fleet slot, spends no Claude quota, and never
 reaches the homepage action queue.
 
-Anything that goes wrong falls back to today's behaviour. An empty pool, a lost race, a failed
-catch-up fetch or an unexpected filesystem error all end in an ordinary `git clone` at the same
-path. The session records which happened in `metadata["warm_clone"]` (`claimed` or `missed`), with a
+Anything that goes wrong falls back to an ordinary `git clone` at the same path: an empty pool, a
+lost race, a failed catch-up fetch, a claimed directory with no `.git`, or an unexpected filesystem
+error. Recording the outcome and enqueueing the refill are rescued too, so the pool is never why a
+session fails to start. The session records which happened in `metadata["warm_clone"]` (`claimed` or `missed`), with a
 matching line in its log.
 
 `WarmClonePoolReplenishJob` refills the pool. `AgentSessionJob` enqueues it on every claim, and a
-one-minute cron entry is the backstop. A pass builds a clone when the pool is short, recycles ready
-clones older than an hour, deletes builds abandoned for more than 30 minutes, and drops the pool for
-any repository the router root no longer lives in. The pool sits under a dot-prefixed directory
+one-minute cron entry is the backstop. A pass:
+
+- builds a clone when the pool has fewer clones younger than 45 minutes than it wants;
+- then removes clones past 45 minutes, now that their replacement exists. A claim takes a clone up
+  to an hour old, so the pool does not go empty while the replacement builds;
+- deletes builds abandoned for more than 30 minutes;
+- atomically drops the pool for any repository the router root no longer lives in.
+
+A build is skipped when the volume could not hold it and still have twice what an ordinary clone of
+that repository needs. It never triggers orphan reclamation: the pool is invisible to that sweep, so
+pruning to make room for it would spend space the sessions' own clones are counting on. The pool sits under a dot-prefixed directory
 because the orphan clone sweep skips dot entries: a pooled clone has no owning session by design. A
 claimed clone's mtime is restamped so that age-based sweeps date it from its session.
 

@@ -37,28 +37,33 @@ require "fileutils"
 #
 # A claimed clone is then fetched to the branch tip, so it is as fresh as a cold
 # clone would have been. A fetch that fails discards the claimed clone and the
-# caller clones cold, which is today's behaviour.
+# caller makes an ordinary clone instead.
 #
 # == Replenishment
 #
 # WarmClonePoolReplenishJob refills the pool: enqueued on every claim, and on a
 # one-minute cron as the backstop that converges after a deploy, a failed build
-# or a race. Entries older than MAX_AGE are recycled, so a fetch on claim stays
-# a few commits deep rather than a day's worth.
+# or a race. A clone is replaced once it passes RECYCLE_AGE, and the replacement
+# is built before the old one is removed; claims accept a clone up to MAX_AGE, so
+# the gap between the two keeps the pool from going empty on the hour. Keeping
+# clones young also keeps the claim's fetch a few commits deep.
 module WarmClonePool
   DIRNAME = ".warm-clones"
   BUILDING_PREFIX = ".building-"
 
-  # How old a ready clone may get before it is recycled rather than claimed.
-  # Also keeps the claim's catch-up fetch small.
+  # The oldest clone a claim accepts.
   MAX_AGE = 1.hour
+
+  # When the refill replaces a clone. Well inside MAX_AGE, so the replacement is
+  # ready before the old one stops being claimable.
+  RECYCLE_AGE = 45.minutes
 
   # A build that has not finished in this long died with its worker.
   ABANDONED_BUILD_AGE = 30.minutes
 
-  # The catch-up fetch runs on the request's critical path. A fetch that takes
-  # longer than this is a sign GitHub is struggling, and the cold path is no
-  # worse a bet.
+  # Per git command (fetch, then reset) in the claim's catch-up, which runs on
+  # the request's critical path. A fetch that takes longer than this is a sign
+  # GitHub is struggling, and an ordinary clone is no worse a bet.
   FETCH_TIMEOUT_SECONDS = 20
 
   # Deployed environments only by default: a development machine or the test
@@ -153,7 +158,7 @@ module WarmClonePool
 
       begin
         catch_up!(into, branch)
-      rescue GitCloneService::GitError => e
+      rescue GitCloneService::GitError, IncompleteCloneError => e
         logger.warn("Warm clone could not be brought to the branch tip; cloning cold", path: into, error: e.message)
         AtomicCloneRemoval.remove(into)
         return false
@@ -184,18 +189,45 @@ module WarmClonePool
     result[:recycled] += remove_untargeted!(wanted)
 
     wanted.each do |repo_url, branch|
-      result[:recycled] += prune!(repo_url, branch)
+      # Build first, prune second: a clone past RECYCLE_AGE stays claimable until
+      # its replacement exists.
+      size.times do
+        break if fresh_entries(repo_url, branch).size >= size
 
-      while ready_entries(repo_url, branch).size < size
+        unless room_to_build?(repo_url)
+          result[:failed] = "not enough free disk to keep a warm clone beside the sessions' own"
+          break
+        end
+
         build!(repo_url, branch)
         result[:built] += 1
       end
+
+      result[:recycled] += prune!(repo_url, branch)
     end
 
     result
-  rescue GitCloneService::GitError, CloneDiskGuard::InsufficientDiskSpaceError => e
+  rescue GitCloneService::GitError => e
     logger.warn("Warm clone build failed; the next pass retries", error: e.message)
     result.merge(failed: e.message)
+  end
+
+  # Ready entries young enough not to need replacing yet.
+  def fresh_entries(repo_url, branch)
+    ready_entries(repo_url, branch).reject { |entry| age_seconds(entry) > RECYCLE_AGE }
+  end
+
+  # Whether the volume can take a pooled clone and still have what an ordinary
+  # clone of the same repository would need. Never reclaims: the pool is
+  # invisible to orphan reclamation, so a build that made room by pruning would
+  # be spending space the sessions' own clones are counting on. An unmeasurable
+  # volume fails open, as CloneDiskGuard does.
+  def room_to_build?(repo_url)
+    stats = CloneDiskGuard.volume_stats(ClonesDirectory.base)
+    return true if stats.nil?
+    return true if stats[:available] >= CloneDiskGuard::MAXIMUM_REQUIRED_BYTES * 2
+
+    stats[:available] >= CloneDiskGuard.required_bytes(repo_url, base: ClonesDirectory.base, total: stats[:total]) * 2
   end
 
   def build!(repo_url, branch)
@@ -203,8 +235,6 @@ module WarmClonePool
     FileUtils.mkdir_p(dir)
     name = "#{Time.now.to_i}-#{SecureRandom.hex(4)}"
     building = File.join(dir, "#{BUILDING_PREFIX}#{name}")
-
-    CloneDiskGuard.ensure_space!(repository_url: repo_url, base: ClonesDirectory.base)
 
     begin
       GitCloneService.run_git_command([ "clone", "--quiet", "--branch", branch, "--single-branch", repo_url, building ])
@@ -217,7 +247,14 @@ module WarmClonePool
     logger.info("Built a warm clone", repo_url: repo_url, branch: branch)
   end
 
+  # Raised when a claimed directory is not a git work tree of its own. Run in a
+  # directory without `.git`, git would walk up to an enclosing repository and
+  # fetch and reset that one instead.
+  class IncompleteCloneError < StandardError; end
+
   def catch_up!(path, branch)
+    raise IncompleteCloneError, "#{path} has no .git directory" unless File.directory?(File.join(path, ".git"))
+
     GitCloneService.run_git_command([ "fetch", "--quiet", "origin", branch ], cwd: path, timeout: FETCH_TIMEOUT_SECONDS)
     GitCloneService.run_git_command([ "reset", "--quiet", "--hard", "FETCH_HEAD" ], cwd: path, timeout: FETCH_TIMEOUT_SECONDS)
   end
@@ -241,7 +278,7 @@ module WarmClonePool
       elsif name.start_with?(".")
         false
       else
-        expired?(path)
+        replaceable?(path, repo_url, branch)
       end
       stale && AtomicCloneRemoval.remove(path)
     end
@@ -252,9 +289,20 @@ module WarmClonePool
 
     keep = wanted.map { |repo_url, branch| key(repo_url, branch) }
     Dir.children(root_dir).reject { |name| keep.include?(name) || name.start_with?(".") }.count do |name|
-      FileUtils.rm_rf(File.join(root_dir, name))
+      path = File.join(root_dir, name)
+      # Atomic, because a worker that still counts this repository as a target
+      # may be listing it to claim from; it must find the directory whole or gone.
+      AtomicCloneRemoval.tombstone?(name) ? FileUtils.rm_rf(path) : AtomicCloneRemoval.remove(path)
       true
     end
+  end
+
+  # A clone past RECYCLE_AGE goes once a fresh one stands in for it, and past
+  # MAX_AGE it goes regardless, since no claim will take it.
+  def replaceable?(path, repo_url, branch)
+    return true if expired?(path)
+
+    age_seconds(path) > RECYCLE_AGE && fresh_entries(repo_url, branch).size >= size
   end
 
   def expired?(path)
