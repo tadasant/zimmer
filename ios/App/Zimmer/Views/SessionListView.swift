@@ -11,7 +11,6 @@ struct SessionListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingSettings = false
     @State private var snoozing: SessionSummary?
-    @State private var trashing: SessionSummary?
     /// The search the list last loaded, so appearing does not reload a list `start()` just loaded.
     @State private var appliedSearch = SearchKey(text: "", scope: .titles)
     @State private var editMode: EditMode = .inactive
@@ -32,16 +31,6 @@ struct SessionListView: View {
             } message: { _ in
                 Text("Visual only — it does not pause, start or stop the session.")
             }
-            .confirmationDialog(
-                "Move to trash?", isPresented: isTrashing,
-                titleVisibility: .visible, presenting: trashing
-            ) { session in
-                Button("Trash", role: .destructive) {
-                    Task { await model.perform("Moved to trash", on: session.id) { try await $0.archive(session.id) } }
-                }
-            } message: { _ in
-                Text("It moves to the trash. You can restore it from Archived.")
-            }
             .confirmationDialog("Move \(selection.count) to trash?", isPresented: $confirmingBulkTrash, titleVisibility: .visible) {
                 Button("Trash \(selection.count)", role: .destructive) {
                     let ids = selection
@@ -60,6 +49,8 @@ struct SessionListView: View {
                 Text("Re-reads transcripts, restarts failed sessions, and continues sessions waiting on you that you didn't pause — up to 50 of those. That spends agent turns.")
             }
             .environment(\.editMode, $editMode)
+            // A refresh while rows are selected or being dragged would move them under a finger.
+            .onChange(of: editMode.isEditing) { _, editing in model.isEditingBoard = editing }
             // Selecting hides the tab bar, as Mail does: the Trash bar takes its place at the bottom.
             .toolbar(editMode.isEditing ? .hidden : .visible, for: .tabBar)
             // A selection only ever names rows on screen: a filter, search or view change drops the rest.
@@ -70,6 +61,7 @@ struct SessionListView: View {
                 Task { await model.viewChanged() }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
+            .modifier(QueuedTrashQuestion { _ in model.path.isEmpty })
     }
 
     private var list: some View {
@@ -105,7 +97,7 @@ struct SessionListView: View {
             ForEach(model.sessions.isEmpty ? [] : model.sections) { section in
                 Section {
                     ForEach(section.sessions) { session in
-                        SwipeableSessionRow(session: session, snoozing: $snoozing, trashing: $trashing)
+                        SwipeableSessionRow(session: session, snoozing: $snoozing)
                             // Only spot rows move: the server places a drop by its spot neighbours,
                             // and a priority row has none, so a drag would reset its precedence.
                             .moveDisabled(session.isPriority)
@@ -171,6 +163,13 @@ struct SessionListView: View {
 
     private var searchableList: some View {
         list
+            // Above the Quick Router bar rather than over it: the Undo toast takes taps.
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 0) {
+                    UndoToast(session: $model.undoable) { Task { await model.undoTrash() } }
+                    Toast(text: $model.notice)
+                }
+            }
             // The web UI's prompt box, at the foot of the board where a thumb reaches it.
             // Inside the searchable scope, so the bar knows when the search box has the
             // keyboard and steps aside.
@@ -183,7 +182,6 @@ struct SessionListView: View {
             .overlay {
                 if model.isLoading && model.sessions.isEmpty { LoadingState(text: "Loading sessions…") }
             }
-            .overlay(alignment: .bottom) { Toast(text: $model.notice) }
     }
 
     private func search() async {
@@ -276,10 +274,6 @@ struct SessionListView: View {
         Binding(get: { snoozing != nil }, set: { if !$0 { snoozing = nil } })
     }
 
-    private var isTrashing: Binding<Bool> {
-        Binding(get: { trashing != nil }, set: { if !$0 { trashing = nil } })
-    }
-
     private var boardSelection: Binding<BoardFilter> {
         Binding(get: { model.board }, set: { board in Task { await model.select(board) } })
     }
@@ -290,7 +284,6 @@ private struct SwipeableSessionRow: View {
     @EnvironmentObject private var model: AppModel
     let session: SessionSummary
     @Binding var snoozing: SessionSummary?
-    @Binding var trashing: SessionSummary?
 
     var body: some View {
         NavigationLink(value: session.id) {
@@ -320,8 +313,8 @@ private struct SwipeableSessionRow: View {
                 .tint(Theme.Swipe.restore)
             } else {
                 // Not `role: .destructive`: that animates the row away on the tap, before
-                // the confirmation has been answered.
-                Button { trashing = session } label: {
+                // the server has answered (and it may ask about queued messages first).
+                Button { Task { await model.trash(session) } } label: {
                     Label("Trash", systemImage: "trash")
                 }
                 .tint(Theme.Swipe.trash)
@@ -340,7 +333,7 @@ private struct SwipeableSessionRow: View {
                 .tint(Theme.Swipe.snooze)
             }
         }
-        .contextMenu { SessionContextMenu(session: session, trashing: $trashing) }
+        .contextMenu { SessionContextMenu(session: session) }
     }
 }
 
@@ -372,7 +365,6 @@ private struct SessionContextMenu: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openURL) private var openURL
     let session: SessionSummary
-    @Binding var trashing: SessionSummary?
 
     var body: some View {
         Button {
@@ -428,7 +420,7 @@ private struct SessionContextMenu: View {
                 Label("Restore from Trash", systemImage: "arrow.uturn.backward")
             }
         } else {
-            Button(role: .destructive) { trashing = session } label: { Label("Trash", systemImage: "trash") }
+            Button(role: .destructive) { Task { await model.trash(session) } } label: { Label("Trash", systemImage: "trash") }
         }
     }
 }
@@ -668,6 +660,40 @@ private struct EmptyListRow: View {
     }
 }
 
+/// The web UI's Undo toast after a trash: on screen for as long as the server would still
+/// undo it, with the button that does.
+struct UndoToast: View {
+    @Binding var session: SessionSummary?
+    let undo: () -> Void
+
+    var body: some View {
+        if let session {
+            HStack(spacing: 14) {
+                Text("Moved to trash")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.ink)
+                Button("Undo", action: undo)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+                    .accessibilityIdentifier("toast.undo")
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 11)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.rule, lineWidth: 1))
+            .padding(.bottom, 12)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("toast")
+            .task(id: session.id) {
+                try? await Task.sleep(for: TrashOutcome.undoWindow)
+                guard !Task.isCancelled else { return }
+                withAnimation { self.session = nil }
+            }
+        }
+    }
+}
+
 /// The web UI's toast: one line at the bottom that goes away on its own.
 struct Toast: View {
     @Binding var text: String?
@@ -691,6 +717,34 @@ struct Toast: View {
                     guard !Task.isCancelled else { return }
                     withAnimation { self.text = nil }
                 }
+        }
+    }
+}
+
+/// The web UI's *Archive anyway*: a trash refused because messages are queued for the
+/// session, asked again naming the discard. Shown by the screen the trash came from — the
+/// board, or that session's page — since a dialog on the navigation stack would stand over
+/// the page's own dialogs and keep them from presenting.
+struct QueuedTrashQuestion: ViewModifier {
+    @EnvironmentObject private var app: AppModel
+    /// Whether this screen is the one that asks about `session`.
+    let asks: (SessionSummary) -> Bool
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            "Discard its queued messages?",
+            isPresented: Binding(
+                get: { app.queuedTrash.map(asks) ?? false },
+                set: { if !$0 { app.queuedTrash = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: app.queuedTrash
+        ) { session in
+            Button("Trash anyway", role: .destructive) {
+                Task { await app.trash(session, force: true) }
+            }
+        } message: { _ in
+            Text("Messages are waiting to be delivered to this session. Trashing it discards them.")
         }
     }
 }
