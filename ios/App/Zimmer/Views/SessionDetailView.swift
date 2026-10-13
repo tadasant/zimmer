@@ -52,6 +52,7 @@ final class SessionDetailModel: ObservableObject {
     /// The skills catalog (`GET /api/v1/skills`), read once: what the composer's "/" offers,
     /// narrowed to this session's own. Nil until it reads, and the composer works without it.
     @Published private(set) var skills: [CatalogItem]?
+    private var loadingConfigs = false
 
     init(id: Int, api: ZimmerAPI) {
         self.id = id
@@ -60,6 +61,12 @@ final class SessionDetailModel: ObservableObject {
     }
 
     func load() async {
+        // Beside the page's own reads, not before them: the catalog only names the goal and
+        // fills the composer's "/".
+        if configs == nil || skills == nil, !loadingConfigs {
+            loadingConfigs = true
+            Task { await loadConfigs() }
+        }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -79,25 +86,29 @@ final class SessionDetailModel: ObservableObject {
             } catch ZimmerError.unauthorized {
                 report(.unauthorized)
             } catch {}
-            // The catalog only names the goal: one that will not read leaves the words.
-            if configs == nil {
-                do {
-                    configs = try await api.configs()
-                } catch ZimmerError.unauthorized {
-                    report(.unauthorized)
-                } catch {}
-            }
-            // The same for the skills: one that will not read leaves "/" offering nothing.
-            if skills == nil {
-                do {
-                    skills = try await api.catalog(.skills)
-                } catch ZimmerError.unauthorized {
-                    report(.unauthorized)
-                } catch {}
-            }
             error = nil
         } catch {
             fail(error)
+        }
+    }
+
+    /// The catalog and the skills, once each. One that will not read leaves the goal's words,
+    /// or "/" offering nothing, and the next load tries again.
+    private func loadConfigs() async {
+        defer { loadingConfigs = false }
+        if configs == nil {
+            do {
+                configs = try await api.configs()
+            } catch ZimmerError.unauthorized {
+                report(.unauthorized)
+            } catch {}
+        }
+        if skills == nil {
+            do {
+                skills = try await api.catalog(.skills)
+            } catch ZimmerError.unauthorized {
+                report(.unauthorized)
+            } catch {}
         }
     }
 
@@ -465,6 +476,7 @@ struct SessionDetailView: View {
                     DetailsCard(
                         detail: detail,
                         goal: model.configs?.goal(matching: detail.session.goal),
+                        catalogRead: model.configs != nil,
                         expanded: fixtureOpensPanels,
                         edit: { editing = $0 },
                         editMcpServers: { editingCatalog = .mcpServers }
@@ -566,7 +578,11 @@ struct SessionDetailView: View {
                 GoalPickerSheet(goals: model.configs?.goals ?? [], current: model.detail?.session.goal) { text in
                     let name = model.configs?.goal(matching: text)?.title
                     let done: String = text.isEmpty ? "Goal cleared" : name.map { "Goal: \($0)" } ?? "Goal updated"
-                    return await model.apply(done) { try await $0.updateGoal(model.id, goal: text) }
+                    let saved = await model.apply(done) { try await $0.updateGoal(model.id, goal: text) }
+                    // The goal check rides on the session's page, not the PATCH's answer: read
+                    // it again so it follows the goal, without holding the sheet open for it.
+                    if saved { Task { await model.load() } }
+                    return saved
                 }
             }
         }
