@@ -1219,6 +1219,17 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert session.logs.where(level: "warning").where("content LIKE ?", "Archived by the REST API while an agent turn was in flight%").exists?
   end
 
+  test "end_turn false is no end_turn" do
+    session = sessions(:running)
+    Sessions::LiveTurn.stubs(:in_flight?).returns(true)
+
+    post archive_api_v1_session_path(session.id), params: { end_turn: "false" }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_includes response.body, "A turn is in flight"
+    assert_equal "running", session.reload.status
+  end
+
   test "end_turn still refuses a queue" do
     session = sessions(:running)
     session.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
