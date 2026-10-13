@@ -107,7 +107,13 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   send them. Anything that would be refused, or could not be read, is named rather than dropped
   quietly. They go with the message however it is delivered: now, queued behind a turn, or with
   *Send Now*.
-- **Trashes** a session, after a confirmation, and restores one from the trash.
+- **Trashes** a session as the web UI's Trash does: no question first, and an *Undo* on the board
+  for the 30 seconds the web UI offers it (`UNDO_ARCHIVE_WINDOW`), which restores it. A session
+  with a turn in flight goes outright, ending the turn: the app asks
+  `POST /api/v1/sessions/:id/archive` without `force` first, and when the only refusal is the turn
+  it asks again with `force`, since the server checks the queue before the turn. A session with
+  messages queued for it is asked about first, naming the discard — the web UI's *Archive anyway*.
+  Restores one from the trash.
 - **Starts a session from a sentence** through the Quick Router, then opens it. The Quick Router is
   where the web UI puts it: a field pinned to the foot of the Sessions screen ("What do you want
   to do?", the web board's prompt box), and a button in the bottom-right corner of every other

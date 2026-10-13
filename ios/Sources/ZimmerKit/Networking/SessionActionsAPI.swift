@@ -26,6 +26,10 @@ public protocol SessionActionsAPI: Sendable {
     func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult
     /// Deliver now, ending the turn in flight — the web UI's "Send Now".
     func sendNow(_ id: Int, prompt: String) async throws -> FollowUpResult
+    /// Move to the trash as the web UI's Trash does: a session with a turn in flight goes
+    /// outright, ending the turn; one with messages queued for it is refused until `force`,
+    /// the web UI's *Archive anyway*.
+    func trash(_ id: Int, force: Bool) async throws -> TrashOutcome
     /// Restore from the trash.
     func unarchive(_ id: Int) async throws -> SessionSummary
     func restart(_ id: Int) async throws -> SessionSummary
@@ -215,6 +219,30 @@ extension ZimmerHTTPClient {
         let segment = ZimmerPathComponent(String(id))
         let response: FollowUpResponse = try await post("/api/v1/sessions/\(segment)/follow_up", json: ["prompt": prompt, "force_immediate": true])
         return FollowUpResult(queued: false, message: response.message ?? "Sent now")
+    }
+
+    public func trash(_ id: Int, force: Bool) async throws -> TrashOutcome {
+        let segment = ZimmerPathComponent(String(id))
+        let raw = try await perform(method: "POST", path: "/api/v1/sessions/\(segment)/archive", query: [:],
+                                    body: try JSONSerialization.data(withJSONObject: ["force": force]), accepting: [422])
+        guard raw.statusCode == 422 else {
+            do {
+                return .trashed(try ZimmerJSON.decoder.decode(ArchiveResponse.self, from: raw.body).session)
+            } catch {
+                throw ZimmerError.decoding("archive: \(error)")
+            }
+        }
+        let refusal = try? JSONDecoder().decode(APIErrorEnvelope.self, from: raw.body)
+        switch refusal?.error {
+        case TrashOutcome.queuedRefusal:
+            return .queued
+        case TrashOutcome.liveTurnRefusal where !force:
+            // The server checks the queue before the turn, so nothing is queued: the web UI
+            // trashes it outright, and so does this.
+            return try await trash(id, force: true)
+        default:
+            throw ZimmerError.http(status: 422, message: refusal?.message)
+        }
     }
 
     public func unarchive(_ id: Int) async throws -> SessionSummary {
@@ -425,4 +453,19 @@ struct SessionEnvelope: Decodable {
 
 struct MessageEnvelope: Decodable {
     let message: String?
+}
+
+/// What trashing a session came to.
+public enum TrashOutcome: Hashable, Sendable {
+    case trashed(SessionSummary)
+    /// Messages are queued for it, which trashing would discard: the web UI's *Archive
+    /// anyway*, asked before it goes.
+    case queued
+
+    /// How long the web UI offers *Undo* after a trash (`UNDO_ARCHIVE_WINDOW`).
+    public static let undoWindow: Duration = .seconds(30)
+
+    /// The `error` of the server's two refusals (`Api::V1::SessionsController#archive`).
+    static let queuedRefusal = "Queued messages would be discarded"
+    static let liveTurnRefusal = "A turn is in flight"
 }
