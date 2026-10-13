@@ -13,16 +13,19 @@ module Mcp
                 "answered THIS prompt — it comes to rest in needs_input, goes to sleep on a wake-up, " \
                 "archives itself, fails, or hands its turn on — and the result carries the session's reply " \
                 "text inline, any sessions it started, and its resulting status. Use it when you would " \
-                "otherwise poll `get_session` for the answer. The wait is capped at " \
-                "#{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}s: if the session is still working then, the " \
+                "otherwise poll `get_session` for the answer. The wait lasts `sync_timeout_seconds` " \
+                "(default #{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, at most " \
+                "#{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}): if the session is still working then, the " \
                 "call returns its id, URL, status and anything it has said so far, and you follow it with " \
                 "`get_session` as usual. A session spawned by this one is listed, never waited on. Inside a " \
                 "Zimmer session, prefer `wake_me_up_when_session_changes_state`, which holds no server " \
                 "thread while you wait."
 
-    SYNC_TIMEOUT_DESC = "Optional, with `sync: true`. How long to wait, in seconds. Default and maximum " \
-                        "#{Sessions::SyncReply::MAX_TIMEOUT_SECONDS} — the longest a request survives the " \
-                        "proxies in front of Zimmer. A larger value is clamped to it."
+    SYNC_TIMEOUT_DESC = "Optional, with `sync: true`. How long to wait, in seconds. Default " \
+                        "#{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, under the 60-second request timeout many " \
+                        "MCP clients default to — raise it only if your client waits longer. Maximum " \
+                        "#{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}, the longest a request survives the proxies in " \
+                        "front of Zimmer; a larger value is clamped to it."
 
     SCHEMA_PROPERTIES = {
       sync: { type: "boolean", description: SYNC_DESC },
@@ -37,6 +40,8 @@ module Mcp
       blocked_on_elicitation: "Paused mid-turn — the session is waiting on an approval request from one of its " \
                               "MCP servers. Answer it with `respond_to_elicitation`; the reply below is what it " \
                               "had said so far.",
+      stood_down: "Not answered — Zimmer parked this turn before the agent ran it (for example, no Claude " \
+                  "account was usable). It is retried on its own; `get_session` says why and when.",
       archived: "The session is archived — it finished (or was archived) without waiting for a reply.",
       failed: "The session failed. `get_session` shows why; `action_session` with `restart` retries it.",
       undelivered: "The prompt was not delivered: its queued message was marked undelivered. `get_session` " \
@@ -57,9 +62,22 @@ module Mcp
                        "(at most #{Sessions::SyncReply::MAX_TIMEOUT_SECONDS})"
     end
 
-    # Wait in a slot, or report the state now when every slot is taken.
-    def await_reply(waiter, timeout)
-      Sessions::SyncReply.with_slot { waiter.wait(timeout: timeout) } || waiter.over_capacity
+    # Wait in a slot, or report the state now when every slot is taken, and
+    # render it. The prompt has been delivered by the time this runs, so a
+    # failure inside the wait must still hand the caller its session.
+    def sync_reply_section(waiter, timeout, heading:)
+      result = Sessions::SyncReply.with_slot { waiter.wait(timeout: timeout) } || waiter.over_capacity
+      format_sync_result(result, heading: heading)
+    rescue StandardError => e
+      Rails.logger.error("[Mcp::SyncMode] Waiting on session #{waiter.session_id} failed: #{e.class}: #{e.message}")
+      [
+        "## #{heading}",
+        "",
+        "- **ID:** #{waiter.session_id}",
+        "- **URL:** #{context.base_url.to_s.chomp('/')}/sessions/#{waiter.session_id}",
+        "- **Outcome:** Not waited on — the wait failed (#{e.class}). The prompt was sent; call `get_session` " \
+        "with id `#{waiter.session_id}` to follow it."
+      ].join("\n")
     end
 
     def format_sync_result(result, heading:)

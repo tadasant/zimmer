@@ -8003,16 +8003,21 @@ production proof. This is a deliberate first step, not a tracked defect.
 `sync: true` on `quick_router`, `start_session` and `action_session` → `follow_up`
 (`app/services/sessions/sync_reply.rb`) keeps the request open until the session answers. Production's
 web is one Puma process with `RAILS_MAX_THREADS` (3) threads, so a waiting call costs a third of the
-web for up to 90 seconds. It returns its database connection to the pool while it waits, and
+web for as long as the caller asked to wait: 55 seconds by default, 90 at most. It returns its database connection to the pool while it waits, and
 `MCP_SYNC_MAX_CONCURRENT_WAITS` (default 1) caps how many wait at once. A second sync call while one is
 waiting is not refused: its prompt is sent and it returns straight away, saying it was not waited on,
 and the caller polls `get_session` as before.
 
-Four more edges, all deliberate for now:
+More edges, all deliberate for now:
 
 - **90 seconds is the ceiling** (`MCP_SYNC_MAX_TIMEOUT_SECONDS`), because the Cloudflare edge in front
-  of production cuts a request at 100. A turn that takes longer returns its state so far, and the
+  of production cuts a request at 100. The default is 55 (`MCP_SYNC_DEFAULT_TIMEOUT_SECONDS`), because
+  many MCP clients give up on a request at 60. A turn that takes longer returns its state so far, and the
   caller falls back to polling. Raising it means raising that edge's limit first.
+- **A caller that hangs up does not free the slot.** Puma cannot tell that the client or an edge has
+  gone, so the wait runs to its own timeout and holds the slot until then.
+- **Every status change costs one more cable write.** The doorbell is published whether or not anyone is
+  waiting: one solid_cable row per transition, written by the worker after commit.
 - **A deploy cuts a wait short.** Stopping the old web container ends the request with a connection
   error rather than a result. The session is not affected, and `get_session` finds the answer.
 - **The wait cannot be faster than the status flip.** It ends when the session's status changes, and
