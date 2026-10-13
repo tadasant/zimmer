@@ -99,6 +99,14 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   follow-up to a session mid-turn is queued, and the app says so; touch and hold the button to
   *Send Now* instead, which ends the turn in flight (`force_immediate`, the web UI's Send Now).
   It is recorded as your message if the app's connection acts on your behalf (below).
+  What you type and do not send is kept per session for seven days, across leaving the screen and
+  relaunching, as the web UI keeps a composer's draft.
+- **Keeps itself current.** A session's page reads again every five seconds while a turn is
+  running or about to start, and every twenty otherwise; the board reads again every thirty
+  seconds while it is the screen in front. Both read at once when the app comes back to the front.
+  The web UI streams these changes; the app asks, so a change can take that long to show. A session
+  opens at its newest message, as the web UI's transcript does, and follows new ones while you are
+  at the end; scrolled back, it stays where you are.
 - **Attaches photos and files** to a message with the paperclip beside the box: *Photo Library* or
   *Choose Files*, up to 20 and 75 MB altogether, shown as chips you can remove before sending. Photos
   go as JPEG, scaled down if needed to fit the 10 MB image limit; the library's own HEIC is not a

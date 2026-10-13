@@ -434,6 +434,7 @@ private struct SessionContextMenu: View {
 
 private struct FilterBar: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.editMode) private var editMode
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -454,6 +455,8 @@ private struct FilterBar: View {
             .padding(.vertical, 2)
             .animation(.snappy(duration: 0.25), value: model.filter)
         }
+        // A refresh while rows are selected or being dragged would move them under a finger.
+        .onChange(of: editMode?.wrappedValue.isEditing ?? false) { _, editing in model.isEditingBoard = editing }
     }
 }
 
