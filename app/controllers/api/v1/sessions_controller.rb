@@ -24,11 +24,18 @@ class Api::V1::SessionsController < Api::BaseController
   # forgotten the way a `performed?` check can.
   class PlacementError < StandardError; end
 
+  # A board filter the server cannot apply — an unknown status, say. A 422 naming
+  # the valid values, rather than a listing that silently ignores the filter.
+  class BoardFilterError < StandardError; end
+
   # Raised under the archive lock when a turn is in flight and the caller did
   # not force. See #guarded_rest_archive!.
   class LiveTurnRefused < StandardError; end
 
   rescue_from PlacementError, with: :render_placement_error
+  rescue_from BoardFilterError do |error|
+    render_api_error("Invalid parameter", error.message, status: :unprocessable_entity)
+  end
 
   # The `error` titles the catalog-selection endpoints answer with, keyed by the
   # code Sessions::UpdateCatalogSelection returns. The titles are this surface's
@@ -63,9 +70,15 @@ class Api::V1::SessionsController < Api::BaseController
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
   #
-  # Query parameters:
-  #   - status: Filter by status (waiting, running, needs_input, failed, archived)
+  # Query parameters (every filter combines with every other, as the dashboard's do —
+  # see #apply_board_filters):
+  #   - status: one status or several (`status[]=needs_input&status[]=failed`, or
+  #     comma-separated) of waiting, running, needs_input, failed, archived. Naming
+  #     archived includes archived sessions without show_archived.
   #   - agent_runtime: Filter by agent runtime
+  #   - agent_root: the agent root's catalog name, matched as the dashboard's
+  #     Advanced filter matches it (SessionSearchable#filter_sessions_by_agent_root)
+  #   - priority_class: priority or spot; genesis: a SessionGenesis kind
   #   - show_archived: Include archived sessions (default: false)
   #   - visibility: board visibility, the presentation-only axis. "on_board" for the
   #     sessions a tidied dashboard shows, "off_board" for the hidden and snoozed
@@ -86,22 +99,7 @@ class Api::V1::SessionsController < Api::BaseController
     # dashboard and the MCP search.
     scope = Session.excluding_status_summary_forks.order(created_at: :desc)
 
-    # Filter by status
-    scope = scope.where(status: params[:status]) if params[:status].present?
-
-    # Filter by agent_runtime
-    scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
-
-    # Filter by scheduling class / genesis. A session that carries no class of its
-    # own is classified through SessionGenesis on read, so moving a genesis in
-    # Settings moves those sessions here immediately.
-    scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
-    scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
-
-    scope = apply_visibility_filter(scope)
-
-    # Exclude archived unless requested
-    scope = scope.where.not(status: :archived) unless params[:show_archived] == "true"
+    scope = apply_board_filters(scope)
 
     case params[:view].to_s
     when "", SessionsController::VIEW_MODE_CREATED_DESC
@@ -1211,9 +1209,8 @@ class Api::V1::SessionsController < Api::BaseController
   #   - q (or query): Search query (required) - searches title, metadata, and custom_metadata
   #   - search_contents: "true" or "1" to also search transcript contents
   #   - scan_cursor: resume token from a previous content search's content_scan.next_cursor
-  #   - status: Filter by status (waiting, running, needs_input, failed, archived)
-  #   - agent_runtime: Filter by agent runtime
-  #   - show_archived: Include archived sessions (default: false)
+  #   - status, agent_runtime, agent_root, priority_class, genesis, visibility,
+  #     show_archived: the same board filters as #index, combinable the same way
   #   - page: Page number (default: 1) - ignored when search_contents is set
   #   - per_page: Results per page (default: 25, max: 100)
   #
@@ -1242,22 +1239,7 @@ class Api::V1::SessionsController < Api::BaseController
     # listings must not disagree about which sessions exist.
     scope = Session.excluding_status_summary_forks.order(created_at: :desc)
 
-    # Filter by status
-    scope = scope.where(status: params[:status]) if params[:status].present?
-
-    # Filter by agent_runtime
-    scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
-
-    # Filter by scheduling class / genesis. A session that carries no class of its
-    # own is classified through SessionGenesis on read, so moving a genesis in
-    # Settings moves those sessions here immediately.
-    scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
-    scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
-
-    scope = apply_visibility_filter(scope)
-
-    # Exclude archived unless requested
-    scope = scope.where.not(status: :archived) unless params[:show_archived] == "true"
+    scope = apply_board_filters(scope)
 
     # Apply search filter
     include_contents = SessionSearchable.search_contents?(params[:search_contents])
@@ -1533,6 +1515,42 @@ class Api::V1::SessionsController < Api::BaseController
   # of work already has a session must not have that session hidden from it
   # because a human tidied their board: that produces duplicate work with no
   # visible cause. An unrecognized value narrows nothing, for the same reason.
+  # The dashboard's board filters, shared by #index and #search so the two cannot
+  # disagree, and all combinable: statuses (any number), runtime, agent root,
+  # scheduling class, genesis and board visibility. Archived sessions are left out
+  # unless asked for — by show_archived, or by naming archived among the statuses.
+  #
+  # @raise [BoardFilterError] on a status that is not one
+  def apply_board_filters(scope)
+    statuses = requested_statuses
+    scope = scope.where(status: statuses) if statuses.any?
+    scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
+
+    # A session that carries no class of its own is classified through
+    # SessionGenesis on read, so moving a genesis in Settings moves those sessions
+    # here immediately.
+    scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
+    scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
+
+    agent_root = params[:agent_root].to_s.strip
+    scope = filter_sessions_by_agent_root(scope, agent_root) if agent_root.present?
+
+    scope = apply_visibility_filter(scope)
+    scope = scope.where.not(status: :archived) unless params[:show_archived] == "true" || statuses.include?("archived")
+    scope
+  end
+
+  # `status` as a list: repeated (`status[]=`), comma-separated, or a single value.
+  def requested_statuses
+    statuses = Array(params[:status]).flat_map { |value| value.to_s.split(",") }.map(&:strip).reject(&:blank?).uniq
+    unknown = statuses - Session.statuses.keys
+    if unknown.any?
+      raise BoardFilterError, "Unknown status #{unknown.join(', ')}. Valid: #{Session.statuses.keys.join(', ')}."
+    end
+
+    statuses
+  end
+
   def apply_visibility_filter(scope)
     case params[:visibility].to_s
     when SessionVisibility::FILTER_ON_BOARD then scope.board_visible
