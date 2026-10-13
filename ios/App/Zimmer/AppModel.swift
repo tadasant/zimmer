@@ -26,6 +26,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var listIncomplete = false
     /// A one-line confirmation of the last row action ("Snoozed until …").
     @Published var notice: String?
+    /// The session just trashed, while *Undo* is offered for it.
+    @Published var undoable: SessionSummary?
+    /// A trash refused because messages are queued for the session: asked again, naming the
+    /// discard, before it goes.
+    @Published var queuedTrash: SessionSummary?
     @Published private(set) var sessions: [SessionSummary] = []
     @Published private(set) var isLoading = false
     @Published var error: ZimmerError?
@@ -46,6 +51,8 @@ final class AppModel: ObservableObject {
     /// Unread notifications, for the Inbox tab's badge.
     @Published var unreadCount = 0
     @Published var showingQuickRouter = false
+    /// The board is in select or reorder mode: a refresh then would move rows under a finger.
+    var isEditingBoard = false
     /// The session the Quick Router was opened from, so the new one threads under it, as
     /// the web bubble on a session page sends `parent_session_id`.
     var quickRouterParent: Int?
@@ -91,6 +98,11 @@ final class AppModel: ObservableObject {
         #if DEBUG
         guard environment.isFixture else { return }
         let arguments = ProcessInfo.processInfo.arguments
+        // Drafts outlive a launch by design; every fixture launch starts without any, so one
+        // test's words never appear in another's composer.
+        for key in UserDefaults.standard.dictionaryRepresentation().keys where key.hasPrefix("draft.") {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
         if let flag = arguments.firstIndex(of: "-ZimmerFixtureOpenSession"),
            arguments.indices.contains(flag + 1), let id = Int(arguments[flag + 1]) {
             path = [id]
@@ -114,6 +126,14 @@ final class AppModel: ObservableObject {
         // The list's search box picks this up and searches, as if typed.
         if let search = value("-ZimmerFixtureSearch") { searchText = search }
         if let tab = value("-ZimmerFixtureTab").flatMap(AppTab.init(rawValue:)) { self.tab = tab }
+        // Trash a session as a swipe would: the Undo toast, or for one with messages queued,
+        // the question before they are discarded.
+        if let id = value("-ZimmerFixtureTrash").flatMap(Int.init) {
+            Task {
+                guard let session = try? await connection.api.session(id).session else { return }
+                await trash(session)
+            }
+        }
         #endif
     }
 
@@ -163,9 +183,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func refresh() async {
-        isLoading = true
-        defer { isLoading = false }
+    /// `silently`: a read the board makes on its own — no loading state, and a failure other
+    /// than a sign-in that ended is not shown; the next read tries again.
+    func refresh(silently: Bool = false) async {
+        if !silently { isLoading = true }
+        defer { if !silently { isLoading = false } }
         let requested = filter
         let board = board
         let view = view
@@ -185,7 +207,7 @@ final class AppModel: ObservableObject {
             listIncomplete = !result.complete
             error = nil
         } catch {
-            handle(error)
+            if !silently || (error as? ZimmerError) == .unauthorized { handle(error) }
         }
         await refreshEdgeExpiry()
         await refreshUnreadCount()
@@ -238,6 +260,43 @@ final class AppModel: ObservableObject {
 
     /// The rows in the current view's order and sections.
     var sections: [BoardSection] { view.sections(sessions) }
+
+    /// Trash one session as the web UI's Trash does: no question first, *Undo* after. One with
+    /// messages queued for it is asked about (`queuedTrash`) unless `force`. A refusal goes to
+    /// `onError` when the caller shows its own errors (the session's page), else to the board.
+    @discardableResult
+    func trash(_ session: SessionSummary, force: Bool = false, onError: ((Error) -> Void)? = nil) async -> Bool {
+        do {
+            switch try await connection.api.trash(session.id, force: force) {
+            case let .trashed(updated):
+                withAnimation {
+                    if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+                        if belongsOnList(updated) { sessions[index] = updated } else { sessions.remove(at: index) }
+                    }
+                    notice = nil
+                    undoable = updated
+                }
+                error = nil
+                Haptics.success()
+                return true
+            case .queued:
+                queuedTrash = session
+                return false
+            }
+        } catch {
+            if let onError { onError(error) } else { handle(error); Haptics.failure() }
+            return false
+        }
+    }
+
+    /// The Undo toast's button: restore what was just trashed.
+    func undoTrash() async {
+        guard let session = undoable else { return }
+        withAnimation { undoable = nil }
+        if await perform("Restored from trash", on: session.id, { try await $0.unarchive(session.id) }) {
+            await refresh()
+        }
+    }
 
     /// Trash the selected sessions. Each refusal is shown with the server's reason; the rest go.
     func trash(_ ids: Set<Int>) async {

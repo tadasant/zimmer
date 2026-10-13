@@ -51,6 +51,7 @@ module Mcp
           *cron_freshness_lines(report),
           *inbound_event_lines(report),
           *root_data_lines(report),
+          *warm_clone_pool_lines(report),
           "",
           "### Health Details",
           "```json",
@@ -206,6 +207,30 @@ module Mcp
           *Array(root_data[:namespaces]).map do |row|
             "  - `#{row[:namespace]}`: #{row[:records]} record(s) in #{row[:collections]} collection(s), " \
               "#{ActiveSupport::NumberHelper.number_to_human_size(row[:data_bytes])}"
+          end
+        ]
+      end
+
+      # The warm clone pool: each pooled key and how many starts claimed a clone,
+      # the numbers the /health card shows and the scope decision is read from.
+      # Silent when the report carries no pool section.
+      def warm_clone_pool_lines(report)
+        pool = report[:warm_clone_pool_health]
+        return [] if pool.nil? || pool[:status].nil?
+
+        outcomes = pool[:outcomes] || {}
+        claims = %i[router other].map do |side|
+          counts = outcomes[side] || {}
+          "#{side} #{counts['claimed'].to_i} claimed / #{counts['missed'].to_i} missed"
+        end
+
+        [
+          "- **Warm clone pool (#{pool[:scope]} scope):** #{pool[:status].message} " \
+            "Last #{pool[:outcome_window_hours]}h: #{claims.join(', ')}.",
+          *Array(pool[:targets]).map do |target|
+            "  - `#{File.basename(target[:repo_url].to_s, '.git')}@#{target[:branch]}`: " \
+              "#{target[:ready]}/#{target[:size]} ready, #{target[:starts]} starts in #{pool[:window_days]}d" \
+              "#{" — #{target[:error]}" if target[:error].present?}"
           end
         ]
       end

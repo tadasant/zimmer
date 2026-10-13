@@ -21,14 +21,16 @@ class Api::V1::ConfigsController < Api::BaseController
   #     mcp_servers: [...],      # Available MCP server options
   #     agent_roots: [...],      # Preconfigured agent repository roots
   #     runtime_models: {...},   # Selectable model catalog per runtime
-  #     goals: [...]             # Available session goals
+  #     goals: [...],            # Available session goals
+  #     geneses: [...]           # Where a session can come from, for the board's Genesis filter
   #   }
   def index
     render json: {
       mcp_servers: mcp_servers_data,
       agent_roots: agent_roots_data,
       runtime_models: runtime_models_data,
-      goals: goals_data
+      goals: goals_data,
+      geneses: SessionGenesis::KINDS.map { |kind| { key: kind.key, label: kind.label } }
     }
   end
 

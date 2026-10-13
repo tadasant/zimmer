@@ -23,12 +23,20 @@ public enum ZimmerError: Error, Equatable, Sendable {
     case edgeNotRouted(String)
     /// The request never got an answer.
     case transport(String)
+    /// Zimmer, or the proxy in front of it, gave up waiting for the answer: the phone's own
+    /// request timeout, or a gateway timeout (504, or Cloudflare's 524). The server was
+    /// reached, so "couldn't reach Zimmer" would send the reader looking at their network.
+    case timedOut
     /// The sign-in did not finish: refused, cancelled, or a mismatched callback.
     case signIn(String)
 
     public static func transport(_ error: Error) -> ZimmerError {
-        .transport(String(describing: error))
+        if let urlError = error as? URLError, urlError.code == .timedOut { return .timedOut }
+        return .transport(String(describing: error))
     }
+
+    /// Gateway timeouts: the proxy's own 504 and Cloudflare's 524 ("a timeout occurred").
+    static let gatewayTimeoutStatuses: Set<Int> = [504, 524]
 
     /// A sentence fit for the screen.
     public var userMessage: String {
@@ -43,6 +51,7 @@ public enum ZimmerError: Error, Equatable, Sendable {
         case let .http(status, message): return message ?? "Zimmer answered \(status)."
         case .decoding: return "Zimmer sent something this version of the app cannot read."
         case .transport: return "Couldn't reach Zimmer."
+        case .timedOut: return "Zimmer took too long to answer. Try again in a moment."
         case let .signIn(reason): return reason
         }
     }
