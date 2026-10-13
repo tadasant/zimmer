@@ -48,8 +48,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   with the status pill, a *Priority* tag, `#id`, a compact age ("41m", "3h"), the latest PR with
   its CI dot and a notes marker; a star for a favourite; and a snoozed or hidden one adds when
   the snooze ends. A trashed session reads in the quieter ink.
-- **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn or with
-  queued messages is refused with the server's reason and stays; the rest go.
+- **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn goes, ending
+  the turn, as in the web UI's bulk Trash (`end_turn`); one with queued messages is refused with the
+  server's reason and stays; the rest go.
 - **Refresh All**, after a confirmation, through `POST /api/v1/sessions/refresh_all`: re-reads
   transcripts, restarts failed sessions, and continues sessions waiting on you that you did not
   pause, up to 50 of those together.
@@ -99,6 +100,15 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   follow-up to a session mid-turn is queued, and the app says so; touch and hold the button to
   *Send Now* instead, which ends the turn in flight (`force_immediate`, the web UI's Send Now).
   It is recorded as your message if the app's connection acts on your behalf (below).
+  What you type and do not send is kept per session for seven days, across leaving the screen and
+  relaunching, as the web UI keeps a composer's draft.
+- **Keeps itself current.** A session's page reads again every five seconds while a turn is
+  running or about to start, and every twenty otherwise (not while the queue's manager is open,
+  and never for a session in the trash); the board reads again every thirty seconds while it is
+  the screen in front and you are not selecting or reordering. Both read at once when the app comes back to the front.
+  The web UI streams these changes; the app asks, so a change can take that long to show. A session
+  opens at its newest message, as the web UI's transcript does, and follows new ones while you are
+  at the end; scrolled back, it stays where you are.
 - **Attaches photos and files** to a message with the paperclip beside the box: *Photo Library* or
   *Choose Files*, up to 20 and 75 MB altogether, shown as chips you can remove before sending. Photos
   go as JPEG, scaled down if needed to fit the 10 MB image limit; the library's own HEIC is not a
@@ -116,7 +126,13 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   the server's refusal in the form.
 - **Forks at a message.** Touch and hold a message for *Fork from Here* (and *Copy*). After a
   confirmation, the fork, a new session holding the conversation up to that message, opens on top.
-- **Trashes** a session, after a confirmation, and restores one from the trash.
+- **Trashes** a session as the web UI's Trash does: no question first, and an *Undo* on the board,
+  shown for 30 seconds as the web UI shows it (`UNDO_ARCHIVE_WINDOW`), which restores the session.
+  A session with a turn in flight goes outright, ending the turn
+  (`POST /api/v1/sessions/:id/archive` with `end_turn`). A session with messages queued for it is
+  asked about first, naming the discard: the web UI's *Archive anyway* (`force`). Undo does not
+  bring back discarded messages or resume an ended turn.
+  Restores one from the trash.
 - **Starts a session from a sentence** through the Quick Router, then opens it. The Quick Router is
   where the web UI puts it: a field pinned to the foot of the Sessions screen ("What do you want
   to do?", the web board's prompt box), and a button in the bottom-right corner of every other

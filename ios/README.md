@@ -169,6 +169,9 @@ companion repo:
    with `x-request-id`. A 404 `text/plain` without `x-request-id` is the tunnel saying the path
    is not on the app host's allow-list — `ZimmerError.edgeNotRouted`, a bug, never retried.
    `server: cloudflare` is on every response, so it is never evidence.
+6. **Timeouts are not outages.** A gateway timeout (504 from the proxy, 524 from Cloudflare) or
+   the request's own `URLError.timedOut` is `ZimmerError.timedOut`, which says "took too long".
+   It is not `.transport`, which says "couldn't reach": in that case the server was reached.
 
 Every `/api/v1` controller the app calls must declare `accepts_native_app_tokens`;
 `test/config/native_app_api_coverage_test.rb` reads every `"/api/v1/…"` literal under

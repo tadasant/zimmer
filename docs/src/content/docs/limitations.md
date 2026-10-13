@@ -7142,6 +7142,23 @@ in the window, and it excludes sessions whose start and end values disagree. Tho
 the most obvious wrong readings. They do not turn an observational comparison into a causal
 one, and a thin report saying "not enough data to compare" is the correct output, not a bug.
 
+## The cost report rescans its window after every ingestion sweep
+
+The Costs page, `GET /api/v1/costs` and `get_costs` share one cached snapshot, but its key
+includes the ledger's highest row id, and ingestion writes every ten minutes. The first request
+for a window after each sweep runs all five rollup scans again, and their time grows with the
+number of rows in the window: about 3.5s for 90 days on a ledger seeded at roughly four times
+this deployment's volume. Nothing stores daily rollups yet, so a much busier fleet will push a
+year-long window back toward the proxy's timeout. See
+[How a long window stays fast](/operate/costs/#how-a-long-window-stays-fast).
+
+## The cost rollups' planner statistics exist only where the migration ran
+
+The two `CREATE STATISTICS` objects on `session_token_usages` that let Postgres hash the daily
+and per-session rollups cannot be expressed in `schema.rb`. A database loaded from the schema
+(CI, a fresh clone's `db:prepare`) does not have them, and nothing checks for their absence. The
+figures are the same either way; only the plan is slower.
+
 ## Session-scoped Claude credentials have no rollback
 
 Every Claude Code session gets its credentials from the DB row — an access token through
@@ -7963,6 +7980,72 @@ retention job's reconcile pass recounts that collection: 25 of the least recentl
 an hour, each once it has been quiet for an hour. Until then a too-high count can refuse writes at
 the row cap. Deleting a session does not touch its records: `writing_session_id` is nulled and the
 record stays.
+
+## The warm clone pool serves one request at a time
+
+`WarmClonePool` (`app/services/warm_clone_pool.rb`) keeps one ready clone per pooled key by default.
+Under the `active` scope, a key with 150 or more starts a week gets two. Two Quick Router requests a few seconds apart get one warm start and one cold
+one, because the refill `WarmClonePoolReplenishJob` enqueues on the claim takes about as long as the
+clone it replaces. Raising `QUICK_ROUTER_WARM_CLONES` trades disk (about 160 MB per clone of
+tadasant-internal) for that case. The refill also runs on the `maintenance` lane, so a backed-up
+`maintenance` queue delays it, and requests clone cold until it drains. A volume short of space skips the build, so the pool is empty exactly when a disk is filling.
+
+The claim, the catch-up fetch, the refill and the fallbacks are covered against real local git
+repositories in the test suite. On the production host, against tadasant-internal (the router root's repository in the production catalog), a cold
+`create_clone` took about 7 seconds and a warm one 0.7–1.6 seconds. The end-to-end win for a router
+session is projected from those numbers and from measured phase timings; it has not yet been measured
+on a production router session that claimed a clone. `metadata["warm_clone"]` on each router session
+records `claimed` or `missed`, so comparing router session start times before and after is the
+production proof. This is a deliberate first step, not a tracked defect.
+
+The `active` scope (`WarmPoolPolicy`) ships **off** and has not run in production. Its ranking,
+caps, per-key isolation and fallbacks are covered against real local repositories. The 8–15 seconds it
+should save each non-router start is a projection from the clone times above. The claimed/missed
+counts on `/health` are the evidence for turning it on, and for keeping it on. Three costs come with
+it:
+
+- **Clones from GitHub.** Every pooled clone is rebuilt about every 45 minutes whether or not anyone
+  claims it, so each one is about 32 clones a day. With ten clones of a repository the size of
+  tadasant-internal, that is roughly 50 GB a day of clone traffic for the pool alone. `MIN_STARTS` (7 a week) keeps
+  rarely used keys out, and `WARM_CLONE_POOL_MAX_CLONES` bounds the total.
+- **Roots that share a repository share its clone.** Under `active`, every root on the router's key
+  claims from the router's pool. The key is sized for all of them, but a burst of other roots'
+  starts can still leave a Quick Router request to clone cold.
+- **Only the default branch.** A key is a root's catalog `url` and `default_branch`. A session started
+  on any other branch clones cold.
+- **The first pass after turning it on is slow.** A refill builds keys one after another, and
+  `WarmClonePoolReplenishJob` runs one at a time. The first pass under `active` can spend minutes
+  building up to ten clones. Refills that claims enqueue during that pass are absorbed, so a claimed
+  clone is replaced on the next one-minute tick after the pass ends.
+
+## A `sync: true` MCP call holds a web thread, and only one runs at a time
+
+`sync: true` on `quick_router`, `start_session` and `action_session` → `follow_up`
+(`app/services/sessions/sync_reply.rb`) keeps the request open until the session answers. Production's
+web is one Puma process with `RAILS_MAX_THREADS` (3) threads, so a waiting call costs a third of the
+web for as long as the caller asked to wait: 55 seconds by default, 90 at most. It returns its database connection to the pool while it waits, and
+`MCP_SYNC_MAX_CONCURRENT_WAITS` (default 1) caps how many wait at once. A second sync call while one is
+waiting is not refused: its prompt is sent and it returns straight away, saying it was not waited on,
+and the caller polls `get_session` as before.
+
+More edges, all deliberate for now:
+
+- **90 seconds is the ceiling** (`MCP_SYNC_MAX_TIMEOUT_SECONDS`), because the Cloudflare edge in front
+  of production cuts a request at 100. The default is 55 (`MCP_SYNC_DEFAULT_TIMEOUT_SECONDS`), because
+  many MCP clients give up on a request at 60. A turn that takes longer returns its state so far, and the
+  caller falls back to polling. Raising it means raising that edge's limit first.
+- **A caller that hangs up does not free the slot.** Puma cannot tell that the client or an edge has
+  gone, so the wait runs to its own timeout and holds the slot until then.
+- **Every status change costs one more cable write.** The doorbell is published whether or not anyone is
+  waiting: one solid_cable row per transition, written by the worker after commit.
+- **A deploy cuts a wait short.** Stopping the old web container ends the request with a connection
+  error rather than a result. The session is not affected, and `get_session` finds the answer.
+- **The wait cannot be faster than the status flip.** It ends when the session's status changes, and
+  Claude Code's process takes some seconds to exit after its last message. On the baseline measured
+  for this feature, that gap was about 17 of the 31 seconds a trivial Quick Router request took.
+- **A status change written with `update_columns` rings no doorbell.** The wait wakes on
+  `Sessions::TurnSignal`, which `Session#broadcast_status_change` sends after commit. A write that
+  skips callbacks is picked up by the 5-second backstop re-read instead.
 
 ## Open questions
 

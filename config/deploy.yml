@@ -40,6 +40,13 @@ proxy:
     path: /up
     interval: 3
     timeout: 5
+  # How long kamal-proxy waits for Puma to answer a request (default 30s). Raised
+  # for MCP's `sync: true`, which holds a tool call open for up to
+  # Sessions::SyncReply::MAX_TIMEOUT_SECONDS (90) while a session answers. 100
+  # matches the Cloudflare edge's own cut, so neither this nor Thruster's
+  # HTTP_WRITE_TIMEOUT (env below) is the tighter limit. Puma keeps running a
+  # request the proxy gave up on either way, so this costs no extra thread time.
+  response_timeout: 100
   # kamal-proxy publishes 80 AND 443 on the host by default -- even with ssl: false.
   # Caddy already owns those (it terminates TLS for the custom domain), so the two
   # collide: "failed to bind host port 0.0.0.0:443/tcp: address already in use".
@@ -151,6 +158,11 @@ env:
     # ZIMMER_PROD_API_KEY -- which is exactly what the pre-Kamal
     # cloud-init did, breaking every staging session.
     OTEL_SERVICE_NAME: zimmer
+    # Thruster (the web role's PID-1 HTTP proxy in front of Puma) cuts a response
+    # it has not finished writing after 30s by default. Raised with kamal-proxy's
+    # `response_timeout` above, for MCP's `sync: true`; inert in the worker, which
+    # does not run Thruster.
+    THRUSTER_HTTP_WRITE_TIMEOUT: "100"
     # Accessories share the Kamal docker network; reach them by container name
     # (<service>-<accessory>).
     #

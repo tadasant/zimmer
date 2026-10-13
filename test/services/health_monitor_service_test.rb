@@ -33,6 +33,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert report.key?(:log_retention_health)
     assert report.key?(:inbound_event_health)
     assert report.key?(:root_data_health)
+    assert report.key?(:warm_clone_pool_health)
     assert report.key?(:cron_health)
     assert report.key?(:overall_status)
     assert report.key?(:generated_at)
@@ -154,6 +155,56 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     root_data = @service.full_health_report[:root_data_health]
     assert_equal :warning, root_data[:status].status
     assert_equal [ "notes" ], root_data[:near_cap].map { |row| row[:collection] }
+  end
+
+  # === Warm clone pool ===
+
+  def warm_pool_report(**overrides)
+    { enabled: true, scope: "router", size: 1, max_clones: 10, window_days: 7, passed_over: [], last_pass: nil,
+      outcome_window_hours: 24, outcomes: {},
+      targets: [ { repo_url: "https://github.com/acme/internal.git", branch: "main", size: 1, ready: 1, error: nil } ] }
+      .merge(overrides)
+  end
+
+  test "warm_clone_pool_health carries the pool report, healthy when every key builds" do
+    WarmClonePool.stubs(:report).returns(warm_pool_report)
+
+    pool = @service.full_health_report[:warm_clone_pool_health]
+
+    assert_equal :healthy, pool[:status].status
+    assert_equal "1 of 1 pooled key has a ready clone (router scope).", pool[:status].message
+    assert_equal "router", pool[:scope]
+  end
+
+  test "warm_clone_pool_health warns on a key the last refill could not build, and never moves overall_status" do
+    failing = { repo_url: "https://github.com/acme/app.git", branch: "main", size: 1, ready: 0, error: "Git command failed" }
+    WarmClonePool.stubs(:report).returns(warm_pool_report(targets: warm_pool_report[:targets] + [ failing ]))
+
+    report = @service.full_health_report
+    pool = report[:warm_clone_pool_health]
+
+    assert_equal :warning, pool[:status].status
+    assert_match(/could not build 1 of 2 pooled keys/, pool[:status].message)
+    assert_equal @service.send(:calculate_overall_status,
+                               %i[process_health session_health system_health egress_health auth_health
+                                  post_deploy_task_health cron_health].map { |k| report[k][:status] }),
+                 report[:overall_status]
+  end
+
+  test "warm_clone_pool_health says so when the pool is off" do
+    WarmClonePool.stubs(:report).returns(warm_pool_report(enabled: false, targets: []))
+
+    assert_match(/Off: QUICK_ROUTER_WARM_CLONES is 0/, @service.full_health_report[:warm_clone_pool_health][:status].message)
+  end
+
+  test "warm_clone_pool_health degrades to a warning rather than failing the report" do
+    WarmClonePool.stubs(:report).raises(Errno::EACCES, "clones base")
+
+    pool = @service.full_health_report[:warm_clone_pool_health]
+
+    assert_equal :warning, pool[:status].status
+    assert_match(/could not be read/, pool[:status].message)
+    assert_empty pool[:targets]
   end
 
   test "log_retention_health reports the size of the logs table and the policy in force" do

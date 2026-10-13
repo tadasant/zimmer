@@ -44,7 +44,7 @@ module Mcp
           is stored is refused for that reason — pass the new `model` with it, or `model: ""`.
         - **set_experimental_setting**: Turn one Settings → Experimental toggle on or off (requires
           `setting` and `enabled`). `setting` is the key `get_app_settings` lists: `mcp_tool_search`,
-          or `extension.<id>` for a registered experimental Zimmer Extension. An unknown key, or an
+          `warm_clone_pool_active_roots`, or `extension.<id>` for a registered experimental Zimmer Extension. An unknown key, or an
           extension that is not registered, is refused. Every
           session is tagged with each toggle's value as it runs, and the Costs page compares those
           cohorts — so switching a setting back and forth is how its cohorts come to interleave in
@@ -81,7 +81,7 @@ module Mcp
           setting: {
             type: "string",
             description: "set_experimental_setting: the toggle's key, as `get_app_settings` lists it " \
-                         "(`mcp_tool_search`, or `extension.<id>`)."
+                         "(`mcp_tool_search`, `warm_clone_pool_active_roots`, or `extension.<id>`)."
           },
           enabled: {
             type: "boolean",

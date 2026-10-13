@@ -343,7 +343,47 @@ The daily-spend chart and the breakdown tables both reveal what is behind a figu
   pointer devices only, and a row you opened deliberately stays open when the pointer leaves.
 
 Every figure a drilldown shows is precomputed in the same cached snapshot as the page — the
-per-day and per-root detail come from one extra grouped query each, not one query per bar.
+per-day and per-root detail are folded out of the same (day, agent root, model) rollup as the
+bars themselves, not one query per bar.
+
+## How a long window stays fast
+
+The Costs page, `GET /api/v1/costs` and the fleet report from `get_costs` all render one
+`CostAnalytics#snapshot`, so the three surfaces share one cached computation per window and scope.
+The snapshot is **five grouped scans** of the ledger whatever the window's length. Each
+`CostRollup` (`app/services/cost_rollup.rb`) sums plain token columns per group **and per model**,
+and dollars are applied in Ruby, once per (group, model) pair:
+
+| Rollup | Grouped by | Sections folded out of it |
+| --- | --- | --- |
+| usage | agent root, runtime, thread, model | totals, where the money goes, by root / model / thread / runtime, the feature denominator |
+| daily | day, agent root, model | the daily chart and each bar's roots and models |
+| per session | session, agent root, model | most expensive sessions, every experiment cohort |
+| ad hoc | day, source, model | the ad hoc half of every table above |
+| features | agent root, feature, model | the feature estimate and each root's feature split |
+
+Pricing a (group, model) sum is exact because price is linear in every token column once the
+model is fixed. The one non-linear piece, an unsplit cache write charged at the 1-hour rate, is
+summed as its own column. Pricing every row in SQL (`TokenPricing.cost_sql`, five model-family
+matches per row) costs several times the scan itself. On a seeded ledger of 400k calls and
+2.8M feature rows, a 90-day report took 37s that way, which is past the proxy's timeout. As five
+rollups it takes 3.5s. `test/services/cost_analytics_test.rb` fails if the query count starts
+depending on the window's length, or if a section starts pricing rows in SQL again. The one
+exception is the experiment labels: they are read for the window's sessions in slices of 5,000,
+so a window with tens of thousands of sessions takes a few extra small reads.
+
+The cache does not hide the five scans for long. The snapshot's key includes the ledger's
+highest row id, and ingestion writes every ten minutes, so the first request for a window after
+each sweep pays for all five. Scan time grows with the number of rows in the window. A year of
+history on a busier fleet will eventually need daily rollups that are stored rather than
+recomputed on every read.
+
+Two multivariate statistics objects on `session_token_usages` (migration
+`20261012050000`) tell the planner how many groups the daily and per-session rollups really
+have. Without them Postgres multiplies the columns' distinct counts, expects about one group per
+row, and sorts the whole window on disk instead of hashing it. `schema.rb` cannot express
+`CREATE STATISTICS`, so a database loaded from it (CI, a fresh clone) answers with the same
+figures on the slower plan.
 
 ## Narrowing the whole page
 
@@ -426,10 +466,12 @@ counted inflates the capacity estimate *in proportion*. The Costs page, the REST
 `get_costs` are deliberately not filtered — they are asked what Zimmer spent, and the answer is
 every runtime.
 
-The prices are `TokenPricing`'s, applied through the same `cost_sum_sql` the rest of this page uses.
-There is deliberately no second pricing path — a rate priced differently from the page would make
-"this session burns $0.40 a minute" and "this root spent $6,116 this week" two numbers nobody could
-reconcile.
+The prices are `TokenPricing`'s, applied through `cost_sum_sql`. The Costs page applies the same
+rates in Ruby over per-model sums (`CostRollup`, see
+[How a long window stays fast](#how-a-long-window-stays-fast)), and
+`test/services/cost_rollup_test.rb` holds the two to the same figure. A rate priced differently
+from the page would make "this session burns $0.40 a minute" and "this root spent $6,116 this
+week" two numbers nobody could reconcile.
 
 The [spot gate](/sessions/spot-and-priority/#the-gate) multiplies these by its re-check interval to
 project what admitting one more session will spend before anyone looks again. A combination that has
@@ -611,6 +653,11 @@ ago on the one tick where nothing has been observed yet and every session really
 
 For `mcp_tool_search` the boundary is **2026-08-22 13:55:34 UTC** (`b59d9ad7`, which shipped
 it on for everyone).
+
+`warm_clone_pool_active_roots` (whether the [warm clone pool](/sessions/spawning/#the-warm-clone-pool)
+serves every active root) ships off with no `landed_at`, so only sessions that start after it
+exists are tagged. It changes start latency rather than spend, and the claimed/missed counts on
+`/health` are its real report.
 
 ### Retiring a setting
 
