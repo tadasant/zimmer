@@ -356,6 +356,21 @@ extension FakeZimmerAPI {
         return FollowUpResult(queued: false, message: "Follow-up prompt sent immediately")
     }
 
+    /// As the server answers the app: a turn in flight ends, a queue waits for `force`.
+    public func trash(_ id: Int, force: Bool) async throws -> TrashOutcome {
+        var session = try find(id)
+        guard session.status != .archived else {
+            throw ZimmerError.http(status: 422, message: "Session cannot be trashed from current status: archived")
+        }
+        if !force, !(queues[id] ?? []).isEmpty { return .queued }
+        queues[id] = nil
+        session.status = .archived
+        session.archivedAt = Date()
+        session.updatedAt = Date()
+        replace(session)
+        return .trashed(session)
+    }
+
     public func unarchive(_ id: Int) async throws -> SessionSummary {
         try change(id, refusal: "Session is not in trash", when: { $0.status != .archived }) {
             $0.status = .needsInput
@@ -447,10 +462,14 @@ extension FakeZimmerAPI {
     public func bulkArchive(_ ids: [Int]) async throws -> BulkArchiveResult {
         var archived = 0
         var errors: [BulkArchiveResult.Refusal] = []
+        // As the server with `end_turn`: a turn in flight goes, a queue is reported.
         for id in ids {
             do {
-                _ = try await archive(id)
-                archived += 1
+                if try await trash(id, force: false) == .queued {
+                    errors.append(BulkArchiveResult.Refusal(id: id, message: "Cannot archive session \(id): queued messages have not been delivered."))
+                } else {
+                    archived += 1
+                }
             } catch let ZimmerError.http(_, message) {
                 errors.append(BulkArchiveResult.Refusal(id: id, message: message ?? "Cannot archive"))
             }

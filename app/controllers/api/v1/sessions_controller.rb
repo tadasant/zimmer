@@ -122,7 +122,8 @@ class Api::V1::SessionsController < Api::BaseController
 
     render json: {
       sessions: result[:records].map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
-      pagination: result[:pagination]
+      pagination: result[:pagination],
+      **board_rows(result[:records])
     }
   end
 
@@ -309,12 +310,18 @@ class Api::V1::SessionsController < Api::BaseController
   # discards them, and nothing delivers a queued message once the session is in
   # the trash. `force: true` overrides it for a caller that has read them and is
   # deliberately discarding them. See Sessions::ArchiveGuard.
+  #
+  # Refused with 422 too when a turn is in flight, unless `force` or `end_turn`.
+  # `end_turn: true` lets the turn go and nothing else: the queue is still
+  # checked. It is the web UI's Trash, which ends a running session's turn but
+  # asks before discarding a queue — what the iOS app sends.
   def archive
     force = ActiveModel::Type::Boolean.new.cast(params[:force])
+    end_turn = ActiveModel::Type::Boolean.new.cast(params[:end_turn])
 
     archived =
       begin
-        @session.may_archive? && guarded_rest_archive!(@session, force: force, actor: "the REST API")
+        @session.may_archive? && guarded_rest_archive!(@session, force: force, end_turn: end_turn, actor: "the REST API")
       rescue Sessions::ArchiveGuard::Refused => e
         render_api_error(
           "Queued messages would be discarded",
@@ -1208,11 +1215,13 @@ class Api::V1::SessionsController < Api::BaseController
     errors = []
 
     force = ActiveModel::Type::Boolean.new.cast(params[:force])
+    end_turn = ActiveModel::Type::Boolean.new.cast(params[:end_turn])
 
     # Refusals are reported and skipped rather than aborting the loop, matching
-    # the MCP twin. `force` applies to the whole batch, not one member of it.
+    # the MCP twin. `force` and `end_turn` apply to the whole batch, not one
+    # member of it.
     sessions.each do |session|
-      if guarded_rest_archive!(session, force: force, actor: "the REST API (bulk)")
+      if guarded_rest_archive!(session, force: force, end_turn: end_turn, actor: "the REST API (bulk)")
         archived_count += 1
       else
         errors << { id: session.id, message: "Cannot archive from status: #{session.status}" }
@@ -1276,7 +1285,8 @@ class Api::V1::SessionsController < Api::BaseController
         query: query,
         search_contents: false,
         sessions: result[:records].map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
-        pagination: result[:pagination]
+        pagination: result[:pagination],
+        **board_rows(result[:records])
       }
       return
     end
@@ -1290,6 +1300,7 @@ class Api::V1::SessionsController < Api::BaseController
       query: query,
       search_contents: true,
       sessions: sessions.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
+      **board_rows(sessions),
       pagination: {
         page: 1,
         per_page: per_page,
@@ -1328,8 +1339,30 @@ class Api::V1::SessionsController < Api::BaseController
     render json: {
       sessions: rows.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
       pagination: { page: 1, per_page: limit, total_count: scope.count, total_pages: 1 },
-      truncated: fetched.size > limit
+      truncated: fetched.size > limit,
+      **board_rows(rows)
     }
+  end
+
+  # What a dashboard row shows that the `session` object does not carry — the
+  # agent root's catalog name and the cached status summary — keyed by id, when
+  # the caller asks with `include=board_row`. A sibling of `sessions` for the
+  # reason `status_summary` is one on #show: `session` keeps one shape everywhere.
+  # The summaries are read in one query for the page, as the dashboard's rows read
+  # them off an eager load.
+  #
+  # @param records [Array<Session>]
+  # @return [Hash] `{ board_rows: { "<id>" => {...} } }`, or `{}` when not asked
+  def board_rows(records)
+    included = Array.wrap(params[:include]).flat_map { |value| value.to_s.split(",") }.map(&:strip)
+    return {} unless included.include?("board_row")
+
+    records = records.to_a
+    ActiveRecord::Associations::Preloader.new(records: records, associations: :status_summary).call
+    rows = records.to_h do |session|
+      [ session.id.to_s, { agent_root: session.agent_root_key, status_summary: session_status_summary_json(session) } ]
+    end
+    { board_rows: rows }
   end
 
   # The dashboard's User-view cap, which MCP `get_user_view` reads too.
@@ -1438,7 +1471,8 @@ class Api::V1::SessionsController < Api::BaseController
   # A live turn is the other thing an archive discards, and this endpoint
   # carries no caller identity at all — the API key is the fleet's. So it takes
   # the same answer the MCP tool gives an unidentified connection: refuse, and
-  # let `force` through. See Sessions::LiveTurn.
+  # let `force` through — or `end_turn`, which lets the turn go and still
+  # refuses a queue. See Sessions::LiveTurn.
   #
   # The live turn is read before the lock and only acted on under it: the read
   # is a GoodJob query that swallows its own errors, and a failed statement
@@ -1446,10 +1480,10 @@ class Api::V1::SessionsController < Api::BaseController
   #
   # @return [Boolean] whether it archived
   # @raise [Sessions::ArchiveGuard::Refused, LiveTurnRefused]
-  def guarded_rest_archive!(session, force:, actor:)
+  def guarded_rest_archive!(session, force:, end_turn: false, actor:)
     live_turn = Sessions::LiveTurn.in_flight?(session)
     archived = Sessions::ArchiveGuard.guarded_archive!(session, force: force, actor: actor) do
-      raise LiveTurnRefused if live_turn && !force
+      raise LiveTurnRefused if live_turn && !force && !end_turn
     end
     note_archive_over_live_turn(session, actor) if archived && live_turn
     archived
