@@ -293,7 +293,7 @@ private struct SwipeableSessionRow: View {
 
     var body: some View {
         NavigationLink(value: session.id) {
-            SessionRow(session: session, showsSummary: model.view == .yourBoard)
+            SessionRow(session: session, showsSummary: model.view == .yourBoard && session.boardRow != nil)
         }
         // Rows share one surface with hairlines between them, as the web UI's Your board and
         // Ranked views draw theirs: a card per row spent a third of the screen on margins.
@@ -581,49 +581,48 @@ private struct RowSummary: View {
         let summary = session.boardRow?.statusSummary
         VStack(alignment: .leading, spacing: 3) {
             if let summary, let text = summary.summary, !text.isEmpty {
-                Text(Self.inline(text))
+                // Links read as text: the row is one tap target, and opens the session, whose
+                // copy of the summary has working links.
+                Text(MarkdownInline.attributed(text))
                     .font(.caption)
                     .foregroundStyle(Theme.inkSoft)
-                    .tint(Theme.accent)
+                    .tint(Theme.inkSoft)
                     .lineLimit(3)
-                    .accessibilityIdentifier("row.summary.\(session.id)")
             } else {
                 Text("No status summary yet.")
                     .font(.caption.italic())
                     .foregroundStyle(Theme.inkMute)
             }
-            HStack(spacing: 5) {
-                if let summary, summary.summary?.isEmpty == false {
-                    let freshness = SummaryFreshness(summary)
+            if let summary, summary.summary?.isEmpty == false {
+                let freshness = SummaryFreshness(summary)
+                HStack(spacing: 5) {
                     HStack(spacing: 3) {
                         Circle().fill(Self.color(freshness)).frame(width: 5, height: 5)
                         Text(freshness.label).foregroundStyle(Self.color(freshness))
                     }
-                    if case let .stale(messages) = freshness {
-                        Text(messages == 1 ? "1 message since" : "\(messages) messages since")
+                    if let behind = summary.messagesSinceGenerated, behind > 0 {
+                        Text(behind == 1 ? "1 message since" : "\(behind) messages since")
                     }
                     if let written = summary.generatedAt {
                         let age = Format.age(written)
                         Text(verbatim: age == "now" ? "written just now" : "written \(age) ago")
                     }
                 }
-                if let root = session.agentRoot {
-                    Text(verbatim: root)
-                        .font(Theme.mono)
-                        .foregroundStyle(Theme.inkMute)
-                }
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(Theme.inkMute)
+                .lineLimit(1)
             }
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(Theme.inkMute)
-            .lineLimit(1)
+            // On its own line, as the web UI's row puts it on the action line: the root, else
+            // the genesis.
+            if let root = session.agentRoot ?? session.genesis {
+                Text(verbatim: root)
+                    .font(Theme.mono)
+                    .foregroundStyle(Theme.inkMute)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
         }
         .padding(.top, 1)
-    }
-
-    /// Inline only, as the web UI renders it on a row: a paragraph break would push the
-    /// row around.
-    static func inline(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
     }
 
     static func color(_ freshness: SummaryFreshness) -> Color {

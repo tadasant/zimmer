@@ -272,9 +272,12 @@ final class AppModel: ObservableObject {
     @discardableResult
     func perform(_ done: String, on id: Int, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
         do {
-            let updated = try await action(connection.api)
+            var updated = try await action(connection.api)
             withAnimation {
                 if let index = sessions.firstIndex(where: { $0.id == id }) {
+                    // An action answers with the session alone: the row's summary stays until
+                    // the next read of the list.
+                    if updated.boardRow == nil { updated.boardRow = sessions[index].boardRow }
                     if belongsOnList(updated) { sessions[index] = updated } else { sessions.remove(at: index) }
                 }
             }
