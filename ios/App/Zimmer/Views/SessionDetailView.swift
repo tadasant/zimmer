@@ -46,6 +46,9 @@ final class SessionDetailModel: ObservableObject {
     var pollPaused = false
     /// Photos and files going with the next message.
     @Published var attachments: [MessageAttachment] = []
+    /// The catalog (`GET /api/v1/configs`), read once: what names the session's goal and
+    /// what the goal picker offers. Nil until it reads, and the page works without it.
+    @Published private(set) var configs: AppConfigs?
 
     init(id: Int, api: ZimmerAPI) {
         self.id = id
@@ -73,6 +76,14 @@ final class SessionDetailModel: ObservableObject {
             } catch ZimmerError.unauthorized {
                 report(.unauthorized)
             } catch {}
+            // The catalog only names the goal: one that will not read leaves the words.
+            if configs == nil {
+                do {
+                    configs = try await api.configs()
+                } catch ZimmerError.unauthorized {
+                    report(.unauthorized)
+                } catch {}
+            }
             error = nil
         } catch {
             fail(error)
@@ -317,6 +328,9 @@ struct SessionDetailView: View {
     private var atEnd: Bool { endY <= viewportHeight + 80 }
     /// Scrolled to the newest message once, on the first load.
     @State private var openedAtNewest = false
+    /// `-ZimmerFixtureOpenPanels`: the page opens at the details card with its folded rows
+    /// open, so `ios/bin/ui-test` can photograph them.
+    @State private var fixtureOpensPanels = false
 
     /// Short answers a person gives most often — on a phone, typing is the expensive part.
     static let quickReplies = ["Yes, go ahead.", "Merge it.", "Not yet — hold off."]
@@ -340,8 +354,15 @@ struct SessionDetailView: View {
                     // follow new ones only while the end is in view.
                     if !openedAtNewest {
                         openedAtNewest = true
+                        let panels = fixtureOpensPanels
                         // After the layout that adds the messages, or the scroll can miss.
-                        Task { @MainActor in proxy.scrollTo(Self.endAnchor, anchor: .bottom) }
+                        Task { @MainActor in
+                            if panels {
+                                proxy.scrollTo(Self.panelsAnchor, anchor: .top)
+                            } else {
+                                proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+                            }
+                        }
                     } else if atEnd {
                         withAnimation { proxy.scrollTo(Self.endAnchor, anchor: .bottom) }
                     }
@@ -384,6 +405,7 @@ struct SessionDetailView: View {
     }
 
     static let endAnchor = "conversation.end"
+    static let panelsAnchor = "detail.panels.anchor"
 
     private var page: some View {
         ScrollView {
@@ -401,11 +423,18 @@ struct SessionDetailView: View {
                     if detail.session.status == .failed, let failure = detail.session.metadata, failure.hasFailureDetails {
                         FailureCard(failure: failure)
                     }
-                    // Goal check, goal, notes, hierarchy and human messages share one card,
-                    // divided rather than stacked, as the web UI's panel group is.
-                    DetailsCard(detail: detail, edit: { editing = $0 }) { junior, uncle in
+                    // Goal check, goal, notes, MCP servers, hierarchy and human messages share one
+                    // card, divided rather than stacked, as the web UI's panel group is.
+                    DetailsCard(
+                        detail: detail,
+                        goal: model.configs?.goal(matching: detail.session.goal),
+                        expanded: fixtureOpensPanels,
+                        edit: { editing = $0 },
+                        editMcpServers: { editingCatalog = .mcpServers }
+                    ) { junior, uncle in
                         Task { await model.detachUncle(junior, uncle: uncle) }
                     }
+                    .id(Self.panelsAnchor)
                 } else if model.isLoading {
                     LoadingState(text: "Loading session…").padding(.top, 60)
                 }
@@ -475,14 +504,17 @@ struct SessionDetailView: View {
         .sheet(isPresented: $choosingModel) { modelSheet }
         .sheet(item: $editingCatalog) { kind in catalogSheet(kind) }
         .sheet(item: $editing) { field in
-            TextEditSheet(
-                title: field == .notes ? "Edit Notes" : "Modify Goal",
-                placeholder: field == .notes ? "Notes for this session" : "When is this session done?",
-                initial: (field == .notes ? model.detail?.session.notes : model.detail?.session.goal) ?? ""
-            ) { text in
-                switch field {
-                case .notes: return await model.apply("Notes saved") { try await $0.updateNotes(model.id, notes: text) }
-                case .goal: return await model.apply(text.isEmpty ? "Goal cleared" : "Goal updated") { try await $0.updateGoal(model.id, goal: text) }
+            switch field {
+            case .notes:
+                TextEditSheet(title: "Edit Notes", placeholder: "Notes for this session", initial: model.detail?.session.notes ?? "") { text in
+                    await model.apply("Notes saved") { try await $0.updateNotes(model.id, notes: text) }
+                }
+            case .goal:
+                // The web page's goal picker: the catalog's goals by name, or your own words.
+                GoalPickerSheet(goals: model.configs?.goals ?? [], current: model.detail?.session.goal) { text in
+                    let name = model.configs?.goal(matching: text)?.title
+                    let done: String = text.isEmpty ? "Goal cleared" : name.map { "Goal: \($0)" } ?? "Goal updated"
+                    return await model.apply(done) { try await $0.updateGoal(model.id, goal: text) }
                 }
             }
         }
@@ -503,6 +535,10 @@ struct SessionDetailView: View {
             model.report = { [weak app] error in app?.noteError(error) }
             // Opening marks the session's notifications read: the Inbox badge follows.
             model.onOpened = { [weak app] in Task { await app?.refreshUnreadCount() } }
+            if app.fixtureOpensPanels {
+                app.fixtureOpensPanels = false
+                fixtureOpensPanels = true
+            }
             await model.load()
             if app.fixtureAttachesFile {
                 app.fixtureAttachesFile = false
@@ -1094,329 +1130,8 @@ private struct FailureCard: View {
     }
 }
 
-/// Goal check, goal, notes, hierarchy and human messages: one card, hairlines between the
-/// rows. Goal and notes clamp to two lines and open on a tap; the hierarchy folds when it
-/// is wide, the human messages always, each saying in its closed row what it holds.
-private struct DetailsCard: View {
-    let detail: SessionDetail
-    let edit: (SessionDetailView.EditedText) -> Void
-    let detach: (Int, Int) -> Void
-
-    private enum Row: Identifiable {
-        case goalCheck(GoalCheck)
-        case goal(String)
-        case notes(String)
-        case hierarchy(SessionHierarchy)
-        case humanMessages([HumanMessage])
-
-        var id: String {
-            switch self {
-            case .goalCheck: return "goalCheck"
-            case .goal: return "goal"
-            case .notes: return "notes"
-            case .hierarchy: return "hierarchy"
-            case .humanMessages: return "humanMessages"
-            }
-        }
-    }
-
-    private var rows: [Row] {
-        var rows: [Row] = []
-        if let check = detail.goalCheck, !check.criteria.isEmpty { rows.append(.goalCheck(check)) }
-        if let goal = detail.session.goal, !goal.isEmpty { rows.append(.goal(goal)) }
-        if detail.session.hasNotes, let notes = detail.session.notes { rows.append(.notes(notes)) }
-        if let hierarchy = detail.hierarchy, hierarchy.isWorthShowing { rows.append(.hierarchy(hierarchy)) }
-        if !detail.humanMessages.isEmpty { rows.append(.humanMessages(detail.humanMessages)) }
-        return rows
-    }
-
-    var body: some View {
-        let rows = rows
-        if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                    if index > 0 { Theme.rule.frame(height: 1) }
-                    view(for: row)
-                        .padding(.vertical, 9)
-                        .padding(.horizontal, 12)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .themeCard(radius: Theme.smallRadius)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("detail.panels")
-        }
-    }
-
-    @ViewBuilder
-    private func view(for row: Row) -> some View {
-        switch row {
-        case let .goalCheck(check):
-            GoalCheckRow(check: check)
-        case let .goal(goal):
-            ClampedTextRow(title: "Goal", text: goal, identifier: "detail.goal") { edit(.goal) }
-        case let .notes(notes):
-            ClampedTextRow(title: "Notes", text: notes, identifier: "detail.notes") { edit(.notes) }
-        case let .hierarchy(hierarchy):
-            HierarchyRow(hierarchy: hierarchy, detach: detach)
-        case let .humanMessages(messages):
-            HumanMessagesRow(messages: messages)
-        }
-    }
-}
-
-/// The web UI's Goal check panel: the verdict, then one line per criterion.
-private struct GoalCheckRow: View {
-    let check: GoalCheck
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Text("Goal check").themeLabel()
-                Text(check.verdict.capitalized)
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .foregroundStyle(Self.verdictColors(check.verdict).text)
-                    .background(Self.verdictColors(check.verdict).fill, in: Capsule())
-                Text(verbatim: "\(check.metCount) of \(check.criteria.count) met")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(Theme.inkMute)
-                Spacer()
-            }
-            ForEach(check.criteria) { criterion in
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(Self.mark(criterion.status).0)
-                        .font(.caption.weight(.bold).monospaced())
-                        .foregroundStyle(Self.mark(criterion.status).1)
-                        .frame(width: 12)
-                    Text(criterion.label).font(.subheadline).foregroundStyle(Theme.ink)
-                    if let detail = criterion.detail, !detail.isEmpty {
-                        Text(detail).font(.caption).foregroundStyle(Theme.inkMute).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-            }
-            if check.provisional {
-                Text("Still working: unmet means not yet.").font(.caption2).foregroundStyle(Theme.inkMute)
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("detail.goalcheck")
-    }
-
-    /// `_goal_check_panel.html.erb`'s marks and colours.
-    static func mark(_ status: String) -> (String, Color) {
-        switch status {
-        case "met": return ("✓", Theme.success)
-        case "unmet": return ("✗", Theme.danger)
-        case "pending": return ("…", Theme.ci("pending"))
-        default: return ("?", Theme.inkMute)
-        }
-    }
-
-    static func verdictColors(_ verdict: String) -> Theme.StatusColors {
-        switch verdict {
-        case "met": return Theme.status(.running)
-        case "unmet": return Theme.status(.failed)
-        default: return Theme.status(.waiting)
-        }
-    }
-}
-
-/// A titled block of text with an Edit button, clamped to two lines until tapped: the
-/// goal, the notes.
-private struct ClampedTextRow: View {
-    let title: String
-    let text: String
-    let identifier: String
-    let edit: () -> Void
-    @State private var expanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title).themeLabel()
-                Spacer()
-                Button("Edit", action: edit).font(.caption.weight(.medium))
-            }
-            Text(text)
-                .font(.subheadline)
-                .foregroundStyle(Theme.ink)
-                .lineLimit(expanded ? nil : 2)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-                .contentShape(Rectangle())
-                .onTapGesture { withAnimation(.snappy(duration: 0.2)) { expanded.toggle() } }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(identifier)
-    }
-}
-
-/// The web UI's hierarchy panel: who spawned this session and what it spawned, indented by
-/// depth. Every other session in it opens on a tap. A tree of more than four folds, and
-/// its closed row says how big it is.
-private struct HierarchyRow: View {
-    let hierarchy: SessionHierarchy
-    /// Remove an "also senior" edge: (junior, uncle).
-    let detach: (Int, Int) -> Void
-    @State private var open: Bool
-    @State private var detaching: (junior: Int, uncle: Int)?
-
-    init(hierarchy: SessionHierarchy, detach: @escaping (Int, Int) -> Void) {
-        self.hierarchy = hierarchy
-        self.detach = detach
-        _open = State(initialValue: hierarchy.nodes.count <= 4)
-    }
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $open) {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(hierarchy.nodes) { node in
-                    VStack(alignment: .leading, spacing: 2) {
-                        if node.current {
-                            row(node).fontWeight(.semibold)
-                        } else {
-                            NavigationLink(value: node.id) { row(node) }
-                                .buttonStyle(.plain)
-                        }
-                        // Beside the link, not in it, so a detach is never taken as opening the session.
-                        if !node.uncles.isEmpty { seniors(node) }
-                    }
-                }
-                if hierarchy.truncated {
-                    Text("Only part of the hierarchy is shown.").font(.caption).foregroundStyle(Theme.inkSoft)
-                }
-            }
-            .padding(.top, 6)
-        } label: {
-            HStack(spacing: 6) {
-                Text("Hierarchy").themeLabel()
-                Text(summary).font(.caption2.monospacedDigit()).foregroundStyle(Theme.inkMute)
-            }
-        }
-        .tint(Theme.inkMute)
-        .confirmationDialog(
-            detaching.map { "Remove #\($0.uncle) as an additional senior of #\($0.junior)?" } ?? "",
-            isPresented: Binding(get: { detaching != nil }, set: { if !$0 { detaching = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button("Remove", role: .destructive) {
-                if let edge = detaching { detach(edge.junior, edge.uncle) }
-            }
-        } message: {
-            Text("Both sessions stop pulling in the other's human messages through this edge. Spawn parents are untouched, and both timelines record the removal.")
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("detail.hierarchy")
-    }
-
-    /// "7 sessions · parent #1040" — what the closed row says. The parent is the nearest
-    /// node above the current one that sits one level shallower, in draw order.
-    private var summary: String {
-        var parts = ["\(hierarchy.nodes.count) sessions"]
-        if let index = hierarchy.nodes.firstIndex(where: \.current) {
-            let current = hierarchy.nodes[index]
-            if current.depth > 0, let parent = hierarchy.nodes[..<index].last(where: { $0.depth == current.depth - 1 }) {
-                parts.append("parent #\(parent.id)")
-            }
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    private func row(_ node: SessionHierarchy.Node) -> some View {
-        HStack(spacing: 6) {
-            StatusDot(status: node.status, size: 7)
-            Text(node.displayTitle).lineLimit(1).foregroundStyle(Theme.ink)
-            Spacer(minLength: 4)
-            Text(verbatim: "#\(node.id)").font(Theme.mono).foregroundStyle(Theme.inkMute)
-            if !node.current {
-                Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(Theme.inkMute)
-            }
-        }
-        .font(.subheadline)
-        .padding(.leading, CGFloat(min(node.depth, 6)) * 12)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("hierarchy.node.\(node.id)")
-    }
-
-    /// The web UI's amber "also senior" chips: the sessions that queued or interrupted this
-    /// one, each with its own detach.
-    private func seniors(_ node: SessionHierarchy.Node) -> some View {
-        HStack(spacing: 4) {
-            Text("also senior:")
-            ForEach(node.uncles, id: \.self) { uncle in
-                // As on the web: the number opens that session, only the × detaches.
-                HStack(spacing: 2) {
-                    NavigationLink(value: uncle) { Text(verbatim: "#\(uncle)").underline() }
-                        .buttonStyle(.plain)
-                    Button {
-                        detaching = (node.id, uncle)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Remove #\(uncle) as an additional senior of #\(node.id)")
-                    .accessibilityIdentifier("hierarchy.uncle.\(node.id).\(uncle)")
-                }
-            }
-        }
-        .font(.caption2.weight(.medium))
-        .foregroundStyle(Theme.status(.failed).text)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 2)
-        .background(Theme.status(.failed).fill, in: Capsule())
-        .padding(.leading, CGFloat(min(node.depth, 6)) * 12 + 14)
-    }
-}
-
-/// The web UI's Human messages panel: what people said to this session and its family,
-/// folded, with who and through which channel on each.
-private struct HumanMessagesRow: View {
-    let messages: [HumanMessage]
-    @State private var open = false
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $open) {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(messages) { message in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(verbatim: provenance(message))
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(Theme.inkMute)
-                        Text(message.content)
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.ink)
-                            .lineLimit(4)
-                            .textSelection(.enabled)
-                    }
-                }
-            }
-            .padding(.top, 6)
-        } label: {
-            HStack(spacing: 6) {
-                Text("Human messages").themeLabel()
-                Text(verbatim: "\(messages.count)").font(.caption2.monospacedDigit()).foregroundStyle(Theme.inkMute)
-            }
-        }
-        .tint(Theme.inkMute)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("detail.humanmessages")
-    }
-
-    private func provenance(_ message: HumanMessage) -> String {
-        var parts: [String] = []
-        if let author = message.author { parts.append(author) }
-        if let channel = message.channelLabel { parts.append(channel) }
-        if let id = message.authoredInSessionID { parts.append("#\(id)") }
-        if let date = message.occurredAt { parts.append(Format.age(date)) }
-        return parts.joined(separator: " · ")
-    }
-}
-
-/// A sheet with one text editor: notes and goal. `save` reports whether the server took it;
-/// the sheet stays open with the text when it did not.
+/// A sheet with one text editor: the notes. `save` reports whether the server took it; the
+/// sheet stays open with the text when it did not.
 private struct TextEditSheet: View {
     let title: String
     let placeholder: String
