@@ -88,6 +88,21 @@ public actor FakeZimmerAPI: ZimmerAPI {
         return Conversation(messages: Array(all.suffix(window)), total: all.count, truncated: all.count > window)
     }
 
+    public func earlierMessages(_ id: Int, before: Int, limit: Int) async throws -> Conversation {
+        _ = try find(id)
+        let all = conversations[id] ?? []
+        let end = min(max(before, 0), all.count)
+        let start = max(end - min(max(limit, 1), Conversation.maxLimit), 0)
+        return Conversation(messages: Array(all[start..<end]), total: all.count, truncated: start > 0, firstPosition: start)
+    }
+
+    /// As the server: opening a session marks its notifications read.
+    public func openSession(_ id: Int) async throws -> SessionDetail {
+        let detail = try await session(id)
+        markRead(session: id)
+        return detail
+    }
+
     public func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult {
         var session = try find(id)
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -752,6 +767,10 @@ extension FakeZimmerAPI {
     public func notifications() async throws -> [InboxNotification] { inbox }
 
     public func unreadNotificationCount() async throws -> Int { inbox.filter { !$0.read }.count }
+
+    func markRead(session: Int) {
+        for index in inbox.indices where inbox[index].session?.id == session { inbox[index].read = true }
+    }
 
     public func markNotificationRead(_ id: Int) async throws -> InboxNotification {
         guard let index = inbox.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
