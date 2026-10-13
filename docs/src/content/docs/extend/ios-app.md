@@ -76,9 +76,11 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   structure. The web UI's log-level filter is a menu on it: *Minimal* (the words alone, the
   default on a phone), *Condensed* (each tool call as one line naming the tool and what it was
   given) and *Verbose* (the tool traffic whole, rendered the same way); the web's *Show Logs* is
-  the logs screen in the menu. The page reads the newest hundred messages
-  (`GET /api/v1/sessions/:id/conversation?limit=`), and *Show earlier* reads a hundred more, up to
-  the two hundred the server returns in one read.
+  the logs screen in the menu. The page reads the newest hundred messages, each whole
+  (`GET /api/v1/sessions/:id/conversation?limit=&full_content=true`), and *Show earlier* reads a
+  hundred more each time, back to the first message (`before=`). Opening a session marks its
+  notifications read and touches it as last touched, as the dashboard's page does
+  (`GET /api/v1/sessions/:id?viewed=true`), and the Inbox badge follows.
 - **Manages the queue**: the messages waiting for the turn in flight to end, in delivery order,
   each with *Send Now* (ending the turn), *Edit* and *Delete*; *Manage* opens the whole queue to
   drag into a new order or swipe away. An edit is recorded as your message when the app acts on
