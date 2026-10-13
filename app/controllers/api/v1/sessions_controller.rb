@@ -787,16 +787,30 @@ class Api::V1::SessionsController < Api::BaseController
   # POST /api/v1/sessions/:id/force_start
   # The queued-for-a-worker banner's "Force": stop the turn that most recently
   # took one of the `agents` lane's threads and give that thread to this
-  # session's queued turn. `expected_victim_id` is the session the caller was
-  # shown (`waiting.banners[].action.expected_victim_id` on GET); a pick that
-  # differs is refused rather than stopping a turn nobody confirmed. Every
-  # refusal is a 422 carrying Sessions::ForceTurnStart's own sentence, the one
-  # the web flash shows.
+  # session's queued turn. `expected_victim_id` is required — it is the session
+  # the caller was shown (`waiting.banners[].action.expected_victim_id` on GET),
+  # and a Force nobody confirmed a victim for is a kill nobody chose. A pick that
+  # differs is refused. Every refusal is a 422 carrying Sessions::ForceTurnStart's
+  # own sentence, the one the web flash shows.
+  #
+  # An agent calling this names itself with `acting_session_id`, as it does for
+  # follow_up, and is never the victim — MCP's `force_start` excludes its caller
+  # the same way. Self-declared, because one API key is shared by the fleet.
   def force_start
+    if params[:expected_victim_id].blank?
+      return render_api_error(
+        "Missing parameter",
+        "expected_victim_id is required: name the session whose turn you confirmed stopping — " \
+        "GET /api/v1/sessions/#{@session.id} offers it on the queued_turn banner's action.",
+        status: :unprocessable_entity
+      )
+    end
+
     result = Sessions::ForceTurnStart.call(
       @session,
       actor: "the REST API",
-      expected_victim_id: params[:expected_victim_id].presence
+      expected_victim_id: params[:expected_victim_id],
+      excluding: [ params[:acting_session_id] ].compact_blank
     )
 
     unless result.forced?
@@ -1343,7 +1357,7 @@ class Api::V1::SessionsController < Api::BaseController
   def touch_user_activity(session)
     with_db_retry { session.touch_user_activity! }
   rescue => e
-    Rails.logger.info("[api start_now] could not record user activity on session #{session.id}: #{e.class}: #{e.message}")
+    Rails.logger.info("[api] could not record user activity on session #{session.id}: #{e.class}: #{e.message}")
   end
 
   # A neighbour named by a reorder: a live spot-queue row, or nil.

@@ -44,10 +44,33 @@ class Sessions::WaitingExplanationTest < ActionView::TestCase
     Nokogiri::HTML.fragment(render(partial: partial, locals: locals)).text.squish
   end
 
-  def assert_partial_says(banner, partial, **locals)
-    text = partial_text(partial, **locals)
+  # Both directions: every line the service says is on the page, and every
+  # headline and paragraph the page draws is in what the service says. Then the
+  # control: its label is the page's button, and Force's confirmation is the
+  # page's. `skip` is page text the service carries in `details` instead.
+  def assert_partial_says(banner, partial, skip: [], **locals)
+    html = Nokogiri::HTML.fragment(render(partial: partial, locals: locals))
+    text = html.text.squish
+    said = [ banner[:headline], *banner[:body] ].join(" ").squish
+
     [ banner[:headline], *banner[:body] ].each do |line|
       assert_includes text, line.squish, "#{partial} does not say what the #{banner[:key]} banner says"
+    end
+
+    html.css("h3, p, span.font-medium").each do |node|
+      line = node.text.squish
+      next if line.empty? || skip.include?(line)
+
+      assert_includes said, line, "the #{banner[:key]} banner does not say what #{partial} says"
+    end
+
+    action = banner[:action]
+    if action && action[:kind] != "open_in_browser"
+      buttons = html.css("button, input[type=submit]").map { |b| b.name == "input" ? b["value"] : b.text.squish }
+      assert_includes buttons, action[:label], "the #{banner[:key]} action is not #{partial}'s button"
+    end
+    if action&.dig(:confirm)
+      assert_equal html.at_css("form[data-turbo-confirm]")&.[]("data-turbo-confirm"), action[:confirm]
     end
   end
 
@@ -335,7 +358,8 @@ class Sessions::WaitingExplanationTest < ActionView::TestCase
     assert_equal "Approval request lost", lost[:headline]
     assert_equal "Requested: Approve deploying to prod", lost[:body].last
     assert_equal 2.minutes.ago.utc.iso8601, lost[:details][:at]
-    assert_partial_says lost, "elicitations/lost_elicitation_banner", session: session
+    assert_partial_says lost, "elicitations/lost_elicitation_banner",
+                        skip: [ session.lost_elicitation_at.strftime("%b %-d, %-I:%M %p") ], session: session
   end
 
   test "an expired approval request says it expired" do
@@ -359,6 +383,123 @@ class Sessions::WaitingExplanationTest < ActionView::TestCase
     assert_equal wake_at.utc.iso8601, wake[:details][:at]
     assert_equal "it is paused until #{wake_at.utc.iso8601}", wake[:details][:phrase]
     assert_equal "Asleep until #{wake_at.utc.strftime('%b %-d, %H:%M')} UTC", wake[:headline]
+  end
+
+  # --- the branches the cases above do not reach ------------------------------
+
+  test "a hold past the starvation age ceiling says the lane admits it" do
+    AppSetting.editable.update!(spot_starvation_age_ceiling_hours: 24)
+    session = session_in(:waiting, scheduling_class: SessionGenesis::SPOT,
+                                   metadata: hold_metadata.merge(SpotSessionHold::HELD_SINCE => 30.hours.ago.iso8601))
+    spot = banner(session, "spot_hold")
+
+    assert_includes spot[:body].join(" "), "That is past the 24 hours starvation age ceiling"
+    assert_partial_says spot, "sessions/spot_hold_banner", agent_session: session
+  end
+
+  test "a hold under the ceiling says when the lane would admit it" do
+    AppSetting.editable.update!(spot_starvation_age_ceiling_hours: 24)
+    session = session_in(:waiting, scheduling_class: SessionGenesis::SPOT, metadata: hold_metadata)
+    spot = banner(session, "spot_hold")
+
+    assert_includes spot[:body].join(" "), "The starvation lane admits it once it has waited 24 hours"
+    assert_partial_says spot, "sessions/spot_hold_banner", agent_session: session
+  end
+
+  test "a hold with the starvation lane off says nothing bounds the wait" do
+    AppSetting.editable.update!(spot_starvation_age_ceiling_hours: 0)
+    session = session_in(:waiting, scheduling_class: SessionGenesis::SPOT, metadata: hold_metadata)
+    spot = banner(session, "spot_hold")
+
+    assert_includes spot[:body].join(" "), "The starvation lane is off, so nothing bounds this wait."
+    assert_partial_says spot, "sessions/spot_hold_banner", agent_session: session
+  end
+
+  test "a live hold for a free slot names the slot and says the lane does not reach it" do
+    session = session_in(:waiting, scheduling_class: SessionGenesis::SPOT,
+                                   metadata: hold_metadata(reason: "fleet_at_cap"))
+    spot = banner(session, "spot_hold")
+
+    assert_equal "Held for a free session slot", spot[:headline]
+    assert_includes spot[:body].join(" "), "which the starvation lane does not override"
+    assert_partial_says spot, "sessions/spot_hold_banner", agent_session: session
+  end
+
+  test "a promoted session whose re-check never fired is waiting on the sweep, not the gate" do
+    session = session_in(:waiting, scheduling_class: SessionGenesis::PRIORITY,
+                                   metadata: hold_metadata(held_at: 11.hours.ago, retry_at: 10.hours.ago))
+    spot = banner(session, "spot_hold")
+
+    assert_equal "Spot hold stalled — its re-check never fired", spot[:headline]
+    assert_includes spot[:body].join(" "), "the gate is done with it, but the re-check that was carrying its turn never fired"
+    assert_nil spot[:action]
+    assert_partial_says spot, "sessions/spot_hold_banner", agent_session: session
+  end
+
+  test "a renewed grant on a running session queues the reconnect message" do
+    session = session_in(:running, metadata: { Session::MCP_OAUTH_RECONNECT_KEY => { "servers" => [ "linear", "notion" ] } })
+    reconnect = banner(session, "mcp_oauth_reconnect")
+
+    assert_equal "Queue a reconnect message", reconnect[:action][:label]
+    assert_includes reconnect[:body].first, "The agent is mid-turn"
+    assert_match(/\Alinear and notion have been re-authorized, so their MCP tools/, reconnect[:action][:prompt])
+    assert_partial_says reconnect, "sessions/mcp_oauth_reconnect_banner", agent_session: session
+  end
+
+  test "a session whose OAuth servers are all authorized already gets no banner" do
+    session = session_in(:failed, metadata: {
+      "failure_reason" => "oauth_required",
+      "oauth_required_servers" => [ { "server_name" => "linear", "server_url" => "https://mcp.linear.app/sse" } ]
+    })
+
+    McpOauthServerAuthorization.stub(:authorized?, true) do
+      assert_not_includes keys(session), "mcp_oauth_required"
+    end
+  end
+
+  test "a pool reset already in the past is not named" do
+    session = session_in(:waiting, metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => 3.hours.ago.iso8601
+    })
+
+    AuthOutageParkService.stub(:pool_recovery_time, 1.hour.ago) do
+      outage = banner(session, "auth_outage")
+      assert_not_includes outage[:body].first, "earliest reset"
+      assert_partial_says outage, "sessions/auth_outage_banner", agent_session: session
+    end
+  end
+
+  test "a starvation admission on a session at rest is told in the past tense" do
+    session = session_in(:needs_input, metadata: {
+      SpotSessionHold::STARVATION_ADMITTED_AT => 5.minutes.ago.iso8601,
+      SpotSessionHold::STARVATION_ADMITTED_AFTER_HOLDS => 12,
+      SpotSessionHold::STARVATION_ADMITTED_AFTER_SECONDS => 26.hours.to_i
+    })
+    admitted = banner(session, "starvation_admission")
+
+    assert_includes admitted[:body].first, "That turn has ended"
+    assert_partial_says admitted, "sessions/spot_starvation_admission", agent_session: session
+  end
+
+  test "a running session that armed a wake mid-turn is not called asleep" do
+    session = session_in(:running)
+    Sessions::ScheduleWakeUp.call(session: session, wake_at: 90.minutes.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
+                                  prompt: "check back", timezone: "UTC")
+
+    assert session.reload.armed_one_time_wake?
+    assert_not_includes keys(session), "pending_wake"
+  end
+
+  test "a banner that cannot be built is left out, and the rest still come back" do
+    session = session_in(:waiting, metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "lost_elicitation" => { "reason" => "expired" }
+    })
+
+    AuthOutageParkService.stub(:pool_recovery_time, ->(_) { raise ActiveRecord::ConnectionNotEstablished, "down" }) do
+      assert_equal [ "lost_elicitation" ], keys(session)
+    end
   end
 
   # --- order --------------------------------------------------------------------

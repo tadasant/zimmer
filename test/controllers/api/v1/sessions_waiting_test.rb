@@ -149,7 +149,9 @@ class Api::V1::SessionsWaitingTest < ActionDispatch::IntegrationTest
     turn_on_a_worker(session_in(:running), started: 1.minute.ago)
     session = queued_session
 
-    with_pool { post "/api/v1/sessions/#{session.id}/force_start", headers: @headers }
+    with_pool do
+      post "/api/v1/sessions/#{session.id}/force_start", params: { expected_victim_id: 424_242 }, headers: @headers
+    end
 
     assert_response :unprocessable_entity
     assert_match(/Nothing to force/, response.body)
@@ -159,9 +161,49 @@ class Api::V1::SessionsWaitingTest < ActionDispatch::IntegrationTest
     saturate
     session = session_in(:needs_input)
 
-    with_pool { post "/api/v1/sessions/#{session.id}/force_start", headers: @headers }
+    with_pool do
+      post "/api/v1/sessions/#{session.id}/force_start", params: { expected_victim_id: 424_242 }, headers: @headers
+    end
 
     assert_response :unprocessable_entity
     assert_equal "Cannot force", response.parsed_body["error"]
+  end
+
+  test "force_start requires the victim the caller confirmed" do
+    _oldest, newest = saturate
+    session = queued_session
+
+    with_pool { post "/api/v1/sessions/#{session.id}/force_start", headers: @headers }
+
+    assert_response :unprocessable_entity
+    assert_equal "Missing parameter", response.parsed_body["error"]
+    assert_match(/expected_victim_id is required/, response.parsed_body["message"])
+    assert newest.reload.running?
+  end
+
+  test "an agent forcing through REST is never its own victim" do
+    oldest, newest = saturate
+    session = queued_session
+
+    with_pool do
+      post "/api/v1/sessions/#{session.id}/force_start",
+           params: { expected_victim_id: oldest.id, acting_session_id: newest.id }, headers: @headers
+    end
+
+    assert_response :success
+    assert oldest.reload.waiting?
+    assert newest.reload.running?, "the caller's own turn is not taken"
+  end
+
+  test "show still answers when a banner cannot be built" do
+    session = session_in(:waiting, metadata: { "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED })
+
+    AuthOutageParkService.stub(:pool_recovery_time, ->(_) { raise ActiveRecord::ConnectionNotEstablished, "down" }) do
+      get "/api/v1/sessions/#{session.id}", headers: @headers
+    end
+
+    assert_response :success
+    assert_empty response.parsed_body["waiting"]["banners"]
+    assert_equal session.id, response.parsed_body["session"]["id"]
   end
 end

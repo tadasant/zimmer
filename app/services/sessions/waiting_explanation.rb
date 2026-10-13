@@ -16,8 +16,9 @@ module Sessions
   #
   # So this reads exactly what the partials read, through the same services, and
   # says it in the same words. `test/services/sessions/waiting_explanation_test.rb`
-  # renders each partial next to this and fails when a headline or a paragraph
-  # stops appearing in the HTML, so the two cannot drift silently.
+  # renders each partial next to this and fails when a line either says is
+  # missing from the other, or the control's label or confirmation differs, so
+  # the two cannot drift silently.
   #
   # == The shape
   #
@@ -79,15 +80,15 @@ module Sessions
       {
         reasons: reasons(reading),
         banners: [
-          quota_limit_banner,
-          auth_outage_banner,
-          spot_banner(reading),
-          starvation_admission_banner,
-          queued_turn_banner(reading),
-          mcp_oauth_reconnect_banner,
-          mcp_oauth_required_banner,
-          lost_elicitation_banner,
-          pending_wake_banner
+          build("quota_limit_paused") { quota_limit_banner },
+          build("auth_outage") { auth_outage_banner },
+          build("spot_hold") { spot_banner(reading) },
+          build("starvation_admission") { starvation_admission_banner },
+          build("queued_turn") { queued_turn_banner(reading) },
+          build("mcp_oauth_reconnect") { mcp_oauth_reconnect_banner },
+          build("mcp_oauth_required") { mcp_oauth_required_banner },
+          build("lost_elicitation") { lost_elicitation_banner },
+          build("pending_wake") { pending_wake_banner }
         ].compact
       }
     end
@@ -108,6 +109,18 @@ module Sessions
           demoted: mechanism.demoted?
         }
       end
+    end
+
+    # One banner, or nil when it has nothing to say or could not be built. Each
+    # builder reads something different — the account pool, the `agents` lane,
+    # the OAuth grants, the trigger table — and one of them failing must cost
+    # that banner, not the GET /sessions/:id it rides on.
+    def build(key)
+      yield
+    rescue StandardError => e
+      Rails.logger.warn("[Sessions::WaitingExplanation] Could not build the #{key} banner for session " \
+                        "#{session.id} (#{e.class}: #{e.message}) — leaving it out")
+      nil
     end
 
     def banner(key, tone:, headline:, body:, details: {}, action: nil)
@@ -428,14 +441,16 @@ module Sessions
 
     # --- no web banner: the wake the session is asleep on ----------------------
 
+    # `waiting` only: a running session that armed a wake mid-turn is not asleep
+    # on it, and a headline saying so would be false until the turn ends.
     # `armed_one_time_wake?` for the reason the REST follow-up's `pending_wake`
     # gives: an unreadable trigger table must read as "no wake", never as a
     # promise that the session wakes itself.
     def pending_wake_banner
-      return nil if session.archived? || !session.armed_one_time_wake?
+      return nil unless session.waiting? && session.armed_one_time_wake?
 
       at = session.pending_wake_at
-      phrase = session.pending_wake_phrase
+      phrase = session.pending_wake_phrase(at)
       banner(
         "pending_wake",
         tone: INFO,
