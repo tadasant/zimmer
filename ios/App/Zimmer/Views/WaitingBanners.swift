@@ -11,11 +11,13 @@ import ZimmerKit
 /// what the web page says, and the banners change as the page reads again.
 struct WaitingBanners: View {
     let banners: [WaitingBanner]
+    /// An action is in flight: the buttons wait for it, so a second tap does not send twice.
+    var busy = false
     let perform: (WaitingBanner.Action) -> Void
 
     var body: some View {
         ForEach(banners) { banner in
-            WaitingBannerCard(banner: banner) { perform($0) }
+            WaitingBannerCard(banner: banner, busy: busy) { perform($0) }
         }
     }
 }
@@ -25,6 +27,7 @@ struct WaitingBanners: View {
 /// and the button are what a person acts on.
 private struct WaitingBannerCard: View {
     let banner: WaitingBanner
+    let busy: Bool
     let perform: (WaitingBanner.Action) -> Void
     @State private var expanded = false
 
@@ -55,6 +58,8 @@ private struct WaitingBannerCard: View {
                                 .background(Theme.accentFill, in: Capsule())
                         }
                         .buttonStyle(.plain)
+                        .disabled(busy)
+                        .opacity(busy ? 0.5 : 1)
                         .accessibilityIdentifier("waiting.action.\(banner.key)")
                     }
                     if banner.body.count > 1 {

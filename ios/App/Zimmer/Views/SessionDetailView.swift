@@ -300,6 +300,8 @@ struct SessionDetailView: View {
     /// The queued-turn banner's Force, waiting on its confirmation: the turn it would stop,
     /// and the server's words for what that costs.
     @State private var forcing: (victim: Int, confirm: String)?
+    /// A banner's action is in flight.
+    @State private var acting = false
     @Environment(\.scenePhase) private var scenePhase
     /// Where the end of the conversation sits in the scroll view, and how tall the view is:
     /// new messages are followed only while the end is in view, so reading back is never
@@ -365,7 +367,7 @@ struct SessionDetailView: View {
                     header(detail)
                     // Why it is waiting and what to do about it: under the header, as the web
                     // page's header stacks them, above everything else.
-                    WaitingBanners(banners: detail.waiting.banners) { perform($0) }
+                    WaitingBanners(banners: detail.waiting.banners, busy: acting) { perform($0) }
                     if let status = detail.statusSummary, status.summary != nil || status.generating == true || status.error != nil {
                         SummaryCard(status: status) {
                             Task { await model.run { try await $0.regenerateStatusSummary(model.id) } }
@@ -427,7 +429,7 @@ struct SessionDetailView: View {
             Button("Force", role: .destructive) {
                 if let victim = forcing?.victim {
                     let id = model.id
-                    Task { await model.run { try await $0.forceStart(id, expectedVictimID: victim).message } }
+                    act { await model.run { try await $0.forceStart(id, expectedVictimID: victim).message } }
                 }
             }
             .accessibilityIdentifier("waiting.force.confirm")
@@ -529,14 +531,24 @@ struct SessionDetailView: View {
         let id = model.id
         switch action {
         case let .updateSchedulingClass(_, priority):
-            Task { await model.reschedule(priority: priority) }
+            act { await model.reschedule(priority: priority) }
         case let .forceStart(_, victim, confirm):
             // Force stops somebody else's turn, so it is confirmed first, as on the web.
             forcing = (victim, confirm)
         case let .followUp(_, prompt):
-            Task { await model.run { try await $0.followUp(id, prompt: prompt).message } }
+            act { await model.run { try await $0.followUp(id, prompt: prompt).message } }
         case let .openInBrowser(_, path):
             if let url = app.webURL(path: path) { openURL(url) }
+        }
+    }
+
+    /// One banner action at a time.
+    private func act(_ work: @escaping @MainActor () async -> Void) {
+        guard !acting else { return }
+        acting = true
+        Task {
+            await work()
+            acting = false
         }
     }
 
