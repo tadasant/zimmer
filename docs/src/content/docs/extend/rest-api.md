@@ -1110,6 +1110,14 @@ unthrottled. `GET /health` is unaffected. See
 `by_day`, `by_agent_root`, `by_model`, `by_thread_kind`, `by_adhoc_source`, `top_sessions`, and
 `unpriced_models`. Window is `days` (default 7, clamped 1–365) or explicit `from`/`to`.
 
+On the whole fleet the response also carries `burn_rates`: the Costs page's
+[burn rate card](/operate/costs/#burn-rate-by-harness--model) as
+`[{harness, model, usd_per_minute, usd_per_hour, sample_session_count, sample_minutes, computed_at}]`,
+dearest first, fresh rates only, `[]` before any have been computed. They are the scheduler's current
+rates over a fixed sample of recent Claude Code sessions, not a rollup of the window, and they are
+fleet rates, so a request narrowed by `agent_root` or `session_id` omits the key, as the page omits
+the card.
+
 Narrow every rollup with `agent_root` or `session_id` — the same two arguments `get_costs` takes and
 the Costs page's *Only this* links carry, so all three surfaces answer the same question. `session_id`
 wins when both are given, and the response echoes what it applied under `scope`. An agent-root scope
