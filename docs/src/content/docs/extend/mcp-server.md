@@ -733,9 +733,10 @@ same reason the tool refuses a call from a Quick Router session: a router routes
 | `context`, `context_url` | Optional. What the person is looking at. Wrapped in the same data block the chat bubble uses for the page, so the router reads it as data, not instructions. `context_url` is used only with `context`. |
 | `idempotency_key` | Optional. A retry with the same key returns the first call's session instead of starting a second router, as on `start_session`. |
 | `scheduling_class` | Optional, `priority` or `spot`. |
+| `sync`, `sync_timeout_seconds` | Optional. Wait for the router's answer and return it in this call — see [`sync: true`](#sync-true-one-call-and-the-answer-inline). |
 
-It returns the session's id and URL at once. The caller follows up with `get_session` (the
-**Status summary** is the short answer once the session reaches `needs_input` or `archived`) and
+Without `sync`, it returns the session's id and URL at once. The caller follows up with `get_session`
+(the **Status summary** is the short answer once the session reaches `needs_input` or `archived`) and
 `action_session` `follow_up`.
 
 Three things differ from the browser surfaces, because of who can be on the other end of `/mcp`:
@@ -755,6 +756,62 @@ Three things differ from the browser surfaces, because of who can be on the othe
   parents under the page it is opened on.
 
 It is in `sessions`, beside `start_session`, and not in `self_session`.
+
+### `sync: true`: one call, and the answer inline
+
+Three tools send a prompt into a session: `quick_router`, `start_session` with a `prompt`, and
+`action_session` → `follow_up`. Each takes `sync` (default `false`). Without it, nothing changes: the
+prompt is sent and the call returns at once. With it, the prompt is sent exactly the same way, and then
+the call waits until the session has answered **that** prompt. It returns:
+
+- the session's reply: the last assistant text of the turn the prompt started;
+- any sessions it started during that turn, each with its status and URL;
+- its id, URL and resulting status, with a line saying how the turn ended.
+
+This is for a caller that would otherwise poll `get_session`, such as Claude voice talking to
+`quick_router`. Inside a Zimmer session, use `wake_me_up_when_session_changes_state` instead. It holds no
+web thread while you wait, and `follow_up` refuses `sync` on the calling session itself.
+
+**Which turn is "the answer".** For a new session it is the first turn. For a follow-up to an idle
+session it is the turn the follow-up starts. A follow-up to a running session goes into its queue, and
+the wait runs through the turn already underway, then through the queued prompt's own turn. A pause that
+ended an earlier turn is never mistaken for the answer, and neither is an earlier turn's reply.
+`needs_input_count` marks where a turn ends and the transcript says what it said; both are read at the
+moment the prompt is delivered.
+
+**How the turn can end**, each said in the result:
+
+| Outcome | Meaning |
+| --- | --- |
+| rests in `needs_input` | The ordinary answer. |
+| `waiting`, asleep | It armed a wake-up of its own and went to sleep; it resumes itself. |
+| moved on | It finished this turn and has already started the next, from a queued message or a resumed turn. The reply is still this turn's. |
+| blocked on an approval | It is paused mid-turn on an MCP elicitation. Answer it with `respond_to_elicitation`. |
+| `archived` | It finished and archived itself, including straight from `running`. |
+| `failed` | `get_session` says why. |
+| undelivered | The queued prompt was marked undelivered and never reached the session. |
+
+A Zimmer restart of a lost process (`paused_by: "recovery"`) is not the end of the turn, and the wait
+continues. A Quick Router usually answers by starting a session for the real work. That session is listed
+and **not** waited on: its work can take an hour, and the router's reply already says what it started.
+
+**Timeout.** `sync_timeout_seconds` defaults to and is capped at 90, the longest a request survives the
+proxies in front of production ([How long a request may take](/operate/deploying/#how-long-a-request-may-take)).
+When it runs out, the result says the session is still working and gives its id, URL, status and
+anything it has said so far. The caller goes back to polling `get_session`; the session itself is not
+touched.
+
+**How it waits.** Every status change saved through `Session` rings `Sessions::TurnSignal`, a stream on
+the existing solid_cable adapter. The waiting request subscribes to it and re-reads the session on each
+ring, with a 5-second backstop for the changes that do not ring. It holds no database connection while
+it waits. Only `MCP_SYNC_MAX_CONCURRENT_WAITS` calls (default 1) wait at once in the web process, because
+production's Puma has three threads. A sync call over that cap still sends its prompt and returns at once,
+saying it was not waited on. See
+[the limitation](/limitations/#a-sync-true-mcp-call-holds-a-web-thread-and-only-one-runs-at-a-time).
+
+`sync` is MCP-only. The REST twins (`POST /api/v1/quick_router`, the sessions API) and the web UI do not
+take it. Their clients show the session itself: the browser extension opens its page, and the iOS app
+renders its conversation. A held request would only spend a web thread there.
 
 ### `get_configs` takes filters
 

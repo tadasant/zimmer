@@ -248,6 +248,24 @@ To turn it off, run the converge once with an empty token and `ZIMMER_CLOUDFLARE
 the tunnel's CNAME (the next `domain-cert` run puts the tailnet A record back), and unset
 `ZIMMER_PIN_DOMAIN_TO_HOST`.
 
+## How long a request may take
+
+A request to the web passes up to four timeouts, and the shortest one wins:
+
+| Hop | Limit | Where it is set |
+| --- | --- | --- |
+| Cloudflare edge (when it is on) | 100s, and a Free or Pro zone cannot raise it | Cloudflare |
+| kamal-proxy | 100s (`proxy.response_timeout`; Kamal's default is 30) | `config/deploy.yml` |
+| Thruster, in front of Puma | 100s (`THRUSTER_HTTP_WRITE_TIMEOUT`; Thruster's default is 30) | `config/deploy.yml` |
+| Puma | none: a request runs until it finishes, even after a proxy gave up on it | — |
+
+The two 100s settings exist for MCP's [`sync: true`](/extend/mcp-server/#sync-true-one-call-and-the-answer-inline),
+which holds a tool call open for up to 90 seconds while a session answers. Everything else should
+still answer well inside 30 seconds. Raising the proxies does not lengthen how long Puma works on a
+request, because Puma never stopped at the proxy's limit. It only lets a slow answer reach the client
+instead of a 504. `test/config/kamal_deploy_config_test.rb` checks that both settings stay above the
+sync ceiling.
+
 ## The Host allow-list
 
 Production and staging turn on Rails' Host authorization (`config.hosts`), which refuses a request
