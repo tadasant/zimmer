@@ -26,6 +26,10 @@ struct RootView: View {
 }
 
 extension RootView {
+    private var isTrashingQueued: Binding<Bool> {
+        Binding(get: { model.queuedTrash != nil }, set: { if !$0 { model.queuedTrash = nil } })
+    }
+
     var tabs: some View {
         TabView(selection: $model.tab) {
             NavigationStack(path: $model.path) {
@@ -33,6 +37,17 @@ extension RootView {
                     .navigationDestination(for: Int.self) { id in
                         SessionDetailView(id: id, api: model.api)
                     }
+            }
+            .confirmationDialog(
+                "Discard its queued messages?", isPresented: isTrashingQueued,
+                titleVisibility: .visible, presenting: model.queuedTrash
+            ) { session in
+                Button("Trash anyway", role: .destructive) {
+                    Task { await model.trash(session, force: true) }
+                }
+                .accessibilityIdentifier("trash.anyway")
+            } message: { _ in
+                Text("Messages are waiting to be delivered to this session. Trashing it discards them.")
             }
             .tabItem { Label("Sessions", systemImage: "rectangle.stack") }
             .tag(AppTab.sessions)

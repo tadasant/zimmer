@@ -38,29 +38,36 @@ final class SessionActionsUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["detail.status"].label, "Running")
         attachScreenshot(app, named: "detail-after-follow-up")
 
-        // It is running now, so trashing it is refused — as the server refuses a session
-        // mid-turn — and the refusal is shown rather than swallowed. The dialog's button
-        // is "Trash", the web UI's word; the toolbar's is labelled "Move to trash".
+        // It is running now, and the web UI trashes a running session outright: no question
+        // first, the page closes, and the board offers Undo for as long as the server would.
         app.buttons["detail.archive"].tap()
-        let refusedConfirm = app.buttons["Trash"].firstMatch
-        XCTAssertTrue(refusedConfirm.waitForExistence(timeout: timeout))
-        refusedConfirm.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["error.banner"].waitForExistence(timeout: timeout))
+        let undo = app.buttons["toast.undo"]
+        XCTAssertTrue(undo.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["session.row.1038"]), "the trashed session left the board")
+        attachScreenshot(app, named: "trash-undo")
+        undo.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout), "Undo brought it back")
 
-        // Archive one that is waiting on a person: back on the list, and it is gone.
-        app.navigationBars.buttons["Sessions"].tap()
-        let other = app.descendants(matching: .any)["session.row.1035"]
-        XCTAssertTrue(other.waitForExistence(timeout: timeout))
-        other.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["detail.summary"].waitForExistence(timeout: timeout))
-        app.buttons["detail.archive"].tap()
-        let confirm = app.buttons["Trash"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
-        confirm.tap()
+        // 1042 has messages queued for it: trashing asks first, naming the discard — the web
+        // UI's *Archive anyway*. It is running, so it is under Active.
         XCTAssertTrue(app.buttons["filter.active"].waitForExistence(timeout: timeout))
         app.buttons["filter.active"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["session.row.1042"].waitForExistence(timeout: timeout))
-        XCTAssertFalse(app.descendants(matching: .any)["session.row.1035"].exists, "the archived session left Active")
+        let queued = app.descendants(matching: .any)["session.row.1042"]
+        XCTAssertTrue(queued.waitForExistence(timeout: timeout))
+        queued.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["detail.summary"].waitForExistence(timeout: timeout))
+        app.buttons["detail.archive"].tap()
+        let anyway = app.buttons["trash.anyway"]
+        XCTAssertTrue(anyway.waitForExistence(timeout: timeout))
+        attachScreenshot(app, named: "trash-queued")
+        anyway.tap()
+        XCTAssertTrue(app.buttons["toast.undo"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["session.row.1042"]), "trashed anyway, it left the board")
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
     }
 
     /// The bar at the foot of the board: the web UI's "What do you want to do?" box.
