@@ -77,10 +77,17 @@ final class TranscriptParityUITests: XCTestCase {
         app.buttons["detail.actions"].tap()
         XCTAssertTrue(app.buttons["Precedence: 40"].firstMatch.waitForExistence(timeout: timeout), "the menu says the precedence in force")
 
-        // Spot: a demotion from priority, as the Ranked view's Demote.
+        // Spot, as the web select sends it: the class alone, so the precedence just set is the
+        // rank it runs at in the spot queue.
         tapMenuItem(app, "Scheduling class: priority")
         tapMenuItem(app, "Spot")
-        XCTAssertTrue(waitForLabelContaining(notice, "Demoted to spot"))
+        XCTAssertTrue(waitForLabelContaining(notice, "This session is now spot."))
+        app.buttons["detail.actions"].tap()
+        XCTAssertTrue(app.buttons["Precedence: 40"].firstMatch.waitForExistence(timeout: timeout), "the demotion kept the precedence")
+        app.buttons["Precedence: 40"].firstMatch.tap()
+        XCTAssertTrue(app.alerts.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Higher is worked first")).firstMatch.waitForExistence(timeout: timeout),
+                      "the note follows the class")
+        app.alerts.buttons["Cancel"].tap()
 
         // Derive it: the class chosen is cleared, and the genesis's priority is back.
         openMenu(app, "Scheduling class: spot")

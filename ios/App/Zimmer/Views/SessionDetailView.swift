@@ -924,10 +924,11 @@ struct SessionDetailView: View {
                     Label("Scheduling class: \(session.priorityClass ?? "priority")", systemImage: "clock")
                 }
                 Button {
+                    // Opens on the value in force, as the web field does.
                     newPrecedence = session.precedence.map(String.init) ?? ""
                     editingPrecedence = true
                 } label: {
-                    Label("Precedence: \(session.precedence ?? 0)", systemImage: "list.number")
+                    Label("Precedence: \(session.precedence.map(String.init) ?? "—")", systemImage: "list.number")
                 }
                 heartbeatMenu(session)
                 if model.detail?.statusSummary?.summary == nil {
@@ -981,17 +982,13 @@ struct SessionDetailView: View {
         }
     }
 
-    /// One of the class select's options; the one already chosen changes nothing. Priority is
-    /// a promotion, which starts a waiting session. Spot on a priority session is a demotion,
-    /// to the head of the spot queue as the Ranked view's Demote puts it; on a spot session
-    /// it only makes the class its own, as the web select does. Derive it clears the choice.
+    /// One of the class select's options, sent as the web select sends it: the class alone, the
+    /// precedence left as it is. The one already chosen changes nothing. A change that makes a
+    /// waiting session priority starts it, as the server's PATCH does on any change into
+    /// priority. The banner's promotion and its head-of-the-queue demotion are other paths.
     private func choose(_ choice: SchedulingClassChoice, for session: SessionSummary) {
         guard choice != session.schedulingClassChoice else { return }
-        switch choice {
-        case .priority: Task { await model.reschedule(priority: true) }
-        case .spot where session.isPriority: Task { await model.reschedule(priority: false) }
-        case .spot, .derive: Task { await model.setSchedulingClass(choice) }
-        }
+        Task { await model.setSchedulingClass(choice) }
     }
 
     @ViewBuilder
@@ -1295,6 +1292,10 @@ struct MessageBubble: View {
 
     var body: some View {
         let fromAgent = message.role == .assistant
+        let folds = message.isToolTraffic && folded
+        // Parsed once, for the text and for whether a Copy button has to be reachable.
+        let segments = folds ? [] : MessageSegment.segments(of: message.content)
+        let hasCode = segments.contains(where: \.isCode)
         VStack(alignment: fromAgent ? .leading : .trailing, spacing: 3) {
             HStack(spacing: 4) {
                 Text(message.isToolTraffic ? "Tool" : (fromAgent ? "Agent" : "You"))
@@ -1305,7 +1306,7 @@ struct MessageBubble: View {
             }
             .themeLabel(size: 10, color: Theme.inkMute)
             Group {
-                if message.isToolTraffic && folded {
+                if folds {
                     Text(message.condensedLine)
                         .font(Theme.mono)
                         .foregroundStyle(Theme.inkSoft)
@@ -1313,9 +1314,9 @@ struct MessageBubble: View {
                 } else if message.isToolTraffic {
                     // The server writes tool traffic as markdown too (`**Using tool: Bash**`
                     // over a fenced block), so it renders the same way, in the monospaced face.
-                    MarkdownText(message.content, proseFont: Theme.mono, proseColor: Theme.inkSoft)
+                    MarkdownText(segments: segments, proseFont: Theme.mono, proseColor: Theme.inkSoft)
                 } else {
-                    MarkdownText(message.content)
+                    MarkdownText(segments: segments)
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -1328,13 +1329,8 @@ struct MessageBubble: View {
         .padding(.leading, fromAgent ? 0 : 36)
         .frame(maxWidth: .infinity, alignment: fromAgent ? .leading : .trailing)
         // One element to VoiceOver, unless a code block's Copy button has to be reachable.
-        .accessibilityElement(children: hasCopyableCode ? .contain : .combine)
+        .accessibilityElement(children: hasCode ? .contain : .combine)
         .accessibilityIdentifier("detail.message.\(message.id)")
-    }
-
-    /// A fenced block is drawn, with its Copy button, unless the message is cut to a line.
-    private var hasCopyableCode: Bool {
-        !(message.isToolTraffic && folded) && MessageSegment.segments(of: message.content).contains(where: \.isCode)
     }
 
     /// The agent's words as plain text, as Motet draws prose; yours on the accent's wash;
@@ -1356,19 +1352,20 @@ struct MessageBubble: View {
 /// spans, links, list markers kept as typed), fenced code blocks in the monospaced face on
 /// a well. Markdown that does not parse is shown as it was written.
 struct MarkdownText: View {
-    let text: String
+    /// The text, already cut at its fences (`MessageSegment.segments(of:)`).
+    let segments: [MessageSegment]
     var proseFont: Font = .subheadline
     var proseColor: Color = Theme.ink
 
-    init(_ text: String, proseFont: Font = .subheadline, proseColor: Color = Theme.ink) {
-        self.text = text
+    init(segments: [MessageSegment], proseFont: Font = .subheadline, proseColor: Color = Theme.ink) {
+        self.segments = segments
         self.proseFont = proseFont
         self.proseColor = proseColor
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(MessageSegment.segments(of: text).enumerated()), id: \.offset) { _, segment in
+            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                 switch segment {
                 case let .prose(prose):
                     Text(Self.attributed(prose))
@@ -1393,6 +1390,8 @@ struct MarkdownText: View {
 /// also colours the code by language (Rouge); here it is one colour.
 struct CodeBlock: View {
     let code: String
+    /// Bumped by each tap, so the check's reset follows the latest tap rather than the first.
+    @State private var copies = 0
     @State private var copied = false
 
     var body: some View {
@@ -1411,11 +1410,8 @@ struct CodeBlock: View {
             Button {
                 UIPasteboard.general.string = code
                 copied = true
+                copies += 1
                 Haptics.success()
-                Task {
-                    try? await Task.sleep(for: .seconds(2))
-                    copied = false
-                }
             } label: {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc")
                     .font(.system(size: 12, weight: .semibold))
@@ -1426,6 +1422,13 @@ struct CodeBlock: View {
             }
             .accessibilityLabel(copied ? "Copied" : "Copy code")
             .accessibilityIdentifier("code.copy")
+        }
+        // A new tap cancels the wait before it, so the check stays two seconds past the last.
+        .task(id: copies) {
+            guard copies > 0 else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            copied = false
         }
     }
 }
