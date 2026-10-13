@@ -23,6 +23,11 @@ class Trigger < ApplicationRecord
   # goes to the log and to the alert's snippet).
   MAX_LAST_ERROR_CHARS = 1000
 
+  # Why `enqueue_messages` or `resuscitate_archived` cannot be on: both act only
+  # on the session a trigger re-uses. Read as "Enqueue messages can only be …"
+  # once Rails prefixes the attribute.
+  REUSE_SESSION_REQUIRED_MESSAGE = "can only be enabled when re-use session is enabled"
+
   # --- Burst control -------------------------------------------------------
   #
   # `max_sessions_per_minute` caps how many NEW sessions a trigger may spawn in a
@@ -491,6 +496,22 @@ class Trigger < ApplicationRecord
     else
       enable!
     end
+  end
+
+  # Flip `enqueue_messages` / `resuscitate_archived`, the two switches on the
+  # trigger page. Each only means anything on a trigger that re-uses a session,
+  # and with reuse_session off the clearing callbacks would store false and the
+  # save would still succeed — so the flip is refused instead, with the reason
+  # on `errors`, which is what the web page and the REST API both report.
+  #
+  # @return [Boolean] whether the flag was flipped
+  def toggle_enqueue_messages
+    toggle_reuse_session_flag(:enqueue_messages)
+  end
+
+  # @return [Boolean] whether the flag was flipped
+  def toggle_resuscitate_archived
+    toggle_reuse_session_flag(:resuscitate_archived)
   end
 
   # Park this trigger with the error that stopped it, instead of destroying it.
@@ -1416,13 +1437,22 @@ class Trigger < ApplicationRecord
     text.truncate(MAX_LAST_ERROR_CHARS)
   end
 
+  def toggle_reuse_session_flag(flag)
+    unless reuse_session
+      errors.add(flag, REUSE_SESSION_REQUIRED_MESSAGE)
+      return false
+    end
+
+    update!(flag => !public_send(flag))
+  end
+
   def clear_enqueue_messages_without_reuse_session
     self.enqueue_messages = false unless reuse_session
   end
 
   def validate_enqueue_messages_requires_reuse_session
     if enqueue_messages && !reuse_session
-      errors.add(:enqueue_messages, "can only be enabled when re-use session is enabled")
+      errors.add(:enqueue_messages, REUSE_SESSION_REQUIRED_MESSAGE)
     end
   end
 
@@ -1447,7 +1477,7 @@ class Trigger < ApplicationRecord
 
   def validate_resuscitate_archived_requires_reuse_session
     if resuscitate_archived && !reuse_session
-      errors.add(:resuscitate_archived, "can only be enabled when re-use session is enabled")
+      errors.add(:resuscitate_archived, REUSE_SESSION_REQUIRED_MESSAGE)
     end
   end
 

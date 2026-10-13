@@ -347,6 +347,8 @@ Rails.application.routes.draw do
       resources :triggers do
         member do
           post :toggle
+          post :toggle_enqueue_messages
+          post :toggle_resuscitate_archived
           post :invoke
         end
         collection do

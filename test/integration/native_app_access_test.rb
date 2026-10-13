@@ -135,6 +135,25 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "the app's token flips a trigger's re-use switches, and is refused as an API key is while reuse_session is off" do
+    headers = bearer(token)
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(reuse_session: true, enqueue_messages: false, resuscitate_archived: false)
+
+    post "/api/v1/triggers/#{trigger.id}/toggle_enqueue_messages", headers: headers
+    assert_response :success
+    assert JSON.parse(response.body)["trigger"]["enqueue_messages"]
+    post "/api/v1/triggers/#{trigger.id}/toggle_resuscitate_archived", headers: headers
+    assert_response :success
+    assert JSON.parse(response.body)["trigger"]["resuscitate_archived"]
+
+    trigger.update!(reuse_session: false)
+    post "/api/v1/triggers/#{trigger.id}/toggle_enqueue_messages", headers: headers
+    assert_response :unprocessable_entity
+    assert_equal "Enqueue messages can only be enabled when re-use session is enabled",
+                 JSON.parse(response.body)["message"]
+  end
+
   test "each controller's operator and authoring actions stay closed to the app" do
     headers = bearer(token)
     # The token is refused before the record is looked up, so no trigger needs to exist:
