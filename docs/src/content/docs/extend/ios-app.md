@@ -84,10 +84,29 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   more arrived than that. Opening a session marks its
   notifications read and touches it as last touched, as the dashboard's page does
   (`GET /api/v1/sessions/:id?viewed=true`), and the Inbox badge follows.
+- **Says why a session is waiting**, under the header, as the web page's header does: the spot
+  gate's hold or quota pause, a turn queued for a worker, an account pool out of quota or logged
+  out, a starvation-lane admission, a renewed MCP grant the agent has not picked up, an MCP server
+  that needs authorizing, an approval request that expired or was lost, and the wake-up a session
+  is asleep on (the one banner the web page does not draw). The words are the server's — `waiting`
+  on `GET /api/v1/sessions/:id`, the web partials' own sentences — so the phone says what the page
+  says, and the banners change as the page reads again. Each shows its headline and first
+  paragraph, with the rest behind *More*, amber for a warning and sky for information. A banner's
+  one control does what the web button does: *Make this session priority* promotes it (which
+  starts a waiting session), *Force* stops the turn that most recently took a worker thread and
+  gives the thread to this session's queued turn, after a confirmation in the web page's words
+  naming that turn (`POST /api/v1/sessions/:id/force_start` with the `expected_victim_id` it
+  named, so a different turn is never the one stopped; a refusal shows the server's reason),
+  *Reconnect now* sends the reconnect message as a follow-up, and *Authorize in the browser* opens
+  the session's web page, since MCP OAuth is a browser round-trip. A banner the app does not know
+  is still shown, without a control.
 - **Manages the queue**: the messages waiting for the turn in flight to end, in delivery order,
   each with *Send Now* (ending the turn), *Edit* and *Delete*; *Manage* opens the whole queue to
   drag into a new order or swipe away. An edit is recorded as your message when the app acts on
   your behalf, as the web UI records one. The app adds to the queue only through a follow-up.
+  Above the queue, read-only as on the web, are the messages that were **never delivered**
+  (`status=undelivered`): the session was archived before they went, or Zimmer retired a notice
+  whose news had already gone stale.
 - **Shows the logs** (*Show Logs*, newest first, fifty at a time) and **the subagents** a session
   ran (*Subagents*), each transcript read into messages.
 - **Detaches an "also senior" link** from the hierarchy, after a confirmation, as the web UI's

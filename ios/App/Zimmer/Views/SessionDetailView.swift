@@ -36,6 +36,8 @@ final class SessionDetailModel: ObservableObject {
     private let drafts = DraftStore()
     /// The messages waiting for the turn in flight to end (`QueueCard`).
     @Published var queue: [QueuedMessage] = [] { didSet { noteChange() } }
+    /// Messages accepted and never delivered (`UndeliveredCard`): read-only, as the web shows them.
+    @Published private(set) var undelivered: [QueuedMessage] = [] { didSet { noteChange() } }
     /// Bumped by every change to what is shown that does not come from a poll, so a poll that
     /// read before an edit landed throws its stale answer away rather than undoing the edit.
     private var revision = 0
@@ -67,6 +69,7 @@ final class SessionDetailModel: ObservableObject {
             // showed rather than failing the session — unless the sign-in has ended.
             do {
                 queue = try await api.queue(id)
+                undelivered = try await api.undeliveredMessages(id)
             } catch ZimmerError.unauthorized {
                 report(.unauthorized)
             } catch {}
@@ -93,6 +96,9 @@ final class SessionDetailModel: ObservableObject {
             }
             let wantsQueue = latest.session.status == .running || latest.session.status == .waiting || !queue.isEmpty
             let queued = wantsQueue ? try? await api.queue(id) : []
+            // A message that left the queue was delivered or retired as stale; only then is
+            // there anything new to read about what was never delivered.
+            let retired: [QueuedMessage]? = queued != nil && queued != queue ? try? await api.undeliveredMessages(id) : nil
             // An edit, a send or *Show earlier* landed while this was reading: its answer wins.
             guard started == revision, limit == conversationLimit, !pollPaused else { return }
             applyingPoll = true
@@ -100,6 +106,7 @@ final class SessionDetailModel: ObservableObject {
             if latest != detail { detail = latest }
             if read != pages { pages = read }
             if let queued, queued != queue { queue = queued }
+            if let retired, retired != undelivered { undelivered = retired }
             // The error on screen is an action's (a poll's own failures are never shown), so
             // a quiet read leaves it for the person to read.
         } catch ZimmerError.unauthorized {
@@ -242,6 +249,8 @@ final class SessionDetailModel: ObservableObject {
             notice = change.startMessage.map { "\(done) \($0)" } ?? done
             error = nil
             if change.startOutcome == "refused" { Haptics.failure() } else { Haptics.success() }
+            // Why it was waiting has changed with it: the banners are read again.
+            await load()
         } catch {
             fail(error)
         }
@@ -288,6 +297,9 @@ struct SessionDetailView: View {
     @State private var showingLogs = false
     @State private var showingSubagents = false
     @State private var newTitle = ""
+    /// The queued-turn banner's Force, waiting on its confirmation: the turn it would stop,
+    /// and the server's words for what that costs.
+    @State private var forcing: (victim: Int, confirm: String)?
     @Environment(\.scenePhase) private var scenePhase
     /// Where the end of the conversation sits in the scroll view, and how tall the view is:
     /// new messages are followed only while the end is in view, so reading back is never
@@ -351,6 +363,9 @@ struct SessionDetailView: View {
             VStack(alignment: .leading, spacing: 10) {
                 if let detail = model.detail {
                     header(detail)
+                    // Why it is waiting and what to do about it: under the header, as the web
+                    // page's header stacks them, above everything else.
+                    WaitingBanners(banners: detail.waiting.banners) { perform($0) }
                     if let status = detail.statusSummary, status.summary != nil || status.generating == true || status.error != nil {
                         SummaryCard(status: status) {
                             Task { await model.run { try await $0.regenerateStatusSummary(model.id) } }
@@ -371,7 +386,10 @@ struct SessionDetailView: View {
                 if let conversation = model.shownConversation {
                     conversationSection(conversation)
                 }
-                // Under the conversation and above the composer, where the web UI puts it.
+                // Under the conversation and above the composer, where the web UI puts them.
+                if !model.undelivered.isEmpty {
+                    UndeliveredCard(messages: model.undelivered)
+                }
                 if !model.queue.isEmpty {
                     QueueCard(model: model)
                 }
@@ -400,6 +418,22 @@ struct SessionDetailView: View {
             }
         } message: {
             Text("It moves to the trash. You can restore it from Archived.")
+        }
+        .confirmationDialog(
+            "Force a worker thread?",
+            isPresented: Binding(get: { forcing != nil }, set: { if !$0 { forcing = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Force", role: .destructive) {
+                if let victim = forcing?.victim {
+                    let id = model.id
+                    Task { await model.run { try await $0.forceStart(id, expectedVictimID: victim).message } }
+                }
+            }
+            .accessibilityIdentifier("waiting.force.confirm")
+        } message: {
+            // The web page's own confirm text: whose turn stops, and what it loses.
+            Text(forcing?.confirm ?? "")
         }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Title", text: $newTitle)
@@ -484,6 +518,25 @@ struct SessionDetailView: View {
                     .accessibilityIdentifier("detail.archive")
                 }
             }
+        }
+    }
+
+    // MARK: - Waiting banners
+
+    /// A banner's one control: the call the server named, made the way the rest of the page
+    /// makes it.
+    private func perform(_ action: WaitingBanner.Action) {
+        let id = model.id
+        switch action {
+        case let .updateSchedulingClass(_, priority):
+            Task { await model.reschedule(priority: priority) }
+        case let .forceStart(_, victim, confirm):
+            // Force stops somebody else's turn, so it is confirmed first, as on the web.
+            forcing = (victim, confirm)
+        case let .followUp(_, prompt):
+            Task { await model.run { try await $0.followUp(id, prompt: prompt).message } }
+        case let .openInBrowser(_, path):
+            if let url = app.webURL(path: path) { openURL(url) }
         }
     }
 

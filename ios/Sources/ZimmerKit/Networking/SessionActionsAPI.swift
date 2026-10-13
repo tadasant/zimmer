@@ -18,6 +18,11 @@ public protocol SessionActionsAPI: Sendable {
     /// The Ranked view's *Start now*: take a waiting session's next turn now. Refused when it
     /// has no turn queued (restart it instead) or is asleep on a wake.
     func startNow(_ id: Int) async throws -> String
+    /// The queued-for-a-worker banner's *Force*: stop the turn that most recently took a worker
+    /// thread and give the thread to this session's queued turn. `expectedVictimID` is the
+    /// session the banner named; the server refuses (a 422 with its reason) when the turn it
+    /// would stop is a different one, rather than stopping a turn nobody confirmed.
+    func forceStart(_ id: Int, expectedVictimID: Int?) async throws -> ForceStartResult
     /// The Ranked view's drag-and-drop: put a spot session between `above` and `below` (either
     /// nil at an end); the server works out the precedence.
     func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary
@@ -192,6 +197,14 @@ extension ZimmerHTTPClient {
         let segment = ZimmerPathComponent(String(id))
         let response: MessageEnvelope = try await post("/api/v1/sessions/\(segment)/start_now", json: [:])
         return response.message ?? "Starting now"
+    }
+
+    public func forceStart(_ id: Int, expectedVictimID: Int?) async throws -> ForceStartResult {
+        let segment = ZimmerPathComponent(String(id))
+        var body: [String: Any] = [:]
+        if let expectedVictimID { body["expected_victim_id"] = expectedVictimID }
+        let response: ForceStartResponse = try await post("/api/v1/sessions/\(segment)/force_start", json: body)
+        return ForceStartResult(session: response.session, message: response.message ?? "Forced")
     }
 
     public func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary {
