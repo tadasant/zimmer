@@ -3150,6 +3150,10 @@ class Session < ApplicationRecord
   end
 
   def broadcast_status_change
+    # First, and not through BroadcastService: this is not UI. It wakes an MCP
+    # call that is holding open until this session finishes a turn
+    # (Sessions::SyncReply), and swallows its own failure.
+    Sessions::TurnSignal.publish(self)
     # Broadcast each component independently. BroadcastService isolates each one,
     # so a render or cable failure in any of them leaves the rest — and this
     # method's caller, which is an after_update_commit — unharmed.
