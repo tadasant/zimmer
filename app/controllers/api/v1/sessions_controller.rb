@@ -65,7 +65,7 @@ class Api::V1::SessionsController < Api::BaseController
   # Before the body is parsed: inline attachments make a follow-up the one request
   # here that can be large, and a body over the limit is refused unread.
   prepend_before_action :refuse_an_oversized_follow_up, only: [ :follow_up ]
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :force_start, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -141,6 +141,9 @@ class Api::V1::SessionsController < Api::BaseController
     render json: {
       session: session_json(@session, include_transcript: params[:include_transcript] == "true"),
       status_summary: session_status_summary_json(@session),
+      # The session page's "why is it waiting" and recovery banners, in the page's
+      # words. A sibling of `session` for the reason status_summary is.
+      waiting: Sessions::WaitingExplanation.call(@session),
       session_hierarchy: session_hierarchy_json(record.hierarchy),
       human_messages: human_messages_json(record),
       human_message_capture_gaps: human_message_capture_gaps_json(record)
@@ -788,6 +791,44 @@ class Api::V1::SessionsController < Api::BaseController
     end
   end
 
+  # POST /api/v1/sessions/:id/force_start
+  # The queued-for-a-worker banner's "Force": stop the turn that most recently
+  # took one of the `agents` lane's threads and give that thread to this
+  # session's queued turn. `expected_victim_id` is required — it is the session
+  # the caller was shown (`waiting.banners[].action.expected_victim_id` on GET),
+  # and a Force nobody confirmed a victim for is a kill nobody chose. A pick that
+  # differs is refused. Every refusal is a 422 carrying Sessions::ForceTurnStart's
+  # own sentence, the one the web flash shows.
+  #
+  # An agent calling this names itself with `acting_session_id`, as it does for
+  # follow_up, and is never the victim — MCP's `force_start` excludes its caller
+  # the same way. Self-declared, because one API key is shared by the fleet.
+  def force_start
+    if params[:expected_victim_id].blank?
+      return render_api_error(
+        "Missing parameter",
+        "expected_victim_id is required: name the session whose turn you confirmed stopping — " \
+        "GET /api/v1/sessions/#{@session.id} offers it on the queued_turn banner's action.",
+        status: :unprocessable_entity
+      )
+    end
+
+    result = Sessions::ForceTurnStart.call(
+      @session,
+      actor: "the REST API",
+      expected_victim_id: params[:expected_victim_id],
+      excluding: [ params[:acting_session_id] ].compact_blank
+    )
+
+    unless result.forced?
+      return render_api_error("Cannot force", result.message, status: :unprocessable_entity)
+    end
+
+    # A person pressing Force in the app is user activity, as the web button is.
+    touch_user_activity(@session) if native_app_request?
+    render json: { session: session_json(@session.reload), message: result.message }
+  end
+
   # PATCH /api/v1/sessions/:id/reorder_precedence
   # The Ranked view's drag-and-drop: the caller names the spot-queue rows it
   # dropped the session between (`above_id`, `below_id`; either may be omitted at
@@ -1340,7 +1381,7 @@ class Api::V1::SessionsController < Api::BaseController
   def touch_user_activity(session)
     with_db_retry { session.touch_user_activity! }
   rescue => e
-    Rails.logger.info("[api start_now] could not record user activity on session #{session.id}: #{e.class}: #{e.message}")
+    Rails.logger.info("[api] could not record user activity on session #{session.id}: #{e.class}: #{e.message}")
   end
 
   # A neighbour named by a reorder: a live spot-queue row, or nil.
