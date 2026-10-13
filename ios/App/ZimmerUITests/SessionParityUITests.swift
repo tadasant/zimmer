@@ -212,6 +212,15 @@ final class BoardViewUITests: XCTestCase {
         XCTAssertTrue(summarised.waitForExistence(timeout: timeout))
         XCTAssertTrue(summarised.label.contains("needs your go-ahead to merge"), summarised.label)
         XCTAssertTrue(summarised.label.contains("Up to date"), summarised.label)
+
+        // Your board is ordered by dragging, as the web UI's is.
+        app.buttons["board.menu"].tap()
+        let reorder = app.buttons["ranked.reorder"]
+        XCTAssertTrue(reorder.waitForExistence(timeout: timeout))
+        XCTAssertEqual(reorder.label, "Reorder Board")
+        reorder.tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).firstMatch.waitForExistence(timeout: timeout), "rows have drag handles")
+        app.buttons["select.done"].tap()
     }
 
     func test_refresh_all_reports_what_it_did() throws {
