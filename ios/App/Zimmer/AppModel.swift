@@ -61,6 +61,9 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureCustomSnooze`: the opened session's custom snooze sheet starts open, so
     /// `ios/bin/ui-test` can photograph the date picker.
     var fixtureOpensCustomSnooze = false
+    /// `-ZimmerFixtureOpenPanels`: the opened session starts at its details card with the
+    /// hierarchy and the human messages open, so `ios/bin/ui-test` can photograph them.
+    var fixtureOpensPanels = false
 
     let environment: AppEnvironment
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
@@ -109,6 +112,7 @@ final class AppModel: ObservableObject {
         if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
+        fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
         func value(_ flag: String) -> String? {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
