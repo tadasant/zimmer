@@ -41,6 +41,19 @@ final class BoardRowTests: XCTestCase {
         XCTAssertNil(result.sessions.first?.boardRow)
     }
 
+    func testSearchAsksForTheRowsToo() async throws {
+        let (api, transport) = client([{ _ in
+            Fixtures.json(200, [
+                "sessions": [["id": 7, "status": "needs_input"]],
+                "board_rows": ["7": ["agent_root": "zimmer", "status_summary": ["summary": "x"]]],
+            ])
+        }])
+        let result = try await api.search("x", contents: false, filters: .default, board: .onBoard)
+        let query = URLComponents(url: try XCTUnwrap(transport.sent.first?.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(query.first { $0.name == "include" }?.value, "board_row")
+        XCTAssertEqual(result.sessions.first?.boardRow?.statusSummary?.summary, "x")
+    }
+
     func testFreshnessReadsAsTheDashboardsChip() {
         XCTAssertEqual(SummaryFreshness(StatusSummary(summary: "x", generating: true, messagesSinceGenerated: 4)), .regenerating)
         XCTAssertEqual(SummaryFreshness(StatusSummary(summary: "x", messagesSinceGenerated: 4)), .stale(messages: 4))

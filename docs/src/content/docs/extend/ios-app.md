@@ -57,7 +57,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   the snooze ends. A trashed session reads in the quieter ink. On *Your board*, as on the web
   board's, each row also carries the session's "where things stand" as inline markdown on up to
   three lines, then how current it is (*Up to date*, *Stale* with the messages since, or
-  *Regenerating*), when it was written, and the agent root (`GET /api/v1/sessions?view=user&include=board_row`).
+  *Regenerating*), when it was written, and the agent root, or the genesis where it has none
+  (`GET /api/v1/sessions?view=user&include=board_row`, and the same on search). A row an action
+  just answered keeps its summary until the next read; a server that sends no rows draws none.
 - **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn or with
   queued messages is refused with the server's reason and stays; the rest go.
 - **Refresh All**, after a confirmation, through `POST /api/v1/sessions/refresh_all`: re-reads

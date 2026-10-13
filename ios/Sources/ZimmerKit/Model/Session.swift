@@ -113,7 +113,8 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var catalogHooks: [String]?
     public var catalogPlugins: [String]?
     /// What the dashboard's row shows that the session object does not carry, when the list
-    /// was read with `include=board_row` (Your board and Ranked). Not part of `session`.
+    /// was read with `include=board_row`; Your board draws it. Nil when it was not read, which
+    /// is not the same as a session with no summary. Not part of `session`.
     public var boardRow: BoardRow? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -374,14 +375,7 @@ struct SessionListResponse: Decodable {
     let board_rows: [String: BoardRow]?
 
     /// The sessions, each with its board row when the server sent one.
-    var rows: [SessionSummary] {
-        guard let board_rows else { return sessions }
-        return sessions.map { session in
-            var session = session
-            session.boardRow = board_rows[String(session.id)]
-            return session
-        }
-    }
+    var rows: [SessionSummary] { BoardRow.attach(board_rows, to: sessions) }
 }
 
 /// What a dashboard row shows that `session` does not carry (`include=board_row`).
@@ -392,6 +386,16 @@ public struct BoardRow: Hashable, Sendable, Codable {
     public init(agentRoot: String? = nil, statusSummary: StatusSummary? = nil) {
         self.agentRoot = agentRoot
         self.statusSummary = statusSummary
+    }
+
+    /// Each session with its row, by id, when the server sent rows.
+    static func attach(_ rows: [String: BoardRow]?, to sessions: [SessionSummary]) -> [SessionSummary] {
+        guard let rows else { return sessions }
+        return sessions.map { session in
+            var session = session
+            session.boardRow = rows[String(session.id)]
+            return session
+        }
     }
 
     enum CodingKeys: String, CodingKey {
