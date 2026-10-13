@@ -98,7 +98,7 @@ struct SessionListView: View {
             }
             if model.sessions.isEmpty && !model.isLoading {
                 Section {
-                    EmptyListRow(filters: model.filters, searching: !model.searchText.isEmpty)
+                    EmptyListRow(filters: model.effectiveFilters, searching: !model.searchText.isEmpty)
                         .listRowBackground(Color.clear)
                 }
             }
@@ -444,16 +444,16 @@ private struct FilterBar: View {
                         Haptics.selection()
                         model.showingFilters = true
                     } label: {
-                        Pill(selected: model.filters.preset == nil, compact: true) {
+                        Pill(selected: model.effectiveFilters.preset == nil, compact: true) {
                             Label(filtersLabel, systemImage: "line.3.horizontal.decrease")
                         }
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Filters")
-                    .accessibilityValue(model.filters.summary)
+                    .accessibilityValue(model.filterSummary)
                     .accessibilityIdentifier("filter.more")
                     ForEach(SessionFilter.allCases) { filter in
-                        let selected = model.filters.preset == filter
+                        let selected = model.effectiveFilters.preset == filter
                         Button {
                             Haptics.selection()
                             Task { await model.select(filter) }
@@ -469,14 +469,16 @@ private struct FilterBar: View {
                 .animation(.snappy(duration: 0.25), value: model.filters)
             }
             // A combination the chips cannot show is said in words, with a way back.
-            if model.filters.preset == nil {
+            if model.effectiveFilters.preset == nil {
                 HStack(spacing: 6) {
-                    Text(model.filters.summary)
+                    Text(model.filterSummary)
                         .font(.caption)
                         .foregroundStyle(Theme.inkSoft)
                         .lineLimit(1)
                         .accessibilityIdentifier("filter.summary")
                     Button("Reset") { Task { await model.apply(.default) } }
+                        // Borderless, or the whole list row becomes this button's target.
+                        .buttonStyle(.borderless)
                         .font(.caption.weight(.medium))
                         .accessibilityIdentifier("filter.reset")
                 }
@@ -488,7 +490,7 @@ private struct FilterBar: View {
     private var filtersLabel: String {
         guard model.filters.preset == nil else { return "Filters" }
         let count = model.filters.refinementCount + (model.filters.statuses.count > 1 ? 1 : 0)
-        return count > 0 ? "Filters · \(max(count, 1))" : "Filters"
+        return count > 0 ? "Filters · \(count)" : "Filters"
     }
 }
 

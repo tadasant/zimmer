@@ -47,8 +47,8 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   the catalog, board visibility, and the web UI's quick filters (*All*, *All unarchived*, *All
   priority, unarchived*). A combination the chips cannot show is spelled out under them with a
   *Reset*. Filters and board visibility are remembered across launches, as the web UI remembers
-  them in a cookie, and *Ranked* opens on waiting, running, needs-input and failed together, as on
-  the web. With no status ticked the list is every status but Archived, where the web reads ticking
+  them in a cookie. Over the default filters *Ranked* shows waiting, running, needs-input and failed
+  together, worked out each time as the web does, so leaving Ranked is back to *Needs input*. With no status ticked the list is every status but Archived, where the web reads ticking
   nothing as everything. Board visibility is *On board* by default, like the web UI's board, with
   *Snoozed & hidden* and *Both* in the view menu and the form. Pull to refresh. Rows sit on one surface with hairlines between them,
   as the web board's Your board and Ranked rows do: the title on up to two lines, then one line

@@ -101,8 +101,9 @@ public struct BoardFilters: Hashable, Sendable, Codable {
         SessionFilter.allCases.first { $0.filters == self }
     }
 
-    /// A line saying what is shown: "Needs input, Failed · Priority · zimmer".
-    public var summary: String {
+    /// A line saying what is shown: "Needs input, Failed · Priority · zimmer". `genesisLabel`
+    /// turns a genesis key into the dashboard's words when the catalog is to hand.
+    public func summary(genesisLabel: (String) -> String? = { _ in nil }) -> String {
         var parts: [String] = []
         let shown = orderedStatuses
         if shown.isEmpty {
@@ -114,9 +115,11 @@ public struct BoardFilters: Hashable, Sendable, Codable {
         }
         if let schedulingClass { parts.append(schedulingClass.capitalized) }
         if let agentRoot { parts.append(agentRoot) }
-        if let genesis { parts.append(genesis) }
+        if let genesis { parts.append(genesisLabel(genesis) ?? genesis) }
         return parts.joined(separator: " · ")
     }
+
+    public var summary: String { summary() }
 
     /// Whether a session's status is among these filters' — what the list keeps of a row the
     /// app has just changed.

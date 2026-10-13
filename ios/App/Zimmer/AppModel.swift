@@ -189,7 +189,7 @@ final class AppModel: ObservableObject {
     func refresh() async {
         isLoading = true
         defer { isLoading = false }
-        let requested = filters
+        let requested = effectiveFilters
         let board = board
         let view = view
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -202,7 +202,7 @@ final class AppModel: ObservableObject {
                 result = try await connection.api.search(query, contents: scope == .transcripts, filters: requested, board: board)
             }
             // A slower answer to an older request must not overwrite a newer list.
-            guard requested == filters, board == self.board, view == self.view,
+            guard requested == effectiveFilters, board == self.board, view == self.view,
                   query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             sessions = result.sessions
             listIncomplete = !result.complete
@@ -224,18 +224,30 @@ final class AppModel: ObservableObject {
         await apply(filter.filters)
     }
 
-    /// The filter sheet's choices, or a quick filter's.
-    func apply(_ filters: BoardFilters) async {
-        guard filters != self.filters else { return }
+    /// The filter sheet's choices, or a quick filter's; the sheet's board visibility with
+    /// them, in one read.
+    func apply(_ filters: BoardFilters, board: BoardFilter? = nil) async {
+        let board = board ?? self.board
+        guard filters != self.filters || board != self.board else { return }
         self.filters = filters
+        self.board = board
         sessions = []
         await refresh()
     }
 
-    /// The Ranked view opens on everything that can still run, as on the web — but only
-    /// over the default filters; a person's own choice is kept.
+    /// What the list asks for. The Ranked view opens on everything that can still run, as the
+    /// web works it out on each request — over the default filters only, and never saved, so
+    /// leaving Ranked is back to Needs input.
+    var effectiveFilters: BoardFilters {
+        view == .ranked && filters == .default ? .ranked : filters
+    }
+
+    /// The filters in words, with a genesis by its label once the catalog has been read.
+    var filterSummary: String {
+        effectiveFilters.summary { key in self.filterOptions?.geneses.first { $0.key == key }?.label }
+    }
+
     func viewChanged() async {
-        if view == .ranked, filters == .default { filters = .ranked }
         await refresh()
     }
 
@@ -278,7 +290,7 @@ final class AppModel: ObservableObject {
     }
 
     private func belongsOnList(_ session: SessionSummary) -> Bool {
-        filters.admits(session) && board.admits(session)
+        effectiveFilters.admits(session) && board.admits(session)
     }
 
     /// The rows in the current view's order and sections.
