@@ -3,8 +3,10 @@
 require "digest"
 require "fileutils"
 
-# A standing pool of ready-made clones of the router root's repository, so a
-# Quick Router request does not wait on a `git clone`.
+# A standing pool of ready-made clones, so a session does not wait on a
+# `git clone`. Which repositories, how many of each and which sessions may claim
+# them is WarmPoolPolicy's: the router root's alone (the default `router` scope),
+# or every recently active root's (`active`).
 #
 # == Why the clone, and only the clone
 #
@@ -72,9 +74,10 @@ module WarmClonePool
 
   module_function
 
-  # Ready clones to keep per target. `QUICK_ROUTER_WARM_CLONES` overrides the
-  # default (1 when deployed, 0 elsewhere); 0 turns the pool off, so nothing is
-  # built and nothing is claimed.
+  # Ready clones to keep of the router root's repository, and of any other key
+  # below WarmPoolPolicy::BUSY_STARTS. `QUICK_ROUTER_WARM_CLONES` overrides the
+  # default (1 when deployed, 0 elsewhere); 0 turns the whole pool off, so
+  # nothing is built and nothing is claimed.
   def size
     configured = ENV["QUICK_ROUTER_WARM_CLONES"].presence
     return default_size if configured.nil?
@@ -92,19 +95,31 @@ module WarmClonePool
     size.positive?
   end
 
-  # Whether a session's fresh start should try the pool: sessions on the router
-  # root, which is what every Quick Router entry point creates.
+  # Whether a session's fresh start should try the pool: its repository and
+  # branch are a pooled key, and — under the `router` scope — it is a router
+  # session, which is what every Quick Router entry point creates. The router
+  # check matters on a deployment whose router shares its repository with other
+  # roots: without it they would take the router's one clone.
+  #
+  # Rescued to false: this runs on every session start, outside the clone's own
+  # fallbacks, and the pool must never be why a session fails.
   def serves?(session)
-    enabled? && AgentRootsConfig::ROUTER_ROOT_NAMES.include?(session.metadata&.dig("agent_root_key"))
+    return false unless enabled?
+    return false if WarmPoolPolicy.scope == "router" &&
+      !AgentRootsConfig::ROUTER_ROOT_NAMES.include?(session.metadata&.dig("agent_root_key"))
+
+    key = [ session.git_root, session.branch.presence || "main" ]
+    targets.any? { |target| [ target.repo_url, target.branch ] == key }
+  rescue StandardError => e
+    logger.warn("Could not decide whether the warm pool serves a session; cloning cold",
+                session_id: session.id, error: "#{e.class}: #{e.message}")
+    false
   end
 
-  # The repositories the pool keeps clones of: the router root's.
-  # @return [Array<Array(String, String)>] [repo_url, branch] pairs
+  # The keys the pool keeps clones of, with how many of each.
+  # @return [Array<WarmPoolPolicy::Target>]
   def targets
-    root = AgentRootsConfig.find(AgentRootsConfig.router_root_name)
-    return [] if root.nil? || root.url.blank?
-
-    [ [ root.url, root.default_branch.presence || "main" ] ]
+    WarmPoolPolicy.targets(base_size: size)
   end
 
   def root_dir
@@ -177,39 +192,119 @@ module WarmClonePool
     false
   end
 
-  # Bring the pool for every target up to `size`, recycle what has aged out, and
-  # drop pools for repositories that are no longer a target. Idempotent: a run
-  # with a full, fresh pool does nothing.
+  # Bring the pool for every target up to its size, recycle what has aged out,
+  # and drop pools for keys that are no longer a target. Idempotent: a run with a
+  # full, fresh pool does nothing. Targets come in WarmPoolPolicy's rank order,
+  # and one that fails does not stop the ones after it.
   #
   # @return [Hash] what the pass did, for the job's log line
   def replenish!
     result = { built: 0, recycled: 0, failed: nil }
+    errors = {}
     wanted = enabled? ? targets : []
 
     result[:recycled] += remove_untargeted!(wanted)
 
-    wanted.each do |repo_url, branch|
-      # Build first, prune second: a clone past RECYCLE_AGE stays claimable until
-      # its replacement exists.
-      size.times do
-        break if fresh_entries(repo_url, branch).size >= size
+    wanted.each do |target|
+      repo_url, branch, want = target.repo_url, target.branch, target.size
 
-        unless room_to_build?(repo_url)
-          result[:failed] = "not enough free disk to keep a warm clone beside the sessions' own"
-          break
+      begin
+        # Build first, prune second: a clone past RECYCLE_AGE stays claimable until
+        # its replacement exists.
+        want.times do
+          break if fresh_entries(repo_url, branch).size >= want
+
+          unless room_to_build?(repo_url)
+            errors[key(repo_url, branch)] = "not enough free disk to keep a warm clone beside the sessions' own"
+            break
+          end
+
+          build!(repo_url, branch)
+          result[:built] += 1
         end
-
-        build!(repo_url, branch)
-        result[:built] += 1
+      rescue GitCloneService::GitError => e
+        logger.warn("Warm clone build failed; the next pass retries", repo_url: repo_url, branch: branch, error: e.message)
+        errors[key(repo_url, branch)] = e.message
       end
 
-      result[:recycled] += prune!(repo_url, branch)
+      result[:recycled] += prune!(repo_url, branch, size: want)
     end
 
+    result[:failed] = errors.values.uniq.join("; ") if errors.any?
+    record_pass(result, errors)
     result
-  rescue GitCloneService::GitError => e
-    logger.warn("Warm clone build failed; the next pass retries", error: e.message)
-    result.merge(failed: e.message)
+  end
+
+  LAST_PASS_CACHE_KEY = "warm_clone_pool/last_pass"
+
+  # Kept where the web container can read it: the health report runs there, and
+  # a build error lives only in the worker's memory otherwise.
+  def record_pass(result, errors)
+    Rails.cache.write(LAST_PASS_CACHE_KEY, result.merge(at: Time.current, errors: errors), expires_in: 1.day)
+  rescue StandardError => e
+    logger.warn("Could not record the warm clone pass", error: e.message)
+  end
+
+  def last_pass
+    Rails.cache.read(LAST_PASS_CACHE_KEY)
+  rescue StandardError
+    nil
+  end
+
+  # How far back the health report counts claims and misses.
+  OUTCOME_WINDOW = 24.hours
+
+  # What the pool holds and how it is doing, for the health report: every pooled
+  # key with its ready clones, what WarmPoolPolicy ranked and left out, the last
+  # refill pass, and how many session starts claimed a clone or missed.
+  #
+  # Read from the web container, which shares the clones volume with the worker,
+  # so the ready counts are the worker's own; the last pass comes from the cache.
+  def report
+    plan = WarmPoolPolicy.plan(base_size: size)
+    pass = last_pass
+    errors = pass&.dig(:errors) || {}
+
+    targets = enabled? ? plan[:targets] : []
+    targets = targets.map do |target|
+      entries = ready_entries(target[:repo_url], target[:branch]).reject { |entry| expired?(entry) }
+      target_key = key(target[:repo_url], target[:branch])
+      target.merge(
+        key: target_key,
+        ready: entries.size,
+        newest_age_seconds: entries.first && age_seconds(entries.first),
+        oldest_age_seconds: entries.last && age_seconds(entries.last),
+        error: errors[target_key]
+      )
+    end
+
+    {
+      enabled: enabled?,
+      scope: plan[:scope],
+      size: size,
+      max_clones: plan[:max_clones],
+      window_days: (WarmPoolPolicy::WINDOW / 1.day).to_i,
+      targets: targets,
+      passed_over: plan[:passed_over],
+      last_pass: pass&.except(:errors),
+      outcome_window_hours: (OUTCOME_WINDOW / 1.hour).to_i,
+      outcomes: outcome_counts
+    }
+  end
+
+  # Session starts in OUTCOME_WINDOW that tried the pool, split by router and
+  # every other root: { router: { "claimed" => n, "missed" => n }, other: {...} }.
+  def outcome_counts(now: Time.current)
+    counts = { router: { "claimed" => 0, "missed" => 0 }, other: { "claimed" => 0, "missed" => 0 } }
+    Session.where(created_at: (now - OUTCOME_WINDOW)..now)
+           .where("metadata->>'warm_clone' IN ('claimed', 'missed')")
+           .group(Arel.sql("metadata->>'agent_root_key'"), Arel.sql("metadata->>'warm_clone'"))
+           .count
+           .each do |(root_name, outcome), count|
+      side = AgentRootsConfig::ROUTER_ROOT_NAMES.include?(root_name) ? :router : :other
+      counts[side][outcome] += count
+    end
+    counts
   end
 
   # Ready entries young enough not to need replacing yet.
@@ -262,7 +357,7 @@ module WarmClonePool
   # Remove expired ready entries, abandoned builds, and the tombstones an
   # interrupted removal leaves (the hourly sweeps reap only the clones base
   # itself) for one target.
-  def prune!(repo_url, branch)
+  def prune!(repo_url, branch, size: self.size)
     dir = key_dir(repo_url, branch)
     return 0 unless Dir.exist?(dir)
 
@@ -278,7 +373,7 @@ module WarmClonePool
       elsif name.start_with?(".")
         false
       else
-        replaceable?(path, repo_url, branch)
+        replaceable?(path, repo_url, branch, size: size)
       end
       stale && AtomicCloneRemoval.remove(path)
     end
@@ -287,7 +382,7 @@ module WarmClonePool
   def remove_untargeted!(wanted)
     return 0 unless Dir.exist?(root_dir)
 
-    keep = wanted.map { |repo_url, branch| key(repo_url, branch) }
+    keep = wanted.map { |target| key(target.repo_url, target.branch) }
     Dir.children(root_dir).reject { |name| keep.include?(name) || name.start_with?(".") }.count do |name|
       path = File.join(root_dir, name)
       # Atomic, because a worker that still counts this repository as a target
@@ -299,7 +394,7 @@ module WarmClonePool
 
   # A clone past RECYCLE_AGE goes once a fresh one stands in for it, and past
   # MAX_AGE it goes regardless, since no claim will take it.
-  def replaceable?(path, repo_url, branch)
+  def replaceable?(path, repo_url, branch, size: self.size)
     return true if expired?(path)
 
     age_seconds(path) > RECYCLE_AGE && fresh_entries(repo_url, branch).size >= size

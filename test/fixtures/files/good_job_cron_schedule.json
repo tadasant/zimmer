@@ -188,7 +188,7 @@
     "warm_clone_pool_replenish": {
       "cron": "* * * * *",
       "class": "WarmClonePoolReplenishJob",
-      "description": "Keep a ready clone of the router root's repository so a Quick Router request skips the git clone"
+      "description": "Keep ready clones of the router root's repository (or every active root's, per WarmPoolPolicy) so a starting session skips the git clone"
     },
     "spot_ceiling_sweep": {
       "cron": "*/5 * * * *",
@@ -475,7 +475,7 @@
     "warm_clone_pool_replenish": {
       "cron": "* * * * *",
       "class": "WarmClonePoolReplenishJob",
-      "description": "Keep a ready clone of the router root's repository so a Quick Router request skips the git clone"
+      "description": "Keep ready clones of the router root's repository (or every active root's, per WarmPoolPolicy) so a starting session skips the git clone"
     },
     "spot_ceiling_sweep": {
       "cron": "*/5 * * * *",

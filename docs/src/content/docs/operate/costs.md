@@ -654,6 +654,11 @@ ago on the one tick where nothing has been observed yet and every session really
 For `mcp_tool_search` the boundary is **2026-08-22 13:55:34 UTC** (`b59d9ad7`, which shipped
 it on for everyone).
 
+`warm_clone_pool_active_roots` (whether the [warm clone pool](/sessions/spawning/#the-warm-clone-pool)
+serves every active root) ships off with no `landed_at`, so only sessions that start after it
+exists are tagged. It changes start latency rather than spend, and the claimed/missed counts on
+`/health` are its real report.
+
 ### Retiring a setting
 
 When the question a setting was asking has been answered and the losing branch is deleted, its

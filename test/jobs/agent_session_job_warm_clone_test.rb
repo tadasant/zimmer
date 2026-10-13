@@ -6,17 +6,25 @@ require_relative "../support/mock_process_manager"
 require_relative "../support/mock_file_system_adapter"
 require_relative "../support/mock_claude_cli_adapter"
 
-# A router session's fresh start asks GitCloneService for a warm clone, records
-# whether it got one, and refills the pool; any other session clones exactly as
-# before. WarmClonePoolTest covers the claim itself against real repositories.
+# A fresh start the pool serves — a router session under the `router` scope, a
+# session on any pooled key under `active` — asks GitCloneService for a warm
+# clone, records whether it got one, and refills the pool; any other session
+# clones exactly as before. WarmClonePoolTest covers the claim itself against
+# real repositories, and which sessions the pool serves.
 class AgentSessionJobWarmCloneTest < ActiveJob::TestCase
   CLONE_PATH = "/tmp/warm-clone-job-test-clone"
+  REPO = "https://github.com/test/repo.git"
 
   setup do
     @previous_size = ENV["QUICK_ROUTER_WARM_CLONES"]
     ENV["QUICK_ROUTER_WARM_CLONES"] = "1"
     # What happens after the clone is not under test, and the clone path is a mock.
     AirPrepareService.any_instance.stubs(:prepare!)
+    # Every session below is on this repository, and it is the router's: the
+    # pool keeps it under either scope.
+    WarmPoolPolicy.stubs(:targets).returns([
+      WarmPoolPolicy::Target.new(repo_url: REPO, branch: "main", size: 1, roots: {}, starts: 0, score: 0.0)
+    ])
   end
 
   teardown do
@@ -43,7 +51,27 @@ class AgentSessionJobWarmCloneTest < ActiveJob::TestCase
     assert_includes all_log_content(session), "No pre-warmed clone was ready; cloned cold"
   end
 
-  test "a session on any other root never asks for a warm clone" do
+  test "under the active scope, a session on any other root on a pooled key claims a warm clone" do
+    AppSetting.editable.update!(warm_clone_pool_active_roots_enabled: true)
+    session = create_session(agent_root_key: "zimmer")
+    GitCloneService.expects(:create_clone).with(anything, has_entry(warm: true)).returns(clone_result(warm: true))
+
+    assert_enqueued_with(job: WarmClonePoolReplenishJob) { run_clone_setup(session) }
+
+    assert_equal "claimed", session.reload.metadata["warm_clone"]
+  end
+
+  test "under the active scope, a session that finds its key's pool empty records the miss" do
+    AppSetting.editable.update!(warm_clone_pool_active_roots_enabled: true)
+    session = create_session(agent_root_key: "zimmer")
+    GitCloneService.expects(:create_clone).with(anything, has_entry(warm: true)).returns(clone_result(warm: false))
+
+    run_clone_setup(session)
+
+    assert_equal "missed", session.reload.metadata["warm_clone"]
+  end
+
+  test "under the router scope, a session on any other root never asks for a warm clone" do
     session = create_session(agent_root_key: "zimmer")
     GitCloneService.expects(:create_clone).with(anything, has_entry(warm: false)).returns(clone_result(warm: false))
 
@@ -80,7 +108,7 @@ class AgentSessionJobWarmCloneTest < ActiveJob::TestCase
       prompt: nil,
       agent_runtime: "claude_code",
       status: :needs_input,
-      git_root: "https://github.com/test/repo.git",
+      git_root: REPO,
       branch: "main",
       metadata: { "agent_root_key" => agent_root_key }
     )

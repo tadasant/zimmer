@@ -17,9 +17,8 @@ class WarmClonePoolTest < ActiveSupport::TestCase
     @previous_size = ENV["QUICK_ROUTER_WARM_CLONES"]
     ENV["QUICK_ROUTER_WARM_CLONES"] = "1"
 
-    root = stub(url: @repo, default_branch: @branch)
     AgentRootsConfig.stubs(:router_root_name).returns("zimmer-orchestrator")
-    AgentRootsConfig.stubs(:find).with("zimmer-orchestrator").returns(root)
+    stub_roots("zimmer-orchestrator" => @repo)
   end
 
   teardown do
@@ -46,15 +45,37 @@ class WarmClonePoolTest < ActiveSupport::TestCase
     assert_equal 0, WarmClonePool.size
   end
 
-  test "serves sessions on either router root name and nothing else" do
+  test "under the router scope, serves router sessions on the router's repository and nothing else" do
     %w[zimmer-orchestrator zimmer-router].each do |name|
-      assert WarmClonePool.serves?(Session.new(metadata: { "agent_root_key" => name }))
+      assert WarmClonePool.serves?(session_on(@repo, name))
     end
-    assert_not WarmClonePool.serves?(Session.new(metadata: { "agent_root_key" => "zimmer" }))
-    assert_not WarmClonePool.serves?(Session.new(metadata: {}))
+    assert_not WarmClonePool.serves?(session_on(@repo, "zimmer")),
+      "a root sharing the router's repository must not take the router's clone under the router scope"
+    assert_not WarmClonePool.serves?(session_on(@repo, nil))
+    assert_not WarmClonePool.serves?(session_on("https://example.com/other.git", "zimmer-orchestrator"))
+    assert_not WarmClonePool.serves?(session_on(@repo, "zimmer-orchestrator", branch: "feature"))
 
     ENV["QUICK_ROUTER_WARM_CLONES"] = "0"
-    assert_not WarmClonePool.serves?(Session.new(metadata: { "agent_root_key" => "zimmer-orchestrator" }))
+    assert_not WarmClonePool.serves?(session_on(@repo, "zimmer-orchestrator"))
+  end
+
+  test "under the active scope, serves any session whose repository and branch are pooled" do
+    other = create_repo("other-repo")
+    stub_roots("zimmer-orchestrator" => @repo, "zimmer" => @repo, "general-agent" => other, "artifacts" => create_repo("cold-repo"))
+    record_starts("general-agent", WarmPoolPolicy::MIN_STARTS)
+    record_starts("artifacts", 1)
+    activate!
+
+    assert WarmClonePool.serves?(session_on(@repo, "zimmer")), "the router's key serves every root on it"
+    assert WarmClonePool.serves?(session_on(other, "general-agent"))
+    assert_not WarmClonePool.serves?(session_on(File.join(@test_dir, "cold-repo"), "artifacts")),
+      "a key below MIN_STARTS is not pooled"
+  end
+
+  test "serves? answers false rather than raising when the policy cannot be read" do
+    WarmPoolPolicy.stubs(:targets).raises(ActiveRecord::ConnectionNotEstablished)
+
+    assert_not WarmClonePool.serves?(session_on(@repo, "zimmer-orchestrator"))
   end
 
   # --- replenish! -------------------------------------------------------------
@@ -115,14 +136,14 @@ class WarmClonePoolTest < ActiveSupport::TestCase
   end
 
   test "a failed build leaves no half-made clone behind and reports the failure" do
-    root = stub(url: File.join(@test_dir, "no-such-repo"), default_branch: @branch)
-    AgentRootsConfig.stubs(:find).with("zimmer-orchestrator").returns(root)
+    missing = File.join(@test_dir, "no-such-repo")
+    stub_roots("zimmer-orchestrator" => missing)
 
     result = WarmClonePool.replenish!
 
     assert_equal 0, result[:built]
     assert_match(/Git command failed/, result[:failed])
-    dir = WarmClonePool.key_dir(root.url, @branch)
+    dir = WarmClonePool.key_dir(missing, @branch)
     assert_empty Dir.exist?(dir) ? Dir.children(dir) : []
   end
 
@@ -331,15 +352,149 @@ class WarmClonePoolTest < ActiveSupport::TestCase
     assert_equal 1, WarmClonePool.ready_entries(@repo, @branch).size
   end
 
+  # --- the active scope ---------------------------------------------------------
+
+  test "under the active scope, replenish builds a clone of every pooled key, router first" do
+    other = create_repo("other-repo")
+    stub_roots("zimmer-orchestrator" => @repo, "general-agent" => other)
+    record_starts("general-agent", WarmPoolPolicy::MIN_STARTS)
+    activate!
+
+    built = sequence("builds")
+    WarmClonePool.expects(:build!).with(@repo, @branch).in_sequence(built).returns(nil)
+    WarmClonePool.expects(:build!).with(other, @branch).in_sequence(built).returns(nil)
+    WarmClonePool.replenish!
+  end
+
+  test "a busy key keeps two clones" do
+    stub_roots("zimmer-orchestrator" => @repo)
+    record_starts("zimmer-orchestrator", WarmPoolPolicy::BUSY_STARTS)
+    activate!
+
+    assert_equal 2, WarmClonePool.replenish![:built]
+    assert_equal 2, WarmClonePool.ready_entries(@repo, @branch).size
+    assert_equal({ built: 0, recycled: 0, failed: nil }, WarmClonePool.replenish!)
+  end
+
+  test "a key that goes cold, or a scope switched back to router, has its pool dropped" do
+    other = create_repo("other-repo")
+    stub_roots("zimmer-orchestrator" => @repo, "general-agent" => other)
+    record_starts("general-agent", WarmPoolPolicy::MIN_STARTS)
+    activate!
+    WarmClonePool.replenish!
+    assert_equal 1, WarmClonePool.ready_entries(other, @branch).size
+
+    AppSetting.editable.update!(warm_clone_pool_active_roots_enabled: false)
+    WarmClonePool.replenish!
+
+    assert_not Dir.exist?(WarmClonePool.key_dir(other, @branch))
+    assert_equal 1, WarmClonePool.ready_entries(@repo, @branch).size, "the router's pool is untouched"
+  end
+
+  test "one key that cannot build does not stop the next, and the failure is kept per key" do
+    missing = File.join(@test_dir, "no-such-repo")
+    other = create_repo("other-repo")
+    stub_roots("zimmer-orchestrator" => missing, "general-agent" => other)
+    record_starts("general-agent", WarmPoolPolicy::MIN_STARTS)
+    activate!
+    with_memory_cache do
+      result = WarmClonePool.replenish!
+
+      assert_equal 1, result[:built]
+      assert_match(/Git command failed/, result[:failed])
+      assert_equal 1, WarmClonePool.ready_entries(other, @branch).size
+
+      errors = WarmClonePool.last_pass[:errors]
+      assert_equal [ WarmClonePool.key(missing, @branch) ], errors.keys
+    end
+  end
+
+  test "the disk guard skips a key the volume cannot hold and still builds the rest" do
+    other = create_repo("other-repo")
+    stub_roots("zimmer-orchestrator" => @repo, "general-agent" => other)
+    record_starts("general-agent", WarmPoolPolicy::MIN_STARTS)
+    activate!
+    WarmClonePool.stubs(:room_to_build?).with(@repo).returns(false)
+    WarmClonePool.stubs(:room_to_build?).with(other).returns(true)
+
+    result = WarmClonePool.replenish!
+
+    assert_equal 1, result[:built]
+    assert_match(/not enough free disk/, result[:failed])
+    assert_empty WarmClonePool.ready_entries(@repo, @branch)
+  end
+
+  # --- report -------------------------------------------------------------------
+
+  test "the report names each pooled key, its ready clones, the last pass and the claim counts" do
+    with_memory_cache do
+      WarmClonePool.replenish!
+      Session.create!(prompt: nil, agent_runtime: "claude_code", status: :archived, git_root: @repo, branch: @branch,
+                      metadata: { "agent_root_key" => "zimmer-orchestrator", "warm_clone" => "claimed" })
+      Session.create!(prompt: nil, agent_runtime: "claude_code", status: :archived, git_root: @repo, branch: @branch,
+                      metadata: { "agent_root_key" => "zimmer", "warm_clone" => "missed" })
+
+      report = WarmClonePool.report
+
+      assert report[:enabled]
+      assert_equal "router", report[:scope]
+      target = report[:targets].sole
+      assert_equal [ @repo, @branch, 1, 1 ], target.values_at(:repo_url, :branch, :size, :ready)
+      assert_equal WarmClonePool.key(@repo, @branch), target[:key]
+      assert_operator target[:newest_age_seconds], :<, 60
+      assert_equal 1, report[:last_pass][:built]
+      assert_equal({ "claimed" => 1, "missed" => 0 }, report[:outcomes][:router])
+      assert_equal({ "claimed" => 0, "missed" => 1 }, report[:outcomes][:other])
+    end
+  end
+
+  test "the report of a disabled pool lists no targets" do
+    ENV["QUICK_ROUTER_WARM_CLONES"] = "0"
+
+    report = WarmClonePool.report
+
+    assert_not report[:enabled]
+    assert_empty report[:targets]
+  end
+
   private
 
-  def create_repo
-    path = File.join(@test_dir, "router-repo")
+  def stub_roots(urls_by_name)
+    roots = urls_by_name.map do |name, url|
+      AgentRootsConfig::AgentRoot.new(name, { "url" => url, "default_branch" => @branch },
+                                      app_setting: AppSetting::NULL, model_ids_by_runtime: {})
+    end
+    AgentRootsConfig.stubs(:all).returns(roots)
+  end
+
+  def activate!
+    AppSetting.editable.update!(warm_clone_pool_active_roots_enabled: true)
+  end
+
+  def record_starts(root_name, count)
+    rows = Array.new(count) do
+      { prompt: nil, agent_runtime: "claude_code", status: "archived", git_root: "unused", branch: @branch,
+        metadata: { "agent_root_key" => root_name }, created_at: 1.hour.ago, updated_at: 1.hour.ago }
+    end
+    Session.insert_all!(rows)
+  end
+
+  def session_on(git_root, root_name, branch: @branch)
+    Session.new(git_root: git_root, branch: branch, metadata: root_name ? { "agent_root_key" => root_name } : {})
+  end
+
+  def with_memory_cache
+    Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
+    yield
+  end
+
+  def create_repo(name = "router-repo")
+    path = File.join(@test_dir, name)
     FileUtils.mkdir_p(path)
     git(path, "init", "-q", "-b", "main")
     git(path, "config", "user.email", "test@example.com")
     git(path, "config", "user.name", "Test User")
-    commit(path, "README.md", "# router")
+    commit(path, "README.md", "# #{name}")
     path
   end
 

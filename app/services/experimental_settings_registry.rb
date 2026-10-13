@@ -95,6 +95,16 @@ class ExperimentalSettingsRegistry
       landed_at: Time.utc(2026, 8, 22, 13, 55, 34),
       value_before: false,
       value_after: true
+    ),
+    Setting.new(
+      key: "warm_clone_pool_active_roots",
+      title: "Warm clones for every active root",
+      description: "Keep ready-made git clones for the repositories of every agent root that started " \
+                   "sessions in the last week, not only the router's, so those sessions skip the " \
+                   "`git clone` too. Off, the pool serves Quick Router sessions alone. See /health → " \
+                   "Warm clone pool for what is pooled and how often a start claimed a clone.",
+      attribute: :warm_clone_pool_active_roots_enabled,
+      default_on: -> { AppSetting::DEFAULT_WARM_CLONE_POOL_ACTIVE_ROOTS_ENABLED }
     )
   ].freeze
 
