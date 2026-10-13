@@ -65,7 +65,7 @@ class Api::V1::SessionsController < Api::BaseController
   # Before the body is parsed: inline attachments make a follow-up the one request
   # here that can be large, and a body over the limit is refused unread.
   prepend_before_action :refuse_an_oversized_follow_up, only: [ :follow_up ]
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :force_start, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -134,6 +134,9 @@ class Api::V1::SessionsController < Api::BaseController
     render json: {
       session: session_json(@session, include_transcript: params[:include_transcript] == "true"),
       status_summary: session_status_summary_json(@session),
+      # The session page's "why is it waiting" and recovery banners, in the page's
+      # words. A sibling of `session` for the reason status_summary is.
+      waiting: Sessions::WaitingExplanation.call(@session),
       session_hierarchy: session_hierarchy_json(record.hierarchy),
       human_messages: human_messages_json(record),
       human_message_capture_gaps: human_message_capture_gaps_json(record)
@@ -779,6 +782,30 @@ class Api::V1::SessionsController < Api::BaseController
       touch_user_activity(@session) if native_app_request?
       render json: { session: session_json(@session.reload), outcome: result.outcome.to_s, message: result.message }
     end
+  end
+
+  # POST /api/v1/sessions/:id/force_start
+  # The queued-for-a-worker banner's "Force": stop the turn that most recently
+  # took one of the `agents` lane's threads and give that thread to this
+  # session's queued turn. `expected_victim_id` is the session the caller was
+  # shown (`waiting.banners[].action.expected_victim_id` on GET); a pick that
+  # differs is refused rather than stopping a turn nobody confirmed. Every
+  # refusal is a 422 carrying Sessions::ForceTurnStart's own sentence, the one
+  # the web flash shows.
+  def force_start
+    result = Sessions::ForceTurnStart.call(
+      @session,
+      actor: "the REST API",
+      expected_victim_id: params[:expected_victim_id].presence
+    )
+
+    unless result.forced?
+      return render_api_error("Cannot force", result.message, status: :unprocessable_entity)
+    end
+
+    # A person pressing Force in the app is user activity, as the web button is.
+    touch_user_activity(@session) if native_app_request?
+    render json: { session: session_json(@session.reload), message: result.message }
   end
 
   # PATCH /api/v1/sessions/:id/reorder_precedence
