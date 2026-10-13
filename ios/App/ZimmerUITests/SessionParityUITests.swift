@@ -190,7 +190,8 @@ final class BoardViewUITests: XCTestCase {
         app.buttons["board.menu"].tap()
         app.buttons["Select Sessions"].firstMatch.tap()
 
-        // A failed session goes; a running one is refused with the server's reason.
+        // A failed session goes; one with messages queued for it is refused with the
+        // server's reason, as the web UI's bulk Trash refuses it.
         let failed = row(app, 1027), running = row(app, 1042)
         XCTAssertTrue(failed.waitForExistence(timeout: timeout))
         failed.tap()
