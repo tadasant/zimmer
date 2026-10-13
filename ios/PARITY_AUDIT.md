@@ -169,20 +169,20 @@ costs.
 | # | Gap | PWA | App today | Server? | Slice / status |
 | --- | --- | --- | --- | --- | --- |
 | G1 | Board filters don't combine | Status checkboxes (any number, *Waiting* included), scheduling class, agent root, genesis, quick filters *All* / *All Unarchived* / *All Priority Unarchived*, remembered in a cookie; Ranked opens on waiting+running+needs_input+failed | One status chip at a time, no *Waiting*, no class/root/genesis, the filter not remembered (the view is), Ranked opens on needs_input | Yes: `agent_root`, several statuses | A: #1304 (server), #1305 (app) |
-| G2 | Nothing updates live | Turbo streams on the board and the session page | Loads once; refreshes only on pull, a filter change or your own action, and not on returning to the app | No (poll and refresh on foreground) | B |
-| G3 | A session opens at the top | Opens at the newest message and follows it | Opens at the header; the conversation is below the cards | No | B |
+| G2 | Nothing updates live | Turbo streams on the board and the session page | Loads once; refreshes only on pull, a filter change or your own action, and not on returning to the app | No (poll and refresh on foreground) | B: #1307 |
+| G3 | A session opens at the top | Opens at the newest message and follows it | Opens at the header; the conversation is below the cards | No | B: #1307 |
 | G4 | MCP prompts can't be answered; no *Fork from here* | Approval banner with the prompt's form; fork from any message | Neither | Yes | Held: #1281, #1282 |
-| G5 | Opening a session doesn't mark it read | Marks all of the session's notifications read and touches *last touched* | From the Inbox, that one notification is marked read; from the board or a push, nothing is, and *last touched* is never set | Yes | C |
-| G6 | Long messages and long histories cut off | Full text; scroll back to the start | Each message cut at 4,000 characters; history stops at 200 messages | Yes: full content, a cursor | C |
-| G7 | Drafts lost | Composer drafts kept for 7 days; an undelivered prompt put back | Lost on leaving the screen | No | B |
-| G8 | Trash refuses running or queued sessions, no Undo | Trashes a running session outright; *Archive anyway* only when messages are queued; an Undo toast | The API refuses a live turn or a non-empty queue without `force` (a 422 shown as an error); no undo | No (`force`, `unarchive` exist) | D |
-| G9 | Status summary unreadable | Markdown with live links (`#message-N`, PRs, sessions); on every *Your board* row | Raw markdown on the session page; not on rows | Yes, for rows: `status_summary` in the list | D |
+| G5 | Opening a session doesn't mark it read | Marks all of the session's notifications read and touches *last touched* | From the Inbox, that one notification is marked read; from the board or a push, nothing is, and *last touched* is never set | Yes | C: #1308 (server), #1309 (app) |
+| G6 | Long messages and long histories cut off | Full text; scroll back to the start | Each message cut at 4,000 characters; history stops at 200 messages | Yes: full content, a cursor | C: #1308 (server), #1309 (app) |
+| G7 | Drafts lost | Composer drafts kept for 7 days; an undelivered prompt put back | Lost on leaving the screen | No | B: #1307 |
+| G8 | Trash refuses running or queued sessions, no Undo | Trashes a running session outright; *Archive anyway* only when messages are queued; an Undo toast | The API refuses a live turn or a non-empty queue without `force` (a 422 shown as an error); no undo | Yes: `end_turn` | D: #1312 (server), #1310 (app) |
+| G9 | Status summary unreadable | Markdown with live links (`#message-N`, PRs, sessions); on every *Your board* row | Raw markdown on the session page; not on rows | Yes: `include=board_row` | D: #1311 (server), #1313 (app) |
 | G10 | No "why is it waiting" | Spot hold, queued turn with *Force start*, auth outage with reset time, starvation banners | None | Yes: waiting reason, `force_start` | E |
 | G11 | Merge and Reprioritize | Row *Merge* on *Your board*; *Reprioritize* | Missing | Yes | Held: #1283, #1284 |
 | G12 | Title search silently capped | Pages through every match | 100 matches, no notice | No | A: #1305 says when there are more |
 | G13 | Rows thin | Agent root, Spot/Priority, genesis, precedence, cost, running elapsed | Status, Priority, `#id`, age, PR | Cost and elapsed: yes | D |
 | G14 | Recovery banners missing | MCP OAuth reconnect, lost approval request, undelivered messages | None | No | E |
-| G15 | Board ordering controls | Drag on *Your board*; inline precedence and promote/demote on Ranked rows | Drag only in Ranked's spot queue | No | D |
+| G15 | Board ordering controls | Drag on *Your board*; inline precedence and promote/demote on Ranked rows | Drag only in Ranked's spot queue | No | D: #1313 (Your board drag) |
 | G16 | Session page detail | Goal picked from the catalog with its name; goal check's delegated sessions; hierarchy root, genesis, markers; human messages here/elsewhere and capture gaps; MCP connection status per server | Free-text goal, raw ids, less detail | Mostly no | F |
 | G17 | Composer capture | Camera; paste an image | Photo library and files only | No | F |
 | G18 | Small controls | Custom snooze time, heartbeat interval, per-row refresh and rename, trash expiry date, restart confirm on a takeover | Missing | No | F |
