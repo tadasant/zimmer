@@ -240,6 +240,7 @@ struct SessionDetailView: View {
         .navigationTitle(Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+        .modifier(QueuedTrashQuestion { $0.id == model.id && app.path.last == model.id })
         // Trashed — here, or after *Trash anyway* — the page goes and the board offers Undo.
         .onChange(of: app.undoable?.id) { _, trashed in
             if trashed == model.id { dismiss() }
