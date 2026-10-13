@@ -219,7 +219,9 @@ final class BoardViewUITests: XCTestCase {
         XCTAssertTrue(reorder.waitForExistence(timeout: timeout))
         XCTAssertEqual(reorder.label, "Reorder Board")
         reorder.tap()
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).firstMatch.waitForExistence(timeout: timeout), "rows have drag handles")
+        XCTAssertTrue(app.buttons["select.done"].waitForExistence(timeout: timeout))
+        let handles = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label != 'Reorder Board'"))
+        XCTAssertTrue(handles.firstMatch.waitForExistence(timeout: timeout), "spot rows have drag handles")
         app.buttons["select.done"].tap()
     }
 
