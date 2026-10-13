@@ -43,12 +43,13 @@ module Mcp
       # than tested for truth.
       BOOLEAN_GATING_ARGS = %w[enabled preemption_enabled].freeze
 
-      # The three numbers FleetIdleMonitor fires on, as tool argument → column.
+      # The four numbers FleetIdleMonitor fires on, as tool argument → column.
       # One list, so the schema, the dispatch and the echo cannot drift apart.
       TOP_UP_FIELDS = {
         "max_running_sessions" => :fleet_idle_max_sessions,
         "idle_minutes" => :fleet_idle_threshold_minutes,
-        "min_fire_interval_minutes" => :fleet_idle_min_fire_interval_minutes
+        "min_fire_interval_minutes" => :fleet_idle_min_fire_interval_minutes,
+        "quiet_backlog_interval_minutes" => :fleet_idle_quiet_backlog_interval_minutes
       }.freeze
 
       description <<~DESC
@@ -87,8 +88,9 @@ module Mcp
           the lane off, which restores the unbounded wait (a session was once held 127 times over five
           days under a gate that was right every time).
         - **set_top_up**: Tune when the `no_sessions_in_progress` trigger event fires — the event that
-          hands a fleet with spare capacity more work. Any of `max_running_sessions`, `idle_minutes` and
-          `min_fire_interval_minutes` may be given; omitted ones are left alone.
+          hands a fleet with spare capacity more work. Any of `max_running_sessions`, `idle_minutes`,
+          `min_fire_interval_minutes` and `quiet_backlog_interval_minutes` may be given; omitted ones are
+          left alone.
 
           The fleet counts as idle enough while FEWER THAN `max_running_sessions` sessions are ON A
           WORKER, so it does not have to empty out completely before topping up. A turn queued behind
@@ -102,8 +104,12 @@ module Mcp
           restart that clock, only reaching the ceiling again does. `min_fire_interval_minutes` is the
           floor between two fires, and on a fleet that stays under its ceiling that floor, not the
           ceiling, is the whole of the cadence: the idle stretch runs on through a fire, so only the
-          cooldown decides when the next one is allowed. `get_spot_policy` reports all three plus where
-          the fleet currently sits against them.
+          cooldown decides when the next one is allowed — while the work backlog has news.
+          `quiet_backlog_interval_minutes` is the longer floor that applies instead when it has none:
+          nothing queued since the last fire, and nothing started from what is left. It is what stops an
+          idle fleet with an empty backlog from spawning an empty top-up every cooldown; a newly queued
+          item lifts it at the next check. `get_spot_policy` reports all four plus where the fleet
+          currently sits against them.
         - **promote_genesis**: Make a genesis kind `priority` (requires `genesis`). This is the one-click
           promotion: it reclassifies every session from that genesis, including ones that already exist,
           because a session's class is derived from its genesis unless something named one for it.
@@ -204,7 +210,17 @@ module Mcp
             maximum: 10080,
             description: "set_top_up: floor between two fires, in minutes, 1-10080 (60 by default). On a " \
                          "fleet that stays under its ceiling this is the whole of the cadence — the idle " \
-                         "stretch runs on through a fire, so only this decides when the next is allowed."
+                         "stretch runs on through a fire, so only this decides when the next is allowed " \
+                         "while the work backlog has something new to hand out."
+          },
+          quiet_backlog_interval_minutes: {
+            type: "integer",
+            minimum: 1,
+            maximum: 10080,
+            description: "set_top_up: the longer floor between two fires while the work backlog has had " \
+                         "nothing new since the last one — no item queued since, nothing started from " \
+                         "what is left — in minutes, 1-10080 (240 by default). A newly queued item lifts " \
+                         "it at the next check. Never binds below `min_fire_interval_minutes`."
           }
         },
         required: [ "action" ]

@@ -119,6 +119,35 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_match "4 record(s) across 1 namespace(s)", response.body
   end
 
+  # UI/MCP parity for the warm clone pool: `get_system_health` and GET
+  # /api/v1/health carry the same reading.
+  test "dashboard shows each pooled key, its ready clones and the claim counts" do
+    WarmClonePool.stubs(:report).returns(
+      enabled: true, scope: "active", size: 1, max_clones: 10, window_days: 7,
+      targets: [ { repo_url: "https://github.com/acme/internal.git", branch: "main", size: 2, ready: 1,
+                   newest_age_seconds: 600, starts: 300, roots: { "zimmer-orchestrator" => 280, "obs" => 20 },
+                   error: nil },
+                 { repo_url: "https://github.com/acme/app.git", branch: "main", size: 1, ready: 0,
+                   newest_age_seconds: nil, starts: 30, roots: { "zimmer" => 30 }, error: "Git command failed: denied" } ],
+      passed_over: [ { repo_url: "https://github.com/acme/site.git", branch: "main", starts: 3,
+                       reason: "fewer than 7 starts in 7 days" } ],
+      last_pass: { at: 2.minutes.ago, built: 1, recycled: 0, failed: "Git command failed: denied" },
+      outcome_window_hours: 24,
+      outcomes: { router: { "claimed" => 12, "missed" => 3 }, other: { "claimed" => 5, "missed" => 4 } }
+    )
+
+    get health_dashboard_url
+    assert_response :success
+
+    assert_select "#warm-clone-pool h3", text: "Warm Clone Pool"
+    assert_select "#warm-clone-pool td", text: /internal@main/
+    assert_select "#warm-clone-pool td", text: "1 / 2"
+    assert_select "#warm-clone-pool dd", text: "12"
+    assert_match "Git command failed: denied", response.body
+    assert_match "fewer than 7 starts in 7 days", response.body
+    assert_match "could not build 1 of 2 pooled keys", response.body
+  end
+
   # UI/MCP parity for webhook ingest: `get_system_health` carries the same reading.
   test "dashboard shows webhook ingest per source, polling by default" do
     with_slack_ingest_env(mode: nil, secret: nil) do

@@ -51,6 +51,12 @@ class AppSetting < ApplicationRecord
   # unavoidable context cost at the start of every session.
   DEFAULT_MCP_TOOL_SEARCH_ENABLED = true
 
+  # Whether WarmClonePool keeps ready clones for every recently active agent root
+  # (WarmPoolPolicy) rather than for the router root alone. OFF is the default:
+  # the router-only pool is the one whose claimed/missed numbers are known, and
+  # this is turned on once they have been read for the wider one.
+  DEFAULT_WARM_CLONE_POOL_ACTIVE_ROOTS_ENABLED = false
+
   # How many sessions may run at once. The gate admits spot work in parallel up to
   # the concurrency the quota can carry, and this is the brake on that — 10 is the
   # number Tadas named. Every running session counts against it, priority included;
@@ -113,6 +119,13 @@ class AppSetting < ApplicationRecord
   # "Why the cadence is the cooldown alone".
   DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES = 60
 
+  # The longer floor that replaces the cooldown while the work backlog has
+  # nothing new to hand out: no item queued since the last fire, and nothing
+  # started since it either. 240 minutes is at most six top-ups a day on an empty
+  # backlog, against the cooldown's 24. See FleetIdleMonitor, "Why an unchanged
+  # backlog backs off".
+  DEFAULT_FLEET_IDLE_QUIET_BACKLOG_INTERVAL_MINUTES = 240
+
   # The knobs an OPERATOR sets: the spot gate, the concurrency limit, the backlog
   # top-up thresholds and the genesis class overrides. Every one of them is a
   # fleet-scheduling decision somebody made deliberately, and every change to one
@@ -136,6 +149,7 @@ class AppSetting < ApplicationRecord
     fleet_idle_max_sessions
     fleet_idle_threshold_minutes
     fleet_idle_min_fire_interval_minutes
+    fleet_idle_quiet_backlog_interval_minutes
     genesis_class_overrides
   ].freeze
 
@@ -156,6 +170,7 @@ class AppSetting < ApplicationRecord
     default_runtime
     default_model
     mcp_tool_search_enabled
+    warm_clone_pool_active_roots_enabled
     extension_states
     mcp_apps_enabled
     mcp_apps_allowed_servers
@@ -237,6 +252,10 @@ class AppSetting < ApplicationRecord
       DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES
     end
 
+    def fleet_idle_quiet_backlog_interval_minutes
+      DEFAULT_FLEET_IDLE_QUIET_BACKLOG_INTERVAL_MINUTES
+    end
+
     # No row means no observation, which is what NULL means on a real row too:
     # the fleet was at or over its ceiling when it was last looked at, and nothing
     # has fired. FleetTopUpStatus reads both unconditionally, so a DB-less boot
@@ -258,6 +277,12 @@ class AppSetting < ApplicationRecord
       DEFAULT_MCP_TOOL_SEARCH_ENABLED
     end
     alias_method :mcp_tool_search_enabled?, :mcp_tool_search_enabled
+
+    # No persisted row exists, so the warm clone pool serves the router alone.
+    def warm_clone_pool_active_roots_enabled
+      DEFAULT_WARM_CLONE_POOL_ACTIVE_ROOTS_ENABLED
+    end
+    alias_method :warm_clone_pool_active_roots_enabled?, :warm_clone_pool_active_roots_enabled
 
     # No persisted row exists, so MCP Apps resolves to off with nothing opted in
     # — the same answer a fresh row gives, and the only one a settings read that
@@ -302,6 +327,10 @@ class AppSetting < ApplicationRecord
   validates :fleet_idle_threshold_minutes,
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 1440 }
   validates :fleet_idle_min_fire_interval_minutes,
+    numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 10_080 }
+  # Same week-long ceiling as the cooldown. A value below the cooldown is legal
+  # and simply never binds: the cooldown is the floor either way.
+  validates :fleet_idle_quiet_backlog_interval_minutes,
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 10_080 }
   validate :genesis_class_overrides_well_formed
 
@@ -430,6 +459,14 @@ class AppSetting < ApplicationRecord
     return DEFAULT_MCP_TOOL_SEARCH_ENABLED unless has_attribute?(:mcp_tool_search_enabled)
 
     !!self[:mcp_tool_search_enabled]
+  end
+
+  # Whether the warm clone pool serves every active root on this row. The shipped
+  # default when the column isn't present yet, as for tool search above.
+  def warm_clone_pool_active_roots_enabled?
+    return DEFAULT_WARM_CLONE_POOL_ACTIVE_ROOTS_ENABLED unless has_attribute?(:warm_clone_pool_active_roots_enabled)
+
+    !!self[:warm_clone_pool_active_roots_enabled]
   end
 
   # Whether session-scoped credentials are on for this row. Returns the shipped

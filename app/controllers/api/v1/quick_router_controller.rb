@@ -41,9 +41,18 @@ class Api::V1::QuickRouterController < Api::BaseController
 
   accepts_native_app_tokens
 
+  prepend_before_action :refuse_an_oversized_body
   before_action :enforce_rate_limit
 
   # POST /api/v1/quick_router
+  #
+  # Besides the message, the page and the pin, the web bubble's Advanced accordion:
+  # `agent_runtime` (a registered harness), `model` (one that harness offers),
+  # `scheduling_class: "spot"` (wait for quota room instead of starting now), a
+  # `parent_session_id` so the new session threads under the one the bubble was opened
+  # on, and `attachments` inline, as a follow-up carries them. A harness or model the
+  # pickers could not have offered is refused rather than silently replaced, as the
+  # bubble refuses it: the draft stays in the field, and nothing is lost by saying so.
   def create
     prompt = params[:prompt].to_s.strip
     if prompt.blank?
@@ -69,33 +78,79 @@ class Api::V1::QuickRouterController < Api::BaseController
         "prompt and page context together are too long; send less of the page", status: :unprocessable_entity)
     end
 
-    session = Session.create_from_agent_root!(
-      agent_root_name: AgentRootsConfig.router_root_name,
-      prompt: augmented_prompt,
-      metadata: { source: source, original_prompt: prompt, current_url: page_url, page_title: page_title, pin: pin }.compact_blank,
-      # From the browser extension a human typed this in a browser: the same
-      # genesis as the in-app bubble. From the iOS app it arrives over an OAuth
-      # grant, which is `api` genesis like MCP's quick_router, at priority because
-      # a person is waiting either way.
-      genesis: native_app_request? ? SessionGenesis::API : SessionGenesis::WEB_UI,
-      scheduling_class: (SessionGenesis::PRIORITY if native_app_request?),
-      skip_enqueue: true
-    )
+    # The Advanced accordion's pickers, validated the way the web bubble validates them.
+    options = QuickRouterOptions.new
+    runtime = options.effective_runtime(params[:agent_runtime])
+    if options.runtime_rejected?(params[:agent_runtime])
+      return render_api_error("Unprocessable Entity", "That harness is not available.", status: :unprocessable_entity)
+    end
+    if options.model_rejected?(runtime, params[:model])
+      return render_api_error("Unprocessable Entity",
+        "That model is not available for the #{RuntimeRegistry.label_for(runtime)} harness.", status: :unprocessable_entity)
+    end
+    model = options.resolve_model(runtime, params[:model])
 
-    # The human's own words, not the page block Zimmer wrapped around them. From
-    # the iOS app they are recorded through its grant, like any OAuth client's.
-    if native_app_request?
-      HumanMessageCapture.record_assistant_message(session: session, grant: native_app_grant, content: prompt,
-        entry_point: NATIVE_APP_ENTRY_POINT)
-    else
-      HumanMessageCapture.record_web_ui_message(session: session, content: prompt, entry_point: ENTRY_POINT)
+    parent_session_id = nil
+    if params[:parent_session_id].present?
+      parent_session_id = Session.find_by(id: params[:parent_session_id].to_i)&.id
+      if parent_session_id.nil?
+        return render_api_error("Unprocessable Entity", "parent_session_id names no session", status: :unprocessable_entity)
+      end
     end
 
-    AgentSessionJob.enqueue_new_session(session.id)
+    # Everything that can be wrong with the attachments is found before a session exists.
+    attachments = InlineAttachments.parse(params[:attachments], noun: "Quick Router prompt")
+
+    spot = params[:scheduling_class].to_s.strip == SessionGenesis::SPOT
+    session = nil
+    staged = nil
+    ActiveRecord::Base.transaction do
+      session = Session.create_from_agent_root!(
+        agent_root_name: AgentRootsConfig.router_root_name,
+        prompt: augmented_prompt,
+        parent_session_id: parent_session_id,
+        # The resolved harness, so the row lands on the runtime the model was validated
+        # against (the bubble passes it the same way, for the same reason).
+        agent_runtime: runtime,
+        metadata: { source: source, original_prompt: prompt, current_url: page_url, page_title: page_title, pin: pin }.compact_blank,
+        # From the browser extension a human typed this in a browser: the same
+        # genesis as the in-app bubble. From the iOS app it arrives over an OAuth
+        # grant, which is `api` genesis like MCP's quick_router, at priority because
+        # a person is waiting either way — unless they chose to let it wait for quota
+        # room, which goes to the top of the spot queue as the bubble's does.
+        genesis: native_app_request? ? SessionGenesis::API : SessionGenesis::WEB_UI,
+        scheduling_class: spot ? SessionGenesis::SPOT : (SessionGenesis::PRIORITY if native_app_request?),
+        precedence: (Session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT) if spot),
+        config: model ? { "model" => model } : nil,
+        skip_enqueue: true
+      )
+
+      # The human's own words, not the page block Zimmer wrapped around them. From
+      # the iOS app they are recorded through its grant, like any OAuth client's.
+      if native_app_request?
+        HumanMessageCapture.record_assistant_message(session: session, grant: native_app_grant, content: prompt,
+          entry_point: NATIVE_APP_ENTRY_POINT)
+      else
+        HumanMessageCapture.record_web_ui_message(session: session, content: prompt, entry_point: ENTRY_POINT)
+      end
+
+      # Last in the block, under the session's own id: a refusal here rolls the session
+      # back, and `store` removes what it wrote before the refusal.
+      staged = InlineAttachments.store(attachments, session_id: session.id)
+    end
+
+    AgentSessionJob.enqueue_new_session(session.id, images: staged[:images], files: staged[:files])
 
     render json: { session_id: session.id, session_url: "#{AppUrl.base_url}#{session_path(session)}" }, status: :created
+  rescue InlineAttachments::Invalid => e
+    render_api_error(e.title, e.message, status: :unprocessable_entity)
   rescue AgentRootsConfig::AgentRootNotFoundError => e
     render_api_error("Unprocessable Entity", "Router agent root not configured: #{e.message}", status: :unprocessable_entity)
+  rescue StandardError
+    # A failure after the files were stored (the commit itself) leaves a session that
+    # does not exist; its files must not stay behind.
+    InlineAttachments.discard(staged)
+    raise
   end
 
   private
@@ -108,6 +163,17 @@ class Api::V1::QuickRouterController < Api::BaseController
   # besides the iOS app's bearer token.
   def api_key_grant
     ApiKey::QUICK_ROUTER_GRANT
+  end
+
+  # Refused before the body is read, as a follow-up's is: the attachments' cap, with
+  # room for base64 and escaping.
+  def self.body_limit = InlineAttachments::BODY_LIMIT
+
+  def refuse_an_oversized_body
+    return unless request.content_length.to_i > self.class.body_limit
+
+    render_api_error("Too large", "The body may be at most #{self.class.body_limit / 1.megabyte} MB, attachments included",
+      status: :content_too_large)
   end
 
   # One counter per client address per window. Read at request time rather than

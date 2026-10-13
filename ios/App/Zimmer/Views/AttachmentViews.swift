@@ -21,8 +21,9 @@ struct AttachMenu: View {
                 Button { choosingFiles = true } label: { Label("Choose Files", systemImage: "folder") }
             } label: {
                 Image(systemName: "paperclip")
-                    .font(.system(size: 20))
-                    .frame(width: 34, height: 34)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(Theme.inkSoft)
+                    .frame(width: 36, height: 36)
             }
             .accessibilityLabel("Attach")
             .accessibilityIdentifier("composer.attach")
@@ -125,19 +126,22 @@ struct AttachmentChips: View {
                         Image(systemName: attachment.isImage ? "photo" : "doc")
                         Text(attachment.filename).lineLimit(1)
                         Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.data.count), countStyle: .file))
-                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.inkSoft)
                         Button {
                             attachments.removeAll { $0.id == attachment.id }
                         } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.inkMute)
                         }
                         .accessibilityLabel("Remove \(attachment.filename)")
                         .accessibilityIdentifier("composer.attachment.remove.\(attachment.filename)")
                     }
                     .font(.footnote)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color(.secondarySystemBackground), in: Capsule())
+                    .foregroundStyle(Theme.ink)
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 32)
+                    .background(Theme.surface, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Theme.rule, lineWidth: 1))
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("composer.attachment.\(attachment.filename)")
                 }

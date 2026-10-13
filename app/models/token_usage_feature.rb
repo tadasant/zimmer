@@ -47,11 +47,11 @@ class TokenUsageFeature < ApplicationRecord
   # this table has no server-tool columns at all because a per-request charge
   # cannot be divided across the content features inside that request.
   #
-  # CostAnalytics reads this table through `cost_sum_sql` and `total_tokens_sql`,
-  # which are correct at any grouping, and takes the call count from the parent.
+  # CostAnalytics reads this table through CostRollup's per-feature sums, which
+  # are correct at any grouping, and takes the call count from the parent.
   def self.totals
     raise NotImplementedError,
       "TokenUsageFeature has several rows per API call — use SessionTokenUsage#totals for " \
-      "call counts, and cost_sum_sql / total_tokens_sql for a per-feature rollup."
+      "call counts, and CostRollup (or cost_sum_sql / total_tokens_sql) for a per-feature rollup."
   end
 end
