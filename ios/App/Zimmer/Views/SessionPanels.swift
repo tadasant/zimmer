@@ -198,9 +198,14 @@ private struct GoalRow: View {
                     .foregroundStyle(name == nil ? Theme.ink : Theme.inkSoft)
                     .lineLimit(expanded ? nil : 2)
                     .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
                     .contentShape(Rectangle())
                     .onTapGesture { withAnimation(.snappy(duration: 0.2)) { expanded.toggle() } }
+                    // A tap expands, so the words are copied from a long press rather than
+                    // selected: selection and a tap gesture on one text, on a page that moves as
+                    // it reads again, took the app down in the UI tests.
+                    .contextMenu {
+                        Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = words }
+                    }
             }
         }
         .accessibilityElement(children: .contain)
