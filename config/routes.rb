@@ -255,6 +255,7 @@ Rails.application.routes.draw do
           post :sleep, action: :sleep_session
           post :restart
           post :start_now
+          post :force_start
           patch :reorder_precedence
           post :fork
           post :regenerate_status_summary
