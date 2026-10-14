@@ -27,6 +27,9 @@ public struct HTTPEndpoint: Hashable, Sendable {
             components.queryItems = query.keys.sorted().map {
                 URLQueryItem(name: $0, value: query[$0])
             }
+            // `URLComponents` leaves `+` as it is, and Rack reads a bare `+` in a query as a
+            // space: a timestamp's `+05:30` would arrive as ` 05:30` and lose its offset.
+            components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         }
         return components.url
     }
