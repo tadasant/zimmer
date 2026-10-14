@@ -40,6 +40,14 @@ public struct AppConfigs: Hashable, Sendable, Decodable {
 
     /// The models for `runtime`, or none when the server names no such runtime.
     public func models(for runtime: String) -> [ModelOption] { runtimeModels[runtime]?.models ?? [] }
+
+    /// The catalog goal a session's goal names, or nil for free text. A goal is stored as the
+    /// id (the web form, the API, a trigger) or as the description verbatim (the web page's
+    /// picker, MCP `start_session`), and both name the same goal, as `GoalsConfig.resolve`
+    /// reads it.
+    public func goal(matching goal: String?) -> GoalOption? {
+        GoalOption.matching(goal, in: goals)
+    }
 }
 
 /// One `SessionGenesis` kind: its key, which the filter sends, and the dashboard's label.
@@ -152,6 +160,23 @@ public struct GoalOption: Hashable, Sendable, Decodable, Identifiable {
         self.id = id
         self.name = name
         self.description = description
+    }
+
+    public var title: String { name?.isEmpty == false ? name! : id }
+
+    /// The goal in `goals` that `goal` names, by id or by its words; nil for free text.
+    public static func matching(_ goal: String?, in goals: [GoalOption]) -> GoalOption? {
+        let value = (goal ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        return goals.first { $0.id == value }
+            ?? goals.first { ($0.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines) == value }
+    }
+
+    /// What a session stores when this goal is picked: its words, as the web page's picker
+    /// stores them, or its id when it has none.
+    public var storedValue: String {
+        let words = (description ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return words.isEmpty ? id : words
     }
 }
 

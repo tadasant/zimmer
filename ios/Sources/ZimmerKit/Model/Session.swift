@@ -117,6 +117,11 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var catalogSkills: [String]?
     public var catalogHooks: [String]?
     public var catalogPlugins: [String]?
+    /// Every MCP server the session has wired: the chosen ones, the ones its plugins bring,
+    /// and the ones Zimmer injects. What the web UI draws a connection chip for.
+    public var allMcpServers: [String]?
+    /// The injected subset alone (the self-session server, say): drawn dashed on the web.
+    public var injectedMcpServers: [String]?
     /// What the dashboard's row shows that the session object does not carry, when the list
     /// was read with `include=board_row`; Your board draws it. Nil when it was not read, which
     /// is not the same as a session with no summary. Not part of `session`.
@@ -141,6 +146,8 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         case catalogSkills = "catalog_skills"
         case catalogHooks = "catalog_hooks"
         case catalogPlugins = "catalog_plugins"
+        case allMcpServers = "all_mcp_servers"
+        case injectedMcpServers = "injected_mcp_servers"
     }
 
     public init(
@@ -199,6 +206,76 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
 
     public var hasNotes: Bool {
         !(notes ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Each wired MCP server and how its connection stands, in the web UI's order: the
+    /// effective set, read against `custom_metadata.mcp_servers_status`. A server with no
+    /// entry is pending, as the web chip reads it.
+    public var mcpConnections: [McpConnection] {
+        let names = allMcpServers ?? mcpServers ?? []
+        let injected = Set(injectedMcpServers ?? [])
+        let statuses = customMetadata?.mcpServerStatuses ?? [:]
+        var seen = Set<String>()
+        return names.compactMap { name in
+            guard seen.insert(name).inserted else { return nil }
+            let status = statuses[name]
+            return McpConnection(name: name, state: McpConnection.State(status?.status), error: status?.error, injected: injected.contains(name))
+        }
+    }
+}
+
+/// One MCP server on a session and whether its agent reached it — the web UI's MCP chips:
+/// green for connected, red for failed (with the error a tap away), grey while pending.
+public struct McpConnection: Hashable, Sendable, Identifiable {
+    public enum State: String, Hashable, Sendable {
+        case connected, failed, pending
+
+        /// Anything but connected or failed reads as pending, as the web chip reads it.
+        public init(_ raw: String?) {
+            self = raw.flatMap(State.init(rawValue:)) ?? .pending
+        }
+
+        public var label: String {
+            switch self {
+            case .connected: return "Connected"
+            case .failed: return "Failed"
+            case .pending: return "Pending connection"
+            }
+        }
+    }
+
+    public var name: String
+    public var state: State
+    public var error: String?
+    /// Zimmer added it rather than anyone choosing it.
+    public var injected: Bool
+
+    public var id: String { name }
+
+    public init(name: String, state: State, error: String? = nil, injected: Bool = false) {
+        self.name = name
+        self.state = state
+        self.error = error
+        self.injected = injected
+    }
+}
+
+/// One entry of `custom_metadata.mcp_servers_status`, as the MCP log poller writes it.
+public struct McpServerStatus: Hashable, Sendable, Codable {
+    public var status: String?
+    public var error: String?
+
+    public init(status: String?, error: String? = nil) {
+        self.status = status
+        self.error = error
+    }
+
+    enum CodingKeys: String, CodingKey { case status, error }
+
+    public init(from decoder: Decoder) throws {
+        let container = try? decoder.container(keyedBy: CodingKeys.self)
+        status = try? container?.decodeIfPresent(String.self, forKey: .status)
+        error = try? container?.decodeIfPresent(String.self, forKey: .error)
     }
 }
 
@@ -346,16 +423,22 @@ public struct PullRequestLink: Hashable, Sendable, Identifiable {
     }
 }
 
-/// The part of a session's `custom_metadata` the app reads: its pull requests, newest last.
+/// The part of a session's `custom_metadata` the app reads: its pull requests, newest last,
+/// and how each MCP server's connection stands.
 public struct SessionCustomMetadata: Hashable, Sendable, Codable {
     public var pullRequests: [PullRequestLink]
+    public var mcpServerStatuses: [String: McpServerStatus]
 
-    public init(pullRequests: [PullRequestLink]) { self.pullRequests = pullRequests }
+    public init(pullRequests: [PullRequestLink], mcpServerStatuses: [String: McpServerStatus] = [:]) {
+        self.pullRequests = pullRequests
+        self.mcpServerStatuses = mcpServerStatuses
+    }
 
     enum CodingKeys: String, CodingKey {
         case urls = "github_pull_request_urls"
         case statuses = "github_pull_request_statuses"
         case ci = "github_pull_request_ci_statuses"
+        case mcpServerStatuses = "mcp_servers_status"
     }
 
     public init(from decoder: Decoder) throws {
@@ -367,6 +450,7 @@ public struct SessionCustomMetadata: Hashable, Sendable, Codable {
             guard let url = URL(string: raw), url.scheme == "https" else { return nil }
             return PullRequestLink(url: url, state: statuses[raw], ci: ci[raw])
         }
+        mcpServerStatuses = (try? container?.decodeIfPresent([String: McpServerStatus].self, forKey: .mcpServerStatuses)) ?? [:]
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -374,6 +458,7 @@ public struct SessionCustomMetadata: Hashable, Sendable, Codable {
         try container.encode(pullRequests.map(\.url.absoluteString), forKey: .urls)
         try container.encode(Dictionary(pullRequests.compactMap { pr in pr.state.map { (pr.url.absoluteString, $0) } }, uniquingKeysWith: { a, _ in a }), forKey: .statuses)
         try container.encode(Dictionary(pullRequests.compactMap { pr in pr.ci.map { (pr.url.absoluteString, $0) } }, uniquingKeysWith: { a, _ in a }), forKey: .ci)
+        if !mcpServerStatuses.isEmpty { try container.encode(mcpServerStatuses, forKey: .mcpServerStatuses) }
     }
 }
 

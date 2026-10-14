@@ -245,6 +245,13 @@ if [ -d "$app" ]; then
   # failed one with its failure details: what the page has to stay legible on.
   shoot session-detail-long -ZimmerFixture -ZimmerFixtureOpenSession 1044
   shoot session-detail-failed -ZimmerFixture -ZimmerFixtureOpenSession 1027
+  # The details card, opened: the goal by its catalog name, its check, the MCP servers' chips
+  # (one failed), the hierarchy's origin, genesis and a row drawn under a senior, and the human
+  # messages here and elsewhere under a Slack capture gap. Then a router judged on the PRs of
+  # the session it spawned, and a goal in your own words.
+  shoot session-detail-panels -ZimmerFixture -ZimmerFixtureOpenSession 1044 -ZimmerFixtureOpenPanels
+  shoot session-detail-delegated -ZimmerFixture -ZimmerFixtureOpenSession 1040 -ZimmerFixtureOpenPanels
+  shoot session-detail-free-goal -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureOpenPanels
   # Why a session is waiting: the spot gate's hold with "Make this session priority", a turn
   # queued for a worker with Force, and a renewed MCP grant beside a message never delivered.
   shoot session-detail-waiting -ZimmerFixture -ZimmerFixtureOpenSession 1031
@@ -275,6 +282,7 @@ if [ -d "$app" ]; then
   shoot sessions-ranked-dark -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView ranked
   shoot session-detail-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038
   shoot session-detail-long-dark -ZimmerFixture -ZimmerFixtureOpenSession 1044
+  shoot session-detail-panels-dark -ZimmerFixture -ZimmerFixtureOpenSession 1044 -ZimmerFixtureOpenPanels
   shoot session-detail-waiting-dark -ZimmerFixture -ZimmerFixtureOpenSession 1031
   shoot composer-attachment-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   shoot session-detail-custom-snooze-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCustomSnooze
