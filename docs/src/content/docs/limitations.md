@@ -1454,6 +1454,22 @@ builds it from the PR's own branch rather than from anything the commenter typed
 code Zimmer's own agent usually wrote — but it is untrusted-adjacent on a PR from a fork, and
 nothing labels it.
 
+### A watcher firing retires an unrelated time wake, and only the prompt says so
+
+When a one-time wake fires, Zimmer retires the rest of the wait it ended at the end of the woken
+turn (`Trigger#shares_wait_with?`). Two `wake_me_up_later` wakes are always treated as two waits, so
+one never retires the other ([#1325](https://github.com/tadasant/zimmer/issues/1325)). A
+`wake_me_up_when_session_changes_state` watcher and a `wake_me_up_later` wake are always treated as
+one wait — the watcher plus deadline backstop pattern — because nothing on the rows says otherwise.
+So a session holding a watcher on a child *and* an unrelated 18:00 CI wake loses the 18:00 wake when
+the watcher fires, unless the woken turn re-arms it.
+
+The woken prompt ends with a list of the wakes the fire will retire and the ones still armed, so
+the loss is not silent. But it depends on the agent reading the list. A turn that ignores it and
+arms nothing comes to rest in `needs_input` rather than sleeping on nothing (#1172), which puts it
+in front of the operator. Recording which wakes belong to one wait at arm time is the fix this
+would need.
+
 ### A message queued by anyone coalesces a recurring trigger's next fire
 
 [Coalescing](/sessions/triggers/#coalescing-a-repeated-fire) asks whether the reused session has
@@ -1852,11 +1868,11 @@ fails, and nothing pages; the first park of a streak sends one push notification
 - **A streak is continued only by its own re-check.** A wall that arrives more than 8 hours after
   the streak's re-check was due starts a fresh streak at 15 minutes, so a session that ran on since
   never inherits an old streak's rung or ceiling.
-- **A re-check can retire the session's own wakes.** The re-check is a one-time wake, so it follows
-  held-wake-group rules: if the agent had armed its own wake before the wall and the re-check fires
-  first and meets the wall again, the agent's wake is retired when that turn comes to rest. A
-  session that failed on the wall lost that wake too, so this is not a new loss, but the agent is
-  not told.
+- **A re-check can retire the session's own watchers.** The re-check is a one-time time wake, so it
+  follows held-wake-group rules: a `wake_me_up_when_session_changes_state` watcher the agent armed
+  before the wall is retired when the re-check's turn comes to rest. The agent's own
+  `wake_me_up_later` wakes are not — two time wakes are two waits — and the re-check's prompt lists
+  what it retired, so the agent can re-arm a watcher it still needs.
 - **One trigger per parked session.** Each park adds a wake trigger row, so a balance that runs out
   under many Pi sessions shows that many rows on `/triggers` until the wall clears.
 

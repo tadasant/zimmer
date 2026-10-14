@@ -1346,12 +1346,16 @@ class Trigger < ApplicationRecord
   # rest, and which ones are still armed. Nil when the requester has no other
   # wakes, so the common single-wake prompt is unchanged.
   #
-  # Retiring a wake is only safe if the turn knows about it. Before this, a turn
-  # woken by one wake had no way to see that a second one it was counting on would
-  # be gone by the end of the turn — the agent in #1325 closed its turn saying "the
-  # 18:00 UTC wake also covers main's post-merge runs" about a wake that no longer
-  # existed. Listing the kept ones as well stops a turn re-arming a wake it already
-  # holds.
+  # Retiring a wake is only safe if the turn knows about it. A turn woken by one
+  # wake cannot otherwise see that a second one it counts on is going away — the
+  # agent in #1325 closed its turn saying "the 18:00 UTC wake also covers main's
+  # post-merge runs" about a wake that no longer existed. Listing the kept ones as
+  # well stops a turn re-arming a wake it already holds.
+  #
+  # Both lists are read at fire time. A wake queued onto a running requester is
+  # read later, and the held group may already be gone by then — the pause of the
+  # turn that was running retires it — so the wording says "by the end of this
+  # turn at the latest" and "when this wake fired" rather than promising either.
   def wake_group_notice
     held, kept = partition_wake_siblings
     kept = kept.select { |sibling| sibling.status == "enabled" && sibling.trigger_conditions.any? { |c| c.last_triggered_at.nil? } }
@@ -1359,12 +1363,12 @@ class Trigger < ApplicationRecord
 
     lines = [ "---", "Zimmer: what this wake did to your other wake-ups." ]
     if held.any?
-      lines << "Retired when this turn ends — they belonged to the wait this wake ended. " \
-        "If one of them was for something else, re-arm it before you finish:"
+      lines << "Retired by the end of this turn at the latest — they belonged to the wait this wake " \
+        "ended. If one of them was for something else, re-arm it before you finish:"
       held.each { |sibling| lines << "- #{sibling.wake_description}" }
     end
     if kept.any?
-      lines << "Still armed, and not affected by this wake — do not re-arm them:"
+      lines << "Still armed when this wake fired, and not affected by it — do not re-arm them:"
       kept.each { |sibling| lines << "- #{sibling.wake_description}" }
     end
     lines.join("\n")

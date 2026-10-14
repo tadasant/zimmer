@@ -592,7 +592,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
       "a second time wake is a different wait, so the first one firing does not hold it (#1325)"
 
     prompt = requester.reload.metadata["pending_follow_up_prompt"].to_s
-    assert_includes prompt, "Retired when this turn ends", "the woken turn is told what its pause will retire"
+    assert_includes prompt, "Retired by the end of this turn", "the woken turn is told what its pause will retire"
     assert_includes prompt, "trigger ##{sibling_needs_input.id}"
     assert_includes prompt, "session_needs_input on session ##{watched.id}"
     assert_includes prompt, "Still armed"
@@ -651,7 +651,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
       assert_includes prompt, "Still armed", "the woken turn is told which of its wakes are still armed"
       assert_includes prompt, "trigger ##{@second.id}"
       assert_includes prompt, "2026-10-13T18:00:00Z"
-      assert_not_includes prompt, "Retired when this turn ends", "nothing of this requester's is retired"
+      assert_not_includes prompt, "Retired by the end of this turn", "nothing of this requester's is retired"
       assert_nil @second.reload.wake_held_at, "the 18:00 wake is not held by the 17:45 fire"
 
       # A worker takes the woken turn, and it ends without arming anything new.
