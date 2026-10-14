@@ -143,7 +143,9 @@ its turn has been running, and leaves the judgement to the person clicking.
 `action_session`'s `force_start` is the same operation for an agent session, with both refusals
 raised as errors rather than returned as a cheerful summary. `get_session` on a queued session names
 the session that would be stopped, and the tool takes the same `expected_victim_id`. The calling
-session is never the victim.
+session is never the victim. The REST API's `POST /sessions/:id/force_start` is the same operation
+for the iOS app, which reads the victim off `GET /sessions/:id`'s `waiting.banners` — see the
+[REST API](/extend/rest-api/).
 
 ## The full machine
 

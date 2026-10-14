@@ -47,7 +47,7 @@ final class TranscriptTests: XCTestCase {
         let transport = ScriptedTransport([{ _ in Fixtures.json(200, ["messages": [], "total": 0, "truncated": false]) }])
         let api = ZimmerHTTPClient(auth: AuthSession(store: Fixtures.signedIn(), transport: transport), transport: transport)
         _ = try await api.conversation(7, limit: 200)
-        XCTAssertEqual(transport.sent.first?.url.query, "limit=200")
+        XCTAssertEqual(transport.sent.first?.url.query, "full_content=true&limit=200")
 
         let fake = FakeZimmerAPI()
         let two = try await fake.conversation(1044, limit: 2)

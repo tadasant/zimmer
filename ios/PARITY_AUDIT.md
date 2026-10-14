@@ -177,20 +177,49 @@ costs.
 | G7 | Drafts lost | Composer drafts kept for 7 days; an undelivered prompt put back | Lost on leaving the screen | No | B: #1307 |
 | G8 | Trash refuses running or queued sessions, no Undo | Trashes a running session outright; *Archive anyway* only when messages are queued; an Undo toast | The API refuses a live turn or a non-empty queue without `force` (a 422 shown as an error); no undo | Yes: `end_turn` | D: #1312 (server), #1310 (app) |
 | G9 | Status summary unreadable | Markdown with live links (`#message-N`, PRs, sessions); on every *Your board* row | Raw markdown on the session page; not on rows | Yes: `include=board_row` | D: #1311 (server), #1313 (app) |
-| G10 | No "why is it waiting" | Spot hold, queued turn with *Force start*, auth outage with reset time, starvation banners | None | Yes: waiting reason, `force_start` | E |
+| G10 | No "why is it waiting" | Spot hold, queued turn with *Force start*, auth outage with reset time, starvation banners | None | Yes: waiting reason, `force_start` | E: #1314 (server), #1315 (app) |
 | G11 | Merge and Reprioritize | Row *Merge* on *Your board*; *Reprioritize* | Missing | Yes | Held: #1283, #1284 |
 | G12 | Title search silently capped | Pages through every match | 100 matches, no notice | No | A: #1305 says when there are more |
-| G13 | Rows thin | Agent root, Spot/Priority, genesis, precedence, cost, running elapsed | Status, Priority, `#id`, age, PR | Cost and elapsed: yes | D |
-| G14 | Recovery banners missing | MCP OAuth reconnect, lost approval request, undelivered messages | None | No | E |
+| G13 | Rows thin | Agent root, Spot/Priority, genesis, precedence, cost, running elapsed | Status, Priority, `#id`, age, PR | Cost and elapsed: yes, but not sent yet (see below) | D: #1313 (agent root, else genesis); cost, running elapsed and precedence on rows not yet |
+| G14 | Recovery banners missing | MCP OAuth reconnect, lost approval request, undelivered messages | None | Yes: banners as data | E: #1314 (server), #1315 (app) |
 | G15 | Board ordering controls | Drag on *Your board*; inline precedence and promote/demote on Ranked rows | Drag only in Ranked's spot queue | No | D: #1313 (Your board drag) |
-| G16 | Session page detail | Goal picked from the catalog with its name; goal check's delegated sessions; hierarchy root, genesis, markers; human messages here/elsewhere and capture gaps; MCP connection status per server | Free-text goal, raw ids, less detail | Mostly no | F |
-| G17 | Composer capture | Camera; paste an image | Photo library and files only | No | F |
-| G18 | Small controls | Custom snooze time, heartbeat interval, per-row refresh and rename, trash expiry date, restart confirm on a takeover | Missing | No | F |
-| G19 | Transcript rows | Thinking, compaction, errors, runtime notices, queue events, image badges; highlighted code with copy | Text and tool calls only; plain code | Yes, for rows | G |
-| G20 | Slash commands | Typeahead from the repo's skills and commands | None | Yes | G |
-| G21 | Desktop-only session settings | Per-session push, auto-compact window, precedence, *Derive* class | Partial | Push, auto-compact: yes | G |
-| G22 | Triggers beyond on/off | Show page toggles for *Enqueue messages* and *Resuscitate archived*; create and edit | List, on/off, invoke | Yes | H (create/edit stays in the browser by choice) |
-| G23 | Costs drill-down | Custom date range, scope to an agent root or a session, burn rate | Fixed windows, fleet only | Burn rate: yes | H |
+| G16 | Session page detail | Goal picked from the catalog with its name; goal check's delegated sessions; hierarchy root, genesis, markers; human messages here/elsewhere and capture gaps; MCP connection status per server | Free-text goal, raw ids, less detail | Mostly no | F: #1320 (Slack permalink and plugin attribution need fields; see below) |
+| G17 | Composer capture | Camera; paste an image | Photo library and files only | No | F: #1317 (paste); camera waits on a device-verified change |
+| G18 | Small controls | Custom snooze time, heartbeat interval, per-row refresh and rename, trash expiry date, restart confirm on a takeover | Missing | No (two follow-ups below) | F: #1317 (board refresh re-reads the transcript only; see below) |
+| G19 | Transcript rows | Thinking, compaction, errors, runtime notices, queue events, image badges; highlighted code with copy | Text and tool calls only; plain code | No: the conversation endpoint sends text and tool calls only (see below) | G: #1321 (Copy on code); the other rows need the server first |
+| G20 | Slash commands | Typeahead from the repo's skills and commands | None | Yes | G: #1321 (catalog skills; clone skills need a route) |
+| G21 | Desktop-only session settings | Per-session push, auto-compact window, precedence, *Derive* class | Partial | Class, precedence: yes; push, auto-compact: no | G: #1321 (class with *Derive it*, precedence); push and auto-compact need routes |
+| G22 | Triggers beyond on/off | Show page toggles for *Enqueue messages* and *Resuscitate archived*; create and edit | List, on/off, invoke | Yes | H: #1316 (app), #1318 (auth: the two switches); create/edit stays in the browser by choice |
+| G23 | Costs drill-down | Custom date range, scope to an agent root or a session, burn rate | Fixed windows, fleet only | Burn rate: yes | H: #1316 (app), #1319 (server: burn rate) |
 | G24 | Outcomes, backlog, gate decisions | Pages of their own | Not in the app | Yes (no token reach) | Not planned: operator surfaces, *Open in browser* |
 | G25 | Settings, API keys, inference, connectors, models, Health's operator actions | Admin pages | Browser | — | Browser by choice |
+
+## Server gaps found while building the slices
+
+Building slices D–H against the real API turned up these. Each one keeps a PWA control off the phone
+until the server carries it. None is an auth change.
+
+- **Transcript rows (G19).** `GET /api/v1/sessions/:id/conversation` sends each message's role,
+  words, time and tool flags. `Session#formatted_conversation` drops everything else: thinking blocks,
+  compaction markers, errors, runtime notices, queue events and images. `GET …/transcript`
+  renders some of them into one plain-text string, which is not rows. The audit's "Yes, for rows"
+  was wrong.
+- **Slash commands (G20).** No route lists the skills and commands in a session's clone
+  (`.claude/skills`, `.claude/commands`, plugin skills); the app offers catalog skills only.
+- **Session settings (G21).** No route toggles a session's push notifications, and the session JSON
+  doesn't say whether push is on. `auto_compact_window` is serialized but not permitted on
+  `PATCH /api/v1/sessions/:id`. That PATCH also writes none of the "Scheduling class set to … /
+  Precedence set to …" log lines the web writes. While a class is chosen, the JSON gives only the
+  class in force, so *Derive it* can't say what the genesis would pick.
+- **Restart confirmation (G18).** The app works out the web's `restart_confirmation` wording from
+  fields the API sends. Sending the server's own wording would retire the app's duplicate of that
+  logic.
+- **Board refresh (G18).** `POST /api/v1/sessions/:id/refresh` re-reads the transcript. The web card's
+  refresh also resumes a failed session, restores a running one's lost job, and nudges a stalled
+  waiting one.
+- **Session detail (G16).** A Slack message's permalink (`human_messages`), which plugin brought an
+  MCP server, and `ceiling_placed` on hierarchy nodes.
+- **Triggers (G22).** `spent_one_shot_wake?`, which the web uses to say whether re-arming a failed
+  trigger fires it again.
+- **Rows (G13).** Cost and running elapsed per row.
 
