@@ -28,6 +28,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
     private let live: Bool
     private var conversationReads: [Int: Int] = [:]
+    /// Made once, from the `now` the fake starts with: a session read twice is the same session,
+    /// as on the server, so a page that reads again sees nothing to redraw.
+    private let humanMessages: [Int: [HumanMessage]]
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to.
@@ -36,6 +39,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries()
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
+        self.humanMessages = FakeZimmerAPI.sampleHumanMessages(now: now)
         if live {
             // Long enough to scroll back through, so following the end can be told from not.
             conversations[1042] = (0..<30).map { index in
@@ -61,7 +65,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
             }
         }
         return SessionDetail(session: try find(id), statusSummary: summaries[id], hierarchy: hierarchy,
-                             goalCheck: Self.sampleGoalChecks()[id], humanMessages: Self.sampleHumanMessages()[id] ?? [])
+                             goalCheck: Self.sampleGoalChecks()[id], humanMessages: humanMessages[id] ?? [])
     }
 
     /// As the server: the newest `limit`, positions counted from the start, capped at 200.
