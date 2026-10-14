@@ -99,6 +99,18 @@ enum Theme {
         }
     }
 
+    /// A session page banner's colours: the web UI's amber (`bg-amber-50 text-amber-800`) for
+    /// a warning, its sky (`bg-sky-50 text-sky-800`) for information. Amber rather than the
+    /// app's orange `warning`, which a failure already wears.
+    static func banner(_ tone: WaitingBanner.Tone) -> StatusColors {
+        switch tone {
+        case .warning:
+            return StatusColors(text: dynamic(light: 0x92400E, dark: 0xFCD34D), fill: wash(light: 0xFFFBEB, dark: 0x78350F), dot: Color(uiColor: UIColor(hex: 0xF59E0B)))
+        case .info:
+            return StatusColors(text: dynamic(light: 0x075985, dark: 0x7DD3FC), fill: wash(light: 0xF0F9FF, dark: 0x0C4A6E), dot: Color(uiColor: UIColor(hex: 0x0EA5E9)))
+        }
+    }
+
     /// Swipe actions carry the system's white label, so their fills are the 600s in both
     /// appearances rather than the lighter dark-mode tints.
     enum Swipe {

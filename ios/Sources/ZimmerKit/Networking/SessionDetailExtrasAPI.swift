@@ -8,6 +8,10 @@ import Foundation
 public protocol SessionDetailExtrasAPI: Sendable {
     /// The messages waiting for the turn in flight to end, in delivery order.
     func queue(_ id: Int) async throws -> [QueuedMessage]
+    /// Messages that were accepted and will never be delivered: the session was archived
+    /// before they went, or Zimmer retired a notice whose news was already stale. Read-only,
+    /// as the web UI's "N messages were never delivered" block under the composer is.
+    func undeliveredMessages(_ id: Int) async throws -> [QueuedMessage]
     /// Rewrite a queued message. Recorded as your message when the app acts on your behalf.
     func editQueued(_ id: Int, message: Int, content: String) async throws -> QueuedMessage
     func deleteQueued(_ id: Int, message: Int) async throws
@@ -31,6 +35,12 @@ extension ZimmerHTTPClient {
     public func queue(_ id: Int) async throws -> [QueuedMessage] {
         let segment = ZimmerPathComponent(String(id))
         let response: QueuedMessagesResponse = try await get("/api/v1/sessions/\(segment)/enqueued_messages", query: ["status": "pending", "per_page": "100"])
+        return response.enqueued_messages.sorted { $0.position < $1.position }
+    }
+
+    public func undeliveredMessages(_ id: Int) async throws -> [QueuedMessage] {
+        let segment = ZimmerPathComponent(String(id))
+        let response: QueuedMessagesResponse = try await get("/api/v1/sessions/\(segment)/enqueued_messages", query: ["status": "undelivered", "per_page": "100"])
         return response.enqueued_messages.sorted { $0.position < $1.position }
     }
 
