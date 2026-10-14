@@ -125,3 +125,30 @@ struct VisibilityLabel: View {
         }
     }
 }
+
+/// When a trashed session's restore window closes (`trash_after`): what the web page's header
+/// says beside Restore. After that date `EmptyTrashJob` deletes what is held for a restore —
+/// the preserved clone, the scratch directory, prompt attachments — not the session. A date
+/// rather than the web's "Expires 3 days from now", so a row read tomorrow still reads true;
+/// the time too where there is room for it.
+struct TrashExpiryLabel: View {
+    let session: SessionSummary
+    var withTime = false
+
+    var body: some View {
+        switch session.trashExpiry() {
+        case let .on(date)?:
+            Label {
+                Text("Expires \(withTime ? date.formatted(date: .abbreviated, time: .shortened) : date.formatted(date: .abbreviated, time: .omitted))")
+            } icon: {
+                Image(systemName: "hourglass")
+            }
+            // The web's tooltip on the same words.
+            .accessibilityHint("Everything held for a restore is permanently deleted after this date.")
+        case .pending?:
+            Label("Deletion pending", systemImage: "hourglass")
+        case nil:
+            EmptyView()
+        }
+    }
+}
