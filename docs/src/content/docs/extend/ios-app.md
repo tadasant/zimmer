@@ -40,10 +40,17 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   says so. In Ranked, *Reorder Spot Queue* (view menu) puts drag handles on the spot queue, and a
   drop tells the server the rows it landed between, as the web UI's drag-and-drop does. *Start Now*
   (press and hold a waiting session, or its session menu) takes its next turn now.
-- **Filters** by status and by board visibility. *Needs input* is the default status filter; the
-  others are *Active* (everything not archived), *Running*, *Failed* and *Archived*. Board
-  visibility is *On board* by default, like the web UI's board, with *Snoozed & hidden* and
-  *Both* in the view menu. Pull to refresh. Rows sit on one surface with hairlines between them,
+- **Filters** as the web UI's filter form does, every filter combining with every other. The
+  chips are one-tap presets: *Needs input* (the default), *Active* (everything not archived),
+  *Waiting*, *Running*, *Failed* and *Archived*. The *Filters* button opens the whole form: any
+  number of statuses, a scheduling class (*Priority* or *Spot*), an agent root and a genesis from
+  the catalog, board visibility, and the web UI's quick filters (*All*, *All unarchived*, *All
+  priority, unarchived*). A combination the chips cannot show is spelled out under them with a
+  *Reset*. Filters and board visibility are remembered across launches, as the web UI remembers
+  them in a cookie. Over the default filters *Ranked* shows waiting, running, needs-input and failed
+  together, worked out each time as the web does, so leaving Ranked is back to *Needs input*. With no status ticked the list is every status but Archived, where the web reads ticking
+  nothing as everything. Board visibility is *On board* by default, like the web UI's board, with
+  *Snoozed & hidden* and *Both* in the view menu and the form. Pull to refresh. Rows sit on one surface with hairlines between them,
   as the web board's Your board and Ranked rows do: the title on up to two lines, then one line
   with the status pill, a *Priority* tag, `#id`, a compact age ("41m", "3h"), the latest PR with
   its CI dot and a notes marker; a star for a favourite; and a snoozed or hidden one adds when
