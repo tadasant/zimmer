@@ -69,6 +69,11 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureOpenPanels`: the opened session starts at its details card with the
     /// hierarchy and the human messages open, so `ios/bin/ui-test` can photograph them.
     var fixtureOpensPanels = false
+    /// `-ZimmerFixtureTrigger <id>`: the Triggers tab opens on that trigger's page.
+    @Published var fixtureTrigger: Int?
+    /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
+    /// is named.
+    @Published var fixtureCosts: CostScope?
 
     let environment: AppEnvironment
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
@@ -134,6 +139,16 @@ final class AppModel: ObservableObject {
         // The list's search box picks this up and searches, as if typed.
         if let search = value("-ZimmerFixtureSearch") { searchText = search }
         if let tab = value("-ZimmerFixtureTab").flatMap(AppTab.init(rawValue:)) { self.tab = tab }
+        if let trigger = value("-ZimmerFixtureTrigger").flatMap(Int.init) {
+            fixtureTrigger = trigger
+            tab = .triggers
+        }
+        if let flag = arguments.firstIndex(of: "-ZimmerFixtureCosts") {
+            // The next argument is a root to narrow to, unless it is the next flag.
+            let root = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : nil
+            fixtureCosts = root.map(CostScope.agentRoot) ?? .fleet
+            tab = .more
+        }
         // Trash a session as a swipe would: the Undo toast, or for one with messages queued,
         // the question before they are discarded.
         if let id = value("-ZimmerFixtureTrash").flatMap(Int.init) {
@@ -380,8 +395,8 @@ final class AppModel: ObservableObject {
         webURL(path: "/sessions/\(id)")
     }
 
-    /// A page of the web UI, by its path: where a banner sends a flow only a browser can
-    /// finish, such as authorizing an MCP server.
+    /// Any page of the web UI, by its path: a trigger's, for editing it, or where a banner sends
+    /// a flow only a browser can finish, such as authorizing an MCP server.
     func webURL(path: String) -> URL? {
         guard let web = signedInOrigins?.web else { return nil }
         return ServerURL.join(web, path)

@@ -208,11 +208,24 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   dismiss a read one, and mark all read or dismiss all read from its menu. *Triggers* lists each
   trigger with what fires it on one line (two at most), its root, when it last fired and how many
   sessions it has made; turn one on or off (a trigger that is off reads in the quieter ink), invoke it now (after a
-  confirmation, then open the session it started), or open its last session. Creating and editing a
-  trigger stay in the browser. *More* holds *Costs* (the window's total, spend by day as a chart, by
-  agent root and by model, and the most expensive sessions with their tokens, each a tap away) and
-  *Health* (the overall status and each section's), read-only; Health's operator actions stay in
-  the browser.
+  confirmation, then open the session it started), or open its last session. Tap one for its page
+  (`GET /api/v1/triggers/:id`): its status and the web page's labels beside it (*Re-uses session*,
+  *Enqueues messages*, missed fires and the rest), why it failed and a *Re-arm* switch if it did,
+  when it last fired and the session it last started, each condition and when it last fired, the
+  agent root (flagged when the catalog has no such root), the re-use settings, the goal and prompt
+  template, and the ten sessions it made most recently. *Enqueue messages* and *Resuscitate
+  archived* are shown, not switched: the API that would switch them is the trigger update, which
+  the app's token does not open. Creating and editing a trigger, and those two switches, stay in
+  the browser; *Open in browser* on a trigger's page gets you there. *More* holds *Costs* and
+  *Health*, read-only. *Costs* is the window's total, spend by day as a chart, by agent root and by
+  model, and the most expensive sessions with their titles, calls and tokens, each a tap away. Its
+  window is one of the web page's horizons (24 hours to a year) or a range of calendar days from
+  the two date fields, both ends included, in the phone's time zone. Tap an agent root to narrow
+  the whole page to it, or, on the page for every root, swipe a session and choose *Only This*,
+  the web page's drilldown; the
+  page then says what it covers, and *All agent roots* widens it again. The burn rate by harness
+  and model is on the web page only: `GET /api/v1/costs` does not return it. *Health* is the
+  overall status and each section's; its operator actions stay in the browser.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
@@ -226,7 +239,11 @@ button: taking a photo cannot be exercised in the simulator, so it waits on a ch
 a device. Fork from a message and answering an
 elicitation each need a server change first — the conversation endpoint does not say where a
 message sits in the transcript the fork service counts, and no route lists a session's pending
-elicitations — and come in their own change. So does the rest of the web card's refresh: on the
+elicitations — and come in their own change. So do switching a trigger's *Enqueue messages* and
+*Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update),
+saying whether re-arming a failed trigger fires it again (the trigger JSON does not say whether a
+one-time wake was already spent; the web page does), and
+the Costs page's burn rate (not in `GET /api/v1/costs`). So does the rest of the web card's refresh: on the
 web it also resumes a failed session and sends the continue nudge to a stalled waiting one, but
 `POST /api/v1/sessions/:id/refresh` only re-reads the transcript, so the row's refresh is
 *Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
