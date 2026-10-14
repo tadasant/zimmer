@@ -46,7 +46,7 @@ struct QuickRouterView: View {
                         AttachmentChips(attachments: $attachments)
                     }
                     HStack(spacing: 8) {
-                        AttachMenu { attach($0, unreadable: $1) }
+                        AttachMenu { attach($0, problems: $1) }
                         Text("Photos, files")
                             .font(.caption)
                             .foregroundStyle(Theme.inkMute)
@@ -163,8 +163,8 @@ struct QuickRouterView: View {
 
     /// Add what the pickers returned, refusing what the server would refuse — the whole
     /// request would fail on it — and saying what could not be read at all.
-    private func attach(_ new: [MessageAttachment], unreadable: [String]) {
-        var refusals = unreadable.map { "\($0) couldn't be read." }
+    private func attach(_ new: [MessageAttachment], problems: [String]) {
+        var refusals = problems
         for attachment in new {
             if let refusal = MessageAttachment.refusal(adding: attachment, to: attachments) {
                 refusals.append(refusal)
