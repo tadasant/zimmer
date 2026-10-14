@@ -64,7 +64,7 @@ struct SessionListView: View {
             // The server orders each view, so a new view is a new list.
             .onChange(of: model.view) { _, view in
                 if view != .ranked, reordering { reordering = false; editMode = .inactive }
-                Task { await model.refresh() }
+                Task { await model.viewChanged() }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
             .modifier(QueuedTrashQuestion { _ in model.path.isEmpty })
@@ -113,11 +113,16 @@ struct SessionListView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
             } footer: {
-                if model.board != .onBoard {
-                    Label("Showing: \(model.board.label)", systemImage: "eye")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(Theme.snooze)
-                        .accessibilityIdentifier("board.current")
+                VStack(alignment: .leading, spacing: 6) {
+                    // In the footer, not the row: a row with no insets clips text at its leading
+                    // edge, which the chips escape only because they scroll.
+                    FilterSummary()
+                    if model.board != .onBoard {
+                        Label("Showing: \(model.board.label)", systemImage: "eye")
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(Theme.snooze)
+                            .accessibilityIdentifier("board.current")
+                    }
                 }
             }
             if let error = model.error {
@@ -129,7 +134,7 @@ struct SessionListView: View {
             }
             if model.sessions.isEmpty && !model.isLoading {
                 Section {
-                    EmptyListRow(filter: model.filter, searching: !model.searchText.isEmpty)
+                    EmptyListRow(filters: model.effectiveFilters, searching: !model.searchText.isEmpty)
                         .listRowBackground(Color.clear)
                 }
             }
@@ -516,23 +521,68 @@ private struct FilterBar: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(SessionFilter.allCases) { filter in
-                    let selected = filter == model.filter
+        VStack(alignment: .leading, spacing: 4) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    // The web UI's filter form, behind one button: every filter, combinable.
                     Button {
                         Haptics.selection()
-                        Task { await model.select(filter) }
+                        model.showingFilters = true
                     } label: {
-                        Pill(selected: selected, compact: true) { Text(filter.label) }
+                        Pill(selected: model.effectiveFilters.preset == nil, compact: true) {
+                            Label(filtersLabel, systemImage: "line.3.horizontal.decrease")
+                        }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityIdentifier("filter.\(filter.rawValue)")
-                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityLabel("Filters")
+                    .accessibilityValue(model.filterSummary)
+                    .accessibilityIdentifier("filter.more")
+                    ForEach(SessionFilter.allCases) { filter in
+                        let selected = model.effectiveFilters.preset == filter
+                        Button {
+                            Haptics.selection()
+                            Task { await model.select(filter) }
+                        } label: {
+                            Pill(selected: selected, compact: true) { Text(filter.label) }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("filter.\(filter.rawValue)")
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
                 }
+                .padding(.vertical, 2)
+                .animation(.snappy(duration: 0.25), value: model.filters)
             }
-            .padding(.vertical, 2)
-            .animation(.snappy(duration: 0.25), value: model.filter)
+        }
+        .sheet(isPresented: $model.showingFilters) { BoardFiltersSheet(initial: model.filters) }
+    }
+
+    private var filtersLabel: String {
+        guard model.filters.preset == nil else { return "Filters" }
+        let count = model.filters.refinementCount + (model.filters.statuses.count > 1 ? 1 : 0)
+        return count > 0 ? "Filters · \(count)" : "Filters"
+    }
+}
+
+/// A combination the chips cannot show, said in words, with a way back.
+private struct FilterSummary: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        if model.effectiveFilters.preset == nil {
+            HStack(spacing: 6) {
+                Text(model.filterSummary)
+                    .font(.caption)
+                    .foregroundStyle(Theme.inkSoft)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .accessibilityIdentifier("filter.summary")
+                Button("Reset") { Task { await model.apply(.default) } }
+                    .buttonStyle(.borderless)
+                    .font(.caption.weight(.medium))
+                    .accessibilityIdentifier("filter.reset")
+                    .fixedSize()
+            }
         }
     }
 }
@@ -611,13 +661,13 @@ struct SessionRow: View {
 }
 
 private struct EmptyListRow: View {
-    let filter: SessionFilter
+    let filters: BoardFilters
     let searching: Bool
 
     var body: some View {
         EmptyState(
             title: message,
-            symbol: searching ? "magnifyingglass" : (filter == .needsInput ? "checkmark" : "tray"),
+            symbol: searching ? "magnifyingglass" : (filters.preset == .needsInput ? "checkmark" : "tray"),
             message: detail
         )
         .accessibilityElement(children: .combine)
@@ -626,12 +676,20 @@ private struct EmptyListRow: View {
 
     private var message: String {
         if searching { return "No sessions match." }
-        return filter == .needsInput ? "Nothing needs you right now." : "No \(filter.label.lowercased()) sessions."
+        switch filters.preset {
+        case .needsInput: return "Nothing needs you right now."
+        case .some(let preset): return "No \(preset.label.lowercased()) sessions."
+        case .none: return "No sessions match these filters."
+        }
     }
 
     private var detail: String? {
         if searching { return "Try other words, or search transcripts." }
-        return filter == .needsInput ? "Sessions waiting on you land here." : nil
+        switch filters.preset {
+        case .needsInput: return "Sessions waiting on you land here."
+        case .some: return nil
+        case .none: return filters.summary
+        }
     }
 }
 

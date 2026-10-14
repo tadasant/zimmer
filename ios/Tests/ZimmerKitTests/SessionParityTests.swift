@@ -76,9 +76,9 @@ final class SessionParityTests: XCTestCase {
             { _ in Fixtures.json(200, ["sessions": [], "content_scan": ["complete": false, "timed_out": true, "next_cursor": "abc"]]) },
         ])
 
-        _ = try await api.sessions(.needsInput, board: .onBoard)
-        _ = try await api.sessions(.active, board: .all)
-        let partial = try await api.search("deploy key", contents: true, filter: .failed, board: .offBoard)
+        _ = try await api.sessions(SessionFilter.needsInput.filters, board: .onBoard)
+        _ = try await api.sessions(SessionFilter.active.filters, board: .all)
+        let partial = try await api.search("deploy key", contents: true, filters: SessionFilter.failed.filters, board: .offBoard)
 
         let queries = transport.sent.map { request in
             Dictionary(uniqueKeysWithValues: (URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
@@ -206,13 +206,13 @@ final class SessionParityTests: XCTestCase {
 
     func testTheFixtureKeepsSnoozedSessionsOffTheBoard() async throws {
         let fake = FakeZimmerAPI()
-        let onBoard = try await fake.sessions(.active, board: .onBoard).sessions.map(\.id)
-        let offBoard = try await fake.sessions(.active, board: .offBoard).sessions.map(\.id)
+        let onBoard = try await fake.sessions(SessionFilter.active.filters, board: .onBoard).sessions.map(\.id)
+        let offBoard = try await fake.sessions(SessionFilter.active.filters, board: .offBoard).sessions.map(\.id)
         XCTAssertFalse(onBoard.contains(1029))
         XCTAssertEqual(offBoard, [1029])
 
         _ = try await fake.setVisibility(1029, .visible)
-        let afterwards = try await fake.sessions(.active, board: .onBoard).sessions.map(\.id)
+        let afterwards = try await fake.sessions(SessionFilter.active.filters, board: .onBoard).sessions.map(\.id)
         XCTAssertTrue(afterwards.contains(1029))
     }
 
@@ -236,11 +236,11 @@ final class SessionParityTests: XCTestCase {
 
     func testSearchMatchesTitlesAndOnlyWhenAskedTranscripts() async throws {
         let fake = FakeZimmerAPI()
-        let byTitle = try await fake.search("postgres", contents: false, filter: .active, board: .all).sessions.map(\.id)
+        let byTitle = try await fake.search("postgres", contents: false, filters: SessionFilter.active.filters, board: .all).sessions.map(\.id)
         XCTAssertEqual(byTitle, [1035])
-        let notInTitles = try await fake.search("ci is green", contents: false, filter: .active, board: .all).sessions
+        let notInTitles = try await fake.search("ci is green", contents: false, filters: SessionFilter.active.filters, board: .all).sessions
         XCTAssertEqual(notInTitles, [])
-        let inTranscripts = try await fake.search("every check is green", contents: true, filter: .active, board: .all).sessions.map(\.id)
+        let inTranscripts = try await fake.search("every check is green", contents: true, filters: SessionFilter.active.filters, board: .all).sessions.map(\.id)
         XCTAssertEqual(inTranscripts, [1038])
     }
 }
