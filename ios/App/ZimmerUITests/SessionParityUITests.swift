@@ -300,8 +300,8 @@ final class RankedUITests: XCTestCase {
         XCTAssertTrue(reorder.waitForExistence(timeout: timeout))
         reorder.tap()
 
-        // Drag the last of the spot queue (the deploy key, 10) up into the second place, between
-        // the sweep (50) and the CarPlay scene (30).
+        // Drag the deploy key (10), fourth in the spot queue, up into second place, between the
+        // sweep (50) and the CarPlay scene (30).
         let last = app.descendants(matching: .any)["session.row.1027"]
         let first = app.descendants(matching: .any)["session.row.1031"]
         let second = app.descendants(matching: .any)["session.row.1042"]
@@ -309,7 +309,7 @@ final class RankedUITests: XCTestCase {
         // Both rows on screen, or the drag has no frame to start from or land on.
         // Read from the frame: `isHittable` throws, rather than answering no, for an element
         // the list has not laid out.
-        // Its top edge below the navigation bar too: the drop lands near the first row's top.
+        // Its top edge below the navigation bar too, so the order read after the drop is real.
         func onScreen(_ element: XCUIElement) -> Bool {
             guard element.exists, !element.frame.isEmpty else { return false }
             let bar = app.navigationBars.firstMatch
