@@ -93,6 +93,43 @@ class Api::V1::CostsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 2, fleet["totals"]["api_calls"]
   end
 
+  # The Costs page's burn rate card, as data: present on the fleet scope, where
+  # the page renders it, and absent on a narrowed one, where it does not.
+  test "the fleet rollup carries the current burn rates and a narrowed one omits them" do
+    HarnessModelBurnRate.create!(harness: "zimmer", model: "claude-opus-5", usd_per_minute: 0.5,
+                                 sample_session_count: 25, sample_minutes: 120.0, sample_cost_usd: 60.0,
+                                 computed_at: 10.minutes.ago)
+    HarnessModelBurnRate.create!(harness: "zimmer-router", model: "claude-sonnet-5", usd_per_minute: 0.1,
+                                 sample_session_count: 4, sample_minutes: 30.0, sample_cost_usd: 3.0,
+                                 computed_at: 10.minutes.ago)
+    HarnessModelBurnRate.create!(harness: "retired", model: "claude-opus-5", usd_per_minute: 9.0,
+                                 computed_at: (HarnessModelBurnRate::FRESHNESS_HORIZON + 1.hour).ago)
+
+    get "/api/v1/costs", headers: @headers
+
+    assert_response :success
+    rates = JSON.parse(response.body)["burn_rates"]
+    assert_equal [ %w[zimmer claude-opus-5], %w[zimmer-router claude-sonnet-5] ], rates.map { |r| [ r["harness"], r["model"] ] },
+                 "fresh rates only, dearest first"
+    assert_equal 0.5, rates.first["usd_per_minute"]
+    assert_equal 30.0, rates.first["usd_per_hour"]
+    assert_equal 25, rates.first["sample_session_count"]
+    assert_equal 120.0, rates.first["sample_minutes"]
+    assert rates.first["computed_at"].present?
+
+    get "/api/v1/costs", params: { agent_root: "zimmer" }, headers: @headers
+    assert_not JSON.parse(response.body).key?("burn_rates")
+
+    get "/api/v1/costs", params: { session_id: @session.id }, headers: @headers
+    assert_not JSON.parse(response.body).key?("burn_rates")
+  end
+
+  test "the fleet rollup reports no burn rates as an empty list" do
+    get "/api/v1/costs", headers: @headers
+
+    assert_equal [], JSON.parse(response.body)["burn_rates"]
+  end
+
   test "records returns rows with a per-row priced cost" do
     usage
 
