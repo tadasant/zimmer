@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// Slice G, against the `-ZimmerFixture` in-memory Zimmer: a code block's Copy button, the
@@ -14,6 +15,9 @@ final class TranscriptParityUITests: XCTestCase {
     /// The Postgres question (1035) ends on a fenced `sh` block. Copy puts the code on the
     /// pasteboard: pasted into the composer, it is the code and only the code.
     func test_a_code_block_is_copied_and_pastes_as_its_code() throws {
+        // Emptied first: the simulator's pasteboard outlives a launch, so a code block copied
+        // by an earlier run would otherwise paste without this one's tap.
+        UIPasteboard.general.string = ""
         let app = launch(["-ZimmerFixtureOpenSession", "1035"])
         let copy = app.buttons["code.copy"].firstMatch
         XCTAssertTrue(copy.waitForExistence(timeout: timeout))
@@ -112,10 +116,16 @@ final class TranscriptParityUITests: XCTestCase {
 
     /// The page opens at its newest message; swipe toward `element` until it can be tapped.
     private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
-        for _ in 0..<8 where !(element.exists && element.isHittable) {
+        // Below the navigation bar too: isHittable says yes under it, where a tap lands on the bar.
+        func inView() -> Bool {
+            guard element.exists, !element.frame.isEmpty, element.isHittable else { return false }
+            let bar = app.navigationBars.firstMatch
+            return element.frame.minY >= (bar.exists ? bar.frame.maxY : 0)
+        }
+        for _ in 0..<8 where !inView() {
             if element.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
         }
-        XCTAssertTrue(element.exists && element.isHittable, "scrolled into view")
+        XCTAssertTrue(inView(), "scrolled into view")
     }
 
     /// The edit menu's Paste: a menu item on current iOS, a button on some runtimes.
