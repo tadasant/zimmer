@@ -55,7 +55,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
                                     content: "Earlier step \(index) of the CarPlay scene.", timestamp: now.addingTimeInterval(Double(index - 30) * 60))
             }
         }
-        self.nextID = (sessions.map(\.id).max() ?? 0) + 1
+        // Past every session the fake can open, the family 1045–1049 included, so a new one
+        // never takes an id an existing page answers to.
+        self.nextID = max((sessions.map(\.id).max() ?? 0) + 1, 1100)
     }
 
     public func sessions(_ filter: SessionFilter) async throws -> [SessionSummary] {
