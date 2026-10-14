@@ -78,11 +78,13 @@ module Mcp
 
           **Wake-ups override `enqueue_messages: false`.** For ordinary triggers (Slack, recurring schedules), `enqueue_messages: false` means "don't barge a busy session." Wake-ups are one-shot signals, not recurring drumbeats, so they queue onto a running requester regardless of that flag.
 
-          **⚠️ Sibling-destroy semantics when paired with state-change wakes.** If this `wake_me_up_later` trigger is acting as a deadline backstop alongside `wake_me_up_when_session_changes_state` triggers (the recommended triple-wake + deadline pattern), Zimmer's firing path destroys ALL of the requester's other one-time wakes whenever any one of them fires — and that cuts both ways:
-          - If a state-change trigger fires first, this deadline backstop is destroyed (not pending in the background).
-          - If THIS deadline fires first (e.g., a hung watched session never transitioned), all the companion state-change watchers are destroyed.
+          **⚠️ Sibling-destroy semantics when paired with state-change wakes.** If this `wake_me_up_later` trigger is acting as a deadline backstop alongside `wake_me_up_when_session_changes_state` watchers (the recommended watcher + deadline pattern), whichever fires first ends the wait, and Zimmer retires the rest of it when the woken turn ends — and that cuts both ways:
+          - If a state-change watcher fires first, this deadline backstop is retired at the end of the woken turn.
+          - If THIS deadline fires first (e.g., a hung watched session never transitioned), the companion state-change watchers are retired at the end of the woken turn.
 
-          In either case, the woken-up turn starts with zero remaining scheduled wakes. If the woken-up turn decides to keep waiting (e.g., the wake fired prematurely on a transient flap, or the deadline hit but the watched session is still progressing), it MUST re-register the wakes it still needs — both the state-change watchers and a fresh deadline — before going back to sleep. The originals are gone.
+          **Two `wake_me_up_later` wakes are two waits, and never retire each other.** If you arm one for 17:45 and another for 18:00, the 17:45 wake firing leaves the 18:00 one armed — and once the 17:45 turn ends without arming anything new, the session goes back to sleep on it. Do not re-arm it.
+
+          The woken turn's prompt ends with a list of what that fire did to your other wakes: which ones will be retired when the turn ends, and which are still armed. If the woken-up turn decides to keep waiting on something the list says will be retired (e.g., the wake fired prematurely on a transient flap, or the deadline hit but the watched session is still progressing), it MUST re-register what it still needs — the state-change watcher and a fresh deadline — before ending the turn.
         DESC
       end
 
@@ -136,7 +138,7 @@ module Mcp
 
           ℹ️ **Cross-turn safety net:** If the wake-up fires while this session is still running — because you had not ended this turn yet, or for any other reason — the wake-up prompt is durably queued onto the session via `enqueued_messages` and processed at the next turn boundary by Zimmer's pre-pause handoff. It is NOT silently dropped. Still end your turn promptly; queuing is the safety net, not a substitute for ending the turn.
 
-          **Sibling-destroy reminder:** if this trigger is paired with `wake_me_up_when_session_changes_state` triggers (the triple-wake + deadline pattern), whichever wake fires first destroys ALL the others belonging to this requester. If this deadline fires while the watched session is still progressing, the woken-up turn must re-register the state-change watchers AND a new deadline before going back to sleep — the originals are gone.
+          **Sibling-destroy reminder:** if this trigger is paired with `wake_me_up_when_session_changes_state` watchers (the watcher + deadline pattern), whichever fires first retires the other at the end of the woken turn. If this deadline fires while the watched session is still progressing, the woken-up turn must re-register the state-change watcher AND a new deadline before ending the turn. Another `wake_me_up_later` wake is never retired by this one firing; the woken prompt lists which of your wakes are still armed and which will be retired.
         TEXT
       end
 
