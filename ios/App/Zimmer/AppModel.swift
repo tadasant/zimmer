@@ -313,9 +313,12 @@ final class AppModel: ObservableObject {
     @discardableResult
     func perform(_ done: String, on id: Int, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
         do {
-            let updated = try await action(connection.api)
+            var updated = try await action(connection.api)
             withAnimation {
                 if let index = sessions.firstIndex(where: { $0.id == id }) {
+                    // An action answers with the session alone: the row's summary stays until
+                    // the next read of the list.
+                    if updated.boardRow == nil { updated.boardRow = sessions[index].boardRow }
                     if belongsOnList(updated) { sessions[index] = updated } else { sessions.remove(at: index) }
                 }
             }
@@ -428,13 +431,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// The Ranked view's drag-and-drop, then the queue as the server now ranks it.
+    /// Your board's and Ranked's drag-and-drop, then the list as the server now orders it.
     func reorder(_ id: Int, above: Int?, below: Int?) async {
         do {
             _ = try await connection.api.reorder(id, above: above, below: below)
             // After the reload, so the toast never shows over the row in its old place.
             await refresh()
-            notice = "Moved in the spot queue"
+            notice = view == .ranked ? "Moved in the spot queue" : "Moved on your board"
             Haptics.success()
         } catch {
             handle(error)

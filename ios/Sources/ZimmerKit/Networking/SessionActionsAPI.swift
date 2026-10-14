@@ -195,8 +195,10 @@ extension ZimmerHTTPClient {
             var query = filters.query.merging(board.query) { a, _ in a }
             query["view"] = view.rawValue
             query["per_page"] = nil
+            // The dashboard's User-view rows carry the agent root and the status summary.
+            query["include"] = "board_row"
             let response: SessionListResponse = try await get("/api/v1/sessions", query: query)
-            return SessionSearchResult(sessions: response.sessions, complete: !(response.truncated ?? false))
+            return SessionSearchResult(sessions: response.rows, complete: !(response.truncated ?? false))
         }
     }
 
@@ -227,11 +229,13 @@ extension ZimmerHTTPClient {
         var params = filters.query.merging(board.query) { a, _ in a }
         params["q"] = query
         if contents { params["search_contents"] = "true" }
+        // Searching from Your board keeps its rows' summaries.
+        params["include"] = "board_row"
         let response: SearchResponse = try await get("/api/v1/sessions/search", query: params)
         // A title search pages like the list; one page of 100 is all the phone reads, so more
         // pages than that is an incomplete answer, said as one rather than cut silently.
         let morePages = (response.pagination?.total_pages ?? 1) > 1
-        return SessionSearchResult(sessions: SessionOrdering.sorted(response.sessions), complete: (response.content_scan?.complete ?? true) && !morePages)
+        return SessionSearchResult(sessions: SessionOrdering.sorted(response.rows), complete: (response.content_scan?.complete ?? true) && !morePages)
     }
 
     public func sendNow(_ id: Int, prompt: String) async throws -> FollowUpResult {
@@ -415,6 +419,9 @@ struct SearchResponse: Decodable {
     let sessions: [SessionSummary]
     let content_scan: ContentScan?
     let pagination: Pagination?
+    let board_rows: [String: BoardRow]?
+
+    var rows: [SessionSummary] { BoardRow.attach(board_rows, to: sessions) }
 }
 
 struct SchedulingResponse: Decodable {

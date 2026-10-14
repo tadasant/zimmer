@@ -586,7 +586,14 @@ extension FakeZimmerAPI {
 // a spot session to the midpoint of the neighbours it was dropped between.
 extension FakeZimmerAPI {
     public func sessions(_ filters: BoardFilters, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
-        let rows = try await sessions(filters, board: board).sessions
+        var rows = try await sessions(filters, board: board).sessions
+        if view == .yourBoard || view == .ranked {
+            rows = rows.map { session in
+                var session = session
+                session.boardRow = BoardRow(agentRoot: session.agentRoot, statusSummary: summaries[session.id])
+                return session
+            }
+        }
         return SessionSearchResult(sessions: view.sections(rows).flatMap(\.sessions))
     }
 
@@ -601,8 +608,13 @@ extension FakeZimmerAPI {
 
     public func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary {
         guard above != id, below != id else { throw ZimmerError.http(status: 422, message: "A session cannot be dropped next to itself") }
-        let upper = try above.map { try find($0).precedence ?? 0 }
-        let lower = try below.map { try find($0).precedence ?? 0 }
+        // As the server: only a live spot session counts as a neighbour.
+        func neighbour(_ id: Int?) -> Int? {
+            guard let id, let row = all.first(where: { $0.id == id }), !row.isPriority, row.status != .archived else { return nil }
+            return row.precedence ?? 0
+        }
+        let upper = neighbour(above)
+        let lower = neighbour(below)
         let precedence: Int
         switch (upper, lower) {
         case let (upper?, lower?): precedence = (upper + lower) / 2
