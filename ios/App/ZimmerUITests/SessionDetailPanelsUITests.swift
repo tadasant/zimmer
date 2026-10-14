@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// The session page's detail (iOS parity G16), against the `-ZimmerFixture` in-memory
@@ -40,6 +41,30 @@ final class SessionDetailPanelsUITests: XCTestCase {
         app.buttons["goal.custom.save"].tap()
         XCTAssertTrue(waitForDisappearance(name), "free text has no catalog name")
         XCTAssertTrue(app.staticTexts["Merge once the reviewer signs off."].waitForExistence(timeout: timeout))
+    }
+
+    /// The goal's words are copied from a long press, as a whole: pasted into the composer,
+    /// they are the words and only the words.
+    func test_the_goals_words_are_copied_from_a_long_press() throws {
+        UIPasteboard.general.string = ""
+        let app = launch(["-ZimmerFixtureOpenSession", "1038"])
+        let words = app.staticTexts["Unmerged PR is open and CI is green."]
+        XCTAssertTrue(words.waitForExistence(timeout: timeout))
+        scrollUntilHittable(app, words)
+        words.press(forDuration: 1.2)
+        let copy = app.buttons["Copy"].firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: timeout), "the long press offers Copy")
+        copy.tap()
+
+        let field = app.descendants(matching: .any)["followup.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: timeout))
+        field.tap()
+        field.press(forDuration: 1.2)
+        let paste = pasteCommand(app)
+        XCTAssertTrue(paste.waitForExistence(timeout: timeout), "the edit menu offers Paste")
+        paste.tap()
+        let pasted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Unmerged PR is open and CI is green."), object: field)
+        XCTAssertEqual(XCTWaiter().wait(for: [pasted], timeout: timeout), .completed, "the pasteboard holds the goal's words")
     }
 
     func test_the_goal_check_opens_the_session_whose_prs_it_judged() throws {
@@ -140,7 +165,13 @@ final class SessionDetailPanelsUITests: XCTestCase {
     private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
         // Ask for hittability only of an element on the page with a frame: asking it of one the
         // lazy list has not laid out throws rather than answering no.
-        func inView() -> Bool { element.exists && !element.frame.isEmpty && element.isHittable }
+        // And below the navigation bar: isHittable says yes for an element still under it, where
+        // a tap lands on the bar.
+        func inView() -> Bool {
+            guard element.exists, !element.frame.isEmpty, element.isHittable else { return false }
+            let bar = app.navigationBars.firstMatch
+            return element.frame.minY >= (bar.exists ? bar.frame.maxY : 0)
+        }
         for _ in 0..<8 where !inView() {
             // Not laid out yet means above: the page opens at its newest message, under the panels.
             if !element.exists || element.frame.isEmpty || element.frame.midY < app.frame.midY {
@@ -150,6 +181,13 @@ final class SessionDetailPanelsUITests: XCTestCase {
             }
         }
         XCTAssertTrue(inView(), "\(element) comes into view")
+    }
+
+    /// The edit menu's Paste: a menu item on current iOS, a button on some runtimes.
+    private func pasteCommand(_ app: XCUIApplication) -> XCUIElement {
+        let item = app.menuItems["Paste"].firstMatch
+        if item.waitForExistence(timeout: 3) { return item }
+        return app.buttons["Paste"].firstMatch
     }
 
     private func waitForDisappearance(_ element: XCUIElement) -> Bool {

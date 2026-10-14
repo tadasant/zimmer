@@ -307,9 +307,12 @@ final class RankedUITests: XCTestCase {
         // Both rows on screen, or the drag has no frame to start from or land on.
         // Read from the frame: `isHittable` throws, rather than answering no, for an element
         // the list has not laid out.
+        // Its top edge below the navigation bar too: the drop lands near the first row's top.
         func onScreen(_ element: XCUIElement) -> Bool {
             guard element.exists, !element.frame.isEmpty else { return false }
-            return app.frame.contains(CGPoint(x: element.frame.midX, y: element.frame.midY))
+            let bar = app.navigationBars.firstMatch
+            return element.frame.minY >= (bar.exists ? bar.frame.maxY : 0)
+                && app.frame.contains(CGPoint(x: element.frame.midX, y: element.frame.midY))
         }
         var swipes = 0
         while !(onScreen(last) && onScreen(first)) && swipes < 6 {
