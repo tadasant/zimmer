@@ -243,9 +243,13 @@ private struct ClampedTextRow: View {
                 .foregroundStyle(Theme.ink)
                 .lineLimit(expanded ? nil : 2)
                 .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
                 .contentShape(Rectangle())
                 .onTapGesture { withAnimation(.snappy(duration: 0.2)) { expanded.toggle() } }
+                // Copied from a long press, as the goal's words are: selection with the tap
+                // that expands, on a page that moves as it reads again, takes the app down.
+                .contextMenu {
+                    Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }
+                }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(identifier)
