@@ -1,7 +1,7 @@
 import XCTest
 
-/// Slice 5: the tab bar — the inbox, triggers, and costs and health under More — against the
-/// `-ZimmerFixture` in-memory Zimmer.
+/// Slice 5: the tab bar — the inbox, triggers, and costs and health under More — and a
+/// trigger's page and the Costs drilldown, against the `-ZimmerFixture` in-memory Zimmer.
 @MainActor
 final class OperationsUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -48,11 +48,92 @@ final class OperationsUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["health.overall"].waitForExistence(timeout: timeout))
     }
 
+    func test_a_trigger_opens_its_page_where_it_is_turned_off_and_invoked() throws {
+        let app = launch()
+        app.tabBars.buttons["Triggers"].tap()
+        let open = app.buttons["trigger.open.5"]
+        XCTAssertTrue(open.waitForExistence(timeout: timeout))
+        open.tap()
+        XCTAssertTrue(app.navigationBars["Nightly dependency sweep"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(app.descendants(matching: .any)["trigger.detail.enqueue"].waitForExistence(timeout: timeout),
+                      "the re-use settings are on the page")
+        XCTAssertTrue(app.descendants(matching: .any)["trigger.detail.lastSession"].exists, "the session it last started is a tap away")
+
+        // A labelled switch: tap the switch itself, at the row's trailing edge.
+        let toggle = app.switches["trigger.detail.toggle"]
+        XCTAssertEqual(toggle.value as? String, "1")
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        XCTAssertTrue(waitForValue(toggle, "0"), "the trigger is off")
+
+        let actions = app.buttons["trigger.detail.actions"]
+        actions.tap()
+        app.buttons["Invoke Now"].firstMatch.tap()
+        let confirm = app.sheets.buttons["Invoke Nightly dependency sweep"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
+        confirm.tap()
+        XCTAssertTrue(app.staticTexts["detail.title"].waitForExistence(timeout: timeout), "the session it started opens")
+    }
+
+    func test_costs_narrow_to_a_root_and_a_session_and_read_a_calendar_range() throws {
+        let app = launch()
+        app.tabBars.buttons["More"].tap()
+        app.descendants(matching: .any)["more.costs"].firstMatch.tap()
+        // The range's fields sit above the figures, so the roots may start below the fold.
+        let root = app.buttons["costs.root.zimmer"]
+        XCTAssertTrue(app.staticTexts["costs.total"].waitForExistence(timeout: timeout))
+        var swipes = 0
+        while !(root.exists && root.isHittable) && swipes < 6 { app.swipeUp(); swipes += 1 }
+        root.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].waitForExistence(timeout: timeout), "the page says what it is narrowed to")
+        XCTAssertTrue(waitForDisappearance(app.buttons["costs.root.motet"]), "only the narrowed root is left")
+        let clear = app.buttons["costs.scope.clear"]
+        swipes = 0
+        while !(clear.exists && clear.isHittable) && swipes < 6 { app.swipeDown(); swipes += 1 }
+        clear.tap()
+        // The banner goes when the fleet's figures arrive; the roots are below the fold again.
+        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["costs.scope"]), "back to the fleet")
+        let motet = app.buttons["costs.root.motet"]
+        swipes = 0
+        while !(motet.exists && motet.isHittable) && swipes < 6 { app.swipeUp(); swipes += 1 }
+        XCTAssertTrue(motet.exists && motet.isHittable, "back to every root")
+
+        let window = app.segmentedControls["costs.window"]
+        swipes = 0
+        while !(window.exists && window.isHittable) && swipes < 6 { app.swipeDown(); swipes += 1 }
+        let showing = app.staticTexts["costs.showing"]
+        window.buttons["30d"].tap()
+        XCTAssertTrue(waitForLabel(showing, "Showing 30 days"))
+        app.buttons["costs.range.apply"].tap()
+        let range = expectation(for: NSPredicate(format: "label CONTAINS %@", "–"), evaluatedWith: showing)
+        XCTAssertEqual(XCTWaiter().wait(for: [range], timeout: timeout), .completed, "the calendar range, from the fields the horizon filled")
+
+        let session = app.buttons["costs.session.1042"]
+        swipes = 0
+        while !(session.exists && session.isHittable) && swipes < 6 { app.swipeUp(); swipes += 1 }
+        session.swipeLeft()
+        app.buttons["Only This"].firstMatch.tap()
+        // The banner heads the page, which is still scrolled to the sessions.
+        let scope = app.descendants(matching: .any)["costs.scope"]
+        swipes = 0
+        while !(scope.waitForExistence(timeout: 2) && scope.isHittable) && swipes < 6 { app.swipeDown(); swipes += 1 }
+        XCTAssertTrue(scope.exists, "narrowed to the session")
+    }
+
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-ZimmerFixture"]
         app.launch()
         return app
+    }
+
+    private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
+        let matches = expectation(for: NSPredicate(format: "label == %@", label), evaluatedWith: element)
+        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
     }
 
     private func waitForValue(_ element: XCUIElement, _ value: String) -> Bool {
