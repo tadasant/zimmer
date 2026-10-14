@@ -14,12 +14,15 @@ final class FakeStableReadsTests: XCTestCase {
         }
     }
 
-    func testAConversationReadTwiceIsTheSameConversation() async throws {
+    func testEverythingThePagePollsReadsTheSameTwice() async throws {
         let fake = FakeZimmerAPI()
         for session in FakeZimmerAPI.sampleSessions() {
-            let first = try await fake.conversation(session.id, limit: 100)
-            let second = try await fake.conversation(session.id, limit: 100)
-            XCTAssertEqual(first, second, "session \(session.id)'s conversation changed between two reads")
+            let conversation = try await fake.conversation(session.id, limit: 100)
+            let queue = try await fake.queue(session.id)
+            let conversationAgain = try await fake.conversation(session.id, limit: 100)
+            let queueAgain = try await fake.queue(session.id)
+            XCTAssertEqual(conversation, conversationAgain, "session \(session.id)'s conversation changed between two reads")
+            XCTAssertEqual(queue, queueAgain, "session \(session.id)'s queue changed between two reads")
         }
     }
 }

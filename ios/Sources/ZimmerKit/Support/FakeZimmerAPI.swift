@@ -37,7 +37,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false) {
         self.live = live
         self.all = sessions
-        self.summaries = FakeZimmerAPI.sampleSummaries()
+        self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
         self.humanMessages = FakeZimmerAPI.sampleHumanMessages(now: now)
         if live {
