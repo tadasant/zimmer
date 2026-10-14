@@ -18,6 +18,11 @@ public protocol SessionActionsAPI: Sendable {
     /// The Ranked view's *Start now*: take a waiting session's next turn now. Refused when it
     /// has no turn queued (restart it instead) or is asleep on a wake.
     func startNow(_ id: Int) async throws -> String
+    /// The queued-for-a-worker banner's *Force*: stop the turn that most recently took a worker
+    /// thread and give the thread to this session's queued turn. `expectedVictimID` is the
+    /// session the banner named; the server refuses (a 422 with its reason) when the turn it
+    /// would stop is a different one, rather than stopping a turn nobody confirmed.
+    func forceStart(_ id: Int, expectedVictimID: Int?) async throws -> ForceStartResult
     /// The Ranked view's drag-and-drop: put a spot session between `above` and `below` (either
     /// nil at an end); the server works out the precedence.
     func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary
@@ -48,6 +53,9 @@ public protocol SessionActionsAPI: Sendable {
     func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SchedulingChange
     /// Turn the session's heartbeat on or off, at the interval it already has.
     func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary
+    /// Set how often the heartbeat beats, leaving it on or off as it is — the web UI's heart
+    /// popout's "Beat every". The server takes 30 seconds to a day.
+    func setHeartbeatInterval(_ id: Int, seconds: Int) async throws -> SessionSummary
     /// Ask for a fresh "where things stand"; it is written in the background.
     func regenerateStatusSummary(_ id: Int) async throws -> String
     /// Re-read the transcript from disk (the web UI's "Refresh Transcript").
@@ -200,6 +208,14 @@ extension ZimmerHTTPClient {
         return response.message ?? "Starting now"
     }
 
+    public func forceStart(_ id: Int, expectedVictimID: Int?) async throws -> ForceStartResult {
+        let segment = ZimmerPathComponent(String(id))
+        var body: [String: Any] = [:]
+        if let expectedVictimID { body["expected_victim_id"] = expectedVictimID }
+        let response: ForceStartResponse = try await post("/api/v1/sessions/\(segment)/force_start", json: body)
+        return ForceStartResult(session: response.session, message: response.message ?? "Forced")
+    }
+
     public func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary {
         let segment = ZimmerPathComponent(String(id))
         var body: [String: Any] = [:]
@@ -312,6 +328,12 @@ extension ZimmerHTTPClient {
     public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {
         let segment = ZimmerPathComponent(String(id))
         let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)/heartbeat", json: ["enabled": enabled])
+        return response.session
+    }
+
+    public func setHeartbeatInterval(_ id: Int, seconds: Int) async throws -> SessionSummary {
+        let segment = ZimmerPathComponent(String(id))
+        let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)/heartbeat", json: ["interval_seconds": seconds])
         return response.session
     }
 
