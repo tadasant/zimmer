@@ -28,6 +28,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
     private let live: Bool
     private var conversationReads: [Int: Int] = [:]
+    /// Made once, from the `now` the fake starts with: a session read twice is the same session,
+    /// as on the server, so a page that reads again sees nothing to redraw.
+    private let humanMessages: [Int: [HumanMessage]]
     /// The sweep (1031) is held by the spot gate for quota headroom.
     private var spotHeld: Set<Int> = [1031]
     /// The changelog (1029) has been handed a turn and is waiting for a worker thread.
@@ -45,9 +48,10 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false) {
         self.live = live
         self.all = sessions
-        self.summaries = FakeZimmerAPI.sampleSummaries()
+        self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
         self.derivedClasses = sessions.reduce(into: [:]) { $0[$1.id] = $1.priorityClass ?? "priority" }
+        self.humanMessages = FakeZimmerAPI.sampleHumanMessages(now: now)
         if live {
             // Long enough to scroll back through, so following the end can be told from not.
             conversations[1042] = (0..<30).map { index in
@@ -79,7 +83,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
             Self.sampleConfigs.goal(matching: session.goal)?.id == check.goalID ? check : nil
         }
         return SessionDetail(session: session, statusSummary: summaries[id], hierarchy: hierarchy,
-                             goalCheck: check, humanMessages: Self.sampleHumanMessages()[id] ?? [],
+                             goalCheck: check, humanMessages: humanMessages[id] ?? [],
                              captureGaps: Self.sampleCaptureGaps()[id] ?? [], waiting: waiting(for: session))
     }
 
