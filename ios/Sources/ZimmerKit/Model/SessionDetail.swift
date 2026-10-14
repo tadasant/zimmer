@@ -49,14 +49,18 @@ public struct SessionDetail: Hashable, Sendable {
     public var goalCheck: GoalCheck?
     /// The web UI's Human messages panel: what people said to this session and its family.
     public var humanMessages: [HumanMessage]
+    /// Why it is waiting, and the recovery banners: what the web page's header says above
+    /// everything else. Empty when there is nothing to say.
+    public var waiting: WaitingExplanation
 
     public init(session: SessionSummary, statusSummary: StatusSummary? = nil, hierarchy: SessionHierarchy? = nil,
-                goalCheck: GoalCheck? = nil, humanMessages: [HumanMessage] = []) {
+                goalCheck: GoalCheck? = nil, humanMessages: [HumanMessage] = [], waiting: WaitingExplanation = .empty) {
         self.session = session
         self.statusSummary = statusSummary
         self.hierarchy = hierarchy
         self.goalCheck = goalCheck
         self.humanMessages = humanMessages
+        self.waiting = waiting
     }
 
     /// Follow-ups are accepted for these; Zimmer queues one sent mid-turn.
@@ -75,9 +79,10 @@ struct SessionShowResponse: Decodable {
     let hierarchy: SessionHierarchy?
     let goalCheck: GoalCheck?
     let humanMessages: [HumanMessage]
+    let waiting: WaitingExplanation
 
     enum CodingKeys: String, CodingKey {
-        case session
+        case session, waiting
         case statusSummary = "status_summary"
         case hierarchy = "session_hierarchy"
         case humanMessages = "human_messages"
@@ -97,10 +102,12 @@ struct SessionShowResponse: Decodable {
         let sessionContainer = try? container.nestedContainer(keyedBy: SessionKeys.self, forKey: .session)
         goalCheck = (try? sessionContainer?.decodeIfPresent(GoalCheck.self, forKey: .goalCheck)) ?? nil
         humanMessages = (try? container.decodeIfPresent([LenientHumanMessage].self, forKey: .humanMessages))?.compactMap(\.message) ?? []
+        // A server from before the banners sends none, which is nothing to say.
+        waiting = (try? container.decodeIfPresent(WaitingExplanation.self, forKey: .waiting)) ?? .empty
     }
 
     var detail: SessionDetail {
-        SessionDetail(session: session, statusSummary: statusSummary, hierarchy: hierarchy, goalCheck: goalCheck, humanMessages: humanMessages)
+        SessionDetail(session: session, statusSummary: statusSummary, hierarchy: hierarchy, goalCheck: goalCheck, humanMessages: humanMessages, waiting: waiting)
     }
 }
 
@@ -323,11 +330,15 @@ public struct Conversation: Hashable, Sendable {
     public var messages: [ConversationMessage]
     public var total: Int
     public var truncated: Bool
+    /// Where the first of `messages` sits in the whole conversation (0 is the first message):
+    /// what *Show earlier* reads back from.
+    public var firstPosition: Int
 
-    public init(messages: [ConversationMessage], total: Int? = nil, truncated: Bool = false) {
+    public init(messages: [ConversationMessage], total: Int? = nil, truncated: Bool = false, firstPosition: Int? = nil) {
         self.messages = messages
         self.total = total ?? messages.count
         self.truncated = truncated
+        self.firstPosition = firstPosition ?? max((total ?? messages.count) - messages.count, 0)
     }
 
     /// The last thing the agent said: what a person deciding a follow-up wants first.
@@ -348,9 +359,10 @@ struct ConversationResponse: Decodable {
     let messages: [Wire]
     let total: Int?
     let truncated: Bool?
+    let first_position: Int?
 
     var conversation: Conversation {
-        let offset = (total ?? messages.count) - messages.count
+        let offset = first_position ?? ((total ?? messages.count) - messages.count)
         let decoded = messages.enumerated().compactMap { index, wire -> ConversationMessage? in
             guard let role = ConversationMessage.Role(rawValue: wire.role) else { return nil }
             return ConversationMessage(
@@ -362,7 +374,7 @@ struct ConversationResponse: Decodable {
                 hasToolResult: wire.has_tool_result ?? false
             )
         }
-        return Conversation(messages: decoded, total: total, truncated: truncated ?? false)
+        return Conversation(messages: decoded, total: total, truncated: truncated ?? false, firstPosition: offset)
     }
 }
 

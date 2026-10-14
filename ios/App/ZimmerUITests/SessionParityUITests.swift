@@ -88,8 +88,12 @@ final class SessionParityUITests: XCTestCase {
         app.buttons["edit.save"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.notes"].waitForExistence(timeout: timeout))
 
-        // Restart a session waiting on you: the turn is handed over, so it reads Waiting.
+        // Restart a session waiting on you: it is taken over, so it is confirmed first, as on
+        // the web; then the turn is handed over, so it reads Waiting.
         openMenu(app, "Restart Session")
+        let restart = app.sheets.buttons["Restart"].firstMatch
+        XCTAssertTrue(restart.waitForExistence(timeout: timeout))
+        restart.tap()
         XCTAssertTrue(waitForLabel(app.staticTexts["detail.status"], "Waiting"))
 
         // Effort, from the levels the session's model accepts.
@@ -280,10 +284,25 @@ final class RankedUITests: XCTestCase {
         let last = app.descendants(matching: .any)["session.row.1027"]
         let first = app.descendants(matching: .any)["session.row.1031"]
         XCTAssertTrue(last.waitForExistence(timeout: timeout))
-        // The handle names its row on current iOS; failing that, it is the spot queue's fourth.
+        // Both rows on screen, or the drag has no frame to start from or land on.
+        func onScreen(_ element: XCUIElement) -> Bool { element.exists && element.isHittable }
+        var swipes = 0
+        while !(onScreen(last) && onScreen(first)) && swipes < 6 {
+            if last.exists && last.frame.minY > app.frame.midY { app.swipeUp() } else { app.swipeDown() }
+            swipes += 1
+        }
+        XCTAssertTrue(onScreen(last) && onScreen(first), "both rows are on screen")
+        // The handle names its row on current iOS; failing that, it is the Reorder button that
+        // sits on the deploy key's row.
         let titled = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Rotate the staging deploy key'")).firstMatch
-        let handle = titled.waitForExistence(timeout: 5) ? titled : app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).element(boundBy: 3)
-        XCTAssertTrue(handle.waitForExistence(timeout: timeout))
+        var handle = titled
+        if !titled.waitForExistence(timeout: 10) {
+            let row = last.frame
+            let handles = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).allElementsBoundByIndex
+            handle = try XCTUnwrap(handles.first { $0.exists && row.minY <= $0.frame.midY && $0.frame.midY <= row.maxY },
+                                   "a Reorder handle on the deploy key's row")
+        }
+        XCTAssertTrue(onScreen(handle), "the handle is on screen")
         // Let go near the top edge of the first row, so the drop lands above it, not below.
         handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.6, thenDragTo: first.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.05)),

@@ -10,20 +10,25 @@ import Foundation
 public protocol SessionActionsAPI: Sendable {
     /// The list, narrowed by board visibility as the web UI's board is: the newest
     /// `SessionFilter.maxPages` pages, with `complete` false when there were more.
-    func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult
+    func sessions(_ filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult
     /// The list in a board view's order, as the server orders it (`view=`): Last Touched and
     /// Created page through the newest-touched or newest-created first; Your board and Ranked
     /// are the User view's top 500 in one page. `complete` is false when more matched.
-    func sessions(_ filter: SessionFilter, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult
+    func sessions(_ filters: BoardFilters, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult
     /// The Ranked view's *Start now*: take a waiting session's next turn now. Refused when it
     /// has no turn queued (restart it instead) or is asleep on a wake.
     func startNow(_ id: Int) async throws -> String
+    /// The queued-for-a-worker banner's *Force*: stop the turn that most recently took a worker
+    /// thread and give the thread to this session's queued turn. `expectedVictimID` is the
+    /// session the banner named; the server refuses (a 422 with its reason) when the turn it
+    /// would stop is a different one, rather than stopping a turn nobody confirmed.
+    func forceStart(_ id: Int, expectedVictimID: Int?) async throws -> ForceStartResult
     /// The Ranked view's drag-and-drop: put a spot session between `above` and `below` (either
     /// nil at an end); the server works out the precedence.
     func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary
     /// Sessions matching `query` (the web UI's search box) within the same filters; with
     /// `contents`, transcripts are searched too — one bounded scan, its first page.
-    func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult
+    func search(_ query: String, contents: Bool, filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult
     /// Deliver now, ending the turn in flight — the web UI's "Send Now".
     func sendNow(_ id: Int, prompt: String) async throws -> FollowUpResult
     /// Move to the trash as the web UI's Trash does: a session with a turn in flight goes
@@ -48,6 +53,9 @@ public protocol SessionActionsAPI: Sendable {
     func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SchedulingChange
     /// Turn the session's heartbeat on or off, at the interval it already has.
     func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary
+    /// Set how often the heartbeat beats, leaving it on or off as it is — the web UI's heart
+    /// popout's "Beat every". The server takes 30 seconds to a day.
+    func setHeartbeatInterval(_ id: Int, seconds: Int) async throws -> SessionSummary
     /// Ask for a fresh "where things stand"; it is written in the background.
     func regenerateStatusSummary(_ id: Int) async throws -> String
     /// Re-read the transcript from disk (the web UI's "Refresh Transcript").
@@ -153,12 +161,12 @@ extension ZimmerHTTPClient {
     /// Up to `SessionFilter.maxPages` pages of the newest sessions — the first, then the rest
     /// at once — for the board views to order on the phone. `complete` is false when the
     /// filter matched more than that, and the list says so.
-    public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
-        try await pagedSessions(filter, board: board, extra: [:])
+    public func sessions(_ filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult {
+        try await pagedSessions(filters, board: board, extra: [:])
     }
 
-    private func pagedSessions(_ filter: SessionFilter, board: BoardFilter, extra: [String: String]) async throws -> SessionSearchResult {
-        let base = filter.query.merging(board.query) { a, _ in a }.merging(extra) { _, new in new }
+    private func pagedSessions(_ filters: BoardFilters, board: BoardFilter, extra: [String: String]) async throws -> SessionSearchResult {
+        let base = filters.query.merging(board.query) { a, _ in a }.merging(extra) { _, new in new }
         let first: SessionListResponse = try await get("/api/v1/sessions", query: base.merging(["page": "1"]) { _, new in new })
         let pages = first.pagination?.total_pages ?? 1
         var rest: [Int: [SessionSummary]] = [:]
@@ -179,12 +187,12 @@ extension ZimmerHTTPClient {
         return SessionSearchResult(sessions: rows, complete: pages <= SessionFilter.maxPages)
     }
 
-    public func sessions(_ filter: SessionFilter, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
+    public func sessions(_ filters: BoardFilters, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
         switch view {
         case .lastTouched, .created:
-            return try await pagedSessions(filter, board: board, extra: ["view": view.rawValue])
+            return try await pagedSessions(filters, board: board, extra: ["view": view.rawValue])
         case .yourBoard, .ranked:
-            var query = filter.query.merging(board.query) { a, _ in a }
+            var query = filters.query.merging(board.query) { a, _ in a }
             query["view"] = view.rawValue
             query["per_page"] = nil
             let response: SessionListResponse = try await get("/api/v1/sessions", query: query)
@@ -198,6 +206,14 @@ extension ZimmerHTTPClient {
         return response.message ?? "Starting now"
     }
 
+    public func forceStart(_ id: Int, expectedVictimID: Int?) async throws -> ForceStartResult {
+        let segment = ZimmerPathComponent(String(id))
+        var body: [String: Any] = [:]
+        if let expectedVictimID { body["expected_victim_id"] = expectedVictimID }
+        let response: ForceStartResponse = try await post("/api/v1/sessions/\(segment)/force_start", json: body)
+        return ForceStartResult(session: response.session, message: response.message ?? "Forced")
+    }
+
     public func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary {
         let segment = ZimmerPathComponent(String(id))
         var body: [String: Any] = [:]
@@ -207,12 +223,15 @@ extension ZimmerHTTPClient {
         return response.session
     }
 
-    public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
-        var params = filter.query.merging(board.query) { a, _ in a }
+    public func search(_ query: String, contents: Bool, filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult {
+        var params = filters.query.merging(board.query) { a, _ in a }
         params["q"] = query
         if contents { params["search_contents"] = "true" }
         let response: SearchResponse = try await get("/api/v1/sessions/search", query: params)
-        return SessionSearchResult(sessions: SessionOrdering.sorted(response.sessions), complete: response.content_scan?.complete ?? true)
+        // A title search pages like the list; one page of 100 is all the phone reads, so more
+        // pages than that is an incomplete answer, said as one rather than cut silently.
+        let morePages = (response.pagination?.total_pages ?? 1) > 1
+        return SessionSearchResult(sessions: SessionOrdering.sorted(response.sessions), complete: (response.content_scan?.complete ?? true) && !morePages)
     }
 
     public func sendNow(_ id: Int, prompt: String) async throws -> FollowUpResult {
@@ -308,6 +327,12 @@ extension ZimmerHTTPClient {
         return response.session
     }
 
+    public func setHeartbeatInterval(_ id: Int, seconds: Int) async throws -> SessionSummary {
+        let segment = ZimmerPathComponent(String(id))
+        let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)/heartbeat", json: ["interval_seconds": seconds])
+        return response.session
+    }
+
     public func regenerateStatusSummary(_ id: Int) async throws -> String {
         let segment = ZimmerPathComponent(String(id))
         let response: MessageEnvelope = try await post("/api/v1/sessions/\(segment)/regenerate_status_summary", json: [:])
@@ -386,8 +411,10 @@ public struct SchedulingChange: Hashable, Sendable {
 
 struct SearchResponse: Decodable {
     struct ContentScan: Decodable { let complete: Bool? }
+    struct Pagination: Decodable { let total_pages: Int? }
     let sessions: [SessionSummary]
     let content_scan: ContentScan?
+    let pagination: Pagination?
 }
 
 struct SchedulingResponse: Decodable {
