@@ -99,7 +99,14 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var snoozedUntil: Date?
     /// `priority` or `spot`: the class the session actually runs under.
     public var priorityClass: String?
+    /// Where the session came from, a `SessionGenesis` key (`web_ui`, `slack`, …).
+    public var genesis: String?
     public var heartbeatEnabled: Bool?
+    /// How often the heartbeat nudges a session waiting for input, in seconds.
+    public var heartbeatIntervalSeconds: Int?
+    /// The agent runtime's own session id, stamped once the spawn pipeline has a clone and
+    /// before the runtime launches. Blank on a session whose agent never launched.
+    public var runtimeSessionID: String?
     public var precedence: Int?
     public var effort: EffortSummary?
     public var config: SessionConfig?
@@ -112,7 +119,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var catalogPlugins: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case id, slug, title, status, prompt, goal, favorited, visibility, precedence, effort, config, metadata
+        case id, slug, title, status, prompt, goal, favorited, visibility, precedence, effort, config, metadata, genesis
         case agentRuntime = "agent_runtime"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -123,6 +130,8 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         case snoozedUntil = "snoozed_until"
         case priorityClass = "priority_class"
         case heartbeatEnabled = "heartbeat_enabled"
+        case heartbeatIntervalSeconds = "heartbeat_interval_seconds"
+        case runtimeSessionID = "session_id"
         case customMetadata = "custom_metadata"
         case mcpServers = "mcp_servers"
         case catalogSkills = "catalog_skills"
@@ -137,7 +146,8 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         goal: String? = nil, notes: String? = nil, favorited: Bool? = nil,
         visibility: SessionVisibility? = nil, snoozedUntil: Date? = nil,
         priorityClass: String? = nil, precedence: Int? = nil, effort: EffortSummary? = nil, model: String? = nil,
-        agentRoot: String? = nil, lastUserActivityAt: Date? = nil, pullRequests: [PullRequestLink] = []
+        agentRoot: String? = nil, lastUserActivityAt: Date? = nil, pullRequests: [PullRequestLink] = [],
+        genesis: String? = nil
     ) {
         self.id = id
         self.slug = slug
@@ -155,6 +165,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         self.effectiveVisibility = visibility
         self.snoozedUntil = snoozedUntil
         self.priorityClass = priorityClass
+        self.genesis = genesis
         self.precedence = precedence
         self.effort = effort
         self.config = model.map { SessionConfig(model: $0) }
@@ -246,6 +257,8 @@ public struct SessionMetadata: Hashable, Sendable, Codable {
     /// Why a session failed, as the web UI's failure details read it: the reason the state
     /// machine recorded, the exception and its class, and the process's exit status.
     public var failureReason: String?
+    /// Where the session's clone is, once it has one.
+    public var clonePath: String?
     public var exceptionMessage: String?
     public var exceptionClass: String?
     public var exitStatus: Int?
@@ -264,6 +277,7 @@ public struct SessionMetadata: Hashable, Sendable, Codable {
         case agentRoot = "agent_root_key"
         case lastUserActivityAt = "last_user_activity_at"
         case failureReason = "failure_reason"
+        case clonePath = "clone_path"
         case exceptionMessage = "exception_message"
         case exceptionClass = "exception_class"
         case exitStatus = "exit_status"
@@ -276,6 +290,7 @@ public struct SessionMetadata: Hashable, Sendable, Codable {
         // as the web UI's `LAST_TOUCHED_ORDER` ignores it.
         lastUserActivityAt = (try? container?.decodeIfPresent(String.self, forKey: .lastUserActivityAt)).flatMap(ZimmerJSON.parseDate)
         failureReason = try? container?.decodeIfPresent(String.self, forKey: .failureReason)
+        clonePath = try? container?.decodeIfPresent(String.self, forKey: .clonePath)
         exceptionMessage = try? container?.decodeIfPresent(String.self, forKey: .exceptionMessage)
         exceptionClass = try? container?.decodeIfPresent(String.self, forKey: .exceptionClass)
         // Written as a number or as a string, depending on who recorded it.
@@ -291,6 +306,7 @@ public struct SessionMetadata: Hashable, Sendable, Codable {
         try container.encodeIfPresent(agentRoot, forKey: .agentRoot)
         try container.encodeIfPresent(lastUserActivityAt.map { ISO8601DateFormatter().string(from: $0) }, forKey: .lastUserActivityAt)
         try container.encodeIfPresent(failureReason, forKey: .failureReason)
+        try container.encodeIfPresent(clonePath, forKey: .clonePath)
         try container.encodeIfPresent(exceptionMessage, forKey: .exceptionMessage)
         try container.encodeIfPresent(exceptionClass, forKey: .exceptionClass)
         try container.encodeIfPresent(exitStatus, forKey: .exitStatus)

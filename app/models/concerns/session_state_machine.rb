@@ -956,8 +956,10 @@ module SessionStateMachine
   # statement otherwise. Shared by AgentSessionJob's stand-down log and the
   # `action_session restart` refusal, so a caller refused by one and then reading
   # the other's log sees the same sentence.
-  def pending_wake_phrase
-    at = pending_wake_at
+  #
+  # @param at [Time, nil] the caller's own read of #pending_wake_at, when it has
+  #   one, so the time it shows and the phrase it prints come from one query
+  def pending_wake_phrase(at = pending_wake_at)
     at ? "it is paused until #{at.utc.iso8601}" : "it is asleep on a pending wake-up"
   end
 

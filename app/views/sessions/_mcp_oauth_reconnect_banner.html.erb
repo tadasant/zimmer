@@ -29,9 +29,7 @@
     <div>
       <%= form_with url: follow_up_session_path(agent_session), method: :post, data: { turbo: false }, class: "w-full sm:w-auto" do |f| %>
         <%= f.hidden_field :follow_up_prompt,
-            value: "#{reconnect_servers.to_sentence} #{reconnect_servers.one? ? 'has' : 'have'} been re-authorized, " \
-                   "so #{reconnect_servers.one? ? 'its' : 'their'} MCP tools are available again. " \
-                   "Pick up where you left off." %>
+            value: Sessions::WaitingExplanation.reconnect_prompt(reconnect_servers) %>
         <%= f.submit agent_session.running? ? "Queue a reconnect message" : "Reconnect now",
             class: "w-full sm:w-auto inline-flex items-center justify-center px-3 py-2 border border-blue-600 text-sm font-medium rounded-md text-blue-700 bg-white hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 cursor-pointer" %>
       <% end %>

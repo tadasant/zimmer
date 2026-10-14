@@ -19,6 +19,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var uncles: [Int: [Int]] = [1031: [1035]]
     private var inbox: [InboxNotification] = FakeZimmerAPI.sampleNotifications()
     private var triggerList: [TriggerSummary] = FakeZimmerAPI.sampleTriggers()
+    /// The sessions each trigger has made, oldest first.
+    private var triggerSessions: [Int: [Int]] = [5: [1031]]
     /// What each follow-up carried, newest last, so a test can see attachments arrive.
     public private(set) var sentAttachments: [Int: [[MessageAttachment]]] = [:]
     /// Every Quick Router start, in order, so a test can see what went with the words.
@@ -27,14 +29,26 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
     private let live: Bool
     private var conversationReads: [Int: Int] = [:]
+    /// Made once, from the `now` the fake starts with: a session read twice is the same session,
+    /// as on the server, so a page that reads again sees nothing to redraw.
+    private let humanMessages: [Int: [HumanMessage]]
+    /// The sweep (1031) is held by the spot gate for quota headroom.
+    private var spotHeld: Set<Int> = [1031]
+    /// The changelog (1029) has been handed a turn and is waiting for a worker thread.
+    private var queuedTurns: Set<Int> = [1029]
+    /// The Postgres question (1035) has a renewed Linear grant its agent has not picked up.
+    private var reconnectServers: [Int: [String]] = [1035: ["Linear"]]
+    /// …and a poller notice Zimmer retired before it was delivered.
+    private var undelivered: [Int: [QueuedMessage]] = FakeZimmerAPI.sampleUndelivered()
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false) {
         self.live = live
         self.all = sessions
-        self.summaries = FakeZimmerAPI.sampleSummaries()
+        self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
+        self.humanMessages = FakeZimmerAPI.sampleHumanMessages(now: now)
         if live {
             // Long enough to scroll back through, so following the end can be told from not.
             conversations[1042] = (0..<30).map { index in
@@ -46,16 +60,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     }
 
     public func sessions(_ filter: SessionFilter) async throws -> [SessionSummary] {
-        let matching = all.filter { session in
-            switch filter {
-            case .needsInput: return session.status == .needsInput
-            case .active: return session.status != .archived
-            case .running: return session.status == .running
-            case .failed: return session.status == .failed
-            case .archived: return session.status == .archived
-            }
-        }
-        return SessionOrdering.sorted(matching)
+        SessionOrdering.sorted(all.filter(filter.filters.admits))
     }
 
     public func session(_ id: Int) async throws -> SessionDetail {
@@ -68,8 +73,10 @@ public actor FakeZimmerAPI: ZimmerAPI {
                 return node
             }
         }
-        return SessionDetail(session: try find(id), statusSummary: summaries[id], hierarchy: hierarchy,
-                             goalCheck: Self.sampleGoalChecks()[id], humanMessages: Self.sampleHumanMessages()[id] ?? [])
+        let session = try find(id)
+        return SessionDetail(session: session, statusSummary: summaries[id], hierarchy: hierarchy,
+                             goalCheck: Self.sampleGoalChecks()[id], humanMessages: humanMessages[id] ?? [],
+                             waiting: waiting(for: session))
     }
 
     /// As the server: the newest `limit`, positions counted from the start, capped at 200.
@@ -95,6 +102,25 @@ public actor FakeZimmerAPI: ZimmerAPI {
         return Conversation(messages: Array(all.suffix(window)), total: all.count, truncated: all.count > window)
     }
 
+    public func earlierMessages(_ id: Int, before: Int, limit: Int) async throws -> Conversation {
+        _ = try find(id)
+        let all = (conversations[id] ?? []).enumerated().map { index, message in
+            var message = message
+            message.transcriptIndex = message.transcriptIndex ?? index
+            return message
+        }
+        let end = min(max(before, 0), all.count)
+        let start = max(end - min(max(limit, 1), Conversation.maxLimit), 0)
+        return Conversation(messages: Array(all[start..<end]), total: all.count, truncated: start > 0, firstPosition: start)
+    }
+
+    /// As the server: opening a session marks its notifications read.
+    public func openSession(_ id: Int) async throws -> SessionDetail {
+        let detail = try await session(id)
+        markRead(session: id)
+        return detail
+    }
+
     public func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult {
         var session = try find(id)
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -106,6 +132,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
             var messages = conversations[id] ?? []
             messages.append(ConversationMessage(id: messages.count, role: .user, content: text, timestamp: Date()))
             conversations[id] = messages
+            // The next agent process loads the renewed grant, as the server's does.
+            reconnectServers[id] = nil
             session.status = .running
             session.updatedAt = Date()
             replace(session)
@@ -125,6 +153,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
         }
         session.status = .archived
         session.archivedAt = Date()
+        // The server holds the clone for `TRASH_RETENTION_PERIOD`, four days, for a restore.
+        session.trashAfter = Date().addingTimeInterval(4 * 86_400)
         session.updatedAt = Date()
         replace(session)
         return session
@@ -184,7 +214,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// one finished. Times are relative to `now` so a screenshot never shows a stale date.
     public static func sampleSessions(now: Date = Date()) -> [SessionSummary] {
         func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
-        return [
+        return ran(trashed([
             SessionSummary(id: 1042, title: "Add a CarPlay scene to the iOS app", status: .running,
                            agentRuntime: "claude_code", createdAt: ago(90), updatedAt: ago(2),
                            priorityClass: "spot", precedence: 30, lastUserActivityAt: ago(70)),
@@ -200,7 +230,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
                            priorityClass: "spot", precedence: 20, lastUserActivityAt: ago(3)),
             SessionSummary(id: 1031, title: "Nightly dependency sweep", status: .waiting,
                            agentRuntime: "claude_code", createdAt: ago(20), updatedAt: ago(20),
-                           priorityClass: "spot", precedence: 50),
+                           priorityClass: "spot", precedence: 50, genesis: "schedule"),
             SessionSummary(id: 1029, title: "Draft the October changelog", status: .waiting,
                            agentRuntime: "claude_code", createdAt: ago(900), updatedAt: ago(800),
                            visibility: .snoozed, snoozedUntil: now.addingTimeInterval(20 * 3600)),
@@ -231,7 +261,28 @@ public actor FakeZimmerAPI: ZimmerAPI {
             SessionSummary(id: 1019, title: "Fix the flaky transcript poller test", status: .archived,
                            agentRuntime: "claude_code", createdAt: ago(2_000), updatedAt: ago(1_400),
                            archivedAt: ago(1_400)),
-        ]
+        ]))
+    }
+
+    /// Every sample but the sweep (1031, held at the starting line) has had its agent launch,
+    /// so a restart from Needs input continues its conversation rather than starting over.
+    private static func ran(_ sessions: [SessionSummary]) -> [SessionSummary] {
+        sessions.map { session in
+            var session = session
+            if session.id != 1031 { session.runtimeSessionID = "fixture-\(session.id)" }
+            return session
+        }
+    }
+
+    /// The trashed sample keeps its clone for a restore, until four days after it was trashed.
+    private static func trashed(_ sessions: [SessionSummary]) -> [SessionSummary] {
+        sessions.map { session in
+            var session = session
+            if session.status == .archived, let archivedAt = session.archivedAt {
+                session.trashAfter = archivedAt.addingTimeInterval(4 * 86_400)
+            }
+            return session
+        }
     }
 
     /// The failure the web UI's failure details read: a reason, an exception, an exit status.
@@ -319,13 +370,14 @@ public actor FakeZimmerAPI: ZimmerAPI {
 // as the server does where the app depends on it: a pause needs a running session, a
 // restart a failed or needs-input one, a restore a trashed one; a blank title clears it.
 extension FakeZimmerAPI {
-    public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
-        SessionSearchResult(sessions: try await sessions(filter).filter(board.admits))
+    /// As the server: every filter narrows, together.
+    public func sessions(_ filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult {
+        SessionSearchResult(sessions: SessionOrdering.sorted(all.filter { filters.admits($0) && board.admits($0) }))
     }
 
-    public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
+    public func search(_ query: String, contents: Bool, filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult {
         let needle = query.lowercased()
-        let matches = try await sessions(filter, board: board).sessions.filter { session in
+        let matches = try await sessions(filters, board: board).sessions.filter { session in
             if session.displayTitle.lowercased().contains(needle) { return true }
             guard contents else { return false }
             return (conversations[session.id] ?? []).contains { $0.content.lowercased().contains(needle) }
@@ -342,6 +394,7 @@ extension FakeZimmerAPI {
         var messages = conversations[id] ?? []
         messages.append(ConversationMessage(id: messages.count, role: .user, content: text, timestamp: Date()))
         conversations[id] = messages
+        reconnectServers[id] = nil
         session.status = .running
         session.updatedAt = Date()
         replace(session)
@@ -367,6 +420,7 @@ extension FakeZimmerAPI {
         try change(id, refusal: "Session is not in trash", when: { $0.status != .archived }) {
             $0.status = .needsInput
             $0.archivedAt = nil
+            $0.trashAfter = nil
         }
     }
 
@@ -442,6 +496,14 @@ extension FakeZimmerAPI {
 
     public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {
         try change(id) { $0.heartbeatEnabled = enabled }
+    }
+
+    /// As `Sessions::UpdateHeartbeat`: 30 seconds to a day, and on or off is left as it is.
+    public func setHeartbeatInterval(_ id: Int, seconds: Int) async throws -> SessionSummary {
+        guard (30...86_400).contains(seconds) else {
+            throw ZimmerError.http(status: 422, message: "Heartbeat interval seconds must be between 30 and 86400")
+        }
+        return try change(id) { $0.heartbeatIntervalSeconds = seconds }
     }
 
     public func transcriptText(_ id: Int) async throws -> String {
@@ -534,8 +596,8 @@ extension FakeZimmerAPI {
 // As the server: Start now needs a waiting session with a turn to take, and a reorder takes
 // a spot session to the midpoint of the neighbours it was dropped between.
 extension FakeZimmerAPI {
-    public func sessions(_ filter: SessionFilter, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
-        let rows = try await sessions(filter, board: board).sessions
+    public func sessions(_ filters: BoardFilters, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
+        let rows = try await sessions(filters, board: board).sessions
         return SessionSearchResult(sessions: view.sections(rows).flatMap(\.sessions))
     }
 
@@ -572,6 +634,11 @@ extension FakeZimmerAPI {
     public func queue(_ id: Int) async throws -> [QueuedMessage] {
         _ = try find(id)
         return (queues[id] ?? []).sorted { $0.position < $1.position }
+    }
+
+    public func undeliveredMessages(_ id: Int) async throws -> [QueuedMessage] {
+        _ = try find(id)
+        return (undelivered[id] ?? []).sorted { $0.position < $1.position }
     }
 
     public func editQueued(_ id: Int, message: Int, content: String) async throws -> QueuedMessage {
@@ -663,6 +730,15 @@ extension FakeZimmerAPI {
         }
     }
 
+    /// A poller notice to the Postgres question that Zimmer retired as stale: the PR it
+    /// reported on had moved on by the time the session could take it.
+    static func sampleUndelivered(now: Date = Date()) -> [Int: [QueuedMessage]] {
+        [1035: [
+            QueuedMessage(id: 497, content: "PR #1297's CI went green while you were waiting on an answer.", position: 1,
+                          status: "undelivered", origin: "automated_pr_poller", createdAt: now.addingTimeInterval(-50 * 60)),
+        ]]
+    }
+
     /// The running CarPlay session has two messages waiting for its turn to end.
     static func sampleQueues() -> [Int: [QueuedMessage]] {
         [1042: [
@@ -746,7 +822,15 @@ extension FakeZimmerAPI {
             GoalOption(id: "open-reviewed-green-pr", name: "Open a reviewed, green PR", description: "Unmerged PR is open and CI is green."),
             GoalOption(id: "answer-question", name: "Answer a question"),
         ],
-        mcpServers: [CatalogItem(id: "playwright-custom", title: "Playwright"), CatalogItem(id: "slack", title: "Slack", unavailableReason: "Needs authorizing")]
+        mcpServers: [CatalogItem(id: "playwright-custom", title: "Playwright"), CatalogItem(id: "slack", title: "Slack", unavailableReason: "Needs authorizing")],
+        geneses: [
+            GenesisOption(key: "web_ui", label: "Zimmer web app"), GenesisOption(key: "slack", label: "Slack trigger"),
+            GenesisOption(key: "whatsapp", label: "WhatsApp trigger"), GenesisOption(key: "email", label: "Email trigger"),
+            GenesisOption(key: "github_issue", label: "GitHub issue trigger"), GenesisOption(key: "github_label", label: "GitHub label trigger"),
+            GenesisOption(key: "schedule", label: "Scheduled trigger"), GenesisOption(key: "ao_event", label: "Session-state trigger"),
+            GenesisOption(key: "system_event", label: "System-event trigger"), GenesisOption(key: "api", label: "API / agent spawn"),
+            GenesisOption(key: "unknown", label: "Unknown"),
+        ]
     )
 
     static let sampleCatalogs: [CatalogKind: [CatalogItem]] = [
@@ -779,6 +863,10 @@ extension FakeZimmerAPI {
 
     public func unreadNotificationCount() async throws -> Int { inbox.filter { !$0.read }.count }
 
+    func markRead(session: Int) {
+        for index in inbox.indices where inbox[index].session?.id == session { inbox[index].read = true }
+    }
+
     public func markNotificationRead(_ id: Int) async throws -> InboxNotification {
         guard let index = inbox.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
         inbox[index].read = true
@@ -801,6 +889,14 @@ extension FakeZimmerAPI {
 
     public func triggers() async throws -> [TriggerSummary] { triggerList }
 
+    public func trigger(_ id: Int) async throws -> TriggerDetail {
+        guard let trigger = triggerList.first(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        let recent = (triggerSessions[id] ?? []).reversed().prefix(10).compactMap { sessionID in
+            all.first(where: { $0.id == sessionID }).map { TriggerDetail.RecentSession(id: $0.id, title: $0.title, status: $0.status, createdAt: $0.createdAt) }
+        }
+        return TriggerDetail(trigger: trigger, recentSessions: Array(recent))
+    }
+
     public func toggleTrigger(_ id: Int) async throws -> TriggerSummary {
         guard let index = triggerList.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
         triggerList[index].status = triggerList[index].isEnabled ? "disabled" : "enabled"
@@ -811,23 +907,56 @@ extension FakeZimmerAPI {
         guard let trigger = triggerList.first(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
         // A disabled trigger can still be fired by hand, as the server allows.
         let started = try await startQuickRouter("\(trigger.name): run now")
+        triggerSessions[id, default: []].append(started)
+        if let index = triggerList.firstIndex(where: { $0.id == id }) {
+            triggerList[index].lastSessionID = started
+            triggerList[index].lastTriggeredAt = Date()
+            triggerList[index].sessionsCreated = (triggerList[index].sessionsCreated ?? 0) + 1
+        }
         return TriggerInvocation(sessionID: started, message: "Trigger '\(trigger.name)' fired: session \(started) started")
     }
 
-    public func costs(days: Int) async throws -> CostSnapshot {
+    /// One week of spend whatever the window, narrowed as the server narrows: a root keeps
+    /// its own share of every figure, a session only its own.
+    public func costs(_ window: CostWindow, scope: CostScope) async throws -> CostSnapshot {
         let now = Date()
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        let spend = [41.2, 55.0, 38.7, 62.3, 70.1, 48.9, 53.4]
+        let roots: [CostSnapshot.Row] = [.init(label: "zimmer", costUSD: 201.4), .init(label: "zimmer-orchestrator", costUSD: 88.2), .init(label: "motet", costUSD: 80.0)]
+        let fleet = roots.reduce(0) { $0 + $1.costUSD }
+        let top: [CostSnapshot.TopSession] = [
+            .init(sessionID: 1042, costUSD: 23.81, tokens: 1_204_331, title: "Add a CarPlay scene to the iOS app", apiCalls: 212),
+            .init(sessionID: 1038, costUSD: 17.02, tokens: 880_120, title: "PR #1261 is green and ready — merge it?", apiCalls: 140),
+        ]
+        let share: Double
+        var shownRoots = roots
+        var shownTop = top
+        switch scope {
+        case .fleet:
+            share = 1
+        case let .agentRoot(root):
+            shownRoots = roots.filter { $0.label == root }
+            share = (shownRoots.first?.costUSD ?? 0) / fleet
+            shownTop = root == "zimmer" ? top : []
+        case let .session(id):
+            shownTop = top.filter { $0.sessionID == id }
+            shownRoots = shownTop.isEmpty ? [] : [.init(label: "zimmer", costUSD: shownTop[0].costUSD)]
+            share = (shownTop.first?.costUSD ?? 0) / fleet
+        }
+        let spend = [41.2, 55.0, 38.7, 62.3, 70.1, 48.9, 53.4].map { $0 * share }
         let daysShown = spend.enumerated().map { offset, cost in
             CostSnapshot.Day(day: formatter.string(from: now.addingTimeInterval(Double(offset - spend.count + 1) * 86_400)), costUSD: cost)
         }
+        let bounds: (Date, Date)
+        switch window {
+        case let .days(days): bounds = (now.addingTimeInterval(-Double(days) * 86_400), now)
+        case let .range(from, to): bounds = (from, to.addingTimeInterval(86_399))
+        }
         return CostSnapshot(
-            from: now.addingTimeInterval(-Double(days) * 86_400), to: now, totalUSD: spend.reduce(0, +), days: daysShown,
-            agentRoots: [.init(label: "zimmer", costUSD: 201.4), .init(label: "zimmer-orchestrator", costUSD: 88.2), .init(label: "motet", costUSD: 80.0)],
-            models: [.init(label: "opus", costUSD: 330.1), .init(label: "sonnet", costUSD: 39.5)],
-            topSessions: [.init(sessionID: 1042, costUSD: 23.81, tokens: 1_204_331), .init(sessionID: 1038, costUSD: 17.02, tokens: 880_120)]
+            from: bounds.0, to: bounds.1, scope: scope, totalUSD: spend.reduce(0, +), days: daysShown, agentRoots: shownRoots,
+            models: [.init(label: "opus", costUSD: 330.1 * share), .init(label: "sonnet", costUSD: 39.5 * share)],
+            topSessions: shownTop
         )
     }
 
@@ -860,7 +989,10 @@ extension FakeZimmerAPI {
         [
             TriggerSummary(id: 5, name: "Nightly dependency sweep", status: "enabled", agentRoot: "zimmer",
                            lastTriggeredAt: now.addingTimeInterval(-20 * 60), lastSessionID: 1031, sessionsCreated: 31,
-                           conditions: [.init(type: "schedule", description: "Every day at 02:00 UTC")]),
+                           conditions: [.init(type: "schedule", description: "Every day at 02:00 UTC", lastTriggeredAt: now.addingTimeInterval(-20 * 60))],
+                           reuseSession: true, enqueueMessages: true,
+                           promptTemplate: "Sweep the dependencies: bump what is safe, open one PR per ecosystem, and say what you held back on {{date}}.",
+                           goal: "Open a reviewed, green PR for each bump."),
             TriggerSummary(id: 6, name: "Slack #zimmer mentions", status: "disabled", agentRoot: "zimmer-orchestrator",
                            sessionsCreated: 4, conditions: [.init(type: "slack", description: "@zimmer in #zimmer")]),
         ]
@@ -936,5 +1068,87 @@ extension FakeZimmerAPI {
                 .init(key: "dry_run", title: "Dry run", kind: .toggle),
             ])
         )]]
+    }
+}
+
+// MARK: - Why it is waiting
+//
+// As the server: a spot hold shows while the gate holds a waiting spot session and offers to
+// make it priority; a turn queued for a worker offers Force while some running turn can be
+// stopped, and Force refuses when the turn it would stop is not the one confirmed; a renewed
+// MCP grant offers the reconnect message until a message reaches the agent.
+extension FakeZimmerAPI {
+    public func forceStart(_ id: Int, expectedVictimID: Int?) async throws -> ForceStartResult {
+        let session = try find(id)
+        guard session.status == .waiting, queuedTurns.contains(id) else {
+            throw ZimmerError.http(status: 422, message: "Session #\(id) has no turn queued for a worker, so there is nothing to force.")
+        }
+        guard let victim = forceVictim(for: id) else {
+            throw ZimmerError.http(status: 422, message: "Nothing to force: a worker thread is already free, so session \(id)'s turn starts on GoodJob's next poll.")
+        }
+        if let expectedVictimID, expectedVictimID != victim.id {
+            throw ZimmerError.http(status: 422, message: "The turn you confirmed — session \(expectedVictimID)'s — is no longer the one that would be stopped (it ended, or was forced out already); session \(victim.id)'s is. Nothing was touched. Reload to see what Force would stop now.")
+        }
+        // The stopped turn is not cancelled: it goes straight back in the queue.
+        queuedTurns.remove(id)
+        queuedTurns.insert(victim.id)
+        _ = try change(victim.id) { $0.status = .waiting }
+        let forced = try change(id) { $0.status = .running }
+        return ForceStartResult(session: forced, message: "Session \(victim.id)'s turn was stopped and put back in the queue, and session \(id)'s turn is first in line for the thread it freed.")
+    }
+
+    /// The turn Force would stop: the running one that started most recently.
+    private func forceVictim(for id: Int) -> SessionSummary? {
+        all.filter { $0.status == .running && $0.id != id }
+            .max { ($0.updatedAt ?? .distantPast) < ($1.updatedAt ?? .distantPast) }
+    }
+
+    func waiting(for session: SessionSummary) -> WaitingExplanation {
+        var reasons: [WaitingExplanation.Reason] = []
+        var banners: [WaitingBanner] = []
+        let id = session.id
+        if session.status == .waiting, spotHeld.contains(id), !session.isPriority {
+            reasons.append(.init(mechanism: "spot_hold", label: "the spot gate (quota headroom)", at: session.createdAt, current: true))
+            banners.append(WaitingBanner(
+                key: "spot_hold", tone: .warning, headline: "Held for quota headroom",
+                body: [
+                    "The spot gate held this session's first turn: the Claude account pool's 5-hour window is at 91% of its 85% target.",
+                    "As of 4 minutes ago. It has waited 20 minutes. The starvation lane admits it once it has waited 2 hours, if the gate is still holding it then.",
+                    "This is a spot session (genesis trigger, inherited from its trigger). It has not been cancelled — it will start on its own once the gate lets it.",
+                    "The gate checks again in about 6 minutes.",
+                ],
+                action: .updateSchedulingClass(label: "Make this session priority", priority: true)
+            ))
+        }
+        if session.status == .waiting, queuedTurns.contains(id) {
+            reasons.append(.init(mechanism: "turn_queued", label: "a worker thread", at: session.updatedAt, current: true))
+            var body = [
+                "This session has been handed a turn and is waiting for a worker thread.",
+                "Nothing is stuck and nobody needs to act. Zimmer runs 4 agent turns at once, and this one starts as soon as a thread frees up. Running means a worker is executing a turn, so a session queued behind the pool reads Waiting.",
+            ]
+            var action: WaitingBanner.Action?
+            if let victim = forceVictim(for: id) {
+                let kind = victim.priorityClass ?? "spot"
+                body.append("All 4 threads are busy. Force takes one by stopping the turn that started most recently — session #\(victim.id), \(kind), started 2 minutes ago. That turn is not cancelled: it is put straight back in the queue and runs again as soon as a thread frees up. What it loses is the tool call it is in the middle of.")
+                action = .forceStart(
+                    label: "Force", expectedVictimID: victim.id,
+                    confirm: "Stop session #\(victim.id)'s turn (\(kind), started 2 minutes ago) to free a worker thread for session #\(id)?\n\nIts work on disk survives and its turn goes back in the queue, but the tool call it is in the middle of is lost — and Zimmer cannot tell what that is."
+                )
+            } else {
+                body.append("Nothing to force: a worker thread is already free, so session \(id)'s turn starts on GoodJob's next poll.")
+            }
+            banners.append(WaitingBanner(key: "queued_turn", tone: .info, headline: "Queued for a worker", body: body, action: action))
+        }
+        if let servers = reconnectServers[id], !servers.isEmpty, session.status == .running || session.status == .needsInput {
+            let named = servers.joined(separator: " and ")
+            let running = session.status == .running
+            banners.append(WaitingBanner(
+                key: "mcp_oauth_reconnect", tone: .info, headline: "Authorization complete — reconnects on the next turn",
+                body: ["Zimmer has stored the renewed grant for \(named), and the next agent process this session starts will use it. This session's agent loaded its MCP servers when it started and cannot pick up a new connection mid-run, so those tools stay missing until it runs again. " + (running ? "The agent is mid-turn, so a message sent now queues and reconnects on the turn after it." : "Send a message to reconnect.")],
+                action: .followUp(label: running ? "Queue a reconnect message" : "Reconnect now",
+                                  prompt: "\(named) \(servers.count == 1 ? "has" : "have") been re-authorized, so \(servers.count == 1 ? "its" : "their") MCP tools are available again. Pick up where you left off.")
+            ))
+        }
+        return WaitingExplanation(reasons: reasons, banners: banners)
     }
 }
