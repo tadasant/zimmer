@@ -74,11 +74,16 @@ struct SessionListView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
             } footer: {
-                if model.board != .onBoard {
-                    Label("Showing: \(model.board.label)", systemImage: "eye")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(Theme.snooze)
-                        .accessibilityIdentifier("board.current")
+                VStack(alignment: .leading, spacing: 6) {
+                    // In the footer, not the row: a row with no insets clips text at its leading
+                    // edge, which the chips escape only because they scroll.
+                    FilterSummary()
+                    if model.board != .onBoard {
+                        Label("Showing: \(model.board.label)", systemImage: "eye")
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(Theme.snooze)
+                            .accessibilityIdentifier("board.current")
+                    }
                 }
             }
             if let error = model.error {
@@ -461,26 +466,6 @@ private struct FilterBar: View {
                 .padding(.vertical, 2)
                 .animation(.snappy(duration: 0.25), value: model.filters)
             }
-            // A combination the chips cannot show is said in words, with a way back.
-            if model.effectiveFilters.preset == nil {
-                HStack(spacing: 6) {
-                    Text(model.filterSummary)
-                        .font(.caption)
-                        .foregroundStyle(Theme.inkSoft)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .accessibilityIdentifier("filter.summary")
-                    Button("Reset") { Task { await model.apply(.default) } }
-                        // Borderless, or the whole list row becomes this button's target.
-                        .buttonStyle(.borderless)
-                        .font(.caption.weight(.medium))
-                        .accessibilityIdentifier("filter.reset")
-                        .fixedSize()
-                }
-                // Bounded and leading, so a long summary truncates at its end rather than
-                // pushing the row wider and losing its first letters off the edge.
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
         }
         .sheet(isPresented: $model.showingFilters) { BoardFiltersSheet(initial: model.filters) }
     }
@@ -489,6 +474,29 @@ private struct FilterBar: View {
         guard model.filters.preset == nil else { return "Filters" }
         let count = model.filters.refinementCount + (model.filters.statuses.count > 1 ? 1 : 0)
         return count > 0 ? "Filters · \(count)" : "Filters"
+    }
+}
+
+/// A combination the chips cannot show, said in words, with a way back.
+private struct FilterSummary: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        if model.effectiveFilters.preset == nil {
+            HStack(spacing: 6) {
+                Text(model.filterSummary)
+                    .font(.caption)
+                    .foregroundStyle(Theme.inkSoft)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .accessibilityIdentifier("filter.summary")
+                Button("Reset") { Task { await model.apply(.default) } }
+                    .buttonStyle(.borderless)
+                    .font(.caption.weight(.medium))
+                    .accessibilityIdentifier("filter.reset")
+                    .fixedSize()
+            }
+        }
     }
 }
 
