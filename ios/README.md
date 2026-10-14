@@ -99,7 +99,8 @@ CI (`.github/workflows/ci.yml`): `ios-changes` (no checkout, `ubuntu-latest`) de
 anything under `ios/**` or the three iOS workflows moved, and fails open to "build". `ios`
 (GitHub-hosted `macos-latest`, free on a public repo) runs `build-app`, `testflight check`,
 `ci-swift` and `ui-test --configuration Staging --api-base-url https://ui-test.invalid`, and
-keeps the `ios-ui-test` artifact (video, screenshots, result bundle). `ios_swift_linux`
+keeps the `ios-ui-test` artifact (video, screenshots, result bundle, and the app's crash reports in
+`crashes/`, whose crashed thread is also printed in the job's log). `ios_swift_linux`
 (self-hosted) runs `ci-swift` on Linux. All three carry the fork-PR guard and are in
 `all-checks-pass`. `ios-ui-tests.yml` is the same simulator run on demand, against a server named
 by the *name* of a repository variable.
