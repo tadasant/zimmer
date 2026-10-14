@@ -5,8 +5,13 @@ import Foundation
 public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI, OperationsAPI, AttachmentsAPI {
     func sessions(_ filter: SessionFilter) async throws -> [SessionSummary]
     func session(_ id: Int) async throws -> SessionDetail
-    /// The newest `limit` messages (the server caps it at 200), and how many there are.
+    /// The newest `limit` messages (the server caps it at 200), whole, and how many there are.
     func conversation(_ id: Int, limit: Int) async throws -> Conversation
+    /// The `limit` messages just before position `before`: *Show earlier*, past the cap.
+    func earlierMessages(_ id: Int, before: Int, limit: Int) async throws -> Conversation
+    /// The session, read as a person opening it: its notifications are marked read and it is
+    /// touched as last touched, as the dashboard's page does (`viewed=true`).
+    func openSession(_ id: Int) async throws -> SessionDetail
     func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult
     func archive(_ id: Int) async throws -> SessionSummary
     /// Start a Quick Router session from a plain-language request, with what the web
@@ -54,8 +59,21 @@ public struct ZimmerHTTPClient: ZimmerAPI {
 
     public func conversation(_ id: Int, limit: Int) async throws -> Conversation {
         let segment = ZimmerPathComponent(String(id))
-        let response: ConversationResponse = try await get("/api/v1/sessions/\(segment)/conversation", query: ["limit": String(limit)])
+        let response: ConversationResponse = try await get("/api/v1/sessions/\(segment)/conversation", query: ["limit": String(limit), "full_content": "true"])
         return response.conversation
+    }
+
+    public func earlierMessages(_ id: Int, before: Int, limit: Int) async throws -> Conversation {
+        let segment = ZimmerPathComponent(String(id))
+        let response: ConversationResponse = try await get("/api/v1/sessions/\(segment)/conversation",
+                                                           query: ["limit": String(limit), "before": String(before), "full_content": "true"])
+        return response.conversation
+    }
+
+    public func openSession(_ id: Int) async throws -> SessionDetail {
+        let segment = ZimmerPathComponent(String(id))
+        let response: SessionShowResponse = try await get("/api/v1/sessions/\(segment)", query: ["viewed": "true"])
+        return response.detail
     }
 
     public func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult {

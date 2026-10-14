@@ -74,6 +74,11 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
     /// since a UI test cannot drive the system photo and file pickers.
     var fixtureAttachesFile = false
+    /// `-ZimmerFixtureTrigger <id>`: the Triggers tab opens on that trigger's page.
+    @Published var fixtureTrigger: Int?
+    /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
+    /// is named.
+    @Published var fixtureCosts: CostScope?
 
     let environment: AppEnvironment
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
@@ -141,6 +146,16 @@ final class AppModel: ObservableObject {
         // The list's search box picks this up and searches, as if typed.
         if let search = value("-ZimmerFixtureSearch") { searchText = search }
         if let tab = value("-ZimmerFixtureTab").flatMap(AppTab.init(rawValue:)) { self.tab = tab }
+        if let trigger = value("-ZimmerFixtureTrigger").flatMap(Int.init) {
+            fixtureTrigger = trigger
+            tab = .triggers
+        }
+        if let flag = arguments.firstIndex(of: "-ZimmerFixtureCosts") {
+            // The next argument is a root to narrow to, unless it is the next flag.
+            let root = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : nil
+            fixtureCosts = root.map(CostScope.agentRoot) ?? .fleet
+            tab = .more
+        }
         // Trash a session as a swipe would: the Undo toast, or for one with messages queued,
         // the question before they are discarded.
         if let id = value("-ZimmerFixtureTrash").flatMap(Int.init) {
@@ -415,8 +430,13 @@ final class AppModel: ObservableObject {
 
     /// The web UI's page for a session, for what the app does not do itself.
     func webURL(for id: Int) -> URL? {
+        webURL(path: "/sessions/\(id)")
+    }
+
+    /// Any page of the web UI: a trigger's, for editing it.
+    func webURL(path: String) -> URL? {
         guard let web = signedInOrigins?.web else { return nil }
-        return ServerURL.join(web, "/sessions/\(id)")
+        return ServerURL.join(web, path)
     }
 
     /// Sign in to a deployment: the edge first when machine calls go to a separate app
