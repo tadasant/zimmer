@@ -59,7 +59,16 @@ final class WaitingUITests: XCTestCase {
 
         // The page opens at the newest message; the banner is at the top.
         let reconnect = app.buttons["waiting.action.mcp_oauth_reconnect"]
-        for _ in 0..<6 where !reconnect.isHittable { app.swipeDown(velocity: .fast) }
+        // isHittable says yes while the button is still under the navigation bar, where a tap
+        // lands on the bar (a CI recording shows it): scroll until it is below the bar.
+        func belowTheBar() -> Bool {
+            guard reconnect.exists, !reconnect.frame.isEmpty else { return false }
+            let bar = app.navigationBars.firstMatch
+            let top = bar.exists ? bar.frame.maxY : 0
+            return reconnect.frame.minY >= top && app.frame.contains(CGPoint(x: reconnect.frame.midX, y: reconnect.frame.maxY))
+        }
+        for _ in 0..<6 where !belowTheBar() { app.swipeDown(velocity: .fast) }
+        XCTAssertTrue(belowTheBar(), "the banner is scrolled into view")
         reconnect.tap()
         XCTAssertTrue(app.descendants(matching: .any)["followup.notice"].waitForExistence(timeout: timeout))
         XCTAssertTrue(waitForDisappearance(banner), "the message reached the agent, which loads the grant")
