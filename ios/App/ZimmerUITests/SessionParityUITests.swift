@@ -300,9 +300,11 @@ final class RankedUITests: XCTestCase {
         XCTAssertTrue(reorder.waitForExistence(timeout: timeout))
         reorder.tap()
 
-        // Drag the last of the spot queue (the deploy key, 10) above the first (the sweep, 50).
+        // Drag the last of the spot queue (the deploy key, 10) up into the second place, between
+        // the sweep (50) and the CarPlay scene (30).
         let last = app.descendants(matching: .any)["session.row.1027"]
         let first = app.descendants(matching: .any)["session.row.1031"]
+        let second = app.descendants(matching: .any)["session.row.1042"]
         XCTAssertTrue(last.waitForExistence(timeout: timeout))
         // Both rows on screen, or the drag has no frame to start from or land on.
         // Read from the frame: `isHittable` throws, rather than answering no, for an element
@@ -331,17 +333,21 @@ final class RankedUITests: XCTestCase {
                                    "a Reorder handle on the deploy key's row")
         }
         XCTAssertTrue(onScreen(handle), "the handle is on screen")
-        // Let go near the top edge of the first row, so the drop lands above it, not below.
+        // Let go in the upper part of the second row: past its middle, so the drop takes its
+        // place, and well inside the section. A drop at the first row's top edge sits a couple
+        // of points under the Priority section, and a touch that strays over it cancels the
+        // move: the row springs back and no drop is ever made.
         handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .press(forDuration: 0.6, thenDragTo: first.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.05)),
+            .press(forDuration: 0.6, thenDragTo: second.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.25)),
                    withVelocity: .slow, thenHoldForDuration: 0.3)
         // The toast comes after the reload, so the new order is on screen by then.
         XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
         let deadline = Date().addingTimeInterval(timeout)
-        while last.frame.minY >= first.frame.minY, Date() < deadline {
+        while last.frame.minY >= second.frame.minY, Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         }
-        XCTAssertLessThan(last.frame.minY, first.frame.minY, "the dropped session now heads the spot queue")
+        XCTAssertLessThan(first.frame.minY, last.frame.minY, "the sweep still heads the spot queue")
+        XCTAssertLessThan(last.frame.minY, second.frame.minY, "the dropped session now sits second")
         app.buttons["select.done"].tap()
     }
 
