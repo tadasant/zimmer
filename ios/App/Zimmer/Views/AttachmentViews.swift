@@ -1,24 +1,32 @@
 import ImageIO
 import PhotosUI
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 import ZimmerKit
 
 /// The composer's paperclip: the web composer's *Attach image* and *Attach file*, as the
-/// system photo picker and file browser.
+/// system photo picker and file browser, and pasting an image, which the web composer takes
+/// from the clipboard into the same attachments.
 struct AttachMenu: View {
-    /// What could be attached, and the names of what could not be read at all.
+    /// What could be attached, and a sentence for each thing that could not be, to show.
     let add: ([MessageAttachment], [String]) -> Void
 
     @State private var photos: [PhotosPickerItem] = []
     @State private var choosingPhotos = false
     @State private var choosingFiles = false
+    /// Whether *Paste Image* is offered. Asking the pasteboard whether it holds an image does
+    /// not read it, so this shows no paste prompt; the prompt comes with the paste itself.
+    @State private var canPasteImage = false
 
     var body: some View {
         HStack {
             Menu {
                 Button { choosingPhotos = true } label: { Label("Photo Library", systemImage: "photo.on.rectangle") }
                 Button { choosingFiles = true } label: { Label("Choose Files", systemImage: "folder") }
+                if canPasteImage {
+                    Button { paste() } label: { Label("Paste Image", systemImage: "doc.on.clipboard") }
+                }
             } label: {
                 Image(systemName: "paperclip")
                     .font(.system(size: 18, weight: .medium))
@@ -34,7 +42,7 @@ struct AttachMenu: View {
             guard case let .success(urls) = result else { return }
             Task {
                 let (read, unreadable) = await Self.read(urls)
-                add(read, unreadable)
+                add(read, Self.unreadable(unreadable))
             }
         }
         .onChange(of: photos) { _, items in
@@ -42,9 +50,59 @@ struct AttachMenu: View {
             photos = []
             Task {
                 let (loaded, failed) = await Self.load(items)
-                add(loaded, failed)
+                add(loaded, Self.unreadable(failed))
             }
         }
+        .onAppear { canPasteImage = UIPasteboard.general.hasImages }
+        // Copied here, or in another app while this one was in the background.
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+            canPasteImage = UIPasteboard.general.hasImages
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            canPasteImage = UIPasteboard.general.hasImages
+        }
+    }
+
+    /// The images on the pasteboard, through the photo pipeline: as JPEG, scaled to fit. Reading
+    /// them is what asks the person to allow the paste; a refusal reads as no images.
+    private func paste() {
+        let pasted = (UIPasteboard.general.images ?? []).map(PastedImage.init)
+        guard !pasted.isEmpty else {
+            add([], ["Paste not allowed."])
+            return
+        }
+        let stamp = Int(Date().timeIntervalSince1970)
+        Task {
+            let (read, failed) = await Self.images(pasted, stamp: stamp)
+            add(read, Self.unreadable(failed))
+        }
+    }
+
+    /// A pasted image, handed off the main thread to be encoded. `UIImage` is immutable and
+    /// documented as safe to use from any thread.
+    struct PastedImage: @unchecked Sendable {
+        let image: UIImage
+    }
+
+    /// Pasted images as attachments, encoded and scaled off the main thread as a library photo
+    /// is: a pasted photo can be twelve megapixels.
+    nonisolated static func images(_ pasted: [PastedImage], stamp: Int) async -> ([MessageAttachment], [String]) {
+        var images: [MessageAttachment] = []
+        var failed: [String] = []
+        for (index, item) in pasted.enumerated() {
+            let name = "Pasted image \(stamp)-\(index + 1).jpg"
+            guard let data = item.image.jpegData(compressionQuality: 0.9), let jpeg = jpeg(from: data) else {
+                failed.append(name)
+                continue
+            }
+            images.append(MessageAttachment(filename: name, mediaType: "image/jpeg", data: jpeg))
+        }
+        return (images, failed)
+    }
+
+    /// What is said about each thing that could not be read at all.
+    nonisolated static func unreadable(_ names: [String]) -> [String] {
+        names.map { "\($0) couldn't be read." }
     }
 
     /// Photos as JPEG, decoded and downsampled off the main thread: the library hands back
