@@ -234,6 +234,8 @@ if [ -d "$app" ]; then
   shoot sessions-snoozed -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureBoard offBoard
   shoot search -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureSearch postgres
   shoot sessions-ranked -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView ranked
+  shoot board-filters -ZimmerFixture -ZimmerFixtureBoard all -ZimmerFixtureFilterSheet -ZimmerFixtureStatuses needs_input,failed
+  shoot board-filtered -ZimmerFixture -ZimmerFixtureBoard all -ZimmerFixtureStatuses needs_input,failed -ZimmerFixtureClass priority
   shoot sessions-your-board -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView user
   shoot session-detail -ZimmerFixture -ZimmerFixtureOpenSession 1038
   shoot session-detail-hierarchy -ZimmerFixture -ZimmerFixtureOpenSession 1042

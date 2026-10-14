@@ -10,14 +10,25 @@ import os
 final class AppModel: ObservableObject {
     /// Nil until the stored sign-in has been read.
     @Published private(set) var isSignedIn: Bool?
-    @Published var filter: SessionFilter = .needsInput
+    /// What the list is narrowed to — statuses, scheduling class, agent root, genesis — all
+    /// combining, as the web UI's filter form does. Remembered, as the web UI remembers its
+    /// filters in a cookie.
+    @Published private(set) var filters: BoardFilters = AppModel.stored("boardFilters") ?? .default {
+        didSet { AppModel.store(filters, "boardFilters") }
+    }
+    /// The filter sheet (the funnel on the chip row).
+    @Published var showingFilters = false
+    /// The catalog's agent roots and geneses, for the filter sheet's pickers; read once.
+    @Published private(set) var filterOptions: AppConfigs?
     /// The board view: Your board, Last Touched, Created or Ranked. Remembered, as the web UI
     /// remembers it in a cookie; "Last Touched" by default, the web UI's default on a phone.
     @Published var view: BoardView = BoardView(rawValue: UserDefaults.standard.string(forKey: "boardView") ?? "") ?? .lastTouched {
         didSet { UserDefaults.standard.set(view.rawValue, forKey: "boardView") }
     }
     /// The board-visibility filter; "On board" by default, as on the web UI's board.
-    @Published private(set) var board: BoardFilter = .onBoard
+    @Published private(set) var board: BoardFilter = BoardFilter(rawValue: UserDefaults.standard.string(forKey: "boardVisibility") ?? "") ?? .onBoard {
+        didSet { UserDefaults.standard.set(board.rawValue, forKey: "boardVisibility") }
+    }
     /// The search box. Empty means the plain list.
     @Published var searchText = ""
     @Published var searchScope: SearchScope = .titles
@@ -129,13 +140,17 @@ final class AppModel: ObservableObject {
         }
         // Every fixture launch starts from the default view, whatever an earlier run chose.
         view = value("-ZimmerFixtureView").flatMap(BoardView.init(rawValue:)) ?? .lastTouched
+        // And from the default filters, whatever an earlier run remembered.
         let listFilter = value("-ZimmerFixtureFilter").flatMap(SessionFilter.init(rawValue:))
-        let listBoard = value("-ZimmerFixtureBoard").flatMap(BoardFilter.init(rawValue:))
-        if listFilter != nil || listBoard != nil {
-            filter = listFilter ?? filter
-            board = listBoard ?? board
-            Task { await refresh() }
+        filters = listFilter?.filters ?? .default
+        if let statuses = value("-ZimmerFixtureStatuses") {
+            filters.statuses = Set(statuses.split(separator: ",").map(String.init))
         }
+        if let root = value("-ZimmerFixtureAgentRoot") { filters.agentRoot = root }
+        if let klass = value("-ZimmerFixtureClass") { filters.schedulingClass = klass }
+        board = value("-ZimmerFixtureBoard").flatMap(BoardFilter.init(rawValue:)) ?? .onBoard
+        if arguments.contains("-ZimmerFixtureFilterSheet") { showingFilters = true }
+        Task { await refresh() }
         // The list's search box picks this up and searches, as if typed.
         if let search = value("-ZimmerFixtureSearch") { searchText = search }
         if let tab = value("-ZimmerFixtureTab").flatMap(AppTab.init(rawValue:)) { self.tab = tab }
@@ -158,6 +173,14 @@ final class AppModel: ObservableObject {
             }
         }
         #endif
+    }
+
+    private static func stored<T: Decodable>(_ key: String) -> T? {
+        UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+    }
+
+    private static func store<T: Encodable>(_ value: T, _ key: String) {
+        UserDefaults.standard.set(try? JSONEncoder().encode(value), forKey: key)
     }
 
     /// An error raised on another screen that the whole app has to act on: a sign-in
@@ -211,7 +234,7 @@ final class AppModel: ObservableObject {
     func refresh(silently: Bool = false) async {
         if !silently { isLoading = true }
         defer { if !silently { isLoading = false } }
-        let requested = filter
+        let requested = effectiveFilters
         let board = board
         let view = view
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -221,10 +244,10 @@ final class AppModel: ObservableObject {
             if query.isEmpty {
                 result = try await connection.api.sessions(requested, board: board, view: view)
             } else {
-                result = try await connection.api.search(query, contents: scope == .transcripts, filter: requested, board: board)
+                result = try await connection.api.search(query, contents: scope == .transcripts, filters: requested, board: board)
             }
             // A slower answer to an older request must not overwrite a newer list.
-            guard requested == filter, board == self.board, view == self.view,
+            guard requested == effectiveFilters, board == self.board, view == self.view,
                   query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             sessions = result.sessions
             listIncomplete = !result.complete
@@ -241,11 +264,45 @@ final class AppModel: ObservableObject {
         if let count = try? await connection.api.unreadNotificationCount() { unreadCount = count }
     }
 
+    /// A quick-filter chip: its statuses, and nothing else narrowed.
     func select(_ filter: SessionFilter) async {
-        guard filter != self.filter else { return }
-        self.filter = filter
+        await apply(filter.filters)
+    }
+
+    /// The filter sheet's choices, or a quick filter's; the sheet's board visibility with
+    /// them, in one read.
+    func apply(_ filters: BoardFilters, board: BoardFilter? = nil) async {
+        let board = board ?? self.board
+        guard filters != self.filters || board != self.board else { return }
+        self.filters = filters
+        self.board = board
         sessions = []
         await refresh()
+    }
+
+    /// What the list asks for. The Ranked view opens on everything that can still run, as the
+    /// web works it out on each request — over the default filters only, and never saved, so
+    /// leaving Ranked is back to Needs input.
+    var effectiveFilters: BoardFilters {
+        view == .ranked && filters == .default ? .ranked : filters
+    }
+
+    /// The filters in words, with a genesis by its label once the catalog has been read.
+    var filterSummary: String {
+        effectiveFilters.summary { key in self.filterOptions?.geneses.first { $0.key == key }?.label }
+    }
+
+    func viewChanged() async {
+        await refresh()
+    }
+
+    func loadFilterOptions() async {
+        guard filterOptions == nil else { return }
+        do {
+            filterOptions = try await connection.api.configs()
+        } catch {
+            handle(error)
+        }
     }
 
     func select(_ board: BoardFilter) async {
@@ -278,7 +335,7 @@ final class AppModel: ObservableObject {
     }
 
     private func belongsOnList(_ session: SessionSummary) -> Bool {
-        filter.admits(session.status) && board.admits(session)
+        effectiveFilters.admits(session) && board.admits(session)
     }
 
     /// The rows in the current view's order and sections.

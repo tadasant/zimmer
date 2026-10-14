@@ -99,6 +99,8 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var snoozedUntil: Date?
     /// `priority` or `spot`: the class the session actually runs under.
     public var priorityClass: String?
+    /// Where the session came from, a `SessionGenesis` key (`web_ui`, `slack`, …).
+    public var genesis: String?
     public var heartbeatEnabled: Bool?
     /// How often the heartbeat nudges a session waiting for input, in seconds.
     public var heartbeatIntervalSeconds: Int?
@@ -122,7 +124,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var injectedMcpServers: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case id, slug, title, status, prompt, goal, favorited, visibility, precedence, effort, config, metadata
+        case id, slug, title, status, prompt, goal, favorited, visibility, precedence, effort, config, metadata, genesis
         case agentRuntime = "agent_runtime"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -151,7 +153,8 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         goal: String? = nil, notes: String? = nil, favorited: Bool? = nil,
         visibility: SessionVisibility? = nil, snoozedUntil: Date? = nil,
         priorityClass: String? = nil, precedence: Int? = nil, effort: EffortSummary? = nil, model: String? = nil,
-        agentRoot: String? = nil, lastUserActivityAt: Date? = nil, pullRequests: [PullRequestLink] = []
+        agentRoot: String? = nil, lastUserActivityAt: Date? = nil, pullRequests: [PullRequestLink] = [],
+        genesis: String? = nil
     ) {
         self.id = id
         self.slug = slug
@@ -169,6 +172,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         self.effectiveVisibility = visibility
         self.snoozedUntil = snoozedUntil
         self.priorityClass = priorityClass
+        self.genesis = genesis
         self.precedence = precedence
         self.effort = effort
         self.config = model.map { SessionConfig(model: $0) }
