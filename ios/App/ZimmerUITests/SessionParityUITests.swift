@@ -88,8 +88,12 @@ final class SessionParityUITests: XCTestCase {
         app.buttons["edit.save"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["detail.notes"].waitForExistence(timeout: timeout))
 
-        // Restart a session waiting on you: the turn is handed over, so it reads Waiting.
+        // Restart a session waiting on you: it is taken over, so it is confirmed first, as on
+        // the web; then the turn is handed over, so it reads Waiting.
         openMenu(app, "Restart Session")
+        let restart = app.sheets.buttons["Restart"].firstMatch
+        XCTAssertTrue(restart.waitForExistence(timeout: timeout))
+        restart.tap()
         XCTAssertTrue(waitForLabel(app.staticTexts["detail.status"], "Waiting"))
 
         // Effort, from the levels the session's model accepts.

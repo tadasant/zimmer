@@ -74,6 +74,9 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
     /// since a UI test cannot drive the system photo and file pickers.
     var fixtureAttachesFile = false
+    /// `-ZimmerFixtureCustomSnooze`: the opened session's custom snooze sheet starts open, so
+    /// `ios/bin/ui-test` can photograph the date picker.
+    var fixtureOpensCustomSnooze = false
     /// `-ZimmerFixtureTrigger <id>`: the Triggers tab opens on that trigger's page.
     @Published var fixtureTrigger: Int?
     /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
@@ -126,6 +129,7 @@ final class AppModel: ObservableObject {
         if arguments.contains("-ZimmerFixtureQuickRouter") { showingQuickRouter = true }
         if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
+        fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
         func value(_ flag: String) -> String? {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
@@ -401,6 +405,20 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// An action the server answers with a sentence rather than the session — a row's
+    /// *Refresh Transcript* — then the list as it now stands, and the sentence as the toast.
+    func run(_ action: (ZimmerAPI) async throws -> String) async {
+        do {
+            let message = try await action(connection.api)
+            await refresh()
+            notice = message
+            Haptics.success()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
     /// The Ranked view's *Start now*.
     func startNow(_ id: Int) async {
         do {
@@ -433,7 +451,8 @@ final class AppModel: ObservableObject {
         webURL(path: "/sessions/\(id)")
     }
 
-    /// Any page of the web UI: a trigger's, for editing it.
+    /// Any page of the web UI, by its path: a trigger's, for editing it, or where a banner sends
+    /// a flow only a browser can finish, such as authorizing an MCP server.
     func webURL(path: String) -> URL? {
         guard let web = signedInOrigins?.web else { return nil }
         return ServerURL.join(web, path)
