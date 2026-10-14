@@ -99,9 +99,27 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   generated") and *Regenerate*; for a failed session, why it failed (`metadata.failure_reason`,
   the exception and exit status, the web's failure details); then one divided card: the **Goal
   check** (the web panel's verdict and one line per criterion, when the goal is a catalog goal
-  with checks), the goal and notes (two lines each until tapped), the hierarchy (who spawned it
-  and what it spawned, each a tap away; folded when wider than four sessions) and the **Human
-  messages** (who said what to this session and its family, through which channel; folded). The
+  with checks; its tally names the goal, and a router that recorded no PR of its own says whose
+  PRs were judged, "Judged on PRs recorded by #1044, which this session spawned", each session a
+  tap away), the **goal** (a catalog goal by its name from `GET /api/v1/configs`, whether the
+  session stores its id or its words, with its words under it; your own words as they are, where
+  the web page says "Custom" and keeps the words for a hover), the notes (two lines each until
+  tapped), the **MCP servers** (a chip per server the session has wired, `all_mcp_servers`, green,
+  red or grey for connected, failed or pending from `custom_metadata.mcp_servers_status`, the
+  injected ones dashed; a failed server's error is a tap away, and *Edit* opens the checklist),
+  the **hierarchy** (who spawned it and what it spawned, each a tap away; folded when wider than
+  four sessions; the closed row names the origin, and each row its agent root, its genesis and
+  class, "this session", "origin", and "drawn under #id" where the session above did not spawn
+  it, with the server's truncation reason when the walk was cut) and the **Human messages**
+  (folded; the closed row has both counts, "1 message in this session · 1 elsewhere in the
+  hierarchy", or "none recorded anywhere in this hierarchy" and what that search could not
+  cover; inside, each channel capture is not configured for, as the web panel's amber notice,
+  then who said what, through which channel, tagged *this session* or *elsewhere*, an elsewhere
+  message with the session it was said in a tap away). *Modify Goal* (in the menu or the goal's
+  *Edit*) is the web page's goal picker: the catalog's goals by name with their words, stored as
+  their words as the web picker stores them, your own words, or none. Two things the web panels
+  show are not on the phone, because the API carries neither: a Slack message's *view in Slack*
+  link, and which plugin brought an MCP server. The
   conversation follows, newest last, each message with its age, rendered the way the web renders
   it as far as a phone's text goes: inline markdown (emphasis, code spans, links) and fenced code
   in the monospaced face; list markers and headings stay as typed, where the web draws them as
@@ -146,7 +164,7 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **The session menu** (the ⋯ button) is the web UI's mobile *Session actions* sheet, in its order:
   Quick Router, Edit Notes, Show Logs, Subagents, View PR, Snooze until… / Hide / Put back on the board, Refresh
   Transcript, Copy Transcript (the whole transcript as text), Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
-  edit: Rename, Modify Goal, Effort (the levels the session's model accepts, or the model
+  edit: Rename, Modify Goal (the catalog's goals by name, or your own words), Effort (the levels the session's model accepts, or the model
   default), Model (the models the session's runtime lists), MCP Servers, Skills, Hooks and Plugins
   (each a checklist of its catalog, from the next turn), Promote to priority / Demote to spot (to the head of the spot queue), the
   heartbeat (the web's heart and its popout: on or off, and *Beat every* from 30 seconds to an
@@ -244,7 +262,10 @@ one-time wake was already spent; the web page does), and
 the Costs page's burn rate (not in `GET /api/v1/costs`). So does the rest of the web card's refresh: on the
 web it also resumes a failed session and sends the continue nudge to a stalled waiting one, but
 `POST /api/v1/sessions/:id/refresh` only re-reads the transcript, so the row's refresh is
-*Refresh Transcript* and a failed session is restarted with *Restart Session*. The admin pages (API keys, inference accounts, connectors,
+*Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
+the web says why a row is *drawn under* a session that did not spawn it — reached through a senior,
+or placed there because the tree was cut short — and the app says only that it is: the hierarchy
+nodes do not carry `ceiling_placed`. The admin pages (API keys, inference accounts, connectors,
 settings) stay in the browser; *Open in browser* on any session gets you there.
 
 ## Two origins

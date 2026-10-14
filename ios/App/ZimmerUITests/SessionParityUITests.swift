@@ -305,7 +305,15 @@ final class RankedUITests: XCTestCase {
         let first = app.descendants(matching: .any)["session.row.1031"]
         XCTAssertTrue(last.waitForExistence(timeout: timeout))
         // Both rows on screen, or the drag has no frame to start from or land on.
-        func onScreen(_ element: XCUIElement) -> Bool { element.exists && element.isHittable }
+        // Read from the frame: `isHittable` throws, rather than answering no, for an element
+        // the list has not laid out.
+        // Its top edge below the navigation bar too: the drop lands near the first row's top.
+        func onScreen(_ element: XCUIElement) -> Bool {
+            guard element.exists, !element.frame.isEmpty else { return false }
+            let bar = app.navigationBars.firstMatch
+            return element.frame.minY >= (bar.exists ? bar.frame.maxY : 0)
+                && app.frame.contains(CGPoint(x: element.frame.midX, y: element.frame.midY))
+        }
         var swipes = 0
         while !(onScreen(last) && onScreen(first)) && swipes < 6 {
             if last.exists && last.frame.minY > app.frame.midY { app.swipeUp() } else { app.swipeDown() }
