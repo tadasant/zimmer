@@ -49,6 +49,9 @@ final class SessionDetailModel: ObservableObject {
     /// The catalog (`GET /api/v1/configs`), read once: what names the session's goal and
     /// what the goal picker offers. Nil until it reads, and the page works without it.
     @Published private(set) var configs: AppConfigs?
+    /// The skills catalog (`GET /api/v1/skills`), read once: what the composer's "/" offers,
+    /// narrowed to this session's own. Nil until it reads, and the composer works without it.
+    @Published private(set) var skills: [CatalogItem]?
     private var loadingConfigs = false
 
     init(id: Int, api: ZimmerAPI) {
@@ -58,8 +61,9 @@ final class SessionDetailModel: ObservableObject {
     }
 
     func load() async {
-        // Beside the page's own reads, not before them: the catalog only names the goal.
-        if configs == nil, !loadingConfigs {
+        // Beside the page's own reads, not before them: the catalog only names the goal and
+        // fills the composer's "/".
+        if configs == nil || skills == nil, !loadingConfigs {
             loadingConfigs = true
             Task { await loadConfigs() }
         }
@@ -88,15 +92,24 @@ final class SessionDetailModel: ObservableObject {
         }
     }
 
-    /// The catalog, once. One that will not read leaves the goal's words, and the next load
-    /// tries again.
+    /// The catalog and the skills, once each. One that will not read leaves the goal's words,
+    /// or "/" offering nothing, and the next load tries again.
     private func loadConfigs() async {
         defer { loadingConfigs = false }
-        do {
-            configs = try await api.configs()
-        } catch ZimmerError.unauthorized {
-            report(.unauthorized)
-        } catch {}
+        if configs == nil {
+            do {
+                configs = try await api.configs()
+            } catch ZimmerError.unauthorized {
+                report(.unauthorized)
+            } catch {}
+        }
+        if skills == nil {
+            do {
+                skills = try await api.catalog(.skills)
+            } catch ZimmerError.unauthorized {
+                report(.unauthorized)
+            } catch {}
+        }
     }
 
     /// Read everything again without showing it: the web UI's page updates as the session
@@ -265,6 +278,29 @@ final class SessionDetailModel: ObservableObject {
         }
     }
 
+    /// The web page's class select, in its words: *Derive it* lets the genesis decide again.
+    /// Like a promotion, a change that makes a waiting session priority starts it, and one
+    /// that could not says why.
+    func setSchedulingClass(_ choice: SchedulingClassChoice) async {
+        do {
+            let change = try await api.setSchedulingClass(id, to: choice)
+            detail?.session = change.session
+            let done = "This session is now \(change.session.priorityClass ?? "derived")."
+            notice = change.startMessage.map { "\(done) \($0)" } ?? done
+            error = nil
+            if change.startOutcome == "refused" { Haptics.failure() } else { Haptics.success() }
+            await load()
+        } catch {
+            fail(error)
+        }
+    }
+
+    /// What the composer's "/" offers this session: its own skills a person may invoke.
+    var slashCommands: [SlashCommand] {
+        guard let session = detail?.session, let skills else { return [] }
+        return SlashCommand.available(in: skills, for: session)
+    }
+
     /// The web UI's "Copy full transcript": the whole transcript as text, on the pasteboard.
     func copyTranscript() async {
         do {
@@ -302,6 +338,9 @@ struct SessionDetailView: View {
     @State private var level: ConversationLevel = .minimal
     @State private var editing: EditedText?
     @State private var renaming = false
+    /// The web page's precedence field, in an alert as the rename is.
+    @State private var editingPrecedence = false
+    @State private var newPrecedence = ""
     @State private var showingLogs = false
     @State private var showingSubagents = false
     @State private var newTitle = ""
@@ -492,6 +531,21 @@ struct SessionDetailView: View {
             }
             .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
+        .alert("Precedence", isPresented: $editingPrecedence) {
+            TextField("Precedence", text: $newPrecedence)
+                .keyboardType(.numbersAndPunctuation)
+                .accessibilityIdentifier("precedence.field")
+            Button("Cancel", role: .cancel) {}
+            Button("Set") {
+                guard let value = Precedence.parse(newPrecedence) else { return }
+                let id = model.id
+                Task { await model.apply("Precedence is now \(value).") { try await $0.setPrecedence(id, value) } }
+            }
+            .disabled(Precedence.parse(newPrecedence) == nil)
+        } message: {
+            // The web page's words beside the field: what the number does for this session.
+            Text(model.detail?.session.precedenceHint ?? "")
+        }
         .sheet(isPresented: $choosingModel) { modelSheet }
         .sheet(item: $editingCatalog) { kind in catalogSheet(kind) }
         .sheet(item: $editing) { field in
@@ -542,6 +596,10 @@ struct SessionDetailView: View {
             if app.fixtureOpensCustomSnooze {
                 app.fixtureOpensCustomSnooze = false
                 customSnoozing = true
+            }
+            if app.fixtureTypesSlash {
+                app.fixtureTypesSlash = false
+                model.draft = "/"
             }
         }
         .onDisappear {
@@ -821,31 +879,37 @@ struct SessionDetailView: View {
                         Button {
                             Task { await model.apply("Effort: model default") { try await $0.updateEffort(session.id, effort: nil) } }
                         } label: {
-                            effortLabel(modelDefault, selected: !effort.isExplicit)
+                            choiceLabel(modelDefault, selected: !effort.isExplicit)
                         }
                         ForEach(effort.levels, id: \.self) { level in
                             Button {
                                 Task { await model.apply("Effort: \(level)") { try await $0.updateEffort(session.id, effort: level) } }
                             } label: {
-                                effortLabel(level, selected: effort.isExplicit && effort.level == level)
+                                choiceLabel(level, selected: effort.isExplicit && effort.level == level)
                             }
                         }
                     } label: {
                         Label("Effort: \(effort.level ?? "default")", systemImage: "gauge.with.dots.needle.50percent")
                     }
                 }
-                if session.isPriority {
-                    Button {
-                        Task { await model.reschedule(priority: false) }
-                    } label: {
-                        Label("Demote to spot", systemImage: "arrow.down.circle")
+                // The web page's class select and precedence field, beside each other as there.
+                Menu {
+                    ForEach(SchedulingClassChoice.allCases) { choice in
+                        Button {
+                            choose(choice, for: session)
+                        } label: {
+                            choiceLabel(session.schedulingClassLabel(choice), selected: session.schedulingClassChoice == choice)
+                        }
                     }
-                } else {
-                    Button {
-                        Task { await model.reschedule(priority: true) }
-                    } label: {
-                        Label("Promote to priority", systemImage: "arrow.up.circle")
-                    }
+                } label: {
+                    Label("Scheduling class: \(session.priorityClass ?? "priority")", systemImage: "clock")
+                }
+                Button {
+                    // Opens on the value in force, as the web field does.
+                    newPrecedence = session.precedence.map(String.init) ?? ""
+                    editingPrecedence = true
+                } label: {
+                    Label("Precedence: \(session.precedence.map(String.init) ?? "—")", systemImage: "list.number")
                 }
                 heartbeatMenu(session)
                 if model.detail?.statusSummary?.summary == nil {
@@ -899,8 +963,17 @@ struct SessionDetailView: View {
         }
     }
 
+    /// One of the class select's options, sent as the web select sends it: the class alone, the
+    /// precedence left as it is. The one already chosen changes nothing. A change that makes a
+    /// waiting session priority starts it, as the server's PATCH does on any change into
+    /// priority. The banner's promotion and its head-of-the-queue demotion are other paths.
+    private func choose(_ choice: SchedulingClassChoice, for session: SessionSummary) {
+        guard choice != session.schedulingClassChoice else { return }
+        Task { await model.setSchedulingClass(choice) }
+    }
+
     @ViewBuilder
-    private func effortLabel(_ text: String, selected: Bool) -> some View {
+    private func choiceLabel(_ text: String, selected: Bool) -> some View {
         if selected { Label(text, systemImage: "checkmark") } else { Text(text) }
     }
 
@@ -960,19 +1033,27 @@ struct SessionDetailView: View {
 
     private var composer: some View {
         let running = model.detail?.session.status == .running
+        let commands = slashMatches
         return VStack(spacing: 6) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(Self.quickReplies, id: \.self) { reply in
-                        Button { model.draft = reply } label: {
-                            Pill(compact: true) { Text(reply) }
-                        }
-                        .buttonStyle(.plain)
-                    }
+            if !commands.isEmpty {
+                // The web composer's "/" typeahead, in the quick replies' place while it is open.
+                SlashCommandList(matches: commands) { command in
+                    model.draft = SlashCommand.inserting(command, into: model.draft)
                 }
-                .padding(.horizontal, Theme.margin)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Self.quickReplies, id: \.self) { reply in
+                            Button { model.draft = reply } label: {
+                                Pill(compact: true) { Text(reply) }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, Theme.margin)
+                }
+                .padding(.horizontal, -Theme.margin)
             }
-            .padding(.horizontal, -Theme.margin)
             if !model.attachments.isEmpty {
                 AttachmentChips(attachments: $model.attachments)
             }
@@ -1023,6 +1104,12 @@ struct SessionDetailView: View {
                 .overlay(alignment: .top) { Theme.rule.frame(height: 1) }
                 .ignoresSafeArea(edges: .bottom)
         }
+    }
+
+    /// The session's skills matching a "/" being typed at the end of the draft; none otherwise.
+    private var slashMatches: [SlashCommand] {
+        guard let query = SlashCommand.query(in: model.draft) else { return [] }
+        return SlashCommand.matches(query, in: model.slashCommands)
     }
 
     private var canSend: Bool {
@@ -1186,6 +1273,10 @@ struct MessageBubble: View {
 
     var body: some View {
         let fromAgent = message.role == .assistant
+        let folds = message.isToolTraffic && folded
+        // Parsed once, for the text and for whether a Copy button has to be reachable.
+        let segments = folds ? [] : MessageSegment.segments(of: message.content)
+        let hasCode = segments.contains(where: \.isCode)
         VStack(alignment: fromAgent ? .leading : .trailing, spacing: 3) {
             HStack(spacing: 4) {
                 Text(message.isToolTraffic ? "Tool" : (fromAgent ? "Agent" : "You"))
@@ -1196,7 +1287,7 @@ struct MessageBubble: View {
             }
             .themeLabel(size: 10, color: Theme.inkMute)
             Group {
-                if message.isToolTraffic && folded {
+                if folds {
                     Text(message.condensedLine)
                         .font(Theme.mono)
                         .foregroundStyle(Theme.inkSoft)
@@ -1204,9 +1295,9 @@ struct MessageBubble: View {
                 } else if message.isToolTraffic {
                     // The server writes tool traffic as markdown too (`**Using tool: Bash**`
                     // over a fenced block), so it renders the same way, in the monospaced face.
-                    MarkdownText(message.content, proseFont: Theme.mono, proseColor: Theme.inkSoft)
+                    MarkdownText(segments: segments, proseFont: Theme.mono, proseColor: Theme.inkSoft)
                 } else {
-                    MarkdownText(message.content)
+                    MarkdownText(segments: segments)
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -1218,7 +1309,8 @@ struct MessageBubble: View {
         // A reply from you sits to the right and stops short of the far edge, as in Messages.
         .padding(.leading, fromAgent ? 0 : 36)
         .frame(maxWidth: .infinity, alignment: fromAgent ? .leading : .trailing)
-        .accessibilityElement(children: .combine)
+        // One element to VoiceOver, unless a code block's Copy button has to be reachable.
+        .accessibilityElement(children: hasCode ? .contain : .combine)
         .accessibilityIdentifier("detail.message.\(message.id)")
     }
 
@@ -1241,33 +1333,27 @@ struct MessageBubble: View {
 /// spans, links, list markers kept as typed), fenced code blocks in the monospaced face on
 /// a well. Markdown that does not parse is shown as it was written.
 struct MarkdownText: View {
-    let text: String
+    /// The text, already cut at its fences (`MessageSegment.segments(of:)`).
+    let segments: [MessageSegment]
     var proseFont: Font = .subheadline
     var proseColor: Color = Theme.ink
 
-    init(_ text: String, proseFont: Font = .subheadline, proseColor: Color = Theme.ink) {
-        self.text = text
+    init(segments: [MessageSegment], proseFont: Font = .subheadline, proseColor: Color = Theme.ink) {
+        self.segments = segments
         self.proseFont = proseFont
         self.proseColor = proseColor
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(MessageSegment.segments(of: text).enumerated()), id: \.offset) { _, segment in
+            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                 switch segment {
                 case let .prose(prose):
                     Text(Self.attributed(prose))
                         .font(proseFont)
                         .foregroundStyle(proseColor)
                 case let .code(code, _):
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        Text(code)
-                            .font(Theme.mono)
-                            .foregroundStyle(Theme.ink)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                    }
-                    .background(Theme.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    CodeBlock(code: code)
                 }
             }
         }
@@ -1276,5 +1362,54 @@ struct MarkdownText: View {
     /// Inline-only, keeping line breaks and list markers: a paragraph stays a paragraph.
     static func attributed(_ prose: String) -> AttributedString {
         MarkdownInline.attributed(prose)
+    }
+}
+
+/// A fenced code block as the web's `code_block_controller.js` draws one: the code in the
+/// monospaced face on a well, scrolling sideways rather than wrapping, with a Copy button in
+/// its corner that puts the code on the pasteboard and shows a check for a moment. The web
+/// also colours the code by language (Rouge); here it is one colour.
+struct CodeBlock: View {
+    let code: String
+    /// Bumped by each tap, so the check's reset follows the latest tap rather than the first.
+    @State private var copies = 0
+    @State private var copied = false
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Text(code)
+                .font(Theme.mono)
+                .foregroundStyle(Theme.ink)
+                .padding(.leading, 10)
+                // Room for the button at the end of the line, so the last characters can be
+                // scrolled out from under it.
+                .padding(.trailing, 40)
+                .padding(.vertical, 8)
+        }
+        .background(Theme.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(alignment: .topTrailing) {
+            Button {
+                UIPasteboard.general.string = code
+                copied = true
+                copies += 1
+                Haptics.success()
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(copied ? Theme.success : Theme.inkSoft)
+                    .frame(width: 30, height: 30)
+                    .background(Theme.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .accessibilityLabel(copied ? "Copied" : "Copy code")
+            .accessibilityIdentifier("code.copy")
+        }
+        // A new tap cancels the wait before it, so the check stays two seconds past the last.
+        .task(id: copies) {
+            guard copies > 0 else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            copied = false
+        }
     }
 }

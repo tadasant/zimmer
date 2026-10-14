@@ -80,6 +80,9 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureOpenPanels`: the opened session starts at its details card with the
     /// hierarchy and the human messages open, so `ios/bin/ui-test` can photograph them.
     var fixtureOpensPanels = false
+    /// `-ZimmerFixtureSlash`: the opened session's composer starts with "/" typed, so
+    /// `ios/bin/ui-test` can photograph the skills it offers.
+    var fixtureTypesSlash = false
     /// `-ZimmerFixtureTrigger <id>`: the Triggers tab opens on that trigger's page.
     @Published var fixtureTrigger: Int?
     /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
@@ -134,6 +137,7 @@ final class AppModel: ObservableObject {
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
         fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
+        fixtureTypesSlash = arguments.contains("-ZimmerFixtureSlash")
         func value(_ flag: String) -> String? {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
