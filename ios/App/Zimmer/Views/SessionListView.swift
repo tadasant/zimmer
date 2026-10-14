@@ -4,9 +4,9 @@ import ZimmerKit
 /// Sessions, in one of the web UI's four board views, filtered by status and by board
 /// visibility as the web UI's board is. "Needs input" is the default filter and the first
 /// chip: the phone is for the sessions waiting on a person. Swipe right to star, left to
-/// trash or snooze; press and hold for everything else the web UI's card offers; Select to
-/// trash several at once. The Quick Router bar is pinned to the foot: the board is where
-/// work starts.
+/// trash or snooze; press and hold for everything else the web UI's card and its row menu
+/// offer; Select to trash several at once. The Quick Router bar is pinned to the foot: the
+/// board is where work starts.
 struct SessionListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingSettings = false
@@ -14,6 +14,12 @@ struct SessionListView: View {
     /// A row whose PR is about to be authorized to merge, waiting on the confirmation.
     @State private var merging: SessionSummary?
     @State private var confirmingReprioritize = false
+    /// A row's *Custom…* snooze, open in its sheet.
+    @State private var customSnoozing: SessionSummary?
+    @State private var renaming: SessionSummary?
+    @State private var newTitle = ""
+    /// A restart that takes over a session waiting on you, waiting on its confirmation.
+    @State private var restarting: SessionSummary?
     /// The search the list last loaded, so appearing does not reload a list `start()` just loaded.
     @State private var appliedSearch = SearchKey(text: "", scope: .titles)
     @State private var editMode: EditMode = .inactive
@@ -30,7 +36,7 @@ struct SessionListView: View {
                 "Snooze until…", isPresented: isSnoozing,
                 titleVisibility: .visible, presenting: snoozing
             ) { session in
-                SnoozeButtons(session: session)
+                SnoozeButtons(session: session) { customSnoozing = session }
             } message: { _ in
                 Text("Visual only — it does not pause, start or stop the session.")
             }
@@ -61,10 +67,43 @@ struct SessionListView: View {
             // The server orders each view, so a new view is a new list.
             .onChange(of: model.view) { _, view in
                 if view != .ranked, reordering { reordering = false; editMode = .inactive }
-                Task { await model.refresh() }
+                Task { await model.viewChanged() }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
             .modifier(QueuedTrashQuestion { _ in model.path.isEmpty })
+    }
+
+    /// The questions a row's own actions ask: a custom snooze time, a new title, and whether a
+    /// restart may take a session over.
+    private var promptingList: some View {
+        searchableList
+            .sheet(item: $customSnoozing) { session in
+                CustomSnoozeSheet { until in
+                    let label = until.formatted(date: .abbreviated, time: .shortened)
+                    return await model.perform("Snoozed until \(label)", on: session.id) { try await $0.setVisibility(session.id, .snoozed(until: until)) }
+                }
+            }
+            .alert("Rename session", isPresented: isRenaming, presenting: renaming) { session in
+                TextField("Title", text: $newTitle)
+                    .accessibilityIdentifier("rename.field")
+                Button("Cancel", role: .cancel) {}
+                Button("Save") {
+                    let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Task { await model.perform("Renamed", on: session.id) { try await $0.rename(session.id, title: title) } }
+                }
+                .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .confirmationDialog(
+                "Restart this session?", isPresented: isRestarting,
+                titleVisibility: .visible, presenting: restarting
+            ) { session in
+                Button("Restart") {
+                    Task { await model.perform("Restarted", on: session.id) { try await $0.restart(session.id) } }
+                }
+            } message: { session in
+                // The web UI's own confirm text for this session's restart.
+                Text(session.restartConfirmation(transcriptPresent: nil) ?? "")
+            }
     }
 
     private var list: some View {
@@ -77,11 +116,16 @@ struct SessionListView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
             } footer: {
-                if model.board != .onBoard {
-                    Label("Showing: \(model.board.label)", systemImage: "eye")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(Theme.snooze)
-                        .accessibilityIdentifier("board.current")
+                VStack(alignment: .leading, spacing: 6) {
+                    // In the footer, not the row: a row with no insets clips text at its leading
+                    // edge, which the chips escape only because they scroll.
+                    FilterSummary()
+                    if model.board != .onBoard {
+                        Label("Showing: \(model.board.label)", systemImage: "eye")
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(Theme.snooze)
+                            .accessibilityIdentifier("board.current")
+                    }
                 }
             }
             if let error = model.error {
@@ -93,14 +137,14 @@ struct SessionListView: View {
             }
             if model.sessions.isEmpty && !model.isLoading {
                 Section {
-                    EmptyListRow(filter: model.filter, searching: !model.searchText.isEmpty)
+                    EmptyListRow(filters: model.effectiveFilters, searching: !model.searchText.isEmpty)
                         .listRowBackground(Color.clear)
                 }
             }
             ForEach(model.sessions.isEmpty ? [] : model.sections) { section in
                 Section {
                     ForEach(section.sessions) { session in
-                        SwipeableSessionRow(session: session, snoozing: $snoozing, merging: $merging)
+                        SwipeableSessionRow(session: session, snoozing: $snoozing, prompts: rowPrompts)
                     }
                     .onMove(perform: moveHandler(for: section))
                     if section.sessions.isEmpty {
@@ -283,10 +327,10 @@ struct SessionListView: View {
         Binding(get: { snoozing != nil }, set: { if !$0 { snoozing = nil } })
     }
 
-    /// The list with Merge's and Reprioritize's confirmations: a separate expression, because
-    /// one modifier chain holding every dialog is more than the type checker will take.
+    /// The prompting list with Merge's and Reprioritize's confirmations: a separate expression,
+    /// because one modifier chain holding every dialog is more than the type checker will take.
     private var listWithDecisions: some View {
-        searchableList
+        promptingList
             .confirmationDialog(
                 "Authorize the merge?", isPresented: isMerging,
                 titleVisibility: .visible, presenting: merging
@@ -308,9 +352,47 @@ struct SessionListView: View {
         Binding(get: { merging != nil }, set: { if !$0 { merging = nil } })
     }
 
+    private var isRenaming: Binding<Bool> {
+        Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })
+    }
+
+    private var isRestarting: Binding<Bool> {
+        Binding(get: { restarting != nil }, set: { if !$0 { restarting = nil } })
+    }
+
+    /// What a row's long press opens on this screen.
+    private var rowPrompts: RowPrompts {
+        RowPrompts(
+            customSnooze: { customSnoozing = $0 },
+            rename: { session in
+                newTitle = session.title ?? ""
+                renaming = session
+            },
+            merge: { merging = $0 },
+            restart: { session in
+                // A failed session restarts at once; one waiting on you is taken over, so the
+                // web UI asks first.
+                // The board does not know whether a transcript is stored; the session page does.
+                if session.restartConfirmation(transcriptPresent: nil) != nil {
+                    restarting = session
+                } else {
+                    Task { await model.perform("Restarted", on: session.id) { try await $0.restart(session.id) } }
+                }
+            }
+        )
+    }
+
     private var boardSelection: Binding<BoardFilter> {
         Binding(get: { model.board }, set: { board in Task { await model.select(board) } })
     }
+}
+
+/// The questions a row's long press hands back to the list to ask.
+private struct RowPrompts {
+    let customSnooze: (SessionSummary) -> Void
+    let rename: (SessionSummary) -> Void
+    let merge: (SessionSummary) -> Void
+    let restart: (SessionSummary) -> Void
 }
 
 /// One row with the web UI card's quick actions on its swipes and its long press.
@@ -318,7 +400,7 @@ private struct SwipeableSessionRow: View {
     @EnvironmentObject private var model: AppModel
     let session: SessionSummary
     @Binding var snoozing: SessionSummary?
-    @Binding var merging: SessionSummary?
+    let prompts: RowPrompts
 
     var body: some View {
         NavigationLink(value: session.id) {
@@ -339,7 +421,7 @@ private struct SwipeableSessionRow: View {
             .tint(Theme.Swipe.favorite)
             // The web UI's row Merge button: offered only on an open, green PR.
             if session.mergeablePullRequest != nil {
-                Button { merging = session } label: {
+                Button { prompts.merge(session) } label: {
                     Label("Merge", systemImage: "arrow.triangle.merge")
                 }
                 // The web Merge button's green-600.
@@ -376,7 +458,7 @@ private struct SwipeableSessionRow: View {
                 .tint(Theme.Swipe.snooze)
             }
         }
-        .contextMenu { SessionContextMenu(session: session, merging: $merging) }
+        .contextMenu { SessionContextMenu(session: session, prompts: prompts) }
     }
 }
 
@@ -385,10 +467,12 @@ private struct SearchKey: Hashable {
     let scope: SearchScope
 }
 
-/// The snooze presets, for a dialog or a menu.
+/// The snooze presets, then a time of your own, then Hide — the web UI's snooze menu, for a
+/// dialog or a menu. `custom` opens the picker.
 struct SnoozeButtons: View {
     @EnvironmentObject private var model: AppModel
     let session: SessionSummary
+    let custom: () -> Void
 
     var body: some View {
         ForEach(VisibilityChange.snoozePresets()) { preset in
@@ -397,22 +481,24 @@ struct SnoozeButtons: View {
                 Task { await model.perform("Snoozed until \(until)", on: session.id) { try await $0.setVisibility(session.id, .snoozed(until: preset.until)) } }
             }
         }
+        Button("Custom…", action: custom)
         Button("Hide") {
             Task { await model.perform("Hidden", on: session.id) { try await $0.setVisibility(session.id, .hidden) } }
         }
     }
 }
 
-/// Press and hold a row: the web UI card's actions.
+/// Press and hold a row: the web UI card's actions, with the rename its title's pencil
+/// offers and the refresh beside its status pill.
 private struct SessionContextMenu: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openURL) private var openURL
     let session: SessionSummary
-    @Binding var merging: SessionSummary?
+    let prompts: RowPrompts
 
     var body: some View {
         if let pr = session.mergeablePullRequest {
-            Button { merging = session } label: {
+            Button { prompts.merge(session) } label: {
                 Label("Merge \(pr.label)", systemImage: "arrow.triangle.merge")
             }
         }
@@ -423,7 +509,7 @@ private struct SessionContextMenu: View {
         }
         if session.boardVisibility == .visible {
             Menu {
-                SnoozeButtons(session: session)
+                SnoozeButtons(session: session) { prompts.customSnooze(session) }
             } label: {
                 Label("Snooze until…", systemImage: "moon.zzz")
             }
@@ -439,6 +525,15 @@ private struct SessionContextMenu: View {
         }
         if let url = model.webURL(for: session.id) {
             Button { openURL(url) } label: { Label("Open in browser", systemImage: "safari") }
+        }
+        Button { prompts.rename(session) } label: { Label("Rename", systemImage: "pencil") }
+        // The card hides its refresh on a running session: it is live already.
+        if session.status != .running {
+            Button {
+                Task { await model.run { try await $0.refreshTranscript(session.id) } }
+            } label: {
+                Label("Refresh Transcript", systemImage: "arrow.triangle.2.circlepath")
+            }
         }
         Divider()
         if session.status == .running {
@@ -456,9 +551,7 @@ private struct SessionContextMenu: View {
             }
         }
         if session.status == .failed || session.status == .needsInput {
-            Button {
-                Task { await model.perform("Restarted", on: session.id) { try await $0.restart(session.id) } }
-            } label: {
+            Button { prompts.restart(session) } label: {
                 Label("Restart Session", systemImage: "arrow.clockwise.circle")
             }
         }
@@ -478,23 +571,68 @@ private struct FilterBar: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(SessionFilter.allCases) { filter in
-                    let selected = filter == model.filter
+        VStack(alignment: .leading, spacing: 4) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    // The web UI's filter form, behind one button: every filter, combinable.
                     Button {
                         Haptics.selection()
-                        Task { await model.select(filter) }
+                        model.showingFilters = true
                     } label: {
-                        Pill(selected: selected, compact: true) { Text(filter.label) }
+                        Pill(selected: model.effectiveFilters.preset == nil, compact: true) {
+                            Label(filtersLabel, systemImage: "line.3.horizontal.decrease")
+                        }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityIdentifier("filter.\(filter.rawValue)")
-                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityLabel("Filters")
+                    .accessibilityValue(model.filterSummary)
+                    .accessibilityIdentifier("filter.more")
+                    ForEach(SessionFilter.allCases) { filter in
+                        let selected = model.effectiveFilters.preset == filter
+                        Button {
+                            Haptics.selection()
+                            Task { await model.select(filter) }
+                        } label: {
+                            Pill(selected: selected, compact: true) { Text(filter.label) }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("filter.\(filter.rawValue)")
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
                 }
+                .padding(.vertical, 2)
+                .animation(.snappy(duration: 0.25), value: model.filters)
             }
-            .padding(.vertical, 2)
-            .animation(.snappy(duration: 0.25), value: model.filter)
+        }
+        .sheet(isPresented: $model.showingFilters) { BoardFiltersSheet(initial: model.filters) }
+    }
+
+    private var filtersLabel: String {
+        guard model.filters.preset == nil else { return "Filters" }
+        let count = model.filters.refinementCount + (model.filters.statuses.count > 1 ? 1 : 0)
+        return count > 0 ? "Filters · \(count)" : "Filters"
+    }
+}
+
+/// A combination the chips cannot show, said in words, with a way back.
+private struct FilterSummary: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        if model.effectiveFilters.preset == nil {
+            HStack(spacing: 6) {
+                Text(model.filterSummary)
+                    .font(.caption)
+                    .foregroundStyle(Theme.inkSoft)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .accessibilityIdentifier("filter.summary")
+                Button("Reset") { Task { await model.apply(.default) } }
+                    .buttonStyle(.borderless)
+                    .font(.caption.weight(.medium))
+                    .accessibilityIdentifier("filter.reset")
+                    .fixedSize()
+            }
         }
     }
 }
@@ -562,19 +700,24 @@ struct SessionRow: View {
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.snooze)
             }
+            if session.status == .archived {
+                TrashExpiryLabel(session: session)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.inkMute)
+            }
         }
         .accessibilityElement(children: .combine)
     }
 }
 
 private struct EmptyListRow: View {
-    let filter: SessionFilter
+    let filters: BoardFilters
     let searching: Bool
 
     var body: some View {
         EmptyState(
             title: message,
-            symbol: searching ? "magnifyingglass" : (filter == .needsInput ? "checkmark" : "tray"),
+            symbol: searching ? "magnifyingglass" : (filters.preset == .needsInput ? "checkmark" : "tray"),
             message: detail
         )
         .accessibilityElement(children: .combine)
@@ -583,12 +726,20 @@ private struct EmptyListRow: View {
 
     private var message: String {
         if searching { return "No sessions match." }
-        return filter == .needsInput ? "Nothing needs you right now." : "No \(filter.label.lowercased()) sessions."
+        switch filters.preset {
+        case .needsInput: return "Nothing needs you right now."
+        case .some(let preset): return "No \(preset.label.lowercased()) sessions."
+        case .none: return "No sessions match these filters."
+        }
     }
 
     private var detail: String? {
         if searching { return "Try other words, or search transcripts." }
-        return filter == .needsInput ? "Sessions waiting on you land here." : nil
+        switch filters.preset {
+        case .needsInput: return "Sessions waiting on you land here."
+        case .some: return nil
+        case .none: return filters.summary
+        }
     }
 }
 

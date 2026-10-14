@@ -257,6 +257,7 @@ Rails.application.routes.draw do
           post :sleep, action: :sleep_session
           post :restart
           post :start_now
+          post :force_start
           patch :reorder_precedence
           # A person's sign-off, from the iOS app only: see the action.
           post :authorize_merge
