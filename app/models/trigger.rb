@@ -1271,17 +1271,16 @@ class Trigger < ApplicationRecord
   # user would see it. Sweeping it up here would delete that evidence as a side
   # effect of a later sibling succeeding, which is the silent loss this whole
   # mechanism exists to prevent. Only the user clears a failed trigger.
+  #
+  # Only the siblings that share this wake's WAIT are held — see #shares_wait_with?.
+  # A later `wake_me_up_later` the requester armed for something else stays armed
+  # and unmarked, so the retirement at the end of the woken turn cannot reach it
+  # (https://github.com/tadasant/zimmer/issues/1325).
   def hold_wake_group!
     return 0 unless one_time_reuse_trigger?
     return 0 if last_session_id.blank?
 
-    siblings = Trigger
-      .where(last_session_id: last_session_id, reuse_session: true)
-      .where.not(id: id)
-      .where.not(status: "failed")
-      .includes(:trigger_conditions)
-      .to_a
-      .select(&:one_time_reuse_trigger?)
+    siblings = wake_group_siblings
 
     held_at = Time.current
     # update_all, not save: `validates :trigger_conditions, presence:` has nothing
@@ -1290,6 +1289,98 @@ class Trigger < ApplicationRecord
     Trigger.where(id: siblings.map(&:id) + [ id ]).update_all(wake_held_at: held_at, updated_at: held_at)
 
     siblings.size
+  end
+
+  # A `wake_me_up_later` wake: a one-time reuse trigger made of nothing but
+  # one-time schedules.
+  def time_wake?
+    one_time_reuse_trigger? && trigger_conditions.all?(&:one_time_schedule?)
+  end
+
+  # Whether +other+, another one-time wake aimed at the same requester, belongs to
+  # the same wait as this one — so that this one firing ends it.
+  #
+  # Every pair does except two time wakes. A wait has at most one deadline: the
+  # pattern the tools prescribe is one `wake_me_up_when_session_changes_state`
+  # watcher plus one `wake_me_up_later` backstop, and whichever fires first ends
+  # the other. Two wall-clock wakes at different times are two waits — "check CI
+  # at 17:45" and "sweep main's post-merge runs at 18:00" — and the earlier one
+  # firing says nothing about whether the later one is still wanted. Treating them
+  # as one group is what retired session 24237's 18:00 wake at the end of its 17:45
+  # turn without telling it, and left it asleep for sixteen hours
+  # (https://github.com/tadasant/zimmer/issues/1325).
+  #
+  # A watcher paired with a time wake cannot be told apart from an independent
+  # pair this way, so it stays in the group — and #wake_group_notice names it in
+  # the woken prompt, so the turn knows to re-arm it if it was not part of this
+  # wait.
+  def shares_wait_with?(other)
+    !(time_wake? && other.time_wake?)
+  end
+
+  # The other one-time wakes aimed at this wake's requester, split by whether
+  # this wake firing retires them. `failed` rows are in neither list: they are
+  # not armed, and they are the user's to clear (see #hold_wake_group!).
+  #
+  # @return [Array(Array<Trigger>, Array<Trigger>)] [held, kept]
+  def partition_wake_siblings
+    return [ [], [] ] unless one_time_reuse_trigger? && last_session_id.present?
+
+    Trigger
+      .where(last_session_id: last_session_id, reuse_session: true)
+      .where.not(id: id)
+      .where.not(status: "failed")
+      .includes(:trigger_conditions)
+      .to_a
+      .select(&:one_time_reuse_trigger?)
+      .partition { |sibling| shares_wait_with?(sibling) }
+  end
+
+  # The siblings #hold_wake_group! holds along with this wake.
+  def wake_group_siblings
+    partition_wake_siblings.first
+  end
+
+  # The paragraph appended to a wake's prompt telling the woken turn what this
+  # fire did to its other wakes: which ones it will retire when the turn comes to
+  # rest, and which ones are still armed. Nil when the requester has no other
+  # wakes, so the common single-wake prompt is unchanged.
+  #
+  # Retiring a wake is only safe if the turn knows about it. Before this, a turn
+  # woken by one wake had no way to see that a second one it was counting on would
+  # be gone by the end of the turn — the agent in #1325 closed its turn saying "the
+  # 18:00 UTC wake also covers main's post-merge runs" about a wake that no longer
+  # existed. Listing the kept ones as well stops a turn re-arming a wake it already
+  # holds.
+  def wake_group_notice
+    held, kept = partition_wake_siblings
+    kept = kept.select { |sibling| sibling.status == "enabled" && sibling.trigger_conditions.any? { |c| c.last_triggered_at.nil? } }
+    return nil if held.empty? && kept.empty?
+
+    lines = [ "---", "Zimmer: what this wake did to your other wake-ups." ]
+    if held.any?
+      lines << "Retired when this turn ends — they belonged to the wait this wake ended. " \
+        "If one of them was for something else, re-arm it before you finish:"
+      held.each { |sibling| lines << "- #{sibling.wake_description}" }
+    end
+    if kept.any?
+      lines << "Still armed, and not affected by this wake — do not re-arm them:"
+      kept.each { |sibling| lines << "- #{sibling.wake_description}" }
+    end
+    lines.join("\n")
+  end
+
+  # One line naming a wake by what it waits for, for #wake_group_notice.
+  def wake_description
+    parts = trigger_conditions.filter_map do |condition|
+      if condition.one_time_schedule?
+        at = condition.scheduled_at_time
+        "fires at #{at ? at.utc.iso8601 : condition.scheduled_at}"
+      elsif condition.session_scoped_ao_event?
+        "#{condition.ao_event_name} on session ##{condition.watched_session_id}"
+      end
+    end
+    "trigger ##{id} (#{name}): #{parts.join(', ')}"
   end
 
   private
@@ -1784,6 +1875,13 @@ class Trigger < ApplicationRecord
 
     @last_follow_up_status = :dropped
 
+    # A wake tells the turn it wakes what it did to the requester's other wakes —
+    # see #wake_group_notice.
+    if one_time_reuse_trigger?
+      notice = wake_group_notice
+      prompt = "#{prompt}\n\n#{notice}" if notice
+    end
+
     # Use transaction with row-level locking to prevent race conditions.
     # The state check and state change must happen atomically, matching the
     # pattern in Github::CommentEvaluator and EnqueuedMessageProcessorService.
@@ -1859,18 +1957,18 @@ class Trigger < ApplicationRecord
           @last_follow_up_status = :queued
         end
       elsif session.needs_input? || session.waiting?
-        # Tell the resume that a WAKE is what woke this session, so its
+        # Tell the resume WHICH wake woke this session, so its
         # cancel_pending_one_time_wake_triggers callback holds the rest of the
         # wake group instead of consuming it. Consuming it there is right for a
         # deliberate resume — a human follow-up, a restart — and wrong here: the
         # requester has been resumed but has not yet DONE anything, and until its
         # turn ends the wait it set up is the only thing that will wake it again.
         # See SessionStateMachine#hold_pending_one_time_wakes.
-        session.wake_fire_resume = one_time_reuse_trigger?
+        session.waking_trigger = self if one_time_reuse_trigger?
         begin
           session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
         ensure
-          session.wake_fire_resume = false
+          session.waking_trigger = nil
         end
         @last_follow_up_status = :delivered
       end

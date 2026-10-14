@@ -588,7 +588,15 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
 
     assert_not_nil firing_trigger.reload.wake_held_at, "firing one-time trigger held"
     assert_not_nil sibling_needs_input.reload.wake_held_at, "ao_event sibling held"
-    assert_not_nil sibling_deadline.reload.wake_held_at, "schedule sibling held"
+    assert_nil sibling_deadline.reload.wake_held_at,
+      "a second time wake is a different wait, so the first one firing does not hold it (#1325)"
+
+    prompt = requester.reload.metadata["pending_follow_up_prompt"].to_s
+    assert_includes prompt, "Retired when this turn ends", "the woken turn is told what its pause will retire"
+    assert_includes prompt, "trigger ##{sibling_needs_input.id}"
+    assert_includes prompt, "session_needs_input on session ##{watched.id}"
+    assert_includes prompt, "Still armed"
+    assert_includes prompt, "trigger ##{sibling_deadline.id}"
 
     # The wake queued the turn; a worker takes it, and the turn then ends.
     requester.reload.start!
@@ -596,7 +604,73 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
 
     assert_not Trigger.exists?(firing_trigger.id), "firing one-time trigger retired with the turn"
     assert_not Trigger.exists?(sibling_needs_input.id), "ao_event sibling retired"
-    assert_not Trigger.exists?(sibling_deadline.id), "schedule sibling retired"
+    assert Trigger.exists?(sibling_deadline.id), "the independent time wake survives the turn"
+  end
+
+  # tadasant/zimmer#1325: session 24237 armed a 17:45 wake and an 18:00 wake in one
+  # turn. The 17:45 fire held the 18:00 one as its sibling, the 17:45 turn's pause
+  # retired it, and the session slept until a sweep found it sixteen hours later —
+  # without the woken turn ever being told the 18:00 wake was gone.
+  test "an earlier wake_me_up_later firing does not retire a later one, and the woken turn sleeps on it" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    requester = Session.create!(
+      prompt: "Requester",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      status: :waiting,
+      metadata: {}
+    )
+
+    time_wake = lambda do |name, at|
+      Trigger.create!(
+        name: name,
+        status: "enabled",
+        agent_root_name: "zimmer",
+        prompt_template: name,
+        reuse_session: true,
+        last_session_id: requester.id,
+        trigger_conditions_attributes: [
+          { condition_type: "schedule", configuration: { "scheduled_at" => at, "timezone" => "UTC" } }
+        ]
+      )
+    end
+
+    travel_to Time.zone.parse("2026-10-13 17:39:02 UTC") do
+      @first = time_wake.call("CI check", "2026-10-13T17:45:00")
+      @second = time_wake.call("main post-merge sweep", "2026-10-13T18:00:00")
+    end
+
+    travel_to Time.zone.parse("2026-10-13 17:45:15 UTC") do
+      ScheduleTriggerJob.perform_now
+
+      requester.reload
+      prompt = requester.metadata["pending_follow_up_prompt"].to_s
+      assert_match(/\ACI check/, prompt, "the 17:45 wake delivered its own prompt")
+      assert_includes prompt, "Still armed", "the woken turn is told which of its wakes are still armed"
+      assert_includes prompt, "trigger ##{@second.id}"
+      assert_includes prompt, "2026-10-13T18:00:00Z"
+      assert_not_includes prompt, "Retired when this turn ends", "nothing of this requester's is retired"
+      assert_nil @second.reload.wake_held_at, "the 18:00 wake is not held by the 17:45 fire"
+
+      # A worker takes the woken turn, and it ends without arming anything new.
+      requester.start!
+      requester.pause!
+    end
+
+    assert_not Trigger.exists?(@first.id), "the fired wake is retired with its turn"
+    assert Trigger.exists?(@second.id), "the 18:00 wake survives the 17:45 turn"
+    assert_predicate requester.reload, :waiting?, "the session goes back to sleep on the 18:00 wake"
+
+    travel_to Time.zone.parse("2026-10-13 18:00:15 UTC") do
+      ScheduleTriggerJob.perform_now
+    end
+
+    requester.reload
+    assert_match(/\Amain post-merge sweep/, requester.metadata["pending_follow_up_prompt"].to_s,
+      "the 18:00 wake fires and delivers its prompt")
+    assert_not_nil @second.reload.wake_held_at, "and is held across the turn it woke"
   end
 
   test "does not destroy siblings when one-time trigger firing fails" do
