@@ -416,7 +416,7 @@ Two things a narrowed page deliberately does *not* show the same way:
   filters on.
 - **Burn rates.** They are current fleet rates over a fixed sample of recent sessions, not a
   rollup of anything on the page, so they are not rendered under a heading that says one
-  agent root.
+  agent root, and `GET /api/v1/costs` leaves `burn_rates` out of a narrowed response.
 - **The experimental-setting cohorts.** The cohorts themselves narrow, but the corpus they
   are counted against does not — `ExperimentAnalytics` reads the deployment's whole tagging
   history to say how many sessions carry each label. A one-session A/B comparison is not a

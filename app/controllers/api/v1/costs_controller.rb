@@ -42,7 +42,7 @@ class Api::V1::CostsController < Api::BaseController
       # not interpretable, and before the historical sweep completes these
       # numbers only cover spend since ingestion shipped.
       ledger_coverage: coverage_json
-    }.merge(analytics.snapshot)
+    }.merge(analytics.snapshot).merge(burn_rates_json(scope))
   end
 
   # POST /api/v1/costs/backfill
@@ -79,6 +79,30 @@ class Api::V1::CostsController < Api::BaseController
   end
 
   private
+
+  # The scheduler's current $/min per harness + model, as the Costs page's burn
+  # rate card shows them: fresh rows only, dearest first. Not a rollup of the
+  # window — they turn over on their own cron, over a fixed sample of recent
+  # sessions — and fleet rates, so the key is omitted on a narrowed scope, where
+  # the page leaves the card out rather than put fleet figures under one agent
+  # root's heading.
+  def burn_rates_json(scope)
+    return {} unless scope.fleet?
+
+    {
+      burn_rates: HarnessModelBurnRate.fresh.by_rate.map do |rate|
+        {
+          harness: rate.harness,
+          model: rate.model,
+          usd_per_minute: rate.usd_per_minute,
+          usd_per_hour: rate.usd_per_hour,
+          sample_session_count: rate.sample_session_count,
+          sample_minutes: rate.sample_minutes,
+          computed_at: rate.computed_at.iso8601
+        }
+      end
+    }
+  end
 
   def coverage_json
     coverage = TokenUsageBackfill.coverage

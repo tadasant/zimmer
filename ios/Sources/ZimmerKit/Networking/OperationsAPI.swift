@@ -1,7 +1,7 @@
 import Foundation
 
-/// The web UI's pages beyond the board: the notifications inbox, triggers (list, turn on or
-/// off, invoke), costs and health — each read-only except where the web UI's own buttons
+/// The web UI's pages beyond the board: the notifications inbox, triggers (list, read one, turn
+/// on or off, invoke), costs and health — each read-only except where the web UI's own buttons
 /// write, and each open to the app's token for exactly those actions.
 public protocol OperationsAPI: Sendable {
     func notifications() async throws -> [InboxNotification]
@@ -13,12 +13,14 @@ public protocol OperationsAPI: Sendable {
     func dismissNotification(_ id: Int) async throws
     func dismissAllReadNotifications() async throws
     func triggers() async throws -> [TriggerSummary]
+    /// One trigger's page: everything the list carries, and the sessions it last made.
+    func trigger(_ id: Int) async throws -> TriggerDetail
     /// Turn a trigger on or off — the web UI's toggle.
     func toggleTrigger(_ id: Int) async throws -> TriggerSummary
     /// Fire a trigger now, as the web UI's Invoke button does.
     func invokeTrigger(_ id: Int) async throws -> TriggerInvocation
-    /// The Costs page over the last `days` days.
-    func costs(days: Int) async throws -> CostSnapshot
+    /// The Costs page over `window`, narrowed to `scope`.
+    func costs(_ window: CostWindow, scope: CostScope) async throws -> CostSnapshot
     func health() async throws -> HealthReport
 }
 
@@ -56,6 +58,10 @@ extension ZimmerHTTPClient {
         return response.triggers
     }
 
+    public func trigger(_ id: Int) async throws -> TriggerDetail {
+        try await get("/api/v1/triggers/\(id)")
+    }
+
     public func toggleTrigger(_ id: Int) async throws -> TriggerSummary {
         let response: TriggerResponse = try await post("/api/v1/triggers/\(id)/toggle", json: [:])
         return response.trigger
@@ -79,8 +85,8 @@ extension ZimmerHTTPClient {
         }
     }
 
-    public func costs(days: Int) async throws -> CostSnapshot {
-        try await get("/api/v1/costs", query: ["days": String(days)])
+    public func costs(_ window: CostWindow, scope: CostScope) async throws -> CostSnapshot {
+        try await get("/api/v1/costs", query: window.query().merging(scope.query) { _, scoped in scoped })
     }
 
     public func health() async throws -> HealthReport {

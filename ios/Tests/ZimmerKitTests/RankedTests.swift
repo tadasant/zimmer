@@ -18,8 +18,8 @@ final class RankedTests: XCTestCase {
             { _ in Fixtures.json(200, ["sessions": [["id": 2, "status": "running"]], "pagination": ["total_pages": 1], "truncated": true]) },
         ])
 
-        let touched = try await api.sessions(.active, board: .onBoard, view: .lastTouched)
-        let ranked = try await api.sessions(.active, board: .onBoard, view: .ranked)
+        let touched = try await api.sessions(SessionFilter.active.filters, board: .onBoard, view: .lastTouched)
+        let ranked = try await api.sessions(SessionFilter.active.filters, board: .onBoard, view: .ranked)
 
         XCTAssertEqual(query(transport.sent[0])["view"], "last_touched")
         XCTAssertEqual(query(transport.sent[0])["page"], "1", "a flat view pages as before")
