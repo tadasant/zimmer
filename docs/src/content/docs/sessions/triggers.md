@@ -2751,6 +2751,25 @@ is what lets it run at every pause. Only a trigger that is nothing but one-shot 
 all: holding hands the whole row to the retirement, and a trigger mixing an unfired one-shot with a
 recurring condition does other work, so its one-shot is consumed the old way instead.
 
+**Two time wakes are two waits.** The group a fire holds is the wait that fire ended, not every wake
+the requester has — `Trigger#shares_wait_with?` decides. A watcher and its `wake_me_up_later`
+deadline are one wait, so whichever fires first holds the other. Two `wake_me_up_later` wakes are
+not: one armed for 17:45 and one for 18:00 are two separate jobs, and the earlier one firing says
+nothing about whether the later one is still wanted. So a time wake firing leaves every other time
+wake of the requester unmarked and armed, and if the woken turn arms nothing new, the session goes
+back to sleep on the next one (a `scheduled_wake` intent, conditional on the wake still being armed
+at the pause). That is [#1325](https://github.com/tadasant/zimmer/issues/1325): session 24237 armed
+both in one turn, the 17:45 fire held the 18:00 wake, the 17:45 turn's pause retired it, and the
+session slept for sixteen hours until the nightly fleet sweep nudged it. The agent's last words
+were about the 18:00 wake.
+
+**The woken turn is told.** A watcher paired with a time wake looks the same whether it is that
+wake's backstop pair or an unrelated wait, so the rule above cannot keep every independent wake.
+Instead `Trigger#follow_up_session!` appends `Trigger#wake_group_notice` to the wake's prompt: which
+of the requester's other wakes this fire will retire when the turn comes to rest, and which are
+still armed. A turn that was relying on one of the retired ones sees it and can re-arm it. A
+requester with no other wakes gets the prompt unchanged.
+
 **A wake that lapses unfired is parked, not deleted.** `CleanupStaleTriggersJob` also collects
 one-time schedules whose moment passed more than an hour ago, on the reasoning that
 `ScheduleTriggerJob` should have fired and destroyed them on its next tick. What happens to one

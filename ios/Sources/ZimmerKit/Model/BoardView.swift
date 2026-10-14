@@ -44,6 +44,22 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
         }
     }
 
+    /// The rows a drop landed between, as the web UI's boards name them: the nearest of the
+    /// moved row's own class above and below. Precedence orders a class and cannot lift a row
+    /// out of it, so a row dropped among the other class is placed by its own neighbours and
+    /// settles back into its block when the list is read again. The server reads only spot
+    /// rows as neighbours, as the web UI's drag does.
+    public static func dropNeighbours(_ rows: [SessionSummary], at index: Int) -> (above: Int?, below: Int?) {
+        guard rows.indices.contains(index) else { return (nil, nil) }
+        let priority = rows[index].isPriority
+        let above = rows[..<index].last { $0.isPriority == priority }?.id
+        let below = rows[(index + 1)...].first { $0.isPriority == priority }?.id
+        return (above, below)
+    }
+
+    /// Whether a person orders this view by dragging: Your board, and Ranked's spot queue.
+    public var isReorderable: Bool { self == .yourBoard || self == .ranked }
+
     /// `Session.ranked` over each scheduling class: precedence descending, then oldest first.
     static func halves(_ sessions: [SessionSummary]) -> (priority: [SessionSummary], spot: [SessionSummary]) {
         let ranked = sorted(sessions, newestFirst: false) { a, b in

@@ -37,8 +37,12 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   order as *Priority* and *Spot queue* sections). The server orders each view
   (`GET /api/v1/sessions?view=`), so the app shows the same sessions the web board does: the first
   500 by Last Touched or Created, or the top 500 of Your board and Ranked; when more match, the list
-  says so. In Ranked, *Reorder Spot Queue* (view menu) puts drag handles on the spot queue, and a
-  drop tells the server the rows it landed between, as the web UI's drag-and-drop does. *Start Now*
+  says so. In Ranked, *Reorder Spot Queue* (view menu) puts drag handles on the spot queue; on
+  Your board, *Reorder Board* puts them on its spot rows. A drop tells the server the nearest spot
+  rows it landed between, as the web UI's drag-and-drop does, and the list is read again: a row
+  dropped among the priority rows settles back into the spot block, since precedence cannot lift
+  it out. Priority rows do not drag: the server places a drop by its spot neighbours only, so a
+  priority row would lose its precedence. *Start Now*
   (press and hold a waiting session, or its session menu) takes its next turn now.
 - **Filters** as the web UI's filter form does, every filter combining with every other. The
   chips are one-tap presets: *Needs input* (the default), *Active* (everything not archived),
@@ -57,7 +61,12 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   the snooze ends. A trashed session reads in the quieter ink and says when its restore window
   closes ("Expires Oct 16", from `trash_after`; "Deletion pending" once that date has passed), as
   the web page's "Expires 3 days from now" does, as a date. What is deleted then is what was held
-  for a restore — the preserved clone, the scratch directory, prompt attachments — not the session.
+  for a restore — the preserved clone, the scratch directory, prompt attachments — not the session. On *Your board*, as on the web
+  board's, each row also carries the session's "where things stand" as inline markdown on up to
+  three lines, then how current it is (*Up to date*, *Stale* with the messages since, or
+  *Regenerating*), when it was written, and the agent root, or the genesis where it has none
+  (`GET /api/v1/sessions?view=user&include=board_row`, and the same on search). A row an action
+  just answered keeps its summary until the next read; a server that sends no rows draws none.
 - **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn goes, ending
   the turn, as in the web UI's bulk Trash (`end_turn`); one with queued messages is refused with the
   server's reason and stays; the rest go.
