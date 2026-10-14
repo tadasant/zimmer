@@ -99,6 +99,9 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var snoozedUntil: Date?
     /// `priority` or `spot`: the class the session actually runs under.
     public var priorityClass: String?
+    /// The class chosen for this one session, or nil when its genesis decides — the web
+    /// page's *Derive it*. `priorityClass` is the answer either way.
+    public var schedulingClass: String?
     /// Where the session came from, a `SessionGenesis` key (`web_ui`, `slack`, …).
     public var genesis: String?
     public var heartbeatEnabled: Bool?
@@ -138,6 +141,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         case effectiveVisibility = "effective_visibility"
         case snoozedUntil = "snoozed_until"
         case priorityClass = "priority_class"
+        case schedulingClass = "scheduling_class"
         case heartbeatEnabled = "heartbeat_enabled"
         case heartbeatIntervalSeconds = "heartbeat_interval_seconds"
         case runtimeSessionID = "session_id"
@@ -193,6 +197,8 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
 
     public var isFavorite: Bool { favorited ?? false }
     public var isPriority: Bool { priorityClass == "priority" }
+    /// The class is the genesis's, not one chosen for this session.
+    public var schedulingClassDerived: Bool { (schedulingClass ?? "").isEmpty }
     public var model: String? { config?.model }
     /// The agent root's catalog name: as recorded at creation, else as the server resolves it.
     public var agentRoot: String? { metadata?.agentRoot ?? boardRow?.agentRoot }

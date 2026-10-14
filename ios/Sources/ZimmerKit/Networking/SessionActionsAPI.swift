@@ -2,7 +2,7 @@ import Foundation
 
 /// Everything else a person does to a session from the web UI's session page and its
 /// mobile action menu: restore, restart, pause, star, hide or snooze, rename, goal, notes,
-/// effort, scheduling class, heartbeat, and the two refreshes. Plus the board's visibility filter, search, and "Send now".
+/// effort, scheduling class and precedence, heartbeat, and the two refreshes. Plus the board's visibility filter, search, and "Send now".
 ///
 /// Every route here is on `Api::V1::SessionsController`, which the app's token already
 /// reaches (`accepts_native_app_tokens`), so none of it widens what a phone can do on the
@@ -51,6 +51,13 @@ public protocol SessionActionsAPI: Sendable {
     /// The Ranked view's Promote to priority (which starts a waiting session) and Demote to
     /// spot (which lands it at the head of the spot queue).
     func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SchedulingChange
+    /// The web page's class select: *Derive it* clears the class chosen for this session, so its
+    /// genesis decides again; Priority or Spot chooses one, leaving the precedence as it is.
+    /// Starts a waiting session that this makes priority, as a promotion does.
+    func setSchedulingClass(_ id: Int, to choice: SchedulingClassChoice) async throws -> SchedulingChange
+    /// The web page's *Precedence*: the session's rank in the spot queue, higher worked first.
+    /// Carried while it is priority too, for a later demotion to land on.
+    func setPrecedence(_ id: Int, _ precedence: Int) async throws -> SessionSummary
     /// Turn the session's heartbeat on or off, at the interval it already has.
     func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary
     /// Set how often the heartbeat beats, leaving it on or off as it is — the web UI's heart
@@ -323,6 +330,20 @@ extension ZimmerHTTPClient {
         let body = priority ? ["scheduling_class": "priority"] : ["scheduling_class": "spot", "place": "top_of_spot"]
         let response: SchedulingResponse = try await patch("/api/v1/sessions/\(segment)", json: body)
         return SchedulingChange(session: response.session, startOutcome: response.start?.outcome, startMessage: response.start?.message)
+    }
+
+    public func setSchedulingClass(_ id: Int, to choice: SchedulingClassChoice) async throws -> SchedulingChange {
+        let segment = ZimmerPathComponent(String(id))
+        // *Derive it* is `null`: the column is cleared and `priority_class` derives from the genesis.
+        let value: Any = choice == .derive ? NSNull() : choice.rawValue
+        let response: SchedulingResponse = try await patch("/api/v1/sessions/\(segment)", json: ["scheduling_class": value])
+        return SchedulingChange(session: response.session, startOutcome: response.start?.outcome, startMessage: response.start?.message)
+    }
+
+    public func setPrecedence(_ id: Int, _ precedence: Int) async throws -> SessionSummary {
+        let segment = ZimmerPathComponent(String(id))
+        let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)", json: ["precedence": precedence])
+        return response.session
     }
 
     public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {

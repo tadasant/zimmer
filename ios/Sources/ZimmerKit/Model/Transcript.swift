@@ -7,6 +7,12 @@ public enum MessageSegment: Hashable, Sendable {
     case prose(String)
     case code(String, language: String?)
 
+    /// A fenced code block, which the screen draws with a Copy button.
+    public var isCode: Bool {
+        if case .code = self { return true }
+        return false
+    }
+
     /// Split on ``` fences. An unclosed fence runs to the end, as a renderer would show it.
     /// Blank prose between blocks is dropped.
     public static func segments(of text: String) -> [MessageSegment] {
