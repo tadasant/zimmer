@@ -149,8 +149,10 @@ module SessionStateMachine
   #
   # `scheduled_wake` is `Trigger#sleep_target_session_if_applicable` marking a
   # RUNNING session to sleep at its turn end because a wake was just armed against
-  # it. If the wake set is gone by the time that turn ends, honouring the intent
-  # puts the session in `waiting` with nothing to come back on — the #1172 strand.
+  # it, or #hold_pending_one_time_wakes marking a session a wake just resumed
+  # because an independent time wake is still armed (#1325). If the wake set is
+  # gone by the time that turn ends, honouring the intent puts the session in
+  # `waiting` with nothing to come back on — the #1172 strand.
   #
   # The rest of the reasons are deliberately absent, each for its own reason. A
   # `deliberate_sleep` (`POST /api/v1/sessions/:id/sleep`) arms nothing by
@@ -2458,11 +2460,13 @@ module SessionStateMachine
     end
 
     consumed.each { |condition| condition.update!(last_triggered_at: Time.current) }
-    return if held.empty?
+    return if held.empty? && kept.empty?
 
-    held_at = Time.current
-    Trigger.where(id: held.map(&:trigger_id).uniq)
-           .update_all(wake_held_at: held_at, updated_at: held_at)
+    if held.any?
+      held_at = Time.current
+      Trigger.where(id: held.map(&:trigger_id).uniq)
+             .update_all(wake_held_at: held_at, updated_at: held_at)
+    end
 
     Rails.logger.info(
       "[SessionStateMachine] Held #{held.size} pending one-time wake-up(s) across the woken " \
