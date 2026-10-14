@@ -47,16 +47,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     }
 
     public func sessions(_ filter: SessionFilter) async throws -> [SessionSummary] {
-        let matching = all.filter { session in
-            switch filter {
-            case .needsInput: return session.status == .needsInput
-            case .active: return session.status != .archived
-            case .running: return session.status == .running
-            case .failed: return session.status == .failed
-            case .archived: return session.status == .archived
-            }
-        }
-        return SessionOrdering.sorted(matching)
+        SessionOrdering.sorted(all.filter(filter.filters.admits))
     }
 
     public func session(_ id: Int) async throws -> SessionDetail {
@@ -210,7 +201,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
                            priorityClass: "spot", precedence: 20, lastUserActivityAt: ago(3)),
             SessionSummary(id: 1031, title: "Nightly dependency sweep", status: .waiting,
                            agentRuntime: "claude_code", createdAt: ago(20), updatedAt: ago(20),
-                           priorityClass: "spot", precedence: 50),
+                           priorityClass: "spot", precedence: 50, genesis: "schedule"),
             SessionSummary(id: 1029, title: "Draft the October changelog", status: .waiting,
                            agentRuntime: "claude_code", createdAt: ago(900), updatedAt: ago(800),
                            visibility: .snoozed, snoozedUntil: now.addingTimeInterval(20 * 3600)),
@@ -329,13 +320,14 @@ public actor FakeZimmerAPI: ZimmerAPI {
 // as the server does where the app depends on it: a pause needs a running session, a
 // restart a failed or needs-input one, a restore a trashed one; a blank title clears it.
 extension FakeZimmerAPI {
-    public func sessions(_ filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
-        SessionSearchResult(sessions: try await sessions(filter).filter(board.admits))
+    /// As the server: every filter narrows, together.
+    public func sessions(_ filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult {
+        SessionSearchResult(sessions: SessionOrdering.sorted(all.filter { filters.admits($0) && board.admits($0) }))
     }
 
-    public func search(_ query: String, contents: Bool, filter: SessionFilter, board: BoardFilter) async throws -> SessionSearchResult {
+    public func search(_ query: String, contents: Bool, filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult {
         let needle = query.lowercased()
-        let matches = try await sessions(filter, board: board).sessions.filter { session in
+        let matches = try await sessions(filters, board: board).sessions.filter { session in
             if session.displayTitle.lowercased().contains(needle) { return true }
             guard contents else { return false }
             return (conversations[session.id] ?? []).contains { $0.content.lowercased().contains(needle) }
@@ -544,8 +536,8 @@ extension FakeZimmerAPI {
 // As the server: Start now needs a waiting session with a turn to take, and a reorder takes
 // a spot session to the midpoint of the neighbours it was dropped between.
 extension FakeZimmerAPI {
-    public func sessions(_ filter: SessionFilter, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
-        let rows = try await sessions(filter, board: board).sessions
+    public func sessions(_ filters: BoardFilters, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
+        let rows = try await sessions(filters, board: board).sessions
         return SessionSearchResult(sessions: view.sections(rows).flatMap(\.sessions))
     }
 
@@ -756,7 +748,15 @@ extension FakeZimmerAPI {
             GoalOption(id: "open-reviewed-green-pr", name: "Open a reviewed, green PR", description: "Unmerged PR is open and CI is green."),
             GoalOption(id: "answer-question", name: "Answer a question"),
         ],
-        mcpServers: [CatalogItem(id: "playwright-custom", title: "Playwright"), CatalogItem(id: "slack", title: "Slack", unavailableReason: "Needs authorizing")]
+        mcpServers: [CatalogItem(id: "playwright-custom", title: "Playwright"), CatalogItem(id: "slack", title: "Slack", unavailableReason: "Needs authorizing")],
+        geneses: [
+            GenesisOption(key: "web_ui", label: "Zimmer web app"), GenesisOption(key: "slack", label: "Slack trigger"),
+            GenesisOption(key: "whatsapp", label: "WhatsApp trigger"), GenesisOption(key: "email", label: "Email trigger"),
+            GenesisOption(key: "github_issue", label: "GitHub issue trigger"), GenesisOption(key: "github_label", label: "GitHub label trigger"),
+            GenesisOption(key: "schedule", label: "Scheduled trigger"), GenesisOption(key: "ao_event", label: "Session-state trigger"),
+            GenesisOption(key: "system_event", label: "System-event trigger"), GenesisOption(key: "api", label: "API / agent spawn"),
+            GenesisOption(key: "unknown", label: "Unknown"),
+        ]
     )
 
     static let sampleCatalogs: [CatalogKind: [CatalogItem]] = [

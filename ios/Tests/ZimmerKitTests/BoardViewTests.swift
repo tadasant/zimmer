@@ -65,7 +65,7 @@ final class BoardViewTests: XCTestCase {
         }
         let (api, transport) = client([page([1, 2], pages: 3), page([3], pages: 3), page([3, 4], pages: 3)])
 
-        let result = try await api.sessions(.active, board: .onBoard)
+        let result = try await api.sessions(SessionFilter.active.filters, board: .onBoard)
 
         XCTAssertEqual(transport.sent.count, 3)
         XCTAssertEqual(Set(transport.sent.map { URLComponents(url: $0.url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value }), ["1", "2", "3"])
@@ -81,7 +81,7 @@ final class BoardViewTests: XCTestCase {
         }
         let (api, transport) = client(Array(repeating: handler, count: 5))
 
-        let result = try await api.sessions(.active, board: .all)
+        let result = try await api.sessions(SessionFilter.active.filters, board: .all)
 
         XCTAssertEqual(transport.sent.count, SessionFilter.maxPages, "five pages, not nine")
         XCTAssertFalse(result.complete)
