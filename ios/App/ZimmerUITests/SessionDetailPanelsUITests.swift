@@ -137,10 +137,18 @@ final class SessionDetailPanelsUITests: XCTestCase {
 
     /// The page opens at its newest message, so what is asked for may be above or below.
     private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
-        for _ in 0..<8 where !element.isHittable {
-            if element.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
+        // Ask for hittability only of an element on the page with a frame: asking it of one the
+        // lazy list has not laid out throws rather than answering no.
+        func inView() -> Bool { element.exists && !element.frame.isEmpty && element.isHittable }
+        for _ in 0..<8 where !inView() {
+            // Not laid out yet means above: the page opens at its newest message, under the panels.
+            if !element.exists || element.frame.isEmpty || element.frame.midY < app.frame.midY {
+                app.swipeDown(velocity: .slow)
+            } else {
+                app.swipeUp(velocity: .slow)
+            }
         }
-        XCTAssertTrue(element.isHittable, "\(element) comes into view")
+        XCTAssertTrue(inView(), "\(element) comes into view")
     }
 
     private func waitForDisappearance(_ element: XCUIElement) -> Bool {
