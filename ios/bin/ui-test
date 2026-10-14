@@ -189,6 +189,8 @@ export TEST_RUNNER_ZIMMER_UI_TEST_EXPECT_HOST="$expect_host"
 
 xcrun simctl io "$udid" recordVideo --codec h264 --force "$artifacts/run.mp4" &
 recorder=$!
+# Crash reports newer than this are the run's own.
+touch "$artifacts/.started"
 
 printf '==> running the UI tests\n'
 status=0
@@ -292,6 +294,39 @@ if [ -d "$app" ]; then
   shoot costs-dark -ZimmerFixture -ZimmerFixtureCosts
   xcrun simctl ui "$udid" appearance light >/dev/null 2>&1 || true
 fi
+
+# The app's crash reports, which the result bundle did not carry in the runs that needed them.
+# A simulator app's crash lands in the host's DiagnosticReports. Collected after the screenshot
+# pass, so a crash there is caught too and the crash reporter, which writes a moment after the
+# crash, has had time to finish. Each is kept in the artifacts, and its exception and
+# the crashed thread's frames are printed here, so a test that failed because the app died
+# says where it died rather than only which assertion stopped waiting.
+mkdir -p "$artifacts/crashes"
+find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 2 -name 'Zimmer-*.ips' -newer "$artifacts/.started" \
+  -exec cp {} "$artifacts/crashes/" \; 2>/dev/null || true
+for report in "$artifacts"/crashes/*.ips; do
+  [ -e "$report" ] || continue
+  printf '\n\033[1;31m==> the app crashed: %s\033[0m\n' "$(basename "$report")"
+  python3 - "$report" <<'PY' 2>&1 || sed -n '1,80p' "$report"
+import json, sys
+text = open(sys.argv[1]).read()
+body = json.loads(text[text.index("\n") + 1:])
+print(json.dumps(body.get("exception", {})), body.get("termination", {}).get("indicator", ""))
+asi = body.get("asi") or {}
+for lines in asi.values():
+    for line in lines:
+        print("  asi:", line)
+images = body.get("usedImages", [])
+for thread in body.get("threads", []):
+    if not thread.get("triggered"):
+        continue
+    for frame in thread.get("frames", [])[:30]:
+        image = images[frame["imageIndex"]].get("name", "?") if 0 <= frame.get("imageIndex", -1) < len(images) else "?"
+        where = (frame.get("symbol") or f"+{frame.get('imageOffset')}") + (f" ({frame.get('sourceFile')}:{frame.get('sourceLine')})" if frame.get("sourceFile") else "")
+        print(f"  {image:<28} {where}")
+PY
+done
+rm -f "$artifacts/.started"
 
 # The derived data is a gigabyte of object files nobody wants in an artifact bundle; the
 # result bundle, the video and the screenshots are the evidence.
