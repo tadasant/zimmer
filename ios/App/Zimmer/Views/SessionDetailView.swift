@@ -11,10 +11,20 @@ final class SessionDetailModel: ObservableObject {
     var report: (ZimmerError) -> Void = { _ in }
 
     @Published private(set) var detail: SessionDetail? { didSet { noteChange() } }
-    @Published private(set) var conversation: Conversation? { didSet { noteChange() } }
+    /// The newest window and the pages read back past the server's one-read cap.
+    @Published private(set) var pages = ConversationPages() { didSet { noteChange() } }
+    /// The newest window, as last read.
+    var conversation: Conversation? { pages.newest }
     /// How far back the conversation reads: a hundred at first, a hundred more on *Show
     /// earlier*, up to what the server returns in one read.
     @Published private(set) var conversationLimit = Conversation.pageSize
+    /// *Show earlier* is reading: a second tap waits for it, and polls stand aside.
+    @Published private(set) var isLoadingEarlier = false
+    /// The session has been opened once, as a person opening it (`viewed=true`); later
+    /// reads are the page keeping current and record nothing.
+    private var opened = false
+    /// Called once the open has marked the session's notifications read, for the badge.
+    var onOpened: () -> Void = {}
     @Published private(set) var isLoading = false
     @Published private(set) var isSending = false
     @Published var error: ZimmerError?
@@ -26,6 +36,8 @@ final class SessionDetailModel: ObservableObject {
     private let drafts = DraftStore()
     /// The messages waiting for the turn in flight to end (`QueueCard`).
     @Published var queue: [QueuedMessage] = [] { didSet { noteChange() } }
+    /// Messages accepted and never delivered (`UndeliveredCard`): read-only, as the web shows them.
+    @Published private(set) var undelivered: [QueuedMessage] = [] { didSet { noteChange() } }
     /// Bumped by every change to what is shown that does not come from a poll, so a poll that
     /// read before an edit landed throws its stale answer away rather than undoing the edit.
     private var revision = 0
@@ -45,12 +57,19 @@ final class SessionDetailModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            detail = try await api.session(id)
-            conversation = try await api.conversation(id, limit: conversationLimit)
+            if opened {
+                detail = try await api.session(id)
+            } else {
+                detail = try await api.openSession(id)
+                opened = true
+                onOpened()
+            }
+            pages.receive(try await api.conversation(id, limit: conversationLimit))
             // The queue is a panel, not the page: one that will not load keeps what it last
             // showed rather than failing the session — unless the sign-in has ended.
             do {
                 queue = try await api.queue(id)
+                undelivered = try await api.undeliveredMessages(id)
             } catch ZimmerError.unauthorized {
                 report(.unauthorized)
             } catch {}
@@ -64,21 +83,30 @@ final class SessionDetailModel: ObservableObject {
     /// moves, and this is that, by asking. A failed read leaves what is on screen, except a
     /// sign-in that ended.
     func poll() async {
-        guard !isLoading, !isSending, !pollPaused, detail?.session.status != .archived else { return }
+        guard !isLoading, !isSending, !isLoadingEarlier, !pollPaused, detail?.session.status != .archived else { return }
         let started = revision
         let limit = conversationLimit
         do {
             let latest = try await api.session(id)
-            let messages = try await api.conversation(id, limit: limit)
+            // The last few messages, joined to what is on screen; the whole window again only
+            // when they cannot be, so a running session is not read in full every few seconds.
+            var read = pages
+            if !read.receiveTail(try await api.conversation(id, limit: ConversationPages.tailSize)) {
+                read.receive(try await api.conversation(id, limit: limit))
+            }
             let wantsQueue = latest.session.status == .running || latest.session.status == .waiting || !queue.isEmpty
             let queued = wantsQueue ? try? await api.queue(id) : []
+            // A message that left the queue was delivered or retired as stale; only then is
+            // there anything new to read about what was never delivered.
+            let retired: [QueuedMessage]? = queued != nil && queued != queue ? try? await api.undeliveredMessages(id) : nil
             // An edit, a send or *Show earlier* landed while this was reading: its answer wins.
             guard started == revision, limit == conversationLimit, !pollPaused else { return }
             applyingPoll = true
             defer { applyingPoll = false }
             if latest != detail { detail = latest }
-            if messages != conversation { conversation = messages }
+            if read != pages { pages = read }
             if let queued, queued != queue { queue = queued }
+            if let retired, retired != undelivered { undelivered = retired }
             // The error on screen is an action's (a poll's own failures are never shown), so
             // a quiet read leaves it for the person to read.
         } catch ZimmerError.unauthorized {
@@ -101,17 +129,35 @@ final class SessionDetailModel: ObservableObject {
     /// Widen the window by a page and read again: the web UI's transcript reading back as
     /// you scroll up.
     func showEarlier() async {
-        guard conversationLimit < Conversation.maxLimit else { return }
-        let next = min(conversationLimit + Conversation.pageSize, Conversation.maxLimit)
+        guard !isLoadingEarlier else { return }
+        isLoadingEarlier = true
+        defer { isLoadingEarlier = false }
+        if conversationLimit < Conversation.maxLimit {
+            let next = min(conversationLimit + Conversation.pageSize, Conversation.maxLimit)
+            do {
+                pages.receive(try await api.conversation(id, limit: next))
+                // Only once the wider read is on screen: a read that failed leaves the button.
+                conversationLimit = next
+                error = nil
+            } catch {
+                fail(error)
+            }
+            return
+        }
+        // Past the cap, a page at a time from the oldest message on screen, as the web UI's
+        // transcript reads back as you scroll up.
+        guard let shown = shownConversation, shown.firstPosition > 0 else { return }
         do {
-            conversation = try await api.conversation(id, limit: next)
-            // Only once the wider read is on screen: a read that failed leaves the button.
-            conversationLimit = next
+            let page = try await api.earlierMessages(id, before: shown.firstPosition, limit: Conversation.pageSize)
+            pages.prepend(page, before: shown.firstPosition)
             error = nil
         } catch {
             fail(error)
         }
     }
+
+    /// What the page shows: the pages read back, then the newest window.
+    var shownConversation: Conversation? { pages.shown }
 
     func fail(_ error: Error) {
         let zimmerError = error as? ZimmerError ?? .transport(error)
@@ -151,8 +197,8 @@ final class SessionDetailModel: ObservableObject {
 
     /// Add what the pickers returned, refusing anything the server would refuse — the whole
     /// message would fail on it — and saying what could not be read at all.
-    func attach(_ new: [MessageAttachment], unreadable: [String] = []) {
-        var refusals = unreadable.map { "\($0) couldn't be read." }
+    func attach(_ new: [MessageAttachment], problems: [String] = []) {
+        var refusals = problems
         for attachment in new {
             if let refusal = MessageAttachment.refusal(adding: attachment, to: attachments) {
                 refusals.append(refusal)
@@ -192,6 +238,8 @@ final class SessionDetailModel: ObservableObject {
             notice = change.startMessage.map { "\(done) \($0)" } ?? done
             error = nil
             if change.startOutcome == "refused" { Haptics.failure() } else { Haptics.success() }
+            // Why it was waiting has changed with it: the banners are read again.
+            await load()
         } catch {
             fail(error)
         }
@@ -238,6 +286,16 @@ struct SessionDetailView: View {
     @State private var showingLogs = false
     @State private var showingSubagents = false
     @State private var newTitle = ""
+    /// The queued-turn banner's Force, waiting on its confirmation: the turn it would stop,
+    /// and the server's words for what that costs.
+    @State private var forcing: (victim: Int, confirm: String)?
+    /// A banner's action is in flight.
+    @State private var acting = false
+    /// The snooze menu's *Custom…*, open in its sheet.
+    @State private var customSnoozing = false
+    /// A restart that takes this session over, waiting on its confirmation: the web UI's words
+    /// for what it will do.
+    @State private var confirmingRestart: String?
     @Environment(\.scenePhase) private var scenePhase
     /// Where the end of the conversation sits in the scroll view, and how tall the view is:
     /// new messages are followed only while the end is in view, so reading back is never
@@ -292,6 +350,26 @@ struct SessionDetailView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await model.poll() } }
         }
+        .sheet(isPresented: $customSnoozing) {
+            CustomSnoozeSheet { until in
+                let label = until.formatted(date: .abbreviated, time: .shortened)
+                let id = model.id
+                return await model.apply("Snoozed until \(label)") { try await $0.setVisibility(id, .snoozed(until: until)) }
+            }
+        }
+        .confirmationDialog(
+            "Restart this session?",
+            isPresented: Binding(get: { confirmingRestart != nil }, set: { if !$0 { confirmingRestart = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Restart") {
+                let id = model.id
+                Task { await model.apply("Restarted") { try await $0.restart(id) } }
+            }
+        } message: {
+            // The web page's own confirm text for this session's restart.
+            Text(confirmingRestart ?? "")
+        }
     }
 
     static let endAnchor = "conversation.end"
@@ -301,6 +379,9 @@ struct SessionDetailView: View {
             VStack(alignment: .leading, spacing: 10) {
                 if let detail = model.detail {
                     header(detail)
+                    // Why it is waiting and what to do about it: under the header, as the web
+                    // page's header stacks them, above everything else.
+                    WaitingBanners(banners: detail.waiting.banners, busy: acting) { perform($0) }
                     if let status = detail.statusSummary, status.summary != nil || status.generating == true || status.error != nil {
                         SummaryCard(status: status) {
                             Task { await model.run { try await $0.regenerateStatusSummary(model.id) } }
@@ -318,10 +399,13 @@ struct SessionDetailView: View {
                     LoadingState(text: "Loading session…").padding(.top, 60)
                 }
                 if let error = model.error { ErrorBanner(error: error) }
-                if let conversation = model.conversation {
+                if let conversation = model.shownConversation {
                     conversationSection(conversation)
                 }
-                // Under the conversation and above the composer, where the web UI puts it.
+                // Under the conversation and above the composer, where the web UI puts them.
+                if !model.undelivered.isEmpty {
+                    UndeliveredCard(messages: model.undelivered)
+                }
                 if !model.queue.isEmpty {
                     QueueCard(model: model)
                 }
@@ -350,6 +434,22 @@ struct SessionDetailView: View {
         // Trashed — here, or after *Trash anyway* — the page goes and the board offers Undo.
         .onChange(of: app.undoable?.id) { _, trashed in
             if trashed == model.id { dismiss() }
+        }
+        .confirmationDialog(
+            "Force a worker thread?",
+            isPresented: Binding(get: { forcing != nil }, set: { if !$0 { forcing = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Force", role: .destructive) {
+                if let victim = forcing?.victim {
+                    let id = model.id
+                    act { await model.run { try await $0.forceStart(id, expectedVictimID: victim).message } }
+                }
+            }
+            .accessibilityIdentifier("waiting.force.confirm")
+        } message: {
+            // The web page's own confirm text: whose turn stops, and what it loses.
+            Text(forcing?.confirm ?? "")
         }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Title", text: $newTitle)
@@ -390,10 +490,16 @@ struct SessionDetailView: View {
         .refreshable { await model.load() }
         .task {
             model.report = { [weak app] error in app?.noteError(error) }
+            // Opening marks the session's notifications read: the Inbox badge follows.
+            model.onOpened = { [weak app] in Task { await app?.refreshUnreadCount() } }
             await model.load()
             if app.fixtureAttachesFile {
                 app.fixtureAttachesFile = false
                 model.attach([MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8))])
+            }
+            if app.fixtureOpensCustomSnooze {
+                app.fixtureOpensCustomSnooze = false
+                customSnoozing = true
             }
         }
         .onDisappear {
@@ -432,6 +538,35 @@ struct SessionDetailView: View {
                     .accessibilityIdentifier("detail.archive")
                 }
             }
+        }
+    }
+
+    // MARK: - Waiting banners
+
+    /// A banner's one control: the call the server named, made the way the rest of the page
+    /// makes it.
+    private func perform(_ action: WaitingBanner.Action) {
+        let id = model.id
+        switch action {
+        case let .updateSchedulingClass(_, priority):
+            act { await model.reschedule(priority: priority) }
+        case let .forceStart(_, victim, confirm):
+            // Force stops somebody else's turn, so it is confirmed first, as on the web.
+            forcing = (victim, confirm)
+        case let .followUp(_, prompt):
+            act { await model.run { try await $0.followUp(id, prompt: prompt).message } }
+        case let .openInBrowser(_, path):
+            if let url = app.webURL(path: path) { openURL(url) }
+        }
+    }
+
+    /// One banner action at a time.
+    private func act(_ work: @escaping @MainActor () async -> Void) {
+        guard !acting else { return }
+        acting = true
+        Task {
+            await work()
+            acting = false
         }
     }
 
@@ -496,6 +631,10 @@ struct SessionDetailView: View {
                 VisibilityLabel(session: session)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Theme.snooze)
+                TrashExpiryLabel(session: session, withTime: true)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.inkSoft)
+                    .accessibilityIdentifier("detail.trashexpiry")
             }
             metadataLine(session)
         }
@@ -570,6 +709,7 @@ struct SessionDetailView: View {
                                 Task { await model.apply("Snoozed until \(until)") { try await $0.setVisibility(session.id, .snoozed(until: preset.until)) } }
                             }
                         }
+                        Button("Custom…") { customSnoozing = true }
                     } label: {
                         Label("Snooze until…", systemImage: "moon.zzz")
                     }
@@ -611,7 +751,13 @@ struct SessionDetailView: View {
                 }
                 if session.status == .failed || session.status == .needsInput {
                     Button {
-                        Task { await model.apply("Restarted") { try await $0.restart(session.id) } }
+                        // A failed session restarts at once; one waiting on you is taken over,
+                        // so the web UI asks first.
+                        if let confirmation = session.restartConfirmation(transcriptPresent: model.conversation.map { $0.total > 0 }) {
+                            confirmingRestart = confirmation
+                        } else {
+                            Task { await model.apply("Restarted") { try await $0.restart(session.id) } }
+                        }
                     } label: {
                         Label("Restart Session", systemImage: "arrow.clockwise.circle")
                     }
@@ -666,12 +812,7 @@ struct SessionDetailView: View {
                         Label("Promote to priority", systemImage: "arrow.up.circle")
                     }
                 }
-                Button {
-                    let enabled = !(session.heartbeatEnabled ?? false)
-                    Task { await model.apply(enabled ? "Heartbeat on" : "Heartbeat off") { try await $0.setHeartbeat(session.id, enabled: enabled) } }
-                } label: {
-                    Label((session.heartbeatEnabled ?? false) ? "Turn Heartbeat Off" : "Turn Heartbeat On", systemImage: "heart")
-                }
+                heartbeatMenu(session)
                 if model.detail?.statusSummary?.summary == nil {
                     Button {
                         Task { await model.run { try await $0.regenerateStatusSummary(session.id) } }
@@ -688,6 +829,39 @@ struct SessionDetailView: View {
         }
         .accessibilityLabel("Session actions")
         .accessibilityIdentifier("detail.actions")
+    }
+
+    /// The web UI's heart and its popout: on or off, and "Beat every" from its intervals. When
+    /// on, a session waiting for input is nudged to keep working toward its goal on that
+    /// cadence. A new interval leaves the heartbeat on or off, as the popout's select does.
+    private func heartbeatMenu(_ session: SessionSummary) -> some View {
+        let enabled = session.heartbeatEnabled ?? false
+        let interval = Binding<Int>(
+            get: { session.heartbeatInterval },
+            set: { seconds in
+                Task {
+                    await model.apply("Heartbeat every \(HeartbeatInterval.label(for: seconds))") { try await $0.setHeartbeatInterval(session.id, seconds: seconds) }
+                }
+            }
+        )
+        return Menu {
+            Button {
+                Task { await model.apply(enabled ? "Heartbeat off" : "Heartbeat on") { try await $0.setHeartbeat(session.id, enabled: !enabled) } }
+            } label: {
+                Label(enabled ? "Turn Off" : "Turn On", systemImage: enabled ? "heart.slash" : "heart")
+            }
+            Picker("Beat every", selection: interval) {
+                ForEach(HeartbeatInterval.choices(including: session.heartbeatInterval)) { option in
+                    Text(option.label).tag(option.seconds)
+                }
+            }
+            .pickerStyle(.menu)
+        } label: {
+            Label(
+                enabled ? "Heartbeat: every \(HeartbeatInterval.label(for: session.heartbeatInterval))" : "Heartbeat: off",
+                systemImage: enabled ? "heart.fill" : "heart"
+            )
+        }
     }
 
     @ViewBuilder
@@ -722,11 +896,12 @@ struct SessionDetailView: View {
             .padding(.bottom, 4)
             if conversation.truncated {
                 // The web UI reads the transcript back as you scroll up; here a tap reads a
-                // hundred more, up to the server's one-read cap.
+                // hundred more each time, back to the first message.
                 HStack(spacing: 6) {
-                    Text("The last \(conversation.messages.count) of \(conversation.total).")
-                    if model.conversationLimit < Conversation.maxLimit {
+                    Text("The last \(conversation.total - conversation.firstPosition) of \(conversation.total).")
+                    if conversation.firstPosition > 0 {
                         Button("Show earlier") { Task { await model.showEarlier() } }
+                            .disabled(model.isLoadingEarlier)
                             .font(.caption.weight(.medium))
                             .foregroundStyle(Theme.accent)
                             .accessibilityIdentifier("detail.earlier")
@@ -767,7 +942,7 @@ struct SessionDetailView: View {
                 AttachmentChips(attachments: $model.attachments)
             }
             HStack(alignment: .bottom, spacing: 8) {
-                AttachMenu { model.attach($0, unreadable: $1) }
+                AttachMenu { model.attach($0, problems: $1) }
                 // The hint lives in the placeholder: a running turn queues, and a touch and
                 // hold on the button sends now instead.
                 TextField(running ? "Queue message · hold send for now" : "Send message", text: $model.draft, axis: .vertical)

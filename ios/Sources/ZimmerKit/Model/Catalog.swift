@@ -8,19 +8,22 @@ public struct AppConfigs: Hashable, Sendable, Decodable {
     public var runtimeModels: [String: RuntimeModels]
     public var goals: [GoalOption]
     public var mcpServers: [CatalogItem]
+    /// Where a session can come from, for the board's Genesis filter.
+    public var geneses: [GenesisOption]
 
     enum CodingKeys: String, CodingKey {
-        case goals
+        case goals, geneses
         case agentRoots = "agent_roots"
         case runtimeModels = "runtime_models"
         case mcpServers = "mcp_servers"
     }
 
-    public init(agentRoots: [AgentRootOption], runtimeModels: [String: RuntimeModels], goals: [GoalOption] = [], mcpServers: [CatalogItem] = []) {
+    public init(agentRoots: [AgentRootOption], runtimeModels: [String: RuntimeModels], goals: [GoalOption] = [], mcpServers: [CatalogItem] = [], geneses: [GenesisOption] = []) {
         self.agentRoots = agentRoots
         self.runtimeModels = runtimeModels
         self.goals = goals
         self.mcpServers = mcpServers
+        self.geneses = geneses
     }
 
     public init(from decoder: Decoder) throws {
@@ -29,6 +32,7 @@ public struct AppConfigs: Hashable, Sendable, Decodable {
         runtimeModels = (try? container.decodeIfPresent([String: RuntimeModels].self, forKey: .runtimeModels)) ?? [:]
         goals = (try? container.decodeIfPresent([GoalOption].self, forKey: .goals)) ?? []
         mcpServers = (try? container.decodeIfPresent([CatalogItem].self, forKey: .mcpServers)) ?? []
+        geneses = (try? container.decodeIfPresent([GenesisOption].self, forKey: .geneses)) ?? []
     }
 
     /// The roots a person may start a session on — the form hides the rest.
@@ -36,6 +40,18 @@ public struct AppConfigs: Hashable, Sendable, Decodable {
 
     /// The models for `runtime`, or none when the server names no such runtime.
     public func models(for runtime: String) -> [ModelOption] { runtimeModels[runtime]?.models ?? [] }
+}
+
+/// One `SessionGenesis` kind: its key, which the filter sends, and the dashboard's label.
+public struct GenesisOption: Hashable, Sendable, Decodable, Identifiable {
+    public var key: String
+    public var label: String
+    public var id: String { key }
+
+    public init(key: String, label: String) {
+        self.key = key
+        self.label = label
+    }
 }
 
 public struct AgentRootOption: Hashable, Sendable, Decodable, Identifiable {
