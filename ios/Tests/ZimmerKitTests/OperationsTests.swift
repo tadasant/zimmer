@@ -97,7 +97,7 @@ final class OperationsTests: XCTestCase {
             "pricing": ["x": 1],
         ]) }])
 
-        let costs = try await api.costs(days: 7)
+        let costs = try await api.costs(.days(7), scope: .fleet)
 
         XCTAssertEqual(URLComponents(url: transport.sent[0].url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "7")
         XCTAssertEqual(costs.totalUSD, 369.6, accuracy: 0.001)
@@ -105,7 +105,175 @@ final class OperationsTests: XCTestCase {
         XCTAssertEqual(costs.agentRoots.map(\.label), ["zimmer", "other (3)"])
         XCTAssertEqual(costs.models.first?.label, "opus")
         XCTAssertEqual(costs.topSessions.first?.sessionID, 1042)
+        XCTAssertEqual(costs.topSessions.first?.apiCalls, 90)
+        XCTAssertEqual(costs.scope, .fleet, "no scope in the response is the fleet")
         XCTAssertNotNil(costs.from)
+    }
+
+    func testTheTriggerPageReadsTheTriggerAndTheSessionsItMade() async throws {
+        let (api, transport) = client([{ _ in Fixtures.json(200, [
+            "trigger": [
+                "id": 5, "name": "Nightly", "status": "failed", "failed_at": "2026-10-11T02:00:00Z", "last_error": "boom",
+                "agent_root_name": "zimmer", "agent_root_missing_from_catalog": true,
+                "reuse_session": true, "enqueue_messages": true, "resuscitate_archived": false, "skip_if_pending_session": true,
+                "missed_fire_count": 2, "bursting": false, "max_sessions_per_minute": NSNull(),
+                "prompt_template": "Sweep {{date}}", "goal": "Green PRs", "last_session_id": 1031,
+                "conditions": [["condition_type": "schedule", "description": "Daily 02:00", "last_triggered_at": "2026-10-11T02:00:00Z"]],
+            ],
+            "recent_sessions": [
+                ["id": 1031, "slug": "s", "title": "Sweep", "status": "waiting", "created_at": "2026-10-11T02:00:00Z"],
+                ["id": 1020, "title": NSNull(), "status": "some_new_state", "created_at": "2026-10-10T02:00:00Z"],
+            ],
+        ]) }])
+
+        let detail = try await api.trigger(5)
+
+        XCTAssertEqual(transport.sent.map { "\($0.method) \($0.url.path)" }, ["GET /api/v1/triggers/5"])
+        let trigger = detail.trigger
+        XCTAssertTrue(trigger.isFailed)
+        XCTAssertEqual(trigger.toggleLabel, "Re-arm", "a failed trigger is re-armed, as the web UI's button says")
+        XCTAssertNotNil(trigger.failedAt)
+        XCTAssertTrue(trigger.agentRootMissing)
+        XCTAssertTrue(trigger.reuseSession)
+        XCTAssertTrue(trigger.enqueueMessages)
+        XCTAssertFalse(trigger.resuscitateArchived)
+        XCTAssertNil(trigger.maxSessionsPerMinute)
+        XCTAssertEqual(trigger.promptTemplate, "Sweep {{date}}")
+        XCTAssertEqual(trigger.badges, ["Re-uses session", "Enqueues messages", "Skips while pending", "2 missed fires"])
+        XCTAssertNotNil(trigger.conditions.first?.lastTriggeredAt)
+        XCTAssertEqual(trigger.conditions.first?.label, "Schedule")
+        XCTAssertEqual(TriggerSummary.Condition(type: "slack", description: "Slack: @zimmer in #zimmer").detail, "@zimmer in #zimmer",
+                       "the badge's words are not printed twice")
+        XCTAssertEqual(TriggerSummary.Condition(type: "github_issue", description: "Opened in tadasant/zimmer").label, "GitHub")
+        XCTAssertEqual(TriggerSummary.Condition(type: "new_kind", description: nil).label, "New Kind")
+        XCTAssertEqual(detail.recentSessions.map(\.id), [1031, 1020])
+        XCTAssertEqual(detail.recentSessions.first?.status, .waiting)
+        XCTAssertNil(detail.recentSessions.last?.title)
+    }
+
+    func testAListTriggerWithoutThePagesFieldsReadsAsOff() throws {
+        let trigger = try ZimmerJSON.decoder.decode(TriggerSummary.self, from: Data(#"{"id": 6, "status": "disabled"}"#.utf8))
+        XCTAssertFalse(trigger.reuseSession)
+        XCTAssertFalse(trigger.enqueueMessages)
+        XCTAssertEqual(trigger.missedFireCount, 0)
+        XCTAssertEqual(trigger.badges, [])
+        XCTAssertEqual(trigger.toggleLabel, "Turn On")
+        XCTAssertEqual(TriggerSummary(id: 7, name: "x", status: "enabled", coalesceWindowSeconds: 0).badges, ["No coalescing"],
+                       "a window of 0 is the web page's No coalescing")
+        XCTAssertEqual(TriggerSummary(id: 7, name: "x", status: "enabled", coalesceWindowSeconds: 60).badges, [])
+    }
+
+    func testEachInvokeOutcomeHasItsOwnNotice() {
+        XCTAssertEqual(TriggerInvocation(outcome: .started, sessionID: 1, message: "Fired").notice, "Fired")
+        XCTAssertEqual(TriggerInvocation(outcome: .burstNotice, sessionID: 1, message: "x").notice, "Burst: no new session. x")
+        XCTAssertEqual(TriggerInvocation(outcome: .pendingSession, sessionID: 1, message: "x").notice, "A session is still pending. x")
+        XCTAssertEqual(TriggerInvocation(outcome: .notReusable, sessionID: 1, message: "x").notice, "Its session cannot take another turn. x")
+    }
+
+    private var pacific: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        return calendar
+    }
+
+    private func day(_ text: String) -> Date {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = pacific.timeZone
+        formatter.formatOptions = [.withFullDate]
+        return formatter.date(from: text)!
+    }
+
+    func testCostsSendTheWindowAndTheScopeTheWayTheWebPageDoes() async throws {
+        let ok: ScriptedTransport.Handler = { _ in Fixtures.json(200, ["totals": ["cost_usd": 1.0], "scope": ["agent_root": "zimmer", "session_id": NSNull()]]) }
+        let (api, transport) = client([ok, ok, ok])
+
+        let scoped = try await api.costs(.days(1), scope: .agentRoot("zimmer"))
+        _ = try await api.costs(.days(30), scope: .session(1042))
+        _ = try await api.costs(.custom(from: day("2026-08-01"), to: day("2026-08-03"), calendar: pacific), scope: .fleet)
+
+        func query(_ index: Int) -> [String: String] {
+            let items = URLComponents(url: transport.sent[index].url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            return Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+        }
+        XCTAssertEqual(query(0), ["days": "1", "agent_root": "zimmer"])
+        XCTAssertEqual(query(1), ["days": "30", "session_id": "1042"])
+        XCTAssertEqual(scoped.scope, .agentRoot("zimmer"), "the response says what it was narrowed to")
+        // The device's zone, not the server's; the first day's start to the last day's last moment.
+        let range = query(2)
+        XCTAssertNil(range["days"])
+        XCTAssertNotNil(range["from"])
+        XCTAssertNotNil(range["to"])
+        let window = CostWindow.custom(from: day("2026-08-01"), to: day("2026-08-03"), calendar: pacific).query(calendar: pacific)
+        XCTAssertEqual(window["from"], "2026-08-01T07:00:00.000Z", "the day's start in the phone's zone, written in UTC")
+        XCTAssertEqual(window["to"], "2026-08-04T06:59:59.999Z")
+    }
+
+    func testARangeEastOfUTCReachesTheServerAsTheSameInstants() throws {
+        var kolkata = Calendar(identifier: .gregorian)
+        kolkata.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = kolkata.timeZone
+        formatter.formatOptions = [.withFullDate]
+        let first = formatter.date(from: "2026-08-01")!
+
+        let query = CostWindow.custom(from: first, to: first, calendar: kolkata).query(calendar: kolkata)
+        let url = try XCTUnwrap(HTTPEndpoint(method: "GET", path: "/api/v1/costs", query: query).url(relativeTo: Fixtures.base))
+
+        // Midnight in Kolkata is 18:30 the evening before in UTC; no `+` is left for Rack to
+        // read as a space.
+        XCTAssertEqual(url.query, "from=2026-07-31T18:30:00.000Z&to=2026-08-01T18:29:59.999Z")
+    }
+
+    func testAPlusInAQueryValueIsSentEscaped() throws {
+        let url = try XCTUnwrap(HTTPEndpoint(method: "GET", path: "/api/v1/costs", query: ["to": "2026-08-01T00:00:00+05:30", "q": "a b"])
+            .url(relativeTo: Fixtures.base))
+        XCTAssertEqual(url.query, "q=a%20b&to=2026-08-01T00:00:00%2B05:30", "a bare + would reach Rails as a space")
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        XCTAssertEqual(items?.first(where: { $0.name == "to" })?.value, "2026-08-01T00:00:00+05:30", "and still decodes to itself")
+    }
+
+    func testACustomRangeIsResolvedAsTheWebFormResolvesIt() {
+        let calendar = pacific
+        guard case let .range(from, to) = CostWindow.custom(from: day("2026-08-03"), to: day("2026-08-01"), calendar: calendar) else {
+            return XCTFail("a range")
+        }
+        XCTAssertEqual(from, day("2026-08-01"), "the ends are swapped")
+        XCTAssertEqual(to, day("2026-08-03"))
+
+        guard case let .range(clampedFrom, _) = CostWindow.custom(from: day("2019-01-01"), to: day("2026-08-03"), calendar: calendar) else {
+            return XCTFail("a range")
+        }
+        XCTAssertEqual(calendar.dateComponents([.day], from: clampedFrom, to: day("2026-08-03")).day, 364, "a year, ending on the last day")
+
+        let locale = Locale(identifier: "en_US")
+        XCTAssertEqual(CostWindow.days(1).label(), "24 hours")
+        XCTAssertEqual(CostWindow.days(7).label(), "7 days")
+        XCTAssertEqual(CostWindow.days(365).label(), "1 year")
+        XCTAssertEqual(CostWindow.custom(from: day("2026-08-01"), to: day("2026-08-03"), calendar: calendar).label(calendar: calendar, locale: locale),
+                       "Aug 1 – Aug 3, 2026")
+        XCTAssertEqual(CostWindow.custom(from: day("2026-08-01"), to: day("2026-08-01"), calendar: calendar).label(calendar: calendar, locale: locale),
+                       "Aug 1, 2026")
+        XCTAssertEqual(CostWindow.days(5000).query(), ["days": "365"], "the server's own cap")
+        XCTAssertFalse(CostScope.narrowable(agentRoot: "other (3)"), "the folded bucket is several roots")
+        XCTAssertTrue(CostScope.narrowable(agentRoot: "zimmer"))
+    }
+
+    func testTheFixtureNarrowsCostsAndRecordsWhatATriggerMade() async throws {
+        let fake = FakeZimmerAPI()
+        let fleet = try await fake.costs(.days(7), scope: .fleet)
+        let root = try await fake.costs(.days(7), scope: .agentRoot("motet"))
+        let session = try await fake.costs(.days(7), scope: .session(1042))
+        XCTAssertEqual(root.agentRoots.map(\.label), ["motet"])
+        XCTAssertLessThan(root.totalUSD, fleet.totalUSD)
+        XCTAssertEqual(session.topSessions.map(\.sessionID), [1042])
+        XCTAssertEqual(session.scope, .session(1042))
+
+        let before = try await fake.trigger(5)
+        XCTAssertEqual(before.recentSessions.map(\.id), [1031])
+        let invoked = try await fake.invokeTrigger(5)
+        let after = try await fake.trigger(5)
+        XCTAssertEqual(after.recentSessions.first?.id, invoked.sessionID, "newest first")
+        XCTAssertEqual(after.trigger.lastSessionID, invoked.sessionID)
     }
 
     func testHealthReadsEachSectionsStatusWhicheverShapeItHas() async throws {
