@@ -24,13 +24,13 @@ module Mcp
 
         **One call, all three events (do this).** Pass `event_names: ["session_archived", "session_needs_input", "session_failed"]` and you get ONE trigger that fires on whichever happens first. Watching only one is a footgun: a session that finishes its work self-archives straight from `running` to `archived`, so a lone `session_needs_input` watcher would never fire for it. Pair the one call with ONE `wake_me_up_later` deadline backstop, and the whole wait costs two tool calls.
 
-        `event_name` (singular) still works and creates a single-event trigger. Prefer `event_names`: three separate calls create three separate triggers, and every one of them is destroyed when any one fires, so you pay to re-create all three.
+        `event_name` (singular) still works and creates a single-event trigger. Prefer `event_names`: three separate calls create three separate triggers, and every one of them is retired when any one fires, so you pay to re-create all three.
 
         **`session_needs_input` means "came to rest", not "crossed the state".** A session emits `needs_input` at every turn boundary, including boundaries it leaves again immediately — one that wakes on its own `wake_me_up_later`, takes a turn and goes back to sleep, or one with a message already queued for it. Zimmer holds the event for a short settle window and drops it unless the watched session is *still* at rest when the window closes, so those turn boundaries do not wake you. What reaches you is a session that has genuinely stopped. `session_failed` and `session_archived` are terminal and fire immediately, with no settle delay.
 
         This is worth internalizing because it inverts the old rule: **a wake you receive is a real signal.** You should not expect to be woken repeatedly by a healthy watched session that is asleep on its own wake-ups.
 
-        **Sibling-destroy semantics.** When any one of the requester's one-time wakes fires — this trigger or the `wake_me_up_later` deadline backstop — Zimmer's firing path destroys the requester's other one-time wake triggers. They are deleted, not merely consumed. If a woken-up turn decides to keep waiting, re-register: one `wake_me_up_when_session_changes_state` call with `event_names`, and one `wake_me_up_later` deadline. Two calls, not four.
+        **Sibling-destroy semantics.** When this watcher fires, Zimmer retires the requester's other one-time wakes — its `wake_me_up_later` deadline backstop and any other watchers — at the end of the woken turn. They are deleted, not merely consumed. When a `wake_me_up_later` wake fires, it retires the requester's watchers the same way, but never another `wake_me_up_later` wake: two time wakes are two waits. The woken turn's prompt ends with a list of what the fire did to your other wakes — which will be retired when the turn ends, and which are still armed. If a woken-up turn decides to keep waiting on something the list says will be retired, re-register: one `wake_me_up_when_session_changes_state` call with `event_names`, and one `wake_me_up_later` deadline. Two calls, not four.
 
         **IMPORTANT — Use this tool instead of polling.** When this tool is available, it is the correct way to wait on another session's state. Do NOT use these alternatives:
         - **Repeated `get_session` calls in a poll loop**: wastes compute, racks up tool-call overhead, and either polls too often (waste) or too rarely (latency).
@@ -145,7 +145,7 @@ module Mcp
 
           **What will NOT wake you:** a `session_needs_input` that the watched session leaves again at once — waking on its own timer, taking a turn and re-sleeping, or draining a queued message. Zimmer settles that event before delivering it, so a wake you receive means the watched session actually came to rest.
 
-          **Sibling-destroy reminder:** when any one-time wake of this requester fires (this trigger or a `wake_me_up_later` deadline), Zimmer's firing path destroys the others. A woken-up turn that decides to keep waiting must re-register — one call here with `event_names`, one `wake_me_up_later` deadline.
+          **Sibling-destroy reminder:** when this watcher or a `wake_me_up_later` deadline fires, Zimmer retires the requester's other wakes from that wait at the end of the woken turn, and the woken prompt lists exactly which ones. A woken-up turn that decides to keep waiting must re-register — one call here with `event_names`, one `wake_me_up_later` deadline.
         TEXT
       end
 

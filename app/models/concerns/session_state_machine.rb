@@ -77,16 +77,19 @@ module SessionStateMachine
   # Session#resume_for_system_recovery!.
   attr_accessor :system_recovery_resume
 
-  # True for exactly the resume a one-time WAKE caused — a `wake_me_up_later`
-  # deadline or a `wake_me_up_when_session_changes_state` watcher firing through
-  # Trigger#follow_up_session!.
+  # The Trigger whose fire caused this resume, for exactly the resume a one-time
+  # WAKE caused — a `wake_me_up_later` deadline or a
+  # `wake_me_up_when_session_changes_state` watcher firing through
+  # Trigger#follow_up_session!. Nil for every other resume.
   #
   # It selects the third branch of #cancel_pending_one_time_wake_triggers: hold
-  # the rest of the wake group rather than consuming it. A deliberate resume (a
-  # human follow-up, a restart, force_immediate) leaves this false and consumes
-  # as before, because a session someone deliberately woke has no wait left to
-  # protect. Transient, never persisted, cleared in an `ensure` by its one writer.
-  attr_accessor :wake_fire_resume
+  # the rest of the wake group rather than consuming it — and it is the trigger,
+  # not just a flag, because which wakes are "the rest of the group" depends on
+  # which one fired (Trigger#shares_wait_with?). A deliberate resume (a human
+  # follow-up, a restart, force_immediate) leaves this nil and consumes as before,
+  # because a session someone deliberately woke has no wait left to protect.
+  # Transient, never persisted, cleared in an `ensure` by its one writer.
+  attr_accessor :waking_trigger
 
   # True for a resume that delivers SOMEBODY ELSE'S prompt to a session which was
   # resting or asleep — a router's `follow_up`, a human's message from the web UI
@@ -146,8 +149,10 @@ module SessionStateMachine
   #
   # `scheduled_wake` is `Trigger#sleep_target_session_if_applicable` marking a
   # RUNNING session to sleep at its turn end because a wake was just armed against
-  # it. If the wake set is gone by the time that turn ends, honouring the intent
-  # puts the session in `waiting` with nothing to come back on — the #1172 strand.
+  # it, or #hold_pending_one_time_wakes marking a session a wake just resumed
+  # because an independent time wake is still armed (#1325). If the wake set is
+  # gone by the time that turn ends, honouring the intent puts the session in
+  # `waiting` with nothing to come back on — the #1172 strand.
   #
   # The rest of the reasons are deliberately absent, each for its own reason. A
   # `deliberate_sleep` (`POST /api/v1/sessions/:id/sleep`) arms nothing by
@@ -2233,7 +2238,7 @@ module SessionStateMachine
     return if conditions.empty?
 
     return preserve_pending_one_time_wakes(conditions) if system_recovery_resume
-    return hold_pending_one_time_wakes(conditions) if wake_fire_resume
+    return hold_pending_one_time_wakes(conditions) if waking_trigger
     return preserve_pending_wakes_across_follow_up(conditions) if follow_up_resume
 
     conditions.each do |condition|
@@ -2441,18 +2446,34 @@ module SessionStateMachine
     # the same distinction. Its one-shot is consumed as before.
     held, consumed = conditions.partition { |condition| condition.trigger&.one_time_reuse_trigger? }
 
-    consumed.each { |condition| condition.update!(last_triggered_at: Time.current) }
-    return if held.empty?
+    # A wake that does not share the fired wake's wait is not part of the group
+    # at all — a later `wake_me_up_later` armed for something else (#1325). It is
+    # left unmarked, so this turn's retirement cannot reach it, and like a
+    # follow-up's preserved wakes it puts the session back to sleep on it once the
+    # turn is over — the same `scheduled_wake` intent arming it wrote, which
+    # #execute_pending_sleep drops if the wake is gone by then (#1172).
+    kept, held = held.partition do |condition|
+      condition.trigger_id != waking_trigger.id && !waking_trigger.shares_wait_with?(condition.trigger)
+    end
+    if kept.any? { |condition| self.class.one_time_wake_pending?(condition) } && !handed_back_to_human?
+      merge_metadata!(Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE))
+    end
 
-    held_at = Time.current
-    Trigger.where(id: held.map(&:trigger_id).uniq)
-           .update_all(wake_held_at: held_at, updated_at: held_at)
+    consumed.each { |condition| condition.update!(last_triggered_at: Time.current) }
+    return if held.empty? && kept.empty?
+
+    if held.any?
+      held_at = Time.current
+      Trigger.where(id: held.map(&:trigger_id).uniq)
+             .update_all(wake_held_at: held_at, updated_at: held_at)
+    end
 
     Rails.logger.info(
       "[SessionStateMachine] Held #{held.size} pending one-time wake-up(s) across the woken " \
       "turn of session #{id} (trigger_conditions #{held.map(&:id).join(', ')}) — they stay " \
       "armed until this turn comes to rest" \
-      "#{consumed.any? ? "; consumed #{consumed.size} on trigger(s) that do other work" : ''}"
+      "#{consumed.any? ? "; consumed #{consumed.size} on trigger(s) that do other work" : ''}" \
+      "#{kept.any? ? "; left #{kept.size} independent wake-up(s) armed" : ''}"
     )
   end
 

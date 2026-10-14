@@ -1361,7 +1361,7 @@ struct MarkdownText: View {
 
     /// Inline-only, keeping line breaks and list markers: a paragraph stays a paragraph.
     static func attributed(_ prose: String) -> AttributedString {
-        (try? AttributedString(markdown: prose, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(prose)
+        MarkdownInline.attributed(prose)
     }
 }
 
