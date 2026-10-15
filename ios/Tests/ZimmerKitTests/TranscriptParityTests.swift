@@ -31,12 +31,12 @@ final class TranscriptParityTests: XCTestCase {
 
         let messages = try await api.conversation(5, limit: 100).messages
 
-        let blocks = messages.map { MessageSegment.segments(of: $0.content).filter(\.isCode) }
+        let blocks = messages.map { MarkdownBlock.blocks(of: $0.content).filter(\.isCode) }
         XCTAssertEqual(blocks[0], [.code("bin/rails test", language: nil)])
         XCTAssertEqual(blocks[1], [.code("12 runs, 0 failures", language: nil)])
         XCTAssertEqual(blocks[2], [.code("bin/rails db:upgrade", language: "sh")])
         XCTAssertEqual(blocks[3], [], "prose alone has nothing to copy")
-        XCTAssertFalse(MessageSegment.prose("x").isCode)
+        XCTAssertFalse(MarkdownBlock.paragraph("x").isCode)
     }
 
     // MARK: - Slash commands

@@ -1,25 +1,9 @@
 import XCTest
 @testable import ZimmerKit
 
-/// The conversation as the page reads it: cut at code fences for the markdown renderer,
-/// filtered by the web UI's levels, and widened by a hundred at a time.
+/// The conversation as the page reads it: filtered by the web UI's levels, and widened by a
+/// hundred at a time. How a message's markdown is cut into blocks is `MarkdownTests`.
 final class TranscriptTests: XCTestCase {
-    func testProseIsCutAtCodeFences() {
-        let text = "Two ways:\n\n- one\n- two\n\n```sh\nbin/rails db:upgrade\n```\n\nWhich?"
-        XCTAssertEqual(MessageSegment.segments(of: text), [
-            .prose("Two ways:\n\n- one\n- two"),
-            .code("bin/rails db:upgrade", language: "sh"),
-            .prose("Which?"),
-        ])
-    }
-
-    func testAnUnclosedFenceRunsToTheEndAndPlainTextIsOneSegment() {
-        XCTAssertEqual(MessageSegment.segments(of: "Look:\n```\nx = 1\ny = 2"), [.prose("Look:"), .code("x = 1\ny = 2", language: nil)])
-        XCTAssertEqual(MessageSegment.segments(of: "Just words."), [.prose("Just words.")])
-        XCTAssertEqual(MessageSegment.segments(of: ""), [])
-        XCTAssertEqual(MessageSegment.segments(of: "```\n```"), [.code("", language: nil)], "an empty block is still a block")
-    }
-
     func testTheLevelsShowWhatTheWebUIsDo() {
         let words = ConversationMessage(id: 0, role: .assistant, content: "Done.", timestamp: nil)
         let tool = ConversationMessage(id: 1, role: .assistant, content: "Using tool: Bash", timestamp: nil, hasToolUse: true)
