@@ -87,6 +87,61 @@ final class SessionActionsUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["detail.status"].label, "Waiting")
     }
 
+    /// The bar's sparkles open the sheet with the words so far. A start from the sheet empties
+    /// the bar as well as the sheet: the bar kept its own copy of the words typed before the
+    /// sheet opened, and that copy is what a start left behind. A Cancel hands the sheet's
+    /// words back to the bar, so nothing typed is lost.
+    func test_a_start_from_the_sheet_the_bar_opened_leaves_the_bar_empty() throws {
+        let app = launch()
+
+        let bar = app.descendants(matching: .any)["quickrouter.bar.field"]
+        XCTAssertTrue(bar.waitForExistence(timeout: timeout))
+        bar.tap()
+        bar.typeText("Rotate the")
+        app.buttons["quickrouter.bar.more"].tap()
+
+        // Cancel first: the bar gets back what the sheet held, edits included.
+        let sheet = app.descendants(matching: .any)["quickrouter.field"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: timeout))
+        XCTAssertEqual(sheet.value as? String, "Rotate the")
+        sheet.typeText(" staging")
+        app.navigationBars["Quick Router"].buttons["Cancel"].tap()
+        XCTAssertTrue(waitForDisappearance(sheet))
+        XCTAssertEqual(bar.value as? String, "Rotate the staging", "a Cancel gives the bar the sheet's words")
+
+        // Then start from the sheet, with more typed there than the bar ever held.
+        app.buttons["quickrouter.bar.more"].tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: timeout))
+        XCTAssertEqual(sheet.value as? String, "Rotate the staging")
+        sheet.typeText(" deploy key")
+        app.buttons["quickrouter.start"].tap()
+
+        let title = app.staticTexts["detail.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: timeout))
+        XCTAssertEqual(title.label, "Rotate the staging deploy key")
+        attachScreenshot(app, named: "quick-router-sheet-started")
+
+        app.navigationBars.buttons["Sessions"].tap()
+        XCTAssertTrue(bar.waitForExistence(timeout: timeout))
+        XCTAssertTrue(isEmpty(bar), "the bar is empty after a start, not \(String(describing: bar.value))")
+        attachScreenshot(app, named: "quick-router-bar-empty-after-start")
+
+        // Reopened, the sheet is empty too.
+        app.buttons["quickrouter.bar.more"].tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: timeout))
+        XCTAssertTrue(isEmpty(sheet), "the reopened sheet is empty, not \(String(describing: sheet.value))")
+        attachScreenshot(app, named: "quick-router-sheet-empty-after-start")
+        app.navigationBars["Quick Router"].buttons["Cancel"].tap()
+        XCTAssertTrue(waitForDisappearance(sheet))
+        XCTAssertTrue(isEmpty(bar), "an empty sheet's Cancel leaves the bar empty")
+    }
+
+    /// An empty text field reads back as nothing or as its placeholder, by iOS version.
+    private func isEmpty(_ field: XCUIElement) -> Bool {
+        let value = field.value as? String ?? ""
+        return value.isEmpty || value == "What do you want to do?"
+    }
+
     /// The button in the corner of every other screen: the web UI's bubble. From the Inbox
     /// it opens the sheet, and the session it starts opens on the Sessions tab.
     func test_the_quick_router_button_is_in_the_corner_of_the_inbox_and_opens_the_sheet() throws {
