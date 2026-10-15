@@ -566,7 +566,7 @@ struct SessionDetailView: View {
         .toolbar { toolbarContent }
     }
 
-    /// The page's questions: each confirmation and alert it can ask. One modifier chain holding
+    /// The page's confirmations and its rename and precedence alerts. One modifier chain holding
     /// these and everything in `scrollingPage` is more than Swift's type checker accepts in a
     /// Release build.
     private func pageWithDialogs(_ proxy: ScrollViewProxy) -> some View {
@@ -758,6 +758,8 @@ struct SessionDetailView: View {
 
     // MARK: - Sections
 
+    /// Spelled out with explicit types, unlike the rest of the file: inferred inline, this was
+    /// what Swift's type checker gave up on in a Release archive.
     @ViewBuilder
     private func sectionStrip(_ proxy: ScrollViewProxy) -> some View {
         if let detail = model.detail {
