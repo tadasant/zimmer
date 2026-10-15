@@ -50,7 +50,7 @@ class Api::V1::HealthController < Api::BaseController
     status = QueueRecoveryMode.enter!(
       reason: params[:reason],
       ttl: params[:ttl_minutes].presence&.to_i&.minutes,
-      actor: "REST API"
+      actor: actor_label
     )
 
     render json: status.as_json
@@ -105,7 +105,7 @@ class Api::V1::HealthController < Api::BaseController
       queue_name: params[:queue_name],
       expected_count: params[:expected_count],
       reason: params[:reason],
-      actor: "REST API"
+      actor: actor_label
     ).as_json
   rescue QueuedJobMaintenance::Refused => e
     render_api_error("Refused", e.message, status: :unprocessable_entity)
@@ -124,7 +124,7 @@ class Api::V1::HealthController < Api::BaseController
       queue_name: params[:queue_name],
       expected_count: params[:expected_count],
       scheduled_at: params[:delay_minutes].presence&.to_i&.minutes&.from_now,
-      actor: "REST API"
+      actor: actor_label
     ).as_json
   rescue QueuedJobMaintenance::Refused => e
     render_api_error("Refused", e.message, status: :unprocessable_entity)
@@ -134,7 +134,7 @@ class Api::V1::HealthController < Api::BaseController
   # Resume normal processing. Idempotent, and never gated: the way out of a halt
   # must always be available.
   def exit_queue_recovery_mode
-    render json: QueueRecoveryMode.exit!(actor: "REST API").as_json
+    render json: QueueRecoveryMode.exit!(actor: actor_label).as_json
   end
 
   # POST /api/v1/health/cleanup_processes
@@ -184,6 +184,13 @@ class Api::V1::HealthController < Api::BaseController
   end
 
   private
+
+  # Who an operator action is recorded as: the person behind the phone, by the
+  # grant's email, so #alerts and the discard log read a human's decision as
+  # theirs rather than as a script's; an API key stays "REST API".
+  def actor_label
+    native_app_request? ? "the iOS app (#{native_app_grant.user_email})" : "REST API"
+  end
 
   # The cooldown object is shared with the native MCP server's action_health
   # tool, so the two surfaces throttle each other for the same caller. The app's
