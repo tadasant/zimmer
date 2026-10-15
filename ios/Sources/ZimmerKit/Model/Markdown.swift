@@ -5,7 +5,7 @@ import Foundation
 /// that nest, quotes, tables and rules. What is inside a block — emphasis, code spans, links —
 /// is left as written, for the screen's inline renderer. The rules are CommonMark's and GFM's
 /// where agents lean on them; anything this does not recognise is a paragraph, shown as typed.
-public indirect enum MarkdownBlock: Hashable, Sendable {
+public enum MarkdownBlock: Hashable, Sendable {
     case heading(level: Int, text: String)
     case paragraph(String)
     case code(String, language: String?)
@@ -84,11 +84,16 @@ public struct MarkdownTable: Hashable, Sendable {
     }
 
     /// Column widths for a table drawn `available` wide. Columns that fit keep their natural
-    /// width. Otherwise the widest are capped at one width, so their text wraps and the table
+    /// width, the last stretched to the edge. Otherwise the widest are capped at one width, so their text wraps and the table
     /// meets the edge — but no column goes under `floor`, and past that the table is wider than
     /// `available` and scrolls, as the web's `table-wrapper` does.
     public static func columnWidths(natural: [Double], available: Double, floor: Double = 72) -> [Double] {
-        guard available > 0, natural.reduce(0, +) > available else { return natural }
+        guard available > 0, !natural.isEmpty else { return natural }
+        let total = natural.reduce(0, +)
+        if total <= available {
+            // The web's table is at least as wide as its box; the last column takes the rest.
+            return natural.dropLast() + [natural[natural.count - 1] + available - total]
+        }
         let target = max(available, floor * Double(natural.count))
         var remaining = target
         var left = natural.count
@@ -121,9 +126,15 @@ public enum MarkdownAutolink {
         public var url: URL
     }
 
+    /// Compiled once. Immutable after initialisation, so sharing it across threads is safe.
+    private struct Pattern: @unchecked Sendable {
+        let regex = try! NSRegularExpression(pattern: "https?://[^\\s<>\"'`]+", options: [.caseInsensitive])
+    }
+    private static let url = Pattern()
+
     public static func matches(in text: String) -> [Match] {
         guard text.contains("://") else { return [] }
-        let pattern = try! NSRegularExpression(pattern: "https?://[^\\s<>\"'`]+", options: [.caseInsensitive])
+        let pattern = url.regex
         let range = NSRange(text.startIndex..., in: text)
         return pattern.matches(in: text, range: range).compactMap { result in
             guard let found = Range(result.range, in: text) else { return nil }
@@ -183,7 +194,9 @@ private struct MarkdownParser {
             } else if Line.quoteContent(line) != nil {
                 flush()
                 blocks.append(readQuote())
-            } else if let marker = Line.listMarker(line), paragraph.isEmpty || !marker.content.isEmpty {
+            } else if let marker = Line.listMarker(line),
+                      paragraph.isEmpty || (!marker.content.isEmpty && (!marker.ordered || marker.number == 1)) {
+                // Only a list starting at 1 may interrupt a paragraph, so "in\n2024. The" is prose.
                 flush()
                 blocks.append(readList(marker))
             } else if paragraph.isEmpty, Line.indent(line) >= 4 {
@@ -252,6 +265,7 @@ private struct MarkdownParser {
         var items: [[String]] = []
         var current = [first.content]
         var contentIndent = first.contentIndent
+        var markerIndent = first.indent
         index += 1
         while index < lines.count {
             let line = lines[index]
@@ -259,10 +273,15 @@ private struct MarkdownParser {
                 current.append("")
             } else if Line.indent(line) >= contentIndent {
                 current.append(Line.dropIndent(line, upTo: contentIndent))
+            } else if let marker = Line.listMarker(line), marker.indent > markerIndent, !Line.isRule(line) {
+                // Indented past this item's marker but short of its text — `  - b` under
+                // `1. a` — is still nested, as Redcarpet nests it.
+                current.append(Line.dropIndent(line, upTo: contentIndent))
             } else if let marker = Line.listMarker(line), marker.ordered == first.ordered, !Line.isRule(line) {
                 items.append(current)
                 current = [marker.content]
                 contentIndent = marker.contentIndent
+                markerIndent = marker.indent
             } else if let last = current.last, !Line.isBlank(last), !Line.startsBlock(line) {
                 current.append(line.trimmingCharacters(in: .whitespaces))
             } else {
@@ -310,6 +329,8 @@ private enum Line {
         var number: Int
         var content: String
         var contentIndent: Int
+        /// Where the marker itself sits: a marker indented past it nests.
+        var indent: Int
     }
 
     static func isBlank(_ line: String) -> Bool {
@@ -347,7 +368,7 @@ private enum Line {
         guard run.count >= 3 else { return nil }
         let info = rest.dropFirst(run.count).trimmingCharacters(in: .whitespaces)
         if character == "`", info.contains("`") { return nil }
-        let language = info.split(separator: " ").first.map(String.init)
+        let language = info.split(whereSeparator: \.isWhitespace).first.map(String.init)
         return Fence(character: character, length: run.count, indent: indent(line), language: language)
     }
 
@@ -420,7 +441,7 @@ private enum Line {
         let content = after.trimmingCharacters(in: .whitespaces)
         // Five or more spaces after the marker start indented code in the item; one is the gap.
         let gap = content.isEmpty || spaces >= 5 ? 1 : spaces
-        return ListMarker(ordered: ordered, number: number, content: content, contentIndent: leading + width + gap)
+        return ListMarker(ordered: ordered, number: number, content: content, contentIndent: leading + width + gap, indent: leading)
     }
 
     /// A line that starts a block of its own, so it cannot continue a paragraph lazily.
@@ -445,14 +466,14 @@ private enum Line {
         return alignments
     }
 
-    /// A row's cells: split on `|`, but not on an escaped one or one inside a code span.
+    /// A row's cells: split on every `|` but an escaped one, as GFM splits them — inside a code
+    /// span too.
     static func cells(_ line: String) -> [String] {
         var text = Substring(line.trimmingCharacters(in: .whitespaces))
         if text.first == "|" { text = text.dropFirst() }
         if text.last == "|", !text.hasSuffix("\\|") { text = text.dropLast() }
         var cells: [String] = []
         var cell = ""
-        var inCode = false
         var characters = text.makeIterator()
         while let character = characters.next() {
             if character == "\\" {
@@ -461,10 +482,7 @@ private enum Line {
                 } else {
                     cell.append(character)
                 }
-            } else if character == "`" {
-                inCode.toggle()
-                cell.append(character)
-            } else if character == "|", !inCode {
+            } else if character == "|" {
                 cells.append(cell.trimmingCharacters(in: .whitespaces))
                 cell = ""
             } else {

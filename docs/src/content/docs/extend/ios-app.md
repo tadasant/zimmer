@@ -123,8 +123,12 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   conversation follows, newest last, each message with its age, rendered the way the web renders
   it: headings, paragraphs, lists that nest, quotes, tables and rules drawn as blocks, with
   emphasis, code spans and links inside them, and bare URLs made links as the web's autolink
-  makes them. A link opens on a tap, and a long press gives the system's link menu — *Copy
-  Link*, *Share* — so a long signed URL in an agent's message can be pasted elsewhere. Fenced code is in the monospaced face, scrolling sideways rather than wrapping,
+  makes them. A link opens on a tap, and a link in a paragraph or a list item gives the
+  system's link menu on a long press — *Copy Link*, *Share* — so a long signed URL in an agent's
+  message can be pasted elsewhere; one in a heading or a table cell opens on a tap and has no
+  menu. Two places the app reads markdown more leniently than the web's Redcarpet: `#1293` at
+  the start of a line stays text rather than becoming a heading, and a table or list may follow
+  a paragraph's line without a blank line between. Fenced code is in the monospaced face, scrolling sideways rather than wrapping,
   with a *Copy* button in the block's corner that puts the code on the clipboard, as the web's
   code blocks have; the code is one colour where the web colours it by language. A table's
   widest columns wrap to fit the phone, and a table with too many columns to fit even so scrolls

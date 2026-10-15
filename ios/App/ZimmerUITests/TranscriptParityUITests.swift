@@ -1,9 +1,10 @@
 import UIKit
 import XCTest
 
-/// Slice G, against the `-ZimmerFixture` in-memory Zimmer: a code block's Copy button, the
-/// composer's "/" typeahead of the session's skills, and the scheduling class and precedence
-/// the web page's desktop metadata block edits.
+/// Slice G, against the `-ZimmerFixture` in-memory Zimmer: a code block's Copy button, block
+/// markdown drawn as structure, a link's long-press menu, the composer's "/" typeahead of the
+/// session's skills, and the scheduling class and precedence the web page's desktop metadata
+/// block edits.
 @MainActor
 final class TranscriptParityUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -206,13 +207,14 @@ final class TranscriptParityUITests: XCTestCase {
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let shot = app.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
         // Beside the result bundle too, where a pull request can take it from the artifact.
         if let directory = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"], !directory.isEmpty {
-            try? app.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: directory).appendingPathComponent("test-\(name).png"))
+            try? shot.pngRepresentation.write(to: URL(fileURLWithPath: directory).appendingPathComponent("test-\(name).png"))
         }
     }
 }

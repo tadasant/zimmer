@@ -58,6 +58,20 @@ final class MarkdownTests: XCTestCase {
         XCTAssertEqual(MarkdownList(ordered: false, items: [[]]).marker(at: 0, depth: 1), "◦")
     }
 
+    func testAListNestsByTwoSpacesUnderANumberAndANumberMidParagraphIsProse() {
+        XCTAssertEqual(blocks("1. foo\n  - bar\n2. baz"), [
+            .list(MarkdownList(ordered: true, items: [
+                [.paragraph("foo"), .list(MarkdownList(ordered: false, items: [[.paragraph("bar")]]))],
+                [.paragraph("baz")],
+            ])),
+        ])
+        XCTAssertEqual(blocks("Shipped in\n2024. The next one\n1. first"), [
+            .paragraph("Shipped in\n2024. The next one"),
+            .list(MarkdownList(ordered: true, items: [[.paragraph("first")]])),
+        ])
+        XCTAssertEqual(blocks("```ruby\tlinenos\nx\n```"), [.code("x", language: "ruby")])
+    }
+
     func testAListItemHoldsCodeAndLazyLinesAndFourSpaceNesting() {
         let text = "- Run:\n\n  ```sh\n  bin/ci\n  ```\n- a long item\nthat wraps lazily\n    - nested by four"
         XCTAssertEqual(blocks(text), [
@@ -85,7 +99,7 @@ final class MarkdownTests: XCTestCase {
     }
 
     func testTablesWithAlignmentsEscapedPipesAndRaggedRows() {
-        let text = "Summary:\n| Check | Result | Count |\n| :--- | :---: | ---: |\n| Build | `a|b` | 1 |\n| UI \\| tests | 2 failed |\n\nAfter"
+        let text = "Summary:\n| Check | Result | Count |\n| :--- | :---: | ---: |\n| Build | `a\\|b` | 1 |\n| UI \\| tests | 2 failed |\n\nAfter"
         XCTAssertEqual(blocks(text), [
             .paragraph("Summary:"),
             .table(MarkdownTable(header: ["Check", "Result", "Count"], alignments: [.leading, .center, .trailing], rows: [
@@ -101,7 +115,7 @@ final class MarkdownTests: XCTestCase {
     }
 
     func testATableWiderThanThePhoneWrapsItsWidestColumnsThenScrolls() {
-        XCTAssertEqual(MarkdownTable.columnWidths(natural: [40, 60], available: 340), [40, 60], "a table that fits keeps its widths")
+        XCTAssertEqual(MarkdownTable.columnWidths(natural: [40, 60], available: 340), [40, 300], "a table that fits spans its box, the last column stretched")
         XCTAssertEqual(MarkdownTable.columnWidths(natural: [40, 300, 200], available: 340), [40, 150, 150], "the wide columns share what is left")
         XCTAssertEqual(MarkdownTable.columnWidths(natural: Array(repeating: 100, count: 6), available: 340), Array(repeating: 72, count: 6),
                        "no column under the floor; the table scrolls")
