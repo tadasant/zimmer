@@ -357,15 +357,11 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
-<<<<<<< HEAD
-Every session action above is a route on `/api/v1/sessions` the app's token could already reach.
-The Health, Costs and CLIs actions are the routes `accepts_native_app_tokens` opens for exactly them
+Every session action above is a route on `/api/v1/sessions`. Merge is the one the app's token reaches
+where an API key cannot: only a person may give it (see the [REST API](/extend/rest-api/)). The
+Health, Costs and CLIs actions are the routes `accepts_native_app_tokens` opens for exactly them
 (`Api::V1::HealthController`, `CostsController#backfill`, `ClisController`): each is a button the
 web page offers any signed-in person, and the phone is that person's other screen.
-=======
-Every action above is a route on `/api/v1/sessions`. Merge is the one the app's token reaches
-where an API key cannot: only a person may give it (see the [REST API](/extend/rest-api/)).
->>>>>>> origin/main
 
 ### Not in the app yet
 
