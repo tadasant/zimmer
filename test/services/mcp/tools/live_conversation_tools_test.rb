@@ -7,21 +7,23 @@ class Mcp::Tools::LiveConversationToolsTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
   setup do
-    context = Mcp::Context.new(tool_groups: "sessions", base_url: "https://zimmer.example.com")
+    context = Mcp::Context.new(tool_groups: "live_conversations", base_url: "https://zimmer.example.com")
     @get = Mcp::Tools::GetLiveConversations.new(context: context)
     @action = Mcp::Tools::ActionLiveConversation.new(context: context)
     stub_live_roots
     stub_live_key
   end
 
-  test "both tools are on the sessions surface, and the read survives sessions_readonly" do
-    names = Mcp::Context.new(tool_groups: "sessions").tools.map(&:tool_name)
+  test "both tools are on the live_conversations surface, not sessions, and the read survives _readonly" do
+    names = Mcp::Context.new(tool_groups: "live_conversations").tools.map(&:tool_name)
     assert_includes names, "get_live_conversations"
     assert_includes names, "action_live_conversation"
 
-    readonly = Mcp::Context.new(tool_groups: "sessions_readonly").tools.map(&:tool_name)
+    readonly = Mcp::Context.new(tool_groups: "live_conversations_readonly").tools.map(&:tool_name)
     assert_includes readonly, "get_live_conversations"
     assert_not_includes readonly, "action_live_conversation"
+
+    assert_not_includes Mcp::Context.new(tool_groups: "sessions").tools.map(&:tool_name), "action_live_conversation"
   end
 
   test "listing says which modes can start and why not" do

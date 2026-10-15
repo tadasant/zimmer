@@ -81,7 +81,7 @@ session gets exactly the surface it should have and no more.
 
 | URL | Tools |
 | --- | --- |
-| `/mcp` | The default surface — 29 tools; the opt-in groups are not among them |
+| `/mcp` | The default surface — 27 tools; the opt-in groups are not among them |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 8 tools a session needs to run itself |
 | `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
@@ -90,11 +90,12 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=settings` | The Settings page's global defaults: read and change the base runtime and model and the Experimental toggles |
 | `/mcp?tool_groups=external_apps` | [Zimmer plugins](/extend/zimmer-plugins/): register one, set the triggers it may invoke, mint and revoke its keys |
 | `/mcp?tool_groups=root_data` | [Root data](/sessions/root-data/): the calling session's agent root's persistent records |
+| `/mcp?tool_groups=live_conversations` | [Live Mode and Live Voice](/sessions/live/): read conversations, start one, type into it, end it |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
 The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions`,
-`work_backlog`, `outcome_analyses`, `settings`, `external_apps` and `root_data` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
+`work_backlog`, `outcome_analyses`, `settings`, `external_apps`, `root_data` and `live_conversations` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
 `_readonly` variant. Omitting `tool_groups` enables the four base groups and nothing else — an
 opt-in group is valid and addressable but never handed out by default, so `/mcp` on its own does
 not carry `record_gate_decision`. An unknown group is dropped with a warning rather than failing
@@ -220,7 +221,7 @@ production.
 
 | Group | Tools |
 | --- | --- |
-| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `quick_router`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_models`, `reorder_user_view`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis`, `get_live_conversations`, `action_live_conversation` |
+| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `quick_router`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_models`, `reorder_user_view`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
@@ -230,11 +231,22 @@ production.
 | `settings` (opt-in) | `get_app_settings`, `action_app_settings` |
 | `external_apps` (opt-in) | `search_external_apps`, `action_external_app` — register [Zimmer plugins](/extend/zimmer-plugins/) and mint their keys |
 | `root_data` (opt-in) | `list_root_collections`, `search_root_records`, `get_root_record`, `put_root_record`, `append_root_record`, `delete_root_record` — the calling root's [persistent data](/sessions/root-data/) |
+| `live_conversations` (opt-in) | `get_live_conversations`, `action_live_conversation` — [Live Mode and Live Voice](/sessions/live/) |
 
 `get_live_conversations` and `action_live_conversation` read and drive [Live Mode and Live
 Voice](/sessions/live/) conversations: whether each mode can start, a conversation's thread with its
 tool calls, and start / send a typed message / end. Live Voice's audio relay and the OpenAI key are
 deliberately not tools — the first needs a client holding the call, the second is a secret value.
+
+`live_conversations` is a group of its own, and opt-in, because of what a live conversation can do.
+Its model can switch on any catalog MCP server and call it with the credentials Rails resolves, while
+a session reaches only the servers it was given. `send_message` hands that model an instruction, so
+in `sessions` every session carrying `zimmer-sessions` (or the unscoped `zimmer` server) would reach
+through it to the whole catalog. A connection names `live_conversations` to get both tools, and
+`live_conversations_readonly` the read alone. No catalog entry names either, so no root carries them,
+and neither does the live agent's own gateway, which is built from the groups its `zimmer` entries
+name. The usual caveat holds: this decides what a connection is offered, not what the fleet's shared
+API key could compose.
 
 `get_user_view` and `reorder_user_view` are the read and write halves of the dashboard's
 [User view](/sessions/user-view/) — the human's decision board. The read returns the board in the
