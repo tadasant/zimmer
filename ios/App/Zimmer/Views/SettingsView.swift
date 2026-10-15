@@ -319,8 +319,14 @@ struct SettingsView: View {
         )
     }
 
+    /// Something to save: a different pair, or the built-in pair while an override is stored —
+    /// the web page stores the built-in pair as an override when it is picked there, and the
+    /// phone is where it gets cleared.
     private func defaultsChanged(_ settings: AppSettings) -> Bool {
-        runtime != settings.sessionDefaults.runtime || modelID != settings.sessionDefaults.model
+        let defaults = settings.sessionDefaults
+        if runtime != defaults.runtime || modelID != defaults.model { return true }
+        let overridden = defaults.runtimeOverridden || defaults.modelOverridden
+        return overridden && runtime == defaults.builtIn.runtime && modelID == defaults.builtIn.model
     }
 
     /// The built-in pair is sent as no override at all, so picking it clears the override

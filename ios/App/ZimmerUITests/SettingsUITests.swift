@@ -32,6 +32,8 @@ final class SettingsUITests: XCTestCase {
         tapSwitch(toggle)
         XCTAssertTrue(waitForLabel(router, "Warm Quick Router process is ON."))
         XCTAssertEqual(toggle.value as? String, "1")
+        // Back up to the first row: a Form row scrolled off is not in the accessibility tree.
+        reveal(app, search)
         XCTAssertEqual(search.label, "MCP tool search is ON (recommended default).", "the other toggles are untouched")
 
         closeSettings(app)
