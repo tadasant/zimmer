@@ -615,15 +615,17 @@ A router session's fresh start asks the pool first, before the warm clone pool. 
 5. Runs the rest of a fresh start as usual: `.env`, `air prepare` for the session, the OAuth gate,
    the system prompt, the account check. Then, where a cold start would spawn:
 6. Refuses the process if the session's `.env` or `.claude/` now differ from what it booted with,
-   if it booted with an MCP server the session does not have, or if the account, its token, the
-   `claude` binary or a spawn-environment setting changed since it booted.
+   if it booted with an MCP server the session does not have, if the OAuth gate wrote MCP OAuth
+   credentials for the session (they land after boot, and an unchanged server is not reconnected to
+   read them), or if the account, its token, the `claude` binary or a spawn-environment setting
+   changed since it booted.
 7. Moves the process and its MCP children into the session's memory cgroup.
-8. Writes the session's scratch directory and elicitation address to the file Claude Code sources
+8. Appends the session's scratch directory and elicitation address to the file Claude Code sources
    before every Bash command (`CLAUDE_ENV_FILE`), since a running process's environment cannot change.
 9. Sends `initialize` with the session's system prompt, `mcp_set_servers` with the session's whole
    server map (the self-session server, and URLs stamped with the session id), and `set_model` when
    the session asked for a different model.
-10. Writes the prompt and closes stdin. The process finishes the turn and exits, as a cold `-p`
+10. Writes the prompt and closes stdin, from a thread as the cold path's stdin delivery does. The process finishes the turn and exits, as a cold `-p`
     start does, and the job monitors it from there like any other turn. Follow-ups `--resume` as
     before.
 
@@ -631,8 +633,8 @@ Every refusal before the prompt is written stops the process and falls back to a
 in the same clone and with the same session id. The pool is never why a session fails. Each router
 session records the outcome in `metadata["warm_process"]`: `claimed`, `missed` (none ready), or the
 reason it started cold (`config_mismatch`, `boot_context_changed`, `workspace_changed`,
-`environment_changed`, `mcp_servers_removed`, `mcp_set_servers_failed`, `fetch_failed`, `stale`,
-`claim_error`, `not_started`).
+`environment_changed`, `mcp_servers_removed`, `oauth_mcp_servers`, `mcp_set_servers_failed`,
+`session_config_dir_exists`, `resume`, `fetch_failed`, `stale`, `claim_error`, `not_started`).
 
 **What starts cold.** A session whose runtime, effort, MCP servers, skills, hooks, plugins,
 branch or subdirectory differ from the router root's defaults. A non-default effort is a CLI flag
@@ -646,14 +648,24 @@ agent jobs can claim it. A deploy or worker restart closes the pipe, the CLI rea
 exits, and the next refill builds a replacement and sweeps what the old worker left on disk.
 
 `WarmProcessPoolReplenishJob` runs every minute and after every claim. It replaces a process that
-has exited, is older than 60 minutes, booted on an account, token, CLI binary or catalog that has
-since changed, or reports a failed MCP server; then it builds up to the pool size. A build claims a
+has exited, is older than 60 minutes, booted on an account, token, CLI binary, router configuration
+or catalog that has since changed, reports a failed MCP server, or does not answer its probe; then
+it builds up to the pool size. After a failed build it waits five minutes before trying again,
+since each attempt takes a warm clone from cold router starts. Each process is probed on its own,
+so one that errors is recycled without stranding the others. A build claims a
 warm clone when there is one, runs `air prepare` for the router root's defaults, drops the servers
 `air prepare` injects per session (they have no session yet), spawns, and waits up to 60 seconds
 for every MCP server to connect.
 
 The process is not a Session row, holds no fleet slot, and never reaches `needs_input`. It sits in
 its own memory cgroup under the sessions pool until it is claimed.
+
+Each process has an entry directory under `<clones base>/.warm-processes/`, holding its state, its
+stdout and the `CLAUDE_ENV_FILE`. The refill's sweep removes an entry only once its process has
+exited. From the claim on, the entry records the session that owns its clone, and the sweep never
+touches a claimed entry's clone: it removes the entry's symlinks, memory cgroup and directory, and
+nothing else. So a worker restart between the claim and the prompt costs the session its warm
+process, never its clone.
 
 | Knob | Default | What it does |
 | --- | --- | --- |
@@ -665,7 +677,8 @@ seconds apart spawns cold.
 
 **Seeing it.** `/health` has a Warm Router Process card: whether a process is ready, its age, model
 and account, the last refill and what it recycled, and how many router starts in the last 24 hours
-claimed it, missed it, or started cold and why. `GET /api/v1/health` and `get_system_health` carry
+claimed it, missed it, or started cold and why. It turns to a warning when the worker has not
+republished its state for three minutes, since the entries it lists may then be gone. `GET /api/v1/health` and `get_system_health` carry
 the same object as `warm_process_pool_health`. It is not part of `overall_status`. The processes
 live in the worker, so the worker publishes their state to the Rails cache for the web container to
 read.

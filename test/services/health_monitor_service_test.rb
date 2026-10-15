@@ -229,6 +229,9 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     WarmProcessPool.stubs(:report).returns(warm_process_report(last_pass: { at: Time.current, built: 0, recycled: 0, error: "spawn failed" }, entries: []))
     assert_equal :warning, @service.full_health_report[:warm_process_pool_health][:status].status
 
+    WarmProcessPool.stubs(:report).returns(warm_process_report(stale: true))
+    assert_match(/has not reported/, @service.full_health_report[:warm_process_pool_health][:status].message)
+
     WarmProcessPool.stubs(:report).returns(warm_process_report(enabled: false, entries: []))
     assert_match(/^Off:/, @service.full_health_report[:warm_process_pool_health][:status].message)
 

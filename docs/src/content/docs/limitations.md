@@ -8071,6 +8071,13 @@ slows both paths. The production win is a projection from those numbers. `metada
   `mcp_set_servers`, `set_model` and `mcp_status` are what the SDK sends on stdin, not a documented
   CLI interface, and an update could change them. A refused or unanswered request falls back to a
   cold spawn, and a CLI update recycles the process.
+- **A claimed process writes its turn's stdout to disk.** The cold path sends stdout to
+  `/dev/null`. A warm process's stdout is the file the pool reads control responses from, so once it
+  is the session's turn, the turn's whole stream-json output (tool results included) lands in the
+  entry directory until the process exits and the sweep removes it.
+- **Its boot memory stays charged to its own cgroup.** Moving a process between cgroups does not move
+  memory it already charged, so about 250 MB of boot memory is counted against the warm process's
+  cgroup, not the session's bound. Both sit under the sessions pool.
 - **A non-default effort, or any artifact selection other than the root's defaults, starts cold.**
   So does a request that arrives while the account or its token has just rotated.
 

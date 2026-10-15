@@ -87,6 +87,13 @@ module WarmProcessPool
   # alone before the sweep stops it.
   ORPHAN_GRACE = 15.minutes
 
+  # How long a failed build stops the refill from trying again.
+  BUILD_BACKOFF = 5.minutes
+
+  # How old the worker's published state may be before /health calls it stale.
+  # The refill republishes every minute.
+  STALE_STATE_AFTER = 3.minutes
+
   STATE_CACHE_KEY = "warm_process_pool/state"
   OUTCOME_WINDOW = 24.hours
 
@@ -136,13 +143,16 @@ module WarmProcessPool
       entry, outcome = checkout_for(config_signature(session))
       unless entry
         record_outcome(session, outcome)
-        WarmProcessPoolReplenishJob.perform_later
+        request_refill
         return nil
       end
 
       catch_up!(entry, session.branch)
+      # From here the clone is the session's. Written before the job can store it
+      # as the session's clone, so a sweep after a worker restart never takes it.
+      write_state(entry.dir, "claimed_session_id" => session.id)
       entry.state = :claimed
-      WarmProcessPoolReplenishJob.perform_later
+      request_refill
       publish_state!
       entry
     rescue Entry::Mismatch => e
@@ -190,6 +200,7 @@ module WarmProcessPool
 
       servers = read_mcp_servers(working_directory)
       raise Entry::Mismatch, "mcp_servers_removed" if (entry.boot_servers.keys - servers.keys).any?
+      raise Entry::Mismatch, "oauth_mcp_servers" if mcp_oauth_credentials?(session)
 
       move_into_session_cgroup(entry, session)
 
@@ -210,12 +221,11 @@ module WarmProcessPool
     end
 
     # A claimed process the session will not use after all. Its clone stays
-    # with the session; everything else of the entry goes.
+    # with the session; the sweep removes the rest once the process has exited.
     def abandon!(entry, session:, reason:)
       entry.terminate!
       record_outcome(session, reason)
       forget(entry)
-      FileUtils.rm_rf(entry.dir)
     rescue StandardError => e
       logger.warn("Could not abandon a warm process cleanly", entry: entry.id, error: e.message)
     end
@@ -246,6 +256,8 @@ module WarmProcessPool
       signature = template && config_signature(template)
       catalog = template && catalog_digest(template)
 
+      # One entry at a time, so a failure on one can never strand the others
+      # outside the registry, where nothing would ever stop them.
       take_all_ready.each do |entry|
         reason = recycle_reason(entry, wanted: wanted, environment: current_env, signature: signature, catalog: catalog)
         if reason
@@ -255,16 +267,26 @@ module WarmProcessPool
         else
           give_back(entry)
         end
+      rescue StandardError => e
+        logger.warn("Could not probe a warm router process; recycling it", entry: entry.id, error: e.message)
+        discard!(entry, reason: "probe_failed")
+        result[:recycled] += 1
+        result[:recycled_reasons] << "probe_failed"
       end
 
-      [ wanted - ready_count, 0 ].max.times do
-        build!(template)
-        result[:built] += 1
+      if build_backoff?
+        result[:backoff_until] = @build_failed_at + BUILD_BACKOFF
+      else
+        [ wanted - ready_count, 0 ].max.times do
+          build!(template)
+          result[:built] += 1
+        end
       end
 
       result
     rescue StandardError => e
       logger.warn("Warm process refill failed; the next pass retries", error: "#{e.class}: #{e.message}")
+      @build_failed_at = Time.current
       result[:error] = e.message.to_s.lines.first.to_s.strip.truncate(300)
       result
     ensure
@@ -282,6 +304,12 @@ module WarmProcessPool
         explicit_lists: { mcp_servers: false, skills: false, hooks: false, plugins: false }
       )
       session
+    end
+
+    # Whether a recent build failed. A failing build would otherwise retry every
+    # minute, taking a warm clone from cold router starts each time.
+    def build_backoff?
+      @build_failed_at.present? && @build_failed_at > BUILD_BACKOFF.ago
     end
 
     def build!(template)
@@ -344,11 +372,25 @@ module WarmProcessPool
       logger.info("Booted a warm router process", entry: id, pid: entry.pid, working_directory: working_directory)
       entry
     rescue StandardError
-      # Never adopted, so everything it made goes with it, clone included.
-      entry&.terminate!
+      # Never adopted, so everything it made goes with it, clone included. A
+      # process spawned before the entry existed is stopped through its own pipe
+      # and process group, since there is no entry to do it.
+      if entry
+        entry.terminate!
+      elsif spawned
+        stop_spawned(spawned)
+      end
       @mutex.synchronize { @known_ids.delete(id) } if id
       remove_entry_files(id, dir, clone&.dig(:clone_path)) if id
       raise
+    end
+
+    def stop_spawned(spawned)
+      spawned[:stdin].close unless spawned[:stdin].closed?
+      Process.kill("TERM", -spawned[:pid])
+      Process.detach(spawned[:pid])
+    rescue StandardError
+      nil
     end
 
     # Add a booted process to the pool, ready to be claimed.
@@ -384,11 +426,16 @@ module WarmProcessPool
     # container reads the state the worker last published.
     def report
       state = Rails.cache.read(STATE_CACHE_KEY) || {}
+      now = Time.current
+      entries = Array(state[:entries]).map do |entry|
+        entry[:created_at] ? entry.merge(age_seconds: (now - entry[:created_at]).to_i) : entry
+      end
       {
         enabled: enabled?,
         size: size,
         max_age_minutes: (MAX_AGE / 1.minute).to_i,
-        entries: state[:entries] || [],
+        stale: state[:at].nil? || state[:at] < STALE_STATE_AFTER.ago,
+        entries: entries,
         last_pass: state[:pass],
         published_at: state[:at],
         outcome_window_hours: (OUTCOME_WINDOW / 1.hour).to_i,
@@ -532,7 +579,7 @@ module WarmProcessPool
       git = ->(*args) { GitCloneService.run_git_command(args, cwd: entry.clone_path, timeout: WarmClonePool::FETCH_TIMEOUT_SECONDS) }
       git.call("fetch", "--quiet", "origin", branch)
       changed = GitCloneService.run_git_command(
-        [ "diff", "--name-only", entry.head.to_s, "FETCH_HEAD" ], cwd: entry.clone_path, timeout: WarmClonePool::FETCH_TIMEOUT_SECONDS
+        [ "diff", "--name-only", "--no-renames", entry.head.to_s, "FETCH_HEAD" ], cwd: entry.clone_path, timeout: WarmClonePool::FETCH_TIMEOUT_SECONDS
       ).to_s.split("\n").map(&:strip).reject(&:empty?)
       raise Entry::Mismatch, "boot_context_changed" if boot_context_changed?(changed, entry.subdirectory)
 
@@ -573,13 +620,16 @@ module WarmProcessPool
       @mutex.synchronize { @entries.count { |entry| entry.state == :ready } }
     end
 
-    # Stop a process nobody has adopted and remove everything it made.
+    # Stop a process nobody has adopted and remove what it made. Its memory
+    # cgroup and entry directory wait for the sweep, since the process is still
+    # exiting and its cgroup cannot be removed while it holds a pid.
     def discard!(entry, reason:)
       logger.info("Recycling a warm router process", entry: entry.id, reason: reason, age_seconds: entry.age_seconds)
       entry.terminate!
       @mutex.synchronize { @entries.delete(entry) }
       forget(entry)
-      remove_entry_files(entry.id, entry.dir, entry.clone_path)
+      AtomicCloneRemoval.remove(entry.clone_path) if entry.clone_path.present? && File.exist?(entry.clone_path)
+      remove_warm_paths(entry.id)
     end
 
     def forget(entry)
@@ -588,10 +638,23 @@ module WarmProcessPool
 
     def remove_entry_files(id, dir, clone_path)
       AtomicCloneRemoval.remove(clone_path) if clone_path.present? && File.exist?(clone_path)
-      ClaudeSessionConfigDirectory.cleanup_for(id)
-      SessionScratchDirectory.cleanup_for(id)
+      remove_warm_paths(id)
       remove_cgroup(id)
       FileUtils.rm_rf(dir)
+    end
+
+    # The process's own config and scratch directories, or — once a claim moved
+    # them onto a session — the symlinks left at their old paths. A symlink is
+    # unlinked, never followed: what it points at is the session's.
+    def remove_warm_paths(id)
+      { ClaudeSessionConfigDirectory => ClaudeSessionConfigDirectory.path_for(id),
+        SessionScratchDirectory => SessionScratchDirectory.path_for(id) }.each do |owner, path|
+        if File.symlink?(path)
+          File.delete(path)
+        else
+          owner.cleanup_for(id)
+        end
+      end
     end
 
     def remove_cgroup(id)
@@ -600,8 +663,10 @@ module WarmProcessPool
     end
 
     # Entry directories no live entry of this process owns: left by a worker
-    # that has since restarted, or by an adopted process. An adopted entry keeps
-    # the symlinks its process still writes through until that process exits.
+    # that has since restarted, by a discarded or abandoned process, or by an
+    # adopted one. Nothing is removed while its process runs. A claimed or
+    # adopted entry's clone is the session's and is never touched; only its
+    # symlinks, cgroup and directory go.
     def sweep_orphans!
       return unless Dir.exist?(root_dir)
 
@@ -612,30 +677,30 @@ module WarmProcessPool
         dir = File.join(root_dir, id)
         state = read_state(dir)
         identity = state["identity"]
-        alive = identity.present? && AgentProcessLiveness.classify(identity) == :alive
+        claimed = state["claimed_session_id"].present? || state["adopted_session_id"].present?
 
-        if state["adopted_session_id"]
-          next if alive
-
-          [ ClaudeSessionConfigDirectory.path_for(id), SessionScratchDirectory.path_for(id) ].each do |link|
-            File.delete(link) if File.symlink?(link)
-          end
-          remove_cgroup(id)
-          FileUtils.rm_rf(dir)
-        elsif alive
-          # Alive and unknown here is a claim this process cannot see — a
-          # reloaded registry, or another worker's — until it is older than any
-          # process the pool would still hand out.
-          next unless orphan_expired?(state)
+        if identity.present? && AgentProcessLiveness.classify(identity) == :alive
+          # A claimed process is a session's turn (or one being stopped). An
+          # unclaimed one unknown here may be a claim this worker cannot see,
+          # until it is older than anything the pool would still hand out.
+          next if claimed || !orphan_expired?(state)
 
           Process.kill("TERM", -identity["pid"].to_i)
-          remove_entry_files(id, dir, state["clone_path"])
-        else
-          remove_entry_files(id, dir, state["clone_path"])
+          next
         end
+
+        remove_entry_files(id, dir, claimed ? nil : state["clone_path"])
       rescue StandardError => e
         logger.warn("Could not sweep a warm process directory", entry: id, error: e.message)
       end
+    end
+
+    # Bookkeeping, so it can never cost the claim it follows: the one-minute cron
+    # refills the pool anyway.
+    def request_refill
+      WarmProcessPoolReplenishJob.perform_later
+    rescue StandardError => e
+      logger.warn("Could not enqueue a warm process refill", error: e.message)
     end
 
     def orphan_expired?(state)
@@ -645,7 +710,6 @@ module WarmProcessPool
 
     def record_adopted(entry, session)
       write_state(entry.dir, "adopted_session_id" => session.id, "adopted_at" => Time.current.iso8601)
-      File.delete(entry.stdout_path) if File.exist?(entry.stdout_path)
     rescue StandardError => e
       logger.warn("Could not record a warm process adoption", entry: entry.id, error: e.message)
     end
@@ -687,6 +751,18 @@ module WarmProcessPool
       config[McpJsonConfigFormat::SERVERS_KEY] = servers
       File.write(path, JSON.pretty_generate(config))
       servers
+    end
+
+    # Whether the OAuth gate wrote MCP OAuth credentials for the session. They
+    # land in the config directory after the process booted, and a server whose
+    # config does not change at the claim is not reconnected to read them.
+    def mcp_oauth_credentials?(session)
+      path = ClaudeSessionConfigDirectory.credentials_path_for(session.id)
+      return false unless File.exist?(path)
+
+      JSON.parse(File.read(path))["mcpOAuth"].present?
+    rescue JSON::ParserError
+      true
     end
 
     def read_mcp_servers(working_directory)

@@ -217,6 +217,17 @@ class WarmProcessPoolTest < ActiveSupport::TestCase
     assert_empty received(entry)
   end
 
+  test "a session the OAuth gate wrote MCP credentials for refuses before the prompt" do
+    entry = start_entry
+    session = router_session
+    write_mcp_json(entry, {})
+    FileUtils.mkdir_p(ClaudeSessionConfigDirectory.path_for(session.id))
+    File.write(ClaudeSessionConfigDirectory.credentials_path_for(session.id), JSON.generate("mcpOAuth" => { "gmail|x" => {} }))
+
+    error = assert_raises(WarmProcessPool::Entry::Mismatch) { deliver(entry, session) }
+    assert_equal "oauth_mcp_servers", error.reason
+  end
+
   test "an account or token change since boot refuses before the prompt" do
     entry = start_entry(environment_key: "booted-on-another-account")
     write_mcp_json(entry, {})
@@ -267,17 +278,52 @@ class WarmProcessPoolTest < ActiveSupport::TestCase
     assert_equal "session_config_dir_exists", error.reason
   end
 
-  test "abandoning a claimed process stops it and leaves the clone with the session" do
+  test "abandoning a claimed process stops it, and the sweep then clears it and leaves the clone with the session" do
     entry = start_entry
     session = router_session
+    write_state(entry, "claimed_session_id" => session.id)
 
     WarmProcessPool.abandon!(entry, session: session, reason: "workspace_changed")
-
     wait_until { !entry.alive? }
+    WarmProcessPool.send(:sweep_orphans!)
+
     assert_not entry.alive?
     assert File.directory?(entry.clone_path)
     assert_not File.exist?(entry.dir)
     assert_equal "workspace_changed", session.reload.metadata["warm_process"]
+  end
+
+  test "a worker restart between the claim and the prompt never costs the session its clone" do
+    entry = WarmProcessPool.register(start_entry)
+    session = router_session
+    claimed = WarmProcessPool.claim(session)
+    assert_same entry, claimed
+    write_state(entry, "claimed_session_id" => session.id) # what claim wrote, plus the pid the test needs
+    ClaudeSessionConfigDirectory.ensure_for(entry.id)
+    SessionScratchDirectory.ensure_for(entry.id)
+    WarmProcessPool.adopt_directories!(entry, session)
+
+    # The restart: the registry is gone and the pipe closes, so the CLI exits.
+    WarmProcessPool.reset!
+    entry.terminate!
+    wait_until { !entry.alive? }
+    WarmProcessPool.send(:sweep_orphans!)
+
+    assert File.directory?(entry.clone_path), "the clone is the session's from the claim on"
+    assert File.directory?(ClaudeSessionConfigDirectory.path_for(session.id))
+    assert File.symlink?(File.join(ClaudeSessionConfigDirectory.path_for(session.id), "projects")),
+      "the session's own projects link survives the warm symlink's removal"
+    assert_not File.symlink?(ClaudeSessionConfigDirectory.path_for(entry.id))
+    assert_not File.exist?(entry.dir)
+  end
+
+  test "a reaped process is never signalled again, since its pid may be someone else's" do
+    entry = start_entry
+    entry.terminate!
+    wait_until { !entry.alive? }
+
+    Process.expects(:kill).never
+    entry.terminate!
   end
 
   test "finishing a claim that never delivered abandons it; finishing a delivered one only forgets it" do
@@ -330,6 +376,32 @@ class WarmProcessPoolTest < ActiveSupport::TestCase
     assert_equal 0, result[:recycled]
     assert_equal [ entry ], WarmProcessPool.entries
     assert_equal [ "mcp_status" ], received(entry).map { |l| l.dig("request", "subtype") }
+  end
+
+  test "a probe that raises recycles that process and leaves the others in the pool" do
+    broken = WarmProcessPool.register(start_entry)
+    healthy = WarmProcessPool.register(start_entry)
+    stub_refill_environment(healthy)
+    WarmProcessPool.stubs(:build!)
+    broken.stubs(:mcp_status).raises(Errno::ENOENT, "stdout.jsonl")
+
+    result = WarmProcessPool.replenish!
+
+    assert_equal [ "probe_failed" ], result[:recycled_reasons]
+    assert_equal [ healthy ], WarmProcessPool.entries
+  end
+
+  test "a failed build backs the refill off instead of retrying every minute" do
+    stub_refill_environment(start_entry)
+    WarmProcessPool.expects(:build!).once.raises(GitCloneService::GitError, "clone failed")
+
+    first = WarmProcessPool.replenish!
+    second = WarmProcessPool.replenish!
+
+    assert_equal "clone failed", first[:error]
+    assert second[:backoff_until].present?
+  ensure
+    WarmProcessPool.instance_variable_set(:@build_failed_at, nil)
   end
 
   test "a process whose MCP server failed is recycled" do
@@ -388,6 +460,7 @@ class WarmProcessPoolTest < ActiveSupport::TestCase
     report = WarmProcessPool.report
 
     assert report[:enabled]
+    assert_not report[:stale]
     assert_equal({ "claimed" => 2, "missed" => 1, "config_mismatch" => 1 }, report[:outcomes])
     assert_equal 1, report[:entries].size
     assert_equal "ready", report[:entries].first[:state]
