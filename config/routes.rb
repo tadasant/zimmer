@@ -242,6 +242,8 @@ Rails.application.routes.draw do
           get :search
           post :refresh_all
           post :bulk_archive
+          # A person's call, from the iOS app only: see the action.
+          post :reprioritize
         end
 
         member do
@@ -257,6 +259,8 @@ Rails.application.routes.draw do
           post :start_now
           post :force_start
           patch :reorder_precedence
+          # A person's sign-off, from the iOS app only: see the action.
+          post :authorize_merge
           post :fork
           post :regenerate_status_summary
           post :refresh
