@@ -102,6 +102,8 @@ final class TranscriptParityUITests: XCTestCase {
         for marks in ["](", "**", "`"] {
             XCTAssertFalse(paragraph.label.contains(marks), "no \"\(marks)\" left as typed: \(paragraph.label)")
         }
+        // The page opens at the newest message; the summary is at the top.
+        scrollUntilHittable(app, paragraph)
         attachScreenshot(app, named: "status-summary")
         paragraph.press(forDuration: 1.5)
         XCTAssertTrue(app.buttons["Open Link"].firstMatch.waitForExistence(timeout: timeout), "the menu opens the link")
