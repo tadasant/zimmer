@@ -121,11 +121,19 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   show are not on the phone, because the API carries neither: a Slack message's *view in Slack*
   link, and which plugin brought an MCP server. The
   conversation follows, newest last, each message with its age, rendered the way the web renders
-  it as far as a phone's text goes: inline markdown (emphasis, code spans, links) and fenced code
-  in the monospaced face, scrolling sideways rather than wrapping, with a *Copy* button in the
-  block's corner that puts the code on the clipboard, as the web's code blocks have; list markers
-  and headings stay as typed, where the web draws them as structure, and the code is one colour
-  where the web colours it by language. The web UI's log-level filter is a menu on it: *Minimal* (the words alone, the
+  it: headings, paragraphs, lists that nest, quotes, tables and rules drawn as blocks, with
+  emphasis, code spans and links inside them, and bare URLs made links as the web's autolink
+  makes them. A link opens on a tap. A long press on a paragraph or list item that holds
+  links opens a menu with *Open Link*, *Copy Link* and *Share…* for each of them, and *Copy Text*,
+  so a long signed URL in an agent's message can be pasted elsewhere; a paragraph with links is
+  copied through that menu rather than selected. A link in a heading or a table cell opens on a
+  tap and has no menu. Two places the app reads markdown more leniently than the web's Redcarpet: `#1293` at
+  the start of a line stays text rather than becoming a heading, and a table or list may follow
+  a paragraph's line without a blank line between. Fenced code is in the monospaced face, scrolling sideways rather than wrapping,
+  with a *Copy* button in the block's corner that puts the code on the clipboard, as the web's
+  code blocks have; the code is one colour where the web colours it by language. A table's
+  widest columns wrap to fit the phone, and a table with too many columns to fit even so scrolls
+  sideways in its box, as the web's does. The web UI's log-level filter is a menu on it: *Minimal* (the words alone, the
   default on a phone), *Condensed* (each tool call as one line naming the tool and what it was
   given) and *Verbose* (the tool traffic whole, rendered the same way); the web's *Show Logs* is
   the logs screen in the menu. The page reads the newest hundred messages, each whole up to

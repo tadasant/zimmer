@@ -1,9 +1,10 @@
 import UIKit
 import XCTest
 
-/// Slice G, against the `-ZimmerFixture` in-memory Zimmer: a code block's Copy button, the
-/// composer's "/" typeahead of the session's skills, and the scheduling class and precedence
-/// the web page's desktop metadata block edits.
+/// Slice G, against the `-ZimmerFixture` in-memory Zimmer: a code block's Copy button, block
+/// markdown drawn as structure, a link's long-press menu, the composer's "/" typeahead of the
+/// session's skills, and the scheduling class and precedence the web page's desktop metadata
+/// block edits.
 @MainActor
 final class TranscriptParityUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -37,6 +38,55 @@ final class TranscriptParityUITests: XCTestCase {
         paste.tap()
         let pasted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "bin/rails db:upgrade -- --target 16"), object: field)
         XCTAssertEqual(XCTWaiter().wait(for: [pasted], timeout: timeout), .completed, "the pasteboard holds the block's code, without its fences")
+    }
+
+    /// The fresh-eyes review (1048) is every kind of block. Its heading, list, table and quote
+    /// are drawn as structure, not as the characters that mark them.
+    func test_block_markdown_is_drawn_as_structure() throws {
+        let app = launch(["-ZimmerFixtureOpenSession", "1048"])
+        XCTAssertTrue(app.descendants(matching: .any)["detail.message.1"].waitForExistence(timeout: timeout))
+        for block in ["markdown.heading", "markdown.list", "markdown.table", "markdown.quote"] {
+            XCTAssertTrue(app.descendants(matching: .any)[block].firstMatch.exists, "\(block) is drawn")
+        }
+        XCTAssertTrue(app.staticTexts["Review of #1293"].exists, "a heading reads without its #s")
+        XCTAssertTrue(app.staticTexts["UI tests"].exists, "a table cell is its own text")
+        for marks in ["## ", "| ---", "> Fix"] {
+            XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", marks)).count, 0, "no \"\(marks)\" left as typed")
+        }
+        attachScreenshot(app, named: "block-markdown")
+    }
+
+    /// A link in an agent's words — here a bare signed URL, the kind a person wants to paste
+    /// somewhere else — offers Copy Link on a long press, and what it copies pastes whole.
+    func test_a_link_offers_copy_link_on_a_long_press() throws {
+        UIPasteboard.general.string = ""
+        let url = "https://files.example.com/pr-1293/composer.png?X-Amz-Signature=4f2c9a"
+        let app = launch(["-ZimmerFixtureOpenSession", "1048"])
+        let paragraph = app.descendants(matching: .any)["markdown.links"].firstMatch
+        XCTAssertTrue(paragraph.waitForExistence(timeout: timeout), "a paragraph with links carries the link menu")
+        XCTAssertTrue(paragraph.label.contains(url), "a bare URL is kept whole")
+        scrollUntilHittable(app, paragraph)
+        paragraph.press(forDuration: 1.5)
+        XCTAssertTrue(app.buttons["Open Link"].firstMatch.waitForExistence(timeout: timeout), "the menu opens the link")
+        XCTAssertTrue(app.buttons["Share…"].firstMatch.exists, "and shares it")
+        let copy = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Copy Link")).firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: timeout), "the long press offers Copy Link")
+        attachScreenshot(app, named: "copy-link")
+        copy.tap()
+
+        // 1048 is archived, so it has no composer: the copy is pasted into 1035's. The
+        // simulator's pasteboard outlives the launch.
+        app.terminate()
+        let other = launch(["-ZimmerFixtureOpenSession", "1035"])
+        let field = other.descendants(matching: .any)["followup.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: timeout))
+        field.tap()
+        field.press(forDuration: 1.2)
+        let paste = pasteCommand(other)
+        XCTAssertTrue(paste.waitForExistence(timeout: timeout), "the edit menu offers Paste")
+        paste.tap()
+        let pasted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", url), object: field)
+        XCTAssertEqual(XCTWaiter().wait(for: [pasted], timeout: timeout), .completed, "the pasteboard holds the whole URL")
     }
 
     /// 1035 carries three catalog skills; two are a person's to invoke. "/" lists those two,
@@ -159,9 +209,14 @@ final class TranscriptParityUITests: XCTestCase {
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let shot = app.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+        // Beside the result bundle too, where a pull request can take it from the artifact.
+        if let directory = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"], !directory.isEmpty {
+            try? shot.pngRepresentation.write(to: URL(fileURLWithPath: directory).appendingPathComponent("test-\(name).png"))
+        }
     }
 }
