@@ -31,6 +31,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "an API key reads but cannot start, steer or speak for a conversation; nor can a relay-only sign-in" do
+    stub_clock_server
     conversation = create_live_conversation(mode: "voice")
     get "/api/v1/live_conversations/#{conversation.id}", headers: @key_headers
     assert_response :success
@@ -51,6 +52,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
 
       post path, params: params, headers: relay_only
       assert_response :forbidden, "#{path} with a relay-only sign-in"
+      assert_match(/may not act as you/, response.parsed_body["message"])
     end
     assert_equal [ "zimmer" ], conversation.reload.mcp_servers, "nothing was enabled"
     assert conversation.active?

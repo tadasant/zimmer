@@ -211,7 +211,7 @@ Rails.application.routes.draw do
       # page. Write-only by shape — one action, one response — and opened by an
       # ApiKey with the `quick_router` grant, which nothing else here accepts.
       post "quick_router", to: "quick_router#create"
-      # Live Mode and Live Voice, for the iOS app and any API client. The same
+      # Live Mode and Live Voice, for the iOS app; an API key may only read. The same
       # verbs as the web routes; see Api::V1::LiveConversationsController.
       get "live", to: "live_conversations#modes"
       resources :live_conversations, only: [ :index, :show, :create ] do
