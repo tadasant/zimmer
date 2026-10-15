@@ -104,9 +104,14 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   tap away), the **goal** (a catalog goal by its name from `GET /api/v1/configs`, whether the
   session stores its id or its words, with its words under it; your own words as they are, where
   the web page says "Custom" and keeps the words for a hover), the notes (two lines each until
-  tapped), the **MCP servers** (a chip per server the session has wired, `all_mcp_servers`, green,
-  red or grey for connected, failed or pending from `custom_metadata.mcp_servers_status`, the
-  injected ones dashed; a failed server's error is a tap away, and *Edit* opens the checklist),
+  tapped), the **MCP servers** (always there, as the web page's line is: a chip per server the
+  session has wired, `all_mcp_servers`, green, red or grey for connected, failed or pending from
+  `custom_metadata.mcp_servers_status`, the injected ones dashed and one a plugin brought, in
+  `all_mcp_servers` but neither chosen nor injected, in italics as the plugin's; a failed
+  server's error is a tap away; with none, the agent root's defaults marked *agent root default*,
+  or *None*; *Edit*, or *Add* when there are none, opens the checklist), the **skills, hooks and
+  plugins** (a line each, the same way: the chosen ids, or the root's defaults, or *None*, and
+  *Edit* or *Add*),
   the **hierarchy** (who spawned it and what it spawned, each a tap away; folded when wider than
   four sessions; the closed row names the origin, and each row its agent root, its genesis and
   class, "this session", "origin", and "drawn under #id" where the session above did not spawn
@@ -119,7 +124,8 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   *Edit*) is the web page's goal picker: the catalog's goals by name with their words, stored as
   their words as the web picker stores them, your own words, or none. Two things the web panels
   show are not on the phone, because the API carries neither: a Slack message's *view in Slack*
-  link, and which plugin brought an MCP server. The
+  link, and *which* plugin brought an MCP server (the app marks the server as a plugin's without
+  naming it). The
   conversation follows, newest last, each message with its age, rendered the way the web renders
   it as far as a phone's text goes: inline markdown (emphasis, code spans, links) and fenced code
   in the monospaced face, scrolling sideways rather than wrapping, with a *Copy* button in the
@@ -167,8 +173,12 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   Quick Router, Edit Notes, Show Logs, Subagents, View PR, Snooze until… / Hide / Put back on the board, Refresh
   Transcript, Copy Transcript (the whole transcript as text), Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
   edit: Rename, Modify Goal (the catalog's goals by name, or your own words), Effort (the levels the session's model accepts, or the model
-  default), Model (the models the session's runtime lists), MCP Servers, Skills, Hooks and Plugins
-  (each a checklist of its catalog, from the next turn), the web page's *Scheduling class* select
+  default), Model (the models the session's runtime lists), Modify MCP Servers, Modify Skills,
+  Modify Hooks and Modify Plugins, an item each with its count (each a checklist of the whole
+  catalog, searchable by name and description, an unavailable MCP server listed last with its
+  reason, a chosen id the catalog no longer lists kept so it can be unticked; saving replaces the
+  session's list, as the web's does, from the next turn; a server that needs OAuth is named with
+  a link to the session's web page, where it is authorized), the web page's *Scheduling class* select
   (*Derive it*, which clears the class chosen for the session so its genesis decides again and
   names the class that gives; *Priority*; *Spot*; each sent as the web select sends it, the class
   alone with the precedence left as it is, `PATCH /api/v1/sessions/:id` with `scheduling_class`,

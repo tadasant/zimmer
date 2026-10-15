@@ -269,8 +269,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
         ])))
     }
 
-    /// The MCP servers the web UI draws a connection chip for: 1038's chosen server and the
-    /// injected self-session server, both connected; 1044's three, one of them failed with
+    /// The MCP servers the web UI draws a connection chip for: 1038's chosen server, the one
+    /// its plugin brings and the injected self-session server, all connected; 1044's three, one of them failed with
     /// the poller's error and the injected one not reached yet. And 1035's skills, which its
     /// composer's "/" offers.
     private static func wired(_ sessions: [SessionSummary]) -> [SessionSummary] {
@@ -280,11 +280,14 @@ public actor FakeZimmerAPI: ZimmerAPI {
             case 1035:
                 session.catalogSkills = ["open-pr", "wait-for-ci", "zimmer-qa-mobile-screens"]
             case 1038:
+                // Its plugin brings a server of its own, which the editor cannot remove.
                 session.mcpServers = ["playwright-custom"]
-                session.allMcpServers = ["playwright-custom", "zimmer-self-session"]
+                session.catalogPlugins = ["screenshots-videos"]
+                session.allMcpServers = ["playwright-custom", "remote-fs-screenshots", "zimmer-self-session"]
                 session.injectedMcpServers = ["zimmer-self-session"]
                 session.customMetadata = SessionCustomMetadata(pullRequests: session.pullRequests, mcpServerStatuses: [
                     "playwright-custom": McpServerStatus(status: "connected"),
+                    "remote-fs-screenshots": McpServerStatus(status: "connected"),
                     "zimmer-self-session": McpServerStatus(status: "connected"),
                 ])
             case 1044:
@@ -985,9 +988,11 @@ extension SessionSummary {
     public mutating func setSelection(_ kind: CatalogKind, _ values: [String]) {
         switch kind {
         case .mcpServers:
+            // The effective set follows the choice, with the injected ones and the ones a
+            // plugin brings kept, as the server's.
+            let kept = mcpConnections.filter { $0.injected || $0.fromPlugin }.map(\.name).filter { !values.contains($0) }
             mcpServers = values
-            // The effective set follows the choice, with the injected ones kept, as the server's.
-            if allMcpServers != nil { allMcpServers = values + (injectedMcpServers ?? []).filter { !values.contains($0) } }
+            if allMcpServers != nil { allMcpServers = values + kept }
         case .skills: catalogSkills = values
         case .hooks: catalogHooks = values
         case .plugins: catalogPlugins = values
