@@ -1253,9 +1253,10 @@ than refused, as the page drops it.
 
 The `PATCH` body is `{app_settings: {default_runtime, default_model, experimental: {"<key>": bool},
 mcp_apps_enabled, mcp_apps_allowed_servers: [names]}}`, every key optional. An empty
-`default_runtime` or `default_model` clears that override. A runtime + model pair the catalog does
-not allow is a 422 (`error: "Settings not saved"`), as is an experimental key the registry does not
-list (`error: "Unknown experimental setting"`); nothing changes on either.
+`default_runtime` or `default_model` clears that override; a `null` leaves it alone. A runtime +
+model pair the catalog does not allow is a 422 (`error: "Settings not saved"`), as is an
+`experimental` that is not an object, or an experimental key the registry does not list
+(`error: "Unknown experimental setting"`); nothing changes on any of them.
 
 `mcp_apps_enabled` and `mcp_apps_allowed_servers` are a person's to change, as on the page: the
 iOS app's token on a grant that acts as you. An API key, or a relay-only grant, gets a 403 before
