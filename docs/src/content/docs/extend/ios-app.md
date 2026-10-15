@@ -284,10 +284,17 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   sessions it made most recently. *Run Now* is the web page's panel: a template that names
   `{{variables}}` opens a sheet with a field for each, optional, and the run carries what you
   typed (`variables` on `POST /api/v1/triggers/:id/invoke`); a template without any asks for a
-  confirmation. *Enqueue messages* and *Resuscitate archived* are shown, not switched: the API
-  that would switch them is the trigger update, which the app's token does not open. Creating
-  and editing a trigger, and those two switches, stay in the browser; *Open in browser* on a
-  trigger's page gets you there. *More* holds *Costs* and *Health*, read-only. *Costs* is the
+  confirmation. The plus on the list and *Edit* on a trigger's page open the web form as a
+  sheet (`POST /api/v1/triggers`, `PATCH /api/v1/triggers/:id`): the name, the conditions —
+  each card's fields by its type, with the Slack channel and WhatsApp chat pickers fed by
+  `GET /api/v1/triggers/channels` and `/whatsapp_chats` and a typed id when they cannot be —
+  the agent root, the four catalog lists, the goal, session re-use, scheduling class,
+  precedence, the burst cap, the coalescing window, skip while pending and the prompt
+  template, in the web form's order and words. A refusal (422) is listed at the top of the
+  form in the server's words, as the web form lists it, with nothing saved. *Delete* on the
+  page asks the web page's question first (`DELETE /api/v1/triggers/:id`). *Enqueue messages*
+  and *Resuscitate archived* are shown, not switched: they stay on the trigger's web page
+  (#1318), which *Open in browser* gets you to. *More* holds *Costs* and *Health*, read-only. *Costs* is the
   web page, section for section, from the whole of `GET /api/v1/costs`: the ledger's coverage
   (backfilled, running with its progress, queued, or not yet, and what the ledger covers since),
   the total with the tokens, API calls and ad hoc share beside it, the unpriced-models warning,
@@ -333,9 +340,12 @@ of them widened what the phone can do on the server.
 button: taking a photo cannot be exercised in the simulator, so it waits on a change verified on
 a device. Fork from a message and answering an
 elicitation stay in the browser until the app draws them; the API they need is in place. Switching a trigger's *Enqueue messages* and
-*Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update), and
+*Resuscitate archived* (#1318), and
 saying whether re-arming a failed trigger fires it again (the trigger JSON does not say whether a
-one-time wake was already spent; the web page does) come in their own change. So does the rest of the web card's refresh: on the
+one-time wake was already spent; the web page does) come in their own change. The trigger
+form's schedule *Time* is typed as `HH:MM` rather than picked, and a one-time schedule's date
+and time are read in the phone's clock, then interpreted in the zone the form names, as the
+web's `datetime-local` field is. So does the rest of the web card's refresh: on the
 web it also resumes a failed session and sends the continue nudge to a stalled waiting one, but
 `POST /api/v1/sessions/:id/refresh` only re-reads the transcript, so the row's refresh is
 *Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
