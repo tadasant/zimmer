@@ -1327,6 +1327,7 @@ extension FakeZimmerAPI {
         if let enabled = change.mcpAppsEnabled { next.mcpApps.enabled = enabled }
         if let names = change.mcpAppsAllowedServers {
             let eligible = Set(appSettingsRow.mcpApps.eligibleServers.map(\.name))
+            // Sorted as McpApps::Policy.sanitize_allowlist stores it: the server's order, not the catalog's.
             next.mcpApps.allowedServers = Array(Set(names.filter(eligible.contains))).sorted()
         }
         appSettingsRow = next

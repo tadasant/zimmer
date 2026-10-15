@@ -290,7 +290,7 @@ if [ -d "$app" ]; then
   shoot inbox -ZimmerFixture -ZimmerFixtureTab inbox
   shoot triggers -ZimmerFixture -ZimmerFixtureTab triggers
   shoot more -ZimmerFixture -ZimmerFixtureTab more
-  shoot settings -ZimmerFixture -ZimmerFixtureSettings
+  shoot settings -ZimmerFixture -ZimmerFixtureSettings defaults
   shoot settings-experimental -ZimmerFixture -ZimmerFixtureSettings experimental
   shoot trigger-detail -ZimmerFixture -ZimmerFixtureTrigger 5
   shoot costs -ZimmerFixture -ZimmerFixtureCosts
