@@ -120,3 +120,21 @@ final class SlowTransport: HTTPTransport, @unchecked Sendable {
 
     var requestCount: Int { lock.withLock { count } }
 }
+
+/// A token store whose reads can fail, as a Keychain read does before the phone's first
+/// unlock: the item is there, the read returns nothing.
+final class FlakyTokenStore: TokenStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: StoredSignIn?
+    private var failing = false
+
+    init(_ value: StoredSignIn?) { self.value = value }
+
+    var failReads: Bool {
+        get { lock.withLock { failing } }
+        set { lock.withLock { failing = newValue } }
+    }
+
+    func load() -> StoredSignIn? { lock.withLock { failing ? nil : value } }
+    func save(_ signIn: StoredSignIn?) { lock.withLock { value = signIn } }
+}

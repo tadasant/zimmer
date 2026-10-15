@@ -186,6 +186,11 @@ export ZIMMER_UI_TEST_EXPECT_ENV="$expect_env"
 export ZIMMER_UI_TEST_EXPECT_HOST="$expect_host"
 export TEST_RUNNER_ZIMMER_UI_TEST_EXPECT_ENV="$expect_env"
 export TEST_RUNNER_ZIMMER_UI_TEST_EXPECT_HOST="$expect_host"
+# Where a test's own screenshots are written as PNGs (`test-<name>.png`), beside the
+# `simctl` ones, so a moment only a test can reach — a menu open on a long press — is in the
+# artifact too, not only inside the result bundle.
+export ZIMMER_UI_TEST_ARTIFACTS="$artifacts"
+export TEST_RUNNER_ZIMMER_UI_TEST_ARTIFACTS="$artifacts"
 
 xcrun simctl io "$udid" recordVideo --codec h264 --force "$artifacts/run.mp4" &
 recorder=$!
@@ -245,6 +250,17 @@ if [ -d "$app" ]; then
   # failed one with its failure details: what the page has to stay legible on.
   shoot session-detail-long -ZimmerFixture -ZimmerFixtureOpenSession 1044
   shoot session-detail-failed -ZimmerFixture -ZimmerFixtureOpenSession 1027
+  # The details card, opened: the goal by its catalog name, its check, the MCP servers' chips
+  # (one failed), the hierarchy's origin, genesis and a row drawn under a senior, and the human
+  # messages here and elsewhere under a Slack capture gap. Then a router judged on the PRs of
+  # the session it spawned, and a goal in your own words.
+  shoot session-detail-panels -ZimmerFixture -ZimmerFixtureOpenSession 1044 -ZimmerFixtureOpenPanels
+  shoot session-detail-delegated -ZimmerFixture -ZimmerFixtureOpenSession 1040 -ZimmerFixtureOpenPanels
+  shoot session-detail-free-goal -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureOpenPanels
+  # A session's MCP servers, skills, hooks and plugins on its page, each with Edit or Add: one
+  # brought by a plugin, read-only; then the MCP checklist that Add or Edit opens.
+  shoot session-detail-artifacts -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureOpenPanels
+  shoot catalog-mcp -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCatalog mcpServers
   # Why a session is waiting: the spot gate's hold with "Make this session priority", a turn
   # queued for a worker with Force, and a renewed MCP grant beside a message never delivered.
   shoot session-detail-waiting -ZimmerFixture -ZimmerFixtureOpenSession 1031
@@ -253,6 +269,11 @@ if [ -d "$app" ]; then
   shoot composer-attachment -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   # A snooze to a time of your own, and when a trashed session is deleted, on its row and page.
   shoot session-detail-custom-snooze -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCustomSnooze
+  # A code block with its Copy button, and the composer's "/" offering the session's skills.
+  shoot session-detail-code -ZimmerFixture -ZimmerFixtureOpenSession 1035
+  shoot composer-slash -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureSlash
+  # Block markdown in a transcript: headings, a code block, a nested list, a table, a quote.
+  shoot session-detail-markdown -ZimmerFixture -ZimmerFixtureOpenSession 1048
   shoot sessions-trash -ZimmerFixture -ZimmerFixtureFilter archived
   shoot session-detail-trashed -ZimmerFixture -ZimmerFixtureOpenSession 1019
   shoot session-prompt -ZimmerFixture -ZimmerFixtureOpenSession 1035
@@ -277,9 +298,15 @@ if [ -d "$app" ]; then
   shoot sessions-ranked-dark -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView ranked
   shoot session-detail-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038
   shoot session-detail-long-dark -ZimmerFixture -ZimmerFixtureOpenSession 1044
+  shoot session-detail-panels-dark -ZimmerFixture -ZimmerFixtureOpenSession 1044 -ZimmerFixtureOpenPanels
+  shoot session-detail-artifacts-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureOpenPanels
+  shoot catalog-mcp-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCatalog mcpServers
   shoot session-detail-waiting-dark -ZimmerFixture -ZimmerFixtureOpenSession 1031
   shoot composer-attachment-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   shoot session-detail-custom-snooze-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCustomSnooze
+  shoot session-detail-code-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035
+  shoot composer-slash-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureSlash
+  shoot session-detail-markdown-dark -ZimmerFixture -ZimmerFixtureOpenSession 1048
   shoot new-session-dark -ZimmerFixture -ZimmerFixtureNewSession
   shoot inbox-dark -ZimmerFixture -ZimmerFixtureTab inbox
   shoot triggers-dark -ZimmerFixture -ZimmerFixtureTab triggers

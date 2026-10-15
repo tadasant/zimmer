@@ -1310,19 +1310,35 @@ class AgentSessionJob < ApplicationJob
               "[DIAGNOSTIC] Calling GitCloneService.create_clone with git_root=#{session.git_root}, branch=#{session.branch}",
               level: "debug"
             )
-            # A session whose repository and branch the warm pool serves (the
-            # router's under the `router` scope, every recently active root's
-            # under `active` — WarmPoolPolicy) takes a ready-made clone when there
-            # is one: the clone is most of a cold start, and nothing in it depends
-            # on the request.
-            warm_eligible = WarmClonePool.serves?(session)
-            clone_result = GitCloneService.create_clone(
-              session.git_root,
-              branch: session.branch,
-              subdirectory: session.subdirectory,
-              fallback_subdirectory: session.catalog_subdirectory,
-              warm: warm_eligible
-            )
+            # A router session takes a booted warm process when one is ready
+            # (WarmProcessPool), and with it the clone that process runs in; the
+            # prompt is handed to it where a cold start would spawn.
+            #
+            # Otherwise, a session whose repository and branch the warm pool
+            # serves (the router's under the `router` scope, every recently active
+            # root's under `active` — WarmPoolPolicy) takes a ready-made clone when
+            # there is one: the clone is most of a cold start, and nothing in it
+            # depends on the request.
+            @warm_process = WarmProcessPool.claim(session) unless clone_only
+            if @warm_process
+              warm_eligible = false
+              clone_result = {
+                clone_path: @warm_process.clone_path,
+                working_directory: @warm_process.working_directory,
+                subdirectory: @warm_process.subdirectory,
+                warm: false
+              }
+              log_buffer.add("Claimed a warm router process (PID #{@warm_process.pid}) and its clone", level: "info")
+            else
+              warm_eligible = WarmClonePool.serves?(session)
+              clone_result = GitCloneService.create_clone(
+                session.git_root,
+                branch: session.branch,
+                subdirectory: session.subdirectory,
+                fallback_subdirectory: session.catalog_subdirectory,
+                warm: warm_eligible
+              )
+            end
             clone_path = clone_result[:clone_path]
             working_directory = clone_result[:working_directory]
 
@@ -1434,13 +1450,15 @@ class AgentSessionJob < ApplicationJob
             end
           end
 
-          # Generate and store session_id for new sessions
-          session_id_uuid = SecureRandom.uuid
+          # Generate and store session_id for new sessions. A warm process was
+          # booted with its id already assigned, so the session takes that one.
+          session_id_uuid = @warm_process&.claude_session_id || SecureRandom.uuid
           session.update!(session_id: session_id_uuid)
           log_buffer.add(
             "Generated session_id: #{session_id_uuid}",
             level: "info"
           )
+          adopt_warm_process_directories(session, log_buffer) if @warm_process
 
           # Store clone paths in session metadata
           # clone_path: base clone directory (e.g., ~/.zimmer/clones/agents-main-123-abc)
@@ -1830,9 +1848,24 @@ class AgentSessionJob < ApplicationJob
           return
         end
 
+        # A claimed warm process takes the prompt instead of a new process being
+        # spawned; any refusal there falls through to the ordinary spawn below.
+        if @warm_process
+          spawn_result = deliver_to_warm_process(
+            session,
+            lifecycle_manager,
+            working_directory: working_directory,
+            prompt: prompt_with_goal,
+            images: images,
+            append_system_prompt: orchestrator_system_prompt,
+            resume: is_resume,
+            log_buffer: log_buffer
+          )
+        end
+
         # Use ProcessLifecycleManager to spawn the process
         # Images are passed for follow-up prompts with attachments
-        spawn_result = lifecycle_manager.spawn(
+        spawn_result ||= lifecycle_manager.spawn(
           prompt: prompt_with_goal,
           working_dir: working_directory,
           mcp_config_path: mcp_config_path,
@@ -2647,6 +2680,10 @@ class AgentSessionJob < ApplicationJob
       end
       raise e
     ensure
+      # A warm process claimed for this turn and never handed its prompt — an
+      # early return, a raise — is stopped rather than left idle in the clone.
+      WarmProcessPool.finish!(@warm_process, session: session) if @warm_process
+
       # Flush any remaining logs first
       log_buffer.flush if log_buffer&.any?
       # Stop log streaming thread
@@ -2820,6 +2857,74 @@ class AgentSessionJob < ApplicationJob
     WarmClonePoolReplenishJob.perform_later
   rescue StandardError => e
     log_buffer.add("Could not record the warm clone outcome: #{e.class}: #{e.message}", level: "warning")
+  end
+
+  # Move the claimed warm process's config and scratch directories onto this
+  # session's ids. A refusal gives the process up; the clone stays the session's.
+  def adopt_warm_process_directories(session, log_buffer)
+    WarmProcessPool.adopt_directories!(@warm_process, session)
+  rescue StandardError => e
+    give_up_warm_process(session, e, log_buffer)
+  end
+
+  # Hand the session's first prompt to the claimed warm process and start
+  # monitoring it. Returns nil, after stopping the process, whenever it cannot
+  # take the turn, so the caller spawns as it would have without the pool.
+  #
+  # @return [ProcessLifecycleManager::SpawnResult, nil]
+  def deliver_to_warm_process(session, lifecycle_manager, working_directory:, prompt:, images:, append_system_prompt:, resume:, log_buffer:)
+    entry = @warm_process
+    raise WarmProcessPool::Entry::Mismatch, "resume" if resume
+
+    # The guard ProcessLifecycleManager#spawn runs, here because once the prompt is
+    # written the process is this session's turn and cannot be refused.
+    AgentProcessLiveness.ensure_no_live_process!(session, process_manager: @process_manager, log_buffer: log_buffer)
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    WarmProcessPool.deliver!(
+      entry,
+      session: session,
+      working_directory: working_directory,
+      append_system_prompt: append_system_prompt,
+      message_json: ClaudeCliAdapter.new.stream_json_message(prompt: prompt, images: images)
+    )
+    elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
+    @warm_process = nil
+    begin
+      WarmProcessPool.finish!(entry, session: session)
+      WarmProcessPoolReplenishJob.perform_later
+    rescue StandardError => e
+      log_buffer.add("Could not refill the warm process pool: #{e.class}: #{e.message}", level: "warning")
+    end
+
+    log_buffer.add(
+      "Handed the prompt to warm router process #{entry.pid} in #{elapsed_ms}ms " \
+      "(#{entry.timings.map { |subtype, ms| "#{subtype} #{ms}ms" }.join(', ')}; booted #{entry.age_seconds}s ago); " \
+      "no new process was spawned",
+      level: "info"
+    )
+    lifecycle_manager.adopt(
+      pid: entry.pid,
+      stderr_log_path: entry.stderr_log_path,
+      append_system_prompt: append_system_prompt,
+      model: session.config&.dig("model"),
+      effort: session.effort_override
+    )
+  rescue StandardError => e
+    raise if entry&.delivered?
+
+    give_up_warm_process(session, e, log_buffer)
+    nil
+  end
+
+  def give_up_warm_process(session, error, log_buffer)
+    reason = error.respond_to?(:reason) ? error.reason : "claim_error"
+    log_buffer.add(
+      "The warm router process could not take this session (#{reason}: #{error.message}); starting cold",
+      level: "info"
+    )
+    WarmProcessPool.abandon!(@warm_process, session: session, reason: reason) if @warm_process
+    @warm_process = nil
   end
 
   # Attempt to recover from a transient git clone failure during session startup

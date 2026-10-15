@@ -8,9 +8,9 @@ import ZimmerKit
 /// Three ways in, as the web UI has: the field pinned to the foot of the board
 /// (`QuickRouterBar`, the web's "What do you want to do?" box), a button in the corner of
 /// every other screen (`QuickRouterButton`, the web's bubble), and this sheet, which the
-/// button opens. The sheet is the web bubble's panel: the words, photos and files, and under
-/// *Advanced* the harness, the model and *Run as spot*. Opened from a session, the new one
-/// threads under it.
+/// button and the bar's sparkles open. The sheet is the web bubble's panel: the words, photos
+/// and files, and under *Advanced* the harness, the model and *Run as spot*. Opened from a
+/// session, the new one threads under it.
 struct QuickRouterView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -26,6 +26,12 @@ struct QuickRouterView: View {
     @State private var spot = false
     @State private var showingAdvanced = false
     @State private var threadUnderParent = true
+    /// The board's bar opened this sheet: the words go back to the bar when it closes, emptied
+    /// by a start. Held here, not read off `AppModel`, so another opening cannot change it.
+    @State private var openedFromBar = false
+    /// A start succeeded. The sheet's `onDisappear` can run before or after `start()` returns,
+    /// so this, not `isStarting` alone, is what keeps it from handing the words back.
+    @State private var started = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -72,7 +78,9 @@ struct QuickRouterView: View {
             .navigationTitle("Quick Router")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                // Not while a start is in flight: the session it starts would open with the words
+                // it started from still in the bar.
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(isStarting) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(isStarting ? "Starting…" : "Start") { Task { await start() } }
                         .disabled(isStarting || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -81,13 +89,22 @@ struct QuickRouterView: View {
             }
             .onAppear {
                 // Words typed in the board's bar come along when it opens the sheet.
-                if prompt.isEmpty, !app.quickRouterDraft.isEmpty { prompt = app.quickRouterDraft }
-                app.quickRouterDraft = ""
+                if let draft = app.quickRouterDraft {
+                    openedFromBar = true
+                    if prompt.isEmpty { prompt = draft }
+                    app.quickRouterDraft = nil
+                }
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("-ZimmerFixtureQuickRouterAdvanced") { showingAdvanced = true }
                 #endif
                 focused = true
             }
+            .onDisappear {
+                // Closed without starting: the bar gets the words as the sheet left them. After a
+                // start, `start()` empties the bar instead.
+                if openedFromBar, !isStarting, !started { app.quickRouterBarHandback = prompt }
+            }
+            .interactiveDismissDisabled(isStarting)
             .task { configs = try? await app.api.configs() }
         }
     }
@@ -193,7 +210,11 @@ struct QuickRouterView: View {
             parentSessionID: threadUnderParent ? app.quickRouterParent : nil,
             attachments: attachments
         )
-        _ = await app.startQuickRouter(request)
+        // Read before the await: a start closes the sheet before it returns.
+        let fromBar = openedFromBar
+        guard await app.startQuickRouter(request) else { return }
+        started = true
+        if fromBar { app.quickRouterBarHandback = "" }
     }
 }
 
@@ -221,15 +242,14 @@ struct QuickRouterBar: View {
         HStack(alignment: .bottom, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
                 Button {
-                    app.quickRouterParent = nil
-                    app.quickRouterDraft = prompt
-                    app.showingQuickRouter = true
+                    app.openQuickRouter(draft: prompt)
                 } label: {
                     Image(systemName: "sparkles")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Theme.accent)
                         .padding(.top, 2)
                 }
+                .disabled(isStarting)
                 .accessibilityLabel("More options")
                 .accessibilityIdentifier("quickrouter.bar.more")
                 TextField("What do you want to do?", text: $prompt, axis: .vertical)
@@ -272,6 +292,17 @@ struct QuickRouterBar: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("quickrouter.bar")
+        // The sheet this bar opened has closed: nothing after a start, so the words typed
+        // before the sheet opened do not outlive the session they started; the sheet's words
+        // after a Cancel. Read on appear too, for a hand-back made while the bar stood aside.
+        .onChange(of: app.quickRouterBarHandback) { _, _ in takeHandback() }
+        .onAppear { takeHandback() }
+    }
+
+    private func takeHandback() {
+        guard let words = app.quickRouterBarHandback else { return }
+        prompt = words
+        app.quickRouterBarHandback = nil
     }
 
     private var canSend: Bool {
@@ -298,8 +329,7 @@ struct QuickRouterButton: View {
 
     var body: some View {
         Button {
-            app.quickRouterParent = parent
-            app.showingQuickRouter = true
+            app.openQuickRouter(parent: parent)
         } label: {
             Image(systemName: "sparkles")
                 .font(.system(size: 21, weight: .semibold))

@@ -86,7 +86,7 @@ final class SessionParityTests: XCTestCase {
         XCTAssertEqual(queries[0], ["status": "needs_input", "per_page": "100", "visibility": "on_board", "page": "1"])
         XCTAssertEqual(queries[1], ["per_page": "100", "page": "1"], "Both sends no visibility, which the server reads as unfiltered")
         XCTAssertEqual(transport.sent[2].url.path, "/api/v1/sessions/search")
-        XCTAssertEqual(queries[2], ["q": "deploy key", "search_contents": "true", "status": "failed", "per_page": "100", "visibility": "off_board"])
+        XCTAssertEqual(queries[2], ["q": "deploy key", "search_contents": "true", "status": "failed", "per_page": "100", "visibility": "off_board", "include": "board_row"])
         XCTAssertFalse(partial.complete, "a scan that stopped early is not a \"no match\"")
     }
 

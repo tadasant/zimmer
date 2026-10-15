@@ -40,6 +40,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var reconnectServers: [Int: [String]] = [1035: ["Linear"]]
     /// …and a poller notice Zimmer retired before it was delivered.
     private var undelivered: [Int: [QueuedMessage]] = FakeZimmerAPI.sampleUndelivered()
+    /// The class each session's genesis gives it: what *Derive it* goes back to. The samples
+    /// choose no class of their own, so it is the class each starts with.
+    private var derivedClasses: [Int: String]
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to.
@@ -48,6 +51,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
+        self.derivedClasses = sessions.reduce(into: [:]) { $0[$1.id] = $1.priorityClass ?? "priority" }
         self.humanMessages = FakeZimmerAPI.sampleHumanMessages(now: now)
         if live {
             // Long enough to scroll back through, so following the end can be told from not.
@@ -56,7 +60,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
                                     content: "Earlier step \(index) of the CarPlay scene.", timestamp: now.addingTimeInterval(Double(index - 30) * 60))
             }
         }
-        self.nextID = (sessions.map(\.id).max() ?? 0) + 1
+        // Past every session the fake can open, the family 1045–1049 included, so a new one
+        // never takes an id an existing page answers to.
+        self.nextID = max((sessions.map(\.id).max() ?? 0) + 1, 1100)
     }
 
     public func sessions(_ filter: SessionFilter) async throws -> [SessionSummary] {
@@ -74,9 +80,14 @@ public actor FakeZimmerAPI: ZimmerAPI {
             }
         }
         let session = try find(id)
+        // As the server: a check reads back the catalog goal the session has now, so a goal
+        // changed to another (or to free text) takes the check with it.
+        let check = Self.sampleGoalChecks()[id].flatMap { check in
+            Self.sampleConfigs.goal(matching: session.goal)?.id == check.goalID ? check : nil
+        }
         return SessionDetail(session: session, statusSummary: summaries[id], hierarchy: hierarchy,
-                             goalCheck: Self.sampleGoalChecks()[id], humanMessages: humanMessages[id] ?? [],
-                             waiting: waiting(for: session))
+                             goalCheck: check, humanMessages: humanMessages[id] ?? [],
+                             captureGaps: Self.sampleCaptureGaps()[id] ?? [], waiting: waiting(for: session))
     }
 
     /// As the server: the newest `limit`, positions counted from the start, capped at 200.
@@ -198,7 +209,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     }
 
     private func find(_ id: Int) throws -> SessionSummary {
-        guard let session = all.first(where: { $0.id == id }) else {
+        // The rest of 1044's family is on no board the fixture draws, but opens from its
+        // hierarchy and its goal check as any session does.
+        guard let session = all.first(where: { $0.id == id }) ?? Self.sampleFamily().first(where: { $0.id == id }) else {
             throw ZimmerError.http(status: 404, message: "The requested resource was not found")
         }
         return session
@@ -214,7 +227,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// one finished. Times are relative to `now` so a screenshot never shows a stale date.
     public static func sampleSessions(now: Date = Date()) -> [SessionSummary] {
         func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
-        return ran(trashed([
+        return wired(ran(trashed([
             SessionSummary(id: 1042, title: "Add a CarPlay scene to the iOS app", status: .running,
                            agentRuntime: "claude_code", createdAt: ago(90), updatedAt: ago(2),
                            priorityClass: "spot", precedence: 30, lastUserActivityAt: ago(70)),
@@ -227,6 +240,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
                            pullRequests: [PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1261")!, state: "open", ci: "pass")]),
             SessionSummary(id: 1035, title: "Which Postgres version should staging run?", status: .needsInput,
                            agentRuntime: "codex", createdAt: ago(300), updatedAt: ago(41),
+                           // Free text, not a catalog goal: the page shows the words themselves.
+                           goal: "Recommend the Postgres version staging should run, with the trade-offs either way.",
                            priorityClass: "spot", precedence: 20, lastUserActivityAt: ago(3)),
             SessionSummary(id: 1031, title: "Nightly dependency sweep", status: .waiting,
                            agentRuntime: "claude_code", createdAt: ago(20), updatedAt: ago(20),
@@ -238,11 +253,12 @@ public actor FakeZimmerAPI: ZimmerAPI {
                                   agentRuntime: "claude_code", createdAt: ago(600), updatedAt: ago(180),
                                   priorityClass: "spot", precedence: 10, agentRoot: "zimmer-production",
                                   pullRequests: [PullRequestLink(url: URL(string: "https://github.com/tadasant/zimmer/pull/1288")!, state: "open", ci: "fail")])),
-            // The richest session: a long title, four PRs, a long goal, notes, a wide
-            // hierarchy, a long conversation. What the detail screen has to stay legible on.
+            // The richest session: a long title, four PRs, a catalog goal with a long
+            // description (stored as its id), notes, a wide hierarchy, three MCP servers (one
+            // failed), a long conversation. What the detail screen has to stay legible on.
             SessionSummary(id: 1044, title: "Audit the iOS app for parity with the PWA, then implement the findings as a series of standalone slices — quick router and the detail page first",
                            status: .needsInput, agentRuntime: "claude_code", createdAt: ago(3_000), updatedAt: ago(9),
-                           goal: "Unmerged PR is open, CI is confirmed green, an independent fresh-eyes review of the PR has been performed and all of its feedback addressed, and the PR description carries a Verification section with screenshots for every UI change.",
+                           goal: "open-reviewed-green-pr",
                            notes: "Tadas: the detail page is too verbose with real data. Keep the slices off the files #1282 and #1284 touch where possible.",
                            // Spot, at the foot of the queue: the Ranked view's UI test reads row
                            // frames in the spot queue, and a second priority row with a two-line
@@ -261,7 +277,63 @@ public actor FakeZimmerAPI: ZimmerAPI {
             SessionSummary(id: 1019, title: "Fix the flaky transcript poller test", status: .archived,
                            agentRuntime: "claude_code", createdAt: ago(2_000), updatedAt: ago(1_400),
                            archivedAt: ago(1_400)),
-        ]))
+        ])))
+    }
+
+    /// The MCP servers the web UI draws a connection chip for: 1038's chosen server, the one
+    /// its plugin brings and the injected self-session server, all connected; 1044's three, one of them failed with
+    /// the poller's error and the injected one not reached yet. And 1035's skills, which its
+    /// composer's "/" offers.
+    private static func wired(_ sessions: [SessionSummary]) -> [SessionSummary] {
+        sessions.map { session in
+            var session = session
+            switch session.id {
+            case 1035:
+                session.catalogSkills = ["open-pr", "wait-for-ci", "zimmer-qa-mobile-screens"]
+            case 1038:
+                // Its plugin brings a server of its own, which the editor cannot remove.
+                session.mcpServers = ["playwright-custom"]
+                session.catalogPlugins = ["screenshots-videos"]
+                session.allMcpServers = ["playwright-custom", "remote-fs-screenshots", "zimmer-self-session"]
+                session.injectedMcpServers = ["zimmer-self-session"]
+                session.customMetadata = SessionCustomMetadata(pullRequests: session.pullRequests, mcpServerStatuses: [
+                    "playwright-custom": McpServerStatus(status: "connected"),
+                    "remote-fs-screenshots": McpServerStatus(status: "connected"),
+                    "zimmer-self-session": McpServerStatus(status: "connected"),
+                ])
+            case 1044:
+                session.mcpServers = ["playwright-custom", "linear"]
+                session.allMcpServers = ["playwright-custom", "linear", "zimmer-self-session"]
+                session.injectedMcpServers = ["zimmer-self-session"]
+                session.customMetadata = SessionCustomMetadata(pullRequests: session.pullRequests, mcpServerStatuses: [
+                    "playwright-custom": McpServerStatus(status: "connected"),
+                    "linear": McpServerStatus(status: "failed", error: "OAuth token expired: 401 Unauthorized from the Linear MCP server"),
+                ])
+            default:
+                break
+            }
+            return session
+        }
+    }
+
+    /// The rest of 1044's family, which no board in the fixture lists: the router that
+    /// spawned it, on a catalog goal judged on 1044's PRs, and the slices 1044 spawned.
+    static func sampleFamily(now: Date = Date()) -> [SessionSummary] {
+        func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
+        let children: [(Int, String, SessionStatus)] = [
+            (1045, "Slice 1: the Quick Router on every screen", .archived),
+            (1046, "Slice 2: the session page's density", .running),
+            (1047, "Slice 3: the board's rows", .waiting),
+            (1048, "Fresh-eyes review of #1293", .archived),
+            (1049, "Fresh-eyes review of #1294", .failed),
+        ]
+        let router = SessionSummary(id: 1040, title: "Route: iOS parity audit and slices", status: .archived, agentRuntime: "claude_code",
+                                    createdAt: ago(3_020), updatedAt: ago(2_990), archivedAt: ago(2_990), goal: "open-reviewed-green-pr",
+                                    priorityClass: "priority", agentRoot: "zimmer-orchestrator")
+        return [router] + children.map { id, title, status in
+            SessionSummary(id: id, title: title, status: status, agentRuntime: "claude_code", createdAt: ago(2_000), updatedAt: ago(60),
+                           archivedAt: status == .archived ? ago(60) : nil, priorityClass: "spot", agentRoot: "zimmer")
+        }
     }
 
     /// Every sample but the sweep (1031, held at the starting line) has had its agent launch,
@@ -321,6 +393,13 @@ public actor FakeZimmerAPI: ZimmerAPI {
                 ConversationMessage(id: 0, role: .user, content: "Bring staging's database up to date.", timestamp: ago(300)),
                 ConversationMessage(id: 1, role: .assistant, content: "Production runs **Postgres 16**; staging is on 15. Two ways to go:\n\n- Match production: `pg_upgrade` to 16, ten minutes, no surprises.\n- Try 17 first on staging, so production's upgrade is rehearsed.\n\nThe upgrade itself is one command either way:\n\n```sh\nbin/rails db:upgrade -- --target 16\n```\n\nShould staging match it, or try 17 first?", timestamp: ago(41)),
             ],
+            // A fresh-eyes review as agents write them: headings, a fenced block, a nested
+            // list, a table, a quote, and a bare signed URL beside a written link. What the
+            // transcript's markdown has to draw.
+            1048: [
+                ConversationMessage(id: 0, role: .user, content: "Review #1293 with fresh eyes.", timestamp: ago(120)),
+                ConversationMessage(id: 1, role: .assistant, content: "## Review of #1293\n\nOne finding is **blocking**; the rest are *nits*.\n\n### The corner button covers Send\n\nOn a small phone `quickRouterCorner()` sits over the composer:\n\n```swift\n.overlay(alignment: .bottomTrailing) { QuickRouterButton() }\n```\n\n- Lift it above the safe area\n  - as the web does\n- Re-shoot both appearances\n\n| Check | Result |\n| --- | --- |\n| Build | pass |\n| UI tests | 2 failed |\n\n> Fix the overlay first; the nits can wait.\n\nThe screenshot is https://files.example.com/pr-1293/composer.png?X-Amz-Signature=4f2c9a and [the diff](https://github.com/tadasant/zimmer/pull/1293/files) has the rest.", timestamp: ago(60)),
+            ],
             1044: [
                 ConversationMessage(id: 0, role: .user, content: "Zimmer iOS still doesn't have parity with PWA. There is no quick router in the corner of every screen, and it should be the most prominent thing on the main screen. With real data the detail page is too verbose and hard to parse. Make it more information dense. Do an extensive audit for parity and design, then implement it as a series of standalone slices.", timestamp: ago(3_000)),
                 ConversationMessage(id: 1, role: .assistant, content: "Using tool: Bash\ngh pr view 1270 --json body", timestamp: ago(2_900), hasToolUse: true),
@@ -333,34 +412,63 @@ public actor FakeZimmerAPI: ZimmerAPI {
         ]
     }
 
-    /// `goal_check` as the server writes it for a catalog goal with criteria.
+    /// `goal_check` as the server writes it for a catalog goal with criteria. The router
+    /// (1040) recorded no PR of its own, so it is judged on the PRs of 1044, which it spawned.
     static func sampleGoalChecks() -> [Int: GoalCheck] {
-        [
-            1044: GoalCheck(goalName: "open-reviewed-green-pr", verdict: "pending", provisional: false, criteria: [
-                GoalCheck.Criterion(key: "pr_open", label: "An unmerged PR is open", status: "met", detail: "#1282 is open"),
-                GoalCheck.Criterion(key: "ci_green", label: "CI is green on the PR", status: "met", detail: "pass on #1282"),
-                GoalCheck.Criterion(key: "reviewed", label: "A fresh-eyes review has been addressed", status: "pending", detail: "no review comment yet"),
-                GoalCheck.Criterion(key: "screenshots", label: "The PR carries screenshots", status: "unknown"),
-            ]),
-            1038: GoalCheck(goalName: "open-reviewed-green-pr", verdict: "met", criteria: [
-                GoalCheck.Criterion(key: "pr_open", label: "An unmerged PR is open", status: "met", detail: "#1261 is open"),
-                GoalCheck.Criterion(key: "ci_green", label: "CI is green on the PR", status: "met", detail: "pass on #1261"),
-            ]),
+        let note = "Advisory only: nothing acts on this. It covers only what Zimmer records and reads from GitHub. Anything else the goal asks for, such as a review, a skill, or a screenshot, is still the agent's word."
+        return [
+            1044: GoalCheck(goalID: "open-reviewed-green-pr", goalName: "Open Reviewed Green PR", verdict: "pending", provisional: false, criteria: [
+                GoalCheck.Criterion(key: "pull_request_open", label: "A pull request is open or merged", status: "met", detail: "#1282 is open"),
+                GoalCheck.Criterion(key: "ci_green", label: "CI is green", status: "pending", detail: "pending on #1283"),
+                GoalCheck.Criterion(key: "verification_section", label: "PR description has a Verification section", status: "met"),
+                GoalCheck.Criterion(key: "ready_to_merge_label", label: "Label \"ready to merge\" applied", status: "unknown"),
+            ], note: note),
+            1040: GoalCheck(goalID: "open-reviewed-green-pr", goalName: "Open Reviewed Green PR", verdict: "pending", criteria: [
+                GoalCheck.Criterion(key: "pull_request_open", label: "A pull request is open or merged", status: "met", detail: "#1282 is open"),
+                GoalCheck.Criterion(key: "ci_green", label: "CI is green", status: "pending", detail: "pending on #1283"),
+            ], delegatedSessionIDs: [1044], note: note),
+            1038: GoalCheck(goalID: "open-reviewed-green-pr", goalName: "Open Reviewed Green PR", verdict: "met", criteria: [
+                GoalCheck.Criterion(key: "pull_request_open", label: "A pull request is open or merged", status: "met", detail: "#1261 is open"),
+                GoalCheck.Criterion(key: "ci_green", label: "CI is green", status: "met", detail: "pass on #1261"),
+            ], note: note),
         ]
     }
 
-    /// `human_messages` as the server writes them: what people said, through which channel.
+    /// `human_messages` as the server writes them: what people said, through which channel,
+    /// and whether to this session or to another in its family.
     static func sampleHumanMessages(now: Date = Date()) -> [Int: [HumanMessage]] {
         func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
+        let asked = "Zimmer iOS still doesn't have parity with PWA. Do an extensive audit for parity and design, then implement it as a series of standalone slices."
+        let carryOn = "Carry on. Screenshots with real data on every slice."
         return [
             1044: [
-                HumanMessage(author: "Tadas", channelLabel: "Web UI", authoredInSessionID: 1040, content: "Zimmer iOS still doesn't have parity with PWA…", occurredAt: ago(3_010)),
-                HumanMessage(author: "Tadas", channelLabel: "iOS app", authoredInSessionID: 1044, content: "Carry on. Screenshots with real data on every slice.", occurredAt: ago(1_380)),
+                HumanMessage(author: "Tadas", channelLabel: "Zimmer web UI", authoredInSessionID: 1040, content: asked, occurredAt: ago(3_010),
+                             origin: .elsewhere, authoredIn: "session #1040 — Route: iOS parity audit and slices"),
+                HumanMessage(author: "Tadas", channelLabel: "Zimmer web UI", authoredInSessionID: 1044, content: carryOn, occurredAt: ago(1_380),
+                             origin: .here, authoredIn: "this session (#1044)"),
+            ],
+            1040: [
+                HumanMessage(author: "Tadas", channelLabel: "Zimmer web UI", authoredInSessionID: 1040, content: asked, occurredAt: ago(3_010),
+                             origin: .here, authoredIn: "this session (#1040)"),
+                HumanMessage(author: "Tadas", channelLabel: "Zimmer web UI", authoredInSessionID: 1044, content: carryOn, occurredAt: ago(1_380),
+                             origin: .elsewhere, authoredIn: "session #1044 — Audit the iOS app for parity with the PWA"),
             ],
             1038: [
-                HumanMessage(author: "Tadas", channelLabel: "Web UI", authoredInSessionID: 1038, content: "Open a PR for the iOS scaffold and get CI green.", occurredAt: ago(240)),
+                HumanMessage(author: "Tadas", channelLabel: "Zimmer web UI", authoredInSessionID: 1038, content: "Open a PR for the iOS scaffold and get CI green.", occurredAt: ago(240),
+                             origin: .here, authoredIn: "this session (#1038)"),
             ],
         ]
+    }
+
+    /// `human_message_capture_gaps`: 1044's router came in over Slack, and no roster row maps
+    /// a Slack user, so the counts on that family are a floor.
+    static func sampleCaptureGaps() -> [Int: [HumanMessageCaptureGap]] {
+        let slack = HumanMessageCaptureGap(
+            channel: "slack", channelLabel: "Slack", genesis: "slack", sessionIDs: [1040],
+            reason: "No row in this deployment's roster maps any Slack user ID, so every Slack message resolved to nobody and recorded nothing — whoever sent it.",
+            remedy: "Fill in the human's Slack user ID at /supervisor/users. It is a row edit, not a deploy."
+        )
+        return [1044: [slack], 1040: [slack]]
     }
 }
 
@@ -487,11 +595,37 @@ extension FakeZimmerAPI {
         let starts = priority && current.status == .waiting && !current.isPriority
         let session = try change(id) { session in
             session.priorityClass = priority ? "priority" : "spot"
+            session.schedulingClass = session.priorityClass
             // Promoting a waiting session starts it, as the server's PATCH does.
             if starts { session.status = .running }
         }
         return SchedulingChange(session: session, startOutcome: starts ? "started" : nil,
                                 startMessage: starts ? "Session \(id)'s next turn is due now: resumed from the spot queue." : nil)
+    }
+
+    /// *Derive it* goes back to the genesis's class; a waiting session the change makes
+    /// priority starts, as the server's PATCH starts one on any change into priority.
+    public func setSchedulingClass(_ id: Int, to choice: SchedulingClassChoice) async throws -> SchedulingChange {
+        let current = try find(id)
+        let chosen = choice == .derive ? nil : choice.rawValue
+        let effective = chosen ?? derivedClasses[id] ?? "priority"
+        let starts = effective == "priority" && current.status == .waiting && !current.isPriority
+        let session = try change(id) { session in
+            session.schedulingClass = chosen
+            session.priorityClass = effective
+            if starts { session.status = .running }
+        }
+        return SchedulingChange(session: session, startOutcome: starts ? "started" : nil,
+                                startMessage: starts ? "Session \(id)'s next turn is due now: resumed from the spot queue." : nil)
+    }
+
+    /// As `SessionPrecedence`: an integer within a billion either way.
+    public func setPrecedence(_ id: Int, _ precedence: Int) async throws -> SessionSummary {
+        guard (-1_000_000_000...1_000_000_000).contains(precedence) else {
+            let bound = precedence > 0 ? "less than or equal to 1000000000" : "greater than or equal to -1000000000"
+            throw ZimmerError.http(status: 422, message: "Precedence must be \(bound)")
+        }
+        return try change(id) { $0.precedence = precedence }
     }
 
     public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {
@@ -545,7 +679,7 @@ extension FakeZimmerAPI {
     /// sits under a router session with five siblings it spawned, a tree wide enough that
     /// the panel folds it.
     static func sampleHierarchy(for id: Int, in sessions: [SessionSummary]) -> SessionHierarchy? {
-        if id == 1044 {
+        if (1040...1049).contains(id), id != 1042 {
             let family: [(Int, String, SessionStatus, Int)] = [
                 (1040, "Route: iOS parity audit and slices", .archived, 0),
                 (1044, "Audit the iOS app for parity with the PWA, then implement the findings as a series of standalone slices — quick router and the detail page first", .needsInput, 1),
@@ -555,16 +689,22 @@ extension FakeZimmerAPI {
                 (1048, "Fresh-eyes review of #1293", .archived, 2),
                 (1049, "Fresh-eyes review of #1294", .failed, 2),
             ]
+            // The router came in over Slack and runs priority; what it spawned is spot. The
+            // review of #1294 was reached through a senior rather than a spawn edge, so it is
+            // drawn under 1044, which did not spawn it.
             return SessionHierarchy(nodes: family.map { nodeID, title, status, depth in
-                SessionHierarchy.Node(id: nodeID, title: title, agentRoot: depth == 0 ? "zimmer-orchestrator" : "zimmer", status: status, depth: depth, current: nodeID == id)
-            })
+                SessionHierarchy.Node(id: nodeID, title: title, agentRoot: depth == 0 ? "zimmer-orchestrator" : "zimmer", status: status, depth: depth,
+                                      current: nodeID == id, genesis: "slack", priorityClass: depth == 0 ? "priority" : "spot",
+                                      renderParentID: depth == 0 ? nil : (depth == 1 ? 1040 : 1044), spawnEdge: nodeID != 1049)
+            }, originID: 1040, rootIDs: [1040])
         }
         let tree = [(1038, 0), (1042, 1), (1031, 1)]
         guard tree.contains(where: { $0.0 == id }) else { return SessionHierarchy(nodes: []) }
         return SessionHierarchy(nodes: tree.compactMap { nodeID, depth in
             guard let session = sessions.first(where: { $0.id == nodeID }) else { return nil }
-            return SessionHierarchy.Node(id: nodeID, title: session.title, agentRoot: "zimmer", status: session.status, depth: depth, current: nodeID == id)
-        })
+            return SessionHierarchy.Node(id: nodeID, title: session.title, agentRoot: "zimmer", status: session.status, depth: depth, current: nodeID == id,
+                                         genesis: "web_ui", priorityClass: session.priorityClass, renderParentID: depth == 0 ? nil : 1038)
+        }, originID: 1038, rootIDs: [1038])
     }
 
     public func regenerateStatusSummary(_ id: Int) async throws -> String {
@@ -597,7 +737,14 @@ extension FakeZimmerAPI {
 // a spot session to the midpoint of the neighbours it was dropped between.
 extension FakeZimmerAPI {
     public func sessions(_ filters: BoardFilters, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
-        let rows = try await sessions(filters, board: board).sessions
+        var rows = try await sessions(filters, board: board).sessions
+        if view == .yourBoard || view == .ranked {
+            rows = rows.map { session in
+                var session = session
+                session.boardRow = BoardRow(agentRoot: session.agentRoot, statusSummary: summaries[session.id])
+                return session
+            }
+        }
         return SessionSearchResult(sessions: view.sections(rows).flatMap(\.sessions))
     }
 
@@ -612,8 +759,13 @@ extension FakeZimmerAPI {
 
     public func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary {
         guard above != id, below != id else { throw ZimmerError.http(status: 422, message: "A session cannot be dropped next to itself") }
-        let upper = try above.map { try find($0).precedence ?? 0 }
-        let lower = try below.map { try find($0).precedence ?? 0 }
+        // As the server: only a live spot session counts as a neighbour.
+        func neighbour(_ id: Int?) -> Int? {
+            guard let id, let row = all.first(where: { $0.id == id }), !row.isPriority, row.status != .archived else { return nil }
+            return row.precedence ?? 0
+        }
+        let upper = neighbour(above)
+        let lower = neighbour(below)
         let precedence: Int
         switch (upper, lower) {
         case let (upper?, lower?): precedence = (upper + lower) / 2
@@ -819,8 +971,9 @@ extension FakeZimmerAPI {
             "codex": RuntimeModels(default: "gpt-5.6-sol", models: [ModelOption(id: "gpt-5.6-sol", label: "GPT-5.6 Sol")]),
         ],
         goals: [
-            GoalOption(id: "open-reviewed-green-pr", name: "Open a reviewed, green PR", description: "Unmerged PR is open and CI is green."),
-            GoalOption(id: "answer-question", name: "Answer a question"),
+            GoalOption(id: "open-reviewed-green-pr", name: "Open Reviewed Green PR", description: "Unmerged PR is open and CI is green."),
+            GoalOption(id: "codebase-question", name: "Codebase Question",
+                       description: "Research the codebase thoroughly to answer the user's question, and report your findings inline in the conversation."),
         ],
         mcpServers: [CatalogItem(id: "playwright-custom", title: "Playwright"), CatalogItem(id: "slack", title: "Slack", unavailableReason: "Needs authorizing")],
         geneses: [
@@ -835,8 +988,14 @@ extension FakeZimmerAPI {
 
     static let sampleCatalogs: [CatalogKind: [CatalogItem]] = [
         .mcpServers: sampleConfigs.mcpServers,
-        .skills: [CatalogItem(id: "open-pr", title: "Open a PR"), CatalogItem(id: "wait-for-ci", title: "Wait for CI"),
-                  CatalogItem(id: "zimmer-qa-mobile-screens", title: "QA mobile screens")],
+        // As `GET /api/v1/skills` lists them: the two workflow skills a person may invoke with
+        // "/", and one only an agent invokes.
+        .skills: [CatalogItem(id: "open-pr", title: "Open a PR", description: "Commit, push a branch, open the PR and wait for CI.",
+                              name: "open-pr", userInvocable: true),
+                  CatalogItem(id: "wait-for-ci", title: "Wait for CI", description: "Block until CI passes or fails on the current PR.",
+                              name: "wait-for-ci", userInvocable: true),
+                  CatalogItem(id: "zimmer-qa-mobile-screens", title: "QA mobile screens", description: "Render a changed screen at a phone's width.",
+                              name: "zimmer-qa-mobile-screens", userInvocable: false)],
         .hooks: [CatalogItem(id: "block-force-push", title: "Block force-push")],
         .plugins: [CatalogItem(id: "screenshots-videos", title: "Screenshots and videos")],
     ]
@@ -846,7 +1005,12 @@ extension SessionSummary {
     /// Set what the session has chosen of one kind.
     public mutating func setSelection(_ kind: CatalogKind, _ values: [String]) {
         switch kind {
-        case .mcpServers: mcpServers = values
+        case .mcpServers:
+            // The effective set follows the choice, with the injected ones and the ones a
+            // plugin brings kept, as the server's.
+            let kept = mcpConnections.filter { $0.injected || $0.fromPlugin }.map(\.name).filter { !values.contains($0) }
+            mcpServers = values
+            if allMcpServers != nil { allMcpServers = values + kept }
         case .skills: catalogSkills = values
         case .hooks: catalogHooks = values
         case .plugins: catalogPlugins = values

@@ -72,8 +72,12 @@ then archive itself.
 
 Three records are written, and they are not equal:
 
-- a `HumanMessage` row, written through the same capture every web-UI input goes through. **This is
-  the provenance record.** Only the browser controllers write one; the MCP and REST surfaces cannot.
+- a `HumanMessage` row. **This is the provenance record.** The browser writes it through the same
+  capture every web-UI input goes through (`web_ui.authorize_merge`). The [iOS app](/extend/ios-app/)'s
+  Merge writes it on the [`assistant` channel](/sessions/hierarchy-and-human-messages/#the-assistant-channel)
+  (`ios_app.authorize_merge`), through `POST /api/v1/sessions/:id/authorize_merge`, which answers
+  only the app's sign-in when it acts as you. An API key and MCP cannot write one. Like every
+  capture it is best-effort: a person with no roster row gets the merge without the record.
 - the message itself, marked `[HUMAN-AUTHORIZED MERGE]` and naming the surface. That marker is what
   the merging session reads, but it is not proof on its own — `action_session`'s `follow_up` can
   deliver any text, marker included — so an audit keys on the `HumanMessage`, not the marker.
@@ -124,6 +128,9 @@ first, then anything asked for with stated priority, then cheap decisions over e
 work stuck on a person over work stuck on a machine.
 
 It suggests an order; it does not impose one. Every row is still draggable afterwards.
+
+The iOS app presses the same button through `POST /api/v1/sessions/reprioritize`. Unlike Merge it is
+not limited to a person: it fires the same trigger `/api/v1/triggers/:id/invoke` already reaches.
 
 ## What replaced what
 

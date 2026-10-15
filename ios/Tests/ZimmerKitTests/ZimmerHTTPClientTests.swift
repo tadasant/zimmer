@@ -45,6 +45,28 @@ final class ZimmerHTTPClientTests: XCTestCase {
         XCTAssertEqual(transport.sent[2].headers["Authorization"], "Bearer zmr_oat_2")
     }
 
+    func testA401ThatSurvivesAFreshTokenIsAnErrorAndKeepsTheSignIn() async throws {
+        let refused = Fixtures.json(401, ["error": "Unauthorized", "message": "Invalid or missing API key"])
+        let transport = ScriptedTransport([
+            { _ in refused },
+            { _ in Fixtures.tokens(access: "zmr_oat_2", refresh: "zmr_ort_2") },
+            { _ in refused },
+        ])
+        let store = Fixtures.signedIn()
+        let auth = AuthSession(store: store, transport: transport)
+        let client = ZimmerHTTPClient(auth: auth, transport: transport)
+
+        do {
+            _ = try await client.sessions(.active)
+            XCTFail("expected the endpoint's refusal")
+        } catch {
+            XCTAssertEqual(error as? ZimmerError, .http(status: 401, message: "Invalid or missing API key"))
+        }
+        XCTAssertEqual(store.load()?.tokens.refreshToken, "zmr_ort_2", "the refreshed sign-in is kept")
+        let signedIn = await auth.isSignedIn
+        XCTAssertTrue(signedIn)
+    }
+
     func testAnEdgeRefusalIsNotMistakenForASignOut() async throws {
         let transport = ScriptedTransport([{ _ in Fixtures.accessRefusal }])
         let store = Fixtures.signedIn()
