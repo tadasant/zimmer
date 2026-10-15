@@ -13,6 +13,8 @@ class LiveController < ApplicationController
   end
 
   def show
+    return redirect_to(live_path, alert: "Unknown live mode.") unless LiveConversations.mode_keys.include?(params[:mode])
+
     @availability = LiveConversations::Availability.for(params[:mode])
     current = LiveConversation.current(params[:mode])
     return redirect_to(live_conversation_path(current)) if current && params[:start].blank?
