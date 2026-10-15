@@ -4,9 +4,11 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::HealthController < Api::BaseController
-  # Zimmer's iOS app: read-only. Health's operator actions (queue recovery, retries, post-
-  # deploy tasks, queued jobs) stay in the browser.
-  accepts_native_app_tokens only: %i[show]
+  # Zimmer's iOS app: the whole controller. Every operator action here — cleanup,
+  # retries, archiving, queue recovery, the queued-job levers, re-arming the
+  # post-deploy tasks — is a button on the web health page, which any signed-in
+  # person may press; the app is that person's other screen.
+  accepts_native_app_tokens
 
   # Bounds for archive days
   MAX_ARCHIVE_DAYS = 365
@@ -184,9 +186,15 @@ class Api::V1::HealthController < Api::BaseController
   private
 
   # The cooldown object is shared with the native MCP server's action_health
-  # tool, so the two surfaces throttle each other for the same caller.
+  # tool, so the two surfaces throttle each other for the same caller. The app's
+  # token presents no key, so its bucket is its grant: HealthActionCooldown says
+  # why a caller with a credential must not fall into the anonymous one.
   def cooldown
-    @cooldown ||= HealthActionCooldown.new(HealthActionCooldown.fingerprint(api_key_from_request))
+    @cooldown ||= HealthActionCooldown.new(HealthActionCooldown.fingerprint(cooldown_credential))
+  end
+
+  def cooldown_credential
+    native_app_request? ? "native_app_grant:#{native_app_grant.id}" : api_key_from_request
   end
 
   def rate_limited?(action)

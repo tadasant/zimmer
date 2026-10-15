@@ -116,6 +116,22 @@ class Api::BaseController < ActionController::API
     self.class.native_app_tokens_accepted_for?(action_name) && native_app_bearer_token.present?
   end
 
+  # For an action that records a person's judgement — hand-placing a backlog
+  # item, taking one off the queue, promoting one — the app's token opens it
+  # only on a grant that acts as its approver: a relay-only grant was approved to
+  # carry messages, not to decide. An API key is not refused here. The key
+  # reached these actions before the app did, and what it establishes (a caller,
+  # not a person) is the controller's own caveat; Api::V1::SessionsController's
+  # `require_a_person_on_the_app` is the stricter gate, for the one action nothing
+  # but a person may take.
+  def require_the_app_to_act_as_a_person
+    return unless native_app_request?
+    return if native_app_grant.acts_as_human?
+
+    render_api_error("Forbidden", "This sign-in may not act as you; sign in again and allow acting as you",
+                     status: :forbidden)
+  end
+
   def native_app_bearer_token
     token = request.headers["Authorization"].to_s[/\ABearer\s+(.+)\z/i, 1]&.strip
     token if token&.start_with?(OauthServer::ACCESS_TOKEN_PREFIX)
