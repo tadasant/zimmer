@@ -4503,21 +4503,29 @@ Three populations are still outside every conflict check:
   `gh pr create`. A PR opened by a subagent, through `gh api`, by a wrapper script, or in a
   stack the session pushed without creating, is invisible. Session 24237's own
   tadasant/zimmer#1282 was one: it conflicted alongside #1284 and nothing could have noticed.
-- **A producer that ended more than 7 days ago.** `GithubOrphanedPrConflictSweepJob` watches the
-  open PRs of archived and failed producers, but only within
-  `Github::OrphanedPrConflictSweep::WATCH_WINDOW`, counted from `archived_at` (or the last human
-  activity, for a failed session). Past that, nothing watches the PR, and the merge gate is the first
-  to find the conflict.
+- **A producer that ended more than 7 days ago, or before 2026-10-16.** `GithubOrphanedPrConflictSweepJob`
+  watches the open PRs of archived and failed producers, but only within
+  `Github::OrphanedPrConflictSweep::WATCH_WINDOW`, and never one that ended before `WATCHED_SINCE`,
+  the cutover that keeps the first deploy from reviving a week of producers at once. Past either, nothing
+  watches the PR, and the merge gate is the first to find the conflict. The window counts from
+  `archived_at`. A failed session has no failure timestamp, so it counts from the session's last human
+  activity, which falls back to `created_at` and which opening the session's page moves. Opening a
+  long-failed session can therefore put it back on watch for a week, and a failed session that ran
+  unattended for over a week is never watched.
 - **A live session idle for more than 7 days.** `Github::PrPollPass` stops holding such a session at
   its 30-minute ceiling and lets it fall to `PollBackoff`'s daily floor, so a conflict there is
   noticed up to a day late.
 
 Reviving a producer has edges of its own. A human who archived a session to abandon its PR, but
 left the PR open, gets that session back once per conflict episode. The message tells it to say so
-and archive, and the confirmed marker keeps it from coming back for the same episode. Each PR is
+and archive, and the confirmed marker keeps it from coming back for the same conflict. A clean
+reading, or a conflict on a new head commit, starts a new episode. Each PR is
 capped at `MAX_REVIVALS_PER_PR` (3) revivals per session, ever. A replaced session
 (`replaces_session`) is never revived, and neither is one when a newer session tracks the same PR.
 That rule picks a single owner, but it trusts that the newer session is the one working the PR.
+A revived child session is an ordinary live session again, so whatever it reports to its parent
+reaches the parent, which may wake it. At most 2 sessions are revived per run, and the rest wait
+for the next run, two minutes later.
 
 ---
 

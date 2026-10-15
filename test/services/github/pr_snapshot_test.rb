@@ -127,26 +127,33 @@ class Github::PrSnapshotTest < ActiveSupport::TestCase
   # The conflict question is answered by REST's `mergeable`, the reading the old
   # merge-conflict poller trusted. GraphQL's answer stands when REST cannot be read.
 
-  REST_COMMAND = [ "gh", "api", "repos/owner/repo/pulls/42", "--jq", ".mergeable" ].freeze
+  REST_COMMAND = [ "gh", "api", "repos/owner/repo/pulls/42", "--jq", Github::PrSnapshot::REST_JQ ].freeze
+  REST_SHA = "c" * 40
 
-  test "with_rest_mergeability takes REST's answer over GraphQL's" do
+  test "with_rest_mergeability takes REST's answer, and REST's head, over GraphQL's" do
     BoundedSubprocess.expects(:run).with(REST_COMMAND, timeout: Github::PrSnapshot::TIMEOUT)
-      .returns([ "false\n", "", fake_process_status ])
+      .returns([ "false #{REST_SHA}\n", "", fake_process_status ])
 
     refreshed = build(mergeable: "MERGEABLE", head_sha: "abc123").with_rest_mergeability
 
     assert_equal true, refreshed.conflicting?
-    assert_equal "abc123", refreshed.head_sha
+    assert_equal REST_SHA, refreshed.head_sha
     assert_equal "open", refreshed.status
   end
 
   test "with_rest_mergeability maps REST's three answers" do
     { "true" => false, "false" => true, "null" => nil }.each do |rest, conflicting|
-      BoundedSubprocess.stubs(:run).returns([ "#{rest}\n", "", fake_process_status ])
+      BoundedSubprocess.stubs(:run).returns([ "#{rest} #{REST_SHA}\n", "", fake_process_status ])
 
       reading = build(mergeable: "UNKNOWN").with_rest_mergeability.conflicting?
       conflicting.nil? ? assert_nil(reading, rest) : assert_equal(conflicting, reading, rest)
     end
+  end
+
+  test "with_rest_mergeability keeps GraphQL's head when REST does not give a sha" do
+    BoundedSubprocess.stubs(:run).returns([ "true not-a-sha\n", "", fake_process_status ])
+
+    assert_equal "abc123", build(mergeable: "UNKNOWN", head_sha: "abc123").with_rest_mergeability.head_sha
   end
 
   test "with_rest_mergeability keeps GraphQL's answer when REST cannot be read" do

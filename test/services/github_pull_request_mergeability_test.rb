@@ -128,7 +128,7 @@ class GithubPullRequestMergeabilityTest < ActiveSupport::TestCase
     assert_equal(
       [
         [ "gh", "pr", "view", "834", "--repo", "tadasant/zimmer", "--json", Github::PrSnapshot::JSON_FIELDS ],
-        [ "gh", "api", "repos/tadasant/zimmer/pulls/834", "--jq", ".mergeable" ]
+        [ "gh", "api", "repos/tadasant/zimmer/pulls/834", "--jq", Github::PrSnapshot::REST_JQ ]
       ],
       captured.map(&:first)
     )
@@ -151,7 +151,7 @@ class GithubPullRequestMergeabilityTest < ActiveSupport::TestCase
     payload = { "state" => state, "mergedAt" => merged_at, "mergeable" => mergeable }.to_json
     BoundedSubprocess.stubs(:run).with { |command, **| command[0, 3] == %w[gh pr view] }
       .returns([ payload, "", fake_process_status(exitstatus: 0) ])
-    rest_answer = rest.nil? ? [ "", "HTTP 502", fake_process_status(exitstatus: 1) ] : [ "#{rest}\n", "", fake_process_status(exitstatus: 0) ]
+    rest_answer = rest.nil? ? [ "", "HTTP 502", fake_process_status(exitstatus: 1) ] : [ "#{rest} #{'d' * 40}\n", "", fake_process_status(exitstatus: 0) ]
     BoundedSubprocess.stubs(:run).with { |command, **| command[0, 2] == %w[gh api] }.returns(rest_answer)
   end
 end

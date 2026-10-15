@@ -391,14 +391,32 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
     assert @session_with_pr.enqueued_messages.pending.exists?
   end
 
-  test "a legacy true marker, or a reading with no head, still means already notified" do
-    track(PR_URL, status: :running, extra: { "github_pull_request_merge_conflicts" => { PR_URL => true } })
+  test "a reading with no head cannot be compared, so it means already notified" do
+    track(PR_URL, status: :running, extra: { "github_pull_request_merge_conflicts" => { PR_URL => "aaa111" } })
 
-    evaluate(@session_with_pr, :conflicting, head_sha: "bbb222")
+    evaluate(@session_with_pr, :conflicting, head_sha: nil)
     evaluate_later(@session_with_pr, :conflicting, head_sha: nil)
 
     refute @session_with_pr.enqueued_messages.pending.exists?
-    assert_equal({ PR_URL => true }, @session_with_pr.reload.custom_metadata["github_pull_request_merge_conflicts"])
+    assert_equal({ PR_URL => "aaa111" }, @session_with_pr.reload.custom_metadata["github_pull_request_merge_conflicts"])
+  end
+
+  # A marker written before heads were recorded is not news on the head it reads
+  # now, and it learns that head, so the next push re-arms it. Without the
+  # upgrade every PR notified before this deploy stays silent until a clean read.
+  test "a legacy true marker means already notified, then learns the head and re-arms on the next push" do
+    track(PR_URL, status: :running, extra: { "github_pull_request_merge_conflicts" => { PR_URL => true } })
+
+    evaluate(@session_with_pr, :conflicting, head_sha: "aaa111")
+
+    refute @session_with_pr.enqueued_messages.pending.exists?
+    assert_equal({ PR_URL => "aaa111" }, @session_with_pr.reload.custom_metadata["github_pull_request_merge_conflicts"])
+
+    evaluate_later(@session_with_pr, :conflicting, head_sha: "bbb222") # suspect
+    evaluate_later(@session_with_pr, :conflicting, head_sha: "bbb222") # confirm
+
+    assert @session_with_pr.enqueued_messages.pending.exists?
+    assert_equal({ PR_URL => "bbb222" }, @session_with_pr.reload.custom_metadata["github_pull_request_merge_conflicts"])
   end
 
   private

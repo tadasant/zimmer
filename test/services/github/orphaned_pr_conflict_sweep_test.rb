@@ -12,6 +12,8 @@ class Github::OrphanedPrConflictSweepTest < ActiveSupport::TestCase
     # No test here reaches GitHub. The REST re-read answers "could not ask", which
     # leaves each snapshot as the stubbed PrSnapshot.fetch built it.
     Github::PrSnapshot.stubs(:fetch_rest_mergeable).returns(nil)
+    # The cutover is a fixed date; move it behind every session these tests end.
+    Github::OrphanedPrConflictSweep.stubs(:watched_since).returns(30.days.ago)
   end
 
   # ---- who is watched ----
@@ -24,19 +26,34 @@ class Github::OrphanedPrConflictSweepTest < ActiveSupport::TestCase
 
     assert_includes ids, archived.id
     refute_includes ids, stale.id
+    assert Github::OrphanedPrConflictSweep.watched?(archived)
+  end
+
+  test "a producer that ended before the cutover is never watched" do
+    Github::OrphanedPrConflictSweep.stubs(:watched_since).returns(1.day.ago)
+    archived = end_session(@session, :archived, ended: 2.days.ago)
+
+    refute_includes Github::OrphanedPrConflictSweep.candidates.pluck(:id), archived.id
+    refute Github::OrphanedPrConflictSweep.watched?(archived)
   end
 
   test "a failed producer is watched by its last human activity, which the sweep never moves" do
     failed = end_session(@session, :failed, ended: 2.days.ago)
-    assert_includes Github::OrphanedPrConflictSweep.candidates.pluck(:id), failed.id
+    assert Github::OrphanedPrConflictSweep.watched?(failed)
 
     failed.update!(metadata: failed.metadata.merge("last_user_activity_at" => 8.days.ago.iso8601))
-    refute_includes Github::OrphanedPrConflictSweep.candidates.pluck(:id), failed.id
+    refute Github::OrphanedPrConflictSweep.watched?(failed.reload)
+
+    # Nothing is read for it, though updated_at keeps it in the loose SQL bound.
+    Github::PrSnapshot.expects(:fetch).never
+    sweep
   end
 
-  test "a malformed activity stamp does not break the query for everyone else" do
+  # The SQL never casts the stamp: a value shaped like a timestamp but not one
+  # would raise there, and take the sweep down for every session.
+  test "a malformed activity stamp cannot break the query" do
     failed = end_session(@session, :failed, ended: 2.days.ago)
-    failed.update!(metadata: failed.metadata.merge("last_user_activity_at" => "yesterday-ish"))
+    failed.update!(metadata: failed.metadata.merge("last_user_activity_at" => "2026-13-45T00:00:00Z"))
 
     assert_nothing_raised { Github::OrphanedPrConflictSweep.candidates.pluck(:id) }
   end
@@ -99,7 +116,6 @@ class Github::OrphanedPrConflictSweepTest < ActiveSupport::TestCase
 
   test "a confirmed conflict resumes a failed producer directly" do
     end_session(@session, :failed, ended: 1.day.ago)
-    @session.update!(session_id: "runtime-session-1")
     reading(:conflicting)
     sweep
 
@@ -140,6 +156,49 @@ class Github::OrphanedPrConflictSweepTest < ActiveSupport::TestCase
     assert_nil @session.custom_metadata[REVIVALS]
   end
 
+  test "this run's revival budget defers the rest, leaving the suspicion standing" do
+    end_session(@session, :archived, ended: 1.day.ago)
+    reading(:conflicting)
+    sweep
+
+    UnarchiveSessionService.expects(:call).never
+    travel (Github::PrPollPass::MERGE_CONFLICT_INTERVAL_SECONDS + 1).seconds
+    spent = Github::OrphanedPrConflictSweep.new
+    spent.instance_variable_set(:@revivals_this_run, Github::OrphanedPrConflictSweep::MAX_REVIVALS_PER_RUN)
+    spent.sweep_session(@session.reload)
+
+    @session.reload
+    assert @session.archived?
+    assert_equal [ PR_URL ], @session.custom_metadata[SUSPECTED].keys
+    assert_nil @session.custom_metadata[CONFIRMED]
+    assert_nil @session.custom_metadata[REVIVALS]
+  end
+
+  # The second PR's conflict is confirmed after the first one's revival has made
+  # the session live: it is told through the ordinary path, once, and both PRs
+  # are recorded as notified so the live pass does not tell it again.
+  test "two conflicting PRs bring the producer back once and tell it about both" do
+    other = "https://github.com/owner/repo/pull/457"
+    end_session(@session, :archived, ended: 1.day.ago, extra: {
+      "github_pull_request_urls" => [ PR_URL, other ],
+      "github_pull_request_statuses" => { PR_URL => "open", other => "open" }
+    })
+    Github::PrSnapshot.stubs(:fetch).with { |ref| ref.url == PR_URL }.returns(snapshot(:conflicting, head_sha: "a" * 40))
+    Github::PrSnapshot.stubs(:fetch).with { |ref| ref.url == other }
+      .returns(Github::PrSnapshot.new(ref: Github::PrRef.parse(other), state: "OPEN", merged_at: nil,
+                                      mergeable: "CONFLICTING", head_sha: "b" * 40))
+    sweep
+
+    expect_unarchive
+    prompts = []
+    Session.any_instance.expects(:deliver_follow_up!).twice.with { |prompt, **| prompts << prompt }
+    sweep_later
+
+    assert_equal 1, prompts.count { |p| p.include?("brought this session back") }
+    assert_equal [ PR_URL, other ].sort, prompts.map { |p| AutomatedPrompts.merge_conflict_pr_url(p) }.sort
+    assert_equal({ PR_URL => "a" * 40, other => "b" * 40 }, @session.reload.custom_metadata[CONFIRMED])
+  end
+
   test "a newer session tracking the same PR is the owner, not this one" do
     end_session(@session, :archived, ended: 1.day.ago)
     newer = Session.create!(
@@ -153,6 +212,21 @@ class Github::OrphanedPrConflictSweepTest < ActiveSupport::TestCase
 
     UnarchiveSessionService.expects(:call).never
     sweep_later
+
+    assert_equal [ PR_URL ], @session.reload.custom_metadata[CONFIRMED].keys
+    assert_nil @session.custom_metadata[REVIVALS]
+  end
+
+  test "a producer with no runtime session id is not brought back" do
+    end_session(@session, :archived, ended: 1.day.ago)
+    @session.update!(session_id: nil)
+    reading(:conflicting)
+    sweep
+
+    UnarchiveSessionService.expects(:call).never
+    sweep_later
+
+    assert_nil @session.reload.custom_metadata[REVIVALS]
   end
 
   test "a PR at its revival cap is not read at all" do
@@ -176,7 +250,7 @@ class Github::OrphanedPrConflictSweepTest < ActiveSupport::TestCase
     @session.reload
     assert @session.archived?
     assert_equal [ PR_URL ], @session.custom_metadata[SUSPECTED].keys
-    assert_nil @session.custom_metadata[CONFIRMED]
+    assert_empty @session.custom_metadata[CONFIRMED].to_h, "the marker set before the revival is taken back"
     assert_equal({ PR_URL => 1 }, @session.custom_metadata[REVIVALS])
     assert_in_delta Time.current,
       Time.zone.parse(@session.custom_metadata.dig("poller_last_polled_at", Github::OrphanedPrConflictSweep::POLL_BACKOFF_KEY)),
@@ -221,6 +295,7 @@ class Github::OrphanedPrConflictSweepTest < ActiveSupport::TestCase
   def end_session(session, status, ended:, extra: {})
     session.update!(
       status: status,
+      session_id: session.session_id.presence || "runtime-#{session.id}",
       archived_at: status == :archived ? ended : nil,
       metadata: (session.metadata || {}).merge("last_user_activity_at" => ended.iso8601),
       custom_metadata: (session.custom_metadata || {}).merge(extra)
