@@ -569,6 +569,9 @@ jobs:
       pull-requests: read
     outputs:
       ios: ${{ steps.filter.outputs.ios }}
+      # The UI test files this change touches, space-separated, so the `ios` job's smoke run
+      # also runs the classes they declare. Empty whenever the answer above was a guess.
+      ui_tests: ${{ steps.filter.outputs.ui_tests }}
     steps:
       - name: Look for changes under ios/
         id: filter
@@ -608,6 +611,8 @@ jobs:
           fi
 
           printf '%s\n' "$files" | sed 's/^/  /'
+          ui_tests="$(printf '%s\n' "$files" | grep -E '^ios/App/ZimmerUITests/[A-Za-z0-9_]+\.swift$' | tr '\n' ' ' || true)"
+          echo "ui_tests=${ui_tests% }" >> "$GITHUB_OUTPUT"
           if printf '%s\n' "$files" | grep -qE '^(ios/|\.github/workflows/(ci|testflight|ios-ui-tests)\.yml$)'; then
             echo "ios=true" >> "$GITHUB_OUTPUT"
           else
@@ -632,13 +637,9 @@ jobs:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
     runs-on: macos-latest
-    # Raised from 45 when the simulator run joined the job, from 60 when the suite and the
-    # photographs grew to fill it, and from 75 when the suite passed seventy UI tests: on a
-    # loaded macOS runner the simulator step alone is an hour (62 minutes on a green run of
-    # #1347), after two app builds, an archive and the Kit tests, before an artifact upload of
-    # most of a gigabyte. A run cut off here reads as "cancelled", which hides whether the suite
-    # passed. Splitting the suite across two simulators is the real fix for the next growth.
-    timeout-minutes: 100
+    # About 12 minutes: an archive, the ZimmerKit tests, one simulator build and the smoke
+    # run. The full UI suite, about 45 minutes on its own, is `ios-ui-tests.yml`.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -650,12 +651,6 @@ jobs:
           xcodebuild -version
           swift --version
           ls /Applications | grep -i '^Xcode' || true
-
-      - name: Build the app for the simulator
-        # A script, not an inlined command, for the reason `bin/build-images` is a script:
-        # a check that exists only in YAML cannot be run by hand and will rot. Anyone with
-        # a Mac runs exactly this.
-        run: ios/bin/build-app
 
       - name: Archive the app for a device, unsigned, and check it is uploadable in shape
         # The credential-free half of `testflight.yml`, run by the same script: the Release
@@ -672,21 +667,40 @@ jobs:
         # a compiler is pointed at the AVFoundation half.
         run: ios/bin/ci-swift
 
-      - name: Run the app on a simulator and photograph it
-        # THE ONLY STEP THAT RUNS THE APP. It drives the Debug-only fixture (an in-memory
-        # Zimmer: an agent cannot complete a Google sign-in) through the session list and its
-        # filters, checks the build reports the environment and server it was built with,
-        # and records a video and screenshots of the key screens.
+      - name: Build the app for the simulator and smoke-test it
+        # THE ONLY STEP THAT RUNS THE APP, and the simulator build of record: there is no
+        # separate `ios/bin/build-app` step, because this builds the same app for the same
+        # SDK on the way to running it. It drives the Debug-only fixture (an in-memory
+        # Zimmer: an agent cannot complete a Google sign-in) through `--smoke`: the session
+        # list, the build reporting the environment and server it was built with, and one
+        # session opened, answered and trashed — plus every class in a UI test file this
+        # change touches, so a new or edited UI test is proven before it merges. It records
+        # a video; it takes no screenshots.
+        #
+        # The other UI tests and the photographs of every key screen are
+        # `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**`: 57 tests
+        # driven one at a time, about 45 minutes — too long to gate every pull request on.
+        # To get them for a branch before it merges:
+        #   gh workflow run ios-ui-tests.yml --ref <branch>
         #
         # `Staging` with a base URL is deliberate: one run proves the staging build variant
         # resolves the server it was given as well as the screens. The host is a
         # reserved-by-RFC-2606 name that can never resolve — the fixture makes no request —
         # because this repository names no deployment, not even in a workflow file.
-        run: >
-          ios/bin/ui-test
-          --configuration Staging
-          --api-base-url https://ui-test.invalid
-          --artifacts "$RUNNER_TEMP/ui-test"
+        #
+        # The file list arrives through `env:`, never pasted into the shell line, and the
+        # script only reads class names out of files under ios/App/ZimmerUITests.
+        env:
+          UI_TEST_FILES: ${{ needs.ios-changes.outputs.ui_tests }}
+        run: |
+          set -euo pipefail
+          also=()
+          for f in $UI_TEST_FILES; do also+=(--also "$f"); done
+          ios/bin/ui-test --smoke \
+            --configuration Staging \
+            --api-base-url https://ui-test.invalid \
+            --artifacts "$RUNNER_TEMP/ui-test" \
+            ${also[@]+"${also[@]}"}
 
       - name: Keep what the run produced
         # `always()`: a red run is the one whose video, screenshot and result bundle
