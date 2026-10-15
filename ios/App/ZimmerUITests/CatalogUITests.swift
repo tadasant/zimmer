@@ -43,9 +43,12 @@ final class CatalogUITests: XCTestCase {
         sonnet.tap()
         XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["detail.metadata"], "sonnet"))
 
+        // Straight from the session menu, one item a kind.
         actions.tap()
-        app.buttons["MCP Servers, Skills, Hooks, Plugins"].firstMatch.tap()
-        app.buttons["Skills (0)"].firstMatch.tap()
+        let skills = app.buttons["menu.catalog.skills"].firstMatch
+        XCTAssertTrue(skills.waitForExistence(timeout: timeout))
+        XCTAssertTrue(skills.label.contains("Modify Skills (0)"))
+        skills.tap()
         let skill = app.buttons["catalog.item.open-pr"]
         XCTAssertTrue(skill.waitForExistence(timeout: timeout))
         skill.tap()
@@ -53,8 +56,9 @@ final class CatalogUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["followup.notice"].waitForExistence(timeout: timeout), "the change is confirmed")
 
         actions.tap()
-        app.buttons["MCP Servers, Skills, Hooks, Plugins"].firstMatch.tap()
-        XCTAssertTrue(app.buttons["Skills (1)"].firstMatch.waitForExistence(timeout: timeout))
+        let after = app.buttons["menu.catalog.skills"].firstMatch
+        XCTAssertTrue(after.waitForExistence(timeout: timeout))
+        XCTAssertTrue(after.label.contains("Modify Skills (1)"))
     }
 
     private func launch(_ arguments: [String]) -> XCUIApplication {

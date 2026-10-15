@@ -244,6 +244,16 @@ public enum CatalogKind: String, Hashable, Sendable, CaseIterable, Identifiable 
         }
     }
 
+    /// The SF Symbol its menu item carries.
+    public var symbol: String {
+        switch self {
+        case .mcpServers: return "server.rack"
+        case .skills: return "wand.and.stars"
+        case .hooks: return "link"
+        case .plugins: return "puzzlepiece.extension"
+        }
+    }
+
     /// The session field, the `PATCH /api/v1/sessions/:id/<path>` and the create parameter.
     var parameter: String {
         switch self {
@@ -262,6 +272,13 @@ public enum CatalogKind: String, Hashable, Sendable, CaseIterable, Identifiable 
         case .hooks: return session.catalogHooks ?? []
         case .plugins: return session.catalogPlugins ?? []
         }
+    }
+
+    /// What the session's agent root supplies of this kind when the session chooses none —
+    /// the web UI's "agent root default".
+    public func rootDefaults(for session: SessionSummary, in configs: AppConfigs?) -> [String] {
+        guard let name = session.agentRoot, let root = configs?.agentRoots.first(where: { $0.name == name }) else { return [] }
+        return defaults(of: root)
     }
 
     /// What `root` starts a session with of this kind.

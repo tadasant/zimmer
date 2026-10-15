@@ -208,10 +208,12 @@ final class SessionDetailPanelsTests: XCTestCase {
         XCTAssertEqual(connections.map(\.state), [.connected, .failed, .pending, .pending], "an entry that does not read is pending, as the web chip reads it")
         XCTAssertEqual(connections[1].error, "401 Unauthorized")
         XCTAssertEqual(connections.map(\.injected), [false, false, true, false])
+        XCTAssertEqual(connections.map(\.fromPlugin), [false, false, false, true], "neither chosen nor injected: a plugin's")
 
         let older = try decode(["session": ["id": 1, "status": "running", "mcp_servers": ["playwright-custom"]]])
         XCTAssertEqual(older.session.mcpConnections.map(\.name), ["playwright-custom"], "without the effective set, the chosen ones")
         XCTAssertEqual(older.session.mcpConnections.first?.state, .pending)
+        XCTAssertEqual(older.session.mcpConnections.first?.fromPlugin, false, "without the effective set nothing reads as a plugin's")
         let none = try decode(["session": ["id": 1, "status": "running", "custom_metadata": ["mcp_servers_status": "broken"]]])
         XCTAssertTrue(none.session.mcpConnections.isEmpty)
         XCTAssertEqual(McpConnection.State("surprising"), .pending)
@@ -249,9 +251,18 @@ final class SessionDetailPanelsTests: XCTestCase {
         let merge = try await fake.session(1038)
         XCTAssertEqual(configs.goal(matching: merge.session.goal)?.title, "Open Reviewed Green PR", "1038's is a catalog goal's words")
 
-        // Choosing MCP servers moves the effective set with them, keeping the injected one.
+        // Choosing MCP servers moves the effective set with them, keeping the injected one and
+        // the plugin's.
+        XCTAssertEqual(merge.session.mcpConnections.filter(\.fromPlugin).map(\.name), ["remote-fs-screenshots"])
         _ = try await fake.updateSelection(1038, .mcpServers, to: ["slack"])
         let rewired = try await fake.session(1038)
-        XCTAssertEqual(rewired.session.mcpConnections.map(\.name), ["slack", "zimmer-self-session"])
+        XCTAssertEqual(rewired.session.mcpConnections.map(\.name), ["slack", "remote-fs-screenshots", "zimmer-self-session"])
+        XCTAssertEqual(rewired.session.mcpServers, ["slack"], "the session's own list is replaced, not merged")
+
+        // What the session's agent root supplies, which an empty list falls back to.
+        XCTAssertEqual(CatalogKind.mcpServers.rootDefaults(for: merge.session, in: configs), ["playwright-custom"])
+        XCTAssertEqual(CatalogKind.hooks.rootDefaults(for: merge.session, in: configs), [])
+        XCTAssertEqual(CatalogKind.mcpServers.rootDefaults(for: merge.session, in: nil), [], "nothing until the catalog reads")
+        XCTAssertEqual(CatalogKind.mcpServers.rootDefaults(for: free.session, in: configs), [], "no root, no defaults")
     }
 }

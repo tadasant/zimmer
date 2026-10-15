@@ -220,12 +220,16 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var mcpConnections: [McpConnection] {
         let names = allMcpServers ?? mcpServers ?? []
         let injected = Set(injectedMcpServers ?? [])
+        // In the effective set, neither chosen nor injected: a plugin brought it.
+        let chosen = Set(mcpServers ?? [])
         let statuses = customMetadata?.mcpServerStatuses ?? [:]
         var seen = Set<String>()
         return names.compactMap { name in
             guard seen.insert(name).inserted else { return nil }
             let status = statuses[name]
-            return McpConnection(name: name, state: McpConnection.State(status?.status), error: status?.error, injected: injected.contains(name))
+            let isInjected = injected.contains(name)
+            return McpConnection(name: name, state: McpConnection.State(status?.status), error: status?.error, injected: isInjected,
+                                 fromPlugin: allMcpServers != nil && !isInjected && !chosen.contains(name))
         }
     }
 }
@@ -255,14 +259,18 @@ public struct McpConnection: Hashable, Sendable, Identifiable {
     public var error: String?
     /// Zimmer added it rather than anyone choosing it.
     public var injected: Bool
+    /// One of the session's plugins brought it: it is not in the session's own list, so the
+    /// editor cannot remove it, as the web UI's read-only plugin chip says.
+    public var fromPlugin: Bool
 
     public var id: String { name }
 
-    public init(name: String, state: State, error: String? = nil, injected: Bool = false) {
+    public init(name: String, state: State, error: String? = nil, injected: Bool = false, fromPlugin: Bool = false) {
         self.name = name
         self.state = state
         self.error = error
         self.injected = injected
+        self.fromPlugin = fromPlugin
     }
 }
 
