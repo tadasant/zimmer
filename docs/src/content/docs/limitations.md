@@ -7974,6 +7974,15 @@ the web UI: queued messages, attachments, the new-session form, catalog and mode
 notifications, triggers, costs and health are still browser-only — see
 [Not in the app yet](/extend/ios-app/#not-in-the-app-yet).
 
+## A Zimmer link in the iOS app opens the browser
+
+The web's Status panel rewrites a summary's link to one of the session's own transcript messages
+into an in-page `#message-N` anchor (`SessionStatusSummary#summary_markdown`), so a tap scrolls the
+transcript. The API sends the stored text, and the app has no handler for Zimmer's own URLs. So in
+the app's *Where things stand* and its transcript, a link to a message, or to another session,
+opens the web page in the browser rather than in the app. A pull request, issue or CI run link
+opens the same either way.
+
 ## The transcript archive's deadline cannot stop a run that is stuck
 
 `TranscriptArchiveJob` stops between sessions once its ten-minute `RUN_DEADLINE` has passed
