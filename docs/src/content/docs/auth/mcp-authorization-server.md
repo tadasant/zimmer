@@ -232,10 +232,9 @@ happens depends on whether any pair it was traded for has been used.
   gets another pair.
 
 Every pair issued for one spent token stays live until one of them is used. The first one used
-retires the rest: their access tokens stop working, and their refresh tokens count as spent. A
-client that refreshed twice at once, or lost an answer and asked again, ends up with exactly one live
-pair. Presenting a retired refresh token is refused, and more than 60 seconds after it was retired
-it revokes the connection.
+retires the rest: both halves expire. A client that refreshed twice at once, or lost an answer and
+asked again, ends up with exactly one live pair. A retired refresh token is refused as expired and
+never revokes the connection, because its holder lost a race rather than replayed a token.
 
 A refresh made while the allowed domains cannot be read (the secret store not answering, or nothing
 configured) is a `503 temporarily_unavailable`. Nothing is issued and nothing is revoked. Only a list

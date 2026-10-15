@@ -507,7 +507,7 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert refresh(client_id, third["refresh_token"])["access_token"], "the reissued chain rotates normally"
   end
 
-  test "the lost pair is retired once the reissued one is used, and presenting it later revokes the grant" do
+  test "the lost pair is retired once the reissued one is used: refused, never a revoke" do
     client_id, tokens = connect
     lost = refresh(client_id, tokens["refresh_token"])
 
@@ -522,9 +522,9 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
 
     travel 2.minutes
     assert_equal "invalid_grant", refresh(client_id, lost["refresh_token"])["error"]
-    assert OauthServer::Grant.last.revoked?, "whoever holds the retired pair is not the client that refreshed"
+    refute OauthServer::Grant.last.revoked?, "a retired pair lost a race; it is not a replay"
     rpc("tools/list", token: reissued["access_token"])
-    assert_response :unauthorized
+    assert_response :success
   end
 
   test "a token bound to another resource is refused on /mcp" do

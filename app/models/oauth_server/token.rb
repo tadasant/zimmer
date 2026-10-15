@@ -45,7 +45,8 @@ module OauthServer
         return lookup unless lookup.ok?
         return Lookup.new(token: lookup.token, refusal: :wrong_audience) unless lookup.grant.resource == resource
 
-        lookup.token.mark_used!
+        return Lookup.new(token: lookup.token, refusal: :expired) unless lookup.token.mark_used!
+
         lookup.grant.touch_last_used!
         lookup
       end
@@ -53,31 +54,39 @@ module OauthServer
 
     # The first request an access token makes. Claims its pair (#claim_pair!) —
     # one write per access token, never repeated.
+    #
+    # @return [Boolean] false when another pair claimed first and retired this one
     def mark_used!
-      claim_pair! if used_at.nil?
+      used_at.present? || claim_pair!
     end
 
     # This token's pair has reached its client: stamp both halves `used_at`, so
     # the evidence outlives the access token's own row, and retire any other
     # pair issued for the same spent refresh token (TokensController#rotate).
     # Called on an access token's first request and on a refresh token's
-    # rotation — whichever comes first.
+    # rotation — whichever comes first. Under the grant's lock, which every
+    # refresh takes first too, so the two never wait on each other's rows.
+    #
+    # A retired pair is expired, both halves: it is refused like any expired
+    # token and never revokes the grant. Its holder lost a race with a pair
+    # issued for the same spent token, which is what a client that refreshed
+    # twice at once looks like.
+    #
+    # @return [Boolean] false when another pair claimed first and retired this one
     def claim_pair!
       now = Time.current
-      if rotated_from_id.nil?
-        pair.where(used_at: nil).update_all(used_at: now, updated_at: now)
-        return
-      end
-
       grant.with_lock do
-        # A sibling claimed first and retired this pair (unlinking it): leave
-        # the winner alone.
-        if self.class.where(id: id).where.not(rotated_from_id: nil).exists?
+        # Retiring a pair unlinks it, so one that names a refresh token in memory
+        # but no longer in the row lost to a sibling.
+        live = rotated_from_id.nil? || self.class.where(id: id).where.not(rotated_from_id: nil).exists?
+        if live
           pair.where(used_at: nil).update_all(used_at: now, updated_at: now)
-          siblings = self.class.where(rotated_from_id: rotated_from_id).where.not(created_at: created_at)
-          siblings.where(kind: REFRESH).update_all(rotated_at: now, rotated_from_id: nil, updated_at: now)
-          siblings.where(kind: ACCESS).update_all(expires_at: now, rotated_from_id: nil, updated_at: now)
+          if rotated_from_id
+            self.class.where(rotated_from_id: rotated_from_id).where.not(created_at: created_at)
+              .update_all(rotated_at: now, expires_at: now, rotated_from_id: nil, updated_at: now)
+          end
         end
+        live
       end
     end
 

@@ -84,8 +84,7 @@ module OauthServer
     # been used: that client gets another pair. Every pair issued for one spent
     # token stays live until one of them is used, and that first use retires the
     # rest (Token#claim_pair!), so the client that refreshed twice at once and
-    # the client that lost an answer both end up with exactly one live pair, and
-    # presenting a retired refresh token later reads as the replay it would be.
+    # the client that lost an answer both end up with exactly one live pair.
     #
     # @return [Grant::TokenPair, :replayed]
     def rotate(token, grant)
