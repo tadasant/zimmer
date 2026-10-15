@@ -242,6 +242,34 @@ module TranscriptRedactor
   # #bytesize is O(1) where #length is O(n) on non-ASCII input.
   PUBLIC_IDENTIFIER_MAX_LENGTH = 255
 
+  # A captured value that is a fill-in-the-blank, not a credential. Checked for
+  # every `:value` pattern, because the framing those rules key on — a URL's
+  # userinfo, `password=`, `Bearer` — is exactly where an agent writing
+  # instructions for a human puts the blank:
+  #
+  #   http://<proxy-username>:<proxy-password>@p.webshare.io:80
+  #
+  # came back as `:[REDACTED:MATCH:URL_CREDENTIALS:…]@`, which turned a
+  # walkthrough step into a puzzle and redacted nothing (session 24427).
+  #
+  # Each alternative is a convention that means "substitute a value here" and
+  # that a credential does not take: a whole `<angle-bracketed name>`, a shell
+  # variable (`${VAR}`, or a bare `$VAR` in one case), a `{{template}}`
+  # variable, a Windows `%VAR%`, or one character repeated (`xxxxxxxx`,
+  # `********`). The angle brackets are also accepted JSON-escaped as
+  # `\u003c…\u003e`, which is how ActiveSupport's `to_json` writes them into a
+  # JSONL record. Anchored at both ends, so the placeholder has to BE the value —
+  # `abc<def>ghi` and `$ecretPassw0rd` are not excused.
+  #
+  # Ordering keeps this from being a way to smuggle a real token through: the
+  # prefixed-token patterns run first, so a `ghp_…` inside angle brackets has
+  # already been redacted by GITHUB_TOKEN before any `:value` rule sees it. The
+  # residual risk is a shapeless password that happens to look like one of these
+  # — documented in limitations.md.
+  PLACEHOLDER_VALUE = bounded(
+    /\A(?:<[A-Za-z][^<>]*>|\\u003c[A-Za-z][^<>\\]*\\u003e|\$\{[A-Za-z_][^{}]*\}|\$(?:[A-Z_][A-Z0-9_]*|[a-z_][a-z0-9_]*)|\{\{[ \t]*[A-Za-z_][^{}]*\}\}|%[A-Za-z_][A-Za-z0-9_]*%|(.)\1+)\z/
+  )
+
   # Order matters: the first pattern to match a span wins, because its
   # replacement no longer looks like a credential to the patterns after it. The
   # specific labels come before the generic `ENV_SECRET` catch so a redaction is
@@ -732,6 +760,7 @@ module TranscriptRedactor
         end
 
         removed = pattern.mode == :value ? found[1] : match
+        next match if pattern.mode == :value && placeholder?(removed)
         next match if pattern.reject&.call(preceding, removed)
 
         if pattern.mode == :value
@@ -778,6 +807,15 @@ module TranscriptRedactor
 
       wordy = segments.count { |segment| segment.match?(NON_HEX_LETTER) }
       wordy * 2 > segments.length
+    end
+
+    # Is this captured value a fill-in-the-blank? See PLACEHOLDER_VALUE. Same
+    # length cap as public_identifier?, for the same reason: ENV_SECRET can hand
+    # this a multi-megabyte base64 run, and no placeholder is that long.
+    def placeholder?(value)
+      value.is_a?(String) &&
+        value.bytesize <= PUBLIC_IDENTIFIER_MAX_LENGTH &&
+        value.match?(PLACEHOLDER_VALUE)
     end
 
     # Swap capture group 1 out of `match` by offset rather than by
