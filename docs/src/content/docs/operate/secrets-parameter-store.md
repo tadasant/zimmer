@@ -780,13 +780,15 @@ name within the 10-second negative TTL. No redeploy.
 
 ## A writer identity, for the Pi tab
 
-Everything above describes a Zimmer that **reads** the store. The Inference
-page's Pi tab is the one surface that writes to it: it creates, rotates and
-deletes `OPENROUTER_API_KEY`, the provider key every Pi session runs on.
+Everything above describes a Zimmer that **reads** the store. Two surfaces
+write to it, both through `ManagedSecret`: the Inference page's Pi tab creates,
+rotates and deletes `OPENROUTER_API_KEY`, the provider key every Pi session runs
+on, and [`/live`](/sessions/live/#the-openai-key) does the same for
+`LIVE_OPENAI_API_KEY`, the live modes' OpenAI key.
 
 **That write path is closed on this deployment today, and it stays closed until
-a human makes the IAM grant below.** Until then the tab says so, names the exact
-permissions it is missing, and offers no form. This is deliberate — the
+a human makes the IAM grant below.** Until then the tab (and `/live`'s key panel)
+says so, names the exact permissions it is missing, and offers no form. This is deliberate — the
 alternative is a Save button that 403s.
 
 ### Why a second service account, and not a wider first one

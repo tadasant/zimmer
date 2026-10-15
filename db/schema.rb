@@ -477,6 +477,43 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_15_160000) do
     t.index ["session_id", "occurred_at", "id"], name: "index_human_messages_on_session_id_and_occurred_at_and_id"
   end
 
+  create_table "live_conversation_turns", force: :cascade do |t|
+    t.string "call_id"
+    t.text "content"
+    t.datetime "created_at", null: false
+    t.bigint "live_conversation_id", null: false
+    t.string "role", null: false
+    t.string "source"
+    t.jsonb "tool_arguments"
+    t.boolean "tool_error", default: false, null: false
+    t.string "tool_name"
+    t.text "tool_output"
+    t.datetime "updated_at", null: false
+    t.index ["live_conversation_id", "id"], name: "index_live_conversation_turns_on_live_conversation_id_and_id"
+    t.index ["live_conversation_id"], name: "index_live_conversation_turns_on_live_conversation_id"
+  end
+
+  create_table "live_conversations", force: :cascade do |t|
+    t.string "agent_root", null: false
+    t.datetime "created_at", null: false
+    t.datetime "ended_at"
+    t.text "error_message"
+    t.text "instructions"
+    t.string "instructions_source"
+    t.datetime "last_activity_at"
+    t.jsonb "mcp_servers", default: [], null: false
+    t.jsonb "mcp_tool_cache", default: {}, null: false
+    t.string "mode", null: false
+    t.string "model", null: false
+    t.datetime "responding_since"
+    t.string "status", default: "preparing", null: false
+    t.string "title"
+    t.datetime "updated_at", null: false
+    t.index ["mode", "status"], name: "index_live_conversations_on_mode_and_status"
+    t.index ["mode"], name: "index_live_conversations_one_open_per_mode", unique: true, where: "((status)::text = ANY ((ARRAY['preparing'::character varying, 'active'::character varying])::text[]))"
+    t.index ["updated_at"], name: "index_live_conversations_on_updated_at"
+  end
+
   create_table "logs", force: :cascade do |t|
     t.text "content"
     t.datetime "created_at", null: false
@@ -1226,6 +1263,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_15_160000) do
   add_foreign_key "gate_decision_feedbacks", "gate_decisions"
   add_foreign_key "gate_decisions", "sessions", column: "writing_session_id", on_delete: :nullify
   add_foreign_key "human_messages", "sessions", on_delete: :cascade
+  add_foreign_key "live_conversation_turns", "live_conversations", on_delete: :cascade
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
   add_foreign_key "notifications", "sessions", on_delete: :cascade

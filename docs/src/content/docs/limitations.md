@@ -8110,6 +8110,45 @@ More edges, all deliberate for now:
   `Sessions::TurnSignal`, which `Session#broadcast_status_change` sends after commit. A write that
   skips callbacks is picked up by the 5-second backstop re-read instead.
 
+## Live Mode and Live Voice have not talked to OpenAI yet
+
+Every Zimmer-side path of [the live modes](/sessions/live/) has run: the reply loop, the tool bridge,
+in-process delegation, self-enabling a stdio server, the client-secret mint, and the browser's
+data-channel relay. But they ran against a stand-in that speaks OpenAI's documented wire format,
+because no deployment had `LIVE_OPENAI_API_KEY` when they were built. So nothing has shown that
+`gpt-6-luna` takes Chat Completions tools with `reasoning_effort: "none"`, that `gpt-realtime-2.1-mini`
+accepts the session config Zimmer mints, or that the browser's WebRTC offer is answered. Those are
+what the first conversation after the key is set will prove. The model names were current in
+OpenAI's docs on 2026-10-15; `LIVE_MODE_MODEL` and `LIVE_VOICE_MODEL` change them without a deploy.
+
+## A live conversation's stdio servers start from scratch on every call
+
+A catalog server a live conversation enables runs in the Rails process's container, spawned for one
+call and closed after it. An `npx` server pays its cold start on every call, and a server that keeps
+state between calls — a browser, a logged-in session — keeps none across a conversation. Remote
+(`streamable-http`) servers hold no such cost. A pooled process per conversation would fix both,
+and needs a home that outlives a Puma request, which nothing provides yet.
+
+## What a live conversation says and reads goes to OpenAI
+
+The live model runs at OpenAI, so every turn is sent there, and so is every tool result the model
+reads. That includes a Zimmer tool's output, such as a session's details or a slice of its
+transcript. Background sessions are no different in kind (their model is a vendor's too), but this
+is a second vendor, and nothing redacts a tool result before it goes.
+
+## Live Mode replies share a two-thread lane
+
+`LiveConversationReplyJob` runs on the `inference` queue beside title and status-summary
+generation, which has two threads. A burst of those can delay a typed reply by a job's length. A lane
+of its own would need a `ConnectionBudget` change, and the measured need for one does not exist yet.
+
+## A Live Voice call lives in one browser tab
+
+The call survives Turbo navigation, because the dock that owns it is permanent in the layout. It
+does not survive closing the tab, a full reload, or a deploy that changes the JavaScript bundle
+(Turbo reloads the page when its tracked assets change). Tool calls also relay through that tab, so
+a tab the browser has frozen stops running them.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

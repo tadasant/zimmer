@@ -121,6 +121,13 @@ module Mcp
       Definition.new(klass: "Mcp::Tools::SaveOutcomeAnalysis", group: "sessions", write: true),
 
       # Notifications
+      # Live Mode and Live Voice: the conversations a human has with Zimmer from
+      # /live. In `sessions` because they are the human-facing front of the same
+      # work — a live conversation's job is to start and check on sessions — and
+      # reading what was said there is a session-orchestration read.
+      Definition.new(klass: "Mcp::Tools::GetLiveConversations", group: "sessions", write: false),
+      Definition.new(klass: "Mcp::Tools::ActionLiveConversation", group: "sessions", write: true),
+
       Definition.new(klass: "Mcp::Tools::GetNotifications", group: "notifications", write: false),
       Definition.new(klass: "Mcp::Tools::SendPushNotification", group: "notifications", write: true, composite_groups: %w[self_session]),
       Definition.new(klass: "Mcp::Tools::ActionNotification", group: "notifications", write: true),
