@@ -1,9 +1,12 @@
 import SwiftUI
 import ZimmerKit
 
-/// The web UI's new-session form, as a native form: agent root, runtime, model, effort,
-/// prompt, title, goal, scheduling class, and the MCP servers, skills, hooks and plugins
-/// the session carries — each starting at the root's defaults, as the web form does.
+/// The web UI's new-session form, as a native form: agent root, runtime, model, effort, the
+/// auto-compact window (Claude Code only), prompt, title, goal, scheduling class and
+/// precedence, the MCP servers, skills, hooks and plugins the session carries — each starting
+/// at the root's defaults, as the web form does — and *Clone Only*. The class starts at
+/// priority, the web form's default for a person's session: a create from the app is recorded
+/// as `api` genesis, which would derive to spot and wait for quota.
 struct NewSessionView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -15,7 +18,10 @@ struct NewSessionView: View {
     @State private var prompt = ""
     @State private var title = ""
     @State private var goal = ""
-    @State private var schedulingClass = ""
+    @State private var schedulingClass = NewSessionRequest.defaultSchedulingClass
+    /// The web form's number fields, as typed: blank is the server's default.
+    @State private var precedence = ""
+    @State private var autoCompactWindow = ""
     @State private var selections: [CatalogKind: [String]] = [:]
     @State private var starting = false
     @State private var error: ZimmerError?
@@ -67,10 +73,11 @@ struct NewSessionView: View {
         goalSection(configs)
         schedulingSection
         artifactsSection
+        cloneOnlySection
     }
 
     private func agentSection(_ configs: AppConfigs) -> some View {
-        Section("Agent") {
+        Section {
             Picker("Agent root", selection: $root) {
                 ForEach(configs.invocableRoots) { root in Text(root.title).tag(root.name) }
             }
@@ -91,6 +98,21 @@ struct NewSessionView: View {
                     Text(modelDefault).tag("")
                     ForEach(model.effortLevels, id: \.self) { Text($0).tag($0) }
                 }
+            }
+            // The web form's field, shown for Claude Code alone, as its controller shows it.
+            if runtime == "claude_code" {
+                LabeledContent("Auto-compact window") {
+                    TextField(NewSessionRequest.maxAutoCompactWindow.formatted(), text: $autoCompactWindow)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("newsession.autocompact")
+                }
+            }
+        } header: {
+            Text("Agent")
+        } footer: {
+            if runtime == "claude_code" {
+                Text("Claude Code's context-compaction threshold, in tokens. Blank is the default, 1,000,000, which is also the most it takes. Only a Claude Code session honours it.")
             }
         }
         .onChange(of: root) { _, name in
@@ -136,13 +158,36 @@ struct NewSessionView: View {
 
     private var schedulingSection: some View {
         Section {
+            // The web select's three, in its order with its words; "from its origin" names what
+            // the app's origin gives, as the web names the web app's.
             Picker("Scheduling class", selection: $schedulingClass) {
-                Text("From its origin").tag("")
-                Text("Priority").tag("priority")
-                Text("Spot").tag("spot")
+                Text("Priority — starts whenever it is ready").tag("priority")
+                Text("Spot — waits for quota room or a free slot").tag("spot")
+                Text("From its origin — an API session, spot by default").tag("")
             }
+            .accessibilityIdentifier("newsession.class")
+            LabeledContent("Precedence") {
+                TextField("0", text: $precedence)
+                    .keyboardType(.numbersAndPunctuation)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityIdentifier("newsession.precedence")
+            }
+        } header: {
+            Text("Scheduling")
         } footer: {
-            Text("Priority starts when it is ready. Spot waits for quota headroom and a free slot, then runs in precedence order.")
+            Text("Spot sessions start only while a Claude Code account is under both quota targets and a session slot is free; otherwise they wait, never cancelled, and are worked highest precedence first on an absolute scale — 100000 comes before 50 — and nothing renumbers, so leave gaps. Blank is 0. Anything this session spawns inherits the class. A session started from the app is recorded as an API session, which runs as spot unless a class is chosen here.")
+        }
+    }
+
+    /// The web form's *Clone Only*: the clone is set up and no turn runs; the prompt is dropped,
+    /// as the web button drops it, and the first message is sent from the session's page.
+    private var cloneOnlySection: some View {
+        Section {
+            Button("Clone Only") { Task { await create(cloneOnly: true) } }
+                .disabled(starting || root.isEmpty)
+                .accessibilityIdentifier("newsession.cloneonly")
+        } footer: {
+            Text("Set the clone up without a first turn. The prompt is dropped; send the first message from the session's page.")
         }
     }
 
@@ -229,9 +274,28 @@ struct NewSessionView: View {
         for kind in CatalogKind.allCases { selections[kind] = kind.defaults(of: option) }
     }
 
-    private func create() async {
+    /// Blank number fields send nothing; one that is not a whole number is refused here, where
+    /// the web's number inputs refuse it, rather than sent as nothing.
+    private func wholeNumber(_ text: String, named name: String) -> Result<Int?, ZimmerError> {
+        let trimmed = text.replacingOccurrences(of: ",", with: "").trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return .success(nil) }
+        guard let value = Int(trimmed) else { return .failure(.http(status: 422, message: "\(name) must be a whole number")) }
+        return .success(value)
+    }
+
+    private func create(cloneOnly: Bool = false) async {
         starting = true
         defer { starting = false }
+        let rank: Int?
+        let window: Int?
+        switch (wholeNumber(precedence, named: "Precedence"), wholeNumber(autoCompactWindow, named: "Auto-compact window")) {
+        case let (.success(p), .success(w)):
+            rank = p
+            window = w
+        case let (.failure(refusal), _), let (_, .failure(refusal)):
+            error = refusal
+            return
+        }
         let trimmedTitle = title.trimmingCharacters(in: .whitespaces)
         let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         // A predefined goal is stored as its words, as the web form stores it.
@@ -239,10 +303,12 @@ struct NewSessionView: View {
         let sendRuntime = rootDeclares.runtime || runtime != appliedRuntime
         let sendModel = !modelID.isEmpty && (rootDeclares.model || modelID != appliedModel || sendRuntime)
         var request = NewSessionRequest(
-            agentRoot: root, prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+            agentRoot: root, prompt: cloneOnly ? "" : prompt.trimmingCharacters(in: .whitespacesAndNewlines),
             runtime: sendRuntime ? runtime : nil, model: sendModel ? modelID : nil, effort: effort.isEmpty ? nil : effort,
             title: trimmedTitle.isEmpty ? nil : trimmedTitle, goal: goalText.isEmpty ? nil : goalText,
-            schedulingClass: schedulingClass.isEmpty ? nil : schedulingClass,
+            schedulingClass: schedulingClass.isEmpty ? nil : schedulingClass, precedence: rank,
+            // A disabled web input is left out of the submit; the field is only shown for Claude Code.
+            autoCompactWindow: runtime == "claude_code" ? window : nil,
             selections: selections, idempotencyKey: idempotencyKey
         )
         let attempt = request.fingerprint

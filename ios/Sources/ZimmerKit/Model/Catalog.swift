@@ -302,16 +302,29 @@ public struct NewSessionRequest: Hashable, Sendable {
     public var effort: String?
     public var title: String?
     public var goal: String?
-    /// `priority` or `spot`; nil derives it.
+    /// `priority` or `spot`; nil derives it from the session's genesis. A create from the app
+    /// is recorded as `api` genesis, which derives to spot, so the form sends `defaultSchedulingClass`
+    /// unless the person chose otherwise.
     public var schedulingClass: String?
+    /// Where the session lands in the spot queue, higher worked first; nil for the server's 0.
+    public var precedence: Int?
+    /// Claude Code's auto-compact threshold in tokens; nil for the column default.
+    public var autoCompactWindow: Int?
     /// Each kind the person chose explicitly; a kind left out takes the root's defaults.
     public var selections: [CatalogKind: [String]]
     /// Names this create attempt, so a retry after a lost response returns the same session.
     public var idempotencyKey: String
 
+    /// The class the web form starts a person's session under (`web_ui` genesis derives to
+    /// priority). The API records a parentless create as `api`, which derives to spot, so the
+    /// app sends this rather than leaving a phone-started session to wait for quota.
+    public static let defaultSchedulingClass = "priority"
+    /// The column default and the most the server takes (`Session::MAX_AUTO_COMPACT_WINDOW`).
+    public static let maxAutoCompactWindow = 1_000_000
+
     public init(agentRoot: String, prompt: String, runtime: String? = nil, model: String? = nil, effort: String? = nil,
-                title: String? = nil, goal: String? = nil, schedulingClass: String? = nil,
-                selections: [CatalogKind: [String]] = [:], idempotencyKey: String = UUID().uuidString) {
+                title: String? = nil, goal: String? = nil, schedulingClass: String? = nil, precedence: Int? = nil,
+                autoCompactWindow: Int? = nil, selections: [CatalogKind: [String]] = [:], idempotencyKey: String = UUID().uuidString) {
         self.agentRoot = agentRoot
         self.prompt = prompt
         self.runtime = runtime
@@ -320,6 +333,8 @@ public struct NewSessionRequest: Hashable, Sendable {
         self.title = title
         self.goal = goal
         self.schedulingClass = schedulingClass
+        self.precedence = precedence
+        self.autoCompactWindow = autoCompactWindow
         self.selections = selections
         self.idempotencyKey = idempotencyKey
     }
@@ -343,6 +358,8 @@ public struct NewSessionRequest: Hashable, Sendable {
         if let title, !title.isEmpty { json["title"] = title }
         if let goal, !goal.isEmpty { json["goal"] = goal }
         if let schedulingClass { json["scheduling_class"] = schedulingClass }
+        if let precedence { json["precedence"] = precedence }
+        if let autoCompactWindow { json["auto_compact_window"] = autoCompactWindow }
         for (kind, values) in selections { json[kind.parameter] = values }
         return json
     }
