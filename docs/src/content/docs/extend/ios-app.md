@@ -239,6 +239,14 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   send them. Anything that would be refused, or could not be read, is named rather than dropped
   quietly. They go with the message however it is delivered: now, queued behind a turn, or with
   *Send Now*.
+- **Merges.** On a session whose newest PR is open with CI green, the web UI's row *Merge* button is
+  a swipe right, a long-press item, and the first item in the session menu (*Merge #1261*). After a
+  confirmation, the session is told it may merge (`POST /api/v1/sessions/:id/authorize_merge`). The
+  tap is the sign-off, and it is recorded as your message. Only a sign-in that acts on your behalf
+  may give it; a relay-only one shows the server's refusal. The app does not show the web row's
+  *Merge sent* state: a second tap is answered "already authorized" and sends nothing.
+- **Reprioritizes** the board from the view menu in *Your board* and *Ranked*, after a confirmation:
+  the deployment's reprioritizing session re-ranks it and writes the order back.
 - **Trashes** a session as the web UI's Trash does: no question first, and an *Undo* on the board,
   shown for 30 seconds as the web UI shows it (`UNDO_ARCHIVE_WINDOW`), which restores the session.
   A session with a turn in flight goes outright, ending the turn
@@ -292,14 +300,13 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
-Every action above is a route on `/api/v1/sessions` that the app's token could already reach; none
-of them widened what the phone can do on the server.
+Every action above is a route on `/api/v1/sessions`. Merge is the one the app's token reaches
+where an API key cannot: only a person may give it (see the [REST API](/extend/rest-api/)).
 
 ### Not in the app yet
 
-*Reprioritize* and *Authorize merge* are not in the app yet, nor is the web composer's camera
-button: taking a photo cannot be exercised in the simulator, so it waits on a change verified on
-a device. Fork from a message and answering an
+The web composer's camera button is not in the app yet: taking a photo cannot be exercised in the
+simulator, so it waits on a change verified on a device. Fork from a message and answering an
 elicitation stay in the browser until the app draws them; the API they need is in place. Switching a trigger's *Enqueue messages* and
 *Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update),
 saying whether re-arming a failed trigger fires it again (the trigger JSON does not say whether a
