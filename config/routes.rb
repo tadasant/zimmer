@@ -217,6 +217,8 @@ Rails.application.routes.draw do
       end
 
       resources :configs, only: [ :index ]
+      # The Settings page's row: session defaults, the experimental toggles, MCP Apps.
+      resource :app_settings, only: [ :show, :update ]
       # Models added to a runtime's catalog at runtime (#85). The built-in ones
       # are read-only and listed under `runtime_models` in GET /configs.
       resources :model_catalog_entries, only: [ :index, :create, :destroy ]

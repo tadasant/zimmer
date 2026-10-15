@@ -231,6 +231,78 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     [ verifier, Base64.urlsafe_encode64(Digest::SHA256.digest(verifier), padding: false) ]
   end
 
+  # The Settings page's row over REST: the app reads it on any grant, writes the
+  # session defaults and the experimental toggles on any grant (an agent may too,
+  # through action_app_settings), and changes MCP Apps only acting as you.
+  test "the app reads the settings and writes the defaults and experimental toggles" do
+    headers = bearer(token)
+    get "/api/v1/app_settings", headers: headers
+    assert_response :success
+    body = JSON.parse(response.body).fetch("app_settings")
+    assert_equal RuntimeRegistry::DEFAULT_RUNTIME, body.dig("session_defaults", "runtime")
+    assert_equal false, body.dig("session_defaults", "runtime_overridden")
+    assert body["runtimes"].any? { |r| r["id"] == "claude_code" && r["models"].any? }
+    first = ExperimentalSettingsRegistry.all.first
+    entry = body["experimental"].find { |e| e["key"] == first.key }
+    assert_equal first.current_value, entry["enabled"]
+    assert_equal ExperimentalSettingsRegistry.default_on?(first), entry["default_enabled"]
+    assert_equal false, body.dig("mcp_apps", "enabled")
+    assert_kind_of Array, body.dig("mcp_apps", "eligible_servers")
+
+    model = ModelCatalog.model_ids_for("claude_code").last
+    patch "/api/v1/app_settings", params: { app_settings: { default_runtime: "claude_code", default_model: model } },
+      headers: headers, as: :json
+    assert_response :success
+    assert_equal model, JSON.parse(response.body).dig("app_settings", "session_defaults", "model")
+    assert_equal true, JSON.parse(response.body).dig("app_settings", "session_defaults", "model_overridden")
+    assert_equal model, AppSetting.current.default_model
+
+    was = first.current_value
+    patch "/api/v1/app_settings", params: { app_settings: { experimental: { first.key => !was } } },
+      headers: headers, as: :json
+    assert_response :success
+    assert_equal !was, first.current_value
+    entry = JSON.parse(response.body).fetch("app_settings")["experimental"].find { |e| e["key"] == first.key }
+    assert_equal first.current_value, entry["enabled"]
+  end
+
+  test "a bad runtime and model pair, or an unknown experimental key, is a 422 and changes nothing" do
+    headers = bearer(token)
+    patch "/api/v1/app_settings", params: { app_settings: { default_runtime: "claude_code", default_model: "not-a-model" } },
+      headers: headers, as: :json
+    assert_response :unprocessable_entity
+    assert_nil AppSetting.current.default_model
+
+    first = ExperimentalSettingsRegistry.all.first
+    before = first.current_value
+    patch "/api/v1/app_settings", params: { app_settings: { experimental: { "no_such_setting" => true, first.key => !before } } },
+      headers: headers, as: :json
+    assert_response :unprocessable_entity
+    assert_equal "Unknown experimental setting", JSON.parse(response.body)["error"]
+    assert_equal before, first.current_value
+  end
+
+  test "MCP Apps change only on a grant that acts as you, never over an API key" do
+    patch "/api/v1/app_settings", params: { app_settings: { mcp_apps_enabled: true } },
+      headers: bearer(token), as: :json
+    assert_response :forbidden
+    assert_match(/sign in again/, JSON.parse(response.body)["message"])
+    assert_equal false, AppSetting.current.mcp_apps_enabled?
+
+    patch "/api/v1/app_settings", params: { app_settings: { mcp_apps_allowed_servers: [ "anything" ] } },
+      headers: { "X-API-Key" => API_KEY }, as: :json
+    assert_response :forbidden
+    assert_match(/Only a person/, JSON.parse(response.body)["message"])
+
+    patch "/api/v1/app_settings", params: { app_settings: { mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "not-in-the-catalog" ] } },
+      headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN)), as: :json
+    assert_response :success
+    body = JSON.parse(response.body).fetch("app_settings")
+    assert_equal true, body.dig("mcp_apps", "enabled")
+    assert_equal [], body.dig("mcp_apps", "allowed_servers"), "a server the catalog does not offer is dropped, as the page drops it"
+    assert_equal true, AppSetting.current.mcp_apps_enabled?
+  end
+
   def token(privilege: OauthServer::RELAY_ONLY)
     verifier, challenge = pkce
     post "/oauth/authorize", params: { response_type: "code", client_id: CLIENT_ID, redirect_uri: REDIRECT,
