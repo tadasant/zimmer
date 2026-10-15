@@ -186,6 +186,11 @@ export ZIMMER_UI_TEST_EXPECT_ENV="$expect_env"
 export ZIMMER_UI_TEST_EXPECT_HOST="$expect_host"
 export TEST_RUNNER_ZIMMER_UI_TEST_EXPECT_ENV="$expect_env"
 export TEST_RUNNER_ZIMMER_UI_TEST_EXPECT_HOST="$expect_host"
+# Where a test's own screenshots are written as PNGs (`test-<name>.png`), beside the
+# `simctl` ones, so a moment only a test can reach — a menu open on a long press — is in the
+# artifact too, not only inside the result bundle.
+export ZIMMER_UI_TEST_ARTIFACTS="$artifacts"
+export TEST_RUNNER_ZIMMER_UI_TEST_ARTIFACTS="$artifacts"
 
 xcrun simctl io "$udid" recordVideo --codec h264 --force "$artifacts/run.mp4" &
 recorder=$!

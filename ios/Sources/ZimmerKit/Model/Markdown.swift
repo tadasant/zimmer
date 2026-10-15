@@ -28,6 +28,16 @@ public indirect enum MarkdownBlock: Hashable, Sendable {
         return false
     }
 
+    /// Whether a paragraph here, however deep, holds a link — written as one or bare.
+    public var containsLink: Bool {
+        switch self {
+        case let .paragraph(text): return text.contains("](") || !MarkdownAutolink.matches(in: text).isEmpty
+        case let .list(list): return list.items.contains { $0.contains(where: \.containsLink) }
+        case let .quote(blocks): return blocks.contains(where: \.containsLink)
+        case .heading, .code, .table, .rule: return false
+        }
+    }
+
     /// Every code block, however deep in a list or a quote.
     public var codeBlocks: [String] {
         switch self {
@@ -96,6 +106,9 @@ public struct MarkdownTable: Hashable, Sendable {
 extension [MarkdownBlock] {
     /// Whether any block has code, so a Copy button has to be reachable.
     public var containsCode: Bool { contains { !$0.codeBlocks.isEmpty } }
+
+    /// Whether any paragraph has a link, whose long-press menu has to be reachable.
+    public var containsLink: Bool { contains(where: \.containsLink) }
 }
 
 /// Bare URLs in a run of prose, which the web's `autolink` makes links. As character offsets,

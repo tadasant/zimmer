@@ -121,7 +121,15 @@ final class MarkdownTests: XCTestCase {
             case .rule: return "rule"
             }
         }
-        XCTAssertEqual(kinds, ["h2", "p", "h3", "p", "code", "list", "table", "quote"])
+        XCTAssertEqual(kinds, ["h2", "p", "h3", "p", "code", "list", "table", "quote", "p"])
+        XCTAssertTrue(blocks(review).containsLink)
+    }
+
+    func testAParagraphWithALinkIsFoundHoweverDeep() {
+        XCTAssertTrue(blocks("See [the diff](https://example.com).").containsLink)
+        XCTAssertTrue(blocks("- one\n  > at https://maps.example.com/x").containsLink)
+        XCTAssertFalse(blocks("No links.\n\n```\ncurl https://example.com\n```\n\n# https://heading.example.com").containsLink,
+                       "code and headings are drawn as text, with no link menu to reach")
     }
 
     func testBareURLsAreFoundWithoutTheirClosingPunctuation() {

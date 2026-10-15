@@ -1274,9 +1274,10 @@ struct MessageBubble: View {
     var body: some View {
         let fromAgent = message.role == .assistant
         let folds = message.isToolTraffic && folded
-        // Parsed once, for the text and for whether a Copy button has to be reachable.
+        // Parsed once, for the text and for what has to stay reachable inside it.
         let blocks = folds ? [] : MarkdownBlock.blocks(of: message.content)
-        let hasCode = blocks.containsCode
+        // A Copy button or a link's long-press menu has to be reachable on its own.
+        let hasControls = blocks.containsCode || blocks.containsLink
         VStack(alignment: fromAgent ? .leading : .trailing, spacing: 3) {
             HStack(spacing: 4) {
                 Text(message.isToolTraffic ? "Tool" : (fromAgent ? "Agent" : "You"))
@@ -1295,7 +1296,7 @@ struct MessageBubble: View {
                 } else if message.isToolTraffic {
                     // The server writes tool traffic as markdown too (`**Using tool: Bash**`
                     // over a fenced block), so it renders the same way, in the monospaced face.
-                    MarkdownText(blocks: blocks, proseFont: Theme.mono, proseColor: Theme.inkSoft)
+                    MarkdownText(blocks: blocks, monospaced: true, proseColor: Theme.inkSoft)
                 } else {
                     MarkdownText(blocks: blocks)
                 }
@@ -1309,8 +1310,8 @@ struct MessageBubble: View {
         // A reply from you sits to the right and stops short of the far edge, as in Messages.
         .padding(.leading, fromAgent ? 0 : 36)
         .frame(maxWidth: .infinity, alignment: fromAgent ? .leading : .trailing)
-        // One element to VoiceOver, unless a code block's Copy button has to be reachable.
-        .accessibilityElement(children: hasCode ? .contain : .combine)
+        // One element to VoiceOver, unless a Copy button or a link has to be reachable.
+        .accessibilityElement(children: hasControls ? .contain : .combine)
         .accessibilityIdentifier("detail.message.\(message.id)")
     }
 
