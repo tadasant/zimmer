@@ -529,7 +529,7 @@ CarPlay in. This is the same arrangement as Motet's.
 | `ios/bin/ui-test` | `ios-ui-tests.yml`, on push to `main` and on dispatch | Every UI test, and a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>` artifact (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
 | `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, and waits for processing |
 
-The full UI suite does not gate pull requests. It is 57 tests driven one at a time plus 60
+The full UI suite does not gate pull requests. It is some 60 tests driven one at a time plus more than 60
 photographs, about 45 minutes, which is too long to gate every iOS pull request on. A UI test that
 the smoke run does not cover is therefore first run on `main`, where a failure alerts like any other.
 To get the whole run and the screenshots for a branch before it merges, dispatch it:

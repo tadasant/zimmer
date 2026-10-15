@@ -6,8 +6,8 @@ name: iOS UI tests
 # THE FULL RUN. `ci.yml`'s `ios` job gates every pull request on `ios/bin/ui-test --smoke`:
 # a few tests, plus the classes the pull request's own changed UI test files declare, and no
 # photographs. Every other UI test and every screenshot runs here, after the merge, because
-# the whole of it — 57 tests driven one at a time and 60 photographs — takes about 45
-# minutes, which is too long to gate every iOS pull request on.
+# the whole of it — some 60 tests driven one at a time and more than 60 photographs — takes
+# about 45 minutes, which is too long to gate every iOS pull request on.
 # A failure on `main` reaches `#alerts` through `alert-ci-failure.yml`, like any other.
 #
 # THE ENTRY POINT AN AGENT CAN START. A branch's full run and screenshots, before it merges:
