@@ -182,6 +182,8 @@ struct FullScreenTranscript<Conversation: View, Composer: View>: View {
                     }
                     .padding(.horizontal, Theme.margin)
                     .padding(.vertical, 12)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("transcript.fullscreen.messages")
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
                 .readsTopEdge($edge)
@@ -235,7 +237,10 @@ struct FullScreenTranscript<Conversation: View, Composer: View>: View {
             .overlay(alignment: .bottom) {
                 Toast(text: $model.notice, identifier: "fullscreen.notice")
             }
-            .safeAreaInset(edge: .bottom) { composer() }
+            .safeAreaInset(edge: .bottom) {
+                // At its own height: offered the whole cover, the quick replies' row grows to fill it.
+                composer().fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

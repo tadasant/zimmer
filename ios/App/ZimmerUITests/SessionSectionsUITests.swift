@@ -55,9 +55,11 @@ final class SessionSectionsUITests: XCTestCase {
         let exit = app.buttons["transcript.fullscreen.exit"]
         XCTAssertTrue(exit.waitForExistence(timeout: timeout))
         XCTAssertTrue(app.navigationBars["#1044 · Transcript"].exists)
-        // Waits out the cover's transition too, while the page and the cover both hold the messages.
-        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["detail.sections"]), "the page's chrome is covered")
-        XCTAssertTrue(waitForVisible(app, app.descendants(matching: .any)["detail.message.98"]), "opened at the newest message")
+        // The page stays under the cover, messages and all: what is read is the cover's own.
+        let cover = app.descendants(matching: .any)["transcript.fullscreen.messages"]
+        XCTAssertTrue(cover.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForNotHittable(app.buttons["detail.sections.overview"]), "the page's chrome is covered")
+        XCTAssertTrue(waitForVisible(app, cover.descendants(matching: .any)["detail.message.98"]), "opened at the newest message")
         XCTAssertTrue(app.descendants(matching: .any)["followup.field"].exists, "a reply is still a tap away")
         attachScreenshot(app, named: "fullscreen-transcript")
 
@@ -77,9 +79,10 @@ final class SessionSectionsUITests: XCTestCase {
         XCTAssertTrue(enter.waitForExistence(timeout: timeout))
         enter.tap()
         XCTAssertTrue(app.buttons["transcript.fullscreen.exit"].waitForExistence(timeout: timeout))
-        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["detail.sections"]))
-        // The page under the cover is off the screen: these come from the cover's own reads.
-        let later = labelled(app, "step 2 done")
+        let cover = app.descendants(matching: .any)["transcript.fullscreen.messages"]
+        XCTAssertTrue(cover.waitForExistence(timeout: timeout))
+        // The page stands its reads down while covered: these come from the cover's own.
+        let later = cover.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "step 2 done")).firstMatch
         XCTAssertTrue(later.waitForExistence(timeout: 30), "a new message appears full screen with nothing touched")
     }
 
@@ -110,6 +113,11 @@ final class SessionSectionsUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         }
         return false
+    }
+
+    private func waitForNotHittable(_ element: XCUIElement) -> Bool {
+        let covered = expectation(for: NSPredicate(format: "hittable == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [covered], timeout: timeout) == .completed
     }
 
     private func waitForSelected(_ element: XCUIElement) -> Bool {
