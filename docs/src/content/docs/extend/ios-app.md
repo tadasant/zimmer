@@ -523,10 +523,17 @@ CarPlay in. This is the same arrangement as Motet's.
 | Check | Where it runs | What it proves |
 | --- | --- | --- |
 | `ios/bin/ci-swift` | `ios_swift_linux` (self-hosted Linux) and `ios` (macOS) | The `ZimmerKit` logic: sign-in protocol, token refresh, edge-refusal handling, list ordering |
-| `ios/bin/build-app` | `ios` (GitHub-hosted `macos-latest`) | The app compiles and links for the simulator |
+| `ios/bin/build-app` | By hand; `ios/bin/ui-test` builds the same simulator app in `ios` | The app compiles and links for the simulator |
 | `ios/bin/testflight check` | `ios` | An unsigned Release archive is uploadable in shape (bundle keys, icon, privacy manifest, no entitlements) |
-| `ios/bin/ui-test` | `ios` | The app runs on a simulator against its debug fixture, and the screenshots are kept as the `ios-ui-test` artifact, with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
+| `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and takes one session through open, answer and trash. Every class in a UI test file the pull request changed runs too |
+| `ios/bin/ui-test` | `ios-ui-tests.yml`, on push to `main` and on dispatch | Every UI test, and a photograph of every key screen in both appearances, kept as the `ios-ui-test-Staging` artifact with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
 | `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, and waits for processing |
+
+The full UI suite does not gate pull requests. It is 57 tests driven one at a time plus 60
+photographs, about 45 minutes, which is too long to gate every iOS pull request on. A UI test that
+the smoke run does not cover is therefore first run on `main`, where a failure alerts like any other.
+To get the whole run and the screenshots for a branch before it merges, dispatch it:
+`gh workflow run ios-ui-tests.yml --ref <branch>`.
 
 The iOS jobs run only when `ios/**` or one of the three workflows changes. The `ios-changes` job
 decides, and when it cannot tell it builds anyway. All three are in `all-checks-pass`. The macOS
