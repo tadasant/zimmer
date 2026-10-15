@@ -25,6 +25,7 @@ tabular digits everywhere, read state shown by dimming rather than by a badge.
 | 4. Quick Router advanced and attachments | P3, P4, P5 | merged, #1296 (a parameter change on the same route, no auth change) |
 | 5. The other tabs | D15–D18 (P11 needs a server field; recorded) | merged, #1297 |
 | 6. Transcript parity | P6, P7, P12 | merged, #1298 |
+| Live Mode and Live Voice | The web's `/live` (#1331): both modes, the single-thread conversation, Live Voice over the Realtime WebSocket, a CarPlay entry | this change |
 
 ## Findings, by priority
 
