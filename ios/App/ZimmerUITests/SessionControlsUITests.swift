@@ -98,6 +98,8 @@ final class SessionControlsUITests: XCTestCase {
         // A running session is live already, so the card offers no refresh.
         let running = row(app, 1042)
         running.press(forDuration: 1.2)
+        // A press that lands while the last menu is still closing opens nothing; once more.
+        if !app.buttons["Rename"].firstMatch.waitForExistence(timeout: 5) { running.press(forDuration: 1.2) }
         XCTAssertTrue(app.buttons["Rename"].firstMatch.waitForExistence(timeout: timeout))
         XCTAssertFalse(app.buttons["Refresh Transcript"].firstMatch.exists)
     }

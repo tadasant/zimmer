@@ -1860,11 +1860,11 @@ class Session < ApplicationRecord
     # human's follow-up form, a trigger, a poller, a child reporting to its
     # parent — so the session's own pending wake-ups survive it (#898). The two
     # callers that have already said what kind of resume this is keep their
-    # answer: Trigger#follow_up_session! sets `wake_fire_resume` when the wake
+    # answer: Trigger#follow_up_session! sets `waking_trigger` when the wake
     # itself is what woke the session, and a recovery path sets
     # `system_recovery_resume`. Both branches leave the wake-ups armed too, by
     # their own rules.
-    if wake_fire_resume || system_recovery_resume
+    if waking_trigger || system_recovery_resume
       resume! if may_resume?
     else
       resume_for_follow_up!

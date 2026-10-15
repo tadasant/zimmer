@@ -1,0 +1,86 @@
+<%# Warm router process: whether one is booted, and how router session starts fared against it. %>
+<%#
+  WarmProcessPool.report, wrapped by HealthMonitorService#warm_process_pool_health.
+  Same object as the REST health report and `get_system_health`.
+%>
+<% pool = health_report[:warm_process_pool_health] %>
+<% if pool %>
+<div class="mt-6 bg-white rounded-lg shadow" id="warm-process-pool">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0">
+        <h3 class="text-lg font-medium text-gray-900">Warm Router Process</h3>
+        <p class="mt-1 text-sm text-gray-500">
+          An idle Claude Code process a Quick Router request takes instead of spawning one. It makes no
+          API call while it waits. Turn it on or off under
+          <%= link_to "Settings → Experimental", settings_path, class: "text-blue-600 hover:text-blue-800" %>.
+        </p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
+        <%= status_badge(pool[:status]) %>
+      </div>
+    </div>
+  </div>
+
+  <div class="px-4 py-5 sm:p-6">
+    <% outcomes = pool[:outcomes] || {} %>
+    <% others = outcomes.except("claimed", "missed").sum { |_, count| count } %>
+    <dl class="grid grid-cols-3 gap-4 mb-6">
+      <% [ [ "Claimed", outcomes["claimed"] ], [ "Missed", outcomes["missed"] ], [ "Started cold", others ] ].each do |label, count| %>
+        <div class="text-center">
+          <dt class="text-sm font-medium text-gray-500"><%= label %></dt>
+          <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= number_with_delimiter(count.to_i) %></dd>
+        </div>
+      <% end %>
+    </dl>
+
+    <p class="text-sm text-gray-600 mb-4 break-words">
+      <%= pool[:status].message %>
+      Counts are router session starts in the last <%= pool[:outcome_window_hours] %> hours; a process is
+      replaced after <%= pool[:max_age_minutes] %> minutes.
+      <% if (pass = pool[:last_pass]) && pass[:at] %>
+        Last refill <%= time_ago_in_words(pass[:at]) %> ago: <%= pass[:built] %> built, <%= pass[:recycled] %> recycled<%= " (#{Array(pass[:recycled_reasons]).tally.map { |reason, n| "#{reason} #{n}" }.join(', ')})" if Array(pass[:recycled_reasons]).any? %>.
+      <% end %>
+    </p>
+
+    <% if others.positive? %>
+      <p class="text-sm text-gray-600 mb-4 break-words">
+        Why the others started cold:
+        <% outcomes.except("claimed", "missed").sort_by { |_, count| -count }.each_with_index do |(reason, count), index| %>
+          <%= ", " if index.positive? %><code class="font-mono text-xs"><%= reason %></code> <%= count %>
+        <% end %>
+      </p>
+    <% end %>
+
+    <% if pool[:entries].any? %>
+      <div class="overflow-x-auto -mx-4 sm:mx-0">
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+          <thead>
+            <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th class="px-4 py-2">Process</th>
+              <th class="px-4 py-2">State</th>
+              <th class="px-4 py-2">Age</th>
+              <th class="px-4 py-2">Model</th>
+              <th class="px-4 py-2">Account</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <% pool[:entries].each do |entry| %>
+              <tr>
+                <td class="px-4 py-3 font-mono text-xs text-gray-900">
+                  <div class="break-all"><%= entry[:id] %></div>
+                  <div class="text-gray-500 whitespace-nowrap">pid <%= entry[:pid] %></div>
+                </td>
+                <td class="px-4 py-3 text-gray-600 whitespace-nowrap"><%= entry[:state] %></td>
+                <td class="px-4 py-3 text-gray-600 whitespace-nowrap"><%= distance_of_time_in_words(entry[:age_seconds].to_i) %></td>
+                <td class="px-4 py-3 text-gray-600 whitespace-nowrap"><%= entry[:model] %></td>
+                <td class="px-4 py-3 text-gray-600 break-all"><%= entry[:account] %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% end %>
+  </div>
+</div>
+<% end %>

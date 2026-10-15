@@ -87,6 +87,72 @@ final class SessionActionsUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["detail.status"].label, "Waiting")
     }
 
+    /// The bar's sparkles open the sheet with the words so far, and a start from the sheet
+    /// leaves the bar empty as well as the sheet: the words typed before the sheet opened do
+    /// not outlive the session they started. Closing the sheet without starting gives the bar
+    /// the sheet's words, edits included.
+    func test_a_start_from_the_sheet_the_bar_opened_leaves_the_bar_empty() throws {
+        let app = launch()
+
+        let bar = app.descendants(matching: .any)["quickrouter.bar.field"]
+        XCTAssertTrue(bar.waitForExistence(timeout: timeout))
+        bar.tap()
+        bar.typeText("Rotate the staging")
+        app.buttons["quickrouter.bar.more"].tap()
+
+        // The sheet starts with the bar's words; more are typed there before Start.
+        let sheet = app.descendants(matching: .any)["quickrouter.field"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForValue(sheet, "Rotate the staging"))
+        XCTAssertTrue(waitForKeyboardFocus(sheet))
+        sheet.typeText(" deploy key")
+        app.buttons["quickrouter.start"].tap()
+
+        let title = app.staticTexts["detail.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: timeout))
+        XCTAssertEqual(title.label, "Rotate the staging deploy key")
+        attachScreenshot(app, named: "quick-router-sheet-started")
+
+        app.navigationBars.buttons["Sessions"].tap()
+        XCTAssertTrue(bar.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForEmpty(bar), "the bar is empty after a start, not \(String(describing: bar.value))")
+        attachScreenshot(app, named: "quick-router-bar-empty-after-start")
+
+        // Reopened, the sheet is empty too.
+        app.buttons["quickrouter.bar.more"].tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForEmpty(sheet), "the reopened sheet is empty, not \(String(describing: sheet.value))")
+        attachScreenshot(app, named: "quick-router-sheet-empty-after-start")
+
+        // Closed without starting, the sheet gives the bar its words.
+        XCTAssertTrue(waitForKeyboardFocus(sheet))
+        sheet.typeText("Draft the release notes")
+        app.navigationBars["Quick Router"].buttons["Cancel"].tap()
+        XCTAssertTrue(waitForDisappearance(sheet))
+        XCTAssertTrue(waitForValue(bar, "Draft the release notes"), "a Cancel gives the bar the sheet's words")
+    }
+
+    private func waitForValue(_ element: XCUIElement, _ value: String) -> Bool {
+        let match = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
+        return XCTWaiter().wait(for: [match], timeout: timeout) == .completed
+    }
+
+    /// An empty text field reads back as nothing or as its placeholder, by iOS version.
+    private func waitForEmpty(_ field: XCUIElement) -> Bool {
+        let empty = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == nil OR value == '' OR value == %@", "What do you want to do?"),
+            object: field
+        )
+        return XCTWaiter().wait(for: [empty], timeout: timeout) == .completed
+    }
+
+    /// The sheet focuses its field as it appears; typing waits for that rather than tapping,
+    /// which would put the cursor wherever the tap landed.
+    private func waitForKeyboardFocus(_ element: XCUIElement) -> Bool {
+        let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: element)
+        return XCTWaiter().wait(for: [focused], timeout: timeout) == .completed
+    }
+
     /// The button in the corner of every other screen: the web UI's bubble. From the Inbox
     /// it opens the sheet, and the session it starts opens on the Sessions tab.
     func test_the_quick_router_button_is_in_the_corner_of_the_inbox_and_opens_the_sheet() throws {

@@ -223,6 +223,9 @@ module ClaudeSpawnEnv
     config_dir = ClaudeSessionConfigDirectory.ensure_for(@zimmer_session_id)
     env_vars["CLAUDE_CONFIG_DIR"] = config_dir
     env_vars["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    # Kept for a caller that has to know which account a process was started on
+    # without a session to record it against (ClaudeCliAdapter#spawn_warm).
+    @spawn_account = account
     record_spawn_credentials(account: account)
     @logger.info "Set CLAUDE_CONFIG_DIR=#{config_dir} and CLAUDE_CODE_OAUTH_TOKEN (session-scoped credentials)"
     env_vars

@@ -99,6 +99,9 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var snoozedUntil: Date?
     /// `priority` or `spot`: the class the session actually runs under.
     public var priorityClass: String?
+    /// The class chosen for this one session, or nil when its genesis decides — the web
+    /// page's *Derive it*. `priorityClass` is the answer either way.
+    public var schedulingClass: String?
     /// Where the session came from, a `SessionGenesis` key (`web_ui`, `slack`, …).
     public var genesis: String?
     public var heartbeatEnabled: Bool?
@@ -117,6 +120,15 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var catalogSkills: [String]?
     public var catalogHooks: [String]?
     public var catalogPlugins: [String]?
+    /// Every MCP server the session has wired: the chosen ones, the ones its plugins bring,
+    /// and the ones Zimmer injects. What the web UI draws a connection chip for.
+    public var allMcpServers: [String]?
+    /// The injected subset alone (the self-session server, say): drawn dashed on the web.
+    public var injectedMcpServers: [String]?
+    /// What the dashboard's row shows that the session object does not carry, when the list
+    /// was read with `include=board_row`; Your board draws it. Nil when it was not read, which
+    /// is not the same as a session with no summary. Not part of `session`.
+    public var boardRow: BoardRow? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, slug, title, status, prompt, goal, favorited, visibility, precedence, effort, config, metadata, genesis
@@ -129,6 +141,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         case effectiveVisibility = "effective_visibility"
         case snoozedUntil = "snoozed_until"
         case priorityClass = "priority_class"
+        case schedulingClass = "scheduling_class"
         case heartbeatEnabled = "heartbeat_enabled"
         case heartbeatIntervalSeconds = "heartbeat_interval_seconds"
         case runtimeSessionID = "session_id"
@@ -137,6 +150,8 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         case catalogSkills = "catalog_skills"
         case catalogHooks = "catalog_hooks"
         case catalogPlugins = "catalog_plugins"
+        case allMcpServers = "all_mcp_servers"
+        case injectedMcpServers = "injected_mcp_servers"
     }
 
     public init(
@@ -182,8 +197,11 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
 
     public var isFavorite: Bool { favorited ?? false }
     public var isPriority: Bool { priorityClass == "priority" }
+    /// The class is the genesis's, not one chosen for this session.
+    public var schedulingClassDerived: Bool { (schedulingClass ?? "").isEmpty }
     public var model: String? { config?.model }
-    public var agentRoot: String? { metadata?.agentRoot }
+    /// The agent root's catalog name: as recorded at creation, else as the server resolves it.
+    public var agentRoot: String? { metadata?.agentRoot ?? boardRow?.agentRoot }
     /// When a person last did something to this session — the web UI's "Last Touched" key,
     /// which falls back to when the session was created.
     public var lastTouchedAt: Date? { metadata?.lastUserActivityAt ?? createdAt }
@@ -194,6 +212,84 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
 
     public var hasNotes: Bool {
         !(notes ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Each wired MCP server and how its connection stands, in the web UI's order: the
+    /// effective set, read against `custom_metadata.mcp_servers_status`. A server with no
+    /// entry is pending, as the web chip reads it.
+    public var mcpConnections: [McpConnection] {
+        let names = allMcpServers ?? mcpServers ?? []
+        let injected = Set(injectedMcpServers ?? [])
+        // In the effective set, neither chosen nor injected: a plugin brought it.
+        let chosen = Set(mcpServers ?? [])
+        let statuses = customMetadata?.mcpServerStatuses ?? [:]
+        var seen = Set<String>()
+        return names.compactMap { name in
+            guard seen.insert(name).inserted else { return nil }
+            let status = statuses[name]
+            let isInjected = injected.contains(name)
+            return McpConnection(name: name, state: McpConnection.State(status?.status), error: status?.error, injected: isInjected,
+                                 fromPlugin: allMcpServers != nil && !isInjected && !chosen.contains(name))
+        }
+    }
+}
+
+/// One MCP server on a session and whether its agent reached it — the web UI's MCP chips:
+/// green for connected, red for failed (with the error a tap away), grey while pending.
+public struct McpConnection: Hashable, Sendable, Identifiable {
+    public enum State: String, Hashable, Sendable {
+        case connected, failed, pending
+
+        /// Anything but connected or failed reads as pending, as the web chip reads it.
+        public init(_ raw: String?) {
+            self = raw.flatMap(State.init(rawValue:)) ?? .pending
+        }
+
+        public var label: String {
+            switch self {
+            case .connected: return "Connected"
+            case .failed: return "Failed"
+            case .pending: return "Pending connection"
+            }
+        }
+    }
+
+    public var name: String
+    public var state: State
+    public var error: String?
+    /// Zimmer added it rather than anyone choosing it.
+    public var injected: Bool
+    /// One of the session's plugins brought it: it is not in the session's own list, so the
+    /// editor cannot remove it, as the web UI's read-only plugin chip says.
+    public var fromPlugin: Bool
+
+    public var id: String { name }
+
+    public init(name: String, state: State, error: String? = nil, injected: Bool = false, fromPlugin: Bool = false) {
+        self.name = name
+        self.state = state
+        self.error = error
+        self.injected = injected
+        self.fromPlugin = fromPlugin
+    }
+}
+
+/// One entry of `custom_metadata.mcp_servers_status`, as the MCP log poller writes it.
+public struct McpServerStatus: Hashable, Sendable, Codable {
+    public var status: String?
+    public var error: String?
+
+    public init(status: String?, error: String? = nil) {
+        self.status = status
+        self.error = error
+    }
+
+    enum CodingKeys: String, CodingKey { case status, error }
+
+    public init(from decoder: Decoder) throws {
+        let container = try? decoder.container(keyedBy: CodingKeys.self)
+        status = try? container?.decodeIfPresent(String.self, forKey: .status)
+        error = try? container?.decodeIfPresent(String.self, forKey: .error)
     }
 }
 
@@ -341,16 +437,22 @@ public struct PullRequestLink: Hashable, Sendable, Identifiable {
     }
 }
 
-/// The part of a session's `custom_metadata` the app reads: its pull requests, newest last.
+/// The part of a session's `custom_metadata` the app reads: its pull requests, newest last,
+/// and how each MCP server's connection stands.
 public struct SessionCustomMetadata: Hashable, Sendable, Codable {
     public var pullRequests: [PullRequestLink]
+    public var mcpServerStatuses: [String: McpServerStatus]
 
-    public init(pullRequests: [PullRequestLink]) { self.pullRequests = pullRequests }
+    public init(pullRequests: [PullRequestLink], mcpServerStatuses: [String: McpServerStatus] = [:]) {
+        self.pullRequests = pullRequests
+        self.mcpServerStatuses = mcpServerStatuses
+    }
 
     enum CodingKeys: String, CodingKey {
         case urls = "github_pull_request_urls"
         case statuses = "github_pull_request_statuses"
         case ci = "github_pull_request_ci_statuses"
+        case mcpServerStatuses = "mcp_servers_status"
     }
 
     public init(from decoder: Decoder) throws {
@@ -362,6 +464,7 @@ public struct SessionCustomMetadata: Hashable, Sendable, Codable {
             guard let url = URL(string: raw), url.scheme == "https" else { return nil }
             return PullRequestLink(url: url, state: statuses[raw], ci: ci[raw])
         }
+        mcpServerStatuses = (try? container?.decodeIfPresent([String: McpServerStatus].self, forKey: .mcpServerStatuses)) ?? [:]
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -369,6 +472,7 @@ public struct SessionCustomMetadata: Hashable, Sendable, Codable {
         try container.encode(pullRequests.map(\.url.absoluteString), forKey: .urls)
         try container.encode(Dictionary(pullRequests.compactMap { pr in pr.state.map { (pr.url.absoluteString, $0) } }, uniquingKeysWith: { a, _ in a }), forKey: .statuses)
         try container.encode(Dictionary(pullRequests.compactMap { pr in pr.ci.map { (pr.url.absoluteString, $0) } }, uniquingKeysWith: { a, _ in a }), forKey: .ci)
+        if !mcpServerStatuses.isEmpty { try container.encode(mcpServerStatuses, forKey: .mcpServerStatuses) }
     }
 }
 
@@ -378,4 +482,68 @@ struct SessionListResponse: Decodable {
     let pagination: Pagination?
     /// `view=user` / `view=ranked`: more matched than the one page holds.
     let truncated: Bool?
+    /// `include=board_row`, keyed by session id.
+    let board_rows: [String: BoardRow]?
+
+    /// The sessions, each with its board row when the server sent one.
+    var rows: [SessionSummary] { BoardRow.attach(board_rows, to: sessions) }
+}
+
+/// What a dashboard row shows that `session` does not carry (`include=board_row`).
+public struct BoardRow: Hashable, Sendable, Codable {
+    public var agentRoot: String?
+    public var statusSummary: StatusSummary?
+
+    public init(agentRoot: String? = nil, statusSummary: StatusSummary? = nil) {
+        self.agentRoot = agentRoot
+        self.statusSummary = statusSummary
+    }
+
+    /// Each session with its row, by id, when the server sent rows.
+    static func attach(_ rows: [String: BoardRow]?, to sessions: [SessionSummary]) -> [SessionSummary] {
+        guard let rows else { return sessions }
+        return sessions.map { session in
+            var session = session
+            session.boardRow = rows[String(session.id)]
+            return session
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case agentRoot = "agent_root"
+        case statusSummary = "status_summary"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        agentRoot = try? container.decodeIfPresent(String.self, forKey: .agentRoot)
+        statusSummary = try? container.decodeIfPresent(StatusSummary.self, forKey: .statusSummary)
+    }
+}
+
+/// How current a row's status summary is, as the dashboard's chip says it.
+public enum SummaryFreshness: Hashable, Sendable {
+    /// A new one is being written.
+    case regenerating
+    /// Messages landed after it was written: it describes an earlier point.
+    case stale(messages: Int)
+    case current
+
+    public init(_ summary: StatusSummary) {
+        if summary.generating == true {
+            self = .regenerating
+        } else if let behind = summary.messagesSinceGenerated, behind > 0 {
+            self = .stale(messages: behind)
+        } else {
+            self = .current
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .regenerating: return "Regenerating"
+        case .stale: return "Stale"
+        case .current: return "Up to date"
+        }
+    }
 }

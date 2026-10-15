@@ -129,6 +129,7 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     /// One call, with at most one retry for each of the two credentials that can be
     /// renewed: the edge's (an access proxy's refusal) and Zimmer's own (a 401 on a token
     /// the clock thought was still good, e.g. after the grant was refreshed elsewhere).
+    /// Only the token endpoint can end the sign-in; a 401 here never does.
     /// `accepting` names non-2xx statuses whose body the caller reads itself (an invoke's 409
     /// carries the pending session) rather than having them thrown.
     func perform(method: String, path: String, query: [String: String], body: Data?, accepting: Set<Int> = []) async throws -> HTTPResponse {
@@ -158,8 +159,12 @@ public struct ZimmerHTTPClient: ZimmerAPI {
             if EdgeRefusal.isEdgeNotRouted(response) { throw ZimmerError.edgeNotRouted(path) }
             if response.statusCode == 401 {
                 if !retriedToken { retriedToken = true; try await auth.refresh(); continue }
-                await auth.signOutLocally()
-                throw ZimmerError.unauthorized
+                // A 401 on a token the server issued a moment ago is this endpoint refusing
+                // the app's token, not the sign-in ending: that answer comes from the token
+                // endpoint, which `refresh()` just read. Signing out here would turn one
+                // closed endpoint into "sign in again".
+                let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: response.body)
+                throw ZimmerError.http(status: 401, message: envelope?.message)
             }
             guard (200..<300).contains(response.statusCode) || accepting.contains(response.statusCode) else {
                 if ZimmerError.gatewayTimeoutStatuses.contains(response.statusCode) { throw ZimmerError.timedOut }

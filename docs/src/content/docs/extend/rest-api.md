@@ -16,7 +16,8 @@ tools. If the caller is an agent rather than a script, that is the surface to po
 :::
 
 :::caution[API keys have names, not scopes]
-Any valid full-API key can do anything to any session or trigger. Each key has a name, and
+Any valid full-API key can do anything to any session or trigger, with one exception: the User
+view's Merge (`POST /sessions/:id/authorize_merge`), which only a person may give. Each key has a name, and
 the request log prints it, never the key. A revoke on `/settings/api_keys` refuses the key from the
 next request on. Every request that presents no key, an unknown key or a revoked one gets the same
 401. The one narrower kind of key is the [Quick Router key](#the-quick-router-ingest): it opens
@@ -33,7 +34,7 @@ when it names none), and only when the token's grant belongs to the built-in cli
 
 | Routes | The app's token may |
 | --- | --- |
-| `/api/v1/sessions` and its member routes (not the nested resources below) | everything an API key may |
+| `/api/v1/sessions` and its member routes (not the nested resources below) | everything an API key may, plus `authorize_merge`, which only the app may call, and only on a grant that acts as you |
 | `POST /api/v1/quick_router`, `/api/v1/apns_devices` | everything |
 | `/api/v1/sessions/:id/enqueued_messages` | list, show, edit, delete, reorder, interrupt — not create: the app queues through `follow_up` |
 | `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
@@ -196,6 +197,8 @@ and the model refuses to write one, answering `422`.
 | `POST` | `/sessions/:id/fork` | `message_index` required → 201. It counts the transcript's events (one per line, blank and unparseable lines skipped), not its user and assistant messages; take it from a message's `transcript_index` in `/conversation` |
 | `POST` | `/sessions/:id/regenerate_status_summary` | → 202. Queues a forced rewrite of the [Status summary](/sessions/status-summary/); it forks the session and spends an agent turn, so it is asynchronous and must not be polled. 422 with the reason, rather than a 202 for work that cannot run, when there is nothing to summarize: no transcript, or a session that is itself a summary fork. An archived session is a normal candidate however long ago it was archived — the fork answers from the conversation, and gets an empty working directory when Zimmer has already reclaimed the clone |
 | `POST` | `/sessions/:id/refresh` | re-read transcript from disk. A shorter filesystem transcript never overwrites a longer stored one — that happens when the clone was recreated at a new path, and the stored history wins. The write is retried on a dropped database connection, and 503 if it stays down |
+| `POST` | `/sessions/:id/authorize_merge` | the User view's *Merge*, from the [iOS app](/extend/ios-app/) only: a person's sign-off that the session may merge its PR ([the Merge button](/sessions/user-view/#the-merge-button)). → `{outcome, message, pr_url}`, `outcome` `sent` or `already_sent`; 422 (`error: "Cannot merge"`, with `outcome` `not_mergeable` or `undeliverable`) when the PR is not open and green (the message says which) or the session cannot take the message. 403 before the lookup, so an unknown id is refused the same way. Recorded as your message. **403 for an API key and for a relay-only app grant**: an API key is the fleet's, and an agent authorizing its own merge is what the button exists to prevent |
+| `POST` | `/sessions/reprioritize` | the User view's *Reprioritize*: hand the board to the deployment's [reprioritizing session](/sessions/user-view/#the-reprioritize-button). → `{outcome: "fired", message, session}`; 422 (`error: "Not reprioritized"`, with `outcome`) and no session for any other outcome (pressed again too soon, a session still pending). It is an invoke of that session's trigger, which an API key can already reach, so it takes an API key. A session it creates is recorded as the API's (`genesis: api`) |
 | `POST` | `/sessions/refresh_all` | → `{message, refreshed, restarted, continued, errors}`. Max 50 restarts/continues. A byte-identical transcript is not counted as refreshed; a transcript write the database keeps refusing counts under `errors` |
 | `POST` | `/sessions/bulk_archive` | `session_ids[]` → `archived_count` and any `errors`. A session with a queued message lands in `errors` and is left alone. A session mid-turn lands there too, unless `end_turn: true`. `force: true` and `end_turn: true` apply to the whole batch, not one member of it |
 | `PATCH` | `/sessions/:id/mcp_servers` | max 50, validated against the catalog. Replaces the set; `[]` clears it and is recorded as deliberate, so the [backfill](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults) does not restore the root's defaults. Takes effect on the session's next prepare — see [Changing a session's artifacts takes effect on its next prepare](#changing-a-sessions-artifacts-takes-effect-on-its-next-prepare) |

@@ -1369,10 +1369,18 @@ the session held nothing at all — and a turn interrupted anywhere in that wind
 a killed process, a transient failure) left it asleep with no wake, indistinguishable from a session
 sleeping correctly ([#569](https://github.com/tadasant/zimmer/issues/569)).
 
-`Trigger#follow_up_session!` therefore sets a transient `wake_fire_resume` flag around its delivery,
-and `cancel_pending_one_time_wake_triggers` takes a **hold** branch: the conditions are left unfired
-and the trigger rows are stamped `wake_held_at`. A held wake is still `enabled` and can still fire.
-What the stamp records is that this turn owes it a retirement.
+`Trigger#follow_up_session!` therefore sets a transient `waking_trigger` — the trigger that fired —
+around its delivery, and `cancel_pending_one_time_wake_triggers` takes a **hold** branch: the
+conditions are left unfired and the trigger rows are stamped `wake_held_at`. A held wake is still
+`enabled` and can still fire. What the stamp records is that this turn owes it a retirement.
+
+Only the wakes that share the fired wake's wait are held (`Trigger#shares_wait_with?`). When a
+`wake_me_up_later` wake fires, the requester's other `wake_me_up_later` wakes are a different wait:
+they are left unmarked, so the retirement cannot reach them, and the hold branch writes a
+`scheduled_wake` sleep intent so the session goes back to sleep on them once the woken turn ends
+([#1325](https://github.com/tadasant/zimmer/issues/1325)). The woken prompt lists which wakes will be
+retired and which are still armed — see
+[Wake-up semantics](/sessions/triggers/#wake-up-semantics).
 
 Only a trigger that is *nothing but* one-shot wakes is held, because holding hands the whole row to
 the retirement. A trigger mixing an unfired one-shot with a recurring schedule or a Slack condition
