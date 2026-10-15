@@ -1091,7 +1091,8 @@ class Api::V1::SessionsController < Api::BaseController
   # GET /api/v1/sessions/:id/conversation
   # The user and assistant messages of the transcript, oldest first, as data
   # rather than as rendered text: { messages: [{ role, content, timestamp,
-  # has_tool_use, has_tool_result }], total, first_position, truncated }.
+  # has_tool_use, has_tool_result, transcript_index }], total, first_position,
+  # truncated }.
   #   - limit (default 50, max 200): how many, ending at `before`
   #   - before: a position in the whole conversation (0 is the first message); the
   #     page ends just before it. Omitted, the page is the newest. `first_position`
@@ -1103,7 +1104,8 @@ class Api::V1::SessionsController < Api::BaseController
   #     reading a session from spending its context on one long tool result.
   #
   # Positions count the messages in this list. They are not `transcript_index`,
-  # which counts the transcript's events and is what `fork` takes.
+  # which counts the transcript's events and is what `fork` takes as message_index
+  # to fork at that message.
   CONVERSATION_DEFAULT_LIMIT = 50
   CONVERSATION_MAX_LIMIT = 200
   CONVERSATION_CONTENT_LIMIT = 4_000
@@ -1118,7 +1120,7 @@ class Api::V1::SessionsController < Api::BaseController
     render json: {
       messages: messages[first...ending].map do |message|
         content = message[:content].to_s
-        message.slice(:role, :timestamp, :has_tool_use, :has_tool_result)
+        message.slice(:role, :timestamp, :has_tool_use, :has_tool_result, :transcript_index)
           .merge(content: content.truncate(full ? CONVERSATION_FULL_CONTENT_LIMIT : CONVERSATION_CONTENT_LIMIT, omission: "\n…[truncated]"))
       end,
       total: messages.size,

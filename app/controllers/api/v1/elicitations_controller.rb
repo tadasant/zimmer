@@ -10,6 +10,7 @@
 #   POST  /api/v1/elicitations                     - Create an elicitation on _meta's session-id
 #   GET   /api/v1/elicitations/:id                 - Poll any elicitation
 #   PATCH /api/v1/elicitations/:id/respond         - Accept/decline/cancel a pending elicitation
+#   GET   /api/v1/sessions/:session_id/elicitations - A session's elicitations awaiting an answer
 #
 # An MCP server has no API key, so it authenticates with the token in the path of
 # the URL ElicitationEndpoint.spawn_env gave it (ElicitationEndpoint explains why
@@ -26,7 +27,15 @@
 # respond it is either the request_id or the DB primary key, so the identifier a
 # consumer already holds — from a poll response or from the web UI's own
 # /elicitations/:id/respond route — works on both surfaces.
+#
+# Zimmer's iOS app reaches index and respond, and nothing else here: it shows a
+# session's pending prompts and answers them, as the web banner does. An answer
+# approves or refuses what an MCP server is about to do, so the app's token
+# answers only on a grant that acts as its human (OauthServer::Grant#acts_as_human?);
+# a relay-only grant may read the prompt but not answer it.
 class Api::V1::ElicitationsController < Api::BaseController
+  accepts_native_app_tokens only: %i[index respond]
+
   # create/show authenticate by the path's token when there is one and by the API
   # key otherwise. respond is API-key only, so it is NOT skipped here.
   skip_before_action :authenticate_api_key, only: [ :create, :show ]
@@ -94,12 +103,29 @@ class Api::V1::ElicitationsController < Api::BaseController
     render_api_error("Not Found", "Elicitation not found for request_id: #{params[:id]}", status: :not_found)
   end
 
+  # GET /api/v1/sessions/:session_id/elicitations
+  #
+  # The elicitations still open on a session, oldest first: the `active` scope
+  # the web UI draws its banners from. A read only — one past its deadline is
+  # left out, and left for CleanupExpiredElicitationsJob to expire.
+  def index
+    session = Session.locate!(params[:session_id])
+    elicitations = session.elicitations.active.order(:created_at)
+
+    render json: { elicitations: elicitations.map { |elicitation| elicitation_json(elicitation) } }
+  end
+
   # PATCH /api/v1/elicitations/:id/respond
   #
   # Programmatic accept/decline of a pending elicitation. Mirrors the human web
   # path (ElicitationsController#respond_to_elicitation) but is authenticated and
   # returns the elicitation poll response as JSON.
   def respond
+    if native_app_request? && !native_app_grant.acts_as_human?
+      render_api_error("Forbidden", "This sign-in may read prompts but not answer them; sign in again and allow acting as you", status: :forbidden)
+      return
+    end
+
     elicitation = find_elicitation_for_respond!
 
     unless elicitation.pending?
@@ -123,6 +149,27 @@ class Api::V1::ElicitationsController < Api::BaseController
   end
 
   private
+
+  # What the app needs to draw and answer one prompt: the form's JSON Schema, and
+  # the numeric id that `respond` takes. `field_order` is the order the web banner
+  # draws the schema's properties in, said outright because a JSON object's key
+  # order does not survive most clients' decoders.
+  def elicitation_json(elicitation)
+    schema = elicitation.requested_schema
+    properties = schema.is_a?(Hash) ? schema["properties"] : nil
+    {
+      id: elicitation.id,
+      request_id: elicitation.request_id,
+      mode: elicitation.mode,
+      message: elicitation.message,
+      requested_schema: schema,
+      field_order: properties.is_a?(Hash) ? properties.keys : [],
+      tool_name: elicitation.tool_name,
+      context: elicitation.context,
+      created_at: elicitation.created_at.iso8601,
+      expires_at: elicitation.expires_at&.iso8601
+    }
+  end
 
   # Who may create or poll: the session a path token names, or an API-key holder.
   #
