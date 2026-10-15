@@ -15,7 +15,10 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::CostsController < Api::BaseController
-  # Zimmer's iOS app: read-only. Not `backfill`, an operator action.
+  # Zimmer's iOS app: read-only. Not `backfill`: a sweep of every transcript on
+  # disk is the one action here that costs the box something, the cron runs it
+  # on its own, and the phone has no screen for a run in flight — so it stays
+  # with the Costs page and the API key until it does.
   accepts_native_app_tokens only: %i[index records]
 
   MAX_DAYS = 365

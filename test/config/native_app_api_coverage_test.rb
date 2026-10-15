@@ -53,13 +53,15 @@ class NativeAppApiCoverageTest < ActiveSupport::TestCase
 
   test "a controller the app does not call stays closed to its token" do
     refute Api::V1::ExternalAppTriggersController.native_app_tokens_accepted
-    refute Api::V1::GateDecisionsController.native_app_tokens_accepted
+    refute Api::V1::TranscriptArchivesController.native_app_tokens_accepted
   end
 
   test "an action its controller did not name stays closed to the token" do
     refute Api::V1::LogsController.native_app_tokens_accepted_for?(:create)
-    refute Api::V1::TriggersController.native_app_tokens_accepted_for?(:destroy)
-    refute Api::V1::HealthController.native_app_tokens_accepted_for?(:enter_queue_recovery_mode)
+    refute Api::V1::CostsController.native_app_tokens_accepted_for?(:backfill)
+    refute Api::V1::GateDecisionsController.native_app_tokens_accepted_for?(:create)
+    refute Api::V1::WorkBacklogItemsController.native_app_tokens_accepted_for?(:pull)
     assert Api::V1::SessionsController.native_app_tokens_accepted_for?(:create), "no `only:` opens every action"
+    assert Api::V1::HealthController.native_app_tokens_accepted_for?(:enter_queue_recovery_mode), "no `only:` opens every action"
   end
 end

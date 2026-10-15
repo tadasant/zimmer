@@ -40,9 +40,13 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
 | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
 | `/api/v1/notifications` | list, show, badge, mark read, dismiss — not `push` |
-| `/api/v1/triggers` | list, show, toggle, invoke — not create, edit or delete |
-| `GET /api/v1/costs`, `GET /api/v1/costs/records` | read — not `backfill` |
-| `GET /api/v1/health` | read — none of its operator actions |
+| `/api/v1/triggers` | everything the triggers pages offer: list, show, create, edit, delete, toggle, invoke, and the Slack channel and WhatsApp chat pickers the form fetches |
+| `GET /api/v1/costs`, `GET /api/v1/costs/records` | read — not `backfill`, the one action there that costs the box a sweep of every transcript; the cron runs it on its own |
+| `/api/v1/health` and its actions | the read and every operator action the web health page offers: cleanup, retries, archiving, queue recovery, the queued-job levers, re-arming the post-deploy tasks |
+| `/api/v1/work_backlog_items` | list, show, hold; `start_now`, `pin`, `unpin` and `remove` — the human-only levers — only on a grant that acts as you (403 otherwise) — not `create` or `pull`, which are the gate's and the groomer's |
+| `GET /api/v1/gate_decisions`, `GET /api/v1/gate_decisions/:id` | read the ledger — not `create`, a gate's write |
+| `GET /api/v1/outcome_analyses`, `GET /api/v1/outcome_analyses/:id`, `GET /api/v1/goal_checks` | read the Outcomes ledger, one analysis with its tree, and the goal-check tally — not `create`, an analyzer session's write |
+| `/api/v1/clis/status`, `/clis/refresh`, `/clis/clear_cache` | everything the /clis page offers |
 | `GET /api/v1/sessions/:id/elicitations`, `PATCH /api/v1/elicitations/:id/respond` | list a session's open prompts; answer one only on a grant that acts as you (403 otherwise) — not create or poll |
 | `GET /api/v1/configs`, `/mcp_servers`, `/skills`, `/hooks`, `/plugins`, `/model_catalog_entries` | read the catalogs |
 
@@ -1294,7 +1298,9 @@ Those four are also on the **browser** surface, at `POST /issues/backlog/:id/pro
 not an API key, and `:id` is the row id only. That is not a convenience: the API key this namespace
 authenticates is shared by the whole agent fleet, so the endpoints above establish a caller but not
 a person, and the [Issues view](/operate/issues-view/#the-four-human-only-operations) is where a
-human reaches these levers without one.
+human reaches these levers without one. The [iOS app's token](#the-ios-apps-bearer-token) reaches
+them too, but only on a sign-in that acts as you: a relay-only grant gets a 403 before the lookup,
+with the same sentence the app shows. `hold`, which an agent may do as well, takes any app sign-in.
 
 ```bash
 curl "$BASE_URL/work_backlog_items?estimated_cost=small&per_page=5" -H "X-API-Key: $API_KEY"
