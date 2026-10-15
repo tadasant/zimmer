@@ -1,8 +1,9 @@
 import Foundation
 
 /// The web UI's pages beyond the board: the notifications inbox, triggers (list, read one, turn
-/// on or off, invoke), costs and health — each read-only except where the web UI's own buttons
-/// write, and each open to the app's token for exactly those actions.
+/// on or off, invoke, create, edit, delete, and the two pickers the form fetches), costs and
+/// health — each read-only except where the web UI's own buttons and forms write, and each
+/// open to the app's token for exactly those actions.
 public protocol OperationsAPI: Sendable {
     func notifications() async throws -> [InboxNotification]
     /// How many notifications are unread — the tab's badge.
@@ -20,6 +21,16 @@ public protocol OperationsAPI: Sendable {
     /// Fire a trigger now, as the web UI's Run Now does, with values for the `{{variables}}`
     /// its template names (`variables` in the request; a variable left out interpolates empty).
     func invokeTrigger(_ id: Int, variables: [String: String]) async throws -> TriggerInvocation
+    /// Create a trigger, as the web's new-trigger form does. A 422 is a `TriggerValidationError`
+    /// carrying the server's reasons; nothing was saved.
+    func createTrigger(_ draft: TriggerDraft) async throws -> TriggerWrite
+    /// Change a trigger, as the web's edit form does; the same 422.
+    func updateTrigger(_ id: Int, _ draft: TriggerDraft) async throws -> TriggerWrite
+    func deleteTrigger(_ id: Int) async throws
+    /// The Slack channels a Slack condition can pick from. A 503 says Slack is not configured.
+    func triggerChannels() async throws -> [SlackChannel]
+    /// The WhatsApp chats a WhatsApp condition can pick from. A 503 says WhatsApp is not configured.
+    func whatsappChats() async throws -> [WhatsAppChat]
     /// The Costs page over `window`, narrowed to `scope`.
     func costs(_ window: CostWindow, scope: CostScope) async throws -> CostSnapshot
     func health() async throws -> HealthReport
@@ -95,6 +106,47 @@ extension ZimmerHTTPClient {
             return TriggerInvocation(outcome: response?.burst_notice == true ? .burstNotice : .started,
                                      sessionID: response?.session?.id, message: message)
         }
+    }
+
+    public func createTrigger(_ draft: TriggerDraft) async throws -> TriggerWrite {
+        try await writeTrigger(method: "POST", path: "/api/v1/triggers", draft)
+    }
+
+    public func updateTrigger(_ id: Int, _ draft: TriggerDraft) async throws -> TriggerWrite {
+        try await writeTrigger(method: "PATCH", path: "/api/v1/triggers/\(id)", draft)
+    }
+
+    /// A 422 here is the form's own answer, read reason by reason, rather than an error like
+    /// any other: the web form lists each one, and so does the app's.
+    private func writeTrigger(method: String, path: String, _ draft: TriggerDraft) async throws -> TriggerWrite {
+        let body = try JSONSerialization.data(withJSONObject: draft.body, options: [.sortedKeys])
+        let raw = try await perform(method: method, path: path, query: [:], body: body, accepting: [422])
+        if raw.statusCode == 422 {
+            let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: raw.body)
+            let messages = envelope?.messages ?? envelope?.message.map { [$0] } ?? []
+            throw TriggerValidationError(messages: messages.isEmpty ? ["Validation failed"] : messages)
+        }
+        do {
+            let response = try ZimmerJSON.decoder.decode(TriggerWriteResponse.self, from: raw.body)
+            return TriggerWrite(trigger: response.trigger, warnings: response.warnings ?? [],
+                                reclassifiedWaitingSessions: response.reclassified_waiting_sessions)
+        } catch {
+            throw ZimmerError.decoding("\(path): \(error)")
+        }
+    }
+
+    public func deleteTrigger(_ id: Int) async throws {
+        _ = try await perform(method: "DELETE", path: "/api/v1/triggers/\(id)", query: [:], body: nil)
+    }
+
+    public func triggerChannels() async throws -> [SlackChannel] {
+        let response: SlackChannelsResponse = try await get("/api/v1/triggers/channels")
+        return response.channels
+    }
+
+    public func whatsappChats() async throws -> [WhatsAppChat] {
+        let response: WhatsAppChatsResponse = try await get("/api/v1/triggers/whatsapp_chats")
+        return response.chats
     }
 
     public func costs(_ window: CostWindow, scope: CostScope) async throws -> CostSnapshot {
