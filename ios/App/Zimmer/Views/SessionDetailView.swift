@@ -380,6 +380,7 @@ struct SessionDetailView: View {
     @State private var jumpedTo: SessionPageSection?
     /// The jump is still scrolling: the sections it passes do not take the light from it.
     @State private var jumping = false
+    /// Counts the jumps, so only the latest one's end clears `jumping`.
     @State private var jumps = 0
     /// Where the strip ends, in global coordinates: the top of what the page shows.
     @State private var stripBottom: CGFloat = 0
@@ -548,13 +549,17 @@ struct SessionDetailView: View {
         // Pinned under the navigation bar, however long the transcript: every section a tap away.
         .safeAreaInset(edge: .top, spacing: 0) {
             if let detail = model.detail {
-                SectionStrip(
-                    sections: SessionPageSection.available(in: detail, hasConversation: model.shownConversation != nil),
-                    current: jumpedTo ?? SessionPageSection.current(reached: reachedSections, in: SessionPageSection.allCases),
-                    jump: { jump(to: $0, proxy) },
-                    fullScreen: model.shownConversation == nil ? nil : { openFullScreen() }
-                )
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { stripBottom = $0 }
+                let sections = SessionPageSection.available(in: detail, hasConversation: model.shownConversation != nil)
+                // A lone chip with nothing to read full screen is no navigation at all.
+                if sections.count > 1 {
+                    SectionStrip(
+                        sections: sections,
+                        current: jumpedTo ?? SessionPageSection.current(reached: reachedSections, in: sections),
+                        jump: { jump(to: $0, proxy) },
+                        fullScreen: model.shownConversation == nil ? nil : { openFullScreen() }
+                    )
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { stripBottom = $0 }
+                }
             }
         }
         .onChange(of: reachedSections) { _, _ in
@@ -701,6 +706,8 @@ struct SessionDetailView: View {
             }
         }
         .onDisappear {
+            // The full-screen transcript covers the page without leaving it.
+            guard !readingFullScreen else { return }
             // What changed here (a star, a snooze, a restore) shows on the list behind.
             Task { await app.sessionChanged() }
         }
