@@ -939,6 +939,12 @@ Taken from the rows' notes ("in #NNNN"). Only the session page, the board and th
 
 **#1341 — the Settings page's row on REST, API half (auth boundary).** Opens `GET`/`PATCH /api/v1/app_settings` to the app's token: the session defaults and the experimental toggles on any grant, the MCP Apps switch and allowlist only on a grant that acts as you. The app half (Settings → Session Defaults, Experimental, MCP Apps) stacks on it and flips A's rows for `show.html.erb:21-88`, `147-176` and `184-243`.
 
+**#1343 — the operations routes open to the app's token, API half (auth boundary).** Opens triggers create/update/destroy and the form's pickers, every health operator action, the work backlog (the human-only levers on a grant that acts as you), the gate-decision and outcome ledgers, the CLIs page's actions and the costs sweep. Flips the "needs a route opened" group's rows from refused to reachable; the screens follow.
+
+**#1344 — Settings → Session Defaults, Experimental and MCP Apps in the app.** The app half of #1341; flips A's rows for `show.html.erb:21-88`, `147-176` and `184-243` to `present`.
+
+**#1345 — Health, Costs and the trigger page read everything the API sends; Run Now fills a template's variables.** Flips the ranked list's app-only items 1, 2 and 5: D's health rows (every section, the banners on the board), the costs rows, and the trigger page's scheduling class, precedence, catalog chips, windows and variables.
+
 **#1318 — a trigger's two re-use switches, API half only.** Opens `POST /api/v1/triggers/:id/toggle_enqueue_messages` and `…/toggle_resuscitate_archived` to the native token and changes no iOS file, so these two D rows stay `partial` (value shown, switch absent) until an app change follows:
 
 - `triggers/show.html.erb:264-274` Enqueue messages value + switch.
