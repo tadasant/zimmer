@@ -289,9 +289,22 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   page then says what it covers, and *All agent roots* widens it again. The burn rate by harness
   and model is on the web page only: `GET /api/v1/costs` does not return it. *Health* is the
   overall status and each section's; its operator actions stay in the browser.
-- **Settings: the page's Session Defaults, Experimental and MCP Apps.** *More → Settings* has, under
-  the phone's own rows (the server signed in to, and the edge sign-in where there is one), the
-  page's three sections in its order and words, read and written through
+- **Settings: the page's Sign-in card, API keys, Session Defaults, Experimental, MCP Apps and
+  Deployment Information.** *More → Settings* opens on the page's Sign-in card, read from
+  `GET /api/v1/me`: the server this phone is signed in to, *Signed in as <email>*, how this
+  connection acts (*acts on your behalf* or *relay only*), and — on a sign-in acting as you —
+  *Authenticator set up 3 weeks ago* and *8 recovery codes left*; then *Sign out* and *Sign out
+  everywhere*, which asks first and, since the server revokes this phone's connection along with
+  every browser, signs the app out. Under it, *API keys & connections* opens the **Settings → API
+  keys** page as a screen: the deployment's MCP connections (`GET /api/v1/oauth_grants`; this phone
+  is marked, each row carries the page's badges, *Approved by*, *Last used* and *Approved*, with
+  *Make relay only* / *Let it act on my behalf* and *Revoke*, each asking first as the page does),
+  the deployment's keys (`GET /api/v1/api_keys`; name, fingerprint, *Created*, the `ZIMMER_API_KEYS`
+  and *Agent sessions use this key* badges, *Revoke* and *Restore*) and *Create a key* (name and what
+  it opens), which shows the token once with *Copy* and the page's warning that it is the one time
+  it can be shown. Every write takes a sign-in acting as you; a relay-only sign-in is refused in
+  place, in the server's words, and the row stays as it was. Below the card come the page's three
+  settings sections in its order and words, read and written through
   `GET`/`PATCH /api/v1/app_settings`. *Session
   Defaults* shows the page's banner (*Active global default: Claude Code / sonnet*, or *No global
   override set — using the built-in default*), a Runtime picker and a Model picker scoped to the
@@ -304,9 +317,11 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   why under it. *MCP Apps* is the master switch, the eligible remote servers as a checklist (or *No
   remote MCP servers in the catalog.*) and *Save MCP Apps settings*; a sign-in that does not act as
   you is refused with the server's message under the Save, and the switch and ticks stay as they
-  were set. Below those: notifications, this build, sign out. The page's other cards — Models, API
-  keys, Zimmer plugins, Catalog Pins, Deployment Information — are not in the app yet; the parity
-  audit (`ios/PARITY_AUDIT.md`) lists each.
+  were set. Below those: notifications, and the page's *Deployment Information* — the commit the
+  server booted from (long-press it to copy the whole SHA), branch, commit date and environment —
+  with this app's own version and build line under it. The page's other cards — Models, Zimmer
+  plugins, Catalog Pins — are not in the app yet; the parity audit (`ios/PARITY_AUDIT.md`) lists
+  each.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
@@ -328,9 +343,9 @@ web it also resumes a failed session and sends the continue nudge to a stalled w
 *Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
 the web says why a row is *drawn under* a session that did not spawn it — reached through a
 senior, or placed there because the tree was cut short — and the app says only that it is: the
-hierarchy nodes do not carry `ceiling_placed`. The Settings sub-pages (API keys, inference
-accounts, connectors, the model catalog, Zimmer plugins, catalog pins) have no app screen yet and
-no API for most of it; `ios/PARITY_AUDIT.md` lists each with what it needs. *Open in browser* on any
+hierarchy nodes do not carry `ceiling_placed`. The Settings sub-pages other than API keys
+(inference accounts, connectors, the model catalog, Zimmer plugins, catalog pins) have no app
+screen yet and no API for most of it; `ios/PARITY_AUDIT.md` lists each with what it needs. *Open in browser* on any
 session gets you there meanwhile.
 
 Parts of the web session page wait on the API carrying them. The conversation endpoint returns
@@ -407,8 +422,9 @@ under the built-in `zimmer-ios` client:
    [the REST API](/extend/rest-api/#the-ios-apps-bearer-token) with it.
 
 No Google credential and no API key ever reaches the phone. The connection is listed on
-**Settings → API keys** with every other OAuth connection, and revoking it there signs the phone out
-on its next request. Signing out in the app revokes it too.
+**Settings → API keys** with every other OAuth connection — and in the app, under *Settings → API
+keys & connections*, marked *This phone* — and revoking it from either signs the phone out on its
+next request. Signing out in the app revokes it too.
 
 Only the token endpoint signs the app out. The app returns to the sign-in screen when `/oauth/token`
 answers `invalid_grant` (the connection was revoked, or its refresh token expired) or

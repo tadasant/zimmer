@@ -11,19 +11,32 @@ enum SettingsSection: String, Hashable {
 struct SettingsOpening: Identifiable, Hashable {
     let id = UUID()
     var section: SettingsSection?
+    /// Open with API keys & connections pushed over it.
+    var account = false
 }
 
-/// The web page's Settings, as the app can write them: the global session defaults, the
-/// experimental toggles and MCP Apps (`/api/v1/app_settings`), then the phone's own rows.
-/// Each section saves on its own, as each of the page's forms submits on its own: the
-/// toggles at once, the defaults and MCP Apps from their Save.
+/// The web page's Settings, as the app can write them: its Sign-in card and a row into
+/// API keys & connections (`/api/v1/me`, `/oauth_grants`, `/api_keys`), the global session
+/// defaults, the experimental toggles and MCP Apps (`/api/v1/app_settings`), then the
+/// phone's own rows and the page's Deployment Information. Each section saves on its own,
+/// as each of the page's forms submits on its own: the toggles at once, the defaults and
+/// MCP Apps from their Save.
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     /// The section the screen scrolls to as it opens, for `ios/bin/ui-test`'s photographs.
     var opensAt: SettingsSection? = nil
+    /// Open with API keys & connections pushed over it, for the same photographs.
+    var opensAccount = false
 
     @State private var notificationStatus = "…"
+    /// Who the token is, the Sign-in card and the deployment; nil until read.
+    @State private var account: Account?
+    @State private var accountError: ZimmerError?
+    @State private var showingAccount = false
+    @State private var confirmingSignOutEverywhere = false
+    @State private var signingOutEverywhere = false
+    @State private var signOutEverywhereError: String?
     /// The server's row; nil until it has been read.
     @State private var settings: AppSettings?
     @State private var loadError: ZimmerError?
@@ -50,12 +63,14 @@ struct SettingsView: View {
             ScrollViewReader { proxy in
                 Form {
                     Group {
-                        Section("Signed in to") {
-                            Text(model.signedInOrigins?.web.host ?? "—")
-                                .accessibilityIdentifier("settings.server")
-                            if let origins = model.signedInOrigins, origins.isSplit {
-                                LabeledContent("App host", value: origins.api.host ?? "—")
+                        signInCard
+                        Section {
+                            NavigationLink { AccountView(onSignedOut: { dismiss() }) } label: {
+                                Label("API keys & connections", systemImage: "key")
                             }
+                            .accessibilityIdentifier("settings.account")
+                        } footer: {
+                            Text("The deployment's API keys, and every client connected to /mcp over OAuth — this phone among them.")
                         }
                         if model.hasEdge {
                             Section {
@@ -87,29 +102,20 @@ struct SettingsView: View {
                         } footer: {
                             Text("Zimmer pushes when a session needs your input, finishes, or fails. Change it in iOS Settings → Zimmer.")
                         }
-                        Section("This build") {
-                            LabeledContent("Version", value: Self.version)
-                            Text(model.buildTarget.summary)
-                                .font(Theme.mono)
-                                .foregroundStyle(Theme.inkSoft)
-                                .accessibilityIdentifier("build.target")
-                        }
-                        Section {
-                            Button("Sign out", role: .destructive) {
-                                Task {
-                                    await model.signOut()
-                                    dismiss()
-                                }
-                            }
-                            .accessibilityIdentifier("settings.signout")
-                        } footer: {
-                            Text("Signing out revokes this phone's connection on the server.")
-                        }
+                        deploymentInformation
                     }
                     .themeRows()
                 }
                 .themeGround()
+                .navigationDestination(isPresented: $showingAccount) { AccountView(onSignedOut: { dismiss() }) }
                 .task { await loadNotificationStatus() }
+                .task { await loadAccount() }
+                .task {
+                    guard opensAccount else { return }
+                    // After the stack has laid out, or the push can be dropped.
+                    try? await Task.sleep(for: .milliseconds(300))
+                    showingAccount = true
+                }
                 .task {
                     await loadSettings()
                     guard let opensAt, settings != nil else { return }
@@ -124,6 +130,156 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
         }
+    }
+
+    // MARK: - The Sign-in card and Deployment Information
+
+    /// The page's Sign-in card: who this phone is signed in as and how it may act, the
+    /// authenticator and recovery codes where the server tells the app them (only a sign-in
+    /// acting as you is told), and the two sign-outs. The host rows are the phone's own.
+    private var signInCard: some View {
+        Section {
+            HStack {
+                Text("Server").foregroundStyle(Theme.inkSoft)
+                Spacer()
+                Text(model.signedInOrigins?.web.host ?? "—")
+                    .accessibilityIdentifier("settings.server")
+            }
+            if let origins = model.signedInOrigins, origins.isSplit {
+                LabeledContent("App host", value: origins.api.host ?? "—")
+            }
+            if let account {
+                (Text("Signed in as ") + Text(account.me.email ?? "—").fontWeight(.medium))
+                    .accessibilityIdentifier("settings.signin.email")
+                Text(account.me.actsAsYou
+                     ? "This connection acts on your behalf: what it sends to a session is recorded as written by you."
+                     : "This connection is relay only: what it sends to a session is recorded as the assistant's.")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.inkSoft)
+                    .accessibilityIdentifier("settings.signin.privilege")
+                if let card = account.webSignIn, let enrolled = card.totpEnrolledAt {
+                    Text("Authenticator set up \(WebDates.ago(enrolled))")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.inkSoft)
+                        .accessibilityIdentifier("settings.signin.totp")
+                    if let line = card.recoveryCodesLine {
+                        Text(line)
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.inkSoft)
+                            .accessibilityIdentifier("settings.signin.recovery")
+                    }
+                }
+            } else if let accountError {
+                Text(accountError.userMessage).font(.caption).foregroundStyle(Theme.danger)
+                    .accessibilityIdentifier("settings.signin.error")
+                Button("Try again") { Task { await loadAccount() } }
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading who you are…").font(.subheadline).foregroundStyle(Theme.inkSoft)
+                }
+                .accessibilityIdentifier("settings.signin.loading")
+            }
+            Button("Sign out", role: .destructive) {
+                Task {
+                    await model.signOut()
+                    dismiss()
+                }
+            }
+            .accessibilityIdentifier("settings.signout")
+            Button("Sign out everywhere", role: .destructive) { confirmingSignOutEverywhere = true }
+                .disabled(account == nil || signingOutEverywhere)
+                .accessibilityIdentifier("settings.signin.everywhere")
+            if let signOutEverywhereError {
+                Text(signOutEverywhereError).font(.caption).foregroundStyle(Theme.danger)
+                    .accessibilityIdentifier("settings.signin.everywhere.error")
+            }
+        } header: {
+            Text("Sign-in")
+        } footer: {
+            Text("Signing out revokes this phone's connection on the server. Signing out everywhere also ends every browser signed in as you; this phone has to sign in again afterwards.")
+        }
+        .confirmationDialog("Sign out everywhere?", isPresented: $confirmingSignOutEverywhere, titleVisibility: .visible) {
+            Button("Sign out everywhere", role: .destructive) { Task { await signOutEverywhere() } }
+                .accessibilityIdentifier("settings.signin.everywhere.confirm")
+        } message: {
+            Text("Sign out every browser signed in as \(account?.me.email ?? "you"), this phone included?")
+        }
+    }
+
+    /// The page's Deployment Information — the commit the server booted from and its
+    /// environment — and, under it, this app's own build.
+    private var deploymentInformation: some View {
+        Section {
+            if let deployment = account?.deployment {
+                LabeledContent("Commit SHA") {
+                    Text(verbatim: deployment.git.commitShort).font(Theme.mono)
+                        .accessibilityIdentifier("settings.deployment.sha")
+                }
+                .contextMenu {
+                    Button("Copy \(deployment.git.commitSha)", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = deployment.git.commitSha
+                    }
+                    .accessibilityIdentifier("settings.deployment.sha.copy")
+                }
+                LabeledContent("Branch") {
+                    Text(verbatim: deployment.git.branch).font(Theme.mono)
+                        .accessibilityIdentifier("settings.deployment.branch")
+                }
+                if let date = deployment.git.commitDate {
+                    LabeledContent("Commit Date") {
+                        Text(verbatim: date).accessibilityIdentifier("settings.deployment.date")
+                    }
+                }
+                LabeledContent("Rails Environment") {
+                    Text(verbatim: deployment.environment.railsEnv).accessibilityIdentifier("settings.deployment.environment")
+                }
+                LabeledContent("Ruby Version", value: deployment.environment.rubyVersion)
+                LabeledContent("Rails Version", value: deployment.environment.railsVersion)
+            } else {
+                Text(accountError.map { "Not read: \($0.userMessage)" } ?? "Reading the deployment…")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.inkSoft)
+            }
+            LabeledContent("App version", value: Self.version)
+            Text(model.buildTarget.summary)
+                .font(Theme.mono)
+                .foregroundStyle(Theme.inkSoft)
+                .accessibilityIdentifier("build.target")
+        } header: {
+            Text("Deployment Information")
+        } footer: {
+            Text("The server this phone talks to, for troubleshooting: the commit it booted from (long-press it to copy the whole SHA) and its environment, then this app's own build.")
+        }
+    }
+
+    private func loadAccount() async {
+        do {
+            account = try await model.api.account()
+            accountError = nil
+        } catch {
+            let error = error as? ZimmerError ?? .transport(error)
+            model.noteError(error)
+            accountError = error
+        }
+    }
+
+    /// The server ends every web sign-in as this person and revokes this phone's own
+    /// connection with them, so the app signs itself out once it has answered.
+    private func signOutEverywhere() async {
+        signingOutEverywhere = true
+        signOutEverywhereError = nil
+        do {
+            _ = try await model.api.signOutEverywhere()
+            await model.signOut()
+            dismiss()
+        } catch {
+            let error = error as? ZimmerError ?? .transport(error)
+            model.noteError(error)
+            signOutEverywhereError = error.userMessage
+            Haptics.failure()
+        }
+        signingOutEverywhere = false
     }
 
     // MARK: - The web page's sections

@@ -335,7 +335,7 @@ struct MoreView: View {
             }
             .themeRows()
             Section {
-                Button { showingSettings = true } label: { row("Settings", "gearshape", "Session defaults, experimental, MCP Apps, sign-in, notifications") }
+                Button { showingSettings = true } label: { row("Settings", "gearshape", "Sign-in, API keys, session defaults, experimental, MCP Apps, notifications") }
                     .accessibilityIdentifier("more.settings")
             }
             .themeRows()
@@ -344,7 +344,7 @@ struct MoreView: View {
         .themeGround()
         .navigationTitle("More")
         .sheet(isPresented: $showingSettings) { SettingsView() }
-        .sheet(item: $openedSettings) { opening in SettingsView(opensAt: opening.section) }
+        .sheet(item: $openedSettings) { opening in SettingsView(opensAt: opening.section, opensAccount: opening.account) }
         .navigationDestination(item: $openedCosts) { scope in CostsView(scope: scope) }
         .onChange(of: app.fixtureCosts, initial: true) { _, scope in
             guard let scope else { return }

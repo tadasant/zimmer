@@ -47,6 +47,14 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// The sign-in is a relay-only grant: the MCP Apps keys are refused, as the server
     /// refuses them before reading anything else.
     private let relayOnly: Bool
+    /// The deployment's connections, as `GET /api/v1/oauth_grants` lists them: id 7 is this
+    /// phone's, so a write that revokes it is a sign-out.
+    private var grants: [OAuthGrant]
+    /// The deployment's keys, as `GET /api/v1/api_keys` lists them.
+    private var keys: [APIKey]
+    private var nextKeyID = 3
+    /// Set by `signOutEverywhere`: the grant this app signed in on is gone.
+    public private(set) var signedOutEverywhere = false
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to. `longTranscript`: 1044's
@@ -56,6 +64,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
                 longTranscript: Bool = false, relayOnly: Bool = false) {
         self.live = live
         self.relayOnly = relayOnly
+        self.grants = FakeZimmerAPI.sampleGrants(now: now, relayOnly: relayOnly)
+        self.keys = FakeZimmerAPI.sampleAPIKeys(now: now)
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
@@ -1357,5 +1367,172 @@ extension FakeZimmerAPI {
             ],
             mcpApps: .init(enabled: false, allowedServers: [], eligibleServers: [.init(name: "linear", title: "Linear"), .init(name: "github", title: "GitHub")])
         )
+    }
+}
+
+// MARK: - The auth boundary: who you are, connections and keys
+//
+// As the server: the reads are open to any sign-in; every write takes one acting as you
+// (403 with the base controller's message on a relay-only grant, before any lookup). A
+// revoked connection cannot be re-levelled (422), a revoke of the phone's own connection
+// says `signedOut`, a key's name must be present, unique and no longer than 100 characters,
+// and a revoked key's row stays so it can be restored.
+extension FakeZimmerAPI {
+    /// `Api::BaseController#require_a_person_on_the_app`'s message on the app's own token.
+    public static let relayOnlyWriteRefusal = "This sign-in may not act as you; sign in again and allow acting as you"
+    /// This phone's connection.
+    public static let ownGrantID = 7
+
+    public func account() async throws -> Account {
+        let own = grants.first { $0.id == Self.ownGrantID }
+        let actsAsYou = own?.actsAsYou ?? !relayOnly
+        let email = own?.userEmail ?? "tadas@example.com"
+        return Account(
+            me: .init(authenticatedAs: "native_app", email: email, privilege: actsAsYou ? OAuthGrant.actAsHuman : OAuthGrant.relayOnly,
+                      actsAsYou: actsAsYou, grantID: own?.id),
+            // The card goes only to a sign-in acting as you.
+            webSignIn: actsAsYou
+                ? .init(email: email, name: "Tadas", lastSignedInAt: Date().addingTimeInterval(-3 * 3600), totpRequired: true,
+                        totpEnrolledAt: Date().addingTimeInterval(-19 * 86_400), recoveryCodesRemaining: 8)
+                : nil,
+            deployment: .init(git: .init(commitSha: "b7d4e1c9a0f2d3e4c5b6a7980f1e2d3c4b5a6978", commitShort: "b7d4e1c", branch: "main",
+                                         commitDate: "2026-10-14 17:22:05 +0000"),
+                              environment: .init(railsEnv: "production", rubyVersion: "3.4.6", railsVersion: "8.1.0"))
+        )
+    }
+
+    public func oauthGrants() async throws -> [OAuthGrant] {
+        Self.listed(grants)
+    }
+
+    public func setGrantPrivilege(_ id: Int, actsAsYou: Bool) async throws -> OAuthGrant {
+        try refuseUnlessActingAsYou()
+        guard let index = grants.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "Not found") }
+        if grants[index].isRevoked {
+            throw ZimmerError.http(status: 422, message: "\(grants[index].clientLabel)'s connection is revoked; approve it again to reconnect")
+        }
+        if grants[index].actsAsYou != actsAsYou {
+            grants[index].actsAsYou = actsAsYou
+            grants[index].privilege = actsAsYou ? OAuthGrant.actAsHuman : OAuthGrant.relayOnly
+            grants[index].scopeChangedAt = Date()
+            grants[index].scopeChangeReason = actsAsYou ? "app_upgrade" : "app_downgrade"
+        }
+        return grants[index]
+    }
+
+    public func revokeGrant(_ id: Int) async throws -> GrantRevocation {
+        try refuseUnlessActingAsYou()
+        guard let index = grants.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "Not found") }
+        if !grants[index].isRevoked {
+            grants[index].status = "revoked"
+            grants[index].revokedAt = Date()
+            grants[index].revocationReason = "revoked from the iOS app (tadas@example.com), 203.0.113.7"
+        }
+        let grant = grants[index]
+        return GrantRevocation(grant: grant, signedOut: id == Self.ownGrantID,
+                               message: "Revoked \(grant.clientLabel)'s connection. It is refused from the next request on.")
+    }
+
+    public func apiKeys() async throws -> [APIKey] {
+        Self.listed(keys)
+    }
+
+    public func mintAPIKey(name: String, grant: String) async throws -> MintedAPIKey {
+        try refuseUnlessActingAsYou()
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { throw ZimmerError.http(status: 422, message: "Name can't be blank") }
+        if trimmed.count > 100 { throw ZimmerError.http(status: 422, message: "Name is too long (maximum is 100 characters)") }
+        if keys.contains(where: { $0.name == trimmed }) { throw ZimmerError.http(status: 422, message: "Name has already been taken") }
+        guard APIKey.formGrants.contains(grant) else { throw ZimmerError.http(status: 422, message: "Grant \(grant) is not one a person may mint") }
+        let token = "zmr_" + Self.randomToken(32)
+        let key = APIKey(id: nextKeyID, name: trimmed, status: "active", source: "minted", grant: grant, fingerprint: Self.fingerprint(token),
+                         agentSessionsUseIt: false, lastUsedAt: nil, createdAt: Date())
+        nextKeyID += 1
+        keys.append(key)
+        return MintedAPIKey(key: key, token: token)
+    }
+
+    public func revokeAPIKey(_ id: Int) async throws -> APIKey {
+        try refuseUnlessActingAsYou()
+        guard let index = keys.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "Not found") }
+        if !keys[index].isRevoked {
+            keys[index].status = "revoked"
+            keys[index].revokedAt = Date()
+        }
+        return keys[index]
+    }
+
+    public func restoreAPIKey(_ id: Int) async throws -> APIKey {
+        try refuseUnlessActingAsYou()
+        guard let index = keys.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "Not found") }
+        keys[index].status = keys[index].isEnv && keys[index].isRetired ? "retired" : "active"
+        keys[index].revokedAt = nil
+        return keys[index]
+    }
+
+    public func signOutEverywhere() async throws -> SignOutEverywhereResult {
+        try refuseUnlessActingAsYou()
+        _ = try await revokeGrant(Self.ownGrantID)
+        signedOutEverywhere = true
+        return SignOutEverywhereResult(webSignInsEnded: 1, thisConnectionRevoked: true,
+                                       message: "Signed out on every device. This sign-in is revoked too; sign in again to keep using the app.")
+    }
+
+    private func refuseUnlessActingAsYou() throws {
+        if relayOnly { throw ZimmerError.http(status: 403, message: Self.relayOnlyWriteRefusal) }
+    }
+
+    /// The server's order: active first, then most recently used (connections) or newest
+    /// (keys) first, as each `listed` scope sorts.
+    private static func listed(_ grants: [OAuthGrant]) -> [OAuthGrant] {
+        grants.sorted { a, b in
+            if a.isRevoked != b.isRevoked { return !a.isRevoked }
+            return (a.lastUsedAt ?? a.createdAt) > (b.lastUsedAt ?? b.createdAt)
+        }
+    }
+
+    private static func listed(_ keys: [APIKey]) -> [APIKey] {
+        keys.sorted { a, b in
+            if a.isRevoked != b.isRevoked { return !a.isRevoked }
+            return a.createdAt > b.createdAt
+        }
+    }
+
+    /// The page's fingerprint: the first eight hex characters of the key's SHA-256.
+    static func fingerprint(_ token: String) -> String {
+        String(SHA256Digest.hash(Array(token.utf8)).map { String(format: "%02x", $0) }.joined().prefix(8))
+    }
+
+    private static func randomToken(_ length: Int) -> String {
+        let alphabet = Array("abcdefghijklmnopqrstuvwxyz0123456789")
+        return String((0..<length).map { _ in alphabet.randomElement()! })
+    }
+
+    /// This phone's connection (acting as you, unless the sign-in is relay only) and a second
+    /// phone's, relay only and last used three days ago.
+    static func sampleGrants(now: Date = Date(), relayOnly: Bool = false) -> [OAuthGrant] {
+        [
+            OAuthGrant(id: ownGrantID, clientName: "Zimmer iOS", clientLabel: "Zimmer iOS", clientID: "zimmer-native-app", firstParty: true,
+                       registration: "self_registered", publisherHost: nil, userEmail: "tadas@example.com",
+                       privilege: relayOnly ? OAuthGrant.relayOnly : OAuthGrant.actAsHuman, actsAsYou: !relayOnly, status: "active", current: true,
+                       createdAt: now.addingTimeInterval(-12 * 86_400), lastUsedAt: now.addingTimeInterval(-40),
+                       scopeChangedAt: now.addingTimeInterval(-12 * 86_400), scopeChangeReason: "consent"),
+            OAuthGrant(id: 4, clientName: "Zimmer iOS", clientLabel: "Zimmer iOS", clientID: "zimmer-native-app", firstParty: true,
+                       registration: "self_registered", publisherHost: nil, userEmail: "tadas@example.com",
+                       privilege: OAuthGrant.relayOnly, actsAsYou: false, status: "active", current: false,
+                       createdAt: now.addingTimeInterval(-41 * 86_400), lastUsedAt: now.addingTimeInterval(-3 * 86_400),
+                       scopeChangedAt: now.addingTimeInterval(-41 * 86_400), scopeChangeReason: "consent"),
+        ]
+    }
+
+    /// The env-registered key every agent session holds, listed under its fingerprint as the
+    /// page lists it, and one minted key.
+    static func sampleAPIKeys(now: Date = Date()) -> [APIKey] {
+        [
+            APIKey(id: 1, name: "c0ffee42", status: "active", source: "env", grant: APIKey.apiGrant, fingerprint: "c0ffee42",
+                   agentSessionsUseIt: true, lastUsedAt: now.addingTimeInterval(-90), createdAt: now.addingTimeInterval(-120 * 86_400)),
+            APIKey(id: 2, name: "laptop scripts", status: "active", source: "minted", grant: APIKey.apiGrant, fingerprint: "9a1b2c3d",
+                   agentSessionsUseIt: false, lastUsedAt: now.addingTimeInterval(-6 * 3600), createdAt: now.addingTimeInterval(-9 * 86_400)),
+        ]
     }
 }

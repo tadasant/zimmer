@@ -292,6 +292,8 @@ if [ -d "$app" ]; then
   shoot more -ZimmerFixture -ZimmerFixtureTab more
   shoot settings -ZimmerFixture -ZimmerFixtureSettings defaults
   shoot settings-experimental -ZimmerFixture -ZimmerFixtureSettings experimental
+  shoot settings-account -ZimmerFixture -ZimmerFixtureSettings
+  shoot account -ZimmerFixture -ZimmerFixtureAccount
   shoot trigger-detail -ZimmerFixture -ZimmerFixtureTrigger 5
   shoot costs -ZimmerFixture -ZimmerFixtureCosts
   shoot costs-root -ZimmerFixture -ZimmerFixtureCosts zimmer
@@ -320,6 +322,8 @@ if [ -d "$app" ]; then
   shoot triggers-dark -ZimmerFixture -ZimmerFixtureTab triggers
   shoot more-dark -ZimmerFixture -ZimmerFixtureTab more
   shoot settings-experimental-dark -ZimmerFixture -ZimmerFixtureSettings experimental
+  shoot settings-account-dark -ZimmerFixture -ZimmerFixtureSettings
+  shoot account-dark -ZimmerFixture -ZimmerFixtureAccount
   shoot trigger-detail-dark -ZimmerFixture -ZimmerFixtureTrigger 5
   shoot costs-dark -ZimmerFixture -ZimmerFixtureCosts
   xcrun simctl ui "$udid" appearance light >/dev/null 2>&1 || true
