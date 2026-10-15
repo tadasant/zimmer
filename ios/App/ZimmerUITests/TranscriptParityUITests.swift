@@ -62,11 +62,13 @@ final class TranscriptParityUITests: XCTestCase {
         UIPasteboard.general.string = ""
         let url = "https://files.example.com/pr-1293/composer.png?X-Amz-Signature=4f2c9a"
         let app = launch(["-ZimmerFixtureOpenSession", "1048"])
-        let link = app.links.matching(NSPredicate(format: "label CONTAINS %@", "files.example.com")).firstMatch
-        XCTAssertTrue(link.waitForExistence(timeout: timeout), "a bare URL is a link")
-        XCTAssertTrue(app.links.matching(NSPredicate(format: "label == %@", "the diff")).firstMatch.exists, "a written link is one too")
-        scrollUntilHittable(app, link)
-        link.press(forDuration: 1.5)
+        let paragraph = app.descendants(matching: .any)["markdown.links"].firstMatch
+        XCTAssertTrue(paragraph.waitForExistence(timeout: timeout), "a paragraph with links carries the link menu")
+        XCTAssertTrue(paragraph.label.contains(url), "a bare URL is kept whole")
+        scrollUntilHittable(app, paragraph)
+        paragraph.press(forDuration: 1.5)
+        XCTAssertTrue(app.buttons["Open Link"].firstMatch.waitForExistence(timeout: timeout), "the menu opens the link")
+        XCTAssertTrue(app.buttons["Share…"].firstMatch.exists, "and shares it")
         let copy = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Copy Link")).firstMatch
         XCTAssertTrue(copy.waitForExistence(timeout: timeout), "the long press offers Copy Link")
         attachScreenshot(app, named: "copy-link")

@@ -5,8 +5,8 @@ import ZimmerKit
 /// headings, paragraphs, lists that nest, quotes, tables, rules and fenced code, each block
 /// drawn as a block. Inside them, emphasis, code spans and links are inline markdown. A code
 /// block or a table wider than the screen scrolls sideways in its own box, so nothing in a
-/// message can widen the page. A link, written as one or bare, opens on a tap and offers
-/// Copy Link and Share on a long press.
+/// message can widen the page. A link, written as one or bare, opens on a tap, and a long
+/// press on its paragraph offers Open Link, Copy Link and Share.
 struct MarkdownText: View {
     /// The text, already cut into blocks (`MarkdownBlock.blocks(of:)`).
     let blocks: [MarkdownBlock]
@@ -27,13 +27,6 @@ struct MarkdownStyle {
     var listDepth = 0
 
     var font: Font { monospaced ? Theme.mono : .subheadline }
-
-    /// The same face for UIKit, which draws the paragraphs that hold links.
-    var uiFont: UIFont {
-        monospaced
-            ? .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular)
-            : .preferredFont(forTextStyle: .subheadline)
-    }
 }
 
 private struct MarkdownBlocks: View {
@@ -53,9 +46,6 @@ private struct MarkdownBlocks: View {
 private struct MarkdownBlockView: View {
     let block: MarkdownBlock
     let style: MarkdownStyle
-    /// Read so a change of text size redraws the paragraphs UIKit draws, whose font is resolved
-    /// here rather than by SwiftUI.
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         switch block {
@@ -72,13 +62,16 @@ private struct MarkdownBlockView: View {
             .accessibilityIdentifier("markdown.heading")
         case let .paragraph(text):
             let attributed = MarkdownInline.transcript(text)
-            if attributed.runs.contains(where: { $0.link != nil }) {
-                // SwiftUI's Text opens a link and offers nothing on a long press; a text view
-                // gives the system's link menu, with Copy Link.
-                LinkText(text: style.attributed(attributed))
-                    // A text view has no baseline of its own; this keeps a list's bullet level
-                    // with the first line rather than the last.
-                    .alignmentGuide(.firstTextBaseline) { _ in style.uiFont.ascender }
+            let links = attributed.runs.compactMap { $0.link }
+            if !links.isEmpty {
+                // A Text opens a link on a tap but offers nothing on a long press, so the
+                // paragraph carries the link menu itself. Selection is off here: its long press
+                // would take the gesture the menu needs, and the menu copies the text instead.
+                Text(attributed)
+                    .font(style.font)
+                    .foregroundStyle(style.color)
+                    .textSelection(.disabled)
+                    .contextMenu { LinkMenu(links: links, text: String(attributed.characters)) }
                     .accessibilityIdentifier("markdown.links")
             } else {
                 Text(attributed)
@@ -264,68 +257,36 @@ extension MarkdownInline {
     }
 }
 
-/// A paragraph with links in it, drawn by a `UITextView` for the system's link handling: a tap
-/// opens the link, and a long press shows its menu — Open Link, Copy Link, Share. The text can
-/// be selected too. Sized like a `Text`: as wide as its longest line, up to the width offered.
-private struct LinkText: UIViewRepresentable {
-    let text: NSAttributedString
+/// The long-press menu of a paragraph with links: each link's Open, Copy and Share — under its
+/// address when there is more than one — then the paragraph's words.
+private struct LinkMenu: View {
+    let links: [URL]
+    let text: String
+    @Environment(\.openURL) private var openURL
 
-    func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
-        view.isEditable = false
-        view.isSelectable = true
-        view.isScrollEnabled = false
-        view.backgroundColor = .clear
-        view.textContainerInset = .zero
-        view.textContainer.lineFragmentPadding = 0
-        view.linkTextAttributes = [.foregroundColor: UIColor(Theme.accent)]
-        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        return view
-    }
-
-    func updateUIView(_ view: UITextView, context: Context) {
-        // Compared with what was last set, not what the view hands back, so a transcript's
-        // refresh leaves a selection or an open link menu alone when the text is unchanged.
-        guard context.coordinator.shown != text else { return }
-        context.coordinator.shown = text
-        view.attributedText = text
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    final class Coordinator {
-        var shown: NSAttributedString?
-    }
-
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
-        let offered = proposal.width.flatMap { $0.isFinite ? $0 : nil }
-        let fitted = uiView.sizeThatFits(CGSize(width: offered ?? .greatestFiniteMagnitude, height: .greatestFiniteMagnitude))
-        let width = min(fitted.width.rounded(.up), offered ?? .greatestFiniteMagnitude)
-        return CGSize(width: width, height: fitted.height.rounded(.up))
-    }
-}
-
-extension MarkdownStyle {
-    /// Inline markdown in UIKit's attributes, for `LinkText`: what SwiftUI's Text reads from the
-    /// presentation intents — bold, italic, code, strikethrough — set as fonts and styles.
-    func attributed(_ attributed: AttributedString) -> NSAttributedString {
-        let result = NSMutableAttributedString()
-        let base = uiFont
-        let ink = UIColor(color)
-        for run in attributed.runs {
-            let intent = run.inlinePresentationIntent ?? []
-            var font = intent.contains(.code) ? UIFont.monospacedSystemFont(ofSize: base.pointSize, weight: .regular) : base
-            var traits = font.fontDescriptor.symbolicTraits
-            if intent.contains(.stronglyEmphasized) { traits.insert(.traitBold) }
-            if intent.contains(.emphasized) { traits.insert(.traitItalic) }
-            if let descriptor = font.fontDescriptor.withSymbolicTraits(traits) { font = UIFont(descriptor: descriptor, size: font.pointSize) }
-            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
-            if intent.contains(.code) { attributes[.backgroundColor] = UIColor(Theme.well) }
-            if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-            if let link = run.link { attributes[.link] = link }
-            result.append(NSAttributedString(string: String(attributed[run.range].characters), attributes: attributes))
+    var body: some View {
+        // The same address twice in a paragraph is one entry.
+        let distinct = links.reduce(into: [URL]()) { if !$0.contains($1) { $0.append($1) } }
+        ForEach(distinct, id: \.self) { url in
+            if distinct.count > 1 {
+                Section(url.host() ?? url.absoluteString) { actions(url) }
+            } else {
+                actions(url)
+            }
         }
-        return result
+        Button("Copy Text", systemImage: "doc.on.doc") {
+            UIPasteboard.general.string = text
+        }
+    }
+
+    @ViewBuilder
+    private func actions(_ url: URL) -> some View {
+        Button("Open Link", systemImage: "safari") { openURL(url) }
+        Button("Copy Link", systemImage: "link") {
+            UIPasteboard.general.string = url.absoluteString
+            Haptics.success()
+        }
+        ShareLink(item: url) { Label("Share…", systemImage: "square.and.arrow.up") }
     }
 }
 
