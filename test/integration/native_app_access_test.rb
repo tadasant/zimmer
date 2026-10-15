@@ -242,7 +242,7 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_equal RuntimeRegistry::DEFAULT_RUNTIME, body.dig("session_defaults", "runtime")
     assert_equal false, body.dig("session_defaults", "runtime_overridden")
     assert body["runtimes"].any? { |r| r["id"] == "claude_code" && r["models"].any? }
-    first = ExperimentalSettingsRegistry.all.first
+    first = ExperimentalSettingsRegistry.find("mcp_tool_search")
     entry = body["experimental"].find { |e| e["key"] == first.key }
     assert_equal first.current_value, entry["enabled"]
     assert_equal ExperimentalSettingsRegistry.default_on?(first), entry["default_enabled"]
@@ -264,6 +264,17 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_equal !was, first.current_value
     entry = JSON.parse(response.body).fetch("app_settings")["experimental"].find { |e| e["key"] == first.key }
     assert_equal first.current_value, entry["enabled"]
+
+    # "" clears a half; null leaves it alone.
+    patch "/api/v1/app_settings", params: { app_settings: { default_model: "", default_runtime: nil } },
+      headers: headers, as: :json
+    assert_response :success
+    assert_nil AppSetting.current.default_model
+    assert_equal "claude_code", AppSetting.current.default_runtime
+
+    get "/api/v1/app_settings", headers: { "X-API-Key" => API_KEY }
+    assert_response :success
+    assert_equal false, JSON.parse(response.body).dig("app_settings", "session_defaults", "model_overridden")
   end
 
   test "a bad runtime and model pair, or an unknown experimental key, is a 422 and changes nothing" do
@@ -273,21 +284,28 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert_nil AppSetting.current.default_model
 
-    first = ExperimentalSettingsRegistry.all.first
+    first = ExperimentalSettingsRegistry.find("mcp_tool_search")
     before = first.current_value
     patch "/api/v1/app_settings", params: { app_settings: { experimental: { "no_such_setting" => true, first.key => !before } } },
       headers: headers, as: :json
     assert_response :unprocessable_entity
     assert_equal "Unknown experimental setting", JSON.parse(response.body)["error"]
     assert_equal before, first.current_value
+
+    patch "/api/v1/app_settings", params: { app_settings: { experimental: [ first.key ] } }, headers: headers, as: :json
+    assert_response :unprocessable_entity
+    assert_equal before, first.current_value
   end
 
   test "MCP Apps change only on a grant that acts as you, never over an API key" do
-    patch "/api/v1/app_settings", params: { app_settings: { mcp_apps_enabled: true } },
+    # A legal change in the same body is refused with it: the guard runs before anything is read.
+    model = ModelCatalog.model_ids_for("claude_code").last
+    patch "/api/v1/app_settings", params: { app_settings: { default_model: model, mcp_apps_enabled: true } },
       headers: bearer(token), as: :json
     assert_response :forbidden
     assert_match(/sign in again/, JSON.parse(response.body)["message"])
     assert_equal false, AppSetting.current.mcp_apps_enabled?
+    assert_nil AppSetting.current.default_model
 
     patch "/api/v1/app_settings", params: { app_settings: { mcp_apps_allowed_servers: [ "anything" ] } },
       headers: { "X-API-Key" => API_KEY }, as: :json
