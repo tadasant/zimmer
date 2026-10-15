@@ -1959,11 +1959,13 @@ class SessionsController < ApplicationController
     render json: { error: e.record.errors.full_messages.join(", ") }, status: :unprocessable_entity
   end
 
+  # Presentation ONLY — the flip is Sessions::TogglePushNotifications, shared
+  # with the `toggle_push_notifications` MCP action.
   def toggle_push_notifications
     @session = find_session
 
     result = with_db_retry do
-      @session.update!(push_notifications_enabled: !@session.push_notifications_enabled)
+      Sessions::TogglePushNotifications.call(session: @session)
     end
 
     return if performed?

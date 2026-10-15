@@ -1122,8 +1122,10 @@ module Mcp
         ].join("\n")
       end
 
+      # Dispatch ONLY — Sessions::TogglePushNotifications owns the flip, shared
+      # with the web UI's bell.
       def toggle_push_notifications(session)
-        session.update!(push_notifications_enabled: !session.push_notifications_enabled)
+        Sessions::TogglePushNotifications.call(session: session)
 
         [
           "## Push Notifications Toggled",
