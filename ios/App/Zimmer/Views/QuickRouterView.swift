@@ -29,6 +29,9 @@ struct QuickRouterView: View {
     /// The board's bar opened this sheet: the words go back to the bar when it closes, emptied
     /// by a start. Held here, not read off `AppModel`, so another opening cannot change it.
     @State private var openedFromBar = false
+    /// A start succeeded. The sheet's `onDisappear` can run before or after `start()` returns,
+    /// so this, not `isStarting` alone, is what keeps it from handing the words back.
+    @State private var started = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -97,9 +100,9 @@ struct QuickRouterView: View {
                 focused = true
             }
             .onDisappear {
-                // Closed without starting: the bar gets the words as the sheet left them. A
-                // start closes the sheet while `isStarting` holds, and `start()` empties the bar.
-                if openedFromBar, !isStarting { app.quickRouterBarHandback = prompt }
+                // Closed without starting: the bar gets the words as the sheet left them. After a
+                // start, `start()` empties the bar instead.
+                if openedFromBar, !isStarting, !started { app.quickRouterBarHandback = prompt }
             }
             .interactiveDismissDisabled(isStarting)
             .task { configs = try? await app.api.configs() }
@@ -209,7 +212,9 @@ struct QuickRouterView: View {
         )
         // Read before the await: a start closes the sheet before it returns.
         let fromBar = openedFromBar
-        if await app.startQuickRouter(request), fromBar { app.quickRouterBarHandback = "" }
+        guard await app.startQuickRouter(request) else { return }
+        started = true
+        if fromBar { app.quickRouterBarHandback = "" }
     }
 }
 
