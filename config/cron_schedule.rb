@@ -360,6 +360,12 @@ module CronSchedule
       description: "Keep ready clones of the router root's repository (or every active root's, per WarmPoolPolicy) so a starting session skips the git clone",
       environments: %i[production staging]
     },
+    warm_process_pool_replenish: {
+      cron: "* * * * *", # Every minute — a deploy or worker restart ends the process; this boots the next
+      class: "WarmProcessPoolReplenishJob",
+      description: "Keep an idle Claude Code process booted for the router root (when Settings → Experimental turns it on) so a Quick Router request skips process boot",
+      environments: %i[production staging]
+    },
     spot_ceiling_sweep: {
       cron: "*/5 * * * *", # Every 5 minutes — quota readings land every 15, so this is not the bound
       class: "SpotCeilingSweepJob",

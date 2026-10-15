@@ -207,6 +207,37 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_empty pool[:targets]
   end
 
+  def warm_process_report(overrides = {})
+    { enabled: true, size: 1, max_age_minutes: 60, published_at: Time.current, outcome_window_hours: 24,
+      outcomes: { "claimed" => 4, "missed" => 1 },
+      last_pass: { at: 1.minute.ago, built: 1, recycled: 0, recycled_reasons: [], error: nil },
+      entries: [ { id: "warm-1-abc", pid: 42, state: "ready", age_seconds: 120, model: "opus" } ] }
+      .merge(overrides)
+  end
+
+  test "warm_process_pool_health carries the pool report, healthy with a process ready" do
+    WarmProcessPool.stubs(:report).returns(warm_process_report)
+
+    pool = @service.full_health_report[:warm_process_pool_health]
+
+    assert_equal :healthy, pool[:status].status
+    assert_equal "1 of 1 warm router process ready.", pool[:status].message
+    assert_equal({ "claimed" => 4, "missed" => 1 }, pool[:outcomes])
+  end
+
+  test "warm_process_pool_health warns on a failed refill, says when it is off, and survives a raise" do
+    WarmProcessPool.stubs(:report).returns(warm_process_report(last_pass: { at: Time.current, built: 0, recycled: 0, error: "spawn failed" }, entries: []))
+    assert_equal :warning, @service.full_health_report[:warm_process_pool_health][:status].status
+
+    WarmProcessPool.stubs(:report).returns(warm_process_report(enabled: false, entries: []))
+    assert_match(/^Off:/, @service.full_health_report[:warm_process_pool_health][:status].message)
+
+    WarmProcessPool.stubs(:report).raises(Errno::EACCES, "cache")
+    pool = @service.full_health_report[:warm_process_pool_health]
+    assert_equal :warning, pool[:status].status
+    assert_empty pool[:entries]
+  end
+
   test "log_retention_health reports the size of the logs table and the policy in force" do
     retention = @service.full_health_report[:log_retention_health]
 

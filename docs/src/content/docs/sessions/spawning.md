@@ -575,6 +575,101 @@ not part of `overall_status`: an empty pool costs a `git clone`, which is how ev
 before the pool existed. The last refill pass is kept in the Rails cache, because the report is served
 by the web container and the refill runs on the worker.
 
+## The warm router process
+
+After the warm clone pool, a Quick Router request still took about 7 seconds from the session row
+to the router's first assistant event (design study, session 24697). About 2.5 seconds of that is
+the process itself: the spawn and its preamble, Claude Code's boot (about 1.3 seconds), and its MCP
+handshake (0.2–0.5 seconds). `WarmProcessPool` keeps a Claude Code process for the router root that
+has already done all three, idle, waiting for a request.
+
+It is off by default. Turn on **Warm Quick Router process** under Settings → Experimental
+(`AppSetting#warm_router_process_enabled`, also settable through `action_app_settings`).
+
+### Idle, without spending anything
+
+The process is `claude -p --input-format stream-json --output-format stream-json`, started with the
+same flags, environment, OAuth token and memory cgroup a cold start gets, minus the system prompt.
+Its stdin is a pipe the worker holds open and never writes a message to, so the CLI boots, connects
+its MCP servers and waits. While it waits it writes no transcript, makes no API call and spends no
+quota. Control requests (`initialize`, `mcp_set_servers`, `set_model`, `mcp_status`) are answered
+by the CLI itself, without a model call.
+
+The session's own prompt is the first message the process is ever sent, so it is the first `user`
+turn in the transcript, exactly as on a cold start. Nothing is said to the process before it.
+
+### What a claim does
+
+A router session's fresh start asks the pool first, before the warm clone pool. A claim:
+
+1. Takes the newest ready process whose configuration matches the session's, and its clone. The
+   clone sits at an ordinary clone path, which the session adopts as its own.
+2. Fetches the clone to the branch tip. Claude Code reads `CLAUDE.md` at boot, not at the first
+   message, so if the fetch moved a file the CLI already read, the process is refused. That means a
+   memory file (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`) in the working directory or above it,
+   anything under a `.claude/` there, the working directory's `.mcp.json`, or, for a root that lives
+   in a subdirectory, anything inside it.
+3. Gives the session the Claude session id the process was started with (`--session-id`).
+4. Renames the process's `CLAUDE_CONFIG_DIR` and scratch directory onto the session's id, leaving a
+   symlink at the old path for the running process.
+5. Runs the rest of a fresh start as usual: `.env`, `air prepare` for the session, the OAuth gate,
+   the system prompt, the account check. Then, where a cold start would spawn:
+6. Refuses the process if the session's `.env` or `.claude/` now differ from what it booted with,
+   if it booted with an MCP server the session does not have, or if the account, its token, the
+   `claude` binary or a spawn-environment setting changed since it booted.
+7. Moves the process and its MCP children into the session's memory cgroup.
+8. Writes the session's scratch directory and elicitation address to the file Claude Code sources
+   before every Bash command (`CLAUDE_ENV_FILE`), since a running process's environment cannot change.
+9. Sends `initialize` with the session's system prompt, `mcp_set_servers` with the session's whole
+   server map (the self-session server, and URLs stamped with the session id), and `set_model` when
+   the session asked for a different model.
+10. Writes the prompt and closes stdin. The process finishes the turn and exits, as a cold `-p`
+    start does, and the job monitors it from there like any other turn. Follow-ups `--resume` as
+    before.
+
+Every refusal before the prompt is written stops the process and falls back to an ordinary spawn,
+in the same clone and with the same session id. The pool is never why a session fails. Each router
+session records the outcome in `metadata["warm_process"]`: `claimed`, `missed` (none ready), or the
+reason it started cold (`config_mismatch`, `boot_context_changed`, `workspace_changed`,
+`environment_changed`, `mcp_servers_removed`, `mcp_set_servers_failed`, `fetch_failed`, `stale`,
+`claim_error`, `not_started`).
+
+**What starts cold.** A session whose runtime, effort, MCP servers, skills, hooks, plugins,
+branch or subdirectory differ from the router root's defaults. A non-default effort is a CLI flag
+with no control request to change it, so it takes the cold path. A different model is patched with
+`set_model` and stays warm.
+
+### Lifetime
+
+The pool lives in the worker's memory: it holds each process's stdin, and only that worker's own
+agent jobs can claim it. A deploy or worker restart closes the pipe, the CLI reads end-of-file and
+exits, and the next refill builds a replacement and sweeps what the old worker left on disk.
+
+`WarmProcessPoolReplenishJob` runs every minute and after every claim. It replaces a process that
+has exited, is older than 60 minutes, booted on an account, token, CLI binary or catalog that has
+since changed, or reports a failed MCP server; then it builds up to the pool size. A build claims a
+warm clone when there is one, runs `air prepare` for the router root's defaults, drops the servers
+`air prepare` injects per session (they have no session yet), spawns, and waits up to 60 seconds
+for every MCP server to connect.
+
+The process is not a Session row, holds no fleet slot, and never reaches `needs_input`. It sits in
+its own memory cgroup under the sessions pool until it is claimed.
+
+| Knob | Default | What it does |
+| --- | --- | --- |
+| Warm Quick Router process (Settings → Experimental) | off | Keep warm router processes at all |
+| `WARM_ROUTER_PROCESSES` | `1` | How many to keep (clamped to 0–2); `0` turns the pool off whatever the toggle says |
+
+Each idle process costs about 250 MB of RAM. With one process, the second of two requests a few
+seconds apart spawns cold.
+
+**Seeing it.** `/health` has a Warm Router Process card: whether a process is ready, its age, model
+and account, the last refill and what it recycled, and how many router starts in the last 24 hours
+claimed it, missed it, or started cold and why. `GET /api/v1/health` and `get_system_health` carry
+the same object as `warm_process_pool_health`. It is not part of `overall_status`. The processes
+live in the worker, so the worker publishes their state to the Rails cache for the web container to
+read.
+
 ## The pre-clone disk guard
 
 Every session's working directory is a git clone under `ClonesDirectory.base`, created by

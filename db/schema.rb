@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_13_040000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_15_160000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -159,6 +159,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_13_040000) do
     t.integer "uncategorized_position", default: 0, null: false
     t.datetime "updated_at", null: false
     t.boolean "warm_clone_pool_active_roots_enabled", default: false, null: false
+    t.boolean "warm_router_process_enabled", default: false, null: false
   end
 
   create_table "catalog_pins", force: :cascade do |t|

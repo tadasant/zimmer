@@ -659,6 +659,12 @@ serves every active root) ships off with no `landed_at`, so only sessions that s
 exists are tagged. It changes start latency rather than spend, and the claimed/missed counts on
 `/health` are its real report.
 
+`warm_router_process` (the [warm router process](/sessions/spawning/#the-warm-router-process))
+ships off with no `landed_at` either. It should not move spend at all: an idle warm process makes no
+API call, and a claimed one makes the same first call a cold start would, with the session's prompt
+as its first message. What it costs is about 250 MB of RAM per idle process, not quota. Its report is
+the claimed/missed counts on `/health`.
+
 ### Retiring a setting
 
 When the question a setting was asking has been answered and the losing branch is deleted, its
