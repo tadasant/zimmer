@@ -265,13 +265,11 @@ of them widened what the phone can do on the server.
 *Reprioritize* and *Authorize merge* are not in the app yet, nor is the web composer's camera
 button: taking a photo cannot be exercised in the simulator, so it waits on a change verified on
 a device. Fork from a message and answering an
-elicitation each need a server change first — the conversation endpoint does not say where a
-message sits in the transcript the fork service counts, and no route lists a session's pending
-elicitations — and come in their own change. So do switching a trigger's *Enqueue messages* and
+elicitation stay in the browser until the app draws them; the API they need is in place. Switching a trigger's *Enqueue messages* and
 *Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update),
 saying whether re-arming a failed trigger fires it again (the trigger JSON does not say whether a
 one-time wake was already spent; the web page does), and
-the Costs page's burn rate (not in `GET /api/v1/costs`). So does the rest of the web card's refresh: on the
+the Costs page's burn rate (not in `GET /api/v1/costs`) come in their own change. So does the rest of the web card's refresh: on the
 web it also resumes a failed session and sends the continue nudge to a stalled waiting one, but
 `POST /api/v1/sessions/:id/refresh` only re-reads the transcript, so the row's refresh is
 *Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
@@ -342,9 +340,11 @@ under the built-in `zimmer-ios` client:
    [web sign-in](/auth/web-sign-in/) does the rest, as it does in a browser: Google, restricted to
    the deployment's domain, then the second factor. Zimmer then shows a consent screen for
    "Zimmer for iOS". It asks for a [connection level](/auth/mcp-authorization-server/#relay-only-or-acts-on-my-behalf) like every
-   other OAuth connection. Both levels reach the same API. **Acts on my behalf** records what you
-   send from the app (follow-ups, Quick Router prompts) as your message, the way it does for an
-   assistant; **Relay only** records nothing.
+   other OAuth connection. Both levels reach the same API, with one exception. **Acts on my behalf**
+   records what you send from the app (follow-ups, Quick Router prompts) as your message, the way it
+   does for an assistant, and is the only level that may answer an MCP server's prompt (an
+   elicitation), because an answer approves or refuses what that server does next. **Relay only**
+   records nothing, and may read a prompt but not answer it.
 3. Approving sends the sheet to `com.tadasant.zimmer:/oauth/callback` with a 60-second code. The app
    redeems it at `/oauth/token` on the app origin with the verifier only it holds.
 4. The access and refresh tokens go into the Keychain (`AfterFirstUnlockThisDeviceOnly`). The app

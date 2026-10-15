@@ -184,6 +184,25 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert body["truncated"]
   end
 
+  test "each conversation message names the index fork takes, counted as the fork service counts" do
+    tokens = sign_in
+    lines = [
+      { type: "system", subtype: "init" }.to_json,
+      { type: "user", message: { role: "user", content: "Ship it?" } }.to_json,
+      "",
+      { type: "assistant", message: { role: "assistant", content: [ { type: "text", text: "PR is green. Merge?" } ] } }.to_json
+    ]
+    session = build_zimmer_session(status: :needs_input, transcript: lines.join("\n") + "\n")
+
+    get "/api/v1/sessions/#{session.id}/conversation", headers: bearer(tokens["access_token"])
+
+    indices = JSON.parse(response.body)["messages"].map { |m| m["transcript_index"] }
+    parsed = ForkSessionService.parsed_messages(session.transcript)
+    assert_equal [ 1, 2 ], indices, "the blank line is not counted; the system event is"
+    assert_equal "Ship it?", parsed[indices.first].dig("message", "content")
+    assert_equal "assistant", parsed[indices.last]["type"]
+  end
+
   test "opening a session in the app marks its notifications read and touches it; a read while open does not" do
     tokens = sign_in
     session = build_zimmer_session(status: :needs_input)
