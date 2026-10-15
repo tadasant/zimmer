@@ -115,7 +115,8 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
   test "the app's token does not open a controller that has not opted in" do
     tokens = sign_in
 
-    get "/api/v1/gate_decisions", headers: bearer(tokens["access_token"])
+    # A controller no page offers a person: the transcript archive is an operator's export.
+    get "/api/v1/transcript_archive/status", headers: bearer(tokens["access_token"])
 
     assert_response :unauthorized
   end
