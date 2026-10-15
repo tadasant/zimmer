@@ -309,7 +309,9 @@ struct HealthView: View {
                     .foregroundStyle(Theme.inkMute)
                     HStack(spacing: 6) {
                         Text(verbatim: "Last run " + (task.lastRanAt.map { Format.age($0) == "now" ? "just now" : "\(Format.age($0)) ago" } ?? "never"))
-                        if let next = task.nextAttemptAt { Text(verbatim: "· retry in \(Format.duration(next.timeIntervalSinceNow))") }
+                        if let next = task.nextAttemptAt {
+                            Text(verbatim: next > Date() ? "· retry in \(Format.duration(next.timeIntervalSinceNow))" : "· retry due")
+                        }
                     }
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Theme.inkSoft)

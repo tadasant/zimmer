@@ -127,7 +127,8 @@ struct SessionListView: View {
             }
             if !model.systemBanners.isEmpty {
                 Section {
-                    SystemBannerRows(banners: model.systemBanners) { model.tab = .more }
+                    // Where the web banner's Manage link goes: Health, under More.
+                    SystemBannerRows(banners: model.systemBanners) { model.fixtureHealth = true; model.tab = .more }
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
