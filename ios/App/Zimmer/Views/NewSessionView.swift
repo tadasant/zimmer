@@ -263,7 +263,8 @@ struct NewSessionView: View {
 
 /// Choose a session's MCP servers, skills, hooks or plugins from the catalog: a checklist,
 /// searchable, with an unavailable MCP server saying why and listed last, as the web's are.
-/// A chosen id the catalog no longer lists stays on the list, so it can be taken off.
+/// A chosen id the catalog no longer lists is shown, unticked: the server refuses a list
+/// that names it, so saving drops it.
 struct CatalogPicker: View {
     @EnvironmentObject private var app: AppModel
     let kind: CatalogKind
@@ -302,23 +303,14 @@ struct CatalogPicker: View {
                 .accessibilityAddTraits(selection.contains(item.id) ? .isSelected : [])
                 .themeRows()
             }
+            // Not a toggle: the server refuses a list naming one.
             ForEach(missing, id: \.self) { id in
-                Button {
-                    toggle(id)
-                } label: {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(verbatim: id).foregroundStyle(Theme.ink)
-                            Text("Not in the catalog").font(.caption).foregroundStyle(Theme.warning)
-                        }
-                        Spacer()
-                        if selection.contains(id) {
-                            Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Theme.accent)
-                        }
-                    }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: id).foregroundStyle(Theme.inkSoft).strikethrough()
+                    Text("Not in the catalog any more; saving drops it").font(.caption).foregroundStyle(Theme.warning)
                 }
-                .accessibilityIdentifier("catalog.item.\(id)")
-                .accessibilityAddTraits(selection.contains(id) ? .isSelected : [])
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("catalog.missing.\(id)")
                 .themeRows()
             }
         }
@@ -337,6 +329,8 @@ struct CatalogPicker: View {
                 let read = try await app.api.catalog(kind)
                 let listed = Set(read.map(\.id))
                 initialMissing = selection.filter { !listed.contains($0) }
+                // Unticked from the start: a list naming one is refused, so it could not be saved.
+                selection.removeAll { !listed.contains($0) }
                 items = read
             } catch {
                 self.error = error as? ZimmerError ?? .transport(error)
@@ -349,23 +343,21 @@ struct CatalogPicker: View {
 
     private var filtered: [CatalogItem] {
         // Available first, each group in the catalog's order.
-        let all = (items ?? []).enumerated()
-            .sorted { ($0.element.unavailableReason != nil ? 1 : 0, $0.offset) < ($1.element.unavailableReason != nil ? 1 : 0, $1.offset) }
-            .map(\.element)
-        guard !needle.isEmpty else { return all }
+        let catalog = items ?? []
+        let all = catalog.filter { $0.unavailableReason == nil } + catalog.filter { $0.unavailableReason != nil }
+        // Every word somewhere in the id, title or description, as the web's search.
+        let terms = needle.split(separator: " ").map(String.init)
+        guard !terms.isEmpty else { return all }
         return all.filter { item in
-            [item.id, item.displayTitle, item.description ?? ""].contains { $0.lowercased().contains(needle) }
+            let text = [item.id, item.displayTitle, item.description ?? ""].joined(separator: " ").lowercased()
+            return terms.allSatisfy { text.contains($0) }
         }
     }
 
     /// Chosen, but not in the catalog the server lists: renamed or removed since.
     private var missing: [String] {
-        guard let items else { return [] }
-        let listed = Set(items.map(\.id))
-        // Kept once it has been unticked, so a slip can be undone.
-        return (initialMissing + selection).reduce(into: [String]()) { result, id in
-            if !listed.contains(id), !result.contains(id), needle.isEmpty || id.lowercased().contains(needle) { result.append(id) }
-        }
+        guard items != nil else { return [] }
+        return initialMissing.filter { needle.isEmpty || $0.lowercased().contains(needle) }
     }
 
     private func toggle(_ id: String) {

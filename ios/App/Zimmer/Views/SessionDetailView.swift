@@ -335,6 +335,7 @@ struct SessionDetailView: View {
     @State private var editingCatalog: CatalogKind?
     /// MCP servers a save chose that need the browser's OAuth flow before they connect.
     @State private var authorizing: [String]?
+    @State private var pendingAuthorizing: [String]?
     /// The web UI's log-level filter, as far as the conversation goes. Minimal by default:
     /// on a phone the tool traffic buries the words.
     @State private var level: ConversationLevel = .minimal
@@ -550,7 +551,10 @@ struct SessionDetailView: View {
             Text(model.detail?.session.precedenceHint ?? "")
         }
         .sheet(isPresented: $choosingModel) { modelSheet }
-        .sheet(item: $editingCatalog) { kind in catalogSheet(kind) }
+        .sheet(item: $editingCatalog, onDismiss: {
+            authorizing = pendingAuthorizing
+            pendingAuthorizing = nil
+        }) { kind in catalogSheet(kind) }
         .alert("Authorize in the browser", isPresented: Binding(get: { authorizing != nil }, set: { if !$0 { authorizing = nil } })) {
             if let url = app.webURL(for: model.id) {
                 Button("Open the session page") { openURL(url) }
@@ -708,9 +712,10 @@ struct SessionDetailView: View {
                 }
                 if saved, !needsAuthorizing.isEmpty {
                     // The server may park the session until these are authorized, which is a
-                    // browser step (the MCP OAuth flow): offer the session's web page.
+                    // browser step (the MCP OAuth flow): offer the session's web page, once the
+                    // editor has gone — an alert asked for while a sheet closes is dropped.
                     model.notice = "Updated. Needs authorizing in the browser: \(needsAuthorizing.joined(separator: ", "))"
-                    authorizing = needsAuthorizing
+                    pendingAuthorizing = needsAuthorizing
                 }
                 return saved
             }

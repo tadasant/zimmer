@@ -405,6 +405,10 @@ private struct ArtifactsRow: View {
             }
             if chosen.isEmpty {
                 EmptySelection(rootDefaults: rootDefaults(kind))
+                if kind != .plugins, !(session.catalogPlugins ?? []).isEmpty {
+                    // The web lists what the plugins bring; the API does not say, so say they may.
+                    Text("Its plugins may bring some.").font(.caption).foregroundStyle(Theme.inkMute)
+                }
             } else {
                 FlowLayout(spacing: 5, rowSpacing: 5) {
                     ForEach(chosen, id: \.self) { id in

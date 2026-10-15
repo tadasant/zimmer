@@ -125,7 +125,8 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   their words as the web picker stores them, your own words, or none. Two things the web panels
   show are not on the phone, because the API carries neither: a Slack message's *view in Slack*
   link, and *which* plugin brought an MCP server (the app marks the server as a plugin's without
-  naming it). The
+  naming it), and the skills and hooks a session's plugins bring (the web lists them read-only;
+  the app's line says only that its plugins may bring some). The
   conversation follows, newest last, each message with its age, rendered the way the web renders
   it as far as a phone's text goes: inline markdown (emphasis, code spans, links) and fenced code
   in the monospaced face, scrolling sideways rather than wrapping, with a *Copy* button in the
@@ -176,7 +177,8 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   default), Model (the models the session's runtime lists), Modify MCP Servers, Modify Skills,
   Modify Hooks and Modify Plugins, an item each with its count (each a checklist of the whole
   catalog, searchable by name and description, an unavailable MCP server listed last with its
-  reason, a chosen id the catalog no longer lists kept so it can be unticked; saving replaces the
+  reason, a chosen id the catalog no longer lists shown unticked, since the server refuses a list
+  naming it, so saving drops it; saving replaces the
   session's list, as the web's does, from the next turn; a server that needs OAuth is named with
   a link to the session's web page, where it is authorized), the web page's *Scheduling class* select
   (*Derive it*, which clears the class chosen for the session so its genesis decides again and
