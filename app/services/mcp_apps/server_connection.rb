@@ -73,48 +73,22 @@ module McpApps
     end
 
     def resolved_url
-      interpolator.resolve(server.url.to_s)
-    rescue SecretsInterpolator::MissingVariableError => e
-      raise UnavailableError, "#{@server_name} url is not resolvable: #{e.message}"
+      endpoint.url
+    rescue McpServerEndpoint::UnresolvableError => e
+      raise UnavailableError, "#{@server_name} #{e.message}"
     end
 
     # Static headers first, then the OAuth bearer if one is stored — an OAuth
     # server has no static credential header to conflict with, and a server that
     # does have one is never OAuth-capable (McpOauthCredentialInjector says so).
     def resolved_headers
-      headers = server.headers.to_h.transform_values(&:to_s)
-      begin
-        interpolator.resolve_hash_values!(headers)
-      rescue SecretsInterpolator::MissingVariableError => e
-        raise UnavailableError, "#{@server_name} header is not resolvable: #{e.message}"
-      end
-
-      token = oauth_access_token
-      headers["Authorization"] = "Bearer #{token}" if token.present?
-      headers
+      endpoint.headers
+    rescue McpServerEndpoint::UnresolvableError => e
+      raise UnavailableError, "#{@server_name} #{e.message}"
     end
 
-    def oauth_access_token
-      config = ServersConfig.credential_config(@server_name)
-      return nil unless config
-
-      key = McpOauthCredential.compute_credential_key(@server_name, config)
-      credential = McpOauthCredential.for_credential_key(key).first
-      return nil unless credential
-
-      if credential.needs_refresh? && credential.can_refresh?
-        begin
-          credential.refresh!
-        rescue StandardError => e
-          Rails.logger.warn("[mcp-apps] token refresh failed for #{@server_name}: #{e.class}")
-        end
-      end
-
-      credential.active? ? credential.access_token : nil
-    end
-
-    def interpolator
-      @interpolator ||= SecretsInterpolator.new
+    def endpoint
+      @endpoint ||= McpServerEndpoint.new(server)
     end
   end
 end

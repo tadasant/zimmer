@@ -1,0 +1,51 @@
+<%# The live modes' OpenAI key. Same contract as the Pi tab's OpenRouter key
+    (inference/_pi_panel): the status carries no value, and nothing on this page
+    or behind it reads the value back.
+
+    Locals: status (ManagedSecret::Status) %>
+<div class="bg-white shadow-sm rounded-lg border border-gray-200 p-4 sm:p-6" id="live-openai-key">
+  <div class="flex items-start justify-between gap-4">
+    <div class="min-w-0">
+      <h2 class="text-lg font-medium text-gray-900">OpenAI API key</h2>
+      <p class="mt-1 text-sm text-gray-600">
+        Both live modes run on OpenAI: Live Mode through Chat Completions, Live Voice through the Realtime API.
+        Stored as <code class="font-mono break-all"><%= status.variable %></code> — its own name, so it never
+        changes how Codex or Pi sessions authenticate.
+      </p>
+    </div>
+    <% if status.present? %>
+      <span class="shrink-0 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800" data-live-key-state="set">Set</span>
+    <% else %>
+      <span class="shrink-0 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700" data-live-key-state="unset">Not set</span>
+    <% end %>
+  </div>
+
+  <% if status.present? %>
+    <p class="mt-3 text-xs text-gray-500">
+      Resolves from <span class="font-medium"><%= status.provider_badge %></span> · fingerprint
+      <span class="font-mono"><%= status.fingerprint %></span> (truncated SHA-256 — not the key, not part of it).
+    </p>
+  <% end %>
+
+  <% if status.writable? %>
+    <%= form_with url: live_openai_key_path, method: :put, class: "mt-4 space-y-3" do |form| %>
+      <%= form.label :live_openai_api_key, status.present? ? "Replace the key" : "Set the key", class: "block text-sm font-medium text-gray-700" %>
+      <%= form.password_field :live_openai_api_key, autocomplete: "off", spellcheck: "false", placeholder: "sk-...",
+          class: "block w-full rounded-md border-gray-300 shadow-sm font-mono text-sm focus:border-indigo-500 focus:ring-indigo-500" %>
+      <%= form.submit status.present? ? "Replace key" : "Save key",
+          class: "inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700" %>
+    <% end %>
+    <% if status.present? && status.deletable? %>
+      <%= button_to "Delete key", destroy_live_openai_key_path, method: :delete,
+          form: { class: "mt-3", data: { turbo_confirm: "Delete #{status.variable}? Live Mode and Live Voice stop until a new key is set." } },
+          class: "inline-flex items-center px-3 py-2 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50" %>
+    <% end %>
+  <% else %>
+    <p class="mt-4 text-sm text-gray-600" data-live-key-write-blocked>
+      Zimmer cannot write to the secret store from here: <%= status.write_reason %>. Place
+      <code class="font-mono break-all"><%= status.variable %></code> in the Parameter Store the way every other
+      Zimmer secret is placed (<code class="font-mono">docs/operate/secrets-parameter-store</code>), or set it in the
+      environment; it shows up here as Set on the next page load.
+    </p>
+  <% end %>
+</div>

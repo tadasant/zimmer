@@ -1,0 +1,8 @@
+<%# Locals: conversation %>
+<% css = case conversation.status
+   when LiveConversation::ACTIVE then "bg-green-100 text-green-800"
+   when LiveConversation::PREPARING then "bg-yellow-100 text-yellow-800"
+   when LiveConversation::FAILED then "bg-red-100 text-red-800"
+   else "bg-gray-100 text-gray-700"
+   end %>
+<span class="shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium <%= css %>" data-live-status="<%= conversation.status %>"><%= conversation.status.humanize %></span>

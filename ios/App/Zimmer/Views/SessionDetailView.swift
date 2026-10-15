@@ -339,6 +339,7 @@ struct SessionDetailView: View {
     /// The web UI's log-level filter, as far as the conversation goes. Minimal by default:
     /// on a phone the tool traffic buries the words.
     @State private var level: ConversationLevel = .minimal
+    @State private var confirmingMerge = false
     @State private var editing: EditedText?
     @State private var renaming = false
     /// The web page's precedence field, in an alert as the rename is.
@@ -576,6 +577,13 @@ struct SessionDetailView: View {
         .navigationTitle(Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+        .confirmationDialog("Authorize the merge?", isPresented: $confirmingMerge, titleVisibility: .visible) {
+            Button("Merge \(model.detail?.session.mergeablePullRequest?.label ?? "PR")") {
+                Task { await model.run { try await $0.authorizeMerge(model.id).message } }
+            }
+        } message: {
+            Text("The session is told to check for conflicts, merge, and archive itself. Your tap is the sign-off.")
+        }
         .modifier(QueuedTrashQuestion { $0.id == model.id && app.path.last == model.id })
         // Trashed — here, or after *Trash anyway* — the page goes and the board offers Undo.
         .onChange(of: app.undoable?.id) { _, trashed in
@@ -926,6 +934,13 @@ struct SessionDetailView: View {
     /// settings its desktop metadata block edits.
     private func actionsMenu(_ session: SessionSummary) -> some View {
         Menu {
+            if let pr = session.mergeablePullRequest {
+                Section {
+                    Button { confirmingMerge = true } label: {
+                        Label("Merge \(pr.label)", systemImage: "arrow.triangle.merge")
+                    }
+                }
+            }
             Section {
                 Button { app.openQuickRouter(parent: session.id) } label: { Label("Quick Router", systemImage: "sparkles") }
                 Button { editing = .notes } label: { Label("Edit Notes", systemImage: "note.text") }
