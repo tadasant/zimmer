@@ -125,6 +125,15 @@ struct SessionListView: View {
                     }
                 }
             }
+            if !model.systemBanners.isEmpty {
+                Section {
+                    // Where the web banner's Manage link goes: Health, under More.
+                    SystemBannerRows(banners: model.systemBanners) { model.fixtureHealth = true; model.tab = .more }
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            }
             if let error = model.error {
                 Section {
                     ErrorBanner(error: error)
