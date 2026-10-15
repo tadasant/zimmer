@@ -248,6 +248,17 @@ Rails.application.routes.draw do
       # Ops action, not a shell: sweep every transcript into the ledger.
       post "costs/backfill", to: "costs#backfill"
 
+      # The auth boundary, for the iOS app (Api::V1::AccountController and the two
+      # beside it): who the caller is, the OAuth connections and API keys the
+      # Settings → API keys page lists, and signing out everywhere. Every write
+      # takes the app's sign-in acting as you; an API key is refused with a 403.
+      get "me", to: "account#show"
+      post "sign_out_everywhere", to: "account#sign_out_everywhere"
+      resources :oauth_grants, only: [ :index, :update, :destroy ]
+      resources :api_keys, only: [ :index, :create, :destroy ] do
+        member { post :restore }
+      end
+
       # Push notifications
       post "notifications/push", to: "notifications#push"
       # The iOS app's push registration (ApnsDevice). The token is hex.
@@ -473,9 +484,10 @@ Rails.application.routes.draw do
   get "settings/models", to: "model_catalog_entries#index", as: :model_catalog_entries
   post "settings/models", to: "model_catalog_entries#create"
   delete "settings/models/:id", to: "model_catalog_entries#destroy", as: :model_catalog_entry
-  # Named API keys (#46): list, mint, revoke, restore. Browser-only by design — no
-  # API-key route and no MCP tool reaches these, so key management stays out of the
-  # tools a session is handed. See ApiKeysController.
+  # Named API keys (#46): list, mint, revoke, restore. No API-key route and no MCP
+  # tool reaches these, so key management stays out of the tools a session is
+  # handed; the one REST sibling, /api/v1/api_keys, writes only for the iOS app's
+  # sign-in acting as you. See ApiKeysController.
   get "settings/api_keys", to: "api_keys#index", as: :api_keys
   post "settings/api_keys", to: "api_keys#create"
   post "settings/api_keys/:id/revoke", to: "api_keys#revoke", as: :revoke_api_key

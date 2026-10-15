@@ -142,6 +142,29 @@ class Api::BaseController < ActionController::API
     end
   end
 
+  # The actions that stand for a person's decision — Merge, minting a key,
+  # revoking a connection: only the iOS app's token, on a grant that acts as its
+  # approver. An API key names a key, never a person, and a relay-only grant was
+  # approved to carry messages, not to decide. A `before_action` on those
+  # actions; placed before any lookup, so the refusal names the rule and nothing
+  # about which ids exist.
+  def require_a_person_on_the_app
+    return if native_app_request? && native_app_grant.acts_as_human?
+
+    message = if native_app_request?
+      "This sign-in may not act as you; sign in again and allow acting as you"
+    else
+      "Only a person can do this: it takes the iOS app's sign-in, acting as you, or the web UI"
+    end
+    render_api_error("Forbidden", message, status: :forbidden)
+  end
+
+  # Who did it, for an audit line a web page writes with "from the settings page,
+  # <ip>": the approver the app's grant names, and that it was the app.
+  def native_app_actor
+    "the iOS app (#{native_app_grant.user_email}), #{request.remote_ip}"
+  end
+
   # Where the key lives on the request. Subclasses may widen this — the native
   # MCP endpoint also accepts `Authorization: Bearer <key>`, since MCP clients
   # configure a bearer token rather than a custom header.
