@@ -54,12 +54,16 @@ final class LiveCall: ObservableObject {
             socket = task
             task.resume()
             receive(task, generation: mine)
-            try await audio.start(
+            let audioToken = try await audio.start(
                 frames: { [weak self] pcm in Task { @MainActor in self?.sendAudio(pcm, generation: mine) } },
                 failed: { [weak self] message in Task { @MainActor in self?.fail(message, generation: mine) } }
             )
-            guard mine == generation else { audio.stop(); return }
+            // Hung up, or replaced by a newer call, while the microphone was opening: close only
+            // what this start opened.
+            guard mine == generation else { audio.stop(token: audioToken); return }
             state = .listening
+        } catch is CancellationError {
+            return
         } catch {
             fail(Self.describe(error), generation: mine)
         }
@@ -106,14 +110,12 @@ final class LiveCall: ObservableObject {
 
     private func receive(_ task: URLSessionWebSocketTask, generation: Int) {
         task.receive { [weak self] result in
-            var text: String?
-            var failure: String?
-            switch result {
-            case let .success(.string(string)): text = string
-            case let .success(.data(data)): text = String(data: data, encoding: .utf8)
-            case .success: break
-            case let .failure(error): failure = error.localizedDescription
+            let text: String? = switch result {
+            case let .success(.string(string)): string
+            case let .success(.data(data)): String(data: data, encoding: .utf8)
+            default: nil
             }
+            let failure: String? = if case let .failure(error) = result { error.localizedDescription } else { nil }
             Task { @MainActor in
                 guard let self, generation == self.generation else { return }
                 if let failure {
@@ -144,8 +146,11 @@ final class LiveCall: ObservableObject {
                 }
             case let .play(pcm):
                 audio.play(pcm)
-            case .stopPlayback:
-                audio.stopPlayback()
+            case .replyStarted:
+                audio.replyStarted()
+            case let .interrupt(itemID):
+                let heard = audio.stopPlayback()
+                send(RealtimeConductor.truncate(itemID: itemID, audioEndMs: heard))
             case let .state(next):
                 state = next
             case let .failure(message):

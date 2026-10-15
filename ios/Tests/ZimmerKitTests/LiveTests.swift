@@ -163,7 +163,9 @@ final class RealtimeConductorTests: XCTestCase {
         _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"a1","name":"list_mcp_servers","arguments":"{}"}"#))
         XCTAssertEqual(sent(conductor.relayed(callID: "a1", result: LiveToolResult(output: "[]"))), ["conversation.item.create:a1"])
         XCTAssertEqual(sent(conductor.handle(event(done))), ["response.create"])
-        XCTAssertEqual(sent(conductor.handle(event(done))), [], "a duplicate done asks for nothing more")
+        let again = conductor.handle(event(done))
+        XCTAssertEqual(sent(again), [], "a duplicate done asks for nothing more")
+        XCTAssertEqual(relays(again), [], "and does not run the finished call again")
     }
 
     func testSeveralCallsWaitForTheLastResult() {
@@ -194,6 +196,17 @@ final class RealtimeConductorTests: XCTestCase {
         XCTAssertEqual(sent(cancelled), [])
     }
 
+    func testACallAlreadyRelayedForACancelledResponseIsAnsweredButNotFollowedUp() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"k1","name":"x","arguments":"{}"}"#))
+        _ = conductor.handle(event(#"{"type":"response.done","response":{"status":"cancelled","output":[{"type":"function_call","call_id":"k1","name":"x","arguments":"{}"}]}}"#))
+        XCTAssertEqual(sent(conductor.relayed(callID: "k1", result: LiveToolResult(output: "1"))), ["conversation.item.create:k1"])
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        XCTAssertEqual(sent(conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[{"type":"message"}]}}"#))), [],
+                       "nothing was left waiting on it")
+    }
+
     func testAToolChangeUpdatesTheSessionsTools() {
         var conductor = RealtimeConductor()
         _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"e1","name":"enable_mcp_server","arguments":"{\"name\":\"clock\"}"}"#))
@@ -218,9 +231,15 @@ final class RealtimeConductorTests: XCTestCase {
                        [.record(role: .user, text: "Is main green?")])
         XCTAssertEqual(conductor.handle(event(#"{"type":"response.output_audio_transcript.done","transcript":"Yes."}"#)),
                        [.record(role: .assistant, text: "Yes.")])
-        XCTAssertEqual(conductor.handle(event(#"{"type":"response.output_audio.delta","delta":"AAABAA=="}"#)),
-                       [.play(Data([0, 0, 1, 0])), .state(.speaking)])
-        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.stopPlayback, .state(.listening)])
+        XCTAssertEqual(conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAABAA=="}"#)),
+                       [.replyStarted(itemID: "r1"), .play(Data([0, 0, 1, 0])), .state(.speaking)])
+        XCTAssertEqual(conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#)),
+                       [.play(Data([0, 0])), .state(.speaking)], "the same item keeps counting")
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(itemID: "r1"), .state(.listening)])
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.state(.listening)], "nothing left playing to cut")
+        let truncate = RealtimeConductor.truncate(itemID: "r1", audioEndMs: 1_250)
+        XCTAssertEqual(truncate["type"]?.string, "conversation.item.truncate")
+        XCTAssertEqual(truncate["audio_end_ms"], .number(1_250))
         XCTAssertEqual(conductor.handle(event(#"{"type":"error","error":{"message":"bad"}}"#)), [.failure("bad")])
     }
 

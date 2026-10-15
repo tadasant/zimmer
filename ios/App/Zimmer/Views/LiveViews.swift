@@ -182,7 +182,6 @@ struct LiveConversationView: View {
         .confirmationDialog("End this conversation and start a new one?", isPresented: $confirmingNew, titleVisibility: .visible) {
             Button("New conversation") { Task { await startNew() } }
         }
-        .accessibilityIdentifier("live.conversation")
         .task(id: id) { await poll() }
         .onChange(of: call.activity) { _, _ in Task { await readNew() } }
     }

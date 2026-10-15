@@ -8195,7 +8195,7 @@ OpenAI's docs on 2026-10-15; `LIVE_MODE_MODEL` and `LIVE_VOICE_MODEL` change the
 
 ## The phone's Live Voice call has not run on a device
 
-The iOS app's Live Voice compiles, and its protocol rules run in ZimmerKit's tests. Its screens
+The iOS app's Live Voice builds in CI's Xcode job, and its protocol rules run in ZimmerKit's tests. Its screens
 run in the simulator against the fixture. The audio half has not run at all: `LiveAudioEngine`
 (microphone, voice processing, reply playback) and `LiveCall`'s WebSocket to OpenAI. A simulator
 has no microphone worth testing echo cancellation on, and no deployment has the OpenAI key yet.
