@@ -174,8 +174,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   Quick Router, Edit Notes, Show Logs, Subagents, View PR, Snooze until… / Hide / Put back on the board, Refresh
   Transcript, Copy Transcript (the whole transcript as text), Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
   edit: Rename, Modify Goal (the catalog's goals by name, or your own words), Effort (the levels the session's model accepts, or the model
-  default), Model (the models the session's runtime lists), Modify MCP Servers, Modify Skills,
-  Modify Hooks and Modify Plugins, an item each with its count (each a checklist of the whole
+  default), Model (the models the session's runtime lists), *Modify MCP Servers, Skills, Hooks,
+  Plugins* (a submenu with an item a kind and its count, so the menu stays short enough to show
+  its last items; the page's rows are the main way in; each a checklist of the whole
   catalog, searchable by name and description, an unavailable MCP server listed last with its
   reason, a chosen id the catalog no longer lists shown unticked, since the server refuses a list
   naming it, so saving drops it; saving replaces the
