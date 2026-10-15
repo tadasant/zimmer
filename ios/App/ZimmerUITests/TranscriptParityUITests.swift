@@ -172,7 +172,11 @@ final class TranscriptParityUITests: XCTestCase {
             guard element.exists, !element.frame.isEmpty, element.isHittable else { return false }
             let bar = app.navigationBars.firstMatch
             let strip = app.descendants(matching: .any)["detail.sections"]
+            // And above the composer and its quick replies, which isHittable can also miss.
+            let field = app.descendants(matching: .any)["followup.field"]
+            let bottom = field.exists ? field.frame.minY - 50 : app.frame.maxY
             return element.frame.minY >= max(bar.exists ? bar.frame.maxY : 0, strip.exists ? strip.frame.maxY : 0)
+                && element.frame.maxY <= bottom
         }
         for _ in 0..<8 where !inView() {
             if element.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
