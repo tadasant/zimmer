@@ -36,8 +36,9 @@ class LiveConversationsController < ApplicationController
     end
   rescue LiveConversations::Actions::Refused => e
     respond_to do |format|
-      format.html { redirect_to live_conversation_path(@conversation), alert: e.message }
-      format.any { render json: { error: e.message }, status: e.status }
+      format.json { render json: { error: e.message }, status: e.status }
+      # A Turbo form submit lands here too, and shows a redirect's flash.
+      format.any { redirect_to live_conversation_path(@conversation), alert: e.message }
     end
   end
 

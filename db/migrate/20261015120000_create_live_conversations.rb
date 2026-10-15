@@ -28,7 +28,7 @@ class CreateLiveConversations < ActiveRecord::Migration[8.1]
     # new one ends the old one first (LiveConversations::Start); this makes a race
     # between two starts fail loudly instead of leaving two "current" threads.
     add_index :live_conversations, :mode, unique: true,
-      where: "status IN ('preparing', 'active')", name: "index_live_conversations_one_open_per_mode"
+      where: "status = 'preparing' OR status = 'active'", name: "index_live_conversations_one_open_per_mode"
     add_index :live_conversations, :updated_at
 
     create_table :live_conversation_turns do |t|

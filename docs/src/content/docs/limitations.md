@@ -8129,6 +8129,22 @@ state between calls — a browser, a logged-in session — keeps none across a c
 (`streamable-http`) servers hold no such cost. A pooled process per conversation would fix both,
 and needs a home that outlives a Puma request, which nothing provides yet.
 
+## A Live Voice tool call holds a web thread for as long as it runs
+
+The browser relays each function call to `POST /live_conversations/:id/tool_calls`, and Rails runs it
+inside that request. That includes a delegated Zimmer tool, a remote server's call (20-second read
+timeout), and a stdio server's spawn and call (60-second read timeout, plus an `npx` cold start).
+Each such call holds a Puma thread for its whole length. The live agent is told to hand anything slow
+to a background session, which keeps most calls short, but nothing enforces it.
+
+## A spoken question can land in the thread after its answer
+
+Live Voice records a line when OpenAI reports it finished: the human's words on
+`conversation.item.input_audio_transcription.completed`, the model's on
+`response.output_audio_transcript.done`. Transcription can finish after the model has already
+answered, so the thread, which is ordered by when lines were recorded, can show an answer above
+the question it answered. The conversation at OpenAI is not affected; only Zimmer's record is.
+
 ## What a live conversation says and reads goes to OpenAI
 
 The live model runs at OpenAI, so every turn is sent there, and so is every tool result the model

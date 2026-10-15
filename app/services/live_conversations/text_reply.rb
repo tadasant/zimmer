@@ -55,7 +55,17 @@ module LiveConversations
       @answered_through.present? && @conversation.turns.where(role: "user").where("id > ?", @answered_through).exists?
     end
 
+    # The reply job's claim (`responding_since`) is renewed before every OpenAI
+    # request and every tool call, so a long multi-round reply never looks
+    # abandoned to a second job: each of those operations is bounded well under
+    # RESPONDING_STALE_AFTER. Written without callbacks — it is not a change the
+    # page needs to hear about.
+    def heartbeat!
+      @conversation.update_columns(responding_since: Time.current) if @conversation.responding_since.present?
+    end
+
     def step
+      heartbeat!
       response = @client.chat_completion(
         model: @conversation.model,
         reasoning_effort: "none",
@@ -74,7 +84,9 @@ module LiveConversations
       end
 
       calls.each do |call|
-        @bridge = ToolBridge.new(@conversation) if @bridge.execute(call.dig("function", "name"), call.dig("function", "arguments"), call_id: call["id"]).tools_changed
+        heartbeat!
+        call_id = call["id"].presence || "call_#{SecureRandom.hex(8)}"
+        @bridge = ToolBridge.new(@conversation) if @bridge.execute(call.dig("function", "name"), call.dig("function", "arguments"), call_id: call_id).tools_changed
       end
     end
 

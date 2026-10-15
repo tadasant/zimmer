@@ -23,8 +23,10 @@ class LiveConversation < ApplicationRecord
   OPEN_STATUSES = [ PREPARING, ACTIVE ].freeze
 
   # A text turn whose job died mid-flight must not leave the thread locked
-  # forever; after this long a new message may take over.
-  RESPONDING_STALE_AFTER = 3.minutes
+  # forever; after this long a new message may take over. A live reply renews
+  # the claim before every request and tool call (TextReply#heartbeat!), each
+  # bounded by a timeout of 90 seconds or less, so only a dead job goes stale.
+  RESPONDING_STALE_AFTER = 5.minutes
 
   has_many :turns, -> { order(:id) }, class_name: "LiveConversationTurn", dependent: :delete_all, inverse_of: :live_conversation
 

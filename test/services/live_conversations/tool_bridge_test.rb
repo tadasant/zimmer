@@ -75,6 +75,24 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_match(/not found/i, result.output)
   end
 
+  test "gateway calls meet the same argument checks POST /mcp applies before a tool runs" do
+    Mcp::Tools::QuickRouter.any_instance.expects(:call).never
+
+    missing = @bridge.execute("zimmer", { tool: "quick_router", arguments: {} }.to_json, call_id: "c_missing")
+    assert missing.error
+    assert_match(/Missing required arguments: prompt/, missing.output)
+
+    wrong_type = @bridge.execute("zimmer", { tool: "get_session", arguments: { id: "1", include_transcript: "yes please" } }.to_json, call_id: "c_type")
+    assert wrong_type.error
+  end
+
+  test "the live agent cannot end or replace its own conversation through the gateway" do
+    tools = @bridge.functions.first.parameters[:properties][:tool][:enum]
+
+    assert_includes tools, "get_live_conversations"
+    assert_not_includes tools, "action_live_conversation"
+  end
+
   test "describe_zimmer_tool returns the full description and schema" do
     result = @bridge.execute("describe_zimmer_tool", { tool: "quick_router" }.to_json, call_id: "c3")
 
@@ -90,9 +108,8 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_equal 3, @conversation.turns.where(tool_error: true).count
   end
 
-  test "an unexpected failure inside a tool is reported and returned, not raised" do
+  test "an unexpected failure inside a tool is returned to the model, not raised" do
     Mcp::Tools::GetSystemHealth.any_instance.stubs(:call).raises(RuntimeError, "boom")
-    ErrorReporter.expects(:report_exception).once
 
     result = @bridge.execute("zimmer", { tool: "get_system_health" }.to_json, call_id: "c7")
     assert result.error

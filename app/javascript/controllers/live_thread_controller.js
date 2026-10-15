@@ -26,13 +26,21 @@ export default class extends Controller {
   // Preparing takes a second or two, often less than the cable subscription
   // takes to connect, so the broadcast that flips it to active can arrive
   // before anyone is listening. Re-render until it has flipped.
-  watchPreparing() {
+  // Bounded, and never at the cost of a message being typed: a re-render would
+  // empty the composer, so while it holds text this only waits. The page says
+  // what is happening either way, and a stuck prepare fails the conversation
+  // server-side (LiveConversationPrepareJob), which the next look picks up.
+  watchPreparing(attempt = 0) {
+    if (attempt >= 20) return
     this.preparingTimer = setTimeout(() => {
       const header = this.element.querySelector("[data-live-conversation-status]")
-      if (header?.dataset.liveConversationStatus === "preparing") {
-        Turbo.visit(window.location.href, { action: "replace" })
+      if (header?.dataset.liveConversationStatus !== "preparing") return
+      if (this.hasInputTarget && this.inputTarget.value.trim() !== "") {
+        this.watchPreparing(attempt + 1)
+        return
       }
-    }, 1500)
+      Turbo.visit(window.location.href, { action: "replace" })
+    }, 1500 + attempt * 500)
   }
 
   disconnect() {
@@ -73,7 +81,7 @@ export default class extends Controller {
     const button = this.talkTarget
     const live = button.dataset.liveVoiceActive === "true"
     if (live) {
-      window.dispatchEvent(new CustomEvent("live-voice:hangup"))
+      this.hangUp()
       return
     }
     window.dispatchEvent(new CustomEvent("live-voice:start", {
@@ -87,9 +95,11 @@ export default class extends Controller {
     }))
   }
 
-  // Ending the conversation ends its call too.
+  // Ending this conversation (or replacing it with a new one) ends its call —
+  // and only its call: the dock ignores a hang-up for another conversation, so
+  // ending a Live Mode thread leaves a Live Voice call alone.
   hangUp() {
-    window.dispatchEvent(new CustomEvent("live-voice:hangup"))
+    window.dispatchEvent(new CustomEvent("live-voice:hangup", { detail: { conversationId: this.element.dataset.liveConversationId } }))
   }
 
   renderVoiceState({ conversationId, state }) {
