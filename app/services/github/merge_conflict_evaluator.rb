@@ -11,7 +11,8 @@ module Github
   #
   # Tracks merge conflict status in custom_metadata across two keys:
   #   github_pull_request_merge_conflicts           => confirmed (already notified),
-  #                                                    { pr_url => true }
+  #                                                    { pr_url => head sha notified
+  #                                                    about, or true if unknown }
   #   github_pull_request_merge_conflicts_suspected => seen conflicting, not yet
   #                                                    confirmed, { pr_url => iso8601 }
   #
@@ -218,14 +219,21 @@ module Github
         next if has_conflict.nil?
 
         if has_conflict
-          if updated_conflicts[pr_url] == true
+          if updated_conflicts.key?(pr_url) && !notified_for_head?(updated_conflicts[pr_url], snapshot)
+            # Notified about an earlier head. The session has pushed since, and the PR
+            # still (or again) conflicts: a new episode, which the debounce below
+            # re-confirms from scratch. See #notified_for_head?.
+            updated_conflicts.delete(pr_url)
+          end
+
+          if updated_conflicts.key?(pr_url)
             # Already confirmed + notified — nothing to do.
           elsif current_suspected.key?(pr_url)
             if confirmable?(current_suspected[pr_url], now)
               # Conflict seen before AND still present now, far enough apart to rule
               # out GitHub's stale/transient conflicting reading (e.g. right after a
               # push, before recomputation) — confirm it and notify.
-              updated_conflicts[pr_url] = true
+              updated_conflicts[pr_url] = snapshot.head_sha || true
               updated_suspected.delete(pr_url)
               newly_conflicting_prs << pr_url
             end
@@ -270,6 +278,25 @@ module Github
     end
 
     private
+
+    # Whether a confirmed marker still covers the PR as it reads now.
+    #
+    # The marker records the head commit the session was told about. A clean
+    # reading clears it, and that used to be the ONLY thing that did — so a
+    # session that resolved a conflict and pushed, at a moment GitHub's reading
+    # was UNKNOWN or stale and stayed that way until the base moved again, carried
+    # an "already notified" marker into the next, unrelated conflict and was never
+    # told about it. A different head says the session acted on the notice, so a
+    # conflict on it is news.
+    #
+    # `true` is the marker written before heads were recorded, and a reading with
+    # no head cannot be compared: both are treated as still covered, which is what
+    # the marker always meant.
+    def notified_for_head?(marker, snapshot)
+      return true if marker == true || snapshot.head_sha.blank?
+
+      marker == snapshot.head_sha
+    end
 
     # Whether a standing suspicion is old enough for a conflicting reading to
     # confirm it.

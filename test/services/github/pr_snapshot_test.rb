@@ -8,7 +8,7 @@ class Github::PrSnapshotTest < ActiveSupport::TestCase
 
   test "fetch asks for one PR object with every field the pass needs" do
     BoundedSubprocess.expects(:run)
-      .with([ "gh", "pr", "view", "42", "--repo", "owner/repo", "--json", "state,mergedAt,mergeable,body,labels" ],
+      .with([ "gh", "pr", "view", "42", "--repo", "owner/repo", "--json", "state,mergedAt,mergeable,body,labels,headRefOid" ],
             timeout: Github::PrSnapshot::TIMEOUT)
       .returns([ { "state" => "OPEN", "mergedAt" => nil, "mergeable" => "MERGEABLE" }.to_json, "", fake_process_status ])
 
@@ -111,9 +111,69 @@ class Github::PrSnapshotTest < ActiveSupport::TestCase
     assert_nil Github::PrSnapshot.fetch(REF)
   end
 
+  # ---- the head commit ----
+
+  test "fetch reads the head commit, for the conflict evaluator's re-arm" do
+    BoundedSubprocess.stubs(:run).returns([
+      { "state" => "OPEN", "mergedAt" => nil, "mergeable" => "MERGEABLE", "headRefOid" => "abc123" }.to_json,
+      "", fake_process_status
+    ])
+
+    assert_equal "abc123", Github::PrSnapshot.fetch(REF).head_sha
+  end
+
+  # ---- REST mergeability ----
+  #
+  # The conflict question is answered by REST's `mergeable`, the reading the old
+  # merge-conflict poller trusted. GraphQL's answer stands when REST cannot be read.
+
+  REST_COMMAND = [ "gh", "api", "repos/owner/repo/pulls/42", "--jq", ".mergeable" ].freeze
+
+  test "with_rest_mergeability takes REST's answer over GraphQL's" do
+    BoundedSubprocess.expects(:run).with(REST_COMMAND, timeout: Github::PrSnapshot::TIMEOUT)
+      .returns([ "false\n", "", fake_process_status ])
+
+    refreshed = build(mergeable: "MERGEABLE", head_sha: "abc123").with_rest_mergeability
+
+    assert_equal true, refreshed.conflicting?
+    assert_equal "abc123", refreshed.head_sha
+    assert_equal "open", refreshed.status
+  end
+
+  test "with_rest_mergeability maps REST's three answers" do
+    { "true" => false, "false" => true, "null" => nil }.each do |rest, conflicting|
+      BoundedSubprocess.stubs(:run).returns([ "#{rest}\n", "", fake_process_status ])
+
+      reading = build(mergeable: "UNKNOWN").with_rest_mergeability.conflicting?
+      conflicting.nil? ? assert_nil(reading, rest) : assert_equal(conflicting, reading, rest)
+    end
+  end
+
+  test "with_rest_mergeability keeps GraphQL's answer when REST cannot be read" do
+    BoundedSubprocess.stubs(:run).returns([ "", "HTTP 502", fake_process_status(exitstatus: 1) ])
+
+    assert_equal true, build(mergeable: "CONFLICTING").with_rest_mergeability.conflicting?
+  end
+
+  test "with_rest_mergeability asks nothing about a PR that is not open" do
+    BoundedSubprocess.expects(:run).never
+
+    snapshot = build(state: "MERGED", merged_at: "2025-01-01T12:00:00Z", mergeable: "UNKNOWN")
+
+    assert_same snapshot, snapshot.with_rest_mergeability
+  end
+
+  test "fetch_rest_mergeable refuses a traversal-shaped repository" do
+    BoundedSubprocess.expects(:run).never
+
+    ref = Github::PrRef.new(url: "https://github.com/../x/pull/1", owner: "..", repo: "x", number: "1")
+
+    assert_nil Github::PrSnapshot.fetch_rest_mergeable(ref)
+  end
+
   private
 
-  def build(state: "OPEN", merged_at: nil, mergeable: "MERGEABLE")
-    Github::PrSnapshot.new(ref: REF, state: state, merged_at: merged_at, mergeable: mergeable)
+  def build(state: "OPEN", merged_at: nil, mergeable: "MERGEABLE", head_sha: nil)
+    Github::PrSnapshot.new(ref: REF, state: state, merged_at: merged_at, mergeable: mergeable, head_sha: head_sha)
   end
 end
