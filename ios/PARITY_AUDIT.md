@@ -945,6 +945,12 @@ Taken from the rows' notes ("in #NNNN"). Only the session page, the board and th
 
 **#1345 — Health, Costs and the trigger page read everything the API sends; Run Now fills a template's variables.** Flips the ranked list's app-only items 1, 2 and 5: D's health rows (every section, the banners on the board), the costs rows, and the trigger page's scheduling class, precedence, catalog chips, windows and variables.
 
+**#1346 — who is signed in, the OAuth grants, API keys and sign-out-everywhere on REST, API half (auth boundary).** `GET /api/v1/me`, `/oauth_grants`, `/api_keys`, `POST /sign_out_everywhere`; every write only on a grant that acts as you. Flips A §4 and §7's "needs API" notes and E's sign-in rows from no-API to reachable.
+
+**#1347 — a phone-started session is priority, as the web's is; rows carry genesis, precedence, root and every PR; cost on the page; Quick Router page context.** Flips the ranked list's app-only items 3, 4, 6 and 8 and C's rows for `new.html.erb:196-246, 256, 430`, `_session_card:95-108`, `_ranked_row:100-111, 178`, B's `_detail.html.erb:123`, and the genesis/spot row under "needs a new API" (resolved by a create rule instead of a genesis).
+
+**#1348 — Settings → the Sign-in card, Deployment Information, and API keys & connections.** The app half of #1346; flips A's rows for `_web_sign_in.html.erb`, `show.html.erb:113-127` and `386-430`, and `api_keys/*`.
+
 **#1318 — a trigger's two re-use switches, API half only.** Opens `POST /api/v1/triggers/:id/toggle_enqueue_messages` and `…/toggle_resuscitate_archived` to the native token and changes no iOS file, so these two D rows stay `partial` (value shown, switch absent) until an app change follows:
 
 - `triggers/show.html.erb:264-274` Enqueue messages value + switch.
