@@ -107,7 +107,7 @@ struct DetailsCard: View {
         switch row {
         case .hierarchy: return .hierarchy
         case .humanMessages: return .humanMessages
-        case .goalCheck, .goal, .notes, .mcpServers: return nil
+        case .goalCheck, .goal, .notes, .mcpServers, .artifacts: return nil
         }
     }
 }
