@@ -510,7 +510,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_15_160000) do
     t.string "title"
     t.datetime "updated_at", null: false
     t.index ["mode", "status"], name: "index_live_conversations_on_mode_and_status"
-    t.index ["mode"], name: "index_live_conversations_one_open_per_mode", unique: true, where: "((status)::text = ANY ((ARRAY['preparing'::character varying, 'active'::character varying])::text[]))"
+    t.index ["mode"], name: "index_live_conversations_one_open_per_mode", unique: true, where: "(((status)::text = 'preparing'::text) OR ((status)::text = 'active'::text))"
     t.index ["updated_at"], name: "index_live_conversations_on_updated_at"
   end
 

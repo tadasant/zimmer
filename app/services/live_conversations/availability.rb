@@ -2,9 +2,10 @@
 
 module LiveConversations
   # Can this mode start right now, and if not, why not — in words a human can
-  # act on. The two prerequisites are the OpenAI key and the mode's agent root;
-  # either PR (this app's, or the catalog's that adds the root) may land first,
-  # so a missing root is an expected state with a readable answer, not a crash.
+  # act on. The two prerequisites are the OpenAI key and the mode's agent root.
+  # The roots live in whatever catalog a deployment runs, which may not carry
+  # them, so a missing root is an expected state with a readable answer, not a
+  # crash.
   class Availability
     attr_reader :mode
 

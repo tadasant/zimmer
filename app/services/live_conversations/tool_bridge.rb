@@ -155,10 +155,12 @@ module LiveConversations
       )
     end
 
+    # Less the one tool that would let the live agent end its own conversation
+    # (`action_live_conversation` → start or finish).
     def zimmer_tools
       return [] if zimmer_groups.empty?
 
-      @zimmer_tools ||= mcp_context.tools
+      @zimmer_tools ||= mcp_context.tools.reject { |tool| tool == Mcp::Tools::ActionLiveConversation }
     end
 
     def zimmer_functions
@@ -207,9 +209,25 @@ module LiveConversations
       arguments = {} if arguments.nil?
       raise ToolFailure, "\"arguments\" must be an object." unless arguments.is_a?(Hash)
 
-      response = tool.call(server_context: mcp_context, **arguments.deep_symbolize_keys)
-      text = Array(response.content).map { |part| part[:text] || part["text"] }.compact.join("\n")
-      [ text, response.error? ]
+      # Through a real MCP server's `tools/call`, the path POST /mcp takes, so a
+      # model's arguments meet the same required-argument and schema checks an
+      # agent's do before any tool runs.
+      response = mcp_server.handle(
+        { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool.tool_name, arguments: arguments } }
+      ) || {}
+      if (error = response[:error])
+        # A tool that raised comes back as a JSON-RPC error whose `data` says what
+        # it raised; the SDK has already handed the exception to its reporter.
+        raise ToolFailure, (error[:data].presence || error[:message]).to_s.presence || "Zimmer refused the call."
+      end
+
+      result = response[:result] || {}
+      text = Array(result[:content]).map { |part| part[:text] || part["text"] }.compact.join("\n")
+      [ text, result[:isError] ? true : false ]
+    end
+
+    def mcp_server
+      @mcp_server ||= MCP::Server.new(name: Mcp::SERVER_NAME, version: Mcp::SERVER_VERSION, tools: zimmer_tools, server_context: mcp_context)
     end
 
     def describe_zimmer(args)
@@ -276,14 +294,20 @@ module LiveConversations
       if SelfSessionInjector.zimmer_server_name?(name)
         raise ToolFailure, "No MCP server named #{name.inspect} in the catalog" if ServersConfig.find(name).nil?
 
-        @conversation.update!(mcp_servers: enabled + [ name ])
+        @conversation.with_lock { @conversation.update!(mcp_servers: (@conversation.enabled_mcp_servers + [ name ]).uniq) }
         reset!
         return "Enabled #{name}. Its tools are reachable through the #{ZIMMER_TOOL} function."
       end
 
       tools = CatalogServer.find!(name).list_tools
-      cache = @conversation.mcp_tool_cache.merge(name => tools.map(&:to_cache_entry))
-      @conversation.update!(mcp_servers: enabled + [ name ], mcp_tool_cache: cache)
+      # Under the row lock and re-read: Live Voice runs tool calls side by side,
+      # and two enables that both started from the old list must not drop one.
+      @conversation.with_lock do
+        @conversation.update!(
+          mcp_servers: (@conversation.enabled_mcp_servers + [ name ]).uniq,
+          mcp_tool_cache: @conversation.mcp_tool_cache.merge(name => tools.map(&:to_cache_entry))
+        )
+      end
       reset!
 
       names = direct_functions.filter_map { |function, (server, _)| function.name if server == name }
@@ -295,7 +319,9 @@ module LiveConversations
       enabled = @conversation.enabled_mcp_servers
       return "#{name} was not enabled." unless enabled.include?(name)
 
-      @conversation.update!(mcp_servers: enabled - [ name ], mcp_tool_cache: @conversation.mcp_tool_cache.except(name))
+      @conversation.with_lock do
+        @conversation.update!(mcp_servers: @conversation.enabled_mcp_servers - [ name ], mcp_tool_cache: @conversation.mcp_tool_cache.except(name))
+      end
       reset!
       "Disabled #{name}."
     end
@@ -337,6 +363,7 @@ module LiveConversations
       @zimmer_groups = nil
       @zimmer_tools = nil
       @mcp_context = nil
+      @mcp_server = nil
     end
   end
 end

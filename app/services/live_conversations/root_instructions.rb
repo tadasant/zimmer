@@ -48,7 +48,8 @@ module LiveConversations
           text = show(dir, path)
           next if text.nil?
 
-          return Result.new(text: text.byteslice(0, MAX_BYTES).scrub, source: "#{repo_label}@#{sha[0, 12]}:#{path}")
+          # NUL is the one byte Postgres text will not store.
+          return Result.new(text: text.byteslice(0, MAX_BYTES).scrub.delete("\u0000"), source: "#{repo_label}@#{sha[0, 12]}:#{path}")
         end
       end
 
@@ -62,7 +63,7 @@ module LiveConversations
 
     def clone_into(dir)
       git!([ "clone", "--quiet", "--depth", "1", "--filter=blob:none", "--no-checkout", "--single-branch",
-             "--branch", branch, @root.url, dir ])
+             "--branch", branch, "--", @root.url, dir ])
     end
 
     # The file's contents, or nil when the path is not in the tree. Any other

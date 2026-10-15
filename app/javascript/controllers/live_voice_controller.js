@@ -29,7 +29,14 @@ export default class extends Controller {
 
   connect() {
     this.onStart = (event) => this.start(event.detail)
-    this.onHangup = () => this.hangUp()
+    // A hang-up names its conversation; one for another conversation (ending a
+    // Live Mode thread) is not this call's business. The dock's own button
+    // calls hangUp() directly.
+    this.onHangup = (event) => {
+      const target = event.detail?.conversationId
+      if (target && this.call && String(target) !== String(this.call.conversationId)) return
+      this.hangUp()
+    }
     this.onQuery = () => this.broadcast()
     window.addEventListener("live-voice:start", this.onStart)
     window.addEventListener("live-voice:hangup", this.onHangup)
@@ -121,6 +128,7 @@ export default class extends Controller {
         this.setState("listening")
         break
       case "response.created":
+        this.responseActive = true
         this.setState("thinking")
         break
       case "response.output_audio.delta":
@@ -131,6 +139,7 @@ export default class extends Controller {
         this.relayToolCall(event, generation)
         break
       case "response.done":
+        this.responseActive = false
         this.finishResponse(event.response, generation)
         break
       case "conversation.item.input_audio_transcription.completed":
@@ -169,7 +178,15 @@ export default class extends Controller {
 
   // A response that asked for tools ends before their results exist; once every
   // result is in, ask for the response that uses them — exactly once.
+  //
+  // Only for a response that completed: one the user talked over was cancelled,
+  // and a function call it was cut off in the middle of is not one to run.
+  // And never on top of a response already running — with server VAD the user
+  // speaking mid-tool starts one — so in that case the request waits for it to
+  // finish (sendPendingResponse).
   async finishResponse(response, generation) {
+    this.sendPendingResponse()
+    if (response?.status && response.status !== "completed") return
     const callIds = (response?.output || []).filter((item) => item.type === "function_call").map((item) => item.call_id)
     if (callIds.length === 0) {
       if (this.state !== "idle") this.setState("listening")
@@ -184,6 +201,13 @@ export default class extends Controller {
     await Promise.all(callIds.map((callId) => this.pendingCalls.get(callId)))
     callIds.forEach((callId) => this.pendingCalls.delete(callId))
     if (generation !== this.generation) return
+    this.pendingResponse = true
+    this.sendPendingResponse()
+  }
+
+  sendPendingResponse() {
+    if (!this.pendingResponse || this.responseActive) return
+    this.pendingResponse = false
     this.send({ type: "response.create" })
   }
 
@@ -226,6 +250,8 @@ export default class extends Controller {
     this.channel = null
     this.pc = null
     this.pendingCalls.clear()
+    this.pendingResponse = false
+    this.responseActive = false
     if (!keepError) this.showError(null)
     this.setState("idle")
   }

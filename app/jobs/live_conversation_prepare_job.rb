@@ -34,6 +34,11 @@ class LiveConversationPrepareJob < ApplicationJob
     LiveConversationReplyJob.perform_later(conversation.id) if conversation.text? && LiveConversations::TextReply.awaiting_reply?(conversation)
   rescue LiveConversations::RootInstructions::Error => e
     conversation&.fail!(e.message)
+  rescue StandardError => e
+    # Anything else would leave the conversation `preparing` forever, with a
+    # page waiting on it. Fail it with the reason, and report it.
+    ErrorReporter.report_exception(e, context: { source: "LiveConversationPrepareJob", live_conversation_id: conversation_id })
+    conversation&.fail!("Could not prepare this conversation: #{e.class}: #{e.message.to_s.truncate(300)}")
   end
 
   private

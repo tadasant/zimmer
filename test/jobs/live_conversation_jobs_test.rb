@@ -48,6 +48,18 @@ class LiveConversationJobsTest < ActiveJob::TestCase
     assert_equal "Agent root live-mode has no AGENTS.md", conversation.error_message
   end
 
+  test "prepare: an unexpected error fails the conversation instead of leaving it preparing" do
+    stub_live_roots
+    conversation = create_live_conversation(mode: "voice", status: LiveConversation::PREPARING)
+    LiveConversations::RootInstructions.stubs(:fetch).raises(ArgumentError, "surprise")
+    ErrorReporter.expects(:report_exception).once
+
+    LiveConversationPrepareJob.perform_now(conversation.id)
+
+    assert conversation.reload.failed?
+    assert_match(/Could not prepare this conversation: ArgumentError: surprise/, conversation.error_message)
+  end
+
   test "prepare: a message typed while preparing is answered once active" do
     stub_live_roots
     conversation = create_live_conversation(mode: "text", status: LiveConversation::PREPARING)
@@ -87,6 +99,26 @@ class LiveConversationJobsTest < ActiveJob::TestCase
     OpenaiClient.expects(:new).never
 
     LiveConversationReplyJob.perform_now(conversation.id)
+  end
+
+  test "reply: the claim is renewed before every request and tool call, so a long reply never goes stale" do
+    conversation = create_live_conversation(mode: "text")
+    conversation.turns.create!(role: "user", source: "typed", content: "how is zimmer?")
+    seen = []
+    client = Fake.new(chat_responses: [ Fake.calls([ "list_mcp_servers", {} ]), Fake.text("Fine.") ])
+    client.define_singleton_method(:chat_completion) do |body|
+      seen << LiveConversation.find(conversation.id).responding_since
+      super(body)
+    end
+    OpenaiClient.stubs(:new).returns(client)
+
+    travel_to(Time.current) do
+      LiveConversationReplyJob.perform_now(conversation.id)
+    end
+
+    assert_equal 2, seen.size
+    assert seen.all?(&:present?)
+    assert_nil conversation.reload.responding_since
   end
 
   test "reply: a stale claim is taken over" do

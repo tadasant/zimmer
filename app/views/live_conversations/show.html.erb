@@ -1,6 +1,6 @@
 <% conversation = @conversation %>
 <%= turbo_stream_from conversation.stream_name %>
-<div class="min-h-screen bg-gray-50" data-controller="live-thread">
+<div class="min-h-screen bg-gray-50" data-controller="live-thread" data-live-conversation-id="<%= conversation.id %>">
   <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col min-h-screen">
     <div class="flex items-center justify-between gap-2 mb-4">
       <%= link_to root_path, class: "inline-flex items-center text-sm text-gray-500 hover:text-gray-700", "aria-label" => "Back to sessions" do %>
@@ -12,7 +12,7 @@
       <div class="flex items-center gap-2">
         <%= link_to "All live", live_path, class: "text-sm text-gray-500 hover:text-gray-700 px-2 py-1" %>
         <%= button_to "New conversation", live_conversations_path, params: { mode: conversation.mode }, method: :post,
-            form: { data: { turbo_confirm: (conversation.open? ? "End this conversation and start a new one?" : nil) } },
+            form: { data: { turbo_confirm: (conversation.open? ? "End this conversation and start a new one?" : nil), action: "submit->live-thread#hangUp" } },
             class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
         <% if conversation.open? %>
           <%= button_to "End", finish_live_conversation_path(conversation), method: :post,
