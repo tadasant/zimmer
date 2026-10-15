@@ -680,7 +680,7 @@ jobs:
         # a video and a picture of the last screen; there is no photograph pass.
         #
         # The other UI tests and the photographs of every key screen are
-        # `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**`: 57 tests
+        # `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**`: some 60 tests
         # driven one at a time, about 45 minutes — too long to gate every pull request on.
         # To get them for a branch before it merges:
         #   gh workflow run ios-ui-tests.yml --ref <branch>
