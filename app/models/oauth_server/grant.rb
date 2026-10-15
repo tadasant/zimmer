@@ -7,14 +7,12 @@ module OauthServer
   # `/oauth/revoke`, or because a spent refresh token was replayed) ends the
   # connection on the next request.
   class Grant < ApplicationRecord
-    # A spent refresh token presented again inside this window never revokes the
-    # grant. The case it is for is a client that refreshes twice at once with the
-    # same token (two tabs, two workers): one call rotates it, the other arrives
-    # second, and the winner's new pair must stay good. The second call gets a
-    # pair of its own while the winner's is still unused, and is refused once it
-    # has been used. Outside the window a replay revokes the grant (RFC 9700
-    # §4.14.2) — unless the rotated pair was never used, which is a client that
-    # never received it (TokensController#rotate).
+    # A spent refresh token presented again inside this window is refused
+    # without revoking the grant. The case it is for is a client that refreshes
+    # twice at once (two tabs, two workers) and holds on to the losing pair once
+    # the winning one has been used. Outside the window a replay revokes the
+    # grant (RFC 9700 §4.14.2). A spent token whose rotated pair was never used is
+    # neither: its client never received the pair (TokensController#rotate).
     REPLAY_GRACE = 60.seconds
 
     belongs_to :client, class_name: "OauthServer::Client", foreign_key: :oauth_server_client_id,

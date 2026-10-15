@@ -220,19 +220,22 @@ months never asks you to sign in again. Every value is opaque and random. Zimmer
 SHA-256 digest, and the plaintext exists only in the response that issued it.
 
 **Refresh tokens rotate.** Each refresh spends the presented refresh token and returns a new pair,
-and remembers which refresh token that pair was traded for. When a spent refresh token comes back,
-what happens depends on whether that pair was ever used: its access token presented, or its refresh
-token refreshed.
+and remembers which refresh token that pair was traded for. A pair counts as used once its access
+token makes a request or its refresh token is refreshed. When a spent refresh token comes back, what
+happens depends on whether any pair it was traded for has been used.
 
-- **The pair was used.** Somebody other than its client holds the spent token. More than 60 seconds
+- **A pair was used.** Somebody other than its client holds the spent token. More than 60 seconds
   after it was spent, the whole connection is revoked (RFC 9700 §4.14.2). Within those 60 seconds it
-  is only refused, so a client that refreshes twice at once does not end its own connection.
-- **The pair was never used.** The client never received it. A phone suspended mid-request, or a
+  is only refused.
+- **No pair was used.** The client never received its answer. A phone suspended mid-request, or a
   connection that dropped after the server answered, leaves the client holding the spent token. It
-  gets a new pair. After the 60 seconds, the lost pair is retired: its access token stops working,
-  and presenting its refresh token later revokes the connection, because the client that refreshed
-  never had it. Within the 60 seconds the lost pair is left alone, since it may belong to the other
-  half of a concurrent refresh.
+  gets another pair.
+
+Every pair issued for one spent token stays live until one of them is used. The first one used
+retires the rest: their access tokens stop working, and their refresh tokens count as spent. A
+client that refreshed twice at once, or lost an answer and asked again, ends up with exactly one live
+pair. Presenting a retired refresh token is refused, and more than 60 seconds after it was retired
+it revokes the connection.
 
 A refresh made while the allowed domains cannot be read (the secret store not answering, or nothing
 configured) is a `503 temporarily_unavailable`. Nothing is issued and nothing is revoked. Only a list

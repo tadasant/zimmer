@@ -91,7 +91,10 @@ public actor AuthSession {
     @discardableResult
     public func refresh() async throws -> OAuthTokens {
         if let refreshing { return try await refreshing.value }
-        guard let signIn = reloadIfEmpty(), let refreshToken = signIn.tokens.refreshToken else {
+        // Nothing read back is not a sign-out to perform: an unreadable Keychain must not
+        // have its item deleted.
+        guard let signIn = reloadIfEmpty() else { throw ZimmerError.unauthorized }
+        guard let refreshToken = signIn.tokens.refreshToken else {
             signOutLocally()
             throw ZimmerError.unauthorized
         }
@@ -153,7 +156,7 @@ public actor AuthSession {
                 return try OAuthTokens.decode(response.body, now: now())
             case 400, 401:
                 // `invalid_grant` is the grant being gone: revoked, replayed, or the
-                // refresh token expired. `invalid_client` is the server no longer knowing
+                // refresh token expired. `invalid_client` is a server that does not know
                 // the app. Nothing to do for either but sign in again. Any other answer —
                 // a 503 while the server cannot check, a 401 with no OAuth body — says
                 // nothing about the grant, and the sign-in is kept for the next try.

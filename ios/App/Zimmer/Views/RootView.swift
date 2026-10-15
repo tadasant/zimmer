@@ -5,6 +5,7 @@ import ZimmerKit
 /// notifications, triggers, and costs and health under More).
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,6 +23,11 @@ struct RootView: View {
         }
         // Behind the status bar, where the build strip's gold does not reach.
         .background(Theme.ground.ignoresSafeArea())
+        // Signed out at the front: read the Keychain again. A sign-in that a launch in the
+        // background could not read comes back here; a real sign-out reads back nothing.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, model.isSignedIn == false { Task { await model.start() } }
+        }
     }
 }
 

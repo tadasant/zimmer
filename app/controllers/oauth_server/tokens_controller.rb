@@ -62,7 +62,8 @@ module OauthServer
       check_domain!(grant)
 
       # One refresh of a connection at a time, so two presentations of one token
-      # decide in turn. Nothing raises inside: a raise would roll back a revoke.
+      # decide in turn. Nothing raises inside, which would roll back the
+      # rotation; the refusal and the revoke happen after the lock.
       pair = grant.with_lock { rotate(token.reload, grant) }
       if pair == :replayed
         raise invalid_grant("the refresh token has already been used") if token.rotated_at > OauthServer::Grant::REPLAY_GRACE.ago
@@ -79,22 +80,23 @@ module OauthServer
     # Spend `token` and issue its replacement — or, when it was already spent,
     # tell a lost answer from a replay. A client whose refresh reached the server
     # but whose answer did not (a phone suspended mid-request, a dropped
-    # connection) still holds the spent token, and the pair it was traded for
-    # was never used: that client gets a new pair, and the lost one is
-    # superseded so presenting it later reads as the replay it would be. Inside
-    # Grant::REPLAY_GRACE the lost pair is left alone instead, because there it
-    # may belong to the other half of a concurrent refresh.
+    # connection) still holds the spent token, and no pair it was traded for has
+    # been used: that client gets another pair. Every pair issued for one spent
+    # token stays live until one of them is used, and that first use retires the
+    # rest (Token#claim_pair!), so the client that refreshed twice at once and
+    # the client that lost an answer both end up with exactly one live pair, and
+    # presenting a retired refresh token later reads as the replay it would be.
     #
     # @return [Grant::TokenPair, :replayed]
     def rotate(token, grant)
       if token.rotate!
+        token.claim_pair!
         return grant.issue_tokens!(config: oauth_config, rotated_from: token)
       end
       return :replayed unless token.successors_unused?
 
-      token.supersede_successors! if token.rotated_at <= OauthServer::Grant::REPLAY_GRACE.ago
       Rails.logger.warn("[oauth_server] grant #{grant.id} (#{grant.user_email}, client #{grant.client.client_id.inspect}) " \
-        "presented a spent refresh token whose rotated pair was never used; issuing it again")
+        "presented a spent refresh token whose rotated pair was never used; issuing another")
       grant.issue_tokens!(config: oauth_config, rotated_from: token)
     end
 

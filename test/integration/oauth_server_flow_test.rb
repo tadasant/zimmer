@@ -421,19 +421,42 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert_equal 600, tokens["expires_in"]
   end
 
-  test "two refreshes at once with one token both get a pair; neither ends the connection" do
+  test "two refreshes with one token before either pair is used: both are answered, and the first pair used retires the other" do
     client_id, tokens = connect
     winner = refresh(client_id, tokens["refresh_token"])
     loser = refresh(client_id, tokens["refresh_token"])
-    assert_response :success, "inside the grace window, with the winner's pair unused, the second call is answered"
+    assert_response :success, "with the first pair unused, the second call is answered"
 
-    [ winner, loser ].each do |pair|
-      rpc("tools/list", token: pair["access_token"])
-      assert_response :success
-    end
+    rpc("tools/list", token: winner["access_token"])
+    assert_response :success
+    rpc("tools/list", token: loser["access_token"])
+    assert_response :unauthorized, "the pair not used first is retired"
+    assert_equal "invalid_grant", refresh(client_id, loser["refresh_token"])["error"]
+    refute OauthServer::Grant.last.revoked?, "inside the grace window the retired pair is only refused"
+
     assert refresh(client_id, winner["refresh_token"])["access_token"]
-    assert refresh(client_id, loser["refresh_token"])["access_token"]
-    refute OauthServer::Grant.last.revoked?
+    assert_equal "invalid_grant", refresh(client_id, tokens["refresh_token"])["error"], "once a pair is used, the spent token is a replay"
+  end
+
+  test "rotating the reissued refresh token is a use: it retires the other pair" do
+    client_id, tokens = connect
+    first = refresh(client_id, tokens["refresh_token"])
+    second = refresh(client_id, tokens["refresh_token"])
+
+    assert refresh(client_id, second["refresh_token"])["access_token"]
+    rpc("tools/list", token: first["access_token"])
+    assert_response :unauthorized
+  end
+
+  test "a used pair's evidence outlives its access token's row" do
+    client_id, tokens = connect
+    rotated = refresh(client_id, tokens["refresh_token"])
+    rpc("tools/list", token: rotated["access_token"])
+    OauthServer::Token.where(token_digest: OauthServer.digest(rotated["access_token"])).delete_all
+
+    travel 2.minutes
+    assert_equal "invalid_grant", refresh(client_id, tokens["refresh_token"])["error"]
+    assert OauthServer::Grant.last.revoked?
   end
 
   test "a spent refresh token whose rotated pair was used is refused in the grace window; later, it revokes the grant" do
@@ -484,20 +507,22 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert refresh(client_id, third["refresh_token"])["access_token"], "the reissued chain rotates normally"
   end
 
-  test "the pair a reissue superseded is dead, and presenting it later revokes the grant" do
+  test "the lost pair is retired once the reissued one is used, and presenting it later revokes the grant" do
     client_id, tokens = connect
     lost = refresh(client_id, tokens["refresh_token"])
 
     travel 2.minutes
     reissued = refresh(client_id, tokens["refresh_token"])
     assert_response :success
+    rpc("tools/list", token: reissued["access_token"])
+    assert_response :success
 
     rpc("tools/list", token: lost["access_token"])
-    assert_response :unauthorized, "the superseded access token is expired"
+    assert_response :unauthorized, "the retired access token is expired"
 
     travel 2.minutes
     assert_equal "invalid_grant", refresh(client_id, lost["refresh_token"])["error"]
-    assert OauthServer::Grant.last.revoked?, "whoever holds the superseded pair is not the client that refreshed"
+    assert OauthServer::Grant.last.revoked?, "whoever holds the retired pair is not the client that refreshed"
     rpc("tools/list", token: reissued["access_token"])
     assert_response :unauthorized
   end
