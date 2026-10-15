@@ -55,8 +55,8 @@ final class TriggerEditorUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         let row = app.descendants(matching: .any)["trigger.8"].firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: timeout), "listed, first, as the server lists newest first")
-        XCTAssertTrue(row.label.contains("Hourly inbox sweep"))
-        XCTAssertTrue(row.label.contains("Every 6 hours"))
+        XCTAssertTrue(rowSays(row, "Hourly inbox sweep"))
+        XCTAssertTrue(rowSays(row, "Every 6 hours"))
     }
 
     /// Edit from the page: the name and the prompt change, and the page and the list say so.
@@ -89,7 +89,7 @@ final class TriggerEditorUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         let row = app.descendants(matching: .any)["trigger.5"].firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: timeout))
-        XCTAssertTrue(waitForLabelContaining(row, "Nightly dependency sweep (quiet)"), "the list reads the saved name")
+        XCTAssertTrue(rowSays(row, "Nightly dependency sweep (quiet)"), "the list reads the saved name")
     }
 
     /// A blank name is refused by the server in its words, in place, and nothing is created.
@@ -191,8 +191,9 @@ final class TriggerEditorUITests: XCTestCase {
         return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
     }
 
-    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
-        let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
-        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
+    /// A trigger row is an accessibility container, so its own label is empty: what it says is
+    /// in the texts inside it.
+    private func rowSays(_ row: XCUIElement, _ text: String) -> Bool {
+        row.descendants(matching: .staticText).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch.waitForExistence(timeout: timeout)
     }
 }

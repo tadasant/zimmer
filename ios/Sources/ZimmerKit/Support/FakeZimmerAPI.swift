@@ -1147,24 +1147,22 @@ extension FakeZimmerAPI {
         if draft.name.trimmingCharacters(in: .whitespaces).isEmpty { messages.append("Name can't be blank") }
         if draft.agentRootName.isEmpty { messages.append("Agent root name can't be blank") }
         if draft.promptTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { messages.append("Prompt template can't be blank") }
-        if draft.conditions.isEmpty { messages.append("Trigger conditions must have at least one condition") }
+        if draft.filledConditions.isEmpty { messages.append("Trigger conditions must have at least one condition") }
         if let max = draft.maxSessionsPerMinute, max < 1 { messages.append("Max sessions per minute must be greater than 0") }
         if let window = draft.coalesceWindowSeconds {
             if window < 0 { messages.append("Coalesce window seconds must be greater than or equal to 0") }
             if window > 3600 { messages.append("Coalesce window seconds must be less than or equal to 3600") }
         }
-        // The two re-use switches stay as stored when the form does not send them, so turning
-        // re-use off under one that is on is refused, as the server refuses it.
+        // Without re-use the two switches go as false (the web's hidden "0"s) unless the
+        // caller insists, which the server refuses.
         if !draft.reuseSession {
-            if draft.enqueueMessages ?? existing?.enqueueMessages ?? false { messages.append("Enqueue messages can only be enabled when re-use session is enabled") }
-            if draft.resuscitateArchived ?? existing?.resuscitateArchived ?? false { messages.append("Resuscitate archived can only be enabled when re-use session is enabled") }
+            if draft.enqueueMessages == true { messages.append("Enqueue messages can only be enabled when re-use session is enabled") }
+            if draft.resuscitateArchived == true { messages.append("Resuscitate archived can only be enabled when re-use session is enabled") }
         }
-        for condition in draft.conditions {
+        for condition in draft.filledConditions {
             let c = condition.configuration
             let prefix = "Trigger conditions configuration "
             switch condition.type {
-            case "":
-                messages.append("Trigger conditions condition type can't be blank")
             case "slack":
                 if condition.showsSlackChannel, c.channelID.isEmpty, !["bot_mention", "passive_listen_thread", "passive_listen_channel"].contains(c.eventType) {
                     messages.append(prefix + "must include channel_id for Slack conditions")
@@ -1216,7 +1214,7 @@ extension FakeZimmerAPI {
     /// The trigger as the server would store and report it: the draft's settings, the
     /// conditions described in the server's words, and the derived fields the page reads.
     private func materialize(_ draft: TriggerDraft, id: Int, existing: TriggerSummary?) -> TriggerSummary {
-        let conditions = draft.conditions.map { condition -> TriggerSummary.Condition in
+        let conditions = draft.filledConditions.map { condition -> TriggerSummary.Condition in
             let serverID: Int
             if let known = condition.serverID {
                 serverID = known
@@ -1239,8 +1237,8 @@ extension FakeZimmerAPI {
             lastError: existing?.lastError, lastTriggeredAt: existing?.lastTriggeredAt, lastSessionID: lastSession,
             sessionsCreated: existing?.sessionsCreated ?? 0, conditions: conditions, failedAt: existing?.failedAt,
             agentRootMissing: !Self.warnings(for: draft).isEmpty, reuseSession: reuse,
-            enqueueMessages: draft.enqueueMessages ?? existing?.enqueueMessages ?? false,
-            resuscitateArchived: draft.resuscitateArchived ?? existing?.resuscitateArchived ?? false,
+            enqueueMessages: reuse ? (draft.enqueueMessages ?? existing?.enqueueMessages ?? false) : (draft.enqueueMessages ?? false),
+            resuscitateArchived: reuse ? (draft.resuscitateArchived ?? existing?.resuscitateArchived ?? false) : (draft.resuscitateArchived ?? false),
             skipIfPendingSession: draft.skipIfPendingSession, missedFireCount: existing?.missedFireCount ?? 0,
             bursting: existing?.bursting ?? false, maxSessionsPerMinute: draft.maxSessionsPerMinute,
             coalesceWindowSeconds: draft.coalesceWindowSeconds, promptTemplate: draft.promptTemplate,

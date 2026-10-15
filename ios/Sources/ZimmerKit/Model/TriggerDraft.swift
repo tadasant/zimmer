@@ -13,7 +13,10 @@ public struct TriggerDraft: Hashable, Sendable {
     public var promptTemplate: String
     public var goal: String
     public var reuseSession: Bool
-    /// nil is not sent: the switch is on the trigger's web page.
+    /// nil is not sent while the session is re-used — the switch is on the trigger's web page —
+    /// and sent as false when it is not, as the web form's hidden check boxes post "0": neither
+    /// can be on without re-use, and leaving them would make turning re-use off a refusal with
+    /// no control to clear.
     public var enqueueMessages: Bool?
     public var resuscitateArchived: Bool?
     /// A session to re-use from the start, with `reuseSession`.
@@ -94,6 +97,10 @@ public struct TriggerDraft: Hashable, Sendable {
     /// Whether any condition is a Slack one: the coalescing window is read on no other.
     public var hasSlackCondition: Bool { conditions.contains { $0.type == "slack" } }
 
+    /// The conditions that go: a card left at "Select condition type..." is dropped, as the
+    /// server's `reject_if: :all_blank` drops it.
+    public var filledConditions: [ConditionDraft] { conditions.filter { !$0.type.isEmpty } }
+
     /// The request body, with the API's parameter names. A blank number is `null`, as the
     /// web's empty number field amounts to; an omitted re-use switch is left out.
     public var body: [String: Any] {
@@ -112,11 +119,11 @@ public struct TriggerDraft: Hashable, Sendable {
             "catalog_skills": catalogSkills,
             "catalog_hooks": catalogHooks,
             "catalog_plugins": catalogPlugins,
-            "trigger_conditions_attributes": conditions.map(\.body) + removedConditionIDs.map { ["id": $0, "_destroy": "1"] as [String: Any] },
+            "trigger_conditions_attributes": filledConditions.map(\.body) + removedConditionIDs.map { ["id": $0, "_destroy": "1"] as [String: Any] },
         ]
         if let status { json["status"] = status }
-        if let enqueueMessages { json["enqueue_messages"] = enqueueMessages }
-        if let resuscitateArchived { json["resuscitate_archived"] = resuscitateArchived }
+        if let enqueueMessages { json["enqueue_messages"] = enqueueMessages } else if !reuseSession { json["enqueue_messages"] = false }
+        if let resuscitateArchived { json["resuscitate_archived"] = resuscitateArchived } else if !reuseSession { json["resuscitate_archived"] = false }
         if let lastSessionID { json["last_session_id"] = lastSessionID }
         return json
     }
@@ -229,7 +236,10 @@ public struct ConditionDraft: Hashable, Sendable, Identifiable {
                 return ["scheduled_at": c.scheduledAt, "timezone": c.timezone]
             case .recurring:
                 var json: [String: Any] = ["interval": Int(c.interval).map { $0 as Any } ?? c.interval, "unit": c.unit]
-                if showsTime { json["time"] = c.time; json["timezone"] = c.timezone }
+                // An hourly schedule's time is its minute past the hour (":30"), which the web
+                // form keeps and posts though it does not show it.
+                if showsTime || c.unit == "hours" { json["time"] = c.time }
+                if showsTime { json["timezone"] = c.timezone }
                 if showsDayOfWeek { json["day_of_week"] = c.dayOfWeek }
                 return json
             }
@@ -448,14 +458,16 @@ public struct ScheduleTimeZone: Hashable, Sendable, Identifiable {
     public var identifier: String
     public var id: String { name }
 
-    /// The option as the web's select prints it: the offset in force, then the name.
+    /// The option as the web's select prints it (`ActiveSupport::TimeZone#to_s`): the standard
+    /// offset, daylight saving set aside, then the name.
     public func label(at date: Date = Date()) -> String {
         guard let zone = TimeZone(identifier: identifier) else { return name }
-        let seconds = zone.secondsFromGMT(for: date)
+        let seconds = zone.secondsFromGMT(for: date) - Int(zone.daylightSavingTimeOffset(for: date))
         let sign = seconds < 0 ? "-" : "+"
         let hours = abs(seconds) / 3600
         let minutes = (abs(seconds) % 3600) / 60
-        return String(format: "(GMT%@%02d:%02d) %@", sign, hours, minutes, name)
+        func two(_ value: Int) -> String { value < 10 ? "0\(value)" : "\(value)" }
+        return "(GMT\(sign)\(two(hours)):\(two(minutes))) \(name)"
     }
 
     public static let us: [ScheduleTimeZone] = [

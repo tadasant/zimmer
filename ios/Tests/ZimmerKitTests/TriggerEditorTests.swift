@@ -25,6 +25,8 @@ final class TriggerEditorTests: XCTestCase {
             "trigger": ["id": 9, "name": "Nightly", "status": "enabled", "conditions": [["id": 90, "condition_type": "schedule", "configuration": ["unit": "days"]]]],
             "warnings": ["Agent root 'ghost' is not in this deployment's catalog."],
         ]) }])
+        var hourly = schedule(interval: "2", unit: "hours", time: "00:30")
+        hourly.configuration.timezone = "Tokyo"
         var slack = ConditionDraft(type: "slack")
         slack.configuration.channelID = "C0A6BF8T45R"
         slack.configuration.channelName = "zimmer"
@@ -34,7 +36,7 @@ final class TriggerEditorTests: XCTestCase {
             name: "Nightly", agentRootName: "ghost", promptTemplate: "Sweep {{date}}", goal: "Green PRs", reuseSession: true,
             maxSessionsPerMinute: 3, skipIfPendingSession: true, coalesceWindowSeconds: 0, schedulingClass: "spot", precedence: 40,
             mcpServers: ["github"], catalogSkills: ["open-pr"], catalogHooks: [], catalogPlugins: ["zimmer-ops"],
-            conditions: [schedule(), slack], removedConditionIDs: [7]
+            conditions: [schedule(), slack, ConditionDraft(type: ""), hourly], removedConditionIDs: [7]
         )
 
         let written = try await api.createTrigger(draft)
@@ -60,7 +62,11 @@ final class TriggerEditorTests: XCTestCase {
         XCTAssertNil(body["status"])
         XCTAssertNil(body["last_session_id"])
         let conditions = body["trigger_conditions_attributes"] as? [[String: Any]] ?? []
-        XCTAssertEqual(conditions.count, 3)
+        XCTAssertEqual(conditions.count, 4, "the card left at \"Select condition type...\" is dropped")
+        XCTAssertEqual(conditions.map { $0["condition_type"] as? String }, ["schedule", "slack", "schedule", nil])
+        let hourlyConfig = conditions[2]["configuration"] as? [String: Any] ?? [:]
+        XCTAssertEqual(hourlyConfig["time"] as? String, "00:30", "an hourly schedule keeps its minute past the hour, as the web posts it")
+        XCTAssertNil(hourlyConfig["timezone"], "and names no zone, which the form does not show for hours")
         XCTAssertEqual(conditions[0]["condition_type"] as? String, "schedule")
         XCTAssertNil(conditions[0]["id"], "a condition drafted in the form has no id yet")
         let scheduleConfig = conditions[0]["configuration"] as? [String: Any] ?? [:]
@@ -76,8 +82,8 @@ final class TriggerEditorTests: XCTestCase {
         XCTAssertEqual(slackConfig["event_type"] as? String, "bot_mention")
         XCTAssertEqual(slackConfig["thread_ts"] as? String, "1767504875.131659")
         XCTAssertNil(slackConfig["allowed_user_ids"], "sent only when there are any")
-        XCTAssertEqual(conditions[2]["id"] as? Int, 7)
-        XCTAssertEqual(conditions[2]["_destroy"] as? String, "1")
+        XCTAssertEqual(conditions[3]["id"] as? Int, 7)
+        XCTAssertEqual(conditions[3]["_destroy"] as? String, "1")
         XCTAssertEqual(written.trigger.id, 9)
         XCTAssertEqual(written.trigger.conditions.first?.id, 90)
         XCTAssertEqual(written.warnings.count, 1)
@@ -101,7 +107,11 @@ final class TriggerEditorTests: XCTestCase {
         XCTAssertTrue(body["precedence"] is NSNull)
         XCTAssertTrue(body["scheduling_class"] is NSNull)
         XCTAssertEqual(body["goal"] as? String, "")
-        XCTAssertEqual(body["enqueue_messages"] as? Bool, true)
+        XCTAssertEqual(body["enqueue_messages"] as? Bool, true, "sent as set, even without re-use: the server's refusal is the answer")
+        XCTAssertEqual(body["resuscitate_archived"] as? Bool, false)
+        let off = TriggerDraft(name: "N", agentRootName: "zimmer", promptTemplate: "p", reuseSession: false).body
+        XCTAssertEqual(off["enqueue_messages"] as? Bool, false, "without re-use both switches go as false, as the web's hidden check boxes post")
+        XCTAssertEqual(off["resuscitate_archived"] as? Bool, false)
         XCTAssertEqual(body["resuscitate_archived"] as? Bool, false)
         XCTAssertEqual(body["last_session_id"] as? Int, 1031)
         XCTAssertEqual(body["status"] as? String, "disabled")
@@ -293,7 +303,11 @@ final class TriggerEditorTests: XCTestCase {
         XCTAssertTrue(options.contains { $0.name == "Eastern Time (US & Canada)" && $0.identifier == "America/New_York" })
         XCTAssertEqual(options.count, 1 + ScheduleTimeZone.us.count + ScheduleTimeZone.rest.count - 1)
         let january = Calendar(identifier: .gregorian).date(from: DateComponents(timeZone: TimeZone(identifier: "UTC"), year: 2026, month: 1, day: 15))!
-        XCTAssertEqual(ScheduleTimeZone(name: "Eastern Time (US & Canada)", identifier: "America/New_York").label(at: january), "(GMT-05:00) Eastern Time (US & Canada)")
+        let july = Calendar(identifier: .gregorian).date(from: DateComponents(timeZone: TimeZone(identifier: "UTC"), year: 2026, month: 7, day: 15))!
+        let eastern = ScheduleTimeZone(name: "Eastern Time (US & Canada)", identifier: "America/New_York")
+        XCTAssertEqual(eastern.label(at: january), "(GMT-05:00) Eastern Time (US & Canada)")
+        XCTAssertEqual(eastern.label(at: july), "(GMT-05:00) Eastern Time (US & Canada)", "the standard offset, as Rails prints it, daylight saving aside")
+        XCTAssertEqual(ScheduleTimeZone(name: "Kolkata", identifier: "Asia/Kolkata").label(at: july), "(GMT+05:30) Kolkata")
         XCTAssertEqual(ScheduleTimeZone.options(including: "Asia/Kolkata").first?.name, "Asia/Kolkata", "a stored identifier is kept rather than moved")
     }
 
@@ -331,15 +345,28 @@ final class TriggerEditorTests: XCTestCase {
         XCTAssertEqual(updated.trigger.conditions.first?.id, created.trigger.conditions.first?.id, "changed in place")
         XCTAssertEqual(updated.reclassifiedWaitingSessions, 0)
 
-        // Turning re-use off under a switch the form does not send is refused, as on the server.
+        // Turning re-use off clears both switches, as the web form's hidden "0"s do; insisting
+        // on one without re-use is refused, as on the server.
         let nightly = try await api.trigger(5).trigger
+        XCTAssertTrue(nightly.enqueueMessages)
         var reuseOff = TriggerDraft(editing: nightly)
         reuseOff.reuseSession = false
+        let cleared = try await api.updateTrigger(5, reuseOff)
+        XCTAssertFalse(cleared.trigger.reuseSession)
+        XCTAssertFalse(cleared.trigger.enqueueMessages)
+        reuseOff.enqueueMessages = true
         do {
             _ = try await api.updateTrigger(5, reuseOff)
             XCTFail("refused")
         } catch let refusal as TriggerValidationError {
             XCTAssertEqual(refusal.messages, ["Enqueue messages can only be enabled when re-use session is enabled"])
+        }
+        let onlyBlankCard = TriggerDraft(name: "x", agentRootName: "zimmer", promptTemplate: "p", conditions: [ConditionDraft(type: "")])
+        do {
+            _ = try await api.createTrigger(onlyBlankCard)
+            XCTFail("refused")
+        } catch let refusal as TriggerValidationError {
+            XCTAssertEqual(refusal.messages, ["Trigger conditions must have at least one condition"], "a blank card is no condition")
         }
 
         try await api.deleteTrigger(created.trigger.id)
