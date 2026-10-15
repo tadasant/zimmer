@@ -27,6 +27,17 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     end
   end
 
+  # A live model can enable any catalog server, so steering one must not come
+  # with `sessions` or the unscoped surface.
+  test "the live-conversation tools are only in their own opt-in group" do
+    live = %w[get_live_conversations action_live_conversation]
+
+    assert_equal live.sort, Mcp::Registry.tools_for([ "live_conversations" ]).map(&:tool_name).sort
+    assert_equal [ "get_live_conversations" ], Mcp::Registry.tools_for([ "live_conversations_readonly" ]).map(&:tool_name)
+    assert_empty live & Mcp::Registry.tools_for([ "sessions" ]).map(&:tool_name)
+    assert_empty live & Mcp::Registry.tools_for(Mcp::Registry.parse_groups(nil)).map(&:tool_name)
+  end
+
   test "unknown groups are dropped, known ones kept" do
     assert_equal [ "sessions" ], Mcp::Registry.parse_groups("sessions,not_a_group")
   end

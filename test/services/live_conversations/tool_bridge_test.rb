@@ -86,10 +86,11 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert wrong_type.error
   end
 
-  test "the live agent cannot end or replace its own conversation through the gateway" do
+  test "the live agent's gateway carries no live-conversation tools: they are an opt-in group" do
     tools = @bridge.functions.first.parameters[:properties][:tool][:enum]
 
-    assert_includes tools, "get_live_conversations"
+    assert_includes tools, "start_session"
+    assert_not_includes tools, "get_live_conversations"
     assert_not_includes tools, "action_live_conversation"
   end
 
