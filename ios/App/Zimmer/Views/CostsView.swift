@@ -8,7 +8,8 @@ import ZimmerKit
 /// experimental settings' cohorts, by model, main thread against subagents, by runtime, ad hoc
 /// calls by source, the most expensive sessions, and the burn rates the spot gate reads. The
 /// window is a one-tap horizon or a calendar range, and the page narrows to one agent root or
-/// one session, as the web page's drilldown does. *Sweep now* stays in the browser.
+/// one session, as the web page's drilldown does. *Sweep now* asks for the history sweep and the
+/// banner follows the run until it is done.
 struct CostsView: View {
     @EnvironmentObject private var app: AppModel
     @State private var window: CostWindow = .days(7)
@@ -23,6 +24,9 @@ struct CostsView: View {
     @State private var rangeTo = Date()
     /// The day whose bar was tapped: the web chart's hover detail.
     @State private var selectedDay: String?
+    /// *Sweep now* is on its way to the server.
+    @State private var sweeping = false
+    @State private var sweepError: ZimmerError?
 
     init(scope: CostScope = .fleet) {
         _scope = State(initialValue: scope)
@@ -66,8 +70,38 @@ struct CostsView: View {
         .themeGround()
         .overlay { if snapshot == nil && error == nil { LoadingState() } }
         .task(id: Request(window: window, scope: scope)) { await load() }
+        // A sweep in flight: the banner follows it, as reloading the web page would, until it is done.
+        .task(id: sweepInFlight) {
+            while sweepInFlight, !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                await load()
+            }
+        }
         .refreshable { await load() }
         .navigationTitle("Costs")
+    }
+
+    private var sweepInFlight: Bool {
+        guard let status = snapshot?.coverage?.status else { return false }
+        return status == "queued" || status == "running"
+    }
+
+    /// Ask for the sweep. The answer is the run queued, or the one already in flight, and the
+    /// banner shows it at once; the figures grow as it runs.
+    private func sweep() async {
+        guard !sweeping else { return }
+        sweeping = true
+        defer { sweeping = false }
+        do {
+            let request = try await app.api.backfillCosts()
+            if let coverage = request.coverage { snapshot?.coverage = coverage }
+            sweepError = nil
+            Haptics.success()
+        } catch {
+            sweepError = error as? ZimmerError ?? .transport(error)
+            Haptics.failure()
+        }
     }
 
     // MARK: - Window and scope
@@ -196,12 +230,31 @@ struct CostsView: View {
                 if let lastError = coverage.lastError, !lastError.isEmpty {
                     Text("Last error: \(lastError)").font(.caption).foregroundStyle(Theme.danger)
                 }
+                Button {
+                    Task { await sweep() }
+                } label: {
+                    HStack(spacing: 6) {
+                        if sweeping { ProgressView().controlSize(.small) }
+                        Text(coverage.swept ? "Re-scan history" : "Sweep now")
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .tint(Theme.accent)
+                .disabled(sweeping)
+                .padding(.top, 4)
+                .accessibilityIdentifier("costs.sweep")
+                if let sweepError {
+                    Text(sweepError.userMessage).font(.caption).foregroundStyle(Theme.danger).accessibilityIdentifier("costs.sweep.error")
+                }
             }
             .padding(.vertical, 2)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("costs.coverage")
         } footer: {
-            Text("Sweep now and Re-scan history are on the Costs page in the browser.").font(.caption).foregroundStyle(Theme.inkMute)
+            Text(coverage.swept ? "Re-scanning reads every transcript again; the ledger upserts, so nothing is counted twice."
+                 : "The sweep starts on its own within five minutes; Sweep now asks for it at once.")
+                .font(.caption).foregroundStyle(Theme.inkMute)
         }
         .listRowBackground(coverage.swept ? Theme.surface : Theme.warning.opacity(0.08))
     }

@@ -103,6 +103,11 @@ final class AppModel: ObservableObject {
     @Published var fixtureCosts: CostScope?
     /// `-ZimmerFixtureHealth`: More opens on Health.
     @Published var fixtureHealth = false
+    /// `-ZimmerFixtureClis`: More opens on CLIs.
+    @Published var fixtureClis = false
+    /// Tools not installed or not signed in: the badge on the board's CLIs button on the web,
+    /// here on the More row. Read when More comes to the front; a hint, never an error.
+    @Published var cliIssues = 0
     /// `-ZimmerFixtureRunNow`: the opened trigger's Run Now sheet starts open, so
     /// `ios/bin/ui-test` can photograph its variable fields.
     var fixtureOpensRunNow = false
@@ -202,6 +207,10 @@ final class AppModel: ObservableObject {
         }
         if arguments.contains("-ZimmerFixtureHealth") {
             fixtureHealth = true
+            tab = .more
+        }
+        if arguments.contains("-ZimmerFixtureClis") {
+            fixtureClis = true
             tab = .more
         }
         fixtureOpensRunNow = arguments.contains("-ZimmerFixtureRunNow")
@@ -324,6 +333,10 @@ final class AppModel: ObservableObject {
     func note(_ report: HealthReport) {
         bannersCheckedAt = Date()
         systemBanners = report.banners
+    }
+
+    func refreshCliIssues() async {
+        if let report = try? await connection.api.cliStatus() { cliIssues = report.unauthenticatedCount }
     }
 
     func refreshUnreadCount() async {

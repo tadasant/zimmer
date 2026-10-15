@@ -303,7 +303,10 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   agent root to narrow the whole page to it, or, on the page for every root, swipe a session and
   choose *Only This*, the web page's drilldown; the page then says what it covers, and *All
   agent roots* widens it again. A narrowed page drops the experiments and burn rates, as the web
-  page does. *Sweep now* stays in the browser. *Health* is the web page's every section, in its
+  page does. *Sweep now* (*Re-scan history* once a sweep has finished) is the web banner's button:
+  it asks `POST /api/v1/costs/backfill` for the sweep, the banner shows the run queued or in
+  flight at once, and the screen reads the ledger again every few seconds until the run is done,
+  so the "swept … ago" line is the one the web page shows after. *Health* is the web page's every section, in its
   order, from `GET /api/v1/health`: the overall status; queue recovery mode (on or off, what it
   halts, and when on, since when, who entered it, why, and when it resumes); process counts
   and the orphan list; session totals, failure rate and the status, error-category and
@@ -319,13 +322,37 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   tap away. The two alerts the web layout puts on every page, *Queue recovery mode* and
   *Network egress degraded*, head the Health screen and the sessions board while they are up;
   the board re-reads them from the health report at most every five minutes, and a visit to
-  Health refreshes them. Health's operator actions (cleanup, retries, entering recovery mode,
-  re-arming tasks) stay in the browser; their routes refuse the app's token.
+  Health refreshes them. Health's operator actions are the web page's buttons, in the sections
+  the page puts them in and with the page's confirmation wording: *Clean Up Orphaned Processes*
+  under the orphan list, *Retry Failed Sessions* under the session breakdown, *Trash Sessions
+  Older Than 7 Days* in Maintenance Actions, *Halt Job Processing* with its reason and auto-resume
+  minutes, and while halted *Resume Job Processing* and *Extend*, *Re-arm and run now* under the
+  post-deploy tasks when one has failed or none has run, and in Queued Job Maintenance a
+  *Reschedule* (with its delay) and a *Discard* per job class with jobs ready. Each answer stays
+  under its button in the server's words (what was terminated, retried, trashed, re-armed,
+  discarded; "Queue recovery mode is on until …"), and the report is read again so the counts
+  move. The thirty-second cooldown on cleanup, retries and trashing is shown in place as the
+  server's "Please wait 30 seconds between actions", not as a failure. Two differences from the
+  web panel: the queued-job rows come from the report's ready-by-job-class breakdown (the API has
+  no listing by class *and* queue), and the count a discard or reschedule carries is read from
+  `GET /api/v1/health/queued_jobs` the moment before the question, so the server's count check
+  refuses an action on a set that moved since. The two dashboard links in Maintenance Actions are
+  web pages. *CLIs*, also under More, is the web page: the banner (all tools ready, or how many
+  need attention, which is also the red count on the More row, as on the web board's CLIs
+  button), when the worker last checked, the `ssh root@…` hint with Copy, and per tool its
+  version, Installed and Authenticated badges, the install hint when it is not installed and the
+  sign-in hint (or the environment variable to set) when it is installed and signed out, each
+  with Copy. *Refresh* queues a fresh check and the status line says so until the next read;
+  *Clear Cache* asks first, then queues the worker's npm and pip cache clear. The SSH hint names
+  the signed-in server's host: the web page prints the box's Tailscale address, which the API
+  does not carry.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
-Every action above is a route on `/api/v1/sessions` that the app's token could already reach; none
-of them widened what the phone can do on the server.
+Every session action above is a route on `/api/v1/sessions` the app's token could already reach.
+The Health, Costs and CLIs actions are the routes `accepts_native_app_tokens` opens for exactly them
+(`Api::V1::HealthController`, `CostsController#backfill`, `ClisController`): each is a button the
+web page offers any signed-in person, and the phone is that person's other screen.
 
 ### Not in the app yet
 
