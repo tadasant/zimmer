@@ -150,6 +150,103 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     assert_includes redacted, "@db.internal:5432/zimmer_production"
   end
 
+  # --- Placeholders are not credentials --------------------------------------
+
+  # The exact shape from session 24427: a walkthrough step telling a human what
+  # to fill in. Redacting the blank made the step unreadable and hid nothing.
+  WEBSHARE_TEMPLATE = "http://<proxy-username>:<proxy-password-from-your-dashboard>@p.webshare.io:80"
+
+  test "leaves the Webshare proxy template from session 24427 readable" do
+    TranscriptRedactor.stub(:known_secrets, []) do
+      assert_equal WEBSHARE_TEMPLATE, TranscriptRedactor.redact(WEBSHARE_TEMPLATE)
+    end
+  end
+
+  # A prompt a human pastes is a `user` record in the same transcript, so it goes
+  # through this same redactor. Both encoders: JSON.generate writes `<` raw (as
+  # Claude Code's JSONL does), ActiveSupport's to_json writes `\u003c`.
+  test "leaves the Webshare template readable when it arrives as a user prompt in a JSONL record" do
+    record = { type: "user", message: { role: "user", content: "Set HTTPS_PROXY to #{WEBSHARE_TEMPLATE}" } }
+    [ JSON.generate(record), record.to_json ].each do |line|
+      TranscriptRedactor.stub(:known_secrets, []) do
+        assert_equal line, TranscriptRedactor.redact(line)
+      end
+    end
+  end
+
+  # Every value-capturing framing, crossed with every placeholder convention.
+  PLACEHOLDER_VALUES = [
+    "<proxy-password>",
+    "<YOUR_PASSWORD_HERE>",
+    "${PROXY_PASSWORD}",
+    "${PROXY_PASSWORD:-changeme}",
+    "$PROXY_PASSWORD",
+    "$proxy_password",
+    "{{proxy_password}}",
+    "%PROXY_PASSWORD%",
+    "xxxxxxxxxxxxxxxx",
+    "****************"
+  ].freeze
+
+  PLACEHOLDER_VALUES.each do |value|
+    test "leaves a URL credential placeholder alone: #{value}" do
+      line = "https://proxyuser:#{value}@proxy.example.com:8080"
+      TranscriptRedactor.stub(:known_secrets, []) do
+        assert_equal line, TranscriptRedactor.redact(line)
+      end
+    end
+
+    test "leaves a database URL placeholder alone: #{value}" do
+      line = "postgres://zimmer:#{value}@db.internal:5432/zimmer_production"
+      TranscriptRedactor.stub(:known_secrets, []) do
+        assert_equal line, TranscriptRedactor.redact(line)
+      end
+    end
+  end
+
+  test "leaves a filler value after a credential name alone" do
+    [ "password=xxxxxxxxxxxxxxxxxxxx", "api_key: ********************".tr("*", "x"), "Authorization: Bearer xxxxxxxxxxxxxxxxxxxxxxxx" ].each do |line|
+      TranscriptRedactor.stub(:known_secrets, []) do
+        assert_equal line, TranscriptRedactor.redact(line)
+      end
+    end
+  end
+
+  # The counterweight: a placeholder has to BE the whole value, and a value that
+  # only resembles one stays redacted.
+  NOT_PLACEHOLDERS = {
+    "a real password" => "https://user:realtoken123@proxy.example.com",
+    "a git remote token" => "https://x-access-token:ghs_abcdefghijklmnop@github.com/tadasant/zimmer.git",
+    "angle brackets around part of the value" => "https://user:abc<def>ghi123@proxy.example.com",
+    "a mixed-case value behind a dollar sign" => "https://user:$ecretPassw0rd@proxy.example.com",
+    "a dollar-brace that is not a variable name" => "https://user:${1nv4lid}xyz@proxy.example.com",
+    "a nearly-uniform filler" => "https://user:xxxxxxxxy@proxy.example.com",
+    "a database password" => "postgres://zimmer:s3cr3t-p4ssw0rd@db.internal:5432/zimmer_production"
+  }.freeze
+
+  NOT_PLACEHOLDERS.each do |name, line|
+    test "still redacts #{name}" do
+      TranscriptRedactor.stub(:known_secrets, []) do
+        refute_equal line, TranscriptRedactor.redact(line)
+        assert_includes TranscriptRedactor.redact(line), "[REDACTED:MATCH:"
+      end
+    end
+  end
+
+  test "a real token inside angle brackets is still caught by its own shape" do
+    token = "ghp_#{'A1b2C3d4E5' * 4}"
+    redacted = TranscriptRedactor.redact("https://user:<#{token}>@github.com")
+
+    refute_includes redacted, token
+  end
+
+  test "a placeholder check never runs on a transcript-scale value" do
+    huge = "x" * (TranscriptRedactor::PUBLIC_IDENTIFIER_MAX_LENGTH + 1)
+    redacted = TranscriptRedactor.redact("password=#{huge}")
+
+    refute_includes redacted, huge
+  end
+
   test "redacts a named secret value while keeping the name" do
     redacted = TranscriptRedactor.redact(%(RAILS_MASTER_KEY=0123456789abcdef0123456789abcdef))
 

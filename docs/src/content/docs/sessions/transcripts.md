@@ -298,6 +298,23 @@ redacted — both are real session-token formats and neither has a letter in `[g
 (`client_secret`, `api_key`, `password`, `passphrase`) are untouched by any of this, so
 `password=correct-horse-battery-staple` still redacts.
 
+### Placeholders are not credentials
+
+Every rule that redacts a *value* — URL credentials, database URLs, `Bearer`, `X-API-Key`, the
+generic name-then-value rule — first checks whether that value is a fill-in-the-blank. An agent
+writing setup steps for a human puts the blank exactly where those rules look:
+`http://<proxy-username>:<proxy-password>@p.webshare.io:80` came back with the password slot as
+`[REDACTED:MATCH:URL_CREDENTIALS:37ch]`, which made the step harder to follow and hid nothing
+([session 24427](https://zimmer.tadasant.com/sessions/24427)).
+
+A value is left alone when the whole of it is one of: an `<angle-bracketed name>` (or its
+JSON-escaped `\u003c…\u003e` form), a shell variable (`${VAR}`, or a bare `$VAR` / `$var` in a
+single case), a `{{template}}` variable, a Windows `%VAR%`, or one character repeated (`xxxxxxxx`,
+`********`). The placeholder has to *be* the value, so `abc<def>ghi` and `$ecretPassw0rd` still
+redact. The prefixed-token rules run first, so a `ghp_…` token wrapped in angle brackets is still
+caught by its own shape. The same check covers a prompt a human pastes into a session: that prompt is
+a record in the same transcript and goes through the same redactor.
+
 ### Why the patterns carry their own regexp timeout
 
 `config.load_defaults 8.0` sets `Regexp.timeout = 1` for the whole process. That cap is sized for
