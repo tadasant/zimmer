@@ -53,6 +53,10 @@ final class SessionDetailModel: ObservableObject {
     /// narrowed to this session's own. Nil until it reads, and the composer works without it.
     @Published private(set) var skills: [CatalogItem]?
     private var loadingConfigs = false
+    /// What the session has spent, in dollars at list price (`GET /api/v1/costs?session_id=`,
+    /// over its whole life): the web header's muted figure beside the id. Read beside the page
+    /// on each load, not on polls; nil until it reads, and zero draws nothing, as on the web.
+    @Published private(set) var cost: Double?
 
     init(id: Int, api: ZimmerAPI) {
         self.id = id
@@ -87,9 +91,17 @@ final class SessionDetailModel: ObservableObject {
                 report(.unauthorized)
             } catch {}
             error = nil
+            // Beside the page, not before it: the figure is a secondary signal.
+            Task { await loadCost() }
         } catch {
             fail(error)
         }
+    }
+
+    /// A ledger that will not read leaves the figure as it was; the next load tries again.
+    private func loadCost() async {
+        guard let session = detail?.session else { return }
+        if let spent = try? await api.sessionCost(session.id, createdAt: session.createdAt) { cost = spent }
     }
 
     /// The catalog and the skills, once each. One that will not read leaves the goal's words,
@@ -669,8 +681,9 @@ struct SessionDetailView: View {
             Toast(text: $model.notice, identifier: "followup.notice")
         }
         // The web UI's bubble, above the composer as its joystick is. A session started
-        // from here threads under this one, as the bubble's `parent_session_id` does.
-        .quickRouterCorner(parent: model.id)
+        // from here threads under this one, as the bubble's `parent_session_id` does, and
+        // carries this page, as the bubble carries the page it was typed on.
+        .quickRouterCorner(parent: model.id, page: model.detail.map { QuickRouterPage.session($0.session, url: app.webURL(for: model.id)) })
         .safeAreaInset(edge: .bottom) {
             if model.detail?.acceptsFollowUp ?? false { composer }
         }
@@ -877,6 +890,16 @@ struct SessionDetailView: View {
                 Text(verbatim: idAndAge(session))
                     .font(Theme.mono)
                     .foregroundStyle(Theme.inkMute)
+                // The web header's `session_cost_badge`: muted, beside the id, nothing for zero
+                // (a session not swept yet is not free). Three places under a dollar, as the web.
+                if let cost = model.cost, cost > 0 {
+                    Text(cost, format: .currency(code: "USD").precision(.fractionLength(cost < 1 ? 3 : 2)))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(Theme.inkMute)
+                        .accessibilityLabel("Estimated inference cost \(cost.formatted(.currency(code: "USD")))")
+                        .accessibilityHint("At current list prices, from Zimmer's own ledger. See Costs.")
+                        .accessibilityIdentifier("detail.cost")
+                }
                 ForEach(session.pullRequests.reversed()) { PullRequestChip(pullRequest: $0, compact: true) }
                 VisibilityLabel(session: session)
                     .font(.caption.weight(.medium))
@@ -917,6 +940,11 @@ struct SessionDetailView: View {
         if let runtime = session.agentRuntime { parts.append(runtime) }
         if let model = session.model { parts.append(Format.modelName(model)) }
         if let effort = session.effort?.level { parts.append("effort \(effort)") }
+        // The web metadata block's "Context window", read-only here (no route edits it), and
+        // only when it was set: the column default on every Claude Code session is not news.
+        if session.agentRuntime == "claude_code", let window = session.autoCompactWindow, window != NewSessionRequest.maxAutoCompactWindow {
+            parts.append("compacts at \(window.formatted()) tokens")
+        }
         return parts
     }
 
@@ -927,7 +955,7 @@ struct SessionDetailView: View {
     private func actionsMenu(_ session: SessionSummary) -> some View {
         Menu {
             Section {
-                Button { app.openQuickRouter(parent: session.id) } label: { Label("Quick Router", systemImage: "sparkles") }
+                Button { app.openQuickRouter(from: session) } label: { Label("Quick Router", systemImage: "sparkles") }
                 Button { editing = .notes } label: { Label("Edit Notes", systemImage: "note.text") }
                 Button { showingLogs = true } label: { Label("Show Logs", systemImage: "doc.plaintext") }
                 Button { showingSubagents = true } label: { Label("Subagents", systemImage: "person.2") }

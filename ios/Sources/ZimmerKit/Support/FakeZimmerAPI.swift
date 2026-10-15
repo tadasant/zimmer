@@ -930,12 +930,17 @@ extension FakeZimmerAPI {
         let model = request.model ?? root.defaultModel ?? Self.sampleConfigs.runtimeModels[runtime]?.default
         let text = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let id = all.map(\.id).max().map { $0 + 1 } ?? 1
+        // As the server: a parentless create is `api` genesis, which derives to spot unless a
+        // class was chosen; the precedence and the compaction window are kept as sent.
         var session = SessionSummary(
             id: id, title: request.title.flatMap { $0.isEmpty ? nil : $0 } ?? (text.count > 60 ? String(text.prefix(57)) + "…" : text),
             status: text.isEmpty ? .needsInput : .waiting, agentRuntime: runtime, prompt: text,
             createdAt: Date(), updatedAt: Date(), goal: request.goal,
-            priorityClass: request.schedulingClass ?? "priority", model: model, agentRoot: root.name
+            priorityClass: request.schedulingClass ?? "spot", precedence: request.precedence, model: model, agentRoot: root.name,
+            genesis: "api", autoCompactWindow: request.autoCompactWindow
         )
+        session.schedulingClass = request.schedulingClass
+        derivedClasses[id] = "spot"
         for kind in CatalogKind.allCases {
             let chosen = request.selections[kind] ?? kind.defaults(of: root)
             session.setSelection(kind, chosen)

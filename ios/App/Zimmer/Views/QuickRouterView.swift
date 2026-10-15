@@ -10,7 +10,9 @@ import ZimmerKit
 /// every other screen (`QuickRouterButton`, the web's bubble), and this sheet, which the
 /// button and the bar's sparkles open. The sheet is the web bubble's panel: the words, photos
 /// and files, and under *Advanced* the harness, the model and *Run as spot*. Opened from a
-/// session, the new one threads under it.
+/// session, the new one threads under it, and that session's page goes with the words as the
+/// bubble sends the page it was typed on. *Open the session when it starts* off is the
+/// bubble's plain *Submit*: the session starts and this screen stays.
 struct QuickRouterView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -26,6 +28,8 @@ struct QuickRouterView: View {
     @State private var spot = false
     @State private var showingAdvanced = false
     @State private var threadUnderParent = true
+    /// The web bubble's *Submit & Open* (on) or *Submit* (off).
+    @State private var opensSession = true
     /// The board's bar opened this sheet: the words go back to the bar when it closes, emptied
     /// by a start. Held here, not read off `AppModel`, so another opening cannot change it.
     @State private var openedFromBar = false
@@ -67,6 +71,29 @@ struct QuickRouterView: View {
                         .tint(Theme.accent)
                         .accessibilityIdentifier("quickrouter.parent")
                     }
+                    if let page = app.quickRouterPage {
+                        // The web bubble's "Page context is automatically included."
+                        Label {
+                            Text("Page context is included: \(page.title)")
+                        } icon: {
+                            Image(systemName: "doc.text")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(Theme.inkMute)
+                        .lineLimit(2)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("quickrouter.page")
+                    }
+                    Toggle(isOn: $opensSession) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Open the session when it starts").font(.subheadline).foregroundStyle(Theme.ink)
+                            Text("Off, it starts in the background and this screen stays.")
+                                .font(.caption)
+                                .foregroundStyle(Theme.inkSoft)
+                        }
+                    }
+                    .tint(Theme.accent)
+                    .accessibilityIdentifier("quickrouter.open")
                     advanced
                     if let error = app.error { ErrorBanner(error: error) }
                 }
@@ -208,11 +235,13 @@ struct QuickRouterView: View {
             model: modelID.isEmpty ? nil : modelID,
             spot: spot,
             parentSessionID: threadUnderParent ? app.quickRouterParent : nil,
-            attachments: attachments
+            attachments: attachments,
+            // The screen, not the thread: it goes whether or not the start threads under the session.
+            page: app.quickRouterPage
         )
         // Read before the await: a start closes the sheet before it returns.
         let fromBar = openedFromBar
-        guard await app.startQuickRouter(request) else { return }
+        guard await app.startQuickRouter(request, open: opensSession) else { return }
         started = true
         if fromBar { app.quickRouterBarHandback = "" }
     }
@@ -322,14 +351,16 @@ struct QuickRouterBar: View {
 /// The web UI's bubble: the Quick Router in the bottom-right corner of every screen that is
 /// not the board (the board has the bar). Indigo, with the mark's gold ring. The one shadow
 /// in the app, because a button floating over content needs the lift; Motet's play button
-/// is the precedent. On a session, `parent` is that session, so the new one threads under it.
+/// is the precedent. On a session, `parent` is that session, so the new one threads under it,
+/// and `page` is its page, sent as the bubble sends the page it was typed on.
 struct QuickRouterButton: View {
     @EnvironmentObject private var app: AppModel
     var parent: Int?
+    var page: QuickRouterPage?
 
     var body: some View {
         Button {
-            app.openQuickRouter(parent: parent)
+            app.openQuickRouter(parent: parent, page: page)
         } label: {
             Image(systemName: "sparkles")
                 .font(.system(size: 21, weight: .semibold))
@@ -347,13 +378,13 @@ struct QuickRouterButton: View {
 extension View {
     /// The Quick Router button in the corner, above whatever the screen keeps at its foot
     /// (a composer, a tab bar) — apply it before a `safeAreaInset` so it sits above the inset.
-    /// `parent` is the session the screen shows, when it shows one.
-    func quickRouterCorner(parent: Int? = nil) -> some View {
+    /// `parent` is the session the screen shows, when it shows one, and `page` its page.
+    func quickRouterCorner(parent: Int? = nil, page: QuickRouterPage? = nil) -> some View {
         // The scroll content keeps room at its foot, so the last row or message can be
         // scrolled clear of the button rather than living under it.
         contentMargins(.bottom, 76, for: .scrollContent)
             .overlay(alignment: .bottomTrailing) {
-                QuickRouterButton(parent: parent)
+                QuickRouterButton(parent: parent, page: page)
                     .padding(.trailing, Theme.margin)
                     .padding(.bottom, 14)
             }
