@@ -887,12 +887,17 @@ struct SessionDetailView: View {
                 Button { editing = .goal } label: { Label("Modify Goal", systemImage: "flag") }
                 Button { choosingModel = true } label: { Label("Model: \(session.model ?? "default")", systemImage: "cpu") }
                     .accessibilityIdentifier("detail.model")
-                // One item a kind, named as the web page's editors are, rather than a submenu.
-                ForEach(CatalogKind.allCases) { kind in
-                    Button { editingCatalog = kind } label: {
-                        Label("Modify \(kind.label) (\(kind.selection(in: session).count))", systemImage: kind.symbol)
+                // One submenu, so the menu stays short enough that its last items show; each
+                // item named as the web page's editors are. The page's rows are the main way in.
+                Menu {
+                    ForEach(CatalogKind.allCases) { kind in
+                        Button { editingCatalog = kind } label: {
+                            Label("Modify \(kind.label) (\(kind.selection(in: session).count))", systemImage: kind.symbol)
+                        }
+                        .accessibilityIdentifier("menu.catalog.\(kind.rawValue)")
                     }
-                    .accessibilityIdentifier("menu.catalog.\(kind.rawValue)")
+                } label: {
+                    Label("Modify MCP Servers, Skills, Hooks, Plugins", systemImage: "puzzlepiece.extension")
                 }
                 if let effort = session.effort, !effort.levels.isEmpty {
                     let modelDefault = effort.default.map { "Model default (\($0))" } ?? "Model default"

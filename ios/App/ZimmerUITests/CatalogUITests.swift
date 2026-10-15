@@ -43,8 +43,9 @@ final class CatalogUITests: XCTestCase {
         sonnet.tap()
         XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["detail.metadata"], "sonnet"))
 
-        // Straight from the session menu, one item a kind.
+        // From the session menu's submenu, an item a kind.
         actions.tap()
+        app.buttons["Modify MCP Servers, Skills, Hooks, Plugins"].firstMatch.tap()
         let skills = app.buttons["menu.catalog.skills"].firstMatch
         XCTAssertTrue(skills.waitForExistence(timeout: timeout))
         XCTAssertTrue(skills.label.contains("Modify Skills (0)"))
@@ -56,6 +57,7 @@ final class CatalogUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["followup.notice"].waitForExistence(timeout: timeout), "the change is confirmed")
 
         actions.tap()
+        app.buttons["Modify MCP Servers, Skills, Hooks, Plugins"].firstMatch.tap()
         let after = app.buttons["menu.catalog.skills"].firstMatch
         XCTAssertTrue(after.waitForExistence(timeout: timeout))
         XCTAssertTrue(after.label.contains("Modify Skills (1)"))
