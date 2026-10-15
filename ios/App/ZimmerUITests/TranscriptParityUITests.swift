@@ -55,6 +55,37 @@ final class TranscriptParityUITests: XCTestCase {
         attachScreenshot(app, named: "block-markdown")
     }
 
+    /// A link in an agent's words — here a bare signed URL, the kind a person wants to paste
+    /// somewhere else — offers Copy Link on a long press, and what it copies pastes whole.
+    func test_a_link_offers_copy_link_on_a_long_press() throws {
+        UIPasteboard.general.string = ""
+        let url = "https://files.example.com/pr-1293/composer.png?X-Amz-Signature=4f2c9a"
+        let app = launch(["-ZimmerFixtureOpenSession", "1048"])
+        let link = app.links.matching(NSPredicate(format: "label CONTAINS %@", "files.example.com")).firstMatch
+        XCTAssertTrue(link.waitForExistence(timeout: timeout), "a bare URL is a link")
+        XCTAssertTrue(app.links.matching(NSPredicate(format: "label == %@", "the diff")).firstMatch.exists, "a written link is one too")
+        scrollUntilHittable(app, link)
+        link.press(forDuration: 1.5)
+        let copy = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Copy Link")).firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: timeout), "the long press offers Copy Link")
+        attachScreenshot(app, named: "copy-link")
+        copy.tap()
+
+        // 1048 is archived, so it has no composer: the copy is pasted into 1035's. The
+        // simulator's pasteboard outlives the launch.
+        app.terminate()
+        let other = launch(["-ZimmerFixtureOpenSession", "1035"])
+        let field = other.descendants(matching: .any)["followup.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: timeout))
+        field.tap()
+        field.press(forDuration: 1.2)
+        let paste = pasteCommand(other)
+        XCTAssertTrue(paste.waitForExistence(timeout: timeout), "the edit menu offers Paste")
+        paste.tap()
+        let pasted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", url), object: field)
+        XCTAssertEqual(XCTWaiter().wait(for: [pasted], timeout: timeout), .completed, "the pasteboard holds the whole URL")
+    }
+
     /// 1035 carries three catalog skills; two are a person's to invoke. "/" lists those two,
     /// typing narrows them, and a tap puts the command in the draft.
     func test_typing_a_slash_offers_the_sessions_skills_and_a_tap_inserts_one() throws {
@@ -179,5 +210,9 @@ final class TranscriptParityUITests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+        // Beside the result bundle too, where a pull request can take it from the artifact.
+        if let directory = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"], !directory.isEmpty {
+            try? app.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: directory).appendingPathComponent("test-\(name).png"))
+        }
     }
 }

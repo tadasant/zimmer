@@ -380,10 +380,11 @@ public actor FakeZimmerAPI: ZimmerAPI {
                 ConversationMessage(id: 1, role: .assistant, content: "Production runs **Postgres 16**; staging is on 15. Two ways to go:\n\n- Match production: `pg_upgrade` to 16, ten minutes, no surprises.\n- Try 17 first on staging, so production's upgrade is rehearsed.\n\nThe upgrade itself is one command either way:\n\n```sh\nbin/rails db:upgrade -- --target 16\n```\n\nShould staging match it, or try 17 first?", timestamp: ago(41)),
             ],
             // A fresh-eyes review as agents write them: headings, a fenced block, a nested
-            // list, a table and a quote. What the transcript's markdown has to draw.
+            // list, a table, a quote, and a bare signed URL beside a written link. What the
+            // transcript's markdown has to draw.
             1048: [
                 ConversationMessage(id: 0, role: .user, content: "Review #1293 with fresh eyes.", timestamp: ago(120)),
-                ConversationMessage(id: 1, role: .assistant, content: "## Review of #1293\n\nOne finding is **blocking**; the rest are *nits*.\n\n### The corner button covers Send\n\nOn a small phone `quickRouterCorner()` sits over the composer:\n\n```swift\n.overlay(alignment: .bottomTrailing) { QuickRouterButton() }\n```\n\n- Lift it above the safe area\n  - as the web does\n- Re-shoot both appearances\n\n| Check | Result |\n| --- | --- |\n| Build | pass |\n| UI tests | 2 failed |\n\n> Fix the overlay first; the nits can wait.", timestamp: ago(60)),
+                ConversationMessage(id: 1, role: .assistant, content: "## Review of #1293\n\nOne finding is **blocking**; the rest are *nits*.\n\n### The corner button covers Send\n\nOn a small phone `quickRouterCorner()` sits over the composer:\n\n```swift\n.overlay(alignment: .bottomTrailing) { QuickRouterButton() }\n```\n\n- Lift it above the safe area\n  - as the web does\n- Re-shoot both appearances\n\n| Check | Result |\n| --- | --- |\n| Build | pass |\n| UI tests | 2 failed |\n\n> Fix the overlay first; the nits can wait.\n\nThe screenshot is https://files.example.com/pr-1293/composer.png?X-Amz-Signature=4f2c9a and [the diff](https://github.com/tadasant/zimmer/pull/1293/files) has the rest.", timestamp: ago(60)),
             ],
             1044: [
                 ConversationMessage(id: 0, role: .user, content: "Zimmer iOS still doesn't have parity with PWA. There is no quick router in the corner of every screen, and it should be the most prominent thing on the main screen. With real data the detail page is too verbose and hard to parse. Make it more information dense. Do an extensive audit for parity and design, then implement it as a series of standalone slices.", timestamp: ago(3_000)),

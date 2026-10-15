@@ -5,24 +5,35 @@ import ZimmerKit
 /// headings, paragraphs, lists that nest, quotes, tables, rules and fenced code, each block
 /// drawn as a block. Inside them, emphasis, code spans and links are inline markdown. A code
 /// block or a table wider than the screen scrolls sideways in its own box, so nothing in a
-/// message can widen the page.
+/// message can widen the page. A link, written as one or bare, opens on a tap and offers
+/// Copy Link and Share on a long press.
 struct MarkdownText: View {
     /// The text, already cut into blocks (`MarkdownBlock.blocks(of:)`).
     let blocks: [MarkdownBlock]
-    var proseFont: Font = .subheadline
+    /// Tool traffic's monospaced face, rather than the prose face.
+    var monospaced = false
     var proseColor: Color = Theme.ink
 
     var body: some View {
-        MarkdownBlocks(blocks: blocks, style: MarkdownStyle(font: proseFont, color: proseColor))
+        MarkdownBlocks(blocks: blocks, style: MarkdownStyle(monospaced: monospaced, color: proseColor))
     }
 }
 
 /// The face and ink of the prose in a message: a quote softens it, tool traffic is monospaced.
 struct MarkdownStyle {
-    var font: Font
+    var monospaced: Bool
     var color: Color
     /// How many lists deep, for the bullet: •, ◦, ▪.
     var listDepth = 0
+
+    var font: Font { monospaced ? Theme.mono : .subheadline }
+
+    /// The same face for UIKit, which draws the paragraphs that hold links.
+    var uiFont: UIFont {
+        monospaced
+            ? .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular)
+            : .preferredFont(forTextStyle: .subheadline)
+    }
 }
 
 private struct MarkdownBlocks: View {
@@ -57,16 +68,24 @@ private struct MarkdownBlockView: View {
             .accessibilityAddTraits(.isHeader)
             .accessibilityIdentifier("markdown.heading")
         case let .paragraph(text):
-            Text(MarkdownInline.transcript(text))
-                .font(style.font)
-                .foregroundStyle(style.color)
+            let attributed = MarkdownInline.transcript(text)
+            if attributed.runs.contains(where: { $0.link != nil }) {
+                // SwiftUI's Text opens a link and offers nothing on a long press; a text view
+                // gives the system's link menu, with Copy Link.
+                LinkText(text: style.attributed(attributed))
+                    .accessibilityIdentifier("markdown.links")
+            } else {
+                Text(attributed)
+                    .font(style.font)
+                    .foregroundStyle(style.color)
+            }
         case let .code(code, _):
             CodeBlock(code: code)
         case let .list(list):
             MarkdownListView(list: list, style: style)
         case let .quote(blocks):
             // The web's blockquote: a bar in the accent down the left, the words softened.
-            MarkdownBlocks(blocks: blocks, style: MarkdownStyle(font: style.font, color: Theme.inkSoft, listDepth: style.listDepth))
+            MarkdownBlocks(blocks: blocks, style: MarkdownStyle(monospaced: style.monospaced, color: Theme.inkSoft, listDepth: style.listDepth))
                 .padding(.leading, 12)
                 .padding(.vertical, 2)
                 .overlay(alignment: .leading) {
@@ -105,7 +124,7 @@ private struct MarkdownListView: View {
                         .font(style.font.monospacedDigit())
                         .foregroundStyle(Theme.inkSoft)
                         .frame(minWidth: list.ordered ? 18 : 10, alignment: .trailing)
-                    MarkdownBlocks(blocks: item, style: MarkdownStyle(font: style.font, color: style.color, listDepth: style.listDepth + 1), spacing: 4)
+                    MarkdownBlocks(blocks: item, style: MarkdownStyle(monospaced: style.monospaced, color: style.color, listDepth: style.listDepth + 1), spacing: 4)
                 }
             }
         }
@@ -236,6 +255,61 @@ extension MarkdownInline {
             if untouched { attributed[start..<end].link = match.url }
         }
         return attributed
+    }
+}
+
+/// A paragraph with links in it, drawn by a `UITextView` for the system's link handling: a tap
+/// opens the link, and a long press shows its menu — Open Link, Copy Link, Share. The text can
+/// be selected too. Sized like a `Text`: as wide as its longest line, up to the width offered.
+private struct LinkText: UIViewRepresentable {
+    let text: NSAttributedString
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.isScrollEnabled = false
+        view.backgroundColor = .clear
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.linkTextAttributes = [.foregroundColor: UIColor(Theme.accent)]
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        if view.attributedText != text { view.attributedText = text }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        let offered = proposal.width.flatMap { $0.isFinite ? $0 : nil }
+        let fitted = uiView.sizeThatFits(CGSize(width: offered ?? .greatestFiniteMagnitude, height: .greatestFiniteMagnitude))
+        let width = min(fitted.width.rounded(.up), offered ?? .greatestFiniteMagnitude)
+        return CGSize(width: width, height: fitted.height.rounded(.up))
+    }
+}
+
+extension MarkdownStyle {
+    /// Inline markdown in UIKit's attributes, for `LinkText`: what SwiftUI's Text reads from the
+    /// presentation intents — bold, italic, code, strikethrough — set as fonts and styles.
+    func attributed(_ attributed: AttributedString) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let base = uiFont
+        let ink = UIColor(color)
+        for run in attributed.runs {
+            let intent = run.inlinePresentationIntent ?? []
+            var font = intent.contains(.code) ? UIFont.monospacedSystemFont(ofSize: base.pointSize, weight: .regular) : base
+            var traits = font.fontDescriptor.symbolicTraits
+            if intent.contains(.stronglyEmphasized) { traits.insert(.traitBold) }
+            if intent.contains(.emphasized) { traits.insert(.traitItalic) }
+            if let descriptor = font.fontDescriptor.withSymbolicTraits(traits) { font = UIFont(descriptor: descriptor, size: font.pointSize) }
+            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
+            if intent.contains(.code) { attributes[.backgroundColor] = UIColor(Theme.well) }
+            if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            if let link = run.link { attributes[.link] = link }
+            result.append(NSAttributedString(string: String(attributed[run.range].characters), attributes: attributes))
+        }
+        return result
     }
 }
 
