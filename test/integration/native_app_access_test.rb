@@ -144,8 +144,6 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
 
     post "/api/v1/notifications/push", params: { title: "t", body: "b" }, headers: headers
     assert_response :unauthorized
-    post "/api/v1/costs/backfill", headers: headers
-    assert_response :unauthorized
     post "/api/v1/model_catalog_entries", params: { runtime: "claude_code", model: "x" }, headers: headers
     assert_response :unauthorized
     # A gate's, a groomer's and an analyzer's writes: no form on any page offers them.
@@ -189,10 +187,16 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_not Trigger.exists?(trigger.id)
   end
 
-  test "the app runs every operator action on the health page, in a cooldown bucket of its own" do
+  test "the app asks for the ledger sweep the Costs page's Sweep now button asks for" do
+    post "/api/v1/costs/backfill", headers: bearer(token)
+    assert_response :success
+    assert_equal true, JSON.parse(response.body)["queued"]
+  end
+
+  test "the app runs every operator action on the health page, in a cooldown bucket apart from the API key's, recorded as the person" do
     ErrorReporter.stubs(:report_message)
-    headers = bearer(token)
     original_cache = Rails.cache
+    headers = bearer(token)
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
     GoodJob::Job.delete_all
 

@@ -14,9 +14,11 @@
 # access token whose grant belongs to the built-in first-party client
 # (OauthServer::NativeApp). It is opt-in per controller, and optionally per
 # action (`accepts_native_app_tokens only: %i[index show]`), so the phone's
-# credential opens the surfaces the app drives and nothing else; a token any
-# other OAuth client holds is refused here exactly as a bad key is, and so is
-# the app's own token on an action its controller did not name.
+# credential opens the surfaces a signed-in person has on the web UI and
+# nothing else — a controller may open an action before the app reads it, never
+# one the web offers no person; a token any other OAuth client holds is refused
+# here exactly as a bad key is, and so is the app's own token on an action its
+# controller did not name.
 class Api::BaseController < ActionController::API
   include ControllerDatabaseRetry
 
