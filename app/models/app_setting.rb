@@ -57,6 +57,11 @@ class AppSetting < ApplicationRecord
   # this is turned on once they have been read for the wider one.
   DEFAULT_WARM_CLONE_POOL_ACTIVE_ROOTS_ENABLED = false
 
+  # Whether WarmProcessPool keeps an idle Claude Code process booted for the
+  # router root. OFF is the default: it holds ~250 MB of RAM per process, and is
+  # turned on once its claimed/missed numbers can be read on /health.
+  DEFAULT_WARM_ROUTER_PROCESS_ENABLED = false
+
   # How many sessions may run at once. The gate admits spot work in parallel up to
   # the concurrency the quota can carry, and this is the brake on that — 10 is the
   # number Tadas named. Every running session counts against it, priority included;
@@ -171,6 +176,7 @@ class AppSetting < ApplicationRecord
     default_model
     mcp_tool_search_enabled
     warm_clone_pool_active_roots_enabled
+    warm_router_process_enabled
     extension_states
     mcp_apps_enabled
     mcp_apps_allowed_servers
@@ -283,6 +289,12 @@ class AppSetting < ApplicationRecord
       DEFAULT_WARM_CLONE_POOL_ACTIVE_ROOTS_ENABLED
     end
     alias_method :warm_clone_pool_active_roots_enabled?, :warm_clone_pool_active_roots_enabled
+
+    # No persisted row exists, so no warm router process is kept.
+    def warm_router_process_enabled
+      DEFAULT_WARM_ROUTER_PROCESS_ENABLED
+    end
+    alias_method :warm_router_process_enabled?, :warm_router_process_enabled
 
     # No persisted row exists, so MCP Apps resolves to off with nothing opted in
     # — the same answer a fresh row gives, and the only one a settings read that
@@ -467,6 +479,14 @@ class AppSetting < ApplicationRecord
     return DEFAULT_WARM_CLONE_POOL_ACTIVE_ROOTS_ENABLED unless has_attribute?(:warm_clone_pool_active_roots_enabled)
 
     !!self[:warm_clone_pool_active_roots_enabled]
+  end
+
+  # Whether a warm router process is kept on this row. The shipped default when
+  # the column isn't present yet, as above.
+  def warm_router_process_enabled?
+    return DEFAULT_WARM_ROUTER_PROCESS_ENABLED unless has_attribute?(:warm_router_process_enabled)
+
+    !!self[:warm_router_process_enabled]
   end
 
   # Whether session-scoped credentials are on for this row. Returns the shipped

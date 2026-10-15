@@ -105,6 +105,16 @@ class ExperimentalSettingsRegistry
                    "Warm clone pool for what is pooled and how often a start claimed a clone.",
       attribute: :warm_clone_pool_active_roots_enabled,
       default_on: -> { AppSetting::DEFAULT_WARM_CLONE_POOL_ACTIVE_ROOTS_ENABLED }
+    ),
+    Setting.new(
+      key: "warm_router_process",
+      title: "Warm Quick Router process",
+      description: "Keep one idle Claude Code process booted for the Quick Router, with its MCP servers " \
+                   "connected, so a request skips process start and CLI boot. It makes no API call and " \
+                   "spends no quota while idle, and the request is its first turn. Costs about 250 MB of " \
+                   "RAM. See /health → Warm router process for how often a request claimed it.",
+      attribute: :warm_router_process_enabled,
+      default_on: -> { AppSetting::DEFAULT_WARM_ROUTER_PROCESS_ENABLED }
     )
   ].freeze
 
