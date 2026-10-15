@@ -30,8 +30,9 @@ name: iOS UI tests
 # `github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository`
 # — is about fork PULL REQUESTS reaching a runner. There are none here: a push to `main` and
 # `workflow_dispatch` are the only triggers, and only somebody with write access to this
-# repository can do either, so the second half of that expression would never be needed. What this needs
-# instead is the second half of the same idea, and it is the job's `if:` below: refuse any
+# repository can do either. That expression is also false on every dispatch, so it would
+# stop the on-demand run from ever starting. What this needs instead is the other half of
+# the same idea, and it is the job's `if:` below: refuse any
 # repository but this one, so a fork that copies this file runs nothing. NEVER add
 # `pull_request` or `pull_request_target` here — a fork PR would then execute fork code,
 # and the `ci.yml` fork guard would have to come with it.
@@ -44,7 +45,8 @@ name: iOS UI tests
 #
 # THE COST. It runs on a GitHub-hosted macOS runner, which GitHub bills at roughly ten
 # times the Linux multiplier — free on a public repository, which this is, and not free on
-# a private one. A run is about 50 minutes: one Xcode build, the suite, and the photographs.
+# a private one. A run is about 50 minutes: one Xcode build, then about 45 of UI tests and
+# photographs.
 
 on:
   # A push carries no inputs: it runs Staging against the reserved-by-RFC-2606
@@ -78,12 +80,15 @@ on:
 permissions:
   contents: read
 
-# One run at a time. Two concurrent runs would each want a simulator and the same
-# artifact name; `cancel-in-progress: true` because a newer push or dispatch supersedes an
-# older one: the run worth finishing is the one on the newest code.
+# One run at a time per trigger. A dispatch cancels an older dispatch, which nobody is
+# waiting on mid-run. A push run is never cancelled: it is the post-merge gate for every UI
+# test the pull request's smoke run skipped, and `alert-ci-failure.yml` is silent on a
+# cancelled run, so a merge landing inside the previous run's ~50 minutes would otherwise
+# hide a red suite on `main` for good. Pushes queue instead; GitHub keeps only the newest
+# pending one, so the queue is never more than one deep.
 concurrency:
-  group: ios-ui-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: ios-ui-tests-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   ui-test:

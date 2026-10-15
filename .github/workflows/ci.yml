@@ -638,8 +638,10 @@ jobs:
     needs: ios-changes
     runs-on: macos-latest
     # About 12 minutes: an archive, the ZimmerKit tests, one simulator build and the smoke
-    # run. The full UI suite, about 45 minutes on its own, is `ios-ui-tests.yml`.
-    timeout-minutes: 30
+    # run. The headroom is for a pull request that touches several UI test files, whose
+    # classes the smoke run adds at roughly 35 seconds a test. The full UI suite, about 45
+    # minutes on its own, is `ios-ui-tests.yml`.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -675,7 +677,7 @@ jobs:
         # list, the build reporting the environment and server it was built with, and one
         # session opened, answered and trashed — plus every class in a UI test file this
         # change touches, so a new or edited UI test is proven before it merges. It records
-        # a video; it takes no screenshots.
+        # a video and a picture of the last screen; there is no photograph pass.
         #
         # The other UI tests and the photographs of every key screen are
         # `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**`: 57 tests

@@ -102,7 +102,7 @@ anything under `ios/**` or the three iOS workflows moved, and fails open to "bui
 `ui-test --smoke --configuration Staging --api-base-url https://ui-test.invalid`, adding an
 `--also` for each UI test file the change touches, and keeps the `ios-ui-test` artifact (video,
 result bundle, and the app's crash reports in `crashes/`, whose crashed thread is also printed in
-the job's log). It does not run `build-app`: `ui-test` builds the same simulator app.
+the job's log). It does not run `build-app`: `ui-test` builds the same app for the simulator it runs on.
 `ios_swift_linux` (self-hosted) runs `ci-swift` on Linux. All three carry the fork-PR guard and are
 in `all-checks-pass`. `ios-ui-tests.yml` is the full run, every UI test and every screenshot, on
 each push to `main` that touches `ios/**`, and on demand: against a branch
