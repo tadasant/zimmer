@@ -263,6 +263,8 @@ if [ -d "$app" ]; then
   # A code block with its Copy button, and the composer's "/" offering the session's skills.
   shoot session-detail-code -ZimmerFixture -ZimmerFixtureOpenSession 1035
   shoot composer-slash -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureSlash
+  # Block markdown in a transcript: headings, a code block, a nested list, a table, a quote.
+  shoot session-detail-markdown -ZimmerFixture -ZimmerFixtureOpenSession 1048
   shoot sessions-trash -ZimmerFixture -ZimmerFixtureFilter archived
   shoot session-detail-trashed -ZimmerFixture -ZimmerFixtureOpenSession 1019
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
@@ -291,6 +293,7 @@ if [ -d "$app" ]; then
   shoot session-detail-custom-snooze-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCustomSnooze
   shoot session-detail-code-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035
   shoot composer-slash-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureSlash
+  shoot session-detail-markdown-dark -ZimmerFixture -ZimmerFixtureOpenSession 1048
   shoot new-session-dark -ZimmerFixture -ZimmerFixtureNewSession
   shoot inbox-dark -ZimmerFixture -ZimmerFixtureTab inbox
   shoot triggers-dark -ZimmerFixture -ZimmerFixtureTab triggers
