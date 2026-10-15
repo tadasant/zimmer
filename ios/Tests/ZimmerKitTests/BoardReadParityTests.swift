@@ -42,12 +42,12 @@ final class BoardReadParityTests: XCTestCase {
     func testTheFormsFieldsRideOnTheCreate() async throws {
         let (api, transport) = client([{ _ in Fixtures.json(201, ["session": ["id": 78, "status": "waiting"]]) }])
         let request = NewSessionRequest(
-            agentRoot: "zimmer", prompt: "Sweep the dependencies", schedulingClass: NewSessionRequest.defaultSchedulingClass,
-            precedence: 70, autoCompactWindow: 400_000, idempotencyKey: "k-2"
+            agentRoot: "zimmer", prompt: "", precedence: 70, autoCompactWindow: 400_000, cloneOnly: true, idempotencyKey: "k-2"
         )
         _ = try await api.createSession(request)
         let sent = try body(try XCTUnwrap(transport.sent.first))
-        XCTAssertEqual(sent["scheduling_class"] as? String, "priority", "the web form's default, sent rather than derived from the `api` genesis")
+        XCTAssertEqual(sent["clone_only"] as? Bool, true)
+        XCTAssertEqual(sent["prompt"] as? String, "", "the server refuses a prompt beside clone_only")
         XCTAssertEqual(sent["precedence"] as? Int, 70)
         XCTAssertEqual(sent["auto_compact_window"] as? Int, 400_000)
     }
@@ -56,21 +56,23 @@ final class BoardReadParityTests: XCTestCase {
         let sent = NewSessionRequest(agentRoot: "zimmer", prompt: "x").body
         XCTAssertNil(sent["precedence"], "blank is the server's 0, as the web form leaves it")
         XCTAssertNil(sent["auto_compact_window"], "blank is the column default")
-        XCTAssertNil(sent["scheduling_class"], "the request itself derives; the form chooses the default")
-        XCTAssertEqual(NewSessionRequest.defaultSchedulingClass, "priority")
+        XCTAssertNil(sent["clone_only"])
+        XCTAssertNil(sent["scheduling_class"], "none sent: the server classes the app's create priority")
     }
 
-    func testACloneOnlyCreateSendsNoPromptAndTheFixtureStartsNoTurn() async throws {
+    func testTheFixtureCreatesAsTheServerDoesForTheApp() async throws {
         let fake = FakeZimmerAPI()
-        let session = try await fake.createSession(NewSessionRequest(agentRoot: "zimmer", prompt: "", precedence: 70, autoCompactWindow: 400_000))
+        let session = try await fake.createSession(NewSessionRequest(agentRoot: "zimmer", prompt: "", precedence: 70, autoCompactWindow: 400_000, cloneOnly: true))
         XCTAssertEqual(session.status, .needsInput, "a clone set up with no first turn waits on a person")
         XCTAssertEqual(session.precedence, 70)
         XCTAssertEqual(session.autoCompactWindow, 400_000)
         XCTAssertEqual(session.genesis, "api")
-        XCTAssertEqual(session.priorityClass, "spot", "no class chosen: the `api` genesis derives to spot, as on the server")
-        let chosen = try await fake.createSession(NewSessionRequest(agentRoot: "zimmer", prompt: "Go", schedulingClass: "priority"))
-        XCTAssertEqual(chosen.priorityClass, "priority")
-        XCTAssertEqual(chosen.schedulingClass, "priority")
+        XCTAssertEqual(session.priorityClass, "priority", "no class sent: the app's create is written priority, as on the server")
+        XCTAssertEqual(session.schedulingClass, "priority")
+        await XCTAssertThrowsAsync(try await fake.createSession(NewSessionRequest(agentRoot: "zimmer", prompt: "Go", cloneOnly: true)), "a prompt beside clone_only is refused")
+        let chosen = try await fake.createSession(NewSessionRequest(agentRoot: "zimmer", prompt: "Go", schedulingClass: "spot"))
+        XCTAssertEqual(chosen.priorityClass, "spot", "a class the app sent stands")
+        XCTAssertEqual(chosen.status, .waiting)
     }
 
     // MARK: - A session's cost
