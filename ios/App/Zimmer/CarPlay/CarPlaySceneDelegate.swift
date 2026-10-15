@@ -29,6 +29,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     private var refreshTask: Task<Void, Never>?
     private var conversation: Task<Void, Never>?
     private let voice = VoiceIO()
+    /// Live Voice: start or resume a conversation from the list (CarPlayLive).
+    private let live = CarPlayLive()
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay")
 
     private enum VoiceState {
@@ -41,6 +43,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         didConnect interfaceController: CPInterfaceController
     ) {
         self.interfaceController = interfaceController
+        live.interfaceController = interfaceController
         let loading = CPListTemplate(title: "Zimmer", sections: [])
         loading.emptyViewSubtitleVariants = ["Checking your sessions…"]
         interfaceController.setRootTemplate(loading, animated: false, completion: nil)
@@ -71,6 +74,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             showMessage(refreshFailure!)
             return
         }
+        await live.refresh()
         do {
             sessions = try await connection.api.sessions(.needsInput)
             summaries = [:]
@@ -99,7 +103,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             }
             return item
         }
-        let template = CPListTemplate(title: "Needs you", sections: [CPListSection(items: items)])
+        let template = CPListTemplate(title: "Needs you", sections: [CPListSection(items: items), live.section()])
         template.emptyViewSubtitleVariants = ["Nothing needs you right now."]
         template.trailingNavigationBarButtons = [
             CPBarButton(title: "Talk") { [weak self] _ in self?.startConversation() },
