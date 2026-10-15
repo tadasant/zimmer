@@ -46,7 +46,8 @@ final class AppEnvironment {
             edgeStore = InMemoryEdgeTokenStore()
             let auth = AuthSession(store: tokenStore, transport: transport)
             connection = Connection(origins: signedIn?.origins, auth: auth, api: FakeZimmerAPI(live: arguments.contains("-ZimmerFixtureLive"),
-                                                                                         longTranscript: arguments.contains("-ZimmerFixtureLongTranscript")), edge: nil)
+                                                                                         longTranscript: arguments.contains("-ZimmerFixtureLongTranscript"),
+                                                                                         degraded: arguments.contains("-ZimmerFixtureDegraded")), edge: nil)
             isFixture = true
             return
         }
