@@ -194,7 +194,7 @@ costs.
 | G22 | Triggers beyond on/off | Show page toggles for *Enqueue messages* and *Resuscitate archived*; create and edit | List, on/off, invoke | Yes | H: #1316 (app), #1318 (auth: the two switches); create/edit stays in the browser by choice |
 | G23 | Costs drill-down | Custom date range, scope to an agent root or a session, burn rate | Fixed windows, fleet only | Burn rate: yes | H: #1316 (app), #1319 (server: burn rate) |
 | G24 | Outcomes, backlog, gate decisions | Pages of their own | Not in the app | Yes (no token reach) | Not planned: operator surfaces, *Open in browser* |
-| G25 | Settings, API keys, inference, connectors, models, Health's operator actions | Admin pages | Browser | — | Browser by choice |
+| G25 | Settings (Sign-in, API keys and connections, Deployment Information); inference, connectors, models, Health's operator actions | Admin pages | Settings and API keys: in the app; the rest: browser | — | The rest: browser by choice |
 
 ## Server gaps found while building the slices
 
