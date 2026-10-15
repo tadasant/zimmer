@@ -21,6 +21,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var triggerList: [TriggerSummary] = FakeZimmerAPI.sampleTriggers()
     /// The sessions each trigger has made, oldest first.
     private var triggerSessions: [Int: [Int]] = [5: [1031]]
+    /// The variables each trigger was last run by hand with, for a test to read back.
+    public private(set) var triggerVariables: [Int: [String: String]] = [:]
+    private let degraded: Bool
     /// What each follow-up carried, newest last, so a test can see attachments arrive.
     public private(set) var sentAttachments: [Int: [[MessageAttachment]]] = [:]
     /// Every Quick Router start, in order, so a test can see what went with the words.
@@ -46,9 +49,12 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to. `longTranscript`: 1044's
     /// conversation runs to a hundred messages, so its details card is far above the newest.
+    /// `degraded`: queue recovery mode is on and network egress is degraded, so the two
+    /// site-wide banners show.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
-                longTranscript: Bool = false) {
+                longTranscript: Bool = false, degraded: Bool = false) {
         self.live = live
+        self.degraded = degraded
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
@@ -1076,10 +1082,24 @@ extension FakeZimmerAPI {
         return triggerList[index]
     }
 
-    public func invokeTrigger(_ id: Int) async throws -> TriggerInvocation {
+    public func invokeTrigger(_ id: Int, variables: [String: String]) async throws -> TriggerInvocation {
         guard let trigger = triggerList.first(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
-        // A disabled trigger can still be fired by hand, as the server allows.
-        let started = try await startQuickRouter("\(trigger.name): run now")
+        // A disabled trigger can still be fired by hand, as the server allows. The prompt is
+        // the template with its variables filled, as the server interpolates it: a variable
+        // left out reads as nothing, and {{time}} and {{date}} fill themselves.
+        let filled = variables.filter { !$0.value.isEmpty }
+        triggerVariables[id] = filled
+        var prompt = trigger.promptTemplate ?? "\(trigger.name): run now"
+        for name in TriggerSummary.placeholderNames(in: prompt) {
+            let value: String
+            switch name {
+            case "date": value = Date().formatted(.iso8601.year().month().day())
+            case "time": value = Date().formatted(.dateTime.hour().minute())
+            default: value = filled[name] ?? ""
+            }
+            prompt = prompt.replacingOccurrences(of: "{{\(name)}}", with: value).replacingOccurrences(of: "{{\(name)|untrusted}}", with: value)
+        }
+        let started = try await startQuickRouter(prompt)
         triggerSessions[id, default: []].append(started)
         if let index = triggerList.firstIndex(where: { $0.id == id }) {
             triggerList[index].lastSessionID = started
@@ -1090,13 +1110,25 @@ extension FakeZimmerAPI {
     }
 
     /// One week of spend whatever the window, narrowed as the server narrows: a root keeps
-    /// its own share of every figure, a session only its own.
+    /// its own share of every figure, a session only its own. Every section of the web page
+    /// has rows, so each can be photographed.
     public func costs(_ window: CostWindow, scope: CostScope) async throws -> CostSnapshot {
         let now = Date()
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        let roots: [CostSnapshot.Row] = [.init(label: "zimmer", costUSD: 201.4), .init(label: "zimmer-orchestrator", costUSD: 88.2), .init(label: "motet", costUSD: 80.0)]
+        func row(_ label: String, _ cost: Double, _ tokens: Int, _ calls: Int, details: [CostSnapshot.Row] = []) -> CostSnapshot.Row {
+            CostSnapshot.Row(label: label, costUSD: cost, tokens: tokens, apiCalls: calls, details: details)
+        }
+        let features: [CostSnapshot.Row] = [
+            row("skills", 61.2, 2_900_000, 0), row("mcp_schemas", 48.9, 2_100_000, 0), row("transcript_replay", 30.1, 1_400_000, 0),
+            row("agents_md", 12.4, 540_000, 0), row("hooks", 4.8, 210_000, 0),
+        ]
+        let roots: [CostSnapshot.Row] = [
+            row("zimmer", 201.4, 9_412_000, 1_204, details: features),
+            row("zimmer-orchestrator", 88.2, 3_950_000, 512, details: [row("skills", 24.1, 1_100_000, 0), row("mcp_schemas", 19.6, 870_000, 0)]),
+            row("motet", 80.0, 3_120_000, 441, details: [row("transcript_replay", 31.0, 1_300_000, 0)]),
+        ]
         let fleet = roots.reduce(0) { $0 + $1.costUSD }
         let top: [CostSnapshot.TopSession] = [
             .init(sessionID: 1042, costUSD: 23.81, tokens: 1_204_331, title: "Add a CarPlay scene to the iOS app", apiCalls: 212),
@@ -1114,37 +1146,69 @@ extension FakeZimmerAPI {
             shownTop = root == "zimmer" ? top : []
         case let .session(id):
             shownTop = top.filter { $0.sessionID == id }
-            shownRoots = shownTop.isEmpty ? [] : [.init(label: "zimmer", costUSD: shownTop[0].costUSD)]
+            shownRoots = shownTop.isEmpty ? [] : [row("zimmer", shownTop[0].costUSD, shownTop[0].tokens ?? 0, shownTop[0].apiCalls ?? 0)]
             share = (shownTop.first?.costUSD ?? 0) / fleet
+        }
+        func scaled(_ rows: [CostSnapshot.Row]) -> [CostSnapshot.Row] {
+            rows.map { row($0.label, $0.costUSD * share, Int(Double($0.tokens ?? 0) * share), Int(Double($0.apiCalls ?? 0) * share), details: scaled($0.details)) }
         }
         let spend = [41.2, 55.0, 38.7, 62.3, 70.1, 48.9, 53.4].map { $0 * share }
         let daysShown = spend.enumerated().map { offset, cost in
-            CostSnapshot.Day(day: formatter.string(from: now.addingTimeInterval(Double(offset - spend.count + 1) * 86_400)), costUSD: cost)
+            CostSnapshot.Day(day: formatter.string(from: now.addingTimeInterval(Double(offset - spend.count + 1) * 86_400)), costUSD: cost,
+                             sessionCostUSD: cost * 0.94, adhocCostUSD: cost * 0.06, tokens: Int(cost * 44_000), apiCalls: Int(cost * 5.8),
+                             roots: scaled([row("zimmer", cost * 0.55, 0, 0), row("motet", cost * 0.22, 0, 0)]),
+                             models: scaled([row("claude-opus-4-5", cost * 0.9, 0, 0), row("claude-sonnet-4-5", cost * 0.1, 0, 0)]))
         }
+        let total = spend.reduce(0, +)
         let bounds: (Date, Date)
         switch window {
         case let .days(days): bounds = (now.addingTimeInterval(-Double(days) * 86_400), now)
         case let .range(from, to): bounds = (from, to.addingTimeInterval(86_399))
         }
+        let adhocCost = scope.isFleet ? 14.3 : (share * 14.3)
+        let off = CostSnapshot.Experiment.Cohort(sessions: 38, costUSD: 212.4, tokens: 8_900_000, apiCalls: 1_380, costPerCall: 0.1539, costPerSession: 5.59, tokensPerCall: 6_449)
+        let on = CostSnapshot.Experiment.Cohort(sessions: 41, costUSD: 198.7, tokens: 9_100_000, apiCalls: 1_495, costPerCall: 0.1329, costPerSession: 4.85, tokensPerCall: 6_087)
         return CostSnapshot(
-            from: bounds.0, to: bounds.1, scope: scope, totalUSD: spend.reduce(0, +), days: daysShown, agentRoots: shownRoots,
-            models: [.init(label: "opus", costUSD: 330.1 * share), .init(label: "sonnet", costUSD: 39.5 * share)],
-            topSessions: shownTop
+            from: bounds.0, to: bounds.1, scope: scope,
+            totals: .init(costUSD: total, sessionCostUSD: total - adhocCost, adhocCostUSD: adhocCost, tokens: Int(total * 44_000), apiCalls: Int(total * 5.8)),
+            coverage: .init(status: "complete", complete: true, progressPct: 100, directoriesDone: 212, directoriesTotal: 212, filesScanned: 18_440,
+                            finishedAt: now.addingTimeInterval(-3 * 3600), lastRanAt: now.addingTimeInterval(-3 * 3600),
+                            coversSince: now.addingTimeInterval(-140 * 86_400), coversUntil: now.addingTimeInterval(-7 * 60)),
+            breakdown: [
+                .init(component: "cache read", costUSD: total * 0.46, share: 0.46), .init(component: "cache write (5m)", costUSD: total * 0.27, share: 0.27),
+                .init(component: "output", costUSD: total * 0.19, share: 0.19), .init(component: "fresh input", costUSD: total * 0.07, share: 0.07),
+                .init(component: "web search", costUSD: total * 0.01, share: 0.01),
+            ],
+            days: daysShown, agentRoots: scaled(shownRoots),
+            models: scaled([row("claude-opus-4-5", 330.1, 14_200_000, 1_610), row("claude-sonnet-4-5", 39.5, 2_280_000, 547)]),
+            threadKinds: scaled([row("main", 301.2, 12_900_000, 1_702), row("subagent", 68.4, 3_580_000, 455)]),
+            runtimes: scaled([row("claude_code", 355.3, 15_100_000, 2_011), row("pi", 14.3, 980_000, 146), row("codex", 0, 402_000, 38)]),
+            adhocSources: share > 0 ? scaled([row("session_title", 9.1, 310_000, 412), row("push_summary", 5.2, 180_000, 296)]) : [],
+            features: .init(rows: scaled(features), attributedCostUSD: 157.4 * share, totalCostUSD: 355.3 * share, totalTokens: Int(15_100_000 * share),
+                            residualCostUSD: 197.9 * share, residualTokens: Int(7_950_000 * share), coverage: 0.47),
+            experiments: scope.isFleet ? [
+                .init(key: "compact_tool_results", title: "Compact tool results", description: "Trim tool output replayed into later turns.",
+                      currentValue: true, landedAt: now.addingTimeInterval(-9 * 86_400), taggedSessions: 83, taggedBackfilled: 38, taggedObserved: 45,
+                      off: off, on: on, mixed: .init(sessions: 2, costUSD: 11.3), unknown: .init(sessions: 2, costUSD: 3.1),
+                      comparison: .init(comparable: true, reason: nil, minSessions: 10, minCalls: 200, costPerCallChange: -0.137, costPerSessionChange: -0.132, tokensPerCallChange: -0.056),
+                      pairedRoots: [.init(agentRoot: "zimmer", off: off, on: on, costPerCallChange: -0.137)]),
+                .init(key: "warm_router_process", title: "Warm router process", description: "Keep an idle Claude Code process for the Quick Router.",
+                      currentValue: false, landedAt: nil, taggedSessions: 6, taggedBackfilled: 0, taggedObserved: 6,
+                      off: .init(sessions: 4, costUSD: 2.1, apiCalls: 40, costPerCall: 0.0525), on: .init(sessions: 2, costUSD: 1.4, apiCalls: 22, costPerCall: 0.0636),
+                      comparison: .init(comparable: false, reason: "too_few", minSessions: 10, minCalls: 200)),
+            ] : [],
+            topSessions: shownTop, unpricedModels: scope.isFleet ? ["gpt-5.2-codex"] : [],
+            burnRates: scope.isFleet ? [
+                .init(harness: "claude_code", model: "claude-opus-4-5", usdPerMinute: 0.212, usdPerHour: 12.72, sampleSessionCount: 20, sampleMinutes: 1_840),
+                .init(harness: "claude_code", model: "claude-sonnet-4-5", usdPerMinute: 0.048, usdPerHour: 2.88, sampleSessionCount: 20, sampleMinutes: 960),
+            ] : []
         )
     }
 
+    /// The health report in the server's own JSON, read through the same parser the client
+    /// uses, so the fixture can only show what the real report would.
     public func health() async throws -> HealthReport {
-        HealthReport(
-            overall: .init(key: "overall", status: "warning", message: "One or more warnings detected"),
-            sections: [
-                .init(key: "auth_health", status: "healthy"),
-                .init(key: "cron_health", status: "healthy"),
-                .init(key: "process_health", status: "healthy"),
-                .init(key: "session_health", status: "warning", message: "Failure rate 12% over the last day"),
-                .init(key: "system_health", status: "healthy"),
-            ],
-            generatedAt: Date()
-        )
+        try HealthReport.parse(JSONSerialization.data(withJSONObject: Self.sampleHealthJSON(now: Date(), degraded: degraded)))
     }
 
     static func sampleNotifications(now: Date = Date()) -> [InboxNotification] {
@@ -1163,11 +1227,24 @@ extension FakeZimmerAPI {
             TriggerSummary(id: 5, name: "Nightly dependency sweep", status: "enabled", agentRoot: "zimmer",
                            lastTriggeredAt: now.addingTimeInterval(-20 * 60), lastSessionID: 1031, sessionsCreated: 31,
                            conditions: [.init(type: "schedule", description: "Every day at 02:00 UTC", lastTriggeredAt: now.addingTimeInterval(-20 * 60))],
-                           reuseSession: true, enqueueMessages: true,
+                           reuseSession: true, enqueueMessages: true, skipIfPendingSession: true, missedFireCount: 2,
                            promptTemplate: "Sweep the dependencies: bump what is safe, open one PR per ecosystem, and say what you held back on {{date}}.",
-                           goal: "Open a reviewed, green PR for each bump."),
+                           goal: "Open a reviewed, green PR for each bump.",
+                           effectiveCoalesceWindowSeconds: 60, coalesceWindowInert: true, skipIfPendingSessionInert: true,
+                           firstMissedFireAt: now.addingTimeInterval(-26 * 3600), schedulingClass: nil, effectiveSchedulingClass: "spot", precedence: 40,
+                           mcpServers: ["github", "linear"], catalogSkills: ["open-pr", "wait-for-ci"], catalogPlugins: ["zimmer-ops"],
+                           unresolvedCatalogReferences: ["mcp_servers": ["linear"]]),
             TriggerSummary(id: 6, name: "Slack #zimmer mentions", status: "disabled", agentRoot: "zimmer-orchestrator",
-                           sessionsCreated: 4, conditions: [.init(type: "slack", description: "@zimmer in #zimmer")]),
+                           sessionsCreated: 4, conditions: [.init(type: "slack", description: "@zimmer in #zimmer")],
+                           coalesceWindowSeconds: 120, effectiveCoalesceWindowSeconds: 120, effectiveSchedulingClass: "priority"),
+            TriggerSummary(id: 7, name: "Slack thread triage", status: "enabled", agentRoot: "zimmer-orchestrator",
+                           lastTriggeredAt: now.addingTimeInterval(-3 * 3600), sessionsCreated: 12,
+                           conditions: [.init(type: "slack", description: "Slack: @zimmer in #support", lastTriggeredAt: now.addingTimeInterval(-3 * 3600))],
+                           maxSessionsPerMinute: 3,
+                           promptTemplate: "Triage this thread: {{text|untrusted}} from {{author}} at {{link}}. Reply in the thread and say what you did on {{date}}.",
+                           goal: "Answer the thread or hand it to a person.",
+                           effectiveCoalesceWindowSeconds: 60, schedulingClass: "priority", effectiveSchedulingClass: "priority",
+                           catalogSkills: ["open-pr"], catalogHooks: ["slack-reply"]),
         ]
     }
 }

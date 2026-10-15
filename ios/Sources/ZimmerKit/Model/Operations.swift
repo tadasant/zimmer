@@ -126,9 +126,41 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
     public var coalesceWindowSeconds: Int?
     public var promptTemplate: String?
     public var goal: String?
+    /// The window in force: the stored one, or the default it inherits.
+    public var effectiveCoalesceWindowSeconds: Int?
+    /// A window stored on a trigger no Slack condition will ever read.
+    public var coalesceWindowInert: Bool
+    /// `skipIfPendingSession` is stored but does nothing while there is a live session to re-use.
+    public var skipIfPendingSessionInert: Bool
+    /// When the first of the `missedFireCount` fires was missed.
+    public var firstMissedFireAt: Date?
+    /// The class chosen on the trigger; nil when its sessions take the default for its conditions.
+    public var schedulingClass: String?
+    /// The class its sessions actually get.
+    public var effectiveSchedulingClass: String?
+    /// Stamped on the sessions it spawns; higher is worked first.
+    public var precedence: Int?
+    public var mcpServers: [String]
+    public var catalogSkills: [String]
+    public var catalogHooks: [String]
+    public var catalogPlugins: [String]
+    /// The names in the four lists above the catalog can no longer resolve, by list
+    /// (`mcp_servers`, `catalog_skills`, `catalog_hooks`, `catalog_plugins`).
+    public var unresolvedCatalogReferences: [String: [String]]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, status, conditions, bursting, goal
+        case id, name, status, conditions, bursting, goal, precedence
+        case effectiveCoalesceWindowSeconds = "effective_coalesce_window_seconds"
+        case coalesceWindowInert = "coalesce_window_inert"
+        case skipIfPendingSessionInert = "skip_if_pending_session_inert"
+        case firstMissedFireAt = "first_missed_fire_at"
+        case schedulingClass = "scheduling_class"
+        case effectiveSchedulingClass = "effective_scheduling_class"
+        case mcpServers = "mcp_servers"
+        case catalogSkills = "catalog_skills"
+        case catalogHooks = "catalog_hooks"
+        case catalogPlugins = "catalog_plugins"
+        case unresolvedCatalogReferences = "unresolved_catalog_references"
         case agentRoot = "agent_root_name"
         case lastError = "last_error"
         case lastTriggeredAt = "last_triggered_at"
@@ -150,7 +182,11 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
                 lastTriggeredAt: Date? = nil, lastSessionID: Int? = nil, sessionsCreated: Int? = nil, conditions: [Condition] = [],
                 failedAt: Date? = nil, agentRootMissing: Bool = false, reuseSession: Bool = false, enqueueMessages: Bool = false,
                 resuscitateArchived: Bool = false, skipIfPendingSession: Bool = false, missedFireCount: Int = 0,
-                bursting: Bool = false, maxSessionsPerMinute: Int? = nil, coalesceWindowSeconds: Int? = nil, promptTemplate: String? = nil, goal: String? = nil) {
+                bursting: Bool = false, maxSessionsPerMinute: Int? = nil, coalesceWindowSeconds: Int? = nil, promptTemplate: String? = nil, goal: String? = nil,
+                effectiveCoalesceWindowSeconds: Int? = nil, coalesceWindowInert: Bool = false, skipIfPendingSessionInert: Bool = false,
+                firstMissedFireAt: Date? = nil, schedulingClass: String? = nil, effectiveSchedulingClass: String? = nil, precedence: Int? = nil,
+                mcpServers: [String] = [], catalogSkills: [String] = [], catalogHooks: [String] = [], catalogPlugins: [String] = [],
+                unresolvedCatalogReferences: [String: [String]] = [:]) {
         self.id = id
         self.name = name
         self.status = status
@@ -172,6 +208,18 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
         self.coalesceWindowSeconds = coalesceWindowSeconds
         self.promptTemplate = promptTemplate
         self.goal = goal
+        self.effectiveCoalesceWindowSeconds = effectiveCoalesceWindowSeconds
+        self.coalesceWindowInert = coalesceWindowInert
+        self.skipIfPendingSessionInert = skipIfPendingSessionInert
+        self.firstMissedFireAt = firstMissedFireAt
+        self.schedulingClass = schedulingClass
+        self.effectiveSchedulingClass = effectiveSchedulingClass
+        self.precedence = precedence
+        self.mcpServers = mcpServers
+        self.catalogSkills = catalogSkills
+        self.catalogHooks = catalogHooks
+        self.catalogPlugins = catalogPlugins
+        self.unresolvedCatalogReferences = unresolvedCatalogReferences
     }
 
     public init(from decoder: Decoder) throws {
@@ -198,6 +246,79 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
         coalesceWindowSeconds = try? container.decodeIfPresent(Int.self, forKey: .coalesceWindowSeconds)
         promptTemplate = try? container.decodeIfPresent(String.self, forKey: .promptTemplate)
         goal = try? container.decodeIfPresent(String.self, forKey: .goal)
+        effectiveCoalesceWindowSeconds = try? container.decodeIfPresent(Int.self, forKey: .effectiveCoalesceWindowSeconds)
+        coalesceWindowInert = flag(.coalesceWindowInert)
+        skipIfPendingSessionInert = flag(.skipIfPendingSessionInert)
+        firstMissedFireAt = try? container.decodeIfPresent(Date.self, forKey: .firstMissedFireAt)
+        schedulingClass = try? container.decodeIfPresent(String.self, forKey: .schedulingClass)
+        effectiveSchedulingClass = try? container.decodeIfPresent(String.self, forKey: .effectiveSchedulingClass)
+        precedence = try? container.decodeIfPresent(Int.self, forKey: .precedence)
+        func names(_ key: CodingKeys) -> [String] { ((try? container.decodeIfPresent([String].self, forKey: key)) ?? nil) ?? [] }
+        mcpServers = names(.mcpServers)
+        catalogSkills = names(.catalogSkills)
+        catalogHooks = names(.catalogHooks)
+        catalogPlugins = names(.catalogPlugins)
+        // `{list: {name: first_seen_at}}`; only the names matter here.
+        let unresolved = ((try? container.decodeIfPresent([String: [String: String]].self, forKey: .unresolvedCatalogReferences)) ?? nil) ?? [:]
+        unresolvedCatalogReferences = unresolved.mapValues { Array($0.keys).sorted() }
+    }
+
+    /// Every variable a prompt template may name that a manual run can fill
+    /// (`Trigger::USER_INPUT_VARIABLES`, in its order); `{{time}}` and `{{date}}` fill themselves.
+    public static let userInputVariables = [
+        "link", "text", "author", "channel", "event", "repo", "number", "title", "labels",
+        "channel_id", "message_ts", "thread_ts", "author_id", "chat_id", "message_id", "thread_id",
+    ]
+
+    /// The web form's hint under each variable's field (`TriggersHelper::VARIABLE_PLACEHOLDERS`).
+    public static func placeholder(for variable: String) -> String {
+        switch variable {
+        case "link": return "e.g. https://example.com/message/123"
+        case "text": return "e.g. The message content…"
+        case "author": return "e.g. Jane Doe"
+        case "channel": return "e.g. #general"
+        case "event": return "e.g. Session #5 needs input"
+        case "repo": return "e.g. tadasant/zimmer"
+        case "number": return "e.g. 177"
+        case "title": return "e.g. Fix the flaky poller test"
+        case "labels": return "e.g. ready to merge"
+        case "channel_id": return "e.g. C0A6BF8T45R"
+        case "message_ts": return "e.g. 1704067300.000100"
+        case "thread_ts": return "e.g. 1704067000.000100"
+        case "author_id": return "e.g. U0123ABCD"
+        default: return ""
+        }
+    }
+
+    /// The variables this trigger's template names that a run by hand can fill, in the order
+    /// the web form lists them (`Trigger#prompt_variables`). `{{name}}` and `{{name|untrusted}}`
+    /// both count; any other `{{…}}` is not a variable.
+    public var promptVariables: [String] {
+        guard let template = promptTemplate else { return [] }
+        let named = Set(Self.placeholderNames(in: template))
+        return Self.userInputVariables.filter { named.contains($0) }
+    }
+
+    static func placeholderNames(in template: String) -> [String] {
+        var names: [String] = []
+        var rest = template[...]
+        while let open = rest.range(of: "{{") {
+            rest = rest[open.upperBound...]
+            guard let close = rest.range(of: "}}") else { break }
+            let inside = rest[..<close.lowerBound]
+            let parts = inside.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+            // The server substitutes a bare name or `|untrusted` and nothing else, so a
+            // placeholder with any other filter is text, not a variable to ask for.
+            if parts.count == 2, parts[1] != "untrusted" { continue }
+            names.append(String(parts[0]))
+            rest = rest[close.upperBound...]
+        }
+        return names
+    }
+
+    /// A catalog name as the web page prints it, flagged when the catalog no longer has it.
+    public func catalogReferenceUnresolved(_ list: String, _ name: String) -> Bool {
+        unresolvedCatalogReferences[list]?.contains(name) ?? false
     }
 
     public var isEnabled: Bool { status == "enabled" }
@@ -409,205 +530,6 @@ public enum CostScope: Hashable, Sendable {
     /// The by-root row that narrows to itself. Not the folded "other (N)" bucket, which is
     /// several roots at once and so not one thing to narrow to.
     public static func narrowable(agentRoot: String) -> Bool { !agentRoot.hasPrefix("other (") }
-}
-
-/// The web UI's Costs page, in the parts a phone shows (`GET /api/v1/costs`): the window's
-/// total, spend by day, the biggest agent roots and the most expensive sessions.
-public struct CostSnapshot: Hashable, Sendable, Decodable {
-    public struct Day: Hashable, Sendable, Decodable, Identifiable {
-        public var day: String
-        public var costUSD: Double
-        public var id: String { day }
-
-        enum CodingKeys: String, CodingKey {
-            case day
-            case costUSD = "cost_usd"
-        }
-    }
-
-    public struct Row: Hashable, Sendable, Identifiable {
-        public var label: String
-        public var costUSD: Double
-        public var id: String { label }
-    }
-
-    public struct TopSession: Hashable, Sendable, Decodable, Identifiable {
-        public var sessionID: Int
-        public var costUSD: Double
-        public var tokens: Int?
-        public var title: String?
-        public var apiCalls: Int?
-        public var id: Int { sessionID }
-
-        enum CodingKeys: String, CodingKey {
-            case tokens, title
-            case sessionID = "session_id"
-            case costUSD = "cost_usd"
-            case apiCalls = "api_calls"
-        }
-
-        public init(sessionID: Int, costUSD: Double, tokens: Int? = nil, title: String? = nil, apiCalls: Int? = nil) {
-            self.sessionID = sessionID
-            self.costUSD = costUSD
-            self.tokens = tokens
-            self.title = title
-            self.apiCalls = apiCalls
-        }
-
-        public init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            sessionID = try container.decode(Int.self, forKey: .sessionID)
-            costUSD = try container.decode(Double.self, forKey: .costUSD)
-            tokens = try? container.decodeIfPresent(Int.self, forKey: .tokens)
-            title = try? container.decodeIfPresent(String.self, forKey: .title)
-            apiCalls = try? container.decodeIfPresent(Int.self, forKey: .apiCalls)
-        }
-    }
-
-    public var from: Date?
-    public var to: Date?
-    /// The slice the server computed over, as it read the request.
-    public var scope: CostScope
-    public var totalUSD: Double
-    public var days: [Day]
-    public var agentRoots: [Row]
-    public var models: [Row]
-    public var topSessions: [TopSession]
-
-    public init(from: Date? = nil, to: Date? = nil, scope: CostScope = .fleet, totalUSD: Double, days: [Day] = [], agentRoots: [Row] = [],
-                models: [Row] = [], topSessions: [TopSession] = []) {
-        self.from = from
-        self.to = to
-        self.scope = scope
-        self.totalUSD = totalUSD
-        self.days = days
-        self.agentRoots = agentRoots
-        self.models = models
-        self.topSessions = topSessions
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case window, totals, scope
-        case days = "by_day"
-        case agentRoots = "by_agent_root"
-        case models = "by_model"
-        case topSessions = "top_sessions"
-    }
-
-    struct Window: Decodable { let from: Date?; let to: Date? }
-    struct Scope: Decodable { let agent_root: String?; let session_id: Int? }
-    struct Totals: Decodable {
-        let cost_usd: Double?
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let window = try? container.decodeIfPresent(Window.self, forKey: .window)
-        from = window?.from
-        to = window?.to
-        // `session_id` wins when both are set, as the server narrows.
-        let scope = (try? container.decodeIfPresent(Scope.self, forKey: .scope)) ?? nil
-        if let session = scope?.session_id {
-            self.scope = .session(session)
-        } else if let root = scope?.agent_root {
-            self.scope = .agentRoot(root)
-        } else {
-            self.scope = .fleet
-        }
-        totalUSD = ((try? container.decodeIfPresent(Totals.self, forKey: .totals)) ?? nil)?.cost_usd ?? 0
-        days = (try? container.decodeIfPresent([Day].self, forKey: .days)) ?? []
-        agentRoots = Self.rows(container, .agentRoots, label: "agent_root")
-        models = Self.rows(container, .models, label: "model")
-        topSessions = (try? container.decodeIfPresent([TopSession].self, forKey: .topSessions)) ?? []
-    }
-
-    /// The by-X rows each name their label differently (`agent_root`, `model`), so they are
-    /// read as loose objects.
-    private static func rows(_ container: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys, label: String) -> [Row] {
-        guard let raw = try? container.decodeIfPresent([LooseObject].self, forKey: key) else { return [] }
-        return raw.compactMap { object in
-            guard let name = object.strings[label], let cost = object.numbers["cost_usd"] else { return nil }
-            return Row(label: name, costUSD: cost)
-        }
-    }
-}
-
-/// A JSON object's string and number fields, ignoring the rest.
-struct LooseObject: Decodable {
-    var strings: [String: String] = [:]
-    var numbers: [String: Double] = [:]
-
-    struct Key: CodingKey {
-        var stringValue: String
-        var intValue: Int? { nil }
-        init?(stringValue: String) { self.stringValue = stringValue }
-        init?(intValue: Int) { nil }
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: Key.self)
-        for key in container.allKeys {
-            if let string = try? container.decode(String.self, forKey: key) {
-                strings[key.stringValue] = string
-            } else if let number = try? container.decode(Double.self, forKey: key) {
-                numbers[key.stringValue] = number
-            }
-        }
-    }
-}
-
-/// The web UI's Health page, read-only: the overall status, then each section's.
-public struct HealthReport: Hashable, Sendable {
-    public struct Section: Hashable, Sendable, Identifiable {
-        public var key: String
-        public var status: String
-        public var message: String?
-        public var id: String { key }
-
-        public init(key: String, status: String, message: String? = nil) {
-            self.key = key
-            self.status = status
-            self.message = message
-        }
-
-        /// `process_health` → "Process".
-        public var title: String {
-            key.replacingOccurrences(of: "_health", with: "").replacingOccurrences(of: "_", with: " ").capitalized
-        }
-    }
-
-    public var overall: Section
-    public var sections: [Section]
-    public var generatedAt: Date?
-
-    public init(overall: Section, sections: [Section], generatedAt: Date? = nil) {
-        self.overall = overall
-        self.sections = sections
-        self.generatedAt = generatedAt
-    }
-
-    /// Read from `GET /api/v1/health`. Each section's `status` is either a word or an object
-    /// with `status` and `message`; anything else in a section is detail the phone leaves out.
-    static func parse(_ data: Data) throws -> HealthReport {
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let report = root["health_report"] as? [String: Any]
-        else { throw ZimmerError.decoding("health report: no health_report key") }
-
-        func status(_ value: Any?) -> (String, String?)? {
-            if let word = value as? String { return (word, nil) }
-            if let object = value as? [String: Any], let word = object["status"] as? String { return (word, object["message"] as? String) }
-            return nil
-        }
-
-        let overall = status(report["overall_status"]).map { Section(key: "overall", status: $0.0, message: $0.1) }
-            ?? Section(key: "overall", status: "unknown")
-        let sections = report.keys.sorted().compactMap { key -> Section? in
-            guard key.hasSuffix("_health"), let section = report[key] as? [String: Any], let (word, message) = status(section["status"]) else { return nil }
-            return Section(key: key, status: word, message: message)
-        }
-        let generatedAt = (report["generated_at"] as? String).flatMap(ZimmerJSON.parseDate)
-        return HealthReport(overall: overall, sections: sections, generatedAt: generatedAt)
-    }
 }
 
 struct NotificationsResponse: Decodable {

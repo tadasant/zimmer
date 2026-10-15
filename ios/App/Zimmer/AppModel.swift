@@ -101,6 +101,16 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
     /// is named.
     @Published var fixtureCosts: CostScope?
+    /// `-ZimmerFixtureHealth`: More opens on Health.
+    @Published var fixtureHealth = false
+    /// `-ZimmerFixtureRunNow`: the opened trigger's Run Now sheet starts open, so
+    /// `ios/bin/ui-test` can photograph its variable fields.
+    var fixtureOpensRunNow = false
+    /// What the web layout announces on every page: queue recovery mode and degraded egress.
+    /// Read from the health report, which is the one route the app's token opens for it, so
+    /// it is re-read at most every few minutes rather than with every board refresh.
+    @Published var systemBanners = SystemBanners()
+    private var bannersCheckedAt: Date?
 
     let environment: AppEnvironment
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
@@ -190,6 +200,11 @@ final class AppModel: ObservableObject {
             fixtureCosts = root.map(CostScope.agentRoot) ?? .fleet
             tab = .more
         }
+        if arguments.contains("-ZimmerFixtureHealth") {
+            fixtureHealth = true
+            tab = .more
+        }
+        fixtureOpensRunNow = arguments.contains("-ZimmerFixtureRunNow")
         // Trash a session as a swipe would: the Undo toast, or for one with messages queued,
         // the question before they are discarded.
         if let id = value("-ZimmerFixtureTrash").flatMap(Int.init) {
@@ -290,6 +305,25 @@ final class AppModel: ObservableObject {
         }
         await refreshEdgeExpiry()
         await refreshUnreadCount()
+        await refreshSystemBanners()
+    }
+
+    /// The site-wide banners, re-read when the last reading is older than `every`. The
+    /// Health screen passes its own fresh report instead of reading twice.
+    func refreshSystemBanners(every interval: TimeInterval = 300) async {
+        if let checked = bannersCheckedAt, Date().timeIntervalSince(checked) < interval { return }
+        // Stamped before the read, so a failing health endpoint — the heaviest one, slowest
+        // during the incidents these banners are for — is asked once an interval, not on
+        // every poll and pull until it answers.
+        bannersCheckedAt = Date()
+        // A hint on the board, never a reason to show an error over it.
+        guard let report = try? await connection.api.health() else { return }
+        note(report)
+    }
+
+    func note(_ report: HealthReport) {
+        bannersCheckedAt = Date()
+        systemBanners = report.banners
     }
 
     func refreshUnreadCount() async {
@@ -549,6 +583,9 @@ final class AppModel: ObservableObject {
         sessions = []
         signedInOrigins = nil
         edgeExpiry = nil
+        // The next deployment's banners are its own, read on the first refresh.
+        systemBanners = SystemBanners()
+        bannersCheckedAt = nil
         isSignedIn = false
     }
 
