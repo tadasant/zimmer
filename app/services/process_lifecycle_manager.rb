@@ -279,6 +279,33 @@ class ProcessLifecycleManager
     end
   end
 
+  # Take over a process WarmProcessPool booted before this session existed, once
+  # the session's first prompt has been written to it. From here it is monitored
+  # and retried exactly as a process #spawn started: the respawn paths reuse the
+  # system prompt, model and effort recorded here.
+  #
+  # The one-live-agent guard #spawn runs belongs BEFORE the prompt is written, so
+  # the caller runs it (AgentSessionJob#deliver_to_warm_process); once the prompt
+  # is in, this process is the session's turn and must not be refused.
+  #
+  # @return [SpawnResult]
+  def adopt(pid:, stderr_log_path:, append_system_prompt:, model:, effort: nil)
+    @mutex.synchronize do
+      return SpawnResult.new(success: false, error: "Cannot adopt: state is #{@state}") unless @state == :idle
+
+      @append_system_prompt = append_system_prompt
+      @model = model
+      @effort = effort
+      @current_pid = pid
+      @stderr_log_path = stderr_log_path
+      @state = :running
+    end
+
+    add_log("Adopted warm process with PID #{pid}", level: "info")
+    @logger.info("Adopted warm process", pid: pid)
+    SpawnResult.new(success: true, pid: pid, stderr_log_path: stderr_log_path)
+  end
+
   # Resume monitoring an existing process (used for session recovery)
   #
   # @param pid [Integer] Process ID to monitor

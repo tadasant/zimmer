@@ -67,8 +67,12 @@ final class AppModel: ObservableObject {
     /// The session the Quick Router was opened from, so the new one threads under it, as
     /// the web bubble on a session page sends `parent_session_id`.
     var quickRouterParent: Int?
-    /// Words typed in the board's bar, carried into the sheet when it is opened for more.
-    var quickRouterDraft = ""
+    /// Words typed in the board's bar, carried into the sheet when it is opened for more. `nil`
+    /// when the sheet was opened from anywhere else.
+    var quickRouterDraft: String?
+    /// What the bar holds once the sheet it opened has closed: empty after a start, the sheet's
+    /// words after a Cancel. Set only then, so typing in the bar publishes nothing.
+    @Published var quickRouterBarHandback: String?
     /// The full new-session form (the pencil in the Sessions toolbar).
     @Published var showingNewSession = false
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
@@ -77,6 +81,16 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureCustomSnooze`: the opened session's custom snooze sheet starts open, so
     /// `ios/bin/ui-test` can photograph the date picker.
     var fixtureOpensCustomSnooze = false
+    /// `-ZimmerFixtureCatalog <kind>`: the opened session's editor for one kind of artifact
+    /// (`mcpServers`, `skills`, `hooks`, `plugins`) starts open, so `ios/bin/ui-test` can
+    /// photograph the checklist.
+    var fixtureOpensCatalog: CatalogKind?
+    /// `-ZimmerFixtureOpenPanels`: the opened session starts at its details card with the
+    /// hierarchy and the human messages open, so `ios/bin/ui-test` can photograph them.
+    var fixtureOpensPanels = false
+    /// `-ZimmerFixtureSlash`: the opened session's composer starts with "/" typed, so
+    /// `ios/bin/ui-test` can photograph the skills it offers.
+    var fixtureTypesSlash = false
     /// `-ZimmerFixtureTrigger <id>`: the Triggers tab opens on that trigger's page.
     @Published var fixtureTrigger: Int?
     /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
@@ -96,8 +110,14 @@ final class AppModel: ObservableObject {
     var hasEdge: Bool { connection.edge != nil }
     var api: ZimmerAPI { connection.api }
 
+    /// Read the sign-in and, when there is one, load the board. Run at launch and again each
+    /// time the app comes to the front signed out, because a launch-time Keychain read can
+    /// fail (a push before the phone's first unlock) and that is not a sign-out.
     func start() async {
         let signIn = await connection.auth.signIn
+        // The connection was built from a Keychain read at launch; when that read failed it
+        // was built for no deployment, and an edge in front of this one would be missing.
+        if let origins = signIn?.origins { environment.resume(origins) }
         signedInOrigins = signIn?.origins
         isSignedIn = signIn != nil
         guard signIn != nil else { return }
@@ -130,6 +150,8 @@ final class AppModel: ObservableObject {
         if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
+        fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
+        fixtureTypesSlash = arguments.contains("-ZimmerFixtureSlash")
         func value(_ flag: String) -> String? {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
@@ -146,6 +168,7 @@ final class AppModel: ObservableObject {
         if let klass = value("-ZimmerFixtureClass") { filters.schedulingClass = klass }
         board = value("-ZimmerFixtureBoard").flatMap(BoardFilter.init(rawValue:)) ?? .onBoard
         if arguments.contains("-ZimmerFixtureFilterSheet") { showingFilters = true }
+        fixtureOpensCatalog = value("-ZimmerFixtureCatalog").flatMap(CatalogKind.init(rawValue:))
         Task { await refresh() }
         // The list's search box picks this up and searches, as if typed.
         if let search = value("-ZimmerFixtureSearch") { searchText = search }
@@ -204,6 +227,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Open the Quick Router sheet. `parent` is the session it was opened on; `draft` is the
+    /// board bar's words, given only by the bar.
+    func openQuickRouter(parent: Int? = nil, draft: String? = nil) {
+        quickRouterParent = parent
+        quickRouterDraft = draft
+        showingQuickRouter = true
+    }
+
     /// Start a Quick Router session and open it.
     func startQuickRouter(_ prompt: String) async -> Bool {
         await startQuickRouter(QuickRouterRequest(prompt: prompt))
@@ -215,7 +246,6 @@ final class AppModel: ObservableObject {
             let id = try await connection.api.startQuickRouter(request)
             showingQuickRouter = false
             quickRouterParent = nil
-            quickRouterDraft = ""
             path.append(id)
             await refresh()
             return true
@@ -313,9 +343,12 @@ final class AppModel: ObservableObject {
     @discardableResult
     func perform(_ done: String, on id: Int, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
         do {
-            let updated = try await action(connection.api)
+            var updated = try await action(connection.api)
             withAnimation {
                 if let index = sessions.firstIndex(where: { $0.id == id }) {
+                    // An action answers with the session alone: the row's summary stays until
+                    // the next read of the list.
+                    if updated.boardRow == nil { updated.boardRow = sessions[index].boardRow }
                     if belongsOnList(updated) { sessions[index] = updated } else { sessions.remove(at: index) }
                 }
             }
@@ -452,13 +485,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// The Ranked view's drag-and-drop, then the queue as the server now ranks it.
+    /// Your board's and Ranked's drag-and-drop, then the list as the server now orders it.
     func reorder(_ id: Int, above: Int?, below: Int?) async {
         do {
             _ = try await connection.api.reorder(id, above: above, below: below)
             // After the reload, so the toast never shows over the row in its old place.
             await refresh()
-            notice = "Moved in the spot queue"
+            notice = view == .ranked ? "Moved in the spot queue" : "Moved on your board"
             Haptics.success()
         } catch {
             handle(error)

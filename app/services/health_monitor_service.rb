@@ -379,6 +379,8 @@ class HealthMonitorService
       root_data_health: root_data_health,
       # Also absent — see #warm_clone_pool_health.
       warm_clone_pool_health: warm_clone_pool_health,
+      # Also absent — see #warm_process_pool_health.
+      warm_process_pool_health: warm_process_pool_health,
       overall_status: calculate_overall_status(
         [ process, session, system, egress, auth, post_deploy, cron ].map { |section| section[:status] }
       ),
@@ -596,6 +598,52 @@ class HealthMonitorService
       status: :healthy,
       message: "#{ready} of #{report[:targets].size} pooled #{'key'.pluralize(report[:targets].size)} " \
                "#{ready == 1 ? 'has' : 'have'} a ready clone (#{report[:scope]} scope)."
+    )
+  end
+
+  # The warm router process: whether one is booted, how old it is, the last
+  # refill, and how router session starts fared against it. See
+  # WarmProcessPool.report.
+  #
+  # Deliberately NOT folded into `overall_status`, for the warm clone pool's
+  # reason: without a warm process a request spawns one, as it always did.
+  def warm_process_pool_health
+    report = WarmProcessPool.report
+    report.merge(status: warm_process_pool_status(report))
+  rescue StandardError => e
+    @logger.warn("Warm process pool health could not be read", error: e.message)
+    {
+      enabled: false, size: 0, max_age_minutes: 0, entries: [], last_pass: nil, published_at: nil,
+      outcome_window_hours: 0, outcomes: {},
+      status: HealthStatus.new(status: :warning, message: "Warm process pool status could not be read: #{e.message}")
+    }
+  end
+
+  def warm_process_pool_status(report)
+    unless report[:enabled]
+      return HealthStatus.new(
+        status: :healthy,
+        message: "Off: Quick Router requests spawn their own process. Turn it on under Settings → Experimental."
+      )
+    end
+
+    if report[:stale]
+      return HealthStatus.new(
+        status: :warning,
+        message: "The worker has not reported on its warm router processes in the last few minutes; " \
+                 "the entries below may be gone. Requests spawn cold until it does."
+      )
+    end
+
+    error = report.dig(:last_pass, :error)
+    if error.present?
+      return HealthStatus.new(status: :warning, message: "The last refill failed (#{error}); requests spawn cold until one succeeds.")
+    end
+
+    ready = Array(report[:entries]).count { |entry| entry[:state] == "ready" }
+    HealthStatus.new(
+      status: :healthy,
+      message: "#{ready} of #{report[:size]} warm router #{'process'.pluralize(report[:size])} ready."
     )
   end
 

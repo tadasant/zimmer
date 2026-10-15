@@ -164,6 +164,61 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_equal PluginsConfig.all.map(&:id), JSON.parse(response.body)["plugins"].map { |p| p["id"] }
   end
 
+  test "the app lists a session's open prompts and answers one when it acts on its approver's behalf" do
+    headers = bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
+    session = build_zimmer_session(status: :needs_input)
+    open_prompt = create_elicitation(session, message: "Send the email?")
+    too_late = create_elicitation(session, message: "Too late", expires_at: 1.minute.ago)
+    create_elicitation(session, message: "Answered").update!(status: "accept", responded_at: Time.current)
+
+    get "/api/v1/sessions/#{session.id}/elicitations", headers: headers
+    assert_response :success
+    listed = JSON.parse(response.body)["elicitations"]
+    assert_equal [ open_prompt.id ], listed.map { |e| e["id"] }, "only the prompt that can still be answered"
+    assert_equal "pending", too_late.reload.status, "a read leaves expiry to the sweep"
+    assert_equal %w[to confirmed], listed.first["field_order"]
+    assert_equal "boolean", listed.first.dig("requested_schema", "properties", "confirmed", "type")
+
+    patch "/api/v1/elicitations/#{open_prompt.id}/respond", params: { action_type: "accept", content: { confirmed: true } },
+      headers: headers, as: :json
+    assert_response :success
+    assert_equal "accept", open_prompt.reload.status
+    assert_equal({ "confirmed" => true }, open_prompt.response_content)
+  end
+
+  test "a relay-only app reads a prompt but may not answer it, and never raises or polls one" do
+    headers = bearer(token)
+    session = build_zimmer_session(status: :needs_input)
+    prompt = create_elicitation(session, message: "Send the email?")
+
+    get "/api/v1/sessions/#{session.id}/elicitations", headers: headers
+    assert_response :success
+
+    patch "/api/v1/elicitations/#{prompt.id}/respond", params: { action_type: "accept" }, headers: headers
+    assert_response :forbidden
+    assert_equal "pending", prompt.reload.status
+
+    patch "/api/v1/elicitations/0/respond", params: { action_type: "accept" }, headers: headers
+    assert_response :forbidden, "refused before the lookup, so it cannot tell which ids exist"
+
+    get "/api/v1/elicitations/#{prompt.request_id}", headers: headers
+    assert_response :unauthorized
+    post "/api/v1/elicitations", params: { message: "forged", _meta: { "com.pulsemcp/request-id" => "r" } }, headers: headers
+    assert_response :unauthorized
+  end
+
+  test "a session's open prompts answer an API key too, and an unknown session is a 404" do
+    session = build_zimmer_session(status: :needs_input)
+    prompt = create_elicitation(session, message: "Send the email?")
+
+    get "/api/v1/sessions/#{session.id}/elicitations", headers: { "X-API-Key" => API_KEY }
+    assert_response :success
+    assert_equal [ prompt.id ], JSON.parse(response.body)["elicitations"].map { |e| e["id"] }
+
+    get "/api/v1/sessions/0/elicitations", headers: { "X-API-Key" => API_KEY }
+    assert_response :not_found
+  end
+
   test "a controller the app does not use refuses its token outright" do
     get "/api/v1/gate_decisions", headers: bearer(token)
     assert_response :unauthorized
@@ -190,6 +245,12 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
   end
 
   def bearer(access_token) = { "Authorization" => "Bearer #{access_token}" }
+
+  def create_elicitation(session, message:, expires_at: 10.minutes.from_now)
+    Elicitation.create!(session: session, request_id: "req-#{SecureRandom.hex(6)}", mode: "form", message: message,
+      requested_schema: { type: "object", properties: { to: { type: "string" }, confirmed: { type: "boolean" } } },
+      expires_at: expires_at)
+  end
 
   def build_zimmer_session(**attrs)
     Session.create!({ git_root: "https://github.com/tadasant/zimmer.git", branch: "main", prompt: "p" }.merge(attrs))

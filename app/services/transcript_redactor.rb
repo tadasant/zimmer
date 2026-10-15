@@ -242,6 +242,52 @@ module TranscriptRedactor
   # #bytesize is O(1) where #length is O(n) on non-ASCII input.
   PUBLIC_IDENTIFIER_MAX_LENGTH = 255
 
+  # A captured value that is a fill-in-the-blank, not a credential. Checked for
+  # every `:value` pattern, because the framing those rules key on — a URL's
+  # userinfo, `password=`, `Bearer` — is exactly where an agent writing
+  # instructions for a human puts the blank:
+  #
+  #   http://<proxy-username>:<proxy-password>@p.webshare.io:80
+  #
+  # came back as `:[REDACTED:MATCH:URL_CREDENTIALS:…]@`, which turned a
+  # walkthrough step into a puzzle and redacted nothing (session 24427).
+  #
+  # Each alternative is a convention that means "substitute a value here" and
+  # that a credential does not take, and each admits only a NAME inside its
+  # delimiters — letters, digits and `_`, plus `-`, `.` and space inside angle
+  # brackets and an optional trailing non-ASCII character for a `…`:
+  #
+  #   <proxy-password>   ${PROXY_PASSWORD}   $PROXY_PASSWORD / $proxy_password
+  #   {{proxy_password}}   %PROXY_PASSWORD%   xxxxxxxx / ********
+  #
+  # The angle brackets are also accepted JSON-escaped as `\u003c…\u003e`, which
+  # is how ActiveSupport's `to_json` writes them into a JSONL record.
+  #
+  # What is deliberately NOT here: `${VAR:-default}`, because a shell or compose
+  # default is routinely the real password; a mixed-case bare `$Var`, which is
+  # how a password starting with `$` looks; and lowercase `%var%`, which reads
+  # as percent-encoding in a URL. Anchored at both ends, so the placeholder has
+  # to BE the value — `abc<def>ghi` is not excused. PLACEHOLDER_OPAQUE_NAME
+  # then vetoes a "name" that mixes digits with both letter cases, which is what
+  # a random password looks like and what a placeholder name does not.
+  #
+  # The prefixed-token patterns run first, so a full-length `ghp_…` inside angle
+  # brackets is still redacted by GITHUB_TOKEN. The residual risk is a password
+  # shaped like a name — documented in limitations.md.
+  PLACEHOLDER_VALUE = bounded(
+    %r{
+      \A(?:
+        (?:<|\\u003c)[A-Za-z][A-Za-z0-9\ _.\-]*[^\x00-\x7F]?(?:>|\\u003e)
+      | \$\{[A-Za-z_][A-Za-z0-9_]*\}
+      | \$(?:[A-Z_][A-Z0-9_]*|[a-z_][a-z0-9_]*)
+      | \{\{[\ \t]*[A-Za-z_][A-Za-z0-9_.]*[\ \t]*\}\}
+      | %[A-Z_][A-Z0-9_]*%
+      | (.)\1+
+      )\z
+    }x
+  )
+  PLACEHOLDER_OPAQUE_NAME = bounded(/\A(?=[^0-9]*[0-9])(?=[^a-z]*[a-z])(?=[^A-Z]*[A-Z])/)
+
   # Order matters: the first pattern to match a span wins, because its
   # replacement no longer looks like a credential to the patterns after it. The
   # specific labels come before the generic `ENV_SECRET` catch so a redaction is
@@ -732,6 +778,7 @@ module TranscriptRedactor
         end
 
         removed = pattern.mode == :value ? found[1] : match
+        next match if pattern.mode == :value && placeholder?(removed)
         next match if pattern.reject&.call(preceding, removed)
 
         if pattern.mode == :value
@@ -778,6 +825,16 @@ module TranscriptRedactor
 
       wordy = segments.count { |segment| segment.match?(NON_HEX_LETTER) }
       wordy * 2 > segments.length
+    end
+
+    # Is this captured value a fill-in-the-blank? See PLACEHOLDER_VALUE. Same
+    # length cap as public_identifier?, for the same reason: ENV_SECRET can hand
+    # this a multi-megabyte base64 run, and no placeholder is that long.
+    def placeholder?(value)
+      value.is_a?(String) &&
+        value.bytesize <= PUBLIC_IDENTIFIER_MAX_LENGTH &&
+        value.match?(PLACEHOLDER_VALUE) &&
+        !value.match?(PLACEHOLDER_OPAQUE_NAME)
     end
 
     # Swap capture group 1 out of `match` by offset rather than by

@@ -148,8 +148,8 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
 
     assert requester.reload.waiting?,
       "expected the backstop to wake the interrupted session, got #{requester.status}"
-    assert_equal "Deadline reached — re-read the PR.", requester.metadata["pending_follow_up_prompt"],
-      "and the woken turn must be the backstop's own prompt"
+    assert_match(/\ADeadline reached — re-read the PR\./, requester.metadata["pending_follow_up_prompt"],
+      "and the woken turn must be the backstop's own prompt — followed by the notice naming the watcher it retires")
   end
 
   # The same interruption, seen through the predicate every sweep and every UI
@@ -308,8 +308,8 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     end
 
     assert requester.reload.waiting?, "the backstop must still wake it"
-    assert_equal "Deadline reached — re-read the PR.", requester.metadata["pending_follow_up_prompt"],
-      "and the turn it queued is the backstop's own prompt"
+    assert_match(/\ADeadline reached — re-read the PR\./, requester.metadata["pending_follow_up_prompt"],
+      "and the turn it queued is the backstop's own prompt — followed by the notice naming the watcher it retires")
   end
 
   # The same shape through the auth-outage park: the account pool was empty, the

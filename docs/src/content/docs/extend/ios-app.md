@@ -37,8 +37,12 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   order as *Priority* and *Spot queue* sections). The server orders each view
   (`GET /api/v1/sessions?view=`), so the app shows the same sessions the web board does: the first
   500 by Last Touched or Created, or the top 500 of Your board and Ranked; when more match, the list
-  says so. In Ranked, *Reorder Spot Queue* (view menu) puts drag handles on the spot queue, and a
-  drop tells the server the rows it landed between, as the web UI's drag-and-drop does. *Start Now*
+  says so. In Ranked, *Reorder Spot Queue* (view menu) puts drag handles on the spot queue; on
+  Your board, *Reorder Board* puts them on its spot rows. A drop tells the server the nearest spot
+  rows it landed between, as the web UI's drag-and-drop does, and the list is read again: a row
+  dropped among the priority rows settles back into the spot block, since precedence cannot lift
+  it out. Priority rows do not drag: the server places a drop by its spot neighbours only, so a
+  priority row would lose its precedence. *Start Now*
   (press and hold a waiting session, or its session menu) takes its next turn now.
 - **Filters** as the web UI's filter form does, every filter combining with every other. The
   chips are one-tap presets: *Needs input* (the default), *Active* (everything not archived),
@@ -57,7 +61,12 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   the snooze ends. A trashed session reads in the quieter ink and says when its restore window
   closes ("Expires Oct 16", from `trash_after`; "Deletion pending" once that date has passed), as
   the web page's "Expires 3 days from now" does, as a date. What is deleted then is what was held
-  for a restore — the preserved clone, the scratch directory, prompt attachments — not the session.
+  for a restore — the preserved clone, the scratch directory, prompt attachments — not the session. On *Your board*, as on the web
+  board's, each row also carries the session's "where things stand" as inline markdown on up to
+  three lines, then how current it is (*Up to date*, *Stale* with the messages since, or
+  *Regenerating*), when it was written, and the agent root, or the genesis where it has none
+  (`GET /api/v1/sessions?view=user&include=board_row`, and the same on search). A row an action
+  just answered keeps its summary until the next read; a server that sends no rows draws none.
 - **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn goes, ending
   the turn, as in the web UI's bulk Trash (`end_turn`); one with queued messages is refused with the
   server's reason and stays; the rest go.
@@ -90,13 +99,48 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   generated") and *Regenerate*; for a failed session, why it failed (`metadata.failure_reason`,
   the exception and exit status, the web's failure details); then one divided card: the **Goal
   check** (the web panel's verdict and one line per criterion, when the goal is a catalog goal
-  with checks), the goal and notes (two lines each until tapped), the hierarchy (who spawned it
-  and what it spawned, each a tap away; folded when wider than four sessions) and the **Human
-  messages** (who said what to this session and its family, through which channel; folded). The
+  with checks; its tally names the goal, and a router that recorded no PR of its own says whose
+  PRs were judged, "Judged on PRs recorded by #1044, which this session spawned", each session a
+  tap away), the **goal** (a catalog goal by its name from `GET /api/v1/configs`, whether the
+  session stores its id or its words, with its words under it; your own words as they are, where
+  the web page says "Custom" and keeps the words for a hover), the notes (two lines each until
+  tapped), the **MCP servers** (always there, as the web page's line is: a chip per server the
+  session has wired, `all_mcp_servers`, green, red or grey for connected, failed or pending from
+  `custom_metadata.mcp_servers_status`, the injected ones dashed and one a plugin brought, in
+  `all_mcp_servers` but neither chosen nor injected, in italics as the plugin's; a failed
+  server's error is a tap away; with none, the agent root's defaults marked *agent root default*,
+  or *None*; *Edit*, or *Add* when there are none, opens the checklist), the **skills, hooks and
+  plugins** (a line each, the same way: the chosen ids, or the root's defaults, or *None*, and
+  *Edit* or *Add*),
+  the **hierarchy** (who spawned it and what it spawned, each a tap away; folded when wider than
+  four sessions; the closed row names the origin, and each row its agent root, its genesis and
+  class, "this session", "origin", and "drawn under #id" where the session above did not spawn
+  it, with the server's truncation reason when the walk was cut) and the **Human messages**
+  (folded; the closed row has both counts, "1 message in this session · 1 elsewhere in the
+  hierarchy", or "none recorded anywhere in this hierarchy" and what that search could not
+  cover; inside, each channel capture is not configured for, as the web panel's amber notice,
+  then who said what, through which channel, tagged *this session* or *elsewhere*, an elsewhere
+  message with the session it was said in a tap away). *Modify Goal* (in the menu or the goal's
+  *Edit*) is the web page's goal picker: the catalog's goals by name with their words, stored as
+  their words as the web picker stores them, your own words, or none. Two things the web panels
+  show are not on the phone, because the API carries neither: a Slack message's *view in Slack*
+  link, and *which* plugin brought an MCP server (the app marks the server as a plugin's without
+  naming it), and the skills and hooks a session's plugins bring (the web lists them read-only;
+  the app's line says only that its plugins may bring some). The
   conversation follows, newest last, each message with its age, rendered the way the web renders
-  it as far as a phone's text goes: inline markdown (emphasis, code spans, links) and fenced code
-  in the monospaced face; list markers and headings stay as typed, where the web draws them as
-  structure. The web UI's log-level filter is a menu on it: *Minimal* (the words alone, the
+  it: headings, paragraphs, lists that nest, quotes, tables and rules drawn as blocks, with
+  emphasis, code spans and links inside them, and bare URLs made links as the web's autolink
+  makes them. A link opens on a tap. A long press on a paragraph or list item that holds
+  links opens a menu with *Open Link*, *Copy Link* and *Share…* for each of them, and *Copy Text*,
+  so a long signed URL in an agent's message can be pasted elsewhere; a paragraph with links is
+  copied through that menu rather than selected. A link in a heading or a table cell opens on a
+  tap and has no menu. Two places the app reads markdown more leniently than the web's Redcarpet: `#1293` at
+  the start of a line stays text rather than becoming a heading, and a table or list may follow
+  a paragraph's line without a blank line between. Fenced code is in the monospaced face, scrolling sideways rather than wrapping,
+  with a *Copy* button in the block's corner that puts the code on the clipboard, as the web's
+  code blocks have; the code is one colour where the web colours it by language. A table's
+  widest columns wrap to fit the phone, and a table with too many columns to fit even so scrolls
+  sideways in its box, as the web's does. The web UI's log-level filter is a menu on it: *Minimal* (the words alone, the
   default on a phone), *Condensed* (each tool call as one line naming the tool and what it was
   given) and *Verbose* (the tool traffic whole, rendered the same way); the web's *Show Logs* is
   the logs screen in the menu. The page reads the newest hundred messages, each whole up to
@@ -137,15 +181,31 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **The session menu** (the ⋯ button) is the web UI's mobile *Session actions* sheet, in its order:
   Quick Router, Edit Notes, Show Logs, Subagents, View PR, Snooze until… / Hide / Put back on the board, Refresh
   Transcript, Copy Transcript (the whole transcript as text), Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
-  edit: Rename, Modify Goal, Effort (the levels the session's model accepts, or the model
-  default), Model (the models the session's runtime lists), MCP Servers, Skills, Hooks and Plugins
-  (each a checklist of its catalog, from the next turn), Promote to priority / Demote to spot (to the head of the spot queue), the
+  edit: Rename, Modify Goal (the catalog's goals by name, or your own words), Effort (the levels the session's model accepts, or the model
+  default), Model (the models the session's runtime lists), *Modify MCP Servers, Skills, Hooks,
+  Plugins* (a submenu with an item a kind and its count, so the menu stays short enough to show
+  its last items; the page's rows are the main way in; each a checklist of the whole
+  catalog, searchable by name and description, an unavailable MCP server listed last with its
+  reason, a chosen id the catalog no longer lists shown unticked, since the server refuses a list
+  naming it, so saving drops it; saving replaces the
+  session's list, as the web's does, from the next turn; a server that needs OAuth is named with
+  a link to the session's web page, where it is authorized), the web page's *Scheduling class* select
+  (*Derive it*, which clears the class chosen for the session so its genesis decides again and
+  names the class that gives; *Priority*; *Spot*; each sent as the web select sends it, the class
+  alone with the precedence left as it is, `PATCH /api/v1/sessions/:id` with `scheduling_class`,
+  `null` for *Derive it*; a change that makes a waiting session priority starts it, as the
+  server does on any change into priority), *Precedence* (the session's rank in the spot queue,
+  higher worked first, with the web page's note on what it does for this session), the
   heartbeat (the web's heart and its popout: on or off, and *Beat every* from 30 seconds to an
   hour, `PATCH /api/v1/sessions/:id/heartbeat` with `interval_seconds`, which leaves it on or off
   as it is), Generate Status Summary when there is none, and Open in browser. *Snooze until…*
   ends in *Custom…*, as on the row. A trashed session's header says when its restore window closes. A promotion that could
   not start the session says why. The star and the trash (or restore) are in the toolbar.
-- **Sends a follow-up** from a box at the bottom, with quick replies for the common answers. A
+- **Sends a follow-up** from a box at the bottom, with quick replies for the common answers.
+  Typing "/" at the start of a line or after a space opens the web composer's typeahead in the
+  quick replies' place: the session's own catalog skills that a person may invoke
+  (`user_invocable`, from `GET /api/v1/skills`), narrowed as you type by name or description,
+  names starting with what you typed first, ten at a time; a tap puts `/name ` in the box. A
   follow-up to a session mid-turn is queued, and the app says so; touch and hold the button to
   *Send Now* instead, which ends the turn in flight (`force_immediate`, the web UI's Send Now).
   It is recorded as your message if the app's connection acts on your behalf (below).
@@ -190,8 +250,11 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   words, photos and files from the paperclip, and under *Advanced* the harness, the model and
   *Run as spot* (wait for quota room, at the top of the spot queue), each picker leading with
   the default rather than preselecting it. The sparkles in the bar open the sheet with the words
-  typed so far. Opened from a session, the new one threads under it (*Thread under #id*, the
-  bubble's `parent_session_id`), which you can switch off. All of it goes to
+  typed so far. A start from the sheet empties the bar too; closing the sheet without starting
+  (*Cancel*, or a swipe down) gives the bar the sheet's words, edits included. The sheet cannot
+  be closed while a start is in flight, and a failed start keeps the words where they were
+  typed. Opened from a session, the new one threads under it (*Thread under #id*, the bubble's
+  `parent_session_id`), which you can switch off. All of it goes to
   `POST /api/v1/quick_router`. **Or from the full form** (the
   pencil in the Sessions toolbar): the web UI's new-session
   form, with agent root, runtime, model, reasoning effort, prompt, title, goal (a predefined one or
@@ -233,17 +296,30 @@ where an API key cannot: only a person may give it (see the [REST API](/extend/r
 
 The web composer's camera button is not in the app yet: taking a photo cannot be exercised in the
 simulator, so it waits on a change verified on a device. Fork from a message and answering an
-elicitation each need a server change first — the conversation endpoint does not say where a
-message sits in the transcript the fork service counts, and no route lists a session's pending
-elicitations — and come in their own change. So do switching a trigger's *Enqueue messages* and
+elicitation stay in the browser until the app draws them; the API they need is in place. Switching a trigger's *Enqueue messages* and
 *Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update),
 saying whether re-arming a failed trigger fires it again (the trigger JSON does not say whether a
 one-time wake was already spent; the web page does), and
-the Costs page's burn rate (not in `GET /api/v1/costs`). So does the rest of the web card's refresh: on the
+the Costs page's burn rate (not in `GET /api/v1/costs`) come in their own change. So does the rest of the web card's refresh: on the
 web it also resumes a failed session and sends the continue nudge to a stalled waiting one, but
 `POST /api/v1/sessions/:id/refresh` only re-reads the transcript, so the row's refresh is
-*Refresh Transcript* and a failed session is restarted with *Restart Session*. The admin pages (API keys, inference accounts, connectors,
-settings) stay in the browser; *Open in browser* on any session gets you there.
+*Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
+the web says why a row is *drawn under* a session that did not spawn it — reached through a
+senior, or placed there because the tree was cut short — and the app says only that it is: the
+hierarchy nodes do not carry `ceiling_placed`. The admin pages (API keys, inference accounts,
+connectors, settings) stay in the browser; *Open in browser* on any session gets you there.
+
+Parts of the web session page wait on the API carrying them. The conversation endpoint returns
+each message's role, words, time and whether it holds a tool call or result, and nothing else, so
+the transcript's thinking blocks, compaction markers, errors, runtime notices, queue events and
+image badges are not on the phone. The web composer's "/" also offers the skills and commands
+found in the session's own clone (`.claude/skills`, `.claude/commands`), which no API route
+returns; the app offers the session's catalog skills alone. The web header's per-session push
+notifications bell and the *Context window* (auto-compact window) editor have no API route, and the
+session JSON does not say whether push is on; *Derive it* cannot name the genesis's class while a
+class is chosen, because the API reports only the class in force. A class or precedence changed
+from the app is not in the session's log: the web page writes "Scheduling class set to … (was …)"
+and "Precedence set to … (was …)" there, and `PATCH /api/v1/sessions/:id` writes neither.
 
 ## Two origins
 
@@ -287,7 +363,7 @@ host's tunnel answers with a 404. The JWT lives about 30 days. The app
 runs the handoff again when less than a day is left, or when Access refuses a call: a redirect to
 `*.cloudflareaccess.com`, which the app never follows, or a 401/403 page with `cf-access-aud`.
 
-**Then Zimmer**, as a public OAuth client of [Zimmer's authorization server](/auth/mcp-authorization-server/),
+**Then Zimmer**, as a public OAuth client of [Zimmer's authorization server](/auth/mcp-authorization-server/#tokens),
 under the built-in `zimmer-ios` client:
 
 1. You type your Zimmer's https address, unless the build already carries one.
@@ -295,9 +371,11 @@ under the built-in `zimmer-ios` client:
    [web sign-in](/auth/web-sign-in/) does the rest, as it does in a browser: Google, restricted to
    the deployment's domain, then the second factor. Zimmer then shows a consent screen for
    "Zimmer for iOS". It asks for a [connection level](/auth/mcp-authorization-server/#relay-only-or-acts-on-my-behalf) like every
-   other OAuth connection. Both levels reach the same API. **Acts on my behalf** records what you
-   send from the app (follow-ups, Quick Router prompts) as your message, the way it does for an
-   assistant; **Relay only** records nothing.
+   other OAuth connection. Both levels reach the same API, with one exception. **Acts on my behalf**
+   records what you send from the app (follow-ups, Quick Router prompts) as your message, the way it
+   does for an assistant, and is the only level that may answer an MCP server's prompt (an
+   elicitation), because an answer approves or refuses what that server does next. **Relay only**
+   records nothing, and may read a prompt but not answer it.
 3. Approving sends the sheet to `com.tadasant.zimmer:/oauth/callback` with a 60-second code. The app
    redeems it at `/oauth/token` on the app origin with the verifier only it holds.
 4. The access and refresh tokens go into the Keychain (`AfterFirstUnlockThisDeviceOnly`). The app
@@ -307,6 +385,16 @@ under the built-in `zimmer-ios` client:
 No Google credential and no API key ever reaches the phone. The connection is listed on
 **Settings → API keys** with every other OAuth connection, and revoking it there signs the phone out
 on its next request. Signing out in the app revokes it too.
+
+Only the token endpoint signs the app out. The app returns to the sign-in screen when `/oauth/token`
+answers `invalid_grant` (the connection was revoked, or its refresh token expired) or
+`invalid_client`. Everything else keeps the sign-in: a network error, a 5xx, or a 401 from an
+endpoint that still refuses after a fresh token. That last one means the endpoint does not take the
+app's token. It shows up as an error on that screen. A refresh whose answer never reached the phone
+does not end the connection either; see
+[refresh-token rotation](/auth/mcp-authorization-server/#tokens). A Keychain read that fails at launch,
+which happens before the phone's first unlock, is retried on the next request rather than treated as
+signed out.
 
 ## Push notifications
 

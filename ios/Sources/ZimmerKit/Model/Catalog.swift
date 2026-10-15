@@ -40,6 +40,14 @@ public struct AppConfigs: Hashable, Sendable, Decodable {
 
     /// The models for `runtime`, or none when the server names no such runtime.
     public func models(for runtime: String) -> [ModelOption] { runtimeModels[runtime]?.models ?? [] }
+
+    /// The catalog goal a session's goal names, or nil for free text. A goal is stored as the
+    /// id (the web form, the API, a trigger) or as the description verbatim (the web page's
+    /// picker, MCP `start_session`), and both name the same goal, as `GoalsConfig.resolve`
+    /// reads it.
+    public func goal(matching goal: String?) -> GoalOption? {
+        GoalOption.matching(goal, in: goals)
+    }
 }
 
 /// One `SessionGenesis` kind: its key, which the filter sends, and the dashboard's label.
@@ -153,6 +161,23 @@ public struct GoalOption: Hashable, Sendable, Decodable, Identifiable {
         self.name = name
         self.description = description
     }
+
+    public var title: String { name?.isEmpty == false ? name! : id }
+
+    /// The goal in `goals` that `goal` names, by id or by its words; nil for free text.
+    public static func matching(_ goal: String?, in goals: [GoalOption]) -> GoalOption? {
+        let value = (goal ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        return goals.first { $0.id == value }
+            ?? goals.first { ($0.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines) == value }
+    }
+
+    /// What a session stores when this goal is picked: its words, as the web page's picker
+    /// stores them, or its id when it has none.
+    public var storedValue: String {
+        let words = (description ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return words.isEmpty ? id : words
+    }
 }
 
 /// One entry of a catalog list — an MCP server, a skill, a hook or a plugin — reduced to what
@@ -164,17 +189,25 @@ public struct CatalogItem: Hashable, Sendable, Decodable, Identifiable {
     public var description: String?
     /// An MCP server that cannot be used right now (it needs authorizing, say), and why.
     public var unavailableReason: String?
+    /// The entry's name where the list gives one beside its id: a skill's is what "/" invokes.
+    public var name: String?
+    /// A skill a person may invoke by name (`user_invocable`); nil where the list does not say.
+    public var userInvocable: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, name, title, description, unavailable
         case unavailableReason = "unavailable_reason"
+        case userInvocable = "user_invocable"
     }
 
-    public init(id: String, title: String? = nil, description: String? = nil, unavailableReason: String? = nil) {
+    public init(id: String, title: String? = nil, description: String? = nil, unavailableReason: String? = nil,
+                name: String? = nil, userInvocable: Bool? = nil) {
         self.id = id
         self.title = title
         self.description = description
         self.unavailableReason = unavailableReason
+        self.name = name
+        self.userInvocable = userInvocable
     }
 
     public init(from decoder: Decoder) throws {
@@ -189,6 +222,8 @@ public struct CatalogItem: Hashable, Sendable, Decodable, Identifiable {
         description = try? container.decodeIfPresent(String.self, forKey: .description)
         let unavailable = (try? container.decodeIfPresent(Bool.self, forKey: .unavailable)) ?? false
         unavailableReason = unavailable ? ((try? container.decodeIfPresent(String.self, forKey: .unavailableReason)) ?? "Unavailable") : nil
+        name = (try? container.decodeIfPresent(String.self, forKey: .name)) ?? nil
+        userInvocable = (try? container.decodeIfPresent(Bool.self, forKey: .userInvocable)) ?? nil
     }
 
     public var displayTitle: String { title?.isEmpty == false ? title! : id }
@@ -206,6 +241,16 @@ public enum CatalogKind: String, Hashable, Sendable, CaseIterable, Identifiable 
         case .skills: return "Skills"
         case .hooks: return "Hooks"
         case .plugins: return "Plugins"
+        }
+    }
+
+    /// The SF Symbol its menu item carries.
+    public var symbol: String {
+        switch self {
+        case .mcpServers: return "server.rack"
+        case .skills: return "wand.and.stars"
+        case .hooks: return "link"
+        case .plugins: return "puzzlepiece.extension"
         }
     }
 
@@ -227,6 +272,13 @@ public enum CatalogKind: String, Hashable, Sendable, CaseIterable, Identifiable 
         case .hooks: return session.catalogHooks ?? []
         case .plugins: return session.catalogPlugins ?? []
         }
+    }
+
+    /// What the session's agent root supplies of this kind when the session chooses none —
+    /// the web UI's "agent root default".
+    public func rootDefaults(for session: SessionSummary, in configs: AppConfigs?) -> [String] {
+        guard let name = session.agentRoot, let root = configs?.agentRoots.first(where: { $0.name == name }) else { return [] }
+        return defaults(of: root)
     }
 
     /// What `root` starts a session with of this kind.

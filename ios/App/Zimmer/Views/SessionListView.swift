@@ -66,7 +66,7 @@ struct SessionListView: View {
             .onChange(of: model.sessions.map(\.id)) { _, ids in selection.formIntersection(ids) }
             // The server orders each view, so a new view is a new list.
             .onChange(of: model.view) { _, view in
-                if view != .ranked, reordering { reordering = false; editMode = .inactive }
+                if reordering { reordering = false; editMode = .inactive }
                 Task { await model.viewChanged() }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
@@ -145,6 +145,9 @@ struct SessionListView: View {
                 Section {
                     ForEach(section.sessions) { session in
                         SwipeableSessionRow(session: session, snoozing: $snoozing, prompts: rowPrompts)
+                            // Only spot rows move: the server places a drop by its spot neighbours,
+                            // and a priority row has none, so a drag would reset its precedence.
+                            .moveDisabled(session.isPriority)
                     }
                     .onMove(perform: moveHandler(for: section))
                     if section.sessions.isEmpty {
@@ -179,22 +182,20 @@ struct SessionListView: View {
 
     private var isSelecting: Bool { editMode.isEditing && !reordering }
 
-    /// Drag handles on the Ranked view's spot queue while reordering, and nowhere else.
+    /// Drag handles while reordering: on Your board, its spot rows; on Ranked, the spot queue.
     private func moveHandler(for section: BoardSection) -> ((IndexSet, Int) -> Void)? {
-        guard reordering, section.title == "Spot queue" else { return nil }
+        guard reordering, model.view == .yourBoard || section.title == "Spot queue" else { return nil }
         return { source, destination in drop(section.sessions, from: source, to: destination) }
     }
 
-    /// A drop in the spot queue: the server is told the rows it landed between and works out
-    /// the precedence, as the web UI's Ranked view does.
+    /// A drop: the server is told the rows of the same class it landed between and works out
+    /// the precedence, as the web UI's Your board and Ranked views do.
     private func drop(_ rows: [SessionSummary], from source: IndexSet, to destination: Int) {
         var moved = rows
         moved.move(fromOffsets: source, toOffset: destination)
         guard let from = source.first, let index = moved.firstIndex(where: { $0.id == rows[from].id }) else { return }
-        let session = moved[index]
-        let above = index > 0 ? moved[index - 1].id : nil
-        let below = index < moved.count - 1 ? moved[index + 1].id : nil
-        Task { await model.reorder(session.id, above: above, below: below) }
+        let (above, below) = BoardView.dropNeighbours(moved, at: index)
+        Task { await model.reorder(moved[index].id, above: above, below: below) }
     }
 
     private var incompleteNotice: String {
@@ -296,12 +297,12 @@ struct SessionListView: View {
                             Label("Reprioritize", systemImage: "list.number")
                         }
                     }
-                    if model.view == .ranked {
+                    if model.view.isReorderable {
                         Button {
                             reordering = true
                             editMode = .active
                         } label: {
-                            Label("Reorder Spot Queue", systemImage: "arrow.up.arrow.down")
+                            Label(model.view == .ranked ? "Reorder Spot Queue" : "Reorder Board", systemImage: "arrow.up.arrow.down")
                         }
                         .accessibilityIdentifier("ranked.reorder")
                     }
@@ -404,7 +405,7 @@ private struct SwipeableSessionRow: View {
 
     var body: some View {
         NavigationLink(value: session.id) {
-            SessionRow(session: session)
+            SessionRow(session: session, showsSummary: model.view == .yourBoard && session.boardRow != nil)
         }
         // Rows share one surface with hairlines between them, as the web UI's Your board and
         // Ranked views draw theirs: a card per row spent a third of the screen on margins.
@@ -643,6 +644,8 @@ private struct FilterSummary: View {
 /// Motet dims what is done, so the ones waiting on you stand out without a heavier face.
 struct SessionRow: View {
     let session: SessionSummary
+    /// Your board's rows carry the session's "where things stand", as the web UI's do.
+    var showsSummary = false
 
     var body: some View {
         let quiet = session.status == .archived
@@ -705,8 +708,73 @@ struct SessionRow: View {
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.inkMute)
             }
+            if showsSummary {
+                RowSummary(session: session)
+            }
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Your board's summary under a row, as the web UI draws it: the cached "where things stand"
+/// as inline markdown on three lines at most, then how current it is, and the agent root.
+private struct RowSummary: View {
+    let session: SessionSummary
+
+    var body: some View {
+        let summary = session.boardRow?.statusSummary
+        VStack(alignment: .leading, spacing: 3) {
+            if let summary, let text = summary.summary, !text.isEmpty {
+                // Links read as text: the row is one tap target, and opens the session, whose
+                // copy of the summary has working links.
+                Text(MarkdownInline.attributed(text))
+                    .font(.caption)
+                    .foregroundStyle(Theme.inkSoft)
+                    .tint(Theme.inkSoft)
+                    .lineLimit(3)
+            } else {
+                Text("No status summary yet.")
+                    .font(.caption.italic())
+                    .foregroundStyle(Theme.inkMute)
+            }
+            if let summary, summary.summary?.isEmpty == false {
+                let freshness = SummaryFreshness(summary)
+                HStack(spacing: 5) {
+                    HStack(spacing: 3) {
+                        Circle().fill(Self.color(freshness)).frame(width: 5, height: 5)
+                        Text(freshness.label).foregroundStyle(Self.color(freshness))
+                    }
+                    if let behind = summary.messagesSinceGenerated, behind > 0 {
+                        Text(behind == 1 ? "1 message since" : "\(behind) messages since")
+                    }
+                    if let written = summary.generatedAt {
+                        let age = Format.age(written)
+                        Text(verbatim: age == "now" ? "written just now" : "written \(age) ago")
+                    }
+                }
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(Theme.inkMute)
+                .lineLimit(1)
+            }
+            // On its own line, as the web UI's row puts it on the action line: the root, else
+            // the genesis.
+            if let root = session.agentRoot ?? session.genesis {
+                Text(verbatim: root)
+                    .font(Theme.mono)
+                    .foregroundStyle(Theme.inkMute)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.top, 1)
+    }
+
+    static func color(_ freshness: SummaryFreshness) -> Color {
+        switch freshness {
+        case .regenerating: return Theme.accent
+        case .stale: return Theme.warning
+        case .current: return Theme.success
+        }
     }
 }
 

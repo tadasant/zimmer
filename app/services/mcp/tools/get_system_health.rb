@@ -52,6 +52,7 @@ module Mcp
           *inbound_event_lines(report),
           *root_data_lines(report),
           *warm_clone_pool_lines(report),
+          *warm_process_pool_lines(report),
           "",
           "### Health Details",
           "```json",
@@ -231,6 +232,23 @@ module Mcp
             "  - `#{File.basename(target[:repo_url].to_s, '.git')}@#{target[:branch]}`: " \
               "#{target[:ready]}/#{target[:size]} ready, #{target[:starts]} starts in #{pool[:window_days]}d" \
               "#{" — #{target[:error]}" if target[:error].present?}"
+          end
+        ]
+      end
+
+      # The warm router process: whether one is ready and how router starts fared
+      # against it, the numbers the /health card shows. Silent when the report
+      # carries no section.
+      def warm_process_pool_lines(report)
+        pool = report[:warm_process_pool_health]
+        return [] if pool.nil? || pool[:status].nil?
+
+        outcomes = (pool[:outcomes] || {}).sort_by { |outcome, count| [ -count, outcome ] }
+        counts = outcomes.any? ? outcomes.map { |outcome, count| "#{outcome} #{count}" }.join(", ") : "no router starts"
+        [
+          "- **Warm router process:** #{pool[:status].message} Last #{pool[:outcome_window_hours]}h: #{counts}.",
+          *Array(pool[:entries]).map do |entry|
+            "  - `#{entry[:id]}` (pid #{entry[:pid]}): #{entry[:state]}, #{entry[:age_seconds].to_i / 60} min old, #{entry[:model]}"
           end
         ]
       end
