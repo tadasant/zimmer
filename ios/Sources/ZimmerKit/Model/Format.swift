@@ -29,4 +29,49 @@ public enum Format {
         }
         return name
     }
+
+    /// A span in the health page's shape (`HealthMonitorService.format_wait`): "45s", "3m",
+    /// "2h 5m", "3d 4h".
+    public static func duration(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        switch total {
+        case ..<60: return "\(total)s"
+        case ..<3600: return "\(total / 60)m"
+        case ..<86_400:
+            let minutes = (total % 3600) / 60
+            return minutes == 0 ? "\(total / 3600)h" : "\(total / 3600)h \(minutes)m"
+        default:
+            let hours = (total % 86_400) / 3600
+            return hours == 0 ? "\(total / 86_400)d" : "\(total / 86_400)d \(hours)h"
+        }
+    }
+
+    /// Bytes as the web page prints them (`number_to_human_size`): "1.2 MB", "840 KB".
+    public static func bytes(_ bytes: Int) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var value = Double(bytes)
+        var index = 0
+        while value >= 1024, index < units.count - 1 {
+            value /= 1024
+            index += 1
+        }
+        let text = index == 0 || value >= 100 ? String(Int(value.rounded())) : String(format: "%.1f", value)
+        return "\(text) \(units[index])"
+    }
+
+    /// A count as the web page's `number_to_human` prints it: "1.2M", "840K", "12".
+    public static func compact(_ count: Int) -> String {
+        let value = Double(count)
+        func scaled(_ divisor: Double, _ unit: String) -> String {
+            let scaled = value / divisor
+            let text = scaled >= 100 ? String(Int(scaled.rounded())) : String(format: "%.1f", scaled).replacingOccurrences(of: ".0", with: "")
+            return text + unit
+        }
+        switch count {
+        case ..<1000: return String(count)
+        case ..<1_000_000: return scaled(1000, "K")
+        case ..<1_000_000_000: return scaled(1_000_000, "M")
+        default: return scaled(1_000_000_000, "B")
+        }
+    }
 }

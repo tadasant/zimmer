@@ -125,6 +125,14 @@ struct SessionListView: View {
                     }
                 }
             }
+            if !model.systemBanners.isEmpty {
+                Section {
+                    SystemBannerRows(banners: model.systemBanners) { model.tab = .more }
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            }
             if let error = model.error {
                 Section {
                     ErrorBanner(error: error)
