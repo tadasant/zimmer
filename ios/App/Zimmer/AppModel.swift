@@ -106,8 +106,14 @@ final class AppModel: ObservableObject {
     var hasEdge: Bool { connection.edge != nil }
     var api: ZimmerAPI { connection.api }
 
+    /// Read the sign-in and, when there is one, load the board. Run at launch and again each
+    /// time the app comes to the front signed out, because a launch-time Keychain read can
+    /// fail (a push before the phone's first unlock) and that is not a sign-out.
     func start() async {
         let signIn = await connection.auth.signIn
+        // The connection was built from a Keychain read at launch; when that read failed it
+        // was built for no deployment, and an edge in front of this one would be missing.
+        if let origins = signIn?.origins { environment.resume(origins) }
         signedInOrigins = signIn?.origins
         isSignedIn = signIn != nil
         guard signIn != nil else { return }

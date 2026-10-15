@@ -6,9 +6,9 @@ module OauthServer
   # the exchange that rotates it (`rotated_at`).
   #
   # A pair issued by a refresh names the refresh token it was traded for
-  # (`rotated_from_id`), and an access token records its first use (`used_at`),
-  # so a spent refresh token presented again can be told apart: its client
-  # either never received the pair (neither half used) or is not its client.
+  # (`rotated_from_id`), and a pair records when it first reached its client
+  # (`used_at`), so a spent refresh token presented again can be told apart:
+  # its client either never received the pair (unused) or is not its client.
   class Token < ApplicationRecord
     ACCESS = "access"
     REFRESH = "refresh"
@@ -51,9 +51,34 @@ module OauthServer
       end
     end
 
-    # One write per access token, on its first request.
+    # The first request an access token makes. Claims its pair (#claim_pair!) —
+    # one write per access token, never repeated.
     def mark_used!
-      update_column(:used_at, Time.current) if used_at.nil?
+      claim_pair! if used_at.nil?
+    end
+
+    # This token's pair has reached its client: stamp both halves `used_at`, so
+    # the evidence outlives the access token's own row, and retire any other
+    # pair issued for the same spent refresh token (TokensController#rotate).
+    # Called on an access token's first request and on a refresh token's
+    # rotation — whichever comes first.
+    def claim_pair!
+      now = Time.current
+      if rotated_from_id.nil?
+        pair.where(used_at: nil).update_all(used_at: now, updated_at: now)
+        return
+      end
+
+      grant.with_lock do
+        # A sibling claimed first and retired this pair (unlinking it): leave
+        # the winner alone.
+        if self.class.where(id: id).where.not(rotated_from_id: nil).exists?
+          pair.where(used_at: nil).update_all(used_at: now, updated_at: now)
+          siblings = self.class.where(rotated_from_id: rotated_from_id).where.not(created_at: created_at)
+          siblings.where(kind: REFRESH).update_all(rotated_at: now, rotated_from_id: nil, updated_at: now)
+          siblings.where(kind: ACCESS).update_all(expires_at: now, rotated_from_id: nil, updated_at: now)
+        end
+      end
     end
 
     # The pair this refresh token's rotation issued, still linked to it.
@@ -61,21 +86,11 @@ module OauthServer
       self.class.where(rotated_from_id: id)
     end
 
-    # Whether the pair this refresh token was traded for ever reached a client:
-    # its access token was presented, or its refresh token was itself rotated.
-    # False when there is no linked pair at all — nothing shows it was lost.
+    # Whether no pair this refresh token was traded for ever reached a client.
+    # False when there is no linked pair at all — nothing shows one was lost.
     def successors_unused?
-      pair = successors.to_a
-      pair.any? && pair.none? { |token| token.used_at || token.rotated_at }
-    end
-
-    # Retire the never-used pair this refresh token was traded for, because its
-    # client is being issued another. The refresh half stays, spent and unlinked,
-    # so presenting it later is a replay.
-    def supersede_successors!
-      now = Time.current
-      successors.where(kind: REFRESH).update_all(rotated_at: now, rotated_from_id: nil, updated_at: now)
-      successors.where(kind: ACCESS).update_all(expires_at: now, rotated_from_id: nil, updated_at: now)
+      issued = successors.to_a
+      issued.any? && issued.none? { |token| token.used_at || token.rotated_at }
     end
 
     # Spend this refresh token. A conditional UPDATE, so of two concurrent
@@ -84,6 +99,13 @@ module OauthServer
     # @return [Boolean] true when this call spent it
     def rotate!
       self.class.where(id: id, rotated_at: nil).update_all(rotated_at: Time.current, updated_at: Time.current) == 1
+    end
+
+    private
+
+    # The access and refresh token one Grant#issue_tokens! call minted together.
+    def pair
+      self.class.where(oauth_server_grant_id: oauth_server_grant_id, rotated_from_id: rotated_from_id, created_at: created_at)
     end
   end
 end

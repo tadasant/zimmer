@@ -171,6 +171,21 @@ final class OAuthSignInTests: XCTestCase {
         XCTAssertEqual(token, "zmr_oat_old")
     }
 
+    func testARefreshThatCannotReadTheStoreLeavesTheItemAlone() async throws {
+        let store = FlakyTokenStore(Fixtures.signedIn().load())
+        store.failReads = true
+        let auth = AuthSession(store: store, transport: ScriptedTransport([]))
+
+        do {
+            try await auth.refresh()
+            XCTFail("expected unauthorized")
+        } catch {
+            XCTAssertEqual(error as? ZimmerError, .unauthorized)
+        }
+        store.failReads = false
+        XCTAssertNotNil(store.load(), "an unreadable item is not deleted")
+    }
+
     func testAnEdgeRefusalOfTheTokenCallIsItsOwnErrorAndKeepsTheSignIn() async throws {
         let transport = ScriptedTransport([{ _ in Fixtures.accessRefusal }])
         let store = Fixtures.signedIn(expiresAt: Date())

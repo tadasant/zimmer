@@ -68,6 +68,14 @@ final class AppEnvironment {
         return connection
     }
 
+    /// Point everything at the deployment a stored sign-in is for, keeping its edge login.
+    /// For a connection built at launch from a Keychain read that failed, which therefore
+    /// knows no deployment: the sign-in and the edge login it was made with are both current.
+    func resume(_ origins: ServerOrigins) {
+        guard !isFixture, connection.origins == nil else { return }
+        connection = Self.makeConnection(origins: origins, transport: transport, tokenStore: tokenStore, edgeStore: edgeStore)
+    }
+
     private static func makeConnection(
         origins: ServerOrigins?, transport: HTTPTransport, tokenStore: TokenStore, edgeStore: EdgeTokenStore
     ) -> Connection {
