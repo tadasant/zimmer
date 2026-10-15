@@ -218,6 +218,17 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   The web UI streams these changes; the app asks, so a change can take that long to show. A session
   opens at its newest message, as the web UI's transcript does, and follows new ones while you are
   at the end; scrolled back, it stays where you are.
+- **Keeps every part of a session's page a tap away.** A strip pinned under the navigation bar
+  has a chip for each part the page draws: *Overview* (the top), *Hierarchy* and *Human messages*
+  (when the details card has those rows) and *Transcript* (the newest message). A chip scrolls
+  there and opens the row if it is folded, so on a long transcript the hierarchy and the human
+  messages do not sit a hundred messages up. The chip for the part being read is filled. On a
+  phone's width the words shorten (*Top*, *Humans*), and at the largest text sizes they become
+  symbols. The web UI's session page has no such strip.
+- **Reads a transcript full screen.** The button at the end of the strip covers the page with the
+  conversation alone, without the header, the cards or the composer; *Done* goes back to the page
+  at the message you reached.
+  Full screen is never remembered: a session always opens on its page.
 - **Attaches photos and files** to a message with the paperclip beside the box: *Photo Library*,
   *Choose Files*, or *Paste Image* when the clipboard holds one (the
   web composer takes a pasted image; iOS asks whether Zimmer may paste from the app it came

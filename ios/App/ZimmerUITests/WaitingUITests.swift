@@ -60,11 +60,13 @@ final class WaitingUITests: XCTestCase {
         // The page opens at the newest message; the banner is at the top.
         let reconnect = app.buttons["waiting.action.mcp_oauth_reconnect"]
         // isHittable says yes while the button is still under the navigation bar, where a tap
-        // lands on the bar (a CI recording shows it): scroll until it is below the bar.
+        // lands on the bar (a CI recording shows it): scroll until it is below the bar, and below
+        // the section strip pinned under it.
         func belowTheBar() -> Bool {
             guard reconnect.exists, !reconnect.frame.isEmpty else { return false }
             let bar = app.navigationBars.firstMatch
-            let top = bar.exists ? bar.frame.maxY : 0
+            let strip = app.descendants(matching: .any)["detail.sections"]
+            let top = max(bar.exists ? bar.frame.maxY : 0, strip.exists ? strip.frame.maxY : 0)
             return reconnect.frame.minY >= top && app.frame.contains(CGPoint(x: reconnect.frame.midX, y: reconnect.frame.maxY))
         }
         for _ in 0..<6 where !belowTheBar() { app.swipeDown(velocity: .fast) }

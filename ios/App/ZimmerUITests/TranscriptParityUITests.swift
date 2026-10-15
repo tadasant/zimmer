@@ -166,11 +166,17 @@ final class TranscriptParityUITests: XCTestCase {
 
     /// The page opens at its newest message; swipe toward `element` until it can be tapped.
     private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
-        // Below the navigation bar too: isHittable says yes under it, where a tap lands on the bar.
+        // Below the navigation bar and the section strip pinned under it too: isHittable says
+        // yes under them, where a tap lands on them.
         func inView() -> Bool {
             guard element.exists, !element.frame.isEmpty, element.isHittable else { return false }
             let bar = app.navigationBars.firstMatch
-            return element.frame.minY >= (bar.exists ? bar.frame.maxY : 0)
+            let strip = app.descendants(matching: .any)["detail.sections"]
+            // And above the composer and its quick replies, which isHittable can also miss.
+            let field = app.descendants(matching: .any)["followup.field"]
+            let bottom = field.exists ? field.frame.minY - 50 : app.frame.maxY
+            return element.frame.minY >= max(bar.exists ? bar.frame.maxY : 0, strip.exists ? strip.frame.maxY : 0)
+                && element.frame.maxY <= bottom
         }
         for _ in 0..<8 where !inView() {
             if element.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
