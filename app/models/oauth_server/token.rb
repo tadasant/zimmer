@@ -4,6 +4,11 @@ module OauthServer
   # An access or refresh token. Only the digest is stored. A token is good while
   # it is unexpired and its grant is unrevoked; a refresh token is also spent by
   # the exchange that rotates it (`rotated_at`).
+  #
+  # A pair issued by a refresh names the refresh token it was traded for
+  # (`rotated_from_id`), and an access token records its first use (`used_at`),
+  # so a spent refresh token presented again can be told apart: its client
+  # either never received the pair (neither half used) or is not its client.
   class Token < ApplicationRecord
     ACCESS = "access"
     REFRESH = "refresh"
@@ -40,9 +45,37 @@ module OauthServer
         return lookup unless lookup.ok?
         return Lookup.new(token: lookup.token, refusal: :wrong_audience) unless lookup.grant.resource == resource
 
+        lookup.token.mark_used!
         lookup.grant.touch_last_used!
         lookup
       end
+    end
+
+    # One write per access token, on its first request.
+    def mark_used!
+      update_column(:used_at, Time.current) if used_at.nil?
+    end
+
+    # The pair this refresh token's rotation issued, still linked to it.
+    def successors
+      self.class.where(rotated_from_id: id)
+    end
+
+    # Whether the pair this refresh token was traded for ever reached a client:
+    # its access token was presented, or its refresh token was itself rotated.
+    # False when there is no linked pair at all — nothing shows it was lost.
+    def successors_unused?
+      pair = successors.to_a
+      pair.any? && pair.none? { |token| token.used_at || token.rotated_at }
+    end
+
+    # Retire the never-used pair this refresh token was traded for, because its
+    # client is being issued another. The refresh half stays, spent and unlinked,
+    # so presenting it later is a replay.
+    def supersede_successors!
+      now = Time.current
+      successors.where(kind: REFRESH).update_all(rotated_at: now, rotated_from_id: nil, updated_at: now)
+      successors.where(kind: ACCESS).update_all(expires_at: now, rotated_from_id: nil, updated_at: now)
     end
 
     # Spend this refresh token. A conditional UPDATE, so of two concurrent

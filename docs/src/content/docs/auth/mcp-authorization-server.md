@@ -219,12 +219,24 @@ Access tokens are short and refresh tokens are long, so a connector that is used
 months never asks you to sign in again. Every value is opaque and random. Zimmer stores only its
 SHA-256 digest, and the plaintext exists only in the response that issued it.
 
-**Refresh tokens rotate.** Each refresh spends the presented refresh token and returns a new pair. If
-a spent refresh token is presented again more than 60 seconds after it was spent, the whole
-connection is revoked (RFC 9700 §4.14.2). Within those 60 seconds it is only refused. That window is
-for a client that refreshes twice at once with the same token: one call wins, and the other must not
-end a connection that the winner's new tokens are still using. It does not rescue a client that lost
-the response to its own refresh. That client is refused and has to be approved again.
+**Refresh tokens rotate.** Each refresh spends the presented refresh token and returns a new pair,
+and remembers which refresh token that pair was traded for. When a spent refresh token comes back,
+what happens depends on whether that pair was ever used: its access token presented, or its refresh
+token refreshed.
+
+- **The pair was used.** Somebody other than its client holds the spent token. More than 60 seconds
+  after it was spent, the whole connection is revoked (RFC 9700 §4.14.2). Within those 60 seconds it
+  is only refused, so a client that refreshes twice at once does not end its own connection.
+- **The pair was never used.** The client never received it. A phone suspended mid-request, or a
+  connection that dropped after the server answered, leaves the client holding the spent token. It
+  gets a new pair. After the 60 seconds, the lost pair is retired: its access token stops working,
+  and presenting its refresh token later revokes the connection, because the client that refreshed
+  never had it. Within the 60 seconds the lost pair is left alone, since it may belong to the other
+  half of a concurrent refresh.
+
+A refresh made while the allowed domains cannot be read (the secret store not answering, or nothing
+configured) is a `503 temporarily_unavailable`. Nothing is issued and nothing is revoked. Only a list
+that is read and leaves the human's domain out revokes the connection.
 
 **Tokens are bound to the resource.** Every access token's audience is `<issuer>/mcp`, whether or not
 the client sent a `resource` (RFC 8707). A `resource` that names anything else is `invalid_target`.

@@ -124,6 +124,53 @@ final class OAuthSignInTests: XCTestCase {
         XCTAssertFalse(signedIn)
     }
 
+    func testATokenEndpointThatCannotCheckRightNowKeepsTheSignIn() async throws {
+        let transport = ScriptedTransport([
+            { _ in Fixtures.json(503, ["error": "temporarily_unavailable"]) },
+            { _ in Fixtures.json(401, ["error": "Unauthorized"]) },
+        ])
+        let store = Fixtures.signedIn(expiresAt: Date())
+        let auth = AuthSession(store: store, transport: transport)
+
+        for _ in 0..<2 {
+            do {
+                _ = try await auth.accessToken()
+                XCTFail("expected an error")
+            } catch {
+                XCTAssertNotEqual(error as? ZimmerError, .unauthorized)
+            }
+        }
+        XCTAssertEqual(store.load()?.tokens.refreshToken, "zmr_ort_old")
+    }
+
+    func testAnUnknownClientSignsTheAppOut() async throws {
+        let transport = ScriptedTransport([{ _ in Fixtures.json(401, ["error": "invalid_client"]) }])
+        let store = Fixtures.signedIn(expiresAt: Date())
+        let auth = AuthSession(store: store, transport: transport)
+
+        do {
+            _ = try await auth.accessToken()
+            XCTFail("expected unauthorized")
+        } catch {
+            XCTAssertEqual(error as? ZimmerError, .unauthorized)
+        }
+        XCTAssertNil(store.load())
+    }
+
+    func testASignInTheStoreCouldNotReadAtLaunchIsPickedUpOnceItCan() async throws {
+        let store = FlakyTokenStore(Fixtures.signedIn().load())
+        store.failReads = true
+        let auth = AuthSession(store: store, transport: ScriptedTransport([]))
+        let atLaunch = await auth.isSignedIn
+        XCTAssertFalse(atLaunch)
+
+        store.failReads = false
+        let later = await auth.isSignedIn
+        XCTAssertTrue(later)
+        let token = try await auth.accessToken()
+        XCTAssertEqual(token, "zmr_oat_old")
+    }
+
     func testAnEdgeRefusalOfTheTokenCallIsItsOwnErrorAndKeepsTheSignIn() async throws {
         let transport = ScriptedTransport([{ _ in Fixtures.accessRefusal }])
         let store = Fixtures.signedIn(expiresAt: Date())
