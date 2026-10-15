@@ -1,10 +1,12 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import ZimmerKit
 
 /// Settings → API keys, as the app: the deployment's MCP connections (this phone among
-/// them), its keys, and a form to mint one. Every write asks first, as the page's
-/// `turbo_confirm` does, and a refusal is shown under the row it answers, in the server's
-/// words; the rows stay as the server lists them.
+/// them), its keys, and a form to mint one. The writes that ask first are the ones the page
+/// asks before (`turbo_confirm`): a revoke, and raising a connection to act on your behalf.
+/// A refusal is shown under the row it answers, in the server's words; the rows stay as the
+/// server lists them.
 struct AccountView: View {
     @EnvironmentObject private var model: AppModel
     /// Revoking this phone's own connection signs the app out; the caller closes Settings.
@@ -106,8 +108,8 @@ struct AccountView: View {
             titleVisibility: .visible,
             presenting: confirming
         ) { confirmation in
+            // Found by its title in the UI tests: a dialog button carries no identifier.
             Button(confirmation.action, role: confirmation.role) { Task { await run(confirmation) } }
-                .accessibilityIdentifier("account.confirm")
         } message: { confirmation in
             Text(confirmation.message)
         }
@@ -160,7 +162,7 @@ struct AccountView: View {
                         .controlSize(.small)
                         .disabled(busy.contains("grant.\(grant.id)"))
                     }
-                    if let message = errors["grant.\(grant.id)"] { refusal(message) }
+                    if let message = errors["grant.\(grant.id)"] { refusal(message, row: "account.grant.\(grant.id)") }
                 }
                 .padding(.vertical, 4)
             }
@@ -210,7 +212,7 @@ struct AccountView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .disabled(busy.contains("key.\(key.id)"))
-                    if let message = errors["key.\(key.id)"] { refusal(message) }
+                    if let message = errors["key.\(key.id)"] { refusal(message, row: "account.key.\(key.id)") }
                 }
                 .padding(.vertical, 4)
             }
@@ -237,7 +239,12 @@ struct AccountView: View {
                         .padding(8)
                         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .accessibilityIdentifier("account.key.token")
-                    Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = minted.token }
+                    // Local to this phone and gone in two minutes: Universal Clipboard would
+                    // otherwise carry a credential to every device on the Apple ID.
+                    Button("Copy", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.setItems([[UTType.utf8PlainText.identifier: minted.token]],
+                                                      options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
+                    }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .accessibilityIdentifier("account.key.token.copy")
@@ -268,7 +275,7 @@ struct AccountView: View {
             }
             .pickerStyle(.menu)
             .accessibilityIdentifier("account.key.new.grant")
-            if let message = errors["new"] { refusal(message) }
+            if let message = errors["new"] { refusal(message, row: "account.key.new") }
         } header: {
             Text("Create a key")
         } footer: {
@@ -307,9 +314,9 @@ struct AccountView: View {
     }
 
     /// The server's refusal, in its words, under the row it answers.
-    private func refusal(_ message: String) -> some View {
+    private func refusal(_ message: String, row: String) -> some View {
         Text(message).font(.caption).foregroundStyle(Theme.danger)
-            .accessibilityIdentifier("account.error")
+            .accessibilityIdentifier("\(row).error")
     }
 
     // MARK: - Reads and writes

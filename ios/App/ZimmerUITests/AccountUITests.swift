@@ -55,7 +55,9 @@ final class AccountUITests: XCTestCase {
         XCTAssertTrue(waitForDisappearance(revoke))
         XCTAssertTrue(waitForLabelContaining(other, "Revoked"))
         XCTAssertFalse(other.label.contains("Active"))
-        XCTAssertTrue(app.buttons["account.grant.7.revoke"].exists, "this phone's own connection is untouched")
+        let ownRevoke = app.buttons["account.grant.7.revoke"]
+        reveal(app, ownRevoke)
+        XCTAssertTrue(ownRevoke.exists, "this phone's own connection is untouched")
 
         // It is the server's state: the same after the screen is opened again.
         goBack(app)
@@ -147,7 +149,7 @@ final class AccountUITests: XCTestCase {
         revoke.tap()
         confirm(app)
 
-        let refusal = app.staticTexts["account.error"]
+        let refusal = app.staticTexts["account.grant.4.error"]
         XCTAssertTrue(refusal.waitForExistence(timeout: timeout))
         XCTAssertEqual(refusal.label, relayOnlyRefusal)
         XCTAssertTrue(revoke.exists, "the row is unchanged")
@@ -205,9 +207,10 @@ final class AccountUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["settings.account"].waitForExistence(timeout: timeout))
     }
 
-    /// The question every write asks first.
-    private func confirm(_ app: XCUIApplication) {
-        let button = app.buttons["account.confirm"]
+    /// The question a revoke asks first. A dialog's button carries no identifier, so it is
+    /// found by its title.
+    private func confirm(_ app: XCUIApplication, _ title: String = "Revoke") {
+        let button = app.sheets.buttons[title].firstMatch
         XCTAssertTrue(button.waitForExistence(timeout: timeout), "the write asks first")
         button.tap()
     }
