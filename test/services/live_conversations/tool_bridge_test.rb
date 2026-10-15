@@ -94,6 +94,16 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_not_includes tools, "action_live_conversation"
   end
 
+  test "a zimmer entry that names live_conversations still cannot end or replace its own conversation" do
+    scoped = ServersConfig::Server.new("zimmer", { "type" => "http", "url" => "https://zimmer.example.com/mcp?tool_groups=live_conversations" })
+    ServersConfig.stubs(:find).with("zimmer").returns(scoped)
+
+    tools = LiveConversations::ToolBridge.new(@conversation).functions.first.parameters[:properties][:tool][:enum]
+
+    assert_includes tools, "get_live_conversations"
+    assert_not_includes tools, "action_live_conversation"
+  end
+
   test "describe_zimmer_tool returns the full description and schema" do
     result = @bridge.execute("describe_zimmer_tool", { tool: "quick_router" }.to_json, call_id: "c3")
 

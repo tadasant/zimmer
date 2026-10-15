@@ -35,6 +35,8 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     assert_equal live.sort, Mcp::Registry.tools_for([ "live_conversations" ]).map(&:tool_name).sort
     assert_equal [ "get_live_conversations" ], Mcp::Registry.tools_for([ "live_conversations_readonly" ]).map(&:tool_name)
     assert_empty live & Mcp::Registry.tools_for([ "sessions" ]).map(&:tool_name)
+    assert_empty live & Mcp::Registry.tools_for([ "sessions_readonly" ]).map(&:tool_name)
+    assert_empty live & Mcp::Registry.tools_for([ "self_session" ]).map(&:tool_name)
     assert_empty live & Mcp::Registry.tools_for(Mcp::Registry.parse_groups(nil)).map(&:tool_name)
   end
 

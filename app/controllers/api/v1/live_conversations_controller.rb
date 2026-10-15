@@ -12,11 +12,19 @@
 #   POST /api/v1/live_conversations/:id/client_secret  Live Voice: mint a Realtime client secret
 #   POST /api/v1/live_conversations/:id/tool_calls     Live Voice: run a function call (name, arguments, call_id)
 #   POST /api/v1/live_conversations/:id/turns          Live Voice: record a transcript line (role, content)
+#
+# The reads take an API key. Everything that starts, steers or speaks for a
+# conversation takes only the iOS app's sign-in, on a grant that acts as its
+# person: a live model can enable any catalog MCP server, and `tool_calls` runs
+# one directly, so an API key — the fleet's — must not reach through here to the
+# whole catalog. The web page is the other way in, behind the sign-in wall.
 class Api::V1::LiveConversationsController < Api::BaseController
   accepts_native_app_tokens
 
   INDEX_LIMIT = 20
+  PERSON_ACTIONS = %i[create finish messages client_secret tool_calls turns].freeze
 
+  before_action :require_a_person_on_the_app, only: PERSON_ACTIONS
   before_action :set_conversation, except: %i[modes index create]
 
   def modes
@@ -78,6 +86,17 @@ class Api::V1::LiveConversationsController < Api::BaseController
   end
 
   private
+
+  def require_a_person_on_the_app
+    return if native_app_request? && native_app_grant.acts_as_human?
+
+    message = if native_app_request?
+      "This sign-in may not act as you; sign in again and allow acting as you"
+    else
+      "Only a person can start or steer a live conversation: it takes the iOS app's sign-in, acting as you, or the web UI"
+    end
+    render_api_error("Forbidden", message, status: :forbidden)
+  end
 
   def set_conversation
     @conversation = LiveConversation.find_by(id: params[:id])

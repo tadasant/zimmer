@@ -155,8 +155,10 @@ module LiveConversations
       )
     end
 
-    # Less the one tool that would let the live agent end its own conversation
-    # (`action_live_conversation` → start or finish).
+    # Less the one tool that would let the live agent end or replace its own
+    # conversation (`action_live_conversation`). Its group, `live_conversations`, is
+    # opt-in and no shipped catalog entry names it, so this only bites when a
+    # deployment's own `zimmer-*` entry does.
     def zimmer_tools
       return [] if zimmer_groups.empty?
 
