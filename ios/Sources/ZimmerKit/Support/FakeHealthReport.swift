@@ -6,32 +6,76 @@ import Foundation
 // QueueRecoveryMode::Status#as_json), so the fixture goes through the real parser and every
 // section of the web page has something to show.
 extension FakeZimmerAPI {
+    /// What the Health page's actions change: the report is built from this, so a button's
+    /// effect is read back the way the server's would be.
+    struct HealthState: Sendable {
+        var orphanPIDs: [Int] = [48_112]
+        /// The recent failures, newest first; a retry takes a session out and restarts it.
+        var failedSessionIDs: [Int] = [1027, 1019]
+        /// Sessions the stale sweep has trashed, which the status breakdown counts as archived.
+        var archivedOld: [Int] = []
+        var recoveryActive: Bool
+        var recoveryEnteredAt: Date?
+        var recoveryExpiresAt: Date?
+        var recoveryReason: String?
+        var recoveryEnteredBy: String?
+        /// The failed post-deploy task was re-armed: it reads as pending until a pass runs it.
+        var postDeployRearmed = false
+        /// Queued jobs by class and queue, as `QueuedJobMaintenance.breakdown` lists them.
+        var queuedJobs: [(jobClass: String, queue: String, count: Int)] = [("SlackTriggerPollerJob", "pollers", 4), ("TriggerEvaluationJob", "triggers", 2)]
+        /// When each cooled-down action last ran, for the thirty-second refusal.
+        var lastActions: [String: Date] = [:]
+
+        init(degraded: Bool, now: Date = Date()) {
+            recoveryActive = degraded
+            if degraded {
+                recoveryEnteredAt = now.addingTimeInterval(-18 * 60)
+                recoveryExpiresAt = now.addingTimeInterval(42 * 60)
+                recoveryReason = "trigger stampede, 900 jobs/hour"
+                recoveryEnteredBy = "tadas"
+            }
+        }
+    }
+
     static func sampleHealthJSON(now: Date, degraded: Bool) -> [String: Any] {
+        sampleHealthJSON(now: now, state: HealthState(degraded: degraded, now: now))
+    }
+
+    static func sampleHealthJSON(now: Date, state: HealthState) -> [String: Any] {
         func iso(_ offset: TimeInterval) -> String { now.addingTimeInterval(offset).formatted(.iso8601) }
         func status(_ word: String, _ message: String) -> [String: Any] { ["status": word, "message": message] }
+        let degraded = state.recoveryActive
+
+        let failures: [[String: Any]] = [
+            ["id": 1027, "slug": "rotate-key", "title": "Rotate the staging deploy key", "status": "failed", "git_root": "zimmer",
+             "updated_at": iso(-3 * 3600), "last_error": "API error 529: overloaded", "failure_reason": "api_error_retries_exhausted"],
+            ["id": 1019, "slug": "poller", "title": "Fix the flaky transcript poller test", "status": "failed", "git_root": "motet",
+             "updated_at": iso(-11 * 3600), "last_error": "SIGTERM during deploy", "failure_reason": "sigterm"],
+        ].filter { state.failedSessionIDs.contains($0["id"] as? Int ?? 0) }
+        let failed = state.failedSessionIDs.count
 
         let sessions: [String: Any] = [
             "status": status("warning", "Failure rate 12.5% over the last day"),
-            "sessions_by_status": ["running": 3, "waiting": 5, "needs_input": 2, "failed": 2, "archived": 4],
+            "sessions_by_status": ["running": 3, "waiting": 5 + (2 - failed) - state.archivedOld.count, "needs_input": 2, "failed": failed,
+                                   "archived": 4 + state.archivedOld.count],
             "total_sessions": 16,
-            "failure_rate": 0.125,
+            "failure_rate": Double(failed) / 16,
             "error_categories": ["api_error": 1, "timeout": 1],
             "failure_reasons": ["api_error_retries_exhausted": 1, "sigterm": 1],
             "average_duration_seconds": 1_840,
-            "recent_failures": [
-                ["id": 1027, "slug": "rotate-key", "title": "Rotate the staging deploy key", "status": "failed", "git_root": "zimmer",
-                 "updated_at": iso(-3 * 3600), "last_error": "API error 529: overloaded", "failure_reason": "api_error_retries_exhausted"],
-                ["id": 1019, "slug": "poller", "title": "Fix the flaky transcript poller test", "status": "failed", "git_root": "motet",
-                 "updated_at": iso(-11 * 3600), "last_error": "SIGTERM during deploy", "failure_reason": "sigterm"],
-            ],
+            "recent_failures": failures,
         ]
 
+        let readyByClass = Dictionary(uniqueKeysWithValues: state.queuedJobs.map { ($0.jobClass, $0.count) })
+        let readyByQueue = state.queuedJobs.reduce(into: [String: Int]()) { $0[$1.queue, default: 0] += $1.count }
+        let ready = state.queuedJobs.reduce(0) { $0 + $1.count }
+
         let queueStats: [String: Any] = [
-            "pending_count": 14, "ready_count": 6, "scheduled_count": 8, "claimed_count": 3, "failed_count": 1,
-            "ready_count_by_queue": ["pollers": 4, "triggers": 2],
-            "ready_count_by_job_class": ["SlackTriggerPollerJob": 4, "TriggerEvaluationJob": 2],
-            "oldest_ready_age_seconds_by_queue": ["pollers": 48, "triggers": 12],
-            "head_of_line": ["queue": "pollers", "job_class": "SlackTriggerPollerJob", "age_seconds": 48],
+            "pending_count": 8 + ready, "ready_count": ready, "scheduled_count": 8, "claimed_count": 3, "failed_count": 1,
+            "ready_count_by_queue": readyByQueue,
+            "ready_count_by_job_class": readyByClass,
+            "oldest_ready_age_seconds_by_queue": readyByQueue.mapValues { _ in 48 },
+            "head_of_line": state.queuedJobs.first.map { ["queue": $0.queue, "job_class": $0.jobClass, "age_seconds": 48] as [String: Any] } ?? NSNull(),
             "claimed_count_by_queue": ["agents": 2, "default": 1],
             "claimed_count_by_job_class": ["AgentSessionJob": 2, "TokenUsageIngestionJob": 1],
             "oldest_claimed_age_seconds_by_queue": ["agents": 1_920, "default": 14],
@@ -43,7 +87,7 @@ extension FakeZimmerAPI {
 
         let system: [String: Any] = [
             "status": status("healthy", "Queues draining; every lane has executed in the last minute"),
-            "queue_depth": 6,
+            "queue_depth": ready,
             "queue_stats": queueStats,
             "worker_stats": ["total_workers": 2, "active_workers": 2, "worker_details": []],
             "recent_errors": [
@@ -66,9 +110,10 @@ extension FakeZimmerAPI {
              "updated_at": iso(-40 * 60)],
         ]
 
+        let rearmed = state.postDeployRearmed
         let postDeploy: [String: Any] = [
-            "status": status("warning", "1 post-deploy task failing, retry pending"),
-            "total": 3, "pending": 0, "running": 0, "succeeded": 2, "failed": 1, "blocked": 0, "awaiting_first_tick": 1,
+            "status": rearmed ? status("healthy", "1 post-deploy task pending its next pass") : status("warning", "1 post-deploy task failing, retry pending"),
+            "total": 3, "pending": rearmed ? 1 : 0, "running": 0, "succeeded": 2, "failed": rearmed ? 0 : 1, "blocked": 0, "awaiting_first_tick": rearmed ? 0 : 1,
             "tasks": [
                 ["version": "20261001120000", "name": "backfill_session_genesis", "status": "succeeded", "registered": true, "attempts": 1,
                  "failures": 0, "blocked": false, "stats": ["rows": 4_120], "started_at": iso(-13 * 86_400), "finished_at": iso(-13 * 86_400),
@@ -76,9 +121,9 @@ extension FakeZimmerAPI {
                 ["version": "20261008090000", "name": "reprice_token_usage", "status": "succeeded", "registered": true, "attempts": 3,
                  "failures": 0, "blocked": false, "stats": ["cursor": 918_000, "rows": 918_000], "started_at": iso(-6 * 86_400),
                  "finished_at": iso(-5 * 86_400), "last_ran_at": iso(-5 * 86_400), "next_attempt_at": NSNull(), "last_error": NSNull(), "last_error_at": NSNull()],
-                ["version": "20261013110000", "name": "reconcile_catalog_references", "status": "failed", "registered": false, "attempts": 2,
+                ["version": "20261013110000", "name": "reconcile_catalog_references", "status": rearmed ? "pending" : "failed", "registered": false, "attempts": 2,
                  "failures": 2, "blocked": false, "stats": ["triggers": 14], "started_at": iso(-2 * 3600), "finished_at": NSNull(),
-                 "last_ran_at": iso(-20 * 60), "next_attempt_at": iso(25 * 60),
+                 "last_ran_at": iso(-20 * 60), "next_attempt_at": rearmed ? iso(0) : iso(25 * 60),
                  "last_error": "AirCatalogService::ResolveFailed: air resolve exited 1\n  app/services/air_catalog_service.rb:88", "last_error_at": iso(-20 * 60)],
             ],
         ]
@@ -110,19 +155,14 @@ extension FakeZimmerAPI {
             ],
         ]
 
-        let queueRecovery: [String: Any] = degraded
-            ? ["active": true, "entered_at": iso(-18 * 60), "expires_at": iso(42 * 60), "expires_in_seconds": 2_520,
-               "reason": "trigger stampede, 900 jobs/hour", "entered_by": "tadas", "halted_queues": ["pollers", "triggers", "inference", "maintenance", "default"],
-               "paused_queues": ["pollers", "triggers", "inference", "maintenance", "default", "exports"], "live_queues": ["agents"]]
-            : ["active": false, "entered_at": NSNull(), "expires_at": NSNull(), "expires_in_seconds": NSNull(), "reason": NSNull(), "entered_by": NSNull(),
-               "halted_queues": ["pollers", "triggers", "inference", "maintenance", "default"], "paused_queues": [], "live_queues": ["agents"]]
+        let queueRecovery = queueRecoveryJSON(now: now, state: state)
 
         let report: [String: Any] = [
             "process_health": [
-                "status": status("warning", "1 orphaned process"),
-                "active_count": 4, "orphaned_count": 1, "tracked_count": 3, "recorded_count": 3, "observable": true,
+                "status": state.orphanPIDs.isEmpty ? status("healthy", "No orphaned processes") : status("warning", "\(state.orphanPIDs.count) orphaned process"),
+                "active_count": 3 + state.orphanPIDs.count, "orphaned_count": state.orphanPIDs.count, "tracked_count": 3, "recorded_count": 3, "observable": true,
                 "active_processes": [], "tracked_processes": [], "recorded_processes": [],
-                "orphaned_processes": [["pid": 48_112, "command": "claude --print --session-id 7f1c… --resume"]],
+                "orphaned_processes": state.orphanPIDs.map { ["pid": $0, "command": "claude --print --session-id 7f1c… --resume"] as [String: Any] },
             ],
             "session_health": sessions,
             "system_health": system,
@@ -219,5 +259,19 @@ extension FakeZimmerAPI {
             "rails_env": "production",
             "ruby_version": "3.4.6",
         ]
+    }
+
+    /// `QueueRecoveryMode::Status#as_json`: what `GET /api/v1/health` carries and what the
+    /// enter and exit routes answer with.
+    static func queueRecoveryJSON(now: Date, state: HealthState) -> [String: Any] {
+        func iso(_ date: Date?) -> Any { date.map { $0.formatted(.iso8601) } ?? NSNull() }
+        let halted = ["pollers", "triggers", "inference", "maintenance", "default"]
+        return state.recoveryActive
+            ? ["active": true, "entered_at": iso(state.recoveryEnteredAt), "expires_at": iso(state.recoveryExpiresAt),
+               "expires_in_seconds": state.recoveryExpiresAt.map { Int($0.timeIntervalSince(now)) } ?? NSNull(),
+               "reason": state.recoveryReason ?? NSNull(), "entered_by": state.recoveryEnteredBy ?? NSNull(), "halted_queues": halted,
+               "paused_queues": halted + ["exports"], "live_queues": ["agents"]]
+            : ["active": false, "entered_at": NSNull(), "expires_at": NSNull(), "expires_in_seconds": NSNull(), "reason": NSNull(), "entered_by": NSNull(),
+               "halted_queues": halted, "paused_queues": [], "live_queues": ["agents"]]
     }
 }
