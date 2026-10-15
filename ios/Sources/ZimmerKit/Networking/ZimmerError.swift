@@ -2,9 +2,10 @@ import Foundation
 
 /// Every way a call to Zimmer can fail, as the app needs to tell them apart.
 ///
-/// The distinction that matters most is `.unauthorized` versus everything else: a 401 means
-/// the grant is gone (revoked on Settings → API keys, or expired past its refresh token) and
-/// the only fix is to sign in again, while a transport error means try again later.
+/// The distinction that matters most is `.unauthorized` versus everything else: it means
+/// the token endpoint said the grant is gone (revoked on Settings → API keys, or expired past
+/// its refresh token) and the only fix is to sign in again, while a transport error, a 5xx or
+/// an endpoint's own 401 means try again later with the sign-in kept.
 public enum ZimmerError: Error, Equatable, Sendable {
     /// No server is configured, or it is not an https origin.
     case notConfigured

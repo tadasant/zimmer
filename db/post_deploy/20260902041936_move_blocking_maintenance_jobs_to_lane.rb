@@ -19,6 +19,7 @@ class MoveBlockingMaintenanceJobsToLane < PostDeployTask
     TranscriptArchiveJob
     TriggerPromotionReleaseJob
     WarmClonePoolReplenishJob
+    WarmProcessPoolReplenishJob
   ].freeze
 
   def up

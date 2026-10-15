@@ -202,6 +202,69 @@ class ClaudeCliAdapter
     end
   end
 
+  # Spawn an idle Claude Code process for WarmProcessPool.
+  #
+  # The flags a fresh stream-json start uses, minus the system prompt, which the
+  # claim sends with an `initialize` control request instead. stdin is a pipe
+  # whose write end is returned to the caller to hold open; stdout goes to a file
+  # the caller reads control responses from. Nothing is written to stdin here,
+  # so the process boots, connects its MCP servers and waits: no transcript, no
+  # API call, no quota.
+  #
+  # `zimmer_session_id` must already be the warm entry's id. The config dir, the
+  # scratch dir, the memory cgroup and the elicitation address all key on it
+  # until a claim moves them onto the session.
+  #
+  # @param env_file [String] CLAUDE_ENV_FILE: a shell file the CLI sources before
+  #   every Bash command, which a claim fills with the session's own environment
+  # @return [Hash] { pid:, stdin:, stderr_log_path:, account: }
+  def spawn_warm(session_id:, working_dir:, mcp_config_path:, model:, stdout_path:, env_file:,
+                 auto_compact_window: DEFAULT_AUTO_COMPACT_WINDOW)
+    command = build_stream_json_command(
+      session_id: session_id,
+      mcp_config_path: mcp_config_path,
+      append_system_prompt: nil,
+      model: model,
+      effort: nil,
+      dangerously_skip_permissions: true,
+      debug: false
+    )
+    validate_spawn_args!(command, working_dir)
+
+    env_vars = build_claude_spawn_env(working_dir: working_dir, has_mcp: mcp_config_path.present?, auto_compact_window: auto_compact_window)
+    env_vars["CLAUDE_ENV_FILE"] = env_file
+
+    stderr_log_path = self.class.stderr_log_path(working_dir)
+    stdin_reader, stdin_writer = IO.pipe
+    stdout_file = File.open(stdout_path, "w")
+    stderr_file = File.open(stderr_log_path, "w")
+
+    pid = @process_manager.spawn(
+      env_vars,
+      *apply_session_memory_cgroup(command),
+      chdir: working_dir,
+      pgroup: true,
+      in: stdin_reader,
+      out: stdout_file,
+      err: stderr_file
+    )
+
+    { pid: pid, stdin: stdin_writer, stderr_log_path: stderr_log_path, account: @spawn_account }
+  rescue StandardError
+    stdin_writer&.close unless stdin_writer.nil? || stdin_writer.closed?
+    raise
+  ensure
+    stdin_reader&.close unless stdin_reader.nil? || stdin_reader.closed?
+    stdout_file&.close
+    stderr_file&.close
+  end
+
+  # The stream-json user message a prompt (and its images) is delivered as. Public
+  # for WarmProcessPool, which writes it to a process that is already running.
+  def stream_json_message(prompt:, images: nil)
+    build_message_json(prompt: prompt, images: images)
+  end
+
   # The CLI binary this adapter spawns. Part of the RuntimeCliAdapter contract.
   def binary_name
     "claude"

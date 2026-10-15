@@ -421,9 +421,49 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     assert_equal 600, tokens["expires_in"]
   end
 
-  test "a spent refresh token replayed inside the grace window is refused; later, it revokes the grant" do
+  test "two refreshes with one token before either pair is used: both are answered, and the first pair used retires the other" do
+    client_id, tokens = connect
+    winner = refresh(client_id, tokens["refresh_token"])
+    loser = refresh(client_id, tokens["refresh_token"])
+    assert_response :success, "with the first pair unused, the second call is answered"
+
+    rpc("tools/list", token: winner["access_token"])
+    assert_response :success
+    rpc("tools/list", token: loser["access_token"])
+    assert_response :unauthorized, "the pair not used first is retired"
+    assert_equal "invalid_grant", refresh(client_id, loser["refresh_token"])["error"]
+    refute OauthServer::Grant.last.revoked?, "inside the grace window the retired pair is only refused"
+
+    assert refresh(client_id, winner["refresh_token"])["access_token"]
+    assert_equal "invalid_grant", refresh(client_id, tokens["refresh_token"])["error"], "once a pair is used, the spent token is a replay"
+  end
+
+  test "rotating the reissued refresh token is a use: it retires the other pair" do
+    client_id, tokens = connect
+    first = refresh(client_id, tokens["refresh_token"])
+    second = refresh(client_id, tokens["refresh_token"])
+
+    assert refresh(client_id, second["refresh_token"])["access_token"]
+    rpc("tools/list", token: first["access_token"])
+    assert_response :unauthorized
+  end
+
+  test "a used pair's evidence outlives its access token's row" do
     client_id, tokens = connect
     rotated = refresh(client_id, tokens["refresh_token"])
+    rpc("tools/list", token: rotated["access_token"])
+    OauthServer::Token.where(token_digest: OauthServer.digest(rotated["access_token"])).delete_all
+
+    travel 2.minutes
+    assert_equal "invalid_grant", refresh(client_id, tokens["refresh_token"])["error"]
+    assert OauthServer::Grant.last.revoked?
+  end
+
+  test "a spent refresh token whose rotated pair was used is refused in the grace window; later, it revokes the grant" do
+    client_id, tokens = connect
+    rotated = refresh(client_id, tokens["refresh_token"])
+    rpc("tools/list", token: rotated["access_token"])
+    assert_response :success
 
     assert_equal "invalid_grant", refresh(client_id, tokens["refresh_token"])["error"]
     rpc("tools/list", token: rotated["access_token"])
@@ -435,6 +475,56 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
       assert_response :unauthorized
       assert_equal "invalid_grant", refresh(client_id, rotated["refresh_token"])["error"]
     end
+  end
+
+  test "a replay is caught by the rotated refresh token's use alone, before any access token is presented" do
+    client_id, tokens = connect
+    rotated = refresh(client_id, tokens["refresh_token"])
+    assert refresh(client_id, rotated["refresh_token"])["access_token"]
+
+    travel 2.minutes do
+      assert_equal "invalid_grant", refresh(client_id, tokens["refresh_token"])["error"]
+      assert OauthServer::Grant.last.revoked?
+    end
+  end
+
+  test "a client that never received its rotated pair gets a new one instead of a revoked grant" do
+    client_id, tokens = connect
+    refresh(client_id, tokens["refresh_token"]) # the answer is lost: a phone suspended mid-request
+
+    travel 61.minutes
+    again = refresh(client_id, tokens["refresh_token"])
+    assert_response :success
+    rpc("tools/list", token: again["access_token"])
+    assert_response :success
+    refute OauthServer::Grant.last.revoked?
+
+    # Lost twice in a row is still the same client.
+    refresh(client_id, again["refresh_token"])
+    travel 5.minutes
+    third = refresh(client_id, again["refresh_token"])
+    assert_response :success
+    assert refresh(client_id, third["refresh_token"])["access_token"], "the reissued chain rotates normally"
+  end
+
+  test "the lost pair is retired once the reissued one is used: refused, never a revoke" do
+    client_id, tokens = connect
+    lost = refresh(client_id, tokens["refresh_token"])
+
+    travel 2.minutes
+    reissued = refresh(client_id, tokens["refresh_token"])
+    assert_response :success
+    rpc("tools/list", token: reissued["access_token"])
+    assert_response :success
+
+    rpc("tools/list", token: lost["access_token"])
+    assert_response :unauthorized, "the retired access token is expired"
+
+    travel 2.minutes
+    assert_equal "invalid_grant", refresh(client_id, lost["refresh_token"])["error"]
+    refute OauthServer::Grant.last.revoked?, "a retired pair lost a race; it is not a replay"
+    rpc("tools/list", token: reissued["access_token"])
+    assert_response :success
   end
 
   test "a token bound to another resource is refused on /mcp" do
@@ -451,6 +541,18 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
 
     assert_equal "invalid_grant", refresh(client_id, tokens["refresh_token"])["error"]
     assert OauthServer::Grant.last.revoked?
+  end
+
+  test "a refresh while the allowed domains cannot be read is a 503 that revokes nothing" do
+    client_id, tokens = connect
+    OauthServer::Config.any_instance.stubs(:allowed_domains).returns([])
+
+    assert_equal "temporarily_unavailable", refresh(client_id, tokens["refresh_token"])["error"]
+    assert_response :service_unavailable
+    refute OauthServer::Grant.last.revoked?
+
+    OauthServer::Config.any_instance.unstub(:allowed_domains)
+    assert refresh(client_id, tokens["refresh_token"])["access_token"], "the refresh token was not spent"
   end
 
   test "the plugin endpoint does not take an OAuth access token, and its 401 carries no OAuth challenge" do

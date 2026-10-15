@@ -295,6 +295,10 @@ Rails.application.routes.draw do
         # way round it. `:session_id` is the junior and `:uncle_id` the senior;
         # direction is the whole content of the edge, so both are in the path.
         resources :uncle_links, only: [ :destroy ], param: :uncle_id
+
+        # The session's elicitations still waiting on an answer — what the web
+        # UI's banner shows. Answering is `PATCH /elicitations/:id/respond`.
+        resources :elicitations, only: [ :index ], as: :open_elicitations
       end
 
       # The gate decision ledger: what `pr-merge-gate` and `issue-work-gate` rated,

@@ -6,8 +6,9 @@ module OauthServer
   # Public clients only: the client names itself with `client_id` in the body
   # and proves possession with the PKCE verifier (for a code) or the refresh
   # token itself. Refresh tokens rotate: every refresh spends the one presented
-  # and returns a new one, and presenting a spent one again later than
-  # Grant::REPLAY_GRACE revokes the whole grant (RFC 9700 §4.14.2).
+  # and returns a new one. Presenting a spent one again revokes the whole grant
+  # (RFC 9700 §4.14.2) — unless the pair it was traded for was never used, which
+  # is a client that never received its answer, and gets a new pair (#rotate).
   class TokensController < BaseController
     VERIFIER_FORMAT = /\A[A-Za-z0-9\-._~]{43,128}\z/
 
@@ -44,7 +45,7 @@ module OauthServer
       client.touch_last_used!
       Rails.logger.info("[oauth_server] grant #{grant.id} issued to #{client.client_id.inspect} for #{grant.user_email} (#{grant.privilege})")
 
-      render_tokens(grant)
+      render_tokens(grant, grant.issue_tokens!(config: oauth_config))
     end
 
     def refresh
@@ -57,29 +58,62 @@ module OauthServer
       grant = token.grant
       raise invalid_grant("the refresh token was issued to a different client") unless grant.oauth_server_client_id == client.id
 
-      if token.rotated_at
-        if token.rotated_at > OauthServer::Grant::REPLAY_GRACE.ago
-          raise invalid_grant("the refresh token has already been used")
-        end
+      check_resource!(grant.resource)
+      check_domain!(grant)
+
+      # One refresh of a connection at a time, so two presentations of one token
+      # decide in turn. Nothing raises inside, which would roll back the
+      # rotation; the refusal and the revoke happen after the lock.
+      pair = grant.with_lock { rotate(token.reload, grant) }
+      if pair == :replayed
+        raise invalid_grant("the refresh token has already been used") if token.rotated_at > OauthServer::Grant::REPLAY_GRACE.ago
 
         grant.revoke!("a spent refresh token was presented again")
         raise invalid_grant("the refresh token has already been used; the grant is revoked")
       end
 
-      check_resource!(grant.resource)
-      unless oauth_config.email_allowed?(grant.user_email)
-        grant.revoke!("#{grant.user_email} is no longer in an allowed domain")
-        raise invalid_grant("#{grant.user_email} is no longer in an allowed domain")
-      end
-      raise invalid_grant("the refresh token has already been used") unless token.rotate!
-
       grant.touch_last_used!
       client.touch_last_used!
-      render_tokens(grant)
+      render_tokens(grant, pair)
     end
 
-    def render_tokens(grant)
-      pair = grant.issue_tokens!(config: oauth_config)
+    # Spend `token` and issue its replacement — or, when it was already spent,
+    # tell a lost answer from a replay. A client whose refresh reached the server
+    # but whose answer did not (a phone suspended mid-request, a dropped
+    # connection) still holds the spent token, and no pair it was traded for has
+    # been used: that client gets another pair. Every pair issued for one spent
+    # token stays live until one of them is used, and that first use retires the
+    # rest (Token#claim_pair!), so the client that refreshed twice at once and
+    # the client that lost an answer both end up with exactly one live pair.
+    #
+    # @return [Grant::TokenPair, :replayed]
+    def rotate(token, grant)
+      if token.rotate!
+        token.claim_pair!
+        return grant.issue_tokens!(config: oauth_config, rotated_from: token)
+      end
+      return :replayed unless token.successors_unused?
+
+      Rails.logger.warn("[oauth_server] grant #{grant.id} (#{grant.user_email}, client #{grant.client.client_id.inspect}) " \
+        "presented a spent refresh token whose rotated pair was never used; issuing another")
+      grant.issue_tokens!(config: oauth_config, rotated_from: token)
+    end
+
+    # A refresh ends a grant whose human has left the allowed domains. An empty
+    # list is not that: it is a store that did not answer, or nothing
+    # configured, and either way says nothing about this human — so nothing is
+    # issued and nothing is revoked.
+    def check_domain!(grant)
+      if oauth_config.allowed_domains.empty?
+        raise OauthServer::Error.new("temporarily_unavailable", "the allowed domains cannot be read; try again later")
+      end
+      return if oauth_config.email_allowed?(grant.user_email)
+
+      grant.revoke!("#{grant.user_email} is no longer in an allowed domain")
+      raise invalid_grant("#{grant.user_email} is no longer in an allowed domain")
+    end
+
+    def render_tokens(grant, pair)
       render json: {
         access_token: pair.access_token,
         token_type: "Bearer",

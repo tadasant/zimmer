@@ -58,8 +58,17 @@ public actor AuthSession {
         self.current = store.load()
     }
 
-    public var signIn: StoredSignIn? { current }
-    public var isSignedIn: Bool { current != nil }
+    public var signIn: StoredSignIn? { reloadIfEmpty() }
+    public var isSignedIn: Bool { reloadIfEmpty() != nil }
+
+    /// The sign-in, read from the store again when this session holds none. A Keychain
+    /// read can fail — before the phone's first unlock after a restart, when a push or
+    /// CarPlay launches the app — and that read must not stand as "signed out" for the
+    /// rest of the process. A real sign-out cleared the store, so it reads back nil.
+    private func reloadIfEmpty() -> StoredSignIn? {
+        if current == nil { current = store.load() }
+        return current
+    }
 
     /// Finish a sign-in the sheet returned from.
     public func complete(_ flow: OAuthSignIn, callback: URL) async throws {
@@ -73,7 +82,7 @@ public actor AuthSession {
 
     /// A valid access token, refreshed first if it is about to expire.
     public func accessToken() async throws -> String {
-        guard let signIn = current else { throw ZimmerError.unauthorized }
+        guard let signIn = reloadIfEmpty() else { throw ZimmerError.unauthorized }
         if !signIn.tokens.needsRefresh(at: now()) { return signIn.tokens.accessToken }
         return try await refresh().accessToken
     }
@@ -82,7 +91,10 @@ public actor AuthSession {
     @discardableResult
     public func refresh() async throws -> OAuthTokens {
         if let refreshing { return try await refreshing.value }
-        guard let signIn = current, let refreshToken = signIn.tokens.refreshToken else {
+        // Nothing read back is not a sign-out to perform: an unreadable Keychain must not
+        // have its item deleted.
+        guard let signIn = reloadIfEmpty() else { throw ZimmerError.unauthorized }
+        guard let refreshToken = signIn.tokens.refreshToken else {
             signOutLocally()
             throw ZimmerError.unauthorized
         }
@@ -144,9 +156,12 @@ public actor AuthSession {
                 return try OAuthTokens.decode(response.body, now: now())
             case 400, 401:
                 // `invalid_grant` is the grant being gone: revoked, replayed, or the
-                // refresh token expired. Nothing to do but sign in again.
+                // refresh token expired. `invalid_client` is a server that does not know
+                // the app. Nothing to do for either but sign in again. Any other answer —
+                // a 503 while the server cannot check, a 401 with no OAuth body — says
+                // nothing about the grant, and the sign-in is kept for the next try.
                 let body = try? JSONDecoder().decode(OAuthErrorBody.self, from: response.body)
-                if body?.error == "invalid_grant" || response.statusCode == 401 { throw ZimmerError.unauthorized }
+                if body?.error == "invalid_grant" || body?.error == "invalid_client" { throw ZimmerError.unauthorized }
                 throw ZimmerError.http(status: response.statusCode, message: body?.error_description ?? body?.error)
             default:
                 throw ZimmerError.http(status: response.statusCode, message: nil)

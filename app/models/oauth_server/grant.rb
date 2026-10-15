@@ -7,12 +7,12 @@ module OauthServer
   # `/oauth/revoke`, or because a spent refresh token was replayed) ends the
   # connection on the next request.
   class Grant < ApplicationRecord
-    # A spent refresh token presented again inside this window is refused without
-    # revoking the grant. The case it is for is a client that refreshes twice at
-    # once with the same token (two tabs, two workers): one call rotates it, the
-    # other loses the race, and the winner's new pair is still good. Revoking on
-    # that would end a working connection. Outside the window a replay revokes the
-    # grant (RFC 9700 §4.14.2).
+    # A spent refresh token presented again inside this window is refused
+    # without revoking the grant. The case it is for is a client that refreshes
+    # twice at once (two tabs, two workers) and holds on to the losing pair once
+    # the winning one has been used. Outside the window a replay revokes the
+    # grant (RFC 9700 §4.14.2). A spent token whose rotated pair was never used is
+    # neither: its client never received the pair (TokensController#rotate).
     REPLAY_GRACE = 60.seconds
 
     belongs_to :client, class_name: "OauthServer::Client", foreign_key: :oauth_server_client_id,
@@ -76,8 +76,9 @@ module OauthServer
       Rails.logger.warn("[oauth_server] grant #{id} (#{user_email}, client #{client.client_id.inspect}) revoked: #{reason}")
     end
 
-    # Mint an access token and a refresh token for this grant.
-    def issue_tokens!(config: OauthServer::Config.current)
+    # Mint an access token and a refresh token for this grant. `rotated_from` is
+    # the refresh token this pair replaces, when a refresh issued it.
+    def issue_tokens!(config: OauthServer::Config.current, rotated_from: nil)
       access = "#{OauthServer::ACCESS_TOKEN_PREFIX}#{SecureRandom.urlsafe_base64(32)}"
       refresh = "#{OauthServer::REFRESH_TOKEN_PREFIX}#{SecureRandom.urlsafe_base64(32)}"
       now = Time.current
@@ -87,9 +88,9 @@ module OauthServer
 
       Token.insert_all!([
         { oauth_server_grant_id: id, kind: Token::ACCESS, token_digest: OauthServer.digest(access),
-          expires_at: now + config.access_token_ttl, created_at: now, updated_at: now },
+          expires_at: now + config.access_token_ttl, rotated_from_id: rotated_from&.id, created_at: now, updated_at: now },
         { oauth_server_grant_id: id, kind: Token::REFRESH, token_digest: OauthServer.digest(refresh),
-          expires_at: now + config.refresh_token_ttl, created_at: now, updated_at: now }
+          expires_at: now + config.refresh_token_ttl, rotated_from_id: rotated_from&.id, created_at: now, updated_at: now }
       ])
 
       TokenPair.new(access_token: access, refresh_token: refresh, expires_in: config.access_token_ttl.to_i)

@@ -1136,9 +1136,16 @@ immediate.
 
 **A spent refresh token replayed within 60 seconds is refused but does not revoke the connection.**
 The window lets a client refresh twice at once without ending its own connection. The cost is that a
-stolen refresh token, replayed inside that minute, does not trip the replay alarm. A client that lost
-the response to its own refresh is not rescued by it: Zimmer keeps no copy of the tokens it sent, so
-that client has to be approved again.
+stolen refresh token, replayed inside that minute, does not trip the replay alarm.
+
+**A spent refresh token is answered while no pair it bought has been used.** That is how a client
+that lost the answer to its own refresh (a phone suspended mid-request) keeps its connection. The
+cost: a stolen *spent* refresh token, presented while the real client has not yet used its new pair,
+gets a live pair and trips no alarm. The two pairs then race. The first one used retires the other,
+and a retired pair is refused but never revokes the connection, so a thief who wins the race is not
+caught by the loser either. The window is as long as the real client sits on an unused pair: for
+the iOS app, which uses a pair as soon as it gets one, it is milliseconds. For a client that
+refreshes and then idles, it is as long as it idles.
 
 **Nothing sweeps expired rows on a schedule.** Expired codes are deleted when the next code is
 issued, and a connection's expired tokens when it next refreshes. A connection that stops refreshing
@@ -1175,6 +1182,13 @@ gap is worth naming precisely:
   Manager resource name out of a command and left a human unable to run it. The narrowing is confined
   to those two nouns: `password=`, `passphrase=`, `client_secret=` and `api_key=` are unchanged, and a
   UUID, a hex key or anything with an uppercase letter still redacts after `secret=` and `token=` too.
+- **A password shaped like a placeholder is not redacted.** A value-capturing rule skips a value that
+  is wholly a name in placeholder delimiters (`<…>`, `${VAR}`, a single-case `$VAR`, `{{var}}`,
+  uppercase `%VAR%`) or one repeated character, because agents write those as fill-in-the-blanks for
+  a human ([session 24427](https://zimmer.tadasant.com/sessions/24427)). A real password that looks
+  like a name — `$lowercasepassw0rd`, `<CorrectHorse>` — passes through, and so does a prefixed token
+  too short for its own rule wrapped in angle brackets. Full-length prefixed tokens (`ghp_…`, `sk-…`)
+  are still caught by their own shape first, wherever they sit.
 - **A redaction reaches the agent's own memory, not just the archive.** When a clone is recreated,
   `AgentSessionJob#restore_regressed_transcript_if_needed` writes the stored transcript back to the file
   the runtime reads on `--resume`. That copy is redacted, so the resumed conversation contains
@@ -1453,6 +1467,22 @@ The `diff_hunk` on an inline review comment is still interpolated into the promp
 builds it from the PR's own branch rather than from anything the commenter typed, so the text is
 code Zimmer's own agent usually wrote — but it is untrusted-adjacent on a PR from a fork, and
 nothing labels it.
+
+### A watcher firing retires an unrelated time wake, and only the prompt says so
+
+When a one-time wake fires, Zimmer retires the rest of the wait it ended at the end of the woken
+turn (`Trigger#shares_wait_with?`). Two `wake_me_up_later` wakes are always treated as two waits, so
+one never retires the other ([#1325](https://github.com/tadasant/zimmer/issues/1325)). A
+`wake_me_up_when_session_changes_state` watcher and a `wake_me_up_later` wake are always treated as
+one wait — the watcher plus deadline backstop pattern — because nothing on the rows says otherwise.
+So a session holding a watcher on a child *and* an unrelated 18:00 CI wake loses the 18:00 wake when
+the watcher fires, unless the woken turn re-arms it.
+
+The woken prompt ends with a list of the wakes the fire will retire and the ones still armed, so
+the loss is not silent. But it depends on the agent reading the list. A turn that ignores it and
+arms nothing comes to rest in `needs_input` rather than sleeping on nothing (#1172), which puts it
+in front of the operator. Recording which wakes belong to one wait at arm time is the fix this
+would need.
 
 ### A message queued by anyone coalesces a recurring trigger's next fire
 
@@ -1852,11 +1882,11 @@ fails, and nothing pages; the first park of a streak sends one push notification
 - **A streak is continued only by its own re-check.** A wall that arrives more than 8 hours after
   the streak's re-check was due starts a fresh streak at 15 minutes, so a session that ran on since
   never inherits an old streak's rung or ceiling.
-- **A re-check can retire the session's own wakes.** The re-check is a one-time wake, so it follows
-  held-wake-group rules: if the agent had armed its own wake before the wall and the re-check fires
-  first and meets the wall again, the agent's wake is retired when that turn comes to rest. A
-  session that failed on the wall lost that wake too, so this is not a new loss, but the agent is
-  not told.
+- **A re-check can retire the session's own watchers.** The re-check is a one-time time wake, so it
+  follows held-wake-group rules: a `wake_me_up_when_session_changes_state` watcher the agent armed
+  before the wall is retired when the re-check's turn comes to rest. The agent's own
+  `wake_me_up_later` wakes are not — two time wakes are two waits — and the re-check's prompt lists
+  what it retired, so the agent can re-arm a watcher it still needs.
 - **One trigger per parked session.** Each park adds a wake trigger row, so a balance that runs out
   under many Pi sessions shows that many rows on `/triggers` until the wall clears.
 
@@ -8017,6 +8047,53 @@ it:
   `WarmClonePoolReplenishJob` runs one at a time. The first pass under `active` can spend minutes
   building up to ten clones. Refills that claims enqueue during that pass are absorbed, so a claimed
   clone is replaced on the next one-minute tick after the pass ends.
+
+## The warm router process has not run in production
+
+`WarmProcessPool` (`app/services/warm_process_pool.rb`) ships **off**. Its claim, the delivery
+protocol, the fallbacks and the refill are covered by tests against a stand-in CLI process and real
+git repositories. The idle behaviour and the claim are proven against the real Claude Code CLI
+(2.1.300) on the production host, in a development deployment. There, over four alternating runs with the
+same prompt and model, a router session reached its first assistant event in a median 6.9 seconds
+with the warm process and 9.6 seconds without it. The runs without it claimed a warm clone, as
+production's do. Over a 60-second idle the process made no request to the API and wrote no
+transcript. The development server's MCP endpoint is slower to connect than production's, which
+slows both paths. The production win is a projection from those numbers. `metadata["warm_process"]` on every router session, and the Warm Router Process card on
+`/health`, are how it gets measured once it is on. The edges it ships with, all deliberate for now:
+
+- **One request at a time.** With one process, the second of two requests a few seconds apart
+  spawns cold, while the refill boots a replacement. `WARM_ROUTER_PROCESSES=2` buys a second at about
+  250 MB of RAM.
+- **It lives in one worker's memory.** The worker holds each process's stdin, so only that worker's
+  agent jobs can claim it, and a deploy or worker restart ends it. A request in the minute after a
+  deploy spawns cold.
+- **The router's MCP servers reconnect at the claim.** The `zimmer` server's URL carries the session
+  id, and the self-session server is the session's own, so `mcp_set_servers` reconnects both. Against
+  the production MCP endpoint that took 0.24–0.5 seconds, which the pool does not save.
+- **A stale `CLAUDE.md` is caught by path, not by content.** The CLI reads its memory files at boot,
+  and a claim refuses a process when the fetch moved one of them, anything under a `.claude/` above
+  the working directory, or anything in the root's own subdirectory. For a root that is the whole
+  repository, a file a `CLAUDE.md` imports from elsewhere in the tree is not checked. The production
+  router lives in a subdirectory, so its imports are covered.
+- **Only Bash gets the session's environment.** A process's environment is fixed when it starts, so
+  the session's scratch directory and elicitation address reach Bash through `CLAUDE_ENV_FILE`.
+  A hook, or a stdio MCP server whose config does not change at the claim, still sees the warm
+  process's own values: its scratch path is a symlink to the session's directory, so files land in
+  the same place, but its elicitation address names the warm process, not the session. The router
+  root's servers are HTTP and carry the session's address in their config.
+- **It drives Claude Code through the Agent SDK's control protocol.** `initialize`,
+  `mcp_set_servers`, `set_model` and `mcp_status` are what the SDK sends on stdin, not a documented
+  CLI interface, and an update could change them. A refused or unanswered request falls back to a
+  cold spawn, and a CLI update recycles the process.
+- **A claimed process writes its turn's stdout to disk.** The cold path sends stdout to
+  `/dev/null`. A warm process's stdout is the file the pool reads control responses from, so once it
+  is the session's turn, the turn's whole stream-json output (tool results included) lands in the
+  entry directory until the process exits and the sweep removes it.
+- **Its boot memory stays charged to its own cgroup.** Moving a process between cgroups does not move
+  memory it already charged, so about 250 MB of boot memory is counted against the warm process's
+  cgroup, not the session's bound. Both sit under the sessions pool.
+- **A non-default effort, or any artifact selection other than the root's defaults, starts cold.**
+  So does a request that arrives while the account or its token has just rotated.
 
 ## A `sync: true` MCP call holds a web thread, and only one runs at a time
 
