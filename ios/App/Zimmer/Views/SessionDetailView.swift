@@ -661,8 +661,6 @@ struct SessionDetailView: View {
                 if let conversation = model.shownConversation {
                     conversationSection(conversation, edge: edge, reading: reading)
                 }
-            } composer: {
-                if model.detail?.acceptsFollowUp ?? false { composer }
             }
             .environmentObject(app)
         }

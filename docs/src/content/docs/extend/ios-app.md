@@ -226,7 +226,8 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   phone's width the words shorten (*Top*, *Humans*), and at the largest text sizes they become
   symbols. The web UI's session page has no such strip.
 - **Reads a transcript full screen.** The button at the end of the strip covers the page with the
-  conversation and the composer alone; *Done* goes back to the page at the message you reached.
+  conversation alone, without the header, the cards or the composer; *Done* goes back to the page
+  at the message you reached.
   Full screen is never remembered: a session always opens on its page.
 - **Attaches photos and files** to a message with the paperclip beside the box: *Photo Library*,
   *Choose Files*, or *Paste Image* when the clipboard holds one (the

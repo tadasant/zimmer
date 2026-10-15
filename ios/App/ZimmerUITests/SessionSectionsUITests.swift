@@ -60,7 +60,6 @@ final class SessionSectionsUITests: XCTestCase {
         XCTAssertTrue(cover.waitForExistence(timeout: timeout))
         XCTAssertTrue(waitForNotHittable(app.buttons["detail.sections.overview"]), "the page's chrome is covered")
         XCTAssertTrue(waitForVisible(app, cover.descendants(matching: .any)["detail.message.98"]), "opened at the newest message")
-        XCTAssertTrue(app.descendants(matching: .any)["followup.field"].exists, "a reply is still a tap away")
         attachScreenshot(app, named: "fullscreen-transcript")
 
         exit.tap()
