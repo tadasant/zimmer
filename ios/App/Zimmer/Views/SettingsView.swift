@@ -34,6 +34,8 @@ struct SettingsView: View {
     @State private var account: Account?
     @State private var accountError: ZimmerError?
     @State private var showingAccount = false
+    /// The fixture's push, made once: the task runs again each time the child pops.
+    @State private var openedAccountForFixture = false
     @State private var confirmingSignOutEverywhere = false
     @State private var signingOutEverywhere = false
     @State private var signOutEverywhereError: String?
@@ -111,7 +113,8 @@ struct SettingsView: View {
                 .task { await loadNotificationStatus() }
                 .task { await loadAccount() }
                 .task {
-                    guard opensAccount else { return }
+                    guard opensAccount, !openedAccountForFixture else { return }
+                    openedAccountForFixture = true
                     // After the stack has laid out, or the push can be dropped.
                     try? await Task.sleep(for: .milliseconds(300))
                     showingAccount = true
@@ -201,7 +204,6 @@ struct SettingsView: View {
         }
         .confirmationDialog("Sign out everywhere?", isPresented: $confirmingSignOutEverywhere, titleVisibility: .visible) {
             Button("Sign out everywhere", role: .destructive) { Task { await signOutEverywhere() } }
-                .accessibilityIdentifier("settings.signin.everywhere.confirm")
         } message: {
             Text("Sign out every browser signed in as \(account?.me.email ?? "you"), this phone included?")
         }
@@ -217,7 +219,7 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings.deployment.sha")
                 }
                 .contextMenu {
-                    Button("Copy \(deployment.git.commitSha)", systemImage: "doc.on.doc") {
+                    Button("Copy full SHA", systemImage: "doc.on.doc") {
                         UIPasteboard.general.string = deployment.git.commitSha
                     }
                     .accessibilityIdentifier("settings.deployment.sha.copy")
