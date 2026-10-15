@@ -1,55 +1,5 @@
 import Foundation
 
-/// A message's text, cut at its fenced code blocks, so the screen can set prose as inline
-/// markdown and code in the monospaced face — the web UI renders both
-/// (`shared/_enhanced_markdown`); the app showed the raw text, fences and all.
-public enum MessageSegment: Hashable, Sendable {
-    case prose(String)
-    case code(String, language: String?)
-
-    /// A fenced code block, which the screen draws with a Copy button.
-    public var isCode: Bool {
-        if case .code = self { return true }
-        return false
-    }
-
-    /// Split on ``` fences. An unclosed fence runs to the end, as a renderer would show it.
-    /// Blank prose between blocks is dropped.
-    public static func segments(of text: String) -> [MessageSegment] {
-        var segments: [MessageSegment] = []
-        var prose: [String] = []
-        var code: [String] = []
-        var language: String?
-        var inCode = false
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("```") {
-                if inCode {
-                    segments.append(.code(code.joined(separator: "\n"), language: language))
-                    code = []
-                    inCode = false
-                } else {
-                    let joined = prose.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !joined.isEmpty { segments.append(.prose(joined)) }
-                    prose = []
-                    let tag = trimmed.dropFirst(3).trimmingCharacters(in: .whitespaces)
-                    language = tag.isEmpty ? nil : tag
-                    inCode = true
-                }
-                continue
-            }
-            if inCode { code.append(String(line)) } else { prose.append(String(line)) }
-        }
-        if inCode {
-            segments.append(.code(code.joined(separator: "\n"), language: language))
-        } else {
-            let joined = prose.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !joined.isEmpty { segments.append(.prose(joined)) }
-        }
-        return segments
-    }
-}
-
 /// How much of the conversation to show: the web UI's log-level filter, as far as the
 /// conversation goes. *Minimal* is the words alone; *Condensed* adds each tool call as one
 /// line; *Verbose* shows the tool traffic whole. The web's fourth level, *Show Logs*, is the
