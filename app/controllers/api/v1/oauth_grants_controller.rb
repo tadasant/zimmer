@@ -45,10 +45,8 @@ class Api::V1::OauthGrantsController < Api::BaseController
     end
 
     reason = privilege == OauthServer::ACT_AS_HUMAN ? OauthServer::Grant::APP_UPGRADE : OauthServer::Grant::APP_DOWNGRADE
-    if @grant.change_privilege!(privilege, reason: reason)
-      Rails.logger.warn("[oauth_server] grant #{@grant.id} (#{@grant.user_email}, client #{@grant.client.client_id.inspect}) " \
-        "privilege set to #{privilege} from #{native_app_actor}")
-    end
+    # The model logs the change; the actor rides on the reason, so it is not logged twice.
+    @grant.change_privilege!(privilege, reason: reason)
 
     message = if privilege == OauthServer::ACT_AS_HUMAN
       "#{@grant.client_label} now acts on your behalf: messages it sends are recorded as yours."

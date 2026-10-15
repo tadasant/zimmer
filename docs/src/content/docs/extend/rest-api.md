@@ -1144,7 +1144,7 @@ any lookup.
 `{email, name, last_signed_in_at, totp_required, totp_enrolled_at, recovery_codes_remaining}`, the
 last two nil until an authenticator stands; the whole thing nil when
 [web sign-in](/auth/web-sign-in/) is not configured, when nobody with that email has signed in to
-the web UI, or over an API key. `deployment` is `{git: {commit_sha, commit_short, branch,
+the web UI, over an API key, or on a relay-only grant, which is not that person's sign-in. `deployment` is `{git: {commit_sha, commit_short, branch,
 commit_date}, environment: {rails_env, ruby_version, rails_version}}`, read once at boot.
 
 `GET /oauth_grants` → `{oauth_grants: [...]}`, the page's **MCP connections**: active first, most
@@ -1152,7 +1152,9 @@ recently used first, at most 50. Each row is `{id, client_name, client_label, cl
 first_party, registration (published|self_registered), publisher_host, user_email, privilege,
 acts_as_you, status (active|revoked), current, created_at, last_used_at, scope_changed_at,
 scope_change_reason, revoked_at, revocation_reason}`. `current` is true on the caller's own
-connection, so the app can say "this phone".
+connection, so the app can say "this phone". The list, and every write in this section, is the
+deployment's — every connection and every key, whoever approved or minted it — as the page is;
+Zimmer is one circle of trust. Only `sign_out_everywhere` is scoped to the caller's email.
 
 `PATCH /oauth_grants/:id` (`privilege`: `act_as_human` | `relay_only`) → `{oauth_grant, message}`.
 The page's **Make relay only** / **Let it act on my behalf**, applied from the connection's next
