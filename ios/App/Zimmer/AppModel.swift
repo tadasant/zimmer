@@ -87,6 +87,11 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureSlash`: the opened session's composer starts with "/" typed, so
     /// `ios/bin/ui-test` can photograph the skills it offers.
     var fixtureTypesSlash = false
+    /// `-ZimmerFixtureSection <section>`: the opened session's page jumps to that section of
+    /// its strip (`hierarchy`, `humanMessages`), as a tap on its chip does.
+    var fixtureSection: SessionPageSection?
+    /// `-ZimmerFixtureFullScreen`: the opened session's transcript opens full screen.
+    var fixtureOpensFullScreen = false
     /// `-ZimmerFixtureTrigger <id>`: the Triggers tab opens on that trigger's page.
     @Published var fixtureTrigger: Int?
     /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
@@ -142,6 +147,7 @@ final class AppModel: ObservableObject {
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
         fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
         fixtureTypesSlash = arguments.contains("-ZimmerFixtureSlash")
+        fixtureOpensFullScreen = arguments.contains("-ZimmerFixtureFullScreen")
         func value(_ flag: String) -> String? {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
@@ -159,6 +165,7 @@ final class AppModel: ObservableObject {
         board = value("-ZimmerFixtureBoard").flatMap(BoardFilter.init(rawValue:)) ?? .onBoard
         if arguments.contains("-ZimmerFixtureFilterSheet") { showingFilters = true }
         fixtureOpensCatalog = value("-ZimmerFixtureCatalog").flatMap(CatalogKind.init(rawValue:))
+        fixtureSection = value("-ZimmerFixtureSection").flatMap(SessionPageSection.init(rawValue:))
         Task { await refresh() }
         // The list's search box picks this up and searches, as if typed.
         if let search = value("-ZimmerFixtureSearch") { searchText = search }
