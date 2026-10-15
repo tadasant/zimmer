@@ -1,0 +1,80 @@
+import Foundation
+
+/// Live Mode and Live Voice over `/api/v1/live*` — the same rules the web's `/live` pages keep
+/// (`LiveConversations::Actions` on the server).
+public protocol LiveAPI: Sendable {
+    /// Both modes: can each start, and if not, why not.
+    func liveModes() async throws -> [LiveModeAvailability]
+    /// The newest conversations and each mode's open one.
+    func liveConversations() async throws -> LiveOverview
+    /// One conversation with its turns; `afterTurn` reads only turns newer than that one.
+    func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation
+    /// Start a fresh conversation in `mode`, ending the mode's open one.
+    func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation
+    func finishLiveConversation(_ id: Int) async throws -> LiveConversation
+    /// Live Mode: a typed message. The reply arrives as a later turn.
+    func sendLiveMessage(_ id: Int, content: String) async throws -> LiveTurn
+    /// Live Voice: the short-lived secret to open the Realtime connection with.
+    func liveClientSecret(_ id: Int) async throws -> LiveClientSecret
+    /// Live Voice: run a function call the model made; send back what this returns.
+    func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult
+    /// Live Voice: a finished transcript line, so the thread carries what was said.
+    func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String) async throws -> LiveTurn
+}
+
+struct LiveModesResponse: Decodable {
+    let modes: [LiveModeAvailability]
+}
+
+struct LiveIndexResponse: Decodable {
+    let live_conversations: [LiveConversation]
+    let current: [String: Int?]
+}
+
+// `ZimmerHTTPClient: ZimmerAPI`, which refines `LiveAPI`.
+extension ZimmerHTTPClient {
+    public func liveModes() async throws -> [LiveModeAvailability] {
+        let response: LiveModesResponse = try await get("/api/v1/live")
+        return response.modes
+    }
+
+    public func liveConversations() async throws -> LiveOverview {
+        let response: LiveIndexResponse = try await get("/api/v1/live_conversations")
+        var current: [LiveMode: Int] = [:]
+        for (key, id) in response.current {
+            if let mode = LiveMode(rawValue: key), let id { current[mode] = id }
+        }
+        return LiveOverview(conversations: response.live_conversations, current: current)
+    }
+
+    public func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation {
+        var query: [String: String] = [:]
+        if let afterTurn { query["after_turn_id"] = String(afterTurn) }
+        return try await get("/api/v1/live_conversations/\(id)", query: query)
+    }
+
+    public func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation {
+        try await post("/api/v1/live_conversations", json: ["mode": mode.rawValue])
+    }
+
+    public func finishLiveConversation(_ id: Int) async throws -> LiveConversation {
+        try await post("/api/v1/live_conversations/\(id)/finish", json: [:])
+    }
+
+    public func sendLiveMessage(_ id: Int, content: String) async throws -> LiveTurn {
+        try await post("/api/v1/live_conversations/\(id)/messages", json: ["content": content])
+    }
+
+    public func liveClientSecret(_ id: Int) async throws -> LiveClientSecret {
+        try await post("/api/v1/live_conversations/\(id)/client_secret", json: [:])
+    }
+
+    public func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult {
+        try await post("/api/v1/live_conversations/\(id)/tool_calls",
+                       json: ["name": name, "arguments": arguments, "call_id": callID])
+    }
+
+    public func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String) async throws -> LiveTurn {
+        try await post("/api/v1/live_conversations/\(id)/turns", json: ["role": role.rawValue, "content": content])
+    }
+}
