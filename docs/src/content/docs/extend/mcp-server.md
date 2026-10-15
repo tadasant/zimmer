@@ -217,7 +217,7 @@ production.
 
 ## The tool surface
 
-47 tools, ten domains — 29 of them on the unscoped surface.
+47 tools, eleven domains — 27 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
@@ -246,7 +246,8 @@ through it to the whole catalog. A connection names `live_conversations` to get 
 `live_conversations_readonly` the read alone. No catalog entry names either, so no root carries them,
 and neither does the live agent's own gateway, which is built from the groups its `zimmer` entries
 name. The usual caveat holds: this decides what a connection is offered, not what the fleet's shared
-API key could compose.
+API key could compose. The REST routes that start and steer a conversation do not take an API key at
+all; see [the REST API](/extend/rest-api/#live-conversations).
 
 `get_user_view` and `reorder_user_view` are the read and write halves of the dashboard's
 [User view](/sessions/user-view/) — the human's decision board. The read returns the board in the

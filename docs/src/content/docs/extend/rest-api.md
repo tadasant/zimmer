@@ -36,7 +36,7 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | --- | --- |
 | `/api/v1/sessions` and its member routes (not the nested resources below) | everything an API key may, plus `authorize_merge`, which only the app may call, and only on a grant that acts as you |
 | `POST /api/v1/quick_router`, `/api/v1/apns_devices` | everything |
-| `GET /api/v1/live`, `/api/v1/live_conversations` and its member routes | everything |
+| `GET /api/v1/live`, `/api/v1/live_conversations` and its member routes | everything, and only the app may start, message, finish or relay for a conversation, on a grant that acts as you |
 | `/api/v1/sessions/:id/enqueued_messages` | list, show, edit, delete, reorder, interrupt — not create: the app queues through `follow_up` |
 | `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
 | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
@@ -1069,6 +1069,13 @@ the status off `failed`, including `POST /triggers/:id/toggle`, clears them.
 
 [Live Mode and Live Voice](/sessions/live/): one continuous conversation per mode with a fast OpenAI
 model. The same rules as the `/live` pages (`LiveConversations::Actions`).
+
+An API key may read: `GET /live`, `GET /live_conversations` and `GET /live_conversations/:id`.
+Every `POST` below — start, message, finish, and the voice relay — is **403 for an API key and for a
+relay-only app grant**, like `authorize_merge`. It takes the [iOS app](/extend/ios-app/)'s sign-in
+acting as you. A live model can enable any catalog MCP server, and `tool_calls` runs one directly,
+so an API key, which is the fleet's, must not reach the whole catalog through here. The web pages are
+the other way in, behind the sign-in wall.
 
 `GET /live` → `{modes: [{mode, label, agent_root, model, available, key_configured, root_present,
 reasons}]}` — whether each mode can start, and in words why not (no `LIVE_OPENAI_API_KEY`, or no

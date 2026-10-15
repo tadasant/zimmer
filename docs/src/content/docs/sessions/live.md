@@ -175,11 +175,13 @@ how those sessions authenticate or bill.
 ## From an agent or a script
 
 - **MCP:** `get_live_conversations` (whether each mode can start, recent conversations, one thread)
-  and `action_live_conversation` (`start`, `send_message`, `finish`). Both are in the opt-in `live_conversations` group, which nothing carries by default: a live
-  model can reach the whole catalog, so a session must not be able to steer one just by holding
-  `sessions`. See [the MCP server](/extend/mcp-server/).
-- **REST:** `/api/v1/live` and `/api/v1/live_conversations`, which the iOS app's token may use. See
-  [the REST API](/extend/rest-api/#live-conversations).
+  and `action_live_conversation` (`start`, `send_message`, `finish`). Both are in the opt-in
+  `live_conversations` group, which nothing carries by default: a live model can reach the whole
+  catalog, so a session must not be able to steer one just by holding `sessions`. See
+  [the MCP server](/extend/mcp-server/).
+- **REST:** `/api/v1/live` and `/api/v1/live_conversations`. An API key may read them. Starting,
+  messaging, finishing and the voice relay take the iOS app's sign-in acting as you, for the same
+  reason. See [the REST API](/extend/rest-api/#live-conversations).
 - **Supervisor:** `/supervisor/live_conversations` and `/supervisor/live_conversation_turns`, both
   read-only.
 
