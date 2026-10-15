@@ -75,6 +75,10 @@ final class AppModel: ObservableObject {
     @Published var quickRouterBarHandback: String?
     /// The full new-session form (the pencil in the Sessions toolbar).
     @Published var showingNewSession = false
+    /// Live Mode / Live Voice (LiveHomeView), from the session list's waveform button.
+    @Published var showingLive = false
+    /// Debug fixture: the live conversation LiveHomeView opens straight into.
+    var fixtureLiveConversation: Int?
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
     /// since a UI test cannot drive the system photo and file pickers.
     var fixtureAttachesFile = false
@@ -153,6 +157,13 @@ final class AppModel: ObservableObject {
         }
         if arguments.contains("-ZimmerFixtureQuickRouter") { showingQuickRouter = true }
         if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
+        // Live: the home sheet, or straight into one conversation's thread.
+        if arguments.contains("-ZimmerFixtureLiveHome") { showingLive = true }
+        if let flag = arguments.firstIndex(of: "-ZimmerFixtureLiveConversation"),
+           arguments.indices.contains(flag + 1), let id = Int(arguments[flag + 1]) {
+            fixtureLiveConversation = id
+            showingLive = true
+        }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
         fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
