@@ -82,6 +82,10 @@ class ManagedSecret
 
   def self.openrouter_key(**kwargs) = new(OPENROUTER_API_KEY, **kwargs)
 
+  # Live Mode and Live Voice's OpenAI key (see OpenaiClient for why it has its
+  # own name), set from the Live page.
+  def self.live_openai_key(**kwargs) = new(OpenaiClient::API_KEY_VARIABLE, **kwargs)
+
   attr_reader :variable
 
   def initialize(variable, chain: SecretProviders.chain, writer: ParameterStore::Writer.from_env)

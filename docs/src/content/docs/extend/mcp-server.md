@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 45 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 47 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -81,7 +81,7 @@ session gets exactly the surface it should have and no more.
 
 | URL | Tools |
 | --- | --- |
-| `/mcp` | The default surface — 27 tools; the opt-in groups are not among them |
+| `/mcp` | The default surface — 29 tools; the opt-in groups are not among them |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 8 tools a session needs to run itself |
 | `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
@@ -216,11 +216,11 @@ production.
 
 ## The tool surface
 
-45 tools, ten domains — 27 of them on the unscoped surface.
+47 tools, ten domains — 29 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
-| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `quick_router`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_models`, `reorder_user_view`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis` |
+| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `quick_router`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_models`, `reorder_user_view`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis`, `get_live_conversations`, `action_live_conversation` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
@@ -230,6 +230,11 @@ production.
 | `settings` (opt-in) | `get_app_settings`, `action_app_settings` |
 | `external_apps` (opt-in) | `search_external_apps`, `action_external_app` — register [Zimmer plugins](/extend/zimmer-plugins/) and mint their keys |
 | `root_data` (opt-in) | `list_root_collections`, `search_root_records`, `get_root_record`, `put_root_record`, `append_root_record`, `delete_root_record` — the calling root's [persistent data](/sessions/root-data/) |
+
+`get_live_conversations` and `action_live_conversation` read and drive [Live Mode and Live
+Voice](/sessions/live/) conversations: whether each mode can start, a conversation's thread with its
+tool calls, and start / send a typed message / end. Live Voice's audio relay and the OpenAI key are
+deliberately not tools — the first needs a client holding the call, the second is a secret value.
 
 `get_user_view` and `reorder_user_view` are the read and write halves of the dashboard's
 [User view](/sessions/user-view/) — the human's decision board. The read returns the board in the
