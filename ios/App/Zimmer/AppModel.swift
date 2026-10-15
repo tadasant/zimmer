@@ -101,6 +101,9 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
     /// is named.
     @Published var fixtureCosts: CostScope?
+    /// `-ZimmerFixtureSettings [section]`: More opens Settings, scrolled to that section
+    /// (`defaults`, `experimental`, `mcpApps`) if one is named.
+    @Published var fixtureSettings: SettingsOpening?
 
     let environment: AppEnvironment
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
@@ -188,6 +191,11 @@ final class AppModel: ObservableObject {
             // The next argument is a root to narrow to, unless it is the next flag.
             let root = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : nil
             fixtureCosts = root.map(CostScope.agentRoot) ?? .fleet
+            tab = .more
+        }
+        if let flag = arguments.firstIndex(of: "-ZimmerFixtureSettings") {
+            let section = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : nil
+            fixtureSettings = SettingsOpening(section: section.flatMap(SettingsSection.init(rawValue:)))
             tab = .more
         }
         // Trash a session as a swipe would: the Undo toast, or for one with messages queued,
