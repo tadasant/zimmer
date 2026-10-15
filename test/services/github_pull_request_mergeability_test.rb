@@ -16,6 +16,19 @@ class GithubPullRequestMergeabilityTest < ActiveSupport::TestCase
     assert_equal :conflicting, GithubPullRequestMergeability.read(PR_URL)
   end
 
+  # The guard that retires a conflict notice reads the same REST answer the
+  # evaluator that wrote it did, so a stale GraphQL MERGEABLE cannot retire a
+  # conflict REST still sees.
+  test "REST's conflicting outranks a stale GraphQL mergeable" do
+    stub_gh(state: "OPEN", mergeable: "MERGEABLE", rest: "false")
+    assert_equal :conflicting, GithubPullRequestMergeability.read(PR_URL)
+  end
+
+  test "REST's still-computing null reads as :unknown" do
+    stub_gh(state: "OPEN", mergeable: "MERGEABLE", rest: "null")
+    assert_equal :unknown, GithubPullRequestMergeability.read(PR_URL)
+  end
+
   test "reads GitHub's still-computing UNKNOWN as :unknown" do
     stub_gh(state: "OPEN", mergeable: "UNKNOWN")
     assert_equal :unknown, GithubPullRequestMergeability.read(PR_URL)
@@ -104,18 +117,22 @@ class GithubPullRequestMergeabilityTest < ActiveSupport::TestCase
   # That is the point: one reader, so the guard that RETIRES a conflict notice and
   # the evaluator that WROTE it cannot disagree about what "conflicting" means.
   test "goes through the same bounded reader the poll pass uses" do
-    captured = nil
+    captured = []
     BoundedSubprocess.stubs(:run).with do |command, **kwargs|
-      captured = [ command, kwargs ]
+      captured << [ command, kwargs ]
       true
     end.returns([ '{"state":"OPEN","mergedAt":null,"mergeable":"MERGEABLE"}', "", fake_process_status(exitstatus: 0) ])
 
     GithubPullRequestMergeability.read(PR_URL)
 
-    command, kwargs = captured
-    assert_equal [ "gh", "pr", "view", "834", "--repo", "tadasant/zimmer",
-                   "--json", Github::PrSnapshot::JSON_FIELDS ], command
-    assert_equal Github::PrSnapshot::TIMEOUT, kwargs[:timeout]
+    assert_equal(
+      [
+        [ "gh", "pr", "view", "834", "--repo", "tadasant/zimmer", "--json", Github::PrSnapshot::JSON_FIELDS ],
+        [ "gh", "api", "repos/tadasant/zimmer/pulls/834", "--jq", Github::PrSnapshot::REST_JQ ]
+      ],
+      captured.map(&:first)
+    )
+    assert_equal [ Github::PrSnapshot::TIMEOUT ] * 2, captured.map { |_, kwargs| kwargs[:timeout] }
   end
 
   test "only read is public" do
@@ -127,8 +144,14 @@ class GithubPullRequestMergeabilityTest < ActiveSupport::TestCase
 
   private
 
-  def stub_gh(state:, mergeable:, merged_at: nil)
+  # `gh pr view` answers with +mergeable+ (GraphQL). The REST re-read answers with
+  # +rest+ ("true", "false", "null"), or fails when +rest+ is nil, which leaves
+  # GraphQL's reading standing.
+  def stub_gh(state:, mergeable:, merged_at: nil, rest: nil)
     payload = { "state" => state, "mergedAt" => merged_at, "mergeable" => mergeable }.to_json
-    BoundedSubprocess.stubs(:run).returns([ payload, "", fake_process_status(exitstatus: 0) ])
+    BoundedSubprocess.stubs(:run).with { |command, **| command[0, 3] == %w[gh pr view] }
+      .returns([ payload, "", fake_process_status(exitstatus: 0) ])
+    rest_answer = rest.nil? ? [ "", "HTTP 502", fake_process_status(exitstatus: 1) ] : [ "#{rest} #{'d' * 40}\n", "", fake_process_status(exitstatus: 0) ]
+    BoundedSubprocess.stubs(:run).with { |command, **| command[0, 2] == %w[gh api] }.returns(rest_answer)
   end
 end

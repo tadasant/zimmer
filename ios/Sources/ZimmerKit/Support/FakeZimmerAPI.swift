@@ -25,6 +25,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public private(set) var sentAttachments: [Int: [[MessageAttachment]]] = [:]
     /// Every Quick Router start, in order, so a test can see what went with the words.
     public private(set) var quickRouterRequests: [QuickRouterRequest] = []
+    /// The PRs a Merge tap has authorized, so a second tap answers as already sent.
+    private var mergesAuthorized: Set<URL> = []
+    private var reprioritizerID: Int?
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
     private let live: Bool
     private var conversationReads: [Int: Int] = [:]
@@ -1209,6 +1212,37 @@ extension FakeZimmerAPI {
     }
 }
 
+// MARK: - Merge and Reprioritize
+//
+// As the server: Merge is offered only on an open, green PR and answers a second tap as
+// already sent; Reprioritize hands the board to one reprioritizing session, reused.
+extension FakeZimmerAPI {
+    public func authorizeMerge(_ id: Int) async throws -> MergeAuthorization {
+        let session = try find(id)
+        guard let pr = session.mergeablePullRequest else {
+            throw ZimmerError.http(status: 422, message: "Cannot merge: this session has no open PR with CI green.")
+        }
+        if mergesAuthorized.contains(pr.url) {
+            return MergeAuthorization(alreadySent: true, message: "Merge already authorized for \(pr.url.absoluteString) — the session has the message.")
+        }
+        mergesAuthorized.insert(pr.url)
+        return MergeAuthorization(alreadySent: false, message: "Merge authorized. Session \(id) has been told to merge \(pr.url.absoluteString).")
+    }
+
+    public func reprioritize() async throws -> Reprioritization {
+        let id: Int
+        if let existing = reprioritizerID {
+            id = existing
+        } else {
+            id = nextID
+            nextID += 1
+            all.append(SessionSummary(id: id, title: "Dashboard reprioritizer", status: .running, agentRuntime: "claude_code",
+                                      prompt: "Re-rank the board.", createdAt: Date(), updatedAt: Date()))
+            reprioritizerID = id
+        }
+        return Reprioritization(sessionID: id, message: "Reprioritizing — session \(id) is re-ranking the board.")
+    }
+}
 
 // MARK: - Why it is waiting
 //
