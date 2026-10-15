@@ -148,17 +148,16 @@ extension View {
     }
 }
 
-/// The transcript alone, over everything else: the conversation and the composer, without the
-/// header and the cards, for reading a long one. Done goes back to the page at the message
-/// reached here. Nothing about it is kept: the page opens without it every time.
-struct FullScreenTranscript<Conversation: View, Composer: View>: View {
+/// The transcript alone, over everything else: the conversation, without the header, the cards
+/// and the composer, for reading a long one. Done goes back to the page at the message reached
+/// here, and to the composer. Nothing about it is kept: the page opens without it every time.
+struct FullScreenTranscript<Conversation: View>: View {
     @ObservedObject var model: SessionDetailModel
     @EnvironmentObject private var app: AppModel
     /// Where this opens, and where it leaves the reader for the page.
     let position: ReadingPosition
     /// The page's conversation section, each message reporting against the given top edge.
     @ViewBuilder let conversation: (_ edge: CGFloat, _ position: ReadingPosition) -> Conversation
-    @ViewBuilder let composer: () -> Composer
     @Environment(\.dismiss) private var dismiss
     @State private var endY: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
@@ -236,10 +235,6 @@ struct FullScreenTranscript<Conversation: View, Composer: View>: View {
             }
             .overlay(alignment: .bottom) {
                 Toast(text: $model.notice, identifier: "fullscreen.notice")
-            }
-            .safeAreaInset(edge: .bottom) {
-                // At its own height: offered the whole cover, the quick replies' row grows to fill it.
-                composer().fixedSize(horizontal: false, vertical: true)
             }
         }
     }
