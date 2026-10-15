@@ -167,7 +167,9 @@ module Github
       )
         stamped_keys << MERGE_CONFLICT_BACKOFF_KEY
         run_evaluator(session, "MergeConflictEvaluator") do
-          MergeConflictEvaluator.new.evaluate(session, refs, snapshots)
+          # Mergeability re-read from REST for every open PR: GraphQL's is a cached
+          # value REST is what refreshes. See PrSnapshot#with_rest_mergeability.
+          MergeConflictEvaluator.new.evaluate(session, refs, snapshots.transform_values { |s| s&.with_rest_mergeability })
         end
       end
 
