@@ -53,6 +53,9 @@ private struct MarkdownBlocks: View {
 private struct MarkdownBlockView: View {
     let block: MarkdownBlock
     let style: MarkdownStyle
+    /// Read so a change of text size redraws the paragraphs UIKit draws, whose font is resolved
+    /// here rather than by SwiftUI.
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         switch block {
@@ -73,6 +76,9 @@ private struct MarkdownBlockView: View {
                 // SwiftUI's Text opens a link and offers nothing on a long press; a text view
                 // gives the system's link menu, with Copy Link.
                 LinkText(text: style.attributed(attributed))
+                    // A text view has no baseline of its own; this keeps a list's bullet level
+                    // with the first line rather than the last.
+                    .alignmentGuide(.firstTextBaseline) { _ in style.uiFont.ascender }
                     .accessibilityIdentifier("markdown.links")
             } else {
                 Text(attributed)
@@ -278,7 +284,17 @@ private struct LinkText: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
-        if view.attributedText != text { view.attributedText = text }
+        // Compared with what was last set, not what the view hands back, so a transcript's
+        // refresh leaves a selection or an open link menu alone when the text is unchanged.
+        guard context.coordinator.shown != text else { return }
+        context.coordinator.shown = text
+        view.attributedText = text
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var shown: NSAttributedString?
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
