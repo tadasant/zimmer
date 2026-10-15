@@ -69,6 +69,8 @@ struct DetailsCard: View {
                     view(for: row)
                         .padding(.vertical, 9)
                         .padding(.horizontal, 12)
+                        // The whole row under the strip when a chip jumps to it, padding and all.
+                        .pageSection(section(for: row), edge: sectionEdge, reached: reachedSections)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -95,10 +97,17 @@ struct DetailsCard: View {
             ArtifactsRow(session: detail.session, rootDefaults: rootDefaults, edit: editCatalog)
         case let .hierarchy(hierarchy):
             HierarchyRow(hierarchy: hierarchy, startsOpen: expanded, opens: opensHierarchy, detach: detach)
-                .pageSection(.hierarchy, edge: sectionEdge, reached: reachedSections)
         case .humanMessages:
             HumanMessagesRow(detail: detail, startsOpen: expanded, opens: opensHumanMessages)
-                .pageSection(.humanMessages, edge: sectionEdge, reached: reachedSections)
+        }
+    }
+
+    /// The page section a row is the top of, for the section strip.
+    private func section(for row: Row) -> SessionPageSection? {
+        switch row {
+        case .hierarchy: return .hierarchy
+        case .humanMessages: return .humanMessages
+        case .goalCheck, .goal, .notes, .mcpServers: return nil
         }
     }
 }

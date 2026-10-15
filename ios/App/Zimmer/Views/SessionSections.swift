@@ -121,7 +121,8 @@ extension View {
     /// Tells `position` when this message's top crosses `edge`, the top of what is in view, in
     /// global coordinates. Only on the crossing, so scrolling between messages costs nothing.
     func tracksReading(_ message: Int, edge: CGFloat, in position: ReadingPosition) -> some View {
-        onGeometryChange(for: Bool.self) { $0.frame(in: .global).minY < edge } action: { above in
+        // A message scrolled to sits with its top on the edge, and counts as reached.
+        onGeometryChange(for: Bool.self) { $0.frame(in: .global).minY <= edge + 1 } action: { above in
             if above { position.above.insert(message) } else { position.above.remove(message) }
         }
     }
@@ -135,6 +136,12 @@ extension View {
             }
     }
 
+    /// `pageSection` for a view that is the top of a section only sometimes.
+    @ViewBuilder
+    func pageSection(_ section: SessionPageSection?, edge: CGFloat, reached: Binding<Set<SessionPageSection>>) -> some View {
+        if let section { pageSection(section, edge: edge, reached: reached) } else { self }
+    }
+
     /// The top of what this scroll view shows, in global coordinates: under the bars.
     func readsTopEdge(_ edge: Binding<CGFloat>) -> some View {
         onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY + $0.safeAreaInsets.top } action: { edge.wrappedValue = $0 }
@@ -146,6 +153,7 @@ extension View {
 /// reached here. Nothing about it is kept: the page opens without it every time.
 struct FullScreenTranscript<Conversation: View, Composer: View>: View {
     @ObservedObject var model: SessionDetailModel
+    @EnvironmentObject private var app: AppModel
     /// Where this opens, and where it leaves the reader for the page.
     let position: ReadingPosition
     /// The page's conversation section, each message reporting against the given top edge.
@@ -198,6 +206,17 @@ struct FullScreenTranscript<Conversation: View, Composer: View>: View {
                     if opened { position.atEnd = end }
                 }
             }
+            // The cover takes the page off the screen, and its reading with it: this reads again
+            // instead, as the page does.
+            .task(id: model.pollInterval) {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: model.pollInterval)
+                    guard !Task.isCancelled else { return }
+                    guard app.path.last == model.id, app.tab == .sessions else { continue }
+                    await model.poll()
+                }
+            }
+            .refreshable { await model.load() }
             .background(Theme.ground)
             .navigationTitle(Text(verbatim: "#\(model.id) · Transcript"))
             .navigationBarTitleDisplayMode(.inline)

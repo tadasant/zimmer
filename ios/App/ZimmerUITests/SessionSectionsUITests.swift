@@ -29,7 +29,7 @@ final class SessionSectionsUITests: XCTestCase {
         XCTAssertTrue(here.waitForExistence(timeout: timeout), "the folded row opens as the strip jumps to it")
         XCTAssertTrue(waitForVisible(app, labelled(app, "1 message in this session · 1 elsewhere")))
         XCTAssertTrue(waitForSelected(app.buttons["detail.sections.humanMessages"]))
-        XCTAssertTrue(strip.isHittable, "the strip stays pinned")
+        XCTAssertTrue(app.buttons["detail.sections.overview"].isHittable, "the strip stays pinned")
         attachScreenshot(app, named: "sections-human-messages")
 
         // One tap: the hierarchy, its seven sessions opened.
@@ -55,25 +55,39 @@ final class SessionSectionsUITests: XCTestCase {
         let exit = app.buttons["transcript.fullscreen.exit"]
         XCTAssertTrue(exit.waitForExistence(timeout: timeout))
         XCTAssertTrue(app.navigationBars["#1044 · Transcript"].exists)
-        let strip = app.descendants(matching: .any)["detail.sections"]
-        XCTAssertFalse(strip.exists && strip.isHittable, "the page's chrome is covered")
+        // Waits out the cover's transition too, while the page and the cover both hold the messages.
+        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["detail.sections"]), "the page's chrome is covered")
         XCTAssertTrue(waitForVisible(app, app.descendants(matching: .any)["detail.message.98"]), "opened at the newest message")
         XCTAssertTrue(app.descendants(matching: .any)["followup.field"].exists, "a reply is still a tap away")
         attachScreenshot(app, named: "fullscreen-transcript")
 
         exit.tap()
         XCTAssertTrue(waitForDisappearance(exit))
+        XCTAssertTrue(waitForDisappearance(app.navigationBars["#1044 · Transcript"]))
         XCTAssertTrue(app.descendants(matching: .any)["detail.sections"].waitForExistence(timeout: timeout))
         XCTAssertTrue(app.navigationBars["#1044"].exists, "back on the page")
         XCTAssertTrue(waitForVisible(app, app.descendants(matching: .any)["detail.message.98"]), "where it was left")
         attachScreenshot(app, named: "fullscreen-exited")
     }
 
+    func test_the_full_screen_transcript_keeps_reading_new_messages() throws {
+        // -ZimmerFixtureLive: the running session's agent adds a line on each read after the first.
+        let app = launch(["-ZimmerFixtureLive", "-ZimmerFixtureOpenSession", "1042"])
+        let enter = app.buttons["detail.fullscreen"]
+        XCTAssertTrue(enter.waitForExistence(timeout: timeout))
+        enter.tap()
+        XCTAssertTrue(app.buttons["transcript.fullscreen.exit"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["detail.sections"]))
+        // The page under the cover is off the screen: these come from the cover's own reads.
+        let later = labelled(app, "step 2 done")
+        XCTAssertTrue(later.waitForExistence(timeout: 30), "a new message appears full screen with nothing touched")
+    }
+
     // MARK: - Helpers
 
-    private func launch() -> XCUIApplication {
+    private func launch(_ arguments: [String] = ["-ZimmerFixtureLongTranscript", "-ZimmerFixtureOpenSession", "1044"]) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-ZimmerFixture", "-ZimmerFixtureLongTranscript", "-ZimmerFixtureOpenSession", "1044"]
+        app.launchArguments = ["-ZimmerFixture"] + arguments
         app.launch()
         return app
     }
@@ -90,7 +104,7 @@ final class SessionSectionsUITests: XCTestCase {
                 let bar = app.navigationBars.firstMatch
                 let strip = app.descendants(matching: .any)["detail.sections"]
                 var top = bar.exists ? bar.frame.maxY : 0
-                if strip.exists, strip.isHittable { top = max(top, strip.frame.maxY) }
+                if strip.exists { top = max(top, strip.frame.maxY) }
                 if element.frame.minY >= top - 1, element.frame.minY < app.frame.maxY { return true }
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
