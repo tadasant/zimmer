@@ -44,8 +44,10 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var derivedClasses: [Int: String]
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
-    /// after the first, so a screen that reads again can be seen to.
-    public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false) {
+    /// after the first, so a screen that reads again can be seen to. `longTranscript`: 1044's
+    /// conversation runs to a hundred messages, so its details card is far above the newest.
+    public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
+                longTranscript: Bool = false) {
         self.live = live
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
@@ -58,6 +60,24 @@ public actor FakeZimmerAPI: ZimmerAPI {
                 ConversationMessage(id: index, role: index.isMultiple(of: 2) ? .assistant : .user,
                                     content: "Earlier step \(index) of the CarPlay scene.", timestamp: now.addingTimeInterval(Double(index - 30) * 60))
             }
+        }
+        if longTranscript, let sample = conversations[1044] {
+            // The sample's opening request first, then steps of work, then the sample's tail.
+            let steps = (0..<92).map { index in
+                let tool = index.isMultiple(of: 3)
+                return ConversationMessage(
+                    id: index + 1, role: .assistant,
+                    content: tool
+                        ? "Using tool: Bash\nswift test --filter Slice\(index / 3 + 1)"
+                        : "Step \(index + 1) of the parity audit: the session page's \(index.isMultiple(of: 2) ? "header and its chips" : "details card and its rows") checked against the PWA on a phone.",
+                    timestamp: now.addingTimeInterval(-Double(2_990 - index) * 60), hasToolUse: tool)
+            }
+            let tail = sample.dropFirst().enumerated().map { offset, message in
+                var message = message
+                message.id = steps.count + 1 + offset
+                return message
+            }
+            conversations[1044] = [sample[0]] + steps + tail
         }
         // Past every session the fake can open, the family 1045–1049 included, so a new one
         // never takes an id an existing page answers to.

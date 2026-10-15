@@ -1,0 +1,117 @@
+import XCTest
+
+/// The session page's pinned section strip and its full-screen transcript, against the
+/// `-ZimmerFixture` in-memory Zimmer with 1044's conversation run long: the page opens at the
+/// newest message, a hundred messages under the details card, and the hierarchy and the human
+/// messages are still one tap away.
+@MainActor
+final class SessionSectionsUITests: XCTestCase {
+    private let timeout: TimeInterval = 20
+
+    override func setUp() {
+        continueAfterFailure = false
+    }
+
+    func test_the_strip_reaches_the_human_messages_and_the_hierarchy_from_the_end_of_a_long_transcript() throws {
+        let app = launch()
+        let strip = app.descendants(matching: .any)["detail.sections"]
+        XCTAssertTrue(strip.waitForExistence(timeout: timeout))
+        let newest = app.descendants(matching: .any)["detail.message.98"]
+        XCTAssertTrue(newest.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForSelected(app.buttons["detail.sections.transcript"]), "opened at the newest message, the transcript's chip is lit")
+        let summary = labelled(app, "1 message in this session · 1 elsewhere")
+        XCTAssertFalse(summary.exists && summary.isHittable, "a hundred messages down, the human messages are out of sight")
+        attachScreenshot(app, named: "sections-long-transcript")
+
+        // One tap: the human messages under the strip, opened.
+        app.buttons["detail.sections.humanMessages"].tap()
+        let here = app.descendants(matching: .any)["humanmessage.here"]
+        XCTAssertTrue(here.waitForExistence(timeout: timeout), "the folded row opens as the strip jumps to it")
+        XCTAssertTrue(waitForVisible(app, labelled(app, "1 message in this session · 1 elsewhere")))
+        XCTAssertTrue(waitForSelected(app.buttons["detail.sections.humanMessages"]))
+        XCTAssertTrue(strip.isHittable, "the strip stays pinned")
+        attachScreenshot(app, named: "sections-human-messages")
+
+        // One tap: the hierarchy, its seven sessions opened.
+        app.buttons["detail.sections.hierarchy"].tap()
+        let origin = app.descendants(matching: .any)["hierarchy.node.1040"]
+        XCTAssertTrue(origin.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForVisible(app, origin))
+        XCTAssertTrue(waitForSelected(app.buttons["detail.sections.hierarchy"]))
+        attachScreenshot(app, named: "sections-hierarchy")
+
+        // And back to the newest message.
+        app.buttons["detail.sections.transcript"].tap()
+        XCTAssertTrue(waitForVisible(app, newest))
+    }
+
+    func test_the_transcript_reads_full_screen_and_goes_back_to_the_page() throws {
+        let app = launch()
+        let enter = app.buttons["detail.fullscreen"]
+        XCTAssertTrue(enter.waitForExistence(timeout: timeout))
+        XCTAssertTrue(app.descendants(matching: .any)["detail.message.98"].waitForExistence(timeout: timeout))
+        enter.tap()
+
+        let exit = app.buttons["transcript.fullscreen.exit"]
+        XCTAssertTrue(exit.waitForExistence(timeout: timeout))
+        XCTAssertTrue(app.navigationBars["#1044 · Transcript"].exists)
+        let strip = app.descendants(matching: .any)["detail.sections"]
+        XCTAssertFalse(strip.exists && strip.isHittable, "the page's chrome is covered")
+        XCTAssertTrue(waitForVisible(app, app.descendants(matching: .any)["detail.message.98"]), "opened at the newest message")
+        XCTAssertTrue(app.descendants(matching: .any)["followup.field"].exists, "a reply is still a tap away")
+        attachScreenshot(app, named: "fullscreen-transcript")
+
+        exit.tap()
+        XCTAssertTrue(waitForDisappearance(exit))
+        XCTAssertTrue(app.descendants(matching: .any)["detail.sections"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(app.navigationBars["#1044"].exists, "back on the page")
+        XCTAssertTrue(waitForVisible(app, app.descendants(matching: .any)["detail.message.98"]), "where it was left")
+        attachScreenshot(app, named: "fullscreen-exited")
+    }
+
+    // MARK: - Helpers
+
+    private func launch() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-ZimmerFixture", "-ZimmerFixtureLongTranscript", "-ZimmerFixtureOpenSession", "1044"]
+        app.launch()
+        return app
+    }
+
+    private func labelled(_ app: XCUIApplication, _ text: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+    }
+
+    /// On screen, and not under the bars: the strip's jump put it there.
+    private func waitForVisible(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists, !element.frame.isEmpty {
+                let bar = app.navigationBars.firstMatch
+                let strip = app.descendants(matching: .any)["detail.sections"]
+                var top = bar.exists ? bar.frame.maxY : 0
+                if strip.exists, strip.isHittable { top = max(top, strip.frame.maxY) }
+                if element.frame.minY >= top - 1, element.frame.minY < app.frame.maxY { return true }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        return false
+    }
+
+    private func waitForSelected(_ element: XCUIElement) -> Bool {
+        let selected = expectation(for: NSPredicate(format: "selected == true"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [selected], timeout: timeout) == .completed
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    private func attachScreenshot(_ app: XCUIApplication, named name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}
