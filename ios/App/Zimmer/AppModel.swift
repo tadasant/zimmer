@@ -77,6 +77,10 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureCustomSnooze`: the opened session's custom snooze sheet starts open, so
     /// `ios/bin/ui-test` can photograph the date picker.
     var fixtureOpensCustomSnooze = false
+    /// `-ZimmerFixtureCatalog <kind>`: the opened session's editor for one kind of artifact
+    /// (`mcpServers`, `skills`, `hooks`, `plugins`) starts open, so `ios/bin/ui-test` can
+    /// photograph the checklist.
+    var fixtureOpensCatalog: CatalogKind?
     /// `-ZimmerFixtureOpenPanels`: the opened session starts at its details card with the
     /// hierarchy and the human messages open, so `ios/bin/ui-test` can photograph them.
     var fixtureOpensPanels = false
@@ -154,6 +158,7 @@ final class AppModel: ObservableObject {
         if let klass = value("-ZimmerFixtureClass") { filters.schedulingClass = klass }
         board = value("-ZimmerFixtureBoard").flatMap(BoardFilter.init(rawValue:)) ?? .onBoard
         if arguments.contains("-ZimmerFixtureFilterSheet") { showingFilters = true }
+        fixtureOpensCatalog = value("-ZimmerFixtureCatalog").flatMap(CatalogKind.init(rawValue:))
         Task { await refresh() }
         // The list's search box picks this up and searches, as if typed.
         if let search = value("-ZimmerFixtureSearch") { searchText = search }

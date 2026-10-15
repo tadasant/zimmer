@@ -333,6 +333,9 @@ struct SessionDetailView: View {
     @StateObject private var model: SessionDetailModel
     @State private var choosingModel = false
     @State private var editingCatalog: CatalogKind?
+    /// MCP servers a save chose that need the browser's OAuth flow before they connect.
+    @State private var authorizing: [String]?
+    @State private var pendingAuthorizing: [String]?
     /// The web UI's log-level filter, as far as the conversation goes. Minimal by default:
     /// on a phone the tool traffic buries the words.
     @State private var level: ConversationLevel = .minimal
@@ -467,7 +470,8 @@ struct SessionDetailView: View {
                         catalogRead: model.configs != nil,
                         expanded: fixtureOpensPanels,
                         edit: { editing = $0 },
-                        editMcpServers: { editingCatalog = .mcpServers }
+                        rootDefaults: { $0.rootDefaults(for: detail.session, in: model.configs) },
+                        editCatalog: { editingCatalog = $0 }
                     ) { junior, uncle in
                         Task { await model.detachUncle(junior, uncle: uncle) }
                     }
@@ -547,7 +551,18 @@ struct SessionDetailView: View {
             Text(model.detail?.session.precedenceHint ?? "")
         }
         .sheet(isPresented: $choosingModel) { modelSheet }
-        .sheet(item: $editingCatalog) { kind in catalogSheet(kind) }
+        .sheet(item: $editingCatalog, onDismiss: {
+            authorizing = pendingAuthorizing
+            pendingAuthorizing = nil
+        }) { kind in catalogSheet(kind) }
+        .alert("Authorize in the browser", isPresented: Binding(get: { authorizing != nil }, set: { if !$0 { authorizing = nil } })) {
+            if let url = app.webURL(for: model.id) {
+                Button("Open the session page") { openURL(url) }
+            }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text(verbatim: "\((authorizing ?? []).joined(separator: ", ")) \((authorizing ?? []).count == 1 ? "needs" : "need") OAuth, which happens in the browser: authorize from the session's page there. Its next turn waits until they are.")
+        }
         .sheet(item: $editing) { field in
             switch field {
             case .notes:
@@ -600,6 +615,10 @@ struct SessionDetailView: View {
             if app.fixtureTypesSlash {
                 app.fixtureTypesSlash = false
                 model.draft = "/"
+            }
+            if let kind = app.fixtureOpensCatalog {
+                app.fixtureOpensCatalog = nil
+                editingCatalog = kind
             }
         }
         .onDisappear {
@@ -693,8 +712,10 @@ struct SessionDetailView: View {
                 }
                 if saved, !needsAuthorizing.isEmpty {
                     // The server may park the session until these are authorized, which is a
-                    // browser step (the MCP OAuth flow); say so rather than "updated".
+                    // browser step (the MCP OAuth flow): offer the session's web page, once the
+                    // editor has gone — an alert asked for while a sheet closes is dropped.
                     model.notice = "Updated. Needs authorizing in the browser: \(needsAuthorizing.joined(separator: ", "))"
+                    pendingAuthorizing = needsAuthorizing
                 }
                 return saved
             }
@@ -866,12 +887,17 @@ struct SessionDetailView: View {
                 Button { editing = .goal } label: { Label("Modify Goal", systemImage: "flag") }
                 Button { choosingModel = true } label: { Label("Model: \(session.model ?? "default")", systemImage: "cpu") }
                     .accessibilityIdentifier("detail.model")
+                // One submenu, so the menu stays short enough that its last items show; each
+                // item named as the web page's editors are. The page's rows are the main way in.
                 Menu {
                     ForEach(CatalogKind.allCases) { kind in
-                        Button("\(kind.label) (\(kind.selection(in: session).count))") { editingCatalog = kind }
+                        Button { editingCatalog = kind } label: {
+                            Label("Modify \(kind.label) (\(kind.selection(in: session).count))", systemImage: kind.symbol)
+                        }
+                        .accessibilityIdentifier("menu.catalog.\(kind.rawValue)")
                     }
                 } label: {
-                    Label("MCP Servers, Skills, Hooks, Plugins", systemImage: "puzzlepiece.extension")
+                    Label("Modify MCP Servers, Skills, Hooks, Plugins", systemImage: "puzzlepiece.extension")
                 }
                 if let effort = session.effort, !effort.levels.isEmpty {
                     let modelDefault = effort.default.map { "Model default (\($0))" } ?? "Model default"

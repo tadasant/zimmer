@@ -262,7 +262,9 @@ struct NewSessionView: View {
 }
 
 /// Choose a session's MCP servers, skills, hooks or plugins from the catalog: a checklist,
-/// searchable, with an unavailable MCP server saying why.
+/// searchable, with an unavailable MCP server saying why and listed last, as the web's are.
+/// A chosen id the catalog no longer lists is shown, unticked: the server refuses a list
+/// that names it, so saving drops it.
 struct CatalogPicker: View {
     @EnvironmentObject private var app: AppModel
     let kind: CatalogKind
@@ -270,6 +272,8 @@ struct CatalogPicker: View {
     @State private var items: [CatalogItem]?
     @State private var error: ZimmerError?
     @State private var query = ""
+    /// The chosen ids the catalog did not list when it read.
+    @State private var initialMissing: [String] = []
 
     var body: some View {
         List {
@@ -282,7 +286,9 @@ struct CatalogPicker: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.displayTitle).foregroundStyle(Theme.ink)
                             if let reason = item.unavailableReason {
-                                Text(reason).font(.caption).foregroundStyle(Theme.warning)
+                                Label(reason, systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.warning)
                             } else if let description = item.description, !description.isEmpty {
                                 Text(description).font(.caption).foregroundStyle(Theme.inkSoft).lineLimit(2)
                             }
@@ -295,6 +301,16 @@ struct CatalogPicker: View {
                 }
                 .accessibilityIdentifier("catalog.item.\(item.id)")
                 .accessibilityAddTraits(selection.contains(item.id) ? .isSelected : [])
+                .themeRows()
+            }
+            // Not a toggle: the server refuses a list naming one.
+            ForEach(missing, id: \.self) { id in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: id).foregroundStyle(Theme.inkSoft).strikethrough()
+                    Text("Not in the catalog any more; saving drops it").font(.caption).foregroundStyle(Theme.warning)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("catalog.missing.\(id)")
                 .themeRows()
             }
         }
@@ -310,7 +326,12 @@ struct CatalogPicker: View {
         }
         .task {
             do {
-                items = try await app.api.catalog(kind)
+                let read = try await app.api.catalog(kind)
+                let listed = Set(read.map(\.id))
+                initialMissing = selection.filter { !listed.contains($0) }
+                // Unticked from the start: a list naming one is refused, so it could not be saved.
+                selection.removeAll { !listed.contains($0) }
+                items = read
             } catch {
                 self.error = error as? ZimmerError ?? .transport(error)
                 items = []
@@ -318,11 +339,25 @@ struct CatalogPicker: View {
         }
     }
 
+    private var needle: String { query.trimmingCharacters(in: .whitespaces).lowercased() }
+
     private var filtered: [CatalogItem] {
-        let all = items ?? []
-        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !needle.isEmpty else { return all }
-        return all.filter { $0.id.lowercased().contains(needle) || $0.displayTitle.lowercased().contains(needle) }
+        // Available first, each group in the catalog's order.
+        let catalog = items ?? []
+        let all = catalog.filter { $0.unavailableReason == nil } + catalog.filter { $0.unavailableReason != nil }
+        // Every word somewhere in the id, title or description, as the web's search.
+        let terms = needle.split(separator: " ").map(String.init)
+        guard !terms.isEmpty else { return all }
+        return all.filter { item in
+            let text = [item.id, item.displayTitle, item.description ?? ""].joined(separator: " ").lowercased()
+            return terms.allSatisfy { text.contains($0) }
+        }
+    }
+
+    /// Chosen, but not in the catalog the server lists: renamed or removed since.
+    private var missing: [String] {
+        guard items != nil else { return [] }
+        return initialMissing.filter { needle.isEmpty || $0.lowercased().contains(needle) }
     }
 
     private func toggle(_ id: String) {
