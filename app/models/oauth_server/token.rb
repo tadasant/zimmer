@@ -4,6 +4,11 @@ module OauthServer
   # An access or refresh token. Only the digest is stored. A token is good while
   # it is unexpired and its grant is unrevoked; a refresh token is also spent by
   # the exchange that rotates it (`rotated_at`).
+  #
+  # A pair issued by a refresh names the refresh token it was traded for
+  # (`rotated_from_id`), and a pair records when it first reached its client
+  # (`used_at`), so a spent refresh token presented again can be told apart:
+  # its client either never received the pair (unused) or is not its client.
   class Token < ApplicationRecord
     ACCESS = "access"
     REFRESH = "refresh"
@@ -40,9 +45,61 @@ module OauthServer
         return lookup unless lookup.ok?
         return Lookup.new(token: lookup.token, refusal: :wrong_audience) unless lookup.grant.resource == resource
 
+        return Lookup.new(token: lookup.token, refusal: :expired) unless lookup.token.mark_used!
+
         lookup.grant.touch_last_used!
         lookup
       end
+    end
+
+    # The first request an access token makes. Claims its pair (#claim_pair!) —
+    # one write per access token, never repeated.
+    #
+    # @return [Boolean] false when another pair claimed first and retired this one
+    def mark_used!
+      used_at.present? || claim_pair!
+    end
+
+    # This token's pair has reached its client: stamp both halves `used_at`, so
+    # the evidence outlives the access token's own row, and retire any other
+    # pair issued for the same spent refresh token (TokensController#rotate).
+    # Called on an access token's first request and on a refresh token's
+    # rotation — whichever comes first. Under the grant's lock, which every
+    # refresh takes first too, so the two never wait on each other's rows.
+    #
+    # A retired pair is expired, both halves: it is refused like any expired
+    # token and never revokes the grant. Its holder lost a race with a pair
+    # issued for the same spent token, which is what a client that refreshed
+    # twice at once looks like.
+    #
+    # @return [Boolean] false when another pair claimed first and retired this one
+    def claim_pair!
+      now = Time.current
+      grant.with_lock do
+        # Retiring a pair unlinks it, so one that names a refresh token in memory
+        # but no longer in the row lost to a sibling.
+        live = rotated_from_id.nil? || self.class.where(id: id).where.not(rotated_from_id: nil).exists?
+        if live
+          pair.where(used_at: nil).update_all(used_at: now, updated_at: now)
+          if rotated_from_id
+            self.class.where(rotated_from_id: rotated_from_id).where.not(created_at: created_at)
+              .update_all(rotated_at: now, expires_at: now, rotated_from_id: nil, updated_at: now)
+          end
+        end
+        live
+      end
+    end
+
+    # The pair this refresh token's rotation issued, still linked to it.
+    def successors
+      self.class.where(rotated_from_id: id)
+    end
+
+    # Whether no pair this refresh token was traded for ever reached a client.
+    # False when there is no linked pair at all — nothing shows one was lost.
+    def successors_unused?
+      issued = successors.to_a
+      issued.any? && issued.none? { |token| token.used_at || token.rotated_at }
     end
 
     # Spend this refresh token. A conditional UPDATE, so of two concurrent
@@ -51,6 +108,13 @@ module OauthServer
     # @return [Boolean] true when this call spent it
     def rotate!
       self.class.where(id: id, rotated_at: nil).update_all(rotated_at: Time.current, updated_at: Time.current) == 1
+    end
+
+    private
+
+    # The access and refresh token one Grant#issue_tokens! call minted together.
+    def pair
+      self.class.where(oauth_server_grant_id: oauth_server_grant_id, rotated_from_id: rotated_from_id, created_at: created_at)
     end
   end
 end

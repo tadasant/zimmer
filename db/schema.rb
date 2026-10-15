@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_15_160000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_15_170000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -637,10 +637,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_15_160000) do
     t.string "kind", null: false
     t.bigint "oauth_server_grant_id", null: false
     t.datetime "rotated_at"
+    t.bigint "rotated_from_id"
     t.string "token_digest", null: false
     t.datetime "updated_at", null: false
+    t.datetime "used_at"
     t.index ["expires_at"], name: "index_oauth_server_tokens_on_expires_at"
     t.index ["oauth_server_grant_id"], name: "index_oauth_server_tokens_on_oauth_server_grant_id"
+    t.index ["rotated_from_id"], name: "index_oauth_server_tokens_on_rotated_from_id"
     t.index ["token_digest"], name: "index_oauth_server_tokens_on_token_digest", unique: true
   end
 
