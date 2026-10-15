@@ -353,7 +353,7 @@ host's tunnel answers with a 404. The JWT lives about 30 days. The app
 runs the handoff again when less than a day is left, or when Access refuses a call: a redirect to
 `*.cloudflareaccess.com`, which the app never follows, or a 401/403 page with `cf-access-aud`.
 
-**Then Zimmer**, as a public OAuth client of [Zimmer's authorization server](/auth/mcp-authorization-server/),
+**Then Zimmer**, as a public OAuth client of [Zimmer's authorization server](/auth/mcp-authorization-server/#tokens),
 under the built-in `zimmer-ios` client:
 
 1. You type your Zimmer's https address, unless the build already carries one.
@@ -375,6 +375,16 @@ under the built-in `zimmer-ios` client:
 No Google credential and no API key ever reaches the phone. The connection is listed on
 **Settings → API keys** with every other OAuth connection, and revoking it there signs the phone out
 on its next request. Signing out in the app revokes it too.
+
+Only the token endpoint signs the app out. The app returns to the sign-in screen when `/oauth/token`
+answers `invalid_grant` (the connection was revoked, or its refresh token expired) or
+`invalid_client`. Everything else keeps the sign-in: a network error, a 5xx, or a 401 from an
+endpoint that still refuses after a fresh token. That last one means the endpoint does not take the
+app's token. It shows up as an error on that screen. A refresh whose answer never reached the phone
+does not end the connection either; see
+[refresh-token rotation](/auth/mcp-authorization-server/#tokens). A Keychain read that fails at launch,
+which happens before the phone's first unlock, is retried on the next request rather than treated as
+signed out.
 
 ## Push notifications
 
