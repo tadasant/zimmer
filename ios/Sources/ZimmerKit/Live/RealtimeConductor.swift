@@ -22,14 +22,17 @@ public enum LiveVoiceState: String, Sendable, Equatable {
 ///
 /// - a function call is relayed to Zimmer as soon as its arguments are complete
 ///   (`response.function_call_arguments.done`), several side by side;
-/// - each result goes back as a `function_call_output` item, preceded by a `session.update` when
+/// - each result goes back as a `function_call_output` item, followed by a `session.update` when
 ///   the call enabled or disabled a server;
 /// - once the response that asked for them is done and every result is in, exactly one
 ///   `response.create` — and never on top of a response already running (the user speaking
 ///   mid-tool starts one), in which case it waits for that response to finish;
-/// - a response the user talked over (`cancelled`) has its calls dropped, not run;
+/// - a response the user talked over (`cancelled`) asks for nothing more: a call first seen in
+///   its `response.done` is not run, and one already relayed is answered but not followed up;
+/// - each call runs once, however often its events repeat;
 /// - finished transcript lines are recorded, and the user starting to speak stops the reply
-///   that is playing.
+///   that is playing and tells OpenAI how much of it was heard (`conversation.item.truncate`,
+///   which a WebSocket client sends itself — over WebRTC the server does it).
 public struct RealtimeConductor: Sendable {
     public enum Effect: Equatable, Sendable {
         /// Send this client event to OpenAI.
@@ -40,14 +43,23 @@ public struct RealtimeConductor: Sendable {
         case record(role: LiveTurn.Role, text: String)
         /// Play this reply audio: 16-bit mono PCM at 24 kHz.
         case play(Data)
-        /// Stop the reply that is playing — the user started talking.
-        case stopPlayback
+        /// A new reply item started playing: count its audio from here.
+        case replyStarted(itemID: String)
+        /// The user started talking over reply `itemID`: stop playing it, and send
+        /// `truncate(itemID:audioEndMs:)` with how much of it was played.
+        case interrupt(itemID: String)
         case state(LiveVoiceState)
         case failure(String)
     }
 
+    /// Every call ever started, so a repeated event never runs one twice.
+    private var seen: Set<String> = []
     /// Calls started and not yet answered.
     private var inFlight: Set<String> = []
+    /// Calls of a cancelled response: answered when their result comes, followed up never.
+    private var dropped: Set<String> = []
+    /// The reply item whose audio is playing.
+    private var playingItem: String?
     /// Answered calls, until the response that asked for them is done.
     private var answered: Set<String> = []
     /// The calls of a finished response still waiting on their results.
@@ -61,13 +73,19 @@ public struct RealtimeConductor: Sendable {
     public mutating func handle(_ event: JSONValue) -> [Effect] {
         switch event["type"]?.string {
         case "input_audio_buffer.speech_started":
-            return [.stopPlayback, .state(.listening)]
+            defer { playingItem = nil }
+            return (playingItem.map { [Effect.interrupt(itemID: $0)] } ?? []) + [.state(.listening)]
         case "response.created":
             responseActive = true
             return [.state(.thinking)]
         case "response.output_audio.delta":
             guard let delta = event["delta"]?.string, let audio = Data(base64Encoded: delta) else { return [] }
-            return [.play(audio), .state(.speaking)]
+            var effects: [Effect] = []
+            if let item = event["item_id"]?.string, item != playingItem {
+                playingItem = item
+                effects.append(.replyStarted(itemID: item))
+            }
+            return effects + [.play(audio), .state(.speaking)]
         case "response.function_call_arguments.done":
             guard let callID = event["call_id"]?.string, let name = event["name"]?.string else { return [] }
             return start(callID: callID, name: name, arguments: event["arguments"]?.string ?? "{}")
@@ -98,12 +116,22 @@ public struct RealtimeConductor: Sendable {
             "type": .string("conversation.item.create"),
             "item": .object(["type": .string("function_call_output"), "call_id": .string(callID), "output": .string(output)]),
         ])), at: 0)
-        if awaiting.remove(callID) != nil {
+        if dropped.remove(callID) != nil {
+            // Its response was talked over; nothing waits on it.
+        } else if awaiting.remove(callID) != nil {
             if awaiting.isEmpty { pendingResponse = true }
         } else {
             answered.insert(callID)
         }
         return effects + sendPendingResponse()
+    }
+
+    /// Tell OpenAI the user heard only the first `audioEndMs` of reply `itemID`.
+    public static func truncate(itemID: String, audioEndMs: Int) -> JSONValue {
+        .object([
+            "type": .string("conversation.item.truncate"), "item_id": .string(itemID),
+            "content_index": .number(0), "audio_end_ms": .number(Double(max(0, audioEndMs))),
+        ])
     }
 
     /// The microphone's audio, as the event that carries it.
@@ -114,7 +142,7 @@ public struct RealtimeConductor: Sendable {
     // MARK: - Internals
 
     private mutating func start(callID: String, name: String, arguments: String) -> [Effect] {
-        guard !inFlight.contains(callID), !answered.contains(callID) else { return [] }
+        guard seen.insert(callID).inserted else { return [] }
         inFlight.insert(callID)
         return [.relay(callID: callID, name: name, arguments: arguments), .state(.working)]
     }
@@ -124,14 +152,20 @@ public struct RealtimeConductor: Sendable {
         let status = response?["status"]?.string
         let calls = (response?["output"]?.array ?? []).filter { $0["type"]?.string == "function_call" }
         guard status == nil || status == "completed" else {
-            // Talked over: whatever it asked for is not run, and nothing waits on it.
+            // Talked over: a call it asked for is not started, and one already relayed is
+            // answered without a follow-up.
+            for call in calls {
+                guard let callID = call["call_id"]?.string else { continue }
+                if inFlight.contains(callID) { dropped.insert(callID) }
+                answered.remove(callID)
+            }
             return effects
         }
         guard !calls.isEmpty else { return effects + [.state(.listening)] }
 
         for call in calls {
             guard let callID = call["call_id"]?.string else { continue }
-            if !inFlight.contains(callID), !answered.contains(callID), let name = call["name"]?.string {
+            if !seen.contains(callID), let name = call["name"]?.string {
                 effects += start(callID: callID, name: name, arguments: call["arguments"]?.string ?? "{}")
             }
             if answered.remove(callID) == nil { awaiting.insert(callID) }

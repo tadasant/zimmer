@@ -31,6 +31,10 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     private let voice = VoiceIO()
     /// Live Voice: start or resume a conversation from the list (CarPlayLive).
     private let live = CarPlayLive()
+    /// The root list, kept so the Live Voice section can be redrawn in place as a call starts
+    /// and ends without resetting the template stack.
+    private var listTemplate: CPListTemplate?
+    private var sessionsSection = CPListSection(items: [])
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay")
 
     private enum VoiceState {
@@ -44,13 +48,17 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     ) {
         self.interfaceController = interfaceController
         live.interfaceController = interfaceController
+        live.onChange = { [weak self] in self?.redrawLiveSection() }
         let loading = CPListTemplate(title: "Zimmer", sections: [])
         loading.emptyViewSubtitleVariants = ["Checking your sessions…"]
         interfaceController.setRootTemplate(loading, animated: false, completion: nil)
         refreshTask = Task {
             await refresh()
             // Voice first, as the category requires. The scene only ever connects on
-            // iOS 26.4+, where the voice-based conversational entitlement exists.
+            // iOS 26.4+, where the voice-based conversational entitlement exists. A Live Voice
+            // call already running is the conversation: it carries on, and the screen offers
+            // Back to the call.
+            guard !LiveCall.shared.isActive else { return }
             startConversation()
         }
     }
@@ -103,12 +111,21 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             }
             return item
         }
-        let template = CPListTemplate(title: "Needs you", sections: [CPListSection(items: items), live.section()])
-        template.emptyViewSubtitleVariants = ["Nothing needs you right now."]
+        // The Live Voice section is always there, so the list is never empty and its empty view
+        // would never show: an empty queue says so in a row instead.
+        let rows = items.isEmpty ? [CPListItem(text: "Nothing needs you right now.", detailText: nil)] : items
+        sessionsSection = CPListSection(items: rows)
+        let template = CPListTemplate(title: "Needs you", sections: [sessionsSection, live.section()])
+        listTemplate = template
         template.trailingNavigationBarButtons = [
             CPBarButton(title: "Talk") { [weak self] _ in self?.startConversation() },
         ]
         interfaceController?.setRootTemplate(template, animated: true, completion: nil)
+    }
+
+    /// A call started or ended: redraw the Live Voice section where it is.
+    private func redrawLiveSection() {
+        listTemplate?.updateSections([sessionsSection, live.section()])
     }
 
     private func showMessage(_ text: String) {
@@ -156,6 +173,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     // MARK: - The conversation
 
     private func startConversation(focusing sessionID: Int? = nil) {
+        // One conversation with the car at a time: a Live Voice call is it until hung up.
+        guard !LiveCall.shared.isActive else { return }
         conversation?.cancel()
         var ordered = sessions
         if let sessionID, let index = ordered.firstIndex(where: { $0.id == sessionID }) {

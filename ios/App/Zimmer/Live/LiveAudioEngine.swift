@@ -36,11 +36,25 @@ final class LiveAudioEngine: @unchecked Sendable {
     private var frames: (@Sendable (Data) -> Void)?
     private var failed: (@Sendable (String) -> Void)?
     private var observers: [NSObjectProtocol] = []
+    /// Bumped by every start and stop, so a start still waiting on the permission prompt, or a
+    /// late stop from an older call, cannot touch a newer call's engine.
+    private var token = 0
+    /// The reply item playing now: when its audio started, and how much of it was queued.
+    private var replyStartedAt: Date?
+    private var replyQueuedMs = 0
 
-    /// Open the microphone and the reply player. `frames` gets PCM16 at 24 kHz, about 21 ms at a time.
-    func start(frames: @escaping @Sendable (Data) -> Void, failed: @escaping @Sendable (String) -> Void) async throws {
+    /// Open the microphone and the reply player. `frames` gets PCM16 at 24 kHz, about 21 ms at a
+    /// time. Returns the token `stop(token:)` takes.
+    @discardableResult
+    func start(frames: @escaping @Sendable (Data) -> Void, failed: @escaping @Sendable (String) -> Void) async throws -> Int {
         stop()
+        let mine = lock.withLock { () -> Int in
+            token += 1
+            return token
+        }
         guard await AVAudioApplication.requestRecordPermission() else { throw Failure.microphoneDenied }
+        // A newer start (or a stop) came while the permission prompt was up.
+        guard lock.withLock({ token == mine }) else { throw CancellationError() }
 
         let session = AVAudioSession.sharedInstance()
         // `.voiceChat` is the mode a call runs in; `.allowBluetooth` lets AirPods or the car be
@@ -63,6 +77,7 @@ final class LiveAudioEngine: @unchecked Sendable {
             throw error
         }
         observe(engine)
+        return mine
     }
 
     private func configure(engine: AVAudioEngine, player: AVAudioPlayerNode) throws {
@@ -134,23 +149,48 @@ final class LiveAudioEngine: @unchecked Sendable {
             return (engine, player)
         }
         guard let (engine, player) = state, engine.isRunning else { return }
+        lock.withLock {
+            if replyStartedAt == nil { replyStartedAt = Date() }
+            replyQueuedMs += samples.count * 1_000 / Int(RealtimeAudio.sampleRate)
+        }
         player.scheduleBuffer(buffer, completionHandler: nil)
     }
 
-    /// Drop the reply that is playing — the user started talking over it.
-    func stopPlayback() {
-        let state = lock.withLock { () -> (AVAudioEngine, AVAudioPlayerNode)? in
-            guard let engine, let player else { return nil }
-            return (engine, player)
+    /// A new reply item starts: count its audio from zero.
+    func replyStarted() {
+        lock.withLock {
+            replyStartedAt = nil
+            replyQueuedMs = 0
         }
-        guard let (engine, player) = state, engine.isRunning else { return }
-        player.stop()
-        player.play()
     }
 
-    func stop() {
+    /// Drop the reply that is playing — the user started talking over it — and say roughly how
+    /// many milliseconds of it were heard: the time since it started, up to what was queued.
+    @discardableResult
+    func stopPlayback() -> Int {
+        let (state, heard) = lock.withLock { () -> ((AVAudioEngine, AVAudioPlayerNode)?, Int) in
+            let elapsed = replyStartedAt.map { Int(Date().timeIntervalSince($0) * 1_000) } ?? 0
+            let heard = min(elapsed, replyQueuedMs)
+            replyStartedAt = nil
+            replyQueuedMs = 0
+            guard let engine, let player else { return (nil, heard) }
+            return ((engine, player), heard)
+        }
+        if let (engine, player) = state, engine.isRunning {
+            player.stop()
+            player.play()
+        }
+        return heard
+    }
+
+    /// Close the microphone and the player. With a `token`, only if it is still that start's call.
+    func stop(token expected: Int? = nil) {
         let (engine, player, observers) = lock.withLock { () -> (AVAudioEngine?, AVAudioPlayerNode?, [NSObjectProtocol]) in
+            if let expected, expected != token { return (nil, nil, []) }
             defer {
+                self.token += 1
+                self.replyStartedAt = nil
+                self.replyQueuedMs = 0
                 self.engine = nil
                 self.player = nil
                 self.frames = nil

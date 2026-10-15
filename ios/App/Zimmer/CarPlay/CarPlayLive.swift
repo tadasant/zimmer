@@ -16,7 +16,17 @@ final class CarPlayLive {
     /// The open Live Voice conversation, read with the rest of the list.
     private(set) var current: Int?
     private var watching: AnyCancellable?
+    /// The list redraws the section when a call starts or ends.
+    var onChange: (() -> Void)?
+    private var activeWatch: AnyCancellable?
     private let call = LiveCall.shared
+
+    init() {
+        // LiveCall is main-actor and publishes from there.
+        activeWatch = call.$state.map { $0 != .idle }.removeDuplicates().dropFirst().sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.onChange?() }
+        }
+    }
 
     /// Read which Live Voice conversation is open, for the list's Resume row.
     func refresh() async {
@@ -26,7 +36,7 @@ final class CarPlayLive {
     func section() -> CPListSection {
         var items: [CPListItem] = []
         if call.isActive, let conversation = call.conversationID {
-            let back = CPListItem(text: "Back to the call", detailText: call.state.label)
+            let back = CPListItem(text: "Back to the call", detailText: "Live Voice is on")
             back.handler = { [weak self] _, completion in
                 self?.showCall(conversation)
                 completion()
