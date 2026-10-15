@@ -1275,8 +1275,8 @@ struct MessageBubble: View {
         let fromAgent = message.role == .assistant
         let folds = message.isToolTraffic && folded
         // Parsed once, for the text and for whether a Copy button has to be reachable.
-        let segments = folds ? [] : MessageSegment.segments(of: message.content)
-        let hasCode = segments.contains(where: \.isCode)
+        let blocks = folds ? [] : MarkdownBlock.blocks(of: message.content)
+        let hasCode = blocks.containsCode
         VStack(alignment: fromAgent ? .leading : .trailing, spacing: 3) {
             HStack(spacing: 4) {
                 Text(message.isToolTraffic ? "Tool" : (fromAgent ? "Agent" : "You"))
@@ -1295,9 +1295,9 @@ struct MessageBubble: View {
                 } else if message.isToolTraffic {
                     // The server writes tool traffic as markdown too (`**Using tool: Bash**`
                     // over a fenced block), so it renders the same way, in the monospaced face.
-                    MarkdownText(segments: segments, proseFont: Theme.mono, proseColor: Theme.inkSoft)
+                    MarkdownText(blocks: blocks, proseFont: Theme.mono, proseColor: Theme.inkSoft)
                 } else {
-                    MarkdownText(segments: segments)
+                    MarkdownText(blocks: blocks)
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -1325,91 +1325,6 @@ struct MessageBubble: View {
             Color.clear
         } else {
             shape.fill(Theme.accent.opacity(0.14))
-        }
-    }
-}
-
-/// A message's text as the web UI renders it: prose as inline markdown (emphasis, code
-/// spans, links, list markers kept as typed), fenced code blocks in the monospaced face on
-/// a well. Markdown that does not parse is shown as it was written.
-struct MarkdownText: View {
-    /// The text, already cut at its fences (`MessageSegment.segments(of:)`).
-    let segments: [MessageSegment]
-    var proseFont: Font = .subheadline
-    var proseColor: Color = Theme.ink
-
-    init(segments: [MessageSegment], proseFont: Font = .subheadline, proseColor: Color = Theme.ink) {
-        self.segments = segments
-        self.proseFont = proseFont
-        self.proseColor = proseColor
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                switch segment {
-                case let .prose(prose):
-                    Text(Self.attributed(prose))
-                        .font(proseFont)
-                        .foregroundStyle(proseColor)
-                case let .code(code, _):
-                    CodeBlock(code: code)
-                }
-            }
-        }
-    }
-
-    /// Inline-only, keeping line breaks and list markers: a paragraph stays a paragraph.
-    static func attributed(_ prose: String) -> AttributedString {
-        MarkdownInline.attributed(prose)
-    }
-}
-
-/// A fenced code block as the web's `code_block_controller.js` draws one: the code in the
-/// monospaced face on a well, scrolling sideways rather than wrapping, with a Copy button in
-/// its corner that puts the code on the pasteboard and shows a check for a moment. The web
-/// also colours the code by language (Rouge); here it is one colour.
-struct CodeBlock: View {
-    let code: String
-    /// Bumped by each tap, so the check's reset follows the latest tap rather than the first.
-    @State private var copies = 0
-    @State private var copied = false
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            Text(code)
-                .font(Theme.mono)
-                .foregroundStyle(Theme.ink)
-                .padding(.leading, 10)
-                // Room for the button at the end of the line, so the last characters can be
-                // scrolled out from under it.
-                .padding(.trailing, 40)
-                .padding(.vertical, 8)
-        }
-        .background(Theme.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(alignment: .topTrailing) {
-            Button {
-                UIPasteboard.general.string = code
-                copied = true
-                copies += 1
-                Haptics.success()
-            } label: {
-                Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(copied ? Theme.success : Theme.inkSoft)
-                    .frame(width: 30, height: 30)
-                    .background(Theme.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .accessibilityLabel(copied ? "Copied" : "Copy code")
-            .accessibilityIdentifier("code.copy")
-        }
-        // A new tap cancels the wait before it, so the check stays two seconds past the last.
-        .task(id: copies) {
-            guard copies > 0 else { return }
-            try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled else { return }
-            copied = false
         }
     }
 }

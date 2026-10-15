@@ -39,6 +39,22 @@ final class TranscriptParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [pasted], timeout: timeout), .completed, "the pasteboard holds the block's code, without its fences")
     }
 
+    /// The fresh-eyes review (1048) is every kind of block. Its heading, list, table and quote
+    /// are drawn as structure, not as the characters that mark them.
+    func test_block_markdown_is_drawn_as_structure() throws {
+        let app = launch(["-ZimmerFixtureOpenSession", "1048"])
+        XCTAssertTrue(app.descendants(matching: .any)["detail.message.1"].waitForExistence(timeout: timeout))
+        for block in ["markdown.heading", "markdown.list", "markdown.table", "markdown.quote"] {
+            XCTAssertTrue(app.descendants(matching: .any)[block].firstMatch.exists, "\(block) is drawn")
+        }
+        XCTAssertTrue(app.staticTexts["Review of #1293"].exists, "a heading reads without its #s")
+        XCTAssertTrue(app.staticTexts["UI tests"].exists, "a table cell is its own text")
+        for marks in ["## ", "| ---", "> Fix"] {
+            XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", marks)).count, 0, "no \"\(marks)\" left as typed")
+        }
+        attachScreenshot(app, named: "block-markdown")
+    }
+
     /// 1035 carries three catalog skills; two are a person's to invoke. "/" lists those two,
     /// typing narrows them, and a tap puts the command in the draft.
     func test_typing_a_slash_offers_the_sessions_skills_and_a_tap_inserts_one() throws {

@@ -113,7 +113,9 @@ two screens down.
 
 - **P6 — parity.** The PWA renders the transcript's markdown (`shared/_enhanced_markdown`). The app
   shows the raw text, asterisks and backticks included. Plan: `AttributedString(markdown:)` with
-  inline-only parsing, and code blocks in the monospaced face. **Slice 6.**
+  inline-only parsing, and code blocks in the monospaced face. **Slice 6.** Then block markdown
+  (headings, nested lists, quotes, tables, rules), cut into blocks by ZimmerKit's
+  `MarkdownBlock` and drawn by `MarkdownText`.
 - **P7 — parity.** The PWA's transcript loads tail-first and reads back as you scroll up. The app
   shows the last 100 and says how many it left out. Plan: a *Show earlier* row that raises the
   limit. **Slice 6.** It stops at the server's 200-message cap; see G6.
