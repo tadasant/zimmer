@@ -312,6 +312,10 @@ final class AppModel: ObservableObject {
     /// Health screen passes its own fresh report instead of reading twice.
     func refreshSystemBanners(every interval: TimeInterval = 300) async {
         if let checked = bannersCheckedAt, Date().timeIntervalSince(checked) < interval { return }
+        // Stamped before the read, so a failing health endpoint — the heaviest one, slowest
+        // during the incidents these banners are for — is asked once an interval, not on
+        // every poll and pull until it answers.
+        bannersCheckedAt = Date()
         // A hint on the board, never a reason to show an error over it.
         guard let report = try? await connection.api.health() else { return }
         note(report)
@@ -579,6 +583,9 @@ final class AppModel: ObservableObject {
         sessions = []
         signedInOrigins = nil
         edgeExpiry = nil
+        // The next deployment's banners are its own, read on the first refresh.
+        systemBanners = SystemBanners()
+        bannersCheckedAt = nil
         isSignedIn = false
     }
 

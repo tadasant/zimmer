@@ -306,8 +306,11 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
             rest = rest[open.upperBound...]
             guard let close = rest.range(of: "}}") else { break }
             let inside = rest[..<close.lowerBound]
-            let name = inside.split(separator: "|", maxSplits: 1).first.map(String.init) ?? ""
-            names.append(name)
+            let parts = inside.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+            // The server substitutes a bare name or `|untrusted` and nothing else, so a
+            // placeholder with any other filter is text, not a variable to ask for.
+            if parts.count == 2, parts[1] != "untrusted" { continue }
+            names.append(String(parts[0]))
             rest = rest[close.upperBound...]
         }
         return names

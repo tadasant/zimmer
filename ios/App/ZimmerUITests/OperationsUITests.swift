@@ -143,8 +143,9 @@ final class OperationsUITests: XCTestCase {
         failure.tap()
         XCTAssertTrue(app.navigationBars["#1027"].waitForExistence(timeout: timeout))
 
-        // The board carries the same banners, one line each.
-        app.tabBars.buttons["Sessions"].tap()
+        // The board carries the same banners, one line each. Back pops the session the
+        // failure opened; the tab alone would rely on a reselect popping the stack.
+        app.navigationBars["#1027"].buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.descendants(matching: .any)["banner.queueRecovery"].waitForExistence(timeout: timeout), "the board says jobs are halted")
         XCTAssertTrue(app.descendants(matching: .any)["banner.egress"].exists)
     }
