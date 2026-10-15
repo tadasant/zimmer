@@ -5,12 +5,79 @@ import ZimmerKit
 /// banners when they are up, the overall status, queue recovery mode, then process, session,
 /// system, egress, authentication, the two auto-retry panels, the retry budgets, post-deploy
 /// tasks, cron freshness, log retention, root data, the warm pools, webhook ingest, and the
-/// four tables of recent failures, errors and retry events. Its operator actions (cleanup,
-/// retries, entering recovery mode, re-arming tasks) stay in the browser.
+/// four tables of recent failures, errors and retry events. Its operator actions are the web
+/// page's buttons where the page has them, with its confirmations: cleaning up orphans, retrying
+/// failures, trashing stale sessions, entering, extending and leaving queue recovery mode,
+/// discarding or rescheduling queued jobs, and re-arming the post-deploy tasks. Each answer stays
+/// under its button, and the report is read again so the counts move.
 struct HealthView: View {
     @EnvironmentObject private var app: AppModel
     @State private var report: HealthReport?
     @State private var error: ZimmerError?
+    /// What each action answered, under its button, until that action runs again.
+    @State private var receipts: [String: Receipt] = [:]
+    @State private var busy: Set<String> = []
+    /// The action waiting on its confirmation.
+    @State private var confirming: Confirmable?
+    /// The queued-job row whose reschedule delay is being asked for.
+    @State private var rescheduling: QueuedJobPreview?
+    @State private var rescheduleDelay = "0"
+    @State private var recoveryReason = ""
+    @State private var recoveryMinutes = HealthReport.QueueRecovery.defaultTTLMinutes
+    @State private var extendMinutes = HealthReport.QueueRecovery.defaultTTLMinutes
+
+    /// An action's answer, in the tone it deserves: the server's sentence, a cooldown, or a failure.
+    private struct Receipt: Equatable {
+        enum Tone { case done, wait, failed }
+        var text: String
+        var tone: Tone
+    }
+
+    /// The actions the web page puts behind a confirmation, with its words.
+    private enum Confirmable: Identifiable {
+        case cleanup(Int), retry(Int), archive, halt, discard(QueuedJobPreview)
+
+        var id: String { key }
+
+        var key: String {
+            switch self {
+            case .cleanup: return "cleanupProcesses"
+            case .retry: return "retrySessions"
+            case .archive: return "archiveOld"
+            case .halt: return "enterQueueRecovery"
+            case let .discard(preview): return "discard.\(preview.scope.jobClass ?? preview.scope.queueName ?? "")"
+            }
+        }
+
+        /// The web button's `data-confirm`.
+        var question: String {
+            switch self {
+            case let .cleanup(count): return "Are you sure you want to terminate \(count) orphaned process(es)?"
+            case let .retry(count): return "Are you sure you want to retry \(count) failed session(s)?"
+            case .archive: return "Are you sure you want to move all sessions older than 7 days to trash?"
+            case .halt:
+                return "Halt pollers, triggers, inference, maintenance, default for the whole instance? Agent sessions keep running; everything else stops until you resume or the timer expires."
+            case let .discard(preview): return "Discard \(preview.matched) queued \(preview.label)? This is NOT recoverable — those jobs will never run."
+            }
+        }
+
+        var button: String {
+            switch self {
+            case .cleanup: return "Clean Up Orphaned Processes"
+            case .retry: return "Retry Failed Sessions"
+            case .archive: return "Trash Sessions Older Than 7 Days"
+            case .halt: return "Halt Job Processing"
+            case .discard: return "Discard"
+            }
+        }
+
+        var destructive: Bool {
+            switch self {
+            case .cleanup, .discard, .archive: return true
+            case .retry, .halt: return false
+            }
+        }
+    }
 
     /// The sections drawn by name below; any other `*_health` key is listed generically.
     private static let drawn: Set<String> = [
@@ -33,6 +100,7 @@ struct HealthView: View {
                 }
                 overall(report)
                 if let recovery = report.queueRecovery { queueRecovery(recovery) }
+                if let system = report.system { queuedJobMaintenance(system) }
                 if let process = report.process { self.process(process, status: report.section("process_health")) }
                 if let sessions = report.session { self.sessions(sessions, status: report.section("session_health")) }
                 if let system = report.system { self.system(system, status: report.section("system_health")) }
@@ -40,6 +108,7 @@ struct HealthView: View {
                 if let auth = report.auth { self.auth(auth, status: report.section("auth_health")) }
                 if let retry = report.sigtermRetry { self.retry(retry, title: "SIGTERM Auto-Retry", identifier: "health.sigtermRetry", quota: false) }
                 if let retry = report.apiErrorRetry { self.retry(retry, title: "API Error Auto-Retry", identifier: "health.apiErrorRetry", quota: true) }
+                maintenanceActions
                 if !report.retryBudgets.isEmpty { retryBudgets(report.retryBudgets) }
                 if let tasks = report.postDeployTasks { postDeployTasks(tasks, status: report.section("post_deploy_task_health")) }
                 if let cron = report.cron { self.cron(cron, status: report.section("cron_health")) }
@@ -76,6 +145,115 @@ struct HealthView: View {
         .task { await load() }
         .refreshable { await load() }
         .navigationTitle("Health")
+        .confirmationDialog(
+            confirming?.question ?? "",
+            isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+            titleVisibility: .visible,
+            presenting: confirming
+        ) { action in
+            Button(action.button, role: action.destructive ? ButtonRole.destructive : nil) { Task { await perform(action) } }
+                .accessibilityIdentifier("health.action.\(action.key).confirm")
+        }
+        .alert(
+            "Reschedule \(rescheduling?.label ?? "")",
+            isPresented: Binding(get: { rescheduling != nil }, set: { if !$0 { rescheduling = nil } }),
+            presenting: rescheduling
+        ) { preview in
+            TextField("Delay (min)", text: $rescheduleDelay)
+                .keyboardType(.numberPad)
+                .accessibilityIdentifier("health.reschedule.delay")
+            Button("Reschedule") { Task { await reschedule(preview) } }
+                .accessibilityIdentifier("health.action.reschedule.confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: { preview in
+            Text("Move \(preview.matched) queued job\(preview.matched == 1 ? "" : "s") to run this many minutes from now; 0 is as soon as the queue allows. The work still happens, later.")
+        }
+    }
+
+    // MARK: - Actions
+
+    /// Run one action: its receipt stays under its button, in the server's words, and the
+    /// report is read again so the counts it changed move. A cooldown is a wait, not a failure.
+    private func run(_ key: String, _ action: @escaping (ZimmerAPI) async throws -> String) async {
+        guard busy.insert(key).inserted else { return }
+        defer { busy.remove(key) }
+        do {
+            let answer = try await action(app.api)
+            receipts[key] = Receipt(text: answer, tone: .done)
+            Haptics.success()
+            await load()
+        } catch {
+            let failure = error as? ZimmerError ?? .transport(error)
+            receipts[key] = Receipt(text: failure.userMessage, tone: failure.isCooldown ? .wait : .failed)
+            Haptics.failure()
+            app.noteError(failure)
+        }
+    }
+
+    private func perform(_ action: Confirmable) async {
+        switch action {
+        case .cleanup: await run(action.key) { try await $0.cleanupProcesses().summary }
+        case .retry: await run(action.key) { try await $0.retryFailedSessions().summary }
+        case .archive: await run(action.key) { try await $0.archiveOldSessions(days: 7).summary }
+        case .halt:
+            let reason = recoveryReason
+            let minutes = recoveryMinutes
+            await run(action.key) { try await $0.enterQueueRecoveryMode(reason: reason, ttlMinutes: minutes).summary }
+        case let .discard(preview):
+            await run(action.key) {
+                try await $0.discardQueuedJobs(preview.scope, expectedCount: preview.matched, reason: "discarded from the Health screen in the iOS app").summary
+            }
+        }
+    }
+
+    /// The count the write will check is the one the confirmation shows: previewed first, as
+    /// the web row carries the count rendered beside it.
+    private func preview(_ jobClass: String, then next: @escaping (QueuedJobPreview) -> Void) async {
+        let key = "queued.\(jobClass)"
+        do {
+            let preview = try await app.api.queuedJobs(QueuedJobScope(jobClass: jobClass))
+            next(preview)
+        } catch {
+            let failure = error as? ZimmerError ?? .transport(error)
+            receipts[key] = Receipt(text: failure.userMessage, tone: .failed)
+        }
+    }
+
+    private func reschedule(_ preview: QueuedJobPreview) async {
+        let delay = min(max(Int(rescheduleDelay) ?? 0, 0), maxRescheduleDelayMinutes)
+        await run("reschedule.\(preview.scope.jobClass ?? "")") {
+            try await $0.rescheduleQueuedJobs(preview.scope, expectedCount: preview.matched, delayMinutes: delay).summary
+        }
+    }
+
+    /// The web page's full-width button, with the action's answer under it.
+    private func actionButton(_ title: String, key: String, tone: Color, destructive: Bool = false, action: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: action) {
+                HStack(spacing: 8) {
+                    if busy.contains(key) { ProgressView().tint(.white).controlSize(.small) }
+                    Text(title).font(.subheadline.weight(.semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9)
+                .foregroundStyle(.white)
+                .background(tone, in: RoundedRectangle(cornerRadius: Theme.smallRadius, style: .continuous))
+            }
+            .buttonStyle(.borderless)
+            .disabled(busy.contains(key))
+            .accessibilityIdentifier("health.action.\(key)")
+            receipt(key)
+        }
+    }
+
+    @ViewBuilder
+    private func receipt(_ key: String) -> some View {
+        if let receipt = receipts[key] {
+            Text(receipt.text)
+                .font(.caption)
+                .foregroundStyle(receipt.tone == .done ? Theme.success : receipt.tone == .wait ? Theme.warning : Theme.danger)
+                .accessibilityIdentifier("health.action.\(key).result")
+        }
     }
 
     // MARK: - Sections
@@ -118,14 +296,94 @@ struct HealthView: View {
                     if let reason = recovery.reason, !reason.isEmpty {
                         Text("Reason: \(reason)").font(.caption).foregroundStyle(Theme.ink)
                     }
+                    note("While halted, act on the cause: disable a stampeding trigger on the Triggers tab, discard or reschedule queued jobs by class below, or trash runaway sessions with the maintenance actions.")
+                    actionButton("Resume Job Processing", key: "exitQueueRecovery", tone: Theme.success) {
+                        Task { await run("exitQueueRecovery") { try await $0.exitQueueRecoveryMode().summary } }
+                    }
+                    Stepper(value: $extendMinutes, in: HealthReport.QueueRecovery.ttlMinutes, step: 5) {
+                        Text(verbatim: "Extend by \(extendMinutes) min").font(.caption).foregroundStyle(Theme.inkSoft)
+                    }
+                    .accessibilityIdentifier("health.recovery.extendMinutes")
+                    actionButton("Extend", key: "extendQueueRecovery", tone: Theme.inkSoft) {
+                        let minutes = extendMinutes
+                        let reason = recovery.reason
+                        Task { await run("extendQueueRecovery") { try await $0.enterQueueRecoveryMode(reason: reason, ttlMinutes: minutes).summary } }
+                    }
+                } else {
+                    TextField("Reason (shown in the banner and the Slack alert)", text: $recoveryReason, prompt: Text("e.g. trigger stampede, 900 jobs/hour"))
+                        .font(.caption)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("health.recovery.reason")
+                    Stepper(value: $recoveryMinutes, in: HealthReport.QueueRecovery.ttlMinutes, step: 5) {
+                        Text(verbatim: "Auto-resume after \(recoveryMinutes) min").font(.caption).foregroundStyle(Theme.inkSoft)
+                    }
+                    .accessibilityIdentifier("health.recovery.minutes")
+                    actionButton("Halt Job Processing", key: "enterQueueRecovery", tone: Theme.warning) { confirming = .halt }
                 }
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("health.queueRecovery")
         } header: {
             Text("Queue Recovery Mode").themeLabel()
+        }
+        .themeRows()
+    }
+
+    /// The web page's third lever for a runaway queue: the jobs already enqueued, by class, each
+    /// with the reversible move and the unrecoverable one. The count a write checks is read just
+    /// before the question, so the action is refused rather than taken on a set you did not see.
+    private func queuedJobMaintenance(_ system: HealthReport.System) -> some View {
+        Section {
+            VStack(alignment: .leading, spacing: 10) {
+                note("Jobs that are enqueued but not started, by class. Discarding is not recoverable — the work never runs. Rescheduling is the reversible sibling: the work still happens, later. Running executions, finished history and the agents queue are never eligible.")
+                if system.readyByJobClass.isEmpty {
+                    Text("Nothing is waiting. Every eligible queue is empty.").font(.subheadline).foregroundStyle(Theme.inkSoft)
+                }
+                ForEach(system.readyByJobClass) { row in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(row.name).font(Theme.mono).foregroundStyle(Theme.ink)
+                        Text(verbatim: "\(row.count) ready").font(.caption.monospacedDigit()).foregroundStyle(Theme.inkSoft)
+                        HStack(spacing: 8) {
+                            Button("Reschedule") {
+                                rescheduleDelay = "0"
+                                Task { await preview(row.name) { rescheduling = $0 } }
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(Theme.accent)
+                            .accessibilityIdentifier("health.action.reschedule.\(row.name)")
+                            Button("Discard", role: .destructive) {
+                                Task { await preview(row.name) { confirming = .discard($0) } }
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(Theme.danger)
+                            .accessibilityIdentifier("health.action.discard.\(row.name)")
+                        }
+                        .font(.caption.weight(.semibold))
+                        receipt("queued.\(row.name)")
+                        receipt("reschedule.\(row.name)")
+                        receipt("discard.\(row.name)")
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("health.queuedJobs")
+        } header: {
+            Text("Queued Job Maintenance").themeLabel()
         } footer: {
-            note("Entering, extending and resuming the mode stay on the Health page in the browser.")
+            note("Each control carries the count read just before the question. If the queue moves between that read and the tap, the action is refused rather than acting on a set you did not see — try again.")
+        }
+        .themeRows()
+    }
+
+    /// The web page's Maintenance Actions card: the stale-session sweep. Its two dashboard links
+    /// are web pages.
+    private var maintenanceActions: some View {
+        Section {
+            actionButton("Trash Sessions Older Than 7 Days", key: "archiveOld", tone: Theme.inkSoft) { confirming = .archive }
+                .padding(.vertical, 2)
+        } header: {
+            Text("Maintenance Actions").themeLabel()
         }
         .themeRows()
     }
@@ -147,6 +405,11 @@ struct HealthView: View {
                     }
                 }
             }
+            if process.orphaned > 0 {
+                actionButton("Clean Up Orphaned Processes", key: "cleanupProcesses", tone: Theme.danger) { confirming = .cleanup(process.orphaned) }
+            } else {
+                receipt("cleanupProcesses")
+            }
         }
     }
 
@@ -163,6 +426,11 @@ struct HealthView: View {
             if !sessions.failureReasons.isEmpty {
                 subhead("Failure Reasons (24h)")
                 counts(sessions.failureReasons.map { HealthReport.Count($0.name.replacingOccurrences(of: "_", with: " ").capitalizedFirst, $0.count) })
+            }
+            if !sessions.recentFailures.isEmpty {
+                actionButton("Retry Failed Sessions", key: "retrySessions", tone: Theme.warning) { confirming = .retry(sessions.recentFailures.count) }
+            } else {
+                receipt("retrySessions")
             }
         }
     }
@@ -324,8 +592,13 @@ struct HealthView: View {
                 }
                 .padding(.vertical, 2)
             }
-        } footer: {
-            note("Re-arming and running a task stays on the Health page in the browser.")
+            if tasks.failed > 0 || tasks.awaitingFirstTick > 0 {
+                actionButton("Re-arm and run now", key: "runPostDeployTasks", tone: tasks.blocked > 0 ? Theme.danger : Theme.accentFill) {
+                    Task { await run("runPostDeployTasks") { try await $0.runPostDeployTasks().summary } }
+                }
+            } else {
+                receipt("runPostDeployTasks")
+            }
         }
     }
 
