@@ -85,8 +85,10 @@ class Api::V1::AccountController < Api::BaseController
   # The card reads the signed-in browser's identity. The app has no browser, so
   # the identity is the one that signed in with the grant's email — the most
   # recent, if that address has ever been recycled onto a second Google account.
+  # The card is the signed-in browser's; a relay-only grant is not that person's
+  # sign-in, so it gets no recovery-code count.
   def web_sign_in_json
-    return nil unless native_app_request?
+    return nil unless native_app_request? && native_app_grant.acts_as_human?
 
     configuration = web_auth_configuration
     return nil unless configuration&.enabled?

@@ -117,6 +117,9 @@ class NativeAppAccountTest < ActionDispatch::IntegrationTest
     assert_match(/may not act as you/, JSON.parse(response.body)["message"])
     delete "/api/v1/oauth_grants/#{grant_for(relay).id}", headers: bearer(relay)
     assert_response :forbidden, "not even its own"
+    patch "/api/v1/oauth_grants/#{grant_for(relay).id}", params: { privilege: OauthServer::ACT_AS_HUMAN }, headers: bearer(relay)
+    assert_response :forbidden, "a relay grant cannot raise itself"
+    assert_equal OauthServer::RELAY_ONLY, grant_for(relay).reload.privilege
     patch "/api/v1/oauth_grants/#{other.id}", params: { privilege: OauthServer::RELAY_ONLY }, headers: bearer(relay)
     assert_response :forbidden
 
@@ -199,6 +202,8 @@ class NativeAppAccountTest < ActionDispatch::IntegrationTest
     post "/api/v1/api_keys", params: { name: "phone" }, headers: bearer(relay)
     assert_response :forbidden
     delete "/api/v1/api_keys/#{existing.id}", headers: bearer(relay)
+    assert_response :forbidden
+    post "/api/v1/api_keys/#{existing.id}/restore", headers: { "X-API-Key" => API_KEY }
     assert_response :forbidden
     post "/api/v1/api_keys/#{existing.id}/restore", headers: bearer(relay)
     assert_response :forbidden
