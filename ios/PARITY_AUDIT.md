@@ -6,14 +6,14 @@ Each row is one control or piece of information on the web: where it is (view fi
 
 ## Why earlier audits missed things
 
-Every audit before this one started from the previous audit, or from memory of the web app, and checked the app against that list. A list built that way can only shrink. Anything the first pass never wrote down — Settings → Experimental, the MCP Apps switch, the whole of `/inference`, `/connectors`, `/clis` and `/settings/api_keys`, the Issues, Outcomes and Gate Decisions pages, the Supervisor console — was invisible to every pass after it, and each pass repeated the same "browser by choice" line for pages it had never enumerated.
+Every audit before this one started from the previous audit, or from memory of the web app, and checked the app against that list. A list built that way can only shrink. What the first pass never wrote down at all — Settings → Experimental, the MCP Apps switch, `/clis`, the Issues pages, the Supervisor console — stayed invisible to every pass after it. What it did write down, it wrote down as one line: `/inference`, `/connectors`, `/settings/api_keys`, Outcomes and Gate Decisions each got a row that said "browser by choice", and no pass after that opened the page to count what was on it.
 
 Two habits did the damage:
 
-1. **"Settings" was one row.** The page has seven cards and four sub-pages, and the row stood in for 165 items.
+1. **"Settings" was one row.** The page has seven cards and four sub-pages, and the row stood in for about 160 items.
 2. **"Stays in the browser" was accepted as a status.** It is not a reason, and because it was never challenged, the API gap behind each such row was never written down either.
 
-This audit was derived from the web app's source instead: every HTML route a signed-in person reaches in `config/routes.rb` (382), every view and partial under `app/views` (182 files), and every Stimulus controller that adds behaviour (84). Five areas were enumerated independently from that source, then cross-checked against the routes census so nothing fell between them. A row is `web-only` only with a reason a phone user would accept — installing the PWA, a ⌘ shortcut, an admin console whose edit forms show plaintext secrets. Everything else that is not in the app is `missing`, with the API it needs named, and anything built in an open PR is marked with that PR.
+This audit was derived from the web app's source instead: every HTML route a signed-in person reaches in `config/routes.rb` (382), every view and partial under `app/views` (183 files), and every Stimulus controller that adds behaviour (82). Five areas were enumerated independently from that source, then cross-checked against the routes census so nothing fell between them. A row is `web-only` only with a reason a phone user would accept — installing the PWA, a ⌘ shortcut, an admin console whose edit forms show plaintext secrets. Everything else that is not in the app is `missing`, with the API it needs named, and anything built in an open PR is marked with that PR.
 
 ## Totals
 
@@ -21,12 +21,12 @@ This audit was derived from the web app's source instead: every HTML route a sig
 | --- | ---: | ---: | ---: | ---: | ---: |
 | A Settings & account | 16 | 19 | 125 | 3 | 163 |
 | B Session page | 90 | 18 | 20 | 3 | 131 |
-| C Board & starting sessions | 81 | 22 | 11 | 1 | 115 |
-| D Operations | 34 | 29 | 83 | 4 | 150 |
+| C Board & starting sessions | 79 | 24 | 11 | 1 | 115 |
+| D Operations | 34 | 29 | 84 | 3 | 150 |
 | E Global chrome | 17 | 3 | 10 | 8 | 38 |
-| **Total** | **238** | **91** | **249** | **19** | **597** |
+| **Total** | **236** | **93** | **250** | **18** | **597** |
 
-Counted from the rows below after removing duplicate copies of items two areas both rowed (the cross-check in `audit/crosscheck.md` lists each one). Four rows in B are `present` only with #1282 and two in C only with #1284, both open; the counts take them as present. The 205 Administrate routes under `/supervisor` and the GoodJob mount are one `web-only` row each in D, not 206.
+Counted from the rows below after removing the 44 duplicate copies of items two areas both rowed. Four rows in B are `present` only with #1282, and two in C are `partial` only with #1284, both open; the counts take them as those PRs leave them. The 205 Administrate routes under `/supervisor` and the GoodJob mount are one `web-only` row each in D, not 206.
 
 ## The biggest gaps, by how often they are hit
 
@@ -43,7 +43,7 @@ Ranked within each group by how often a person on a phone runs into it. The area
 7. Camera capture and paste-an-image are absent from the Quick Router and the first prompt; the session composer has paste but no camera (B `_follow_up_form:174-179`, C `index.html.erb:505-515`, `_chat_bubble:64-104`).
 8. Promote/demote and heartbeat are on the session page only, not on the row (C `_ranked_row:100-111`, `_session_heartbeat` on the card); the session page does not show the session's cost though `GET /api/v1/costs?session_id=` exists (B `_detail:123`).
 9. Verbose logs are unreachable (`logs?level=` exists) and subagent transcripts are a separate modal rather than inline (B `timeline_items/_log`, `subagent_transcripts/_accordion`).
-10. Supervisor and the Jobs dashboard have no "Open in browser" row under More (E `sessions/index.html.erb:72, 75`); "Set up a new authenticator" could open `/login/second_factor/setup` in the sign-in sheet (A `_web_sign_in:25`).
+10. Supervisor and the Jobs dashboard have no "Open in browser" row under More (E `sessions/index.html.erb:72, 79`); "Set up a new authenticator" could open `/login/second_factor/setup` in the sign-in sheet (A `_web_sign_in:25`).
 
 **Needs a route opened to the app's token (`accepts_native_app_tokens`)**
 
@@ -502,12 +502,12 @@ Ranked within each group by how often a person on a phone runs into it. The area
 | _flat_sessions.html.erb:31 Kaminari `paginate` (50/page, `?page=`) | Page through flat views | SessionActionsAPI.swift:174 reads up to 5×100 then says "Showing the first 500" | present | Different mechanism, same reach |
 | _user_view_sessions.html.erb:24–67 **Your board**: one list, priority above spot, precedence within, capped 500 with truncation notice | The decision board | BoardView.swift:204; SessionListView.swift:172 `listIncomplete` | present |  |
 | _user_view_sessions.html.erb:26 `user-view` drag reorder (writes precedence via `reorder_precedence`) | Drag a row to reorder | SessionListView.swift:283 "Reorder Board" edit mode, `.onMove` → `reorder(above:below:)` | partial | iOS needs an explicit "Reorder Board" mode, then Done; the web drags directly. Priority rows are `moveDisabled` on iOS. Acceptable, but two extra taps per reorder |
-| _user_view_sessions.html.erb:38 **Reprioritize** button + "Working in session #N" | Hand the board to the reprioritizer session | `SessionListView.swift` (#1284) | present | **in #1284**: view menu → confirm → `reprioritize()`, toast with the message. The "Working in session #N" link is not shown (the response carries `session`; the PR shows only `message`) → partial once #1284 lands |
+| _user_view_sessions.html.erb:38 **Reprioritize** button + "Working in session #N" | Hand the board to the reprioritizer session | `SessionListView.swift` (#1284) | partial | **in #1284**: view menu → confirm → `reprioritize()`, toast with the message. The "Working in session #N" link is not shown (the response carries `session`; the PR shows only `message`) → partial once #1284 lands |
 | _user_view_sessions.html.erb:64 error live region for failed reorder | Error without reload | AppModel.swift:465 `handle(error)` + refresh | present |  |
 | _ranked_sessions.html.erb:77–102 **Priority** section + count | Priority sessions above the queue | SessionListView.swift:123 sections "Priority" / "Spot queue"; BoardView.swift:207 | present | Section counts not shown on iOS (web shows `priorityCount` / `spotCount`) — minor |
 | _ranked_sessions.html.erb:104–124 **Spot queue** section + count, capped 200 | The queue in work order | same | present |  |
 | _ranked_row.html.erb:163 inline **precedence number field** (Enter commits, `update_precedence`) | Type an exact rank | SessionDetailView.swift (`setPrecedence`) only | partial | Rank is editable on the session page, not on the row; iOS Ranked rows do not show the precedence number at all (`SessionRow`), the web row does |
-| _ranked_row.html.erb:36 drag handle on spot rows (`ranked-queue#persistDrop`) | Drag to reorder the spot queue | SessionListView.swift:283 "Reorder Spot Queue" | present | Same explicit mode caveat as Your board |
+| _ranked_row.html.erb:36 drag handle on spot rows (`ranked-queue#persistDrop`) | Drag to reorder the spot queue | SessionListView.swift:295 "Reorder Spot Queue" | present | Same explicit mode caveat as Your board |
 | _ranked_row.html.erb:100–111 ⋮ **Promote to priority** / **Demote to spot** (`update_scheduling_class`, demote → `place: top_of_spot`) | Move a row between sections | SessionDetailView.swift `setSchedulingClass` | partial | Only on the session page; not on the row's context menu. API supports it (`PATCH /sessions/:id` `scheduling_class` / `place`) |
 | _ranked_row.html.erb:127 ⋮ **Start now** (`start_now`) | Take the waiting session's turn now | SessionListView.swift:461 context menu "Start Now" (status == waiting) | present | Web offers it on every row and lets the server refuse; iOS only on waiting rows — fine |
 | _ranked_row.html.erb:135 ⋮ **Open session** (full page) | Navigate to `/sessions/:id` | row tap → `SessionDetailView`; "Open in browser" | present |  |
@@ -552,7 +552,7 @@ Ranked within each group by how often a person on a phone runs into it. The area
 | _user_view_row.html.erb:128 agent root / genesis chip |  | `RowSummary` root ?? genesis | present |  |
 | _user_view_row.html.erb:133 **precedence readout** `#N` |  | — | missing | `precedence` is in `session_json`; not rendered on any iOS row |
 | _user_view_row.html.erb:139 PR button |  | SessionRow PR | present |  |
-| _user_view_merge_button.html.erb **Merge** (offered when open+green; "Merge sent" when `AuthorizeMerge.authorized_at`; "Merged" when merged) | Authorize the merge | `SessionListView.swift` (#1284) | present | **in #1284**: swipe/context "Merge" with confirm. The "Merge sent" state is not shown afterwards: `authorized_at` is not in `session_json`, so a second press is only refused server-side. Needs API: `merge_authorized_at` → partial once #1284 lands |
+| _user_view_merge_button.html.erb **Merge** (offered when open+green; "Merge sent" when `AuthorizeMerge.authorized_at`; "Merged" when merged) | Authorize the merge | `SessionListView.swift` (#1284) | partial | **in #1284**: swipe/context "Merge" with confirm. The "Merge sent" state is not shown afterwards: `authorized_at` is not in `session_json`, so a second press is only refused server-side. Needs API: `merge_authorized_at` → partial once #1284 lands |
 | _user_view_row.html.erb:147 Snooze popover on the row |  | swipe/context | present |  |
 | _user_view_row.html.erb:156 Trash (turbo stream removes the row) |  | swipe/context | present |  |
 
@@ -810,7 +810,7 @@ Ranked within each group by how often a person on a phone runs into it. The area
 | Web location | What it does | iOS equivalent | Status | Note |
 | --- | --- | --- | --- | --- |
 | `config/routes.rb:2-150` (205 Administrate routes over ~50 tables; `/jobs` GoodJob mount) | Raw CRUD console: sessions, triggers, trigger_conditions, claude_accounts, app_settings, logs, users, post_deploy_task_runs, agent_root_records, webhook_deliveries, … including **editable** `mcp_oauth_credentials`, `mcp_oauth_pending_flows`, `x_oauth_credentials` whose edit forms hold plaintext tokens | — | web-only | Not admin-gated (`Supervisor::ApplicationController` has only `WebSignInRequired`; a security note, not a parity gap). Web-only: a generic table editor with no JSON surface, whose forms expose secrets a phone should not carry; what a phone operator needs (post-deploy runs, root data, webhook deliveries) is on /health, rowed there as partial. |
-| supervisor/x_oauth_credentials/index,show; x_oauth_authorizations/new,manual,error | Connect / re-authorize an X account (OAuth consent round-trip, manual code finish) | — | web-only | An OAuth consent round-trip with X; the app already sends MCP OAuth to the browser. |
+| supervisor/x_oauth_credentials/index,show; x_oauth_authorizations/new,manual,error | Connect / re-authorize an X account (OAuth consent round-trip, manual code finish) | — | missing | needs API: start and finish the X consent round-trip from the phone; `ASWebAuthenticationSession` runs the consent as the browser does. No REST under `/api/v1`. |
 
 ### E Global chrome
 
@@ -911,8 +911,6 @@ Inventory notes from this area, not counted (neither side has it, or iOS has it 
 | C | index.html.erb:790–832 slide-in notes sidebar (`dashboard-notes#open`, `manualSave`, autosave) | Edit a session's notes from the board | Unreachable on the web: nothing in `app/views` dispatches `dashboard-notes#open`, so the sidebar is dead markup. Notes are at parity on the session page |
 | D | _health_content:615 | Link to GoodJob dashboard (`/jobs`) | GoodJob's own HTML console; no JSON surface. Its only phone-relevant use (unpause after queue recovery) is covered by the queue-recovery row above. |
 | D | _health_content:622 | Link to /supervisor | See Supervisor block. |
-| D | `config/routes.rb:2-150` (205 Administrate routes over ~50 tables; `/jobs` GoodJob mount) | Raw CRUD console: sessions, triggers, trigger_conditions, claude_accounts, app_settings, logs, users, post_deploy_task_runs, agent_root_records, webhook_deliveries, … including **editable** `mcp_oauth_credentials`, `mcp_oauth_pending_flows`, `x_oauth_credentials` whose edit forms hold plaintext tokens | Not admin-gated (`Supervisor::ApplicationController` has only `WebSignInRequired`; a security note, not a parity gap). Web-only: a generic table editor with no JSON surface, whose forms expose secrets a phone should not carry; what a phone operator needs (post-deploy runs, root data, webhook deliveries) is on /health, rowed there as partial. |
-| D | supervisor/x_oauth_credentials/index,show; x_oauth_authorizations/new,manual,error | Connect / re-authorize an X account (OAuth consent round-trip, manual code finish) | An OAuth consent round-trip with X; the app already sends MCP OAuth to the browser. |
 | E | sessions/index.html.erb:35, `2xl:` classes | Ultrawide sidebar layout | A phone has no 2xl viewport. |
 | E | layouts/application.html.erb:33-38 + `live_updates_status_controller.js` → `GET /live_updates/status` → `shared/_live_updates_paused_banner.html.erb` | "Live updates paused" banner, polled, while BroadcastService's breaker is open | The condition is Turbo Stream broadcasts being dropped; the app has no stream, it polls REST, so the freeze it warns about cannot happen on the phone. |
 | E | shared/_chat_bubble.html.erb:40, `chat_bubble_controller.js:102` | ⌘/Ctrl+K opens the bubble | Desktop keyboard shortcut. |
@@ -921,6 +919,7 @@ Inventory notes from this area, not counted (neither side has it, or iOS has it 
 | E | layouts/application.html.erb:11 → `public/manifest.json` (standalone, start_url `/`, portrait, maskable icons) | Installable PWA | Installing a PWA is what the native app replaces. |
 | E | `GET /supervisor/apns_devices` | Operator view of registered phones | Operator surface about the phones themselves. |
 | E | `GET /up`, `GET /up/deep` | Liveness/deep health probes | Infrastructure probes. |
+| D | `config/routes.rb:2-150` (205 Administrate routes over ~50 tables; `/jobs` GoodJob mount) | Raw CRUD console: sessions, triggers, trigger_conditions, claude_accounts, app_settings, logs, users, post_deploy_task_runs, agent_root_records, webhook_deliveries, … including **editable** `mcp_oauth_credentials`, `mcp_oauth_pending_flows`, `x_oauth_credentials` whose edit forms hold plaintext tokens | Not admin-gated (`Supervisor::ApplicationController` has only `WebSignInRequired`; a security note, not a parity gap). Web-only: a generic table editor with no JSON surface, whose forms expose secrets a phone should not carry; what a phone operator needs (post-deploy runs, root data, webhook deliveries) is on /health, rowed there as partial. |
 
 ## Open PRs that close rows
 
@@ -958,6 +957,6 @@ Every HTML route a signed-in person reaches, from `config/routes.rb` at `1dc3697
 | E — Global chrome | 7 |
 | **Total** | **382** |
 
-The cross-check (`audit/crosscheck.md`) matched all 382 against the five area files by controller#action and by path: every route is accounted for by a row or a `## Routes covered` entry, and the only two with no row are route-level redirects for stale links (`GET /sessions` → `/`, `GET /quotas` → `/inference`), which are not something a person uses. Nothing had to be added; the cross-check instead found 44 duplicate rows where two areas rowed the same item, and the matrix above keeps one copy of each.
+The cross-check (the cross-check (kept outside the repo)) matched all 382 against the five area files by controller#action and by path: every route is accounted for by a row or a `## Routes covered` entry, and the only two with no row are route-level redirects for stale links (`GET /sessions` → `/`, `GET /quotas` → `/inference`), which are not something a person uses. Nothing had to be added; the cross-check instead found 44 duplicate rows where two areas rowed the same item, and the matrix above keeps one copy of each.
 
 Two web routes are dead on the web side — nothing in `app/views`, `app/javascript` or `app/helpers` reaches them: `POST /sessions/bulk_archive` (`sessions#bulk_archive`; its only callers are the API twin, the `action_session` MCP tool and the Slack poller — the iOS app has multi-select trash, the web does not), and `GET /mcp_oauth/status/:session_id` (`mcp_oauth#status`; renders a partial whose Stimulus controller does not exist and that nothing polls).
