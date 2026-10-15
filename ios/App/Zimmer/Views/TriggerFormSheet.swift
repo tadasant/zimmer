@@ -291,7 +291,7 @@ struct TriggerFormSheet: View {
 
     private var reuseFooter: String {
         let words = "When enabled, subsequent trigger invocations will send a follow-up prompt to the previously created session instead of spawning a new one. If the previous session is no longer active, a new session will be created."
-        return draft.reuseSession ? words + " Enqueue messages and Resuscitate archived are switched on the trigger's page in the browser." : words
+        return draft.reuseSession ? words + " Enqueue messages and Resuscitate archived are switched on the trigger's page in the browser; turning re-use off here turns both off." : words
     }
 
     private var defaultClassLabel: String {
