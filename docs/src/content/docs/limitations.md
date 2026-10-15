@@ -1136,9 +1136,16 @@ immediate.
 
 **A spent refresh token replayed within 60 seconds is refused but does not revoke the connection.**
 The window lets a client refresh twice at once without ending its own connection. The cost is that a
-stolen refresh token, replayed inside that minute, does not trip the replay alarm. A client that lost
-the response to its own refresh is not rescued by it: Zimmer keeps no copy of the tokens it sent, so
-that client has to be approved again.
+stolen refresh token, replayed inside that minute, does not trip the replay alarm.
+
+**A spent refresh token is answered while no pair it bought has been used.** That is how a client
+that lost the answer to its own refresh (a phone suspended mid-request) keeps its connection. The
+cost: a stolen *spent* refresh token, presented while the real client has not yet used its new pair,
+gets a live pair and trips no alarm. The two pairs then race. The first one used retires the other,
+and a retired pair is refused but never revokes the connection, so a thief who wins the race is not
+caught by the loser either. The window is as long as the real client sits on an unused pair: for
+the iOS app, which uses a pair as soon as it gets one, it is milliseconds. For a client that
+refreshes and then idles, it is as long as it idles.
 
 **Nothing sweeps expired rows on a schedule.** Expired codes are deleted when the next code is
 issued, and a connection's expired tokens when it next refreshes. A connection that stops refreshing
