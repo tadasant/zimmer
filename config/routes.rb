@@ -64,6 +64,10 @@ Rails.application.routes.draw do
     # what Zimmer wrote to the Parameter Store, and an editable audit log is not
     # an audit log. The dashboard's FORM_ATTRIBUTES is empty for the same reason.
     resources :managed_secret_writes, only: [ :index, :show ]
+    # Read-only: live conversations are driven from /live and the API, whose
+    # rules (one open per mode, the tool bridge) an edit form would bypass.
+    resources :live_conversations, only: [ :index, :show ]
+    resources :live_conversation_turns, only: [ :index, :show ]
     # Read-only, both of them. A delivery row is what Webhooks::SlackController verified and
     # accepted, and a claim is a Slack firing path's record that a message has fired. Nothing here
     # is hand-authored, and an edited or deleted claim would re-fire a message the other path
@@ -207,6 +211,18 @@ Rails.application.routes.draw do
       # page. Write-only by shape — one action, one response — and opened by an
       # ApiKey with the `quick_router` grant, which nothing else here accepts.
       post "quick_router", to: "quick_router#create"
+      # Live Mode and Live Voice, for the iOS app; an API key may only read. The same
+      # verbs as the web routes; see Api::V1::LiveConversationsController.
+      get "live", to: "live_conversations#modes"
+      resources :live_conversations, only: [ :index, :show, :create ] do
+        member do
+          post :finish
+          post :messages
+          post :client_secret
+          post :tool_calls
+          post :turns
+        end
+      end
 
       # A Zimmer plugin's REST surface (ExternalApp): its allowlisted triggers and
       # invoking one. Opened only by an `external_app` key, which every other
@@ -518,6 +534,26 @@ Rails.application.routes.draw do
   patch "inference/fleet_top_up", to: "fleet_top_up_policies#update", as: :fleet_top_up_policy
   patch "inference/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class
   delete "inference/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
+
+  # Live Mode and Live Voice: one continuous conversation per mode, entered from
+  # the main screen. /live is the overview and the OpenAI key; /live/:mode
+  # resumes the mode's current conversation or offers to start one. The member
+  # routes are the shared thread (messages) and Live Voice's client relay
+  # (client_secret, tool_calls, turns). The key has a write and a delete and no
+  # read, for the reason the OpenRouter key above has none.
+  get "live", to: "live#index", as: :live
+  get "live/:mode", to: "live#show", as: :live_mode
+  put "live/openai_key", to: "live#update_openai_key", as: :live_openai_key
+  delete "live/openai_key", to: "live#destroy_openai_key", as: :destroy_live_openai_key
+  resources :live_conversations, only: [ :show, :create ] do
+    member do
+      post :finish
+      post :messages
+      post :client_secret
+      post :tool_calls
+      post :turns
+    end
+  end
 
   # Outcomes: the transcript-outcome analysis ledger, one transcript's
   # flamegraph drilldown, and the separate summary-stats surface. Every write
