@@ -33,12 +33,14 @@ module Github
   # Resurrecting a session is expensive (a re-clone) and visible (it takes a turn and
   # may land in the human's queue), so it is bounded several ways:
   #
-  #   * Only sessions that ended within WATCH_WINDOW. A PR whose producer ended longer
-  #     ago than that, and that nobody has touched since, is not this sweep's to
-  #     revive.
-  #   * One revival per conflict episode. The confirmed marker is cleared only by a
-  #     clean reading, so a revived session that archives again without resolving the
-  #     conflict is not revived a second time for it.
+  #   * Only sessions that ended within WATCH_WINDOW, and after WATCHED_SINCE. A PR
+  #     whose producer ended longer ago than that is not this sweep's to revive.
+  #   * One revival per conflict episode. The confirmed marker records the head it
+  #     was confirmed on and is cleared by a clean reading or a new head, so a
+  #     revived session that archives again without touching the PR is not revived
+  #     a second time for the same conflict.
+  #   * At most MAX_REVIVALS_PER_RUN revivals per run, so a burst of them cannot
+  #     hold a `:pollers` thread for a dozen re-clones.
   #   * At most MAX_REVIVALS_PER_PR revival attempts per PR per session, ever. This
   #     is the backstop for a PR that flaps clean/conflicting, and for an unarchive
   #     that keeps failing.
@@ -59,12 +61,31 @@ module Github
     # touching the PR, the pass stops holding a live session's cadence too.
     WATCH_WINDOW = PrPollPass::AWAITING_PR_OUTCOME_MAX_IDLE
 
+    # Producers that ended before this are never watched.
+    #
+    # Without a cutover, the first deploy would read every producer that ended in
+    # the week before it and revive, within minutes, each one whose PR conflicts —
+    # including PRs abandoned on purpose while nothing could have revived them.
+    # The sweep only promises to watch producers that ended after it existed.
+    WATCHED_SINCE = Time.utc(2026, 10, 16).freeze
+
+    # WATCHED_SINCE, as a method so a test can move the cutover.
+    def self.watched_since
+      WATCHED_SINCE
+    end
+
     # How often one ended producer's PRs are read when nothing is suspected.
     #
-    # Every reading is a `gh pr view`. Fifteen minutes keeps the cost to four
-    # calls an hour per watched PR, and the population is small: a terminal reading
-    # removes a PR from it on the first read.
+    # Every reading is a `gh pr view` plus a REST mergeability read. Fifteen
+    # minutes keeps that to eight calls an hour per watched PR, and the population
+    # is small: a terminal reading removes a PR from it on the first read.
     POLL_INTERVAL = 15.minutes.to_i
+
+    # Slack under each interval. The poll stamp is written after the session's
+    # `gh` calls, so a session read on one tick is a few seconds short of due on
+    # the tick an interval later — and without this would be read on the tick
+    # after that, doubling every interval.
+    DUE_SLACK_SECONDS = 30
 
     POLL_BACKOFF_KEY = "github_orphaned_pr_conflict_sweep"
 
@@ -72,26 +93,47 @@ module Github
     MAX_REVIVALS_PER_PR = 3
     REVIVALS_METADATA_KEY = "github_pull_request_conflict_revivals"
 
-    # Sessions this sweep watches: ended within the window, with PR urls recorded.
+    # How many sessions one run may bring back. A revival re-clones a repository,
+    # serially, on a `:pollers` thread shared with every other periodic job; the
+    # rest stay suspected and are revived on the next runs.
+    MAX_REVIVALS_PER_RUN = 2
+
+    # Raised by #revive_and_notify when this run has spent its revivals. Aborts
+    # the evaluation before it writes anything, so the suspicion stands.
+    class RevivalDeferred < StandardError; end
+
+    # The columns a sweep reads. Everything but the transcript, which can be
+    # megabytes and is needed only by a revival, which re-reads the row whole.
+    def self.swept_columns
+      Session.column_names - %w[transcript]
+    end
+
+    # Sessions this sweep may watch: archived or failed, with PR urls recorded.
     #
-    # The window is measured from `archived_at` where there is one. A failed
-    # session has no failure timestamp, and `updated_at` will not do — every write
-    # this sweep makes bumps it, which would keep a session in the window for ever.
-    # `last_user_activity_at` is the human-activity clock PrPollPass's own idle bound
-    # reads, and nothing here moves it. It lives in `metadata`, so the cast is
-    # guarded: one malformed value must not fail the query for the whole fleet.
-    # Session#last_user_activity_at falls back to `created_at` the same way.
+    # A deliberately loose SQL bound; #watched? applies the exact window in Ruby.
+    # `updated_at` is never earlier than the end of a session, so the bound is a
+    # superset, and it needs no cast of a stamp out of `metadata` — one malformed
+    # value there would otherwise fail the query for the whole fleet.
     def self.candidates(now: Time.current)
       Session.where(status: %w[archived failed])
         .where("custom_metadata->>'github_pull_request_urls' IS NOT NULL")
-        .where(<<~SQL.squish, now - WATCH_WINDOW)
-          COALESCE(
-            archived_at,
-            CASE WHEN metadata->>'last_user_activity_at' ~ '^\\d{4}-\\d{2}-\\d{2}T'
-              THEN (metadata->>'last_user_activity_at')::timestamptz END,
-            created_at
-          ) >= ?
-        SQL
+        .where("COALESCE(archived_at, updated_at) >= ?", [ now - WATCH_WINDOW, watched_since ].max)
+        .select(swept_columns)
+    end
+
+    # Whether +session+ ended inside the window.
+    #
+    # Measured from `archived_at`. A failed session has no failure timestamp, and
+    # `updated_at` moves with every write this sweep makes, so a failed one is
+    # measured from its last human activity (Session#last_user_activity_at, which
+    # falls back to `created_at`).
+    def self.watched?(session, now: Time.current)
+      ended = session.archived_at || session.last_user_activity_at
+      ended.present? && ended >= now - WATCH_WINDOW && ended >= watched_since
+    end
+
+    def initialize
+      @revivals_this_run = 0
     end
 
     def run
@@ -109,8 +151,13 @@ module Github
     # @param session [Session]
     # @return [void]
     def sweep_session(session)
+      return unless self.class.watched?(session)
       return if session.status_summary_fork?
       return unless due?(session)
+
+      # The batch row may be minutes old by now; the debounce markers must not be.
+      session = Session.select(self.class.swept_columns).find(session.id)
+      return unless session.archived? || session.failed?
 
       revivals = session.custom_metadata&.dig(REVIVALS_METADATA_KEY) || {}
       unresolved = session.unresolved_pr_urls
@@ -124,62 +171,84 @@ module Github
           record_terminal_statuses(session, snapshots)
           Reviver.new(self).evaluate(session, refs, snapshots)
         end
+      rescue RevivalDeferred
+        Rails.logger.info "[Github::OrphanedPrConflictSweep] Deferred reviving session #{session.id}: " \
+          "this run has revived #{MAX_REVIVALS_PER_RUN} already"
       ensure
-        # Stamped even when a revival raised, so a failing unarchive is retried on
-        # the debounce's cadence rather than on every cron tick.
-        PollBackoff.record_poll!(session, job_key: POLL_BACKOFF_KEY)
+        stamp_poll(session)
       end
     end
 
     # Bring +session+ back and tell it +pr_url+ conflicts.
     #
-    # Called by Reviver at the moment the debounce confirms a conflict. Raises when
-    # the session could not be brought back, so the evaluator does not record the
-    # conflict as notified: the suspicion stands and the next sweep tries again,
-    # up to MAX_REVIVALS_PER_PR.
+    # Called by Reviver at the moment the debounce confirms a conflict. The PR is
+    # marked notified BEFORE the session is brought back: from the moment the
+    # session is live, Github::PrPollPass sees it, and a marker written only at the
+    # end of the evaluation would let the pass confirm the same suspicion and send
+    # a second notice. A revival that fails takes the marker back off and raises,
+    # so the suspicion stands and the next sweep tries again, up to
+    # MAX_REVIVALS_PER_PR.
     #
     # @param session [Session]
     # @param pr_url [String]
+    # @param head_sha [String, nil] the head the conflict was read on
     # @return [void]
-    def revive_and_notify(session, pr_url)
-      session.reload
+    def revive_and_notify(session, pr_url, head_sha)
+      session = Session.find(session.id)
+      marker = head_sha || true
 
-      # Already live — revived a moment ago for another of its PRs in this same
-      # evaluation, or brought back by someone else. Its own poller will not
-      # announce this conflict: the evaluator is about to mark it notified. So
-      # deliver it here, the ordinary way.
+      # Already live: revived a moment ago for another of its PRs in this same
+      # evaluation, or brought back by someone else. If the live pass has not
+      # already told it about this head, tell it here — the evaluator is about to
+      # mark it notified, so nothing else will.
       unless session.archived? || session.failed?
+        return if notified?(session, pr_url, head_sha)
+
+        mark_notified!(session, pr_url, marker)
         delivered = deliver_automated_message(
           session, AutomatedPrompts.merge_conflict_message(pr_url),
           event_description: "Merge conflict detected on #{pr_url}", origin: "automated_merge_conflict"
         )
-        raise "could not deliver the conflict notice to session #{session.id}" unless delivered
-
+        unless delivered
+          unmark_notified!(session, pr_url)
+          raise "could not deliver the conflict notice to session #{session.id}"
+        end
         return
       end
 
       skip = skip_revival_reason(session, pr_url)
       if skip
+        # Recorded as handled by the evaluator, deliberately: every reason here is
+        # permanent, so retrying it on every sweep would only repeat the skip.
         Rails.logger.info "[Github::OrphanedPrConflictSweep] Not reviving session #{session.id} for #{pr_url}: #{skip}"
         return
       end
 
+      raise RevivalDeferred if @revivals_this_run >= MAX_REVIVALS_PER_RUN
+
+      @revivals_this_run += 1
       from_status = session.status
       count_revival!(session, pr_url)
+      mark_notified!(session, pr_url, marker)
       prompt = AutomatedPrompts.merge_conflict_revival_message(pr_url, from_status: from_status)
       event = "Merge conflict detected on #{pr_url} while this session was #{from_status}"
 
-      if session.archived?
-        result = UnarchiveSessionService.call(session: session)
-        raise "could not unarchive session #{session.id}: #{result.error}" unless result.success?
+      begin
+        if session.archived?
+          result = UnarchiveSessionService.call(session: session)
+          raise "could not unarchive session #{session.id}: #{result.error}" unless result.success?
 
-        session.reload
-        delivered = deliver_automated_message(
-          session, prompt, event_description: "#{event} — unarchived to deliver it", origin: "automated_merge_conflict"
-        )
-        raise "unarchived session #{session.id} but could not deliver the conflict notice" unless delivered
-      else
-        resume_failed_session(session, prompt, event)
+          session.reload
+          delivered = deliver_automated_message(
+            session, prompt, event_description: "#{event} — unarchived to deliver it", origin: "automated_merge_conflict"
+          )
+          raise "unarchived session #{session.id} but could not deliver the conflict notice" unless delivered
+        else
+          resume_failed_session(session, prompt, event)
+        end
+      rescue
+        unmark_notified!(session, pr_url)
+        raise
       end
     end
 
@@ -187,6 +256,7 @@ module Github
 
     def due?(session)
       interval = MergeConflictEvaluator.fresh_suspicion?(session) ? PrPollPass::MERGE_CONFLICT_INTERVAL_SECONDS : POLL_INTERVAL
+      interval -= DUE_SLACK_SECONDS
       PollBackoff.should_poll?(
         session,
         job_key: POLL_BACKOFF_KEY,
@@ -194,6 +264,14 @@ module Github
         min_interval: interval,
         max_interval: interval
       )
+    end
+
+    # Never lets a failed stamp replace the error that is already on its way out.
+    def stamp_poll(session)
+      PollBackoff.record_poll!(session, job_key: POLL_BACKOFF_KEY)
+    rescue => e
+      Rails.logger.error "[Github::OrphanedPrConflictSweep] Could not stamp the poll on session #{session.id}: " \
+        "#{e.class}: #{e.message}"
     end
 
     # Record merged and closed readings, so the PR leaves the population.
@@ -215,11 +293,14 @@ module Github
     end
 
     # Why this producer is not the one to bring back for +pr_url+, or nil.
+    #
+    # A session with no runtime session id has no conversation to resume:
+    # UnarchiveSessionService refuses it, and a follow-up into it would be
+    # reclassified as a fresh start.
     def skip_revival_reason(session, pr_url)
-      return "a turn is already queued for it" if Sessions::LiveTurn.underway?(session)
-      return "it has no runtime session to resume" if session.failed? && session.session_id.blank?
+      return "it has no runtime session to resume" if session.session_id.blank?
 
-      replacement = Session.replacing_session(session.id).pick(:id)
+      replacement = session.replacement_sessions.pick(:id)
       return "it was replaced by session #{replacement}" if replacement
 
       newer = Session.where("custom_metadata->'github_pull_request_urls' @> ?::jsonb", [ pr_url ].to_json)
@@ -228,6 +309,29 @@ module Github
       return "session #{newer} tracks the same PR and is newer" if newer
 
       nil
+    end
+
+    def notified?(session, pr_url, head_sha)
+      marker = session.custom_metadata&.dig(MergeConflictEvaluator::CONFIRMED_METADATA_KEY, pr_url)
+      return false if marker.nil?
+
+      marker == true || head_sha.blank? || marker == head_sha
+    end
+
+    def mark_notified!(session, pr_url, marker)
+      confirmed = (session.custom_metadata&.dig(MergeConflictEvaluator::CONFIRMED_METADATA_KEY) || {}).merge(pr_url => marker)
+      with_db_retry { session.merge_custom_metadata!(MergeConflictEvaluator::CONFIRMED_METADATA_KEY => confirmed) }
+    end
+
+    def unmark_notified!(session, pr_url)
+      fresh = Session.find(session.id)
+      confirmed = fresh.custom_metadata&.dig(MergeConflictEvaluator::CONFIRMED_METADATA_KEY) || {}
+      return unless confirmed.key?(pr_url)
+
+      with_db_retry { fresh.merge_custom_metadata!(MergeConflictEvaluator::CONFIRMED_METADATA_KEY => confirmed.except(pr_url)) }
+    rescue => e
+      Rails.logger.error "[Github::OrphanedPrConflictSweep] Could not clear the notified marker for #{pr_url} on " \
+        "session #{session.id}: #{e.class}: #{e.message}"
     end
 
     def count_revival!(session, pr_url)
@@ -260,10 +364,17 @@ module Github
         @sweep = sweep
       end
 
+      # Keeps this evaluation's readings, so a revival can record the head it was
+      # told about.
+      def evaluate(session, refs, snapshots)
+        @snapshots = snapshots
+        super
+      end
+
       private
 
       def enqueue_merge_conflict_message(session, pr_url)
-        @sweep.revive_and_notify(session, pr_url)
+        @sweep.revive_and_notify(session, pr_url, @snapshots[pr_url]&.head_sha)
       end
     end
   end

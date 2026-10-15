@@ -280,7 +280,7 @@ module AutomatedPrompts
   MERGE_CONFLICT_REVIVAL_TEMPLATE = <<~PROMPT.strip
     Zimmer brought this session back from `%{from_status}` to deliver this. The PR is still open, and while a session is %{from_status} nothing else tells anyone the PR has stopped merging cleanly.
 
-    Once the conflict is resolved and pushed, hand the PR back the way you did before: wait for CI and follow the `open-pr` skill's terminal steps. If the PR is no longer wanted, say so in your final message and archive without resolving anything. Zimmer will not bring you back for this PR again unless GitHub first reads it as conflict-free and it then conflicts again.
+    Once the conflict is resolved and pushed, hand the PR back the way you did before: wait for CI and follow the `open-pr` skill's terminal steps. If the PR is no longer wanted, say so in your final message and archive without resolving anything. Zimmer will not bring you back for this same conflict. It will if the PR conflicts again after its head changes, or after GitHub reads it as conflict-free.
   PROMPT
 
   # The merge-conflict message, for a producer that had archived or failed.

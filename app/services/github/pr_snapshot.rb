@@ -110,19 +110,23 @@ module Github
     def with_rest_mergeability
       return self unless status == "open"
 
-      rest = self.class.fetch_rest_mergeable(ref)
-      return self if rest.nil?
+      rest_mergeable, rest_head_sha = self.class.fetch_rest_mergeable(ref)
+      return self if rest_mergeable.nil?
 
+      # The head comes from the same REST reading, so a push between the two calls
+      # cannot pair one commit's mergeability with another commit's sha.
       self.class.new(
-        ref: ref, state: state, merged_at: merged_at, mergeable: rest, body: body, labels: labels, head_sha: head_sha
+        ref: ref, state: state, merged_at: merged_at, mergeable: rest_mergeable, body: body, labels: labels,
+        head_sha: rest_head_sha.presence || head_sha
       )
     end
 
-    # REST's `mergeable` for one PR, in GraphQL's vocabulary, or nil when the call
-    # did not complete.
+    # REST's `mergeable` for one PR, in GraphQL's vocabulary, and the head commit it
+    # was read on — or nil when the call did not complete.
     #
     # @param ref [Github::PrRef]
-    # @return [String, nil] MERGEABLE_CLEAN, MERGEABLE_CONFLICTING, MERGEABLE_UNKNOWN or nil
+    # @return [Array(String, String), nil] [MERGEABLE_CLEAN, MERGEABLE_CONFLICTING or
+    #   MERGEABLE_UNKNOWN, head sha or nil]
     def self.fetch_rest_mergeable(ref)
       # The only call here that puts the url's parts into an API path rather than
       # passing them as arguments, so it refuses anything that could walk out of it.
@@ -131,7 +135,7 @@ module Github
         return nil
       end
 
-      command = [ "gh", "api", "repos/#{ref.slug}/pulls/#{ref.number}", "--jq", ".mergeable" ]
+      command = [ "gh", "api", "repos/#{ref.slug}/pulls/#{ref.number}", "--jq", REST_JQ ]
       result = GithubCli.run(command, timeout: TIMEOUT)
 
       unless result.success?
@@ -139,12 +143,21 @@ module Github
         return nil
       end
 
-      case result.stdout.to_s.strip
-      when "true" then MERGEABLE_CLEAN
-      when "false" then MERGEABLE_CONFLICTING
-      when "null", "" then MERGEABLE_UNKNOWN
-      end
+      raw_mergeable, raw_sha = result.stdout.to_s.split
+      mergeable =
+        case raw_mergeable
+        when "true" then MERGEABLE_CLEAN
+        when "false" then MERGEABLE_CONFLICTING
+        when "null", nil then MERGEABLE_UNKNOWN
+        end
+      return nil if mergeable.nil?
+
+      [ mergeable, raw_sha&.match?(/\A\h{40}\z/) ? raw_sha : nil ]
     end
+
+    # "<mergeable> <head sha>" on one line: `true`/`false`/`null`, then the sha.
+    REST_JQ = '"\(.mergeable) \(.head.sha)"'
+
 
     # `body` and `labels` default to "not read" so a reading built by hand for a
     # caller that only asks about lifecycle or conflicts need not invent them.

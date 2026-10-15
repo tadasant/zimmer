@@ -95,7 +95,7 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
       ref: Github::PrRef.parse(PR_URL), state: "OPEN", merged_at: nil, mergeable: "MERGEABLE", head_sha: "abc123"
     )
     Github::PrSnapshot.expects(:fetch).once.returns(snapshot)
-    Github::PrSnapshot.expects(:fetch_rest_mergeable).once.returns(Github::PrSnapshot::MERGEABLE_CONFLICTING)
+    Github::PrSnapshot.expects(:fetch_rest_mergeable).once.returns([ Github::PrSnapshot::MERGEABLE_CONFLICTING, nil ])
 
     Github::PrStatusEvaluator.any_instance.expects(:evaluate)
       .with { |_s, _refs, snapshots| snapshots[PR_URL].equal?(snapshot) }

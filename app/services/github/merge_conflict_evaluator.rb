@@ -227,7 +227,9 @@ module Github
           end
 
           if updated_conflicts.key?(pr_url)
-            # Already confirmed + notified — nothing to do.
+            # Already confirmed + notified. A marker from before heads were recorded
+            # learns the head it covers now, so the session's next push re-arms it.
+            updated_conflicts[pr_url] = snapshot.head_sha if updated_conflicts[pr_url] == true && snapshot.head_sha.present?
           elsif current_suspected.key?(pr_url)
             if confirmable?(current_suspected[pr_url], now)
               # Conflict seen before AND still present now, far enough apart to rule
@@ -291,7 +293,8 @@ module Github
     #
     # `true` is the marker written before heads were recorded, and a reading with
     # no head cannot be compared: both are treated as still covered, which is what
-    # the marker always meant.
+    # the marker always meant. #evaluate upgrades a `true` marker to the head it
+    # reads, so it covers that head and no later one.
     def notified_for_head?(marker, snapshot)
       return true if marker == true || snapshot.head_sha.blank?
 
