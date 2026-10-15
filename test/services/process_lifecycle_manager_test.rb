@@ -51,6 +51,25 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     assert_equal :idle, manager.current_state
   end
 
+  # WarmProcessPool hands a running process over instead of a spawn. From then on
+  # it is the manager's like any other, and a respawn reuses what adopt recorded.
+  test "adopt takes over a running process without spawning, and records what a respawn reuses" do
+    manager = create_manager
+
+    result = manager.adopt(pid: 4242, stderr_log_path: "/tmp/test-clone/claude_stderr.log",
+                           append_system_prompt: "system", model: "sonnet", effort: nil)
+
+    assert result.success?
+    assert_equal 4242, manager.current_pid
+    assert_equal :running, manager.current_state
+    assert_empty @mock_cli_adapter.executed_commands
+    assert_equal "system", manager.instance_variable_get(:@append_system_prompt)
+    assert_equal "sonnet", manager.instance_variable_get(:@model)
+
+    assert_not manager.adopt(pid: 4243, stderr_log_path: nil, append_system_prompt: nil, model: nil).success?,
+      "a manager already running a process takes no second one"
+  end
+
   # Regression: MCP elicitation 404s after restart/resume.
   #
   # The constructor — not #spawn — must set zimmer_session_id on the CLI adapter. The

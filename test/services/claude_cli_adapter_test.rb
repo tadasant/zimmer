@@ -46,6 +46,33 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     end
   end
 
+  # ===== WARM PROCESS =====
+
+  test "spawn_warm starts a stream-json process with no prompt and no system prompt, and hands back its stdin" do
+    stdout_path = File.join(@test_dir, "stdout.jsonl")
+    env_file = File.join(@test_dir, "session.env")
+
+    result = @adapter.spawn_warm(session_id: "warm-uuid", working_dir: @test_dir, mcp_config_path: nil,
+                                 model: "opus", stdout_path: stdout_path, env_file: env_file)
+
+    spawned = @mock_process_manager.spawned_processes.last
+    env = spawned[:env]
+    argv = spawned[:command]
+    assert_includes argv, "-p"
+    assert_equal "stream-json", argv[argv.index("--input-format") + 1]
+    assert_equal "warm-uuid", argv[argv.index("--session-id") + 1]
+    assert_equal "opus", argv[argv.index("--model") + 1]
+    assert_not_includes argv, "--append-system-prompt"
+    assert_not_includes argv, "--"
+    assert_equal env_file, env["CLAUDE_ENV_FILE"]
+    assert_kind_of IO, result[:stdin]
+    assert_not result[:stdin].closed?
+    assert_equal File.join(@test_dir, ClaudeCliAdapter::STDERR_LOG_FILENAME), result[:stderr_log_path]
+    assert result[:account].present?, "the account the token came from, for the pool's key"
+  ensure
+    result&.dig(:stdin)&.close
+  end
+
   # ===== COMMAND BUILDING TESTS =====
 
   test "build_command creates basic claude CLI command" do

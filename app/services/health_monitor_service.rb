@@ -627,6 +627,14 @@ class HealthMonitorService
       )
     end
 
+    if report[:stale]
+      return HealthStatus.new(
+        status: :warning,
+        message: "The worker has not reported on its warm router processes in the last few minutes; " \
+                 "the entries below may be gone. Requests spawn cold until it does."
+      )
+    end
+
     error = report.dig(:last_pass, :error)
     if error.present?
       return HealthStatus.new(status: :warning, message: "The last refill failed (#{error}); requests spawn cold until one succeeds.")

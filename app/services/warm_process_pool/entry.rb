@@ -73,12 +73,19 @@ module WarmProcessPool
     end
 
     # Whether the process is still running. A dead child is reaped here, and one
-    # the zombie reaper got to first is just as dead.
+    # the zombie reaper got to first is just as dead. Once reaped, its pid is
+    # free for the kernel to hand out again, so nothing here signals it after.
     def alive?
-      return false if Process.waitpid(pid, Process::WNOHANG)
+      return false if @reaped
+
+      if Process.waitpid(pid, Process::WNOHANG)
+        mark_reaped
+        return false
+      end
 
       AgentProcessLiveness.classify(identity) == :alive
     rescue Errno::ECHILD
+      mark_reaped
       false
     end
 
@@ -119,7 +126,11 @@ module WarmProcessPool
     # @raise [Mismatch, ControlError] before the prompt was written
     def deliver!(append_system_prompt:, mcp_servers:, model:, message_json:, env:, timeout:)
       @timings = {}
-      File.write(env_file_path, env.map { |key, value| "export #{key}=#{Shellwords.escape(value.to_s)}\n" }.join)
+      # Appended, so anything a boot-time hook exported stays, with the
+      # session's values after it taking precedence.
+      File.open(env_file_path, "a") do |file|
+        file.write(env.map { |key, value| "export #{key}=#{Shellwords.escape(value.to_s)}\n" }.join)
+      end
 
       request!("initialize", { "appendSystemPrompt" => append_system_prompt.to_s }, timeout: timeout)
 
@@ -129,25 +140,22 @@ module WarmProcessPool
 
       request!("set_model", { "model" => model }, timeout: timeout) if model.present? && model != self.model
 
-      @stdin.write(message_json.end_with?("\n") ? message_json : "#{message_json}\n")
-      @stdin.flush
-      close_stdin
+      write_prompt_and_close(message_json.end_with?("\n") ? message_json : "#{message_json}\n")
       @state = :delivered
     end
 
     # Stop the process and keep nothing it was given: closing stdin is enough
-    # for an idle `-p` process, and the signal covers one that is not idle.
+    # for an idle `-p` process, and the signal covers one that is not idle. A
+    # process already reaped, or no longer the one that was started, is left
+    # alone: its pid may belong to someone else by now.
     def terminate!
       close_stdin
+      return unless alive?
+
       Process.kill("TERM", -pid)
+      Process.detach(pid)
     rescue Errno::ESRCH, Errno::EPERM
       nil
-    ensure
-      begin
-        Process.detach(pid)
-      rescue StandardError
-        nil
-      end
     end
 
     def env_file_path
@@ -159,7 +167,7 @@ module WarmProcessPool
     end
 
     def to_report(now = Time.current)
-      { id: id, pid: pid, state: state.to_s, age_seconds: age_seconds(now), model: model,
+      { id: id, pid: pid, state: state.to_s, created_at: created_at, age_seconds: age_seconds(now), model: model,
         working_directory: working_directory, account: account&.email, head: head&.first(12) }
     end
 
@@ -215,6 +223,27 @@ module WarmProcessPool
       rescue JSON::ParserError
         nil
       end
+    end
+
+    # Off the caller's thread, as ClaudeCliAdapter's cold stdin path does: a
+    # payload past the pipe buffer (an image) would otherwise block the job until
+    # the CLI drains it. Closing stdin after it is what ends the turn.
+    def write_prompt_and_close(payload)
+      stdin = @stdin
+      Thread.new do
+        stdin.write(payload)
+      rescue Errno::EPIPE, IOError
+        nil
+      ensure
+        stdin.close unless stdin.closed?
+      end
+    end
+
+    def mark_reaped
+      @reaped = true
+      ChildWaiterRegistry.instance.release(pid)
+    rescue StandardError
+      nil
     end
 
     def close_stdin
