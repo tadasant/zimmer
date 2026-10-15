@@ -5,9 +5,12 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::TriggersController < Api::BaseController
-  # Zimmer's iOS app: list, turn on or off, and invoke. Creating and editing a trigger stays
-  # in the browser.
-  accepts_native_app_tokens only: %i[index show toggle invoke]
+  # Zimmer's iOS app: everything the triggers pages offer a signed-in person — list,
+  # read, create, edit, delete, turn on or off, invoke, and the Slack channel and
+  # WhatsApp chat pickers the form fetches. The trigger page's two re-use switches
+  # (`toggle_enqueue_messages`, `toggle_resuscitate_archived`) are opened where they
+  # are added, in #1318.
+  accepts_native_app_tokens only: %i[index show create update destroy toggle invoke channels whatsapp_chats]
 
   before_action :set_trigger, only: [ :show, :update, :destroy, :toggle, :invoke ]
 
