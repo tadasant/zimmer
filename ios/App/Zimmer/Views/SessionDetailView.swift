@@ -425,7 +425,11 @@ struct SessionDetailView: View {
                                 proxy.scrollTo(Self.endAnchor, anchor: .bottom)
                             }
                             if let section { jump(to: section, proxy) }
-                            if fixtureFullScreen { openFullScreen() }
+                            if fixtureFullScreen {
+                                // Once the page has settled at the end, so the cover opens there.
+                                try? await Task.sleep(for: .milliseconds(500))
+                                openFullScreen()
+                            }
                         }
                     } else if atEnd {
                         withAnimation { proxy.scrollTo(Self.endAnchor, anchor: .bottom) }
@@ -452,6 +456,8 @@ struct SessionDetailView: View {
                 guard !Task.isCancelled else { return }
                 // Only while this session is the screen in front, whatever SwiftUI keeps alive.
                 guard app.path.last == model.id, app.tab == .sessions else { continue }
+                // The full-screen transcript reads for itself while it covers the page.
+                guard !readingFullScreen else { continue }
                 await model.poll()
             }
         }
