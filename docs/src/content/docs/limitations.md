@@ -8034,6 +8034,53 @@ it:
   building up to ten clones. Refills that claims enqueue during that pass are absorbed, so a claimed
   clone is replaced on the next one-minute tick after the pass ends.
 
+## The warm router process has not run in production
+
+`WarmProcessPool` (`app/services/warm_process_pool.rb`) ships **off**. Its claim, the delivery
+protocol, the fallbacks and the refill are covered by tests against a stand-in CLI process and real
+git repositories. The idle behaviour and the claim are proven against the real Claude Code CLI
+(2.1.300) on the production host, in a development deployment. There, over four alternating runs with the
+same prompt and model, a router session reached its first assistant event in a median 6.9 seconds
+with the warm process and 9.6 seconds without it. The runs without it claimed a warm clone, as
+production's do. Over a 60-second idle the process made no request to the API and wrote no
+transcript. The development server's MCP endpoint is slower to connect than production's, which
+slows both paths. The production win is a projection from those numbers. `metadata["warm_process"]` on every router session, and the Warm Router Process card on
+`/health`, are how it gets measured once it is on. The edges it ships with, all deliberate for now:
+
+- **One request at a time.** With one process, the second of two requests a few seconds apart
+  spawns cold, while the refill boots a replacement. `WARM_ROUTER_PROCESSES=2` buys a second at about
+  250 MB of RAM.
+- **It lives in one worker's memory.** The worker holds each process's stdin, so only that worker's
+  agent jobs can claim it, and a deploy or worker restart ends it. A request in the minute after a
+  deploy spawns cold.
+- **The router's MCP servers reconnect at the claim.** The `zimmer` server's URL carries the session
+  id, and the self-session server is the session's own, so `mcp_set_servers` reconnects both. Against
+  the production MCP endpoint that took 0.24–0.5 seconds, which the pool does not save.
+- **A stale `CLAUDE.md` is caught by path, not by content.** The CLI reads its memory files at boot,
+  and a claim refuses a process when the fetch moved one of them, anything under a `.claude/` above
+  the working directory, or anything in the root's own subdirectory. For a root that is the whole
+  repository, a file a `CLAUDE.md` imports from elsewhere in the tree is not checked. The production
+  router lives in a subdirectory, so its imports are covered.
+- **Only Bash gets the session's environment.** A process's environment is fixed when it starts, so
+  the session's scratch directory and elicitation address reach Bash through `CLAUDE_ENV_FILE`.
+  A hook, or a stdio MCP server whose config does not change at the claim, still sees the warm
+  process's own values: its scratch path is a symlink to the session's directory, so files land in
+  the same place, but its elicitation address names the warm process, not the session. The router
+  root's servers are HTTP and carry the session's address in their config.
+- **It drives Claude Code through the Agent SDK's control protocol.** `initialize`,
+  `mcp_set_servers`, `set_model` and `mcp_status` are what the SDK sends on stdin, not a documented
+  CLI interface, and an update could change them. A refused or unanswered request falls back to a
+  cold spawn, and a CLI update recycles the process.
+- **A claimed process writes its turn's stdout to disk.** The cold path sends stdout to
+  `/dev/null`. A warm process's stdout is the file the pool reads control responses from, so once it
+  is the session's turn, the turn's whole stream-json output (tool results included) lands in the
+  entry directory until the process exits and the sweep removes it.
+- **Its boot memory stays charged to its own cgroup.** Moving a process between cgroups does not move
+  memory it already charged, so about 250 MB of boot memory is counted against the warm process's
+  cgroup, not the session's bound. Both sit under the sessions pool.
+- **A non-default effort, or any artifact selection other than the root's defaults, starts cold.**
+  So does a request that arrives while the account or its token has just rotated.
+
 ## A `sync: true` MCP call holds a web thread, and only one runs at a time
 
 `sync: true` on `quick_router`, `start_session` and `action_session` → `follow_up`

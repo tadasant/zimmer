@@ -58,6 +58,23 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_includes result, "  - `app@main`: 0/1 ready, 30 starts in 7d — denied"
   end
 
+  test "reports the warm router process and how router starts fared" do
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "healthy",
+        warm_process_pool_health: {
+          outcome_window_hours: 24, outcomes: { "claimed" => 9, "missed" => 1, "config_mismatch" => 2 },
+          entries: [ { id: "warm-1-abc", pid: 42, state: "ready", age_seconds: 300, model: "opus" } ],
+          status: HealthMonitorService::HealthStatus.new(status: :healthy, message: "1 of 1 warm router process ready.")
+        } }
+    )
+
+    result = @tool.call({})
+
+    assert_includes result, "- **Warm router process:** 1 of 1 warm router process ready. " \
+                            "Last 24h: claimed 9, config_mismatch 2, missed 1."
+    assert_includes result, "  - `warm-1-abc` (pid 42): ready, 5 min old, opus"
+  end
+
   test "include_cli_status appends the cli report" do
     CliStatusService.stubs(:unauthenticated_count).returns(2)
     CliStatusService.stubs(:cached_report).returns({ tools: { claude: { authenticated: false } } })

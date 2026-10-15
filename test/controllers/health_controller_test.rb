@@ -119,6 +119,27 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_match "4 record(s) across 1 namespace(s)", response.body
   end
 
+  # UI/MCP parity for the warm router process: `get_system_health` and GET
+  # /api/v1/health carry the same reading.
+  test "dashboard shows the warm router process, its outcomes and why starts went cold" do
+    WarmProcessPool.stubs(:report).returns(
+      enabled: true, size: 1, max_age_minutes: 60, published_at: Time.current, outcome_window_hours: 24,
+      outcomes: { "claimed" => 7, "missed" => 2, "boot_context_changed" => 1 },
+      last_pass: { at: 1.minute.ago, built: 1, recycled: 1, recycled_reasons: [ "aged_out" ], error: nil },
+      entries: [ { id: "warm-1792080000-abcd1234", pid: 4242, state: "ready", age_seconds: 600, model: "opus", account: "ops@example.com" } ]
+    )
+
+    get health_dashboard_url
+    assert_response :success
+
+    assert_select "#warm-process-pool h3", text: "Warm Router Process"
+    assert_select "#warm-process-pool dd", text: "7"
+    assert_select "#warm-process-pool td", text: /warm-1792080000-abcd1234/
+    assert_match "1 of 1 warm router process ready.", response.body
+    assert_match "aged_out 1", response.body
+    assert_match "boot_context_changed", response.body
+  end
+
   # UI/MCP parity for the warm clone pool: `get_system_health` and GET
   # /api/v1/health carry the same reading.
   test "dashboard shows each pooled key, its ready clones and the claim counts" do
