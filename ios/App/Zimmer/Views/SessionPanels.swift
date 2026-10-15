@@ -1,8 +1,9 @@
 import SwiftUI
 import ZimmerKit
 
-/// Goal check, goal, notes, MCP servers, hierarchy and human messages: one card, hairlines
-/// between the rows. Goal and notes clamp to two lines and open on a tap; the hierarchy folds
+/// Goal check, goal, notes, MCP servers, skills/hooks/plugins, hierarchy and human messages:
+/// one card, hairlines between the rows. The MCP servers and the other three are always
+/// there, each with its Edit — or Add, when the session has none — as the web page's are. Goal and notes clamp to two lines and open on a tap; the hierarchy folds
 /// when it is wide, the human messages always, each saying in its closed row what it holds.
 struct DetailsCard: View {
     let detail: SessionDetail
@@ -13,7 +14,9 @@ struct DetailsCard: View {
     /// Open the folded rows from the start: the fixture's photograph of them.
     var expanded = false
     let edit: (SessionDetailView.EditedText) -> Void
-    let editMcpServers: () -> Void
+    /// What the session's agent root supplies of a kind, shown when the session chooses none.
+    var rootDefaults: (CatalogKind) -> [String] = { _ in [] }
+    let editCatalog: (CatalogKind) -> Void
     let detach: (Int, Int) -> Void
 
     private enum Row: Identifiable {
@@ -21,6 +24,7 @@ struct DetailsCard: View {
         case goal(String)
         case notes(String)
         case mcpServers([McpConnection])
+        case artifacts
         case hierarchy(SessionHierarchy)
         case humanMessages
 
@@ -30,6 +34,7 @@ struct DetailsCard: View {
             case .goal: return "goal"
             case .notes: return "notes"
             case .mcpServers: return "mcpServers"
+            case .artifacts: return "artifacts"
             case .hierarchy: return "hierarchy"
             case .humanMessages: return "humanMessages"
             }
@@ -41,8 +46,8 @@ struct DetailsCard: View {
         if let check = detail.goalCheck, !check.criteria.isEmpty { rows.append(.goalCheck(check)) }
         if let goal = detail.session.goal, !goal.isEmpty { rows.append(.goal(goal)) }
         if detail.session.hasNotes, let notes = detail.session.notes { rows.append(.notes(notes)) }
-        let connections = detail.session.mcpConnections
-        if !connections.isEmpty { rows.append(.mcpServers(connections)) }
+        rows.append(.mcpServers(detail.session.mcpConnections))
+        rows.append(.artifacts)
         if let hierarchy = detail.hierarchy, hierarchy.isWorthShowing { rows.append(.hierarchy(hierarchy)) }
         // A capture gap is worth the row on its own: it says an empty list is not "nobody spoke".
         if !detail.humanMessages.isEmpty || !detail.captureGaps.isEmpty { rows.append(.humanMessages) }
@@ -79,7 +84,9 @@ struct DetailsCard: View {
         case let .notes(notes):
             ClampedTextRow(title: "Notes", text: notes, identifier: "detail.notes") { edit(.notes) }
         case let .mcpServers(connections):
-            McpServersRow(connections: connections, edit: editMcpServers)
+            McpServersRow(connections: connections, rootDefaults: rootDefaults(.mcpServers)) { editCatalog(.mcpServers) }
+        case .artifacts:
+            ArtifactsRow(session: detail.session, rootDefaults: rootDefaults, edit: editCatalog)
         case let .hierarchy(hierarchy):
             HierarchyRow(hierarchy: hierarchy, startsOpen: expanded, detach: detach)
         case .humanMessages:
@@ -261,6 +268,7 @@ private struct ClampedTextRow: View {
 /// a tap away, as the web chip's popover is.
 private struct McpServersRow: View {
     let connections: [McpConnection]
+    let rootDefaults: [String]
     let edit: () -> Void
     @State private var showingError: String?
 
@@ -268,11 +276,17 @@ private struct McpServersRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("MCP servers").themeLabel()
-                Text(verbatim: tally).font(.caption2.monospacedDigit()).foregroundStyle(Theme.inkMute)
+                if !connections.isEmpty {
+                    Text(verbatim: tally).font(.caption2.monospacedDigit()).foregroundStyle(Theme.inkMute)
+                }
                 Spacer()
-                Button("Edit", action: edit)
+                Button(connections.isEmpty ? "Add" : "Edit", action: edit)
                     .font(.caption.weight(.medium))
+                    .accessibilityLabel(connections.isEmpty ? "Add MCP servers" : "Edit MCP servers")
                     .accessibilityIdentifier("detail.mcp.edit")
+            }
+            if connections.isEmpty {
+                EmptySelection(rootDefaults: rootDefaults).accessibilityIdentifier("detail.mcp.none")
             }
             FlowLayout(spacing: 5, rowSpacing: 5) {
                 ForEach(connections) { connection in
@@ -315,7 +329,8 @@ private struct McpServersRow: View {
         return HStack(spacing: 4) {
             Circle().fill(tint).frame(width: 6, height: 6)
             Text(connection.name)
-                .italic(connection.injected)
+                .italic(connection.injected || connection.fromPlugin)
+                .foregroundStyle(connection.fromPlugin ? Theme.inkSoft : Theme.ink)
         }
         .font(.caption.weight(.medium))
         .foregroundStyle(Theme.ink)
@@ -326,7 +341,7 @@ private struct McpServersRow: View {
             shape.strokeBorder(tint.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: connection.injected ? [3, 2] : []))
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(connection.name): \(connection.state.label)\(connection.injected ? ", added by Zimmer" : "")")
+        .accessibilityLabel("\(connection.name): \(connection.state.label)\(connection.injected ? ", added by Zimmer" : "")\(connection.fromPlugin ? ", from a plugin" : "")")
         .accessibilityIdentifier("mcp.server.\(connection.name)")
     }
 
@@ -336,6 +351,79 @@ private struct McpServersRow: View {
         case .failed: return Theme.danger
         case .pending: return Theme.inkMute
         }
+    }
+}
+
+/// What an empty list says: the agent root's defaults where it has some, as the web page's
+/// "agent root default", else None.
+private struct EmptySelection: View {
+    let rootDefaults: [String]
+
+    var body: some View {
+        Group {
+            if rootDefaults.isEmpty {
+                Text("None").italic()
+            } else {
+                Text(verbatim: "\(rootDefaults.joined(separator: ", ")) (agent root default)")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(Theme.inkMute)
+    }
+}
+
+/// The session's skills, hooks and plugins, a line each with its Edit — or Add, when the
+/// session has none — as the web page's metadata block lists them beside the MCP servers.
+private struct ArtifactsRow: View {
+    let session: SessionSummary
+    let rootDefaults: (CatalogKind) -> [String]
+    let edit: (CatalogKind) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach([CatalogKind.skills, .hooks, .plugins]) { kind in
+                line(kind)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("detail.artifacts")
+    }
+
+    private func line(_ kind: CatalogKind) -> some View {
+        let chosen = kind.selection(in: session)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(kind.label).themeLabel()
+                if !chosen.isEmpty {
+                    Text(verbatim: "\(chosen.count)").font(.caption2.monospacedDigit()).foregroundStyle(Theme.inkMute)
+                }
+                Spacer()
+                Button(chosen.isEmpty ? "Add" : "Edit") { edit(kind) }
+                    .font(.caption.weight(.medium))
+                    .accessibilityLabel("\(chosen.isEmpty ? "Add" : "Edit") \(kind.label.lowercased())")
+                    .accessibilityIdentifier("detail.\(kind.rawValue).edit")
+            }
+            if chosen.isEmpty {
+                EmptySelection(rootDefaults: rootDefaults(kind))
+                if kind != .plugins, !(session.catalogPlugins ?? []).isEmpty {
+                    // The web lists what the plugins bring; the API does not say, so say they may.
+                    Text("Its plugins may bring some.").font(.caption).foregroundStyle(Theme.inkMute)
+                }
+            } else {
+                FlowLayout(spacing: 5, rowSpacing: 5) {
+                    ForEach(chosen, id: \.self) { id in
+                        Text(verbatim: id)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Theme.ink)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Theme.well, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("detail.\(kind.rawValue)")
     }
 }
 

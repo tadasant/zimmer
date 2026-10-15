@@ -139,6 +139,65 @@ final class SessionDetailPanelsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["catalog.save"].waitForExistence(timeout: timeout))
     }
 
+    /// From the session page, with no menu: a session with no MCP servers says None and offers
+    /// Add; ticking a server and saving puts its chip on the page. One that needs OAuth offers
+    /// the browser, where that happens.
+    func test_mcp_servers_are_added_from_the_session_page() throws {
+        let app = launch(["-ZimmerFixtureOpenSession", "1035", "-ZimmerFixtureOpenPanels"])
+        let none = app.descendants(matching: .any)["detail.mcp.none"]
+        XCTAssertTrue(none.waitForExistence(timeout: timeout), "an empty list says so")
+        let add = app.buttons["detail.mcp.edit"]
+        scrollUntilHittable(app, add)
+        XCTAssertEqual(add.label, "Add MCP servers")
+        // Skills, hooks and plugins have their rows too: 1035 has skills, and no hooks.
+        XCTAssertEqual(app.buttons["detail.skills.edit"].label, "Edit skills")
+        XCTAssertEqual(app.buttons["detail.hooks.edit"].label, "Add hooks")
+        attachScreenshot(app, named: "mcp-none")
+        add.tap()
+
+        let playwright = app.buttons["catalog.item.playwright-custom"]
+        XCTAssertTrue(playwright.waitForExistence(timeout: timeout))
+        playwright.tap()
+        app.buttons["catalog.item.slack"].tap()
+        attachScreenshot(app, named: "mcp-checklist")
+        app.buttons["catalog.save"].tap()
+
+        // Slack needs OAuth: the app says where that is done.
+        let later = app.alerts.buttons["Later"]
+        XCTAssertTrue(later.waitForExistence(timeout: timeout), "a server that needs authorizing says so")
+        XCTAssertTrue(app.alerts.buttons["Open the session page"].exists)
+        later.tap()
+
+        let chip = labelled(app, "playwright-custom: Pending connection")
+        XCTAssertTrue(chip.waitForExistence(timeout: timeout), "the chosen server is on the page")
+        XCTAssertTrue(labelled(app, "slack: Pending connection").exists)
+        XCTAssertFalse(none.exists)
+        XCTAssertEqual(add.label, "Edit MCP servers")
+        attachScreenshot(app, named: "mcp-added")
+
+        // And taken off again: the list is replaced, not merged.
+        scrollUntilHittable(app, add)
+        add.tap()
+        let slack = app.buttons["catalog.item.slack"]
+        XCTAssertTrue(slack.waitForExistence(timeout: timeout))
+        slack.tap()
+        app.buttons["catalog.save"].tap()
+        XCTAssertTrue(waitForDisappearance(labelled(app, "slack: Pending connection")), "the unticked server is gone")
+        XCTAssertTrue(labelled(app, "playwright-custom: Pending connection").exists)
+    }
+
+    /// A server a plugin brings is marked as the plugin's, and the plugins row names the plugin.
+    func test_a_plugins_mcp_server_is_marked_as_its() throws {
+        let app = launch(["-ZimmerFixtureOpenSession", "1038", "-ZimmerFixtureOpenPanels"])
+        let chip = labelled(app, "remote-fs-screenshots: Connected, from a plugin")
+        XCTAssertTrue(chip.waitForExistence(timeout: timeout))
+        XCTAssertTrue(labelled(app, "zimmer-self-session: Connected, added by Zimmer").exists)
+        let plugins = app.buttons["detail.plugins.edit"]
+        XCTAssertTrue(plugins.waitForExistence(timeout: timeout))
+        XCTAssertEqual(plugins.label, "Edit plugins")
+        XCTAssertTrue(app.staticTexts["screenshots-videos"].exists)
+    }
+
     // MARK: - Helpers
 
     private func launch(_ arguments: [String]) -> XCUIApplication {
