@@ -346,6 +346,61 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
     refute Github::MergeConflictEvaluator.fresh_suspicion?(@session_with_pr)
   end
 
+  # ---- the head commit re-arms the notice ----
+  #
+  # The confirmed marker used to be cleared by a clean reading and nothing else. A
+  # session that pushed its fix while GitHub's reading was UNKNOWN or stale carried
+  # "already notified" into the next conflict on the same PR and was never told.
+
+  test "confirming records the head commit the session was told about" do
+    track(PR_URL, status: :running)
+
+    evaluate(@session_with_pr, :conflicting, head_sha: "aaa111")
+    evaluate_later(@session_with_pr, :conflicting, head_sha: "aaa111")
+
+    assert_equal({ PR_URL => "aaa111" }, @session_with_pr.reload.custom_metadata["github_pull_request_merge_conflicts"])
+  end
+
+  test "a conflict on the head already notified about is not news" do
+    track(PR_URL, status: :running, extra: { "github_pull_request_merge_conflicts" => { PR_URL => "aaa111" } })
+
+    evaluate(@session_with_pr, :conflicting, head_sha: "aaa111")
+    evaluate_later(@session_with_pr, :conflicting, head_sha: "aaa111")
+
+    refute @session_with_pr.enqueued_messages.pending.exists?
+    assert_equal({ PR_URL => "aaa111" }, @session_with_pr.reload.custom_metadata["github_pull_request_merge_conflicts"])
+  end
+
+  test "a conflict on a newer head is a new episode, debounced and then notified" do
+    track(PR_URL, status: :running, extra: { "github_pull_request_merge_conflicts" => { PR_URL => "aaa111" } })
+
+    # The session pushed bbb222 and no clean reading was ever seen. The first
+    # conflicting reading on the new head only suspects it...
+    evaluate(@session_with_pr, :conflicting, head_sha: "bbb222")
+
+    @session_with_pr.reload
+    assert_equal({}, @session_with_pr.custom_metadata["github_pull_request_merge_conflicts"])
+    assert_equal [ PR_URL ], @session_with_pr.custom_metadata["github_pull_request_merge_conflicts_suspected"].keys
+    refute @session_with_pr.enqueued_messages.pending.exists?
+
+    # ...and a debounce gap later it is confirmed and the session is told.
+    evaluate_later(@session_with_pr, :conflicting, head_sha: "bbb222")
+
+    @session_with_pr.reload
+    assert_equal({ PR_URL => "bbb222" }, @session_with_pr.custom_metadata["github_pull_request_merge_conflicts"])
+    assert @session_with_pr.enqueued_messages.pending.exists?
+  end
+
+  test "a legacy true marker, or a reading with no head, still means already notified" do
+    track(PR_URL, status: :running, extra: { "github_pull_request_merge_conflicts" => { PR_URL => true } })
+
+    evaluate(@session_with_pr, :conflicting, head_sha: "bbb222")
+    evaluate_later(@session_with_pr, :conflicting, head_sha: nil)
+
+    refute @session_with_pr.enqueued_messages.pending.exists?
+    assert_equal({ PR_URL => true }, @session_with_pr.reload.custom_metadata["github_pull_request_merge_conflicts"])
+  end
+
   private
 
   def track(pr_url, status: nil, extra: {})
@@ -362,22 +417,22 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
   #   :clean        — MergeableState MERGEABLE
   #   :uncomputed   — MergeableState UNKNOWN, GitHub still computing
   #   :no_reading   — the call did not complete, so the pass hands over no snapshot
-  def evaluate(session, reading, state: "OPEN")
+  def evaluate(session, reading, state: "OPEN", head_sha: nil)
     refs = Github::PrRef.for_session(session)
-    snapshots = refs.to_h { |pr_ref| [ pr_ref.url, snapshot_for(pr_ref, reading, state) ] }
+    snapshots = refs.to_h { |pr_ref| [ pr_ref.url, snapshot_for(pr_ref, reading, state, head_sha) ] }
     Github::MergeConflictEvaluator.new.evaluate(session, refs, snapshots)
   end
 
   # A later gated poll: far enough after the previous reading for the debounce's
   # MIN_CONFIRMATION_GAP_SECONDS to have elapsed. `travel` without a block
   # accumulates, so repeated calls walk the clock forward one gap at a time.
-  def evaluate_later(session, reading, state: "OPEN")
+  def evaluate_later(session, reading, state: "OPEN", head_sha: nil)
     travel (Github::MergeConflictEvaluator::MIN_CONFIRMATION_GAP_SECONDS + 1).seconds
     session.reload
-    evaluate(session, reading, state: state)
+    evaluate(session, reading, state: state, head_sha: head_sha)
   end
 
-  def snapshot_for(pr_ref, reading, state)
+  def snapshot_for(pr_ref, reading, state, head_sha = nil)
     return nil if reading == :no_reading
 
     mergeable = case reading
@@ -391,7 +446,8 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
       ref: pr_ref,
       state: state,
       merged_at: state == "MERGED" ? "2025-01-01T12:00:00Z" : nil,
-      mergeable: mergeable
+      mergeable: mergeable,
+      head_sha: head_sha
     )
   end
 end
