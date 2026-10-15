@@ -174,12 +174,16 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     end
   end
 
-  # Every value-capturing framing, crossed with every placeholder convention.
+  # Every placeholder convention, in the two framings whose value class admits
+  # its delimiters. Bearer, X-API-Key and ENV_SECRET exclude `<`, `$`, `{` and
+  # `%`, so only the repeated-character filler can reach them — tested below.
   PLACEHOLDER_VALUES = [
     "<proxy-password>",
+    "<proxy-password...>",
+    "<proxy-password…>",
     "<YOUR_PASSWORD_HERE>",
+    "<YourPassword>",
     "${PROXY_PASSWORD}",
-    "${PROXY_PASSWORD:-changeme}",
     "$PROXY_PASSWORD",
     "$proxy_password",
     "{{proxy_password}}",
@@ -205,7 +209,7 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
   end
 
   test "leaves a filler value after a credential name alone" do
-    [ "password=xxxxxxxxxxxxxxxxxxxx", "api_key: ********************".tr("*", "x"), "Authorization: Bearer xxxxxxxxxxxxxxxxxxxxxxxx" ].each do |line|
+    [ "password=xxxxxxxxxxxxxxxxxxxx", "api_key: xxxxxxxxxxxxxxxxxxxx", "Authorization: Bearer xxxxxxxxxxxxxxxxxxxxxxxx" ].each do |line|
       TranscriptRedactor.stub(:known_secrets, []) do
         assert_equal line, TranscriptRedactor.redact(line)
       end
@@ -219,7 +223,13 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     "a git remote token" => "https://x-access-token:ghs_abcdefghijklmnop@github.com/tadasant/zimmer.git",
     "angle brackets around part of the value" => "https://user:abc<def>ghi123@proxy.example.com",
     "a mixed-case value behind a dollar sign" => "https://user:$ecretPassw0rd@proxy.example.com",
-    "a dollar-brace that is not a variable name" => "https://user:${1nv4lid}xyz@proxy.example.com",
+    "a dollar-brace that is not a variable name" => "https://user:${1nv4lid}@proxy.example.com",
+    "a shell default, which is routinely the real password" => "postgres://app:${POSTGRES_PASSWORD:-Zx81kLmq0PqRt}@db:5432/app",
+    "an assign-default" => "https://user:${PW:=Hunter2Secret99}@proxy.example.com",
+    "an opaque value in angle brackets" => "https://user:<Xk9mQ2vL8pR4tZ>@proxy.example.com",
+    "an opaque value in template braces" => "https://user:{{Xk9mQ2vL8pR4tZ}}@proxy.example.com",
+    "a slash inside angle brackets" => "redis://default:<k9mqvlprtz/abcdef>@cache:6379",
+    "a mixed-case value between percent signs" => "https://user:%Fk9mQ2vL8pR4tZ%@proxy.example.com",
     "a nearly-uniform filler" => "https://user:xxxxxxxxy@proxy.example.com",
     "a database password" => "postgres://zimmer:s3cr3t-p4ssw0rd@db.internal:5432/zimmer_production"
   }.freeze
@@ -233,18 +243,18 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     end
   end
 
-  test "a real token inside angle brackets is still caught by its own shape" do
+  test "a full-length token inside angle brackets is still caught by its own shape" do
     token = "ghp_#{'A1b2C3d4E5' * 4}"
-    redacted = TranscriptRedactor.redact("https://user:<#{token}>@github.com")
-
-    refute_includes redacted, token
+    TranscriptRedactor.stub(:known_secrets, []) do
+      refute_includes TranscriptRedactor.redact("https://user:<#{token}>@github.com"), token
+    end
   end
 
   test "a placeholder check never runs on a transcript-scale value" do
     huge = "x" * (TranscriptRedactor::PUBLIC_IDENTIFIER_MAX_LENGTH + 1)
-    redacted = TranscriptRedactor.redact("password=#{huge}")
-
-    refute_includes redacted, huge
+    TranscriptRedactor.stub(:known_secrets, []) do
+      refute_includes TranscriptRedactor.redact("password=#{huge}"), huge
+    end
   end
 
   test "redacts a named secret value while keeping the name" do

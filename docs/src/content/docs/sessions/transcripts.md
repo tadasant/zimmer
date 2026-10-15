@@ -300,20 +300,26 @@ redacted — both are real session-token formats and neither has a letter in `[g
 
 ### Placeholders are not credentials
 
-Every rule that redacts a *value* — URL credentials, database URLs, `Bearer`, `X-API-Key`, the
-generic name-then-value rule — first checks whether that value is a fill-in-the-blank. An agent
+Every rule that redacts a *value* first checks whether that value is a fill-in-the-blank. An agent
 writing setup steps for a human puts the blank exactly where those rules look:
 `http://<proxy-username>:<proxy-password>@p.webshare.io:80` came back with the password slot as
 `[REDACTED:MATCH:URL_CREDENTIALS:37ch]`, which made the step harder to follow and hid nothing
 ([session 24427](https://zimmer.tadasant.com/sessions/24427)).
 
-A value is left alone when the whole of it is one of: an `<angle-bracketed name>` (or its
-JSON-escaped `\u003c…\u003e` form), a shell variable (`${VAR}`, or a bare `$VAR` / `$var` in a
-single case), a `{{template}}` variable, a Windows `%VAR%`, or one character repeated (`xxxxxxxx`,
-`********`). The placeholder has to *be* the value, so `abc<def>ghi` and `$ecretPassw0rd` still
-redact. The prefixed-token rules run first, so a `ghp_…` token wrapped in angle brackets is still
-caught by its own shape. The same check covers a prompt a human pastes into a session: that prompt is
-a record in the same transcript and goes through the same redactor.
+A value is left alone when the whole of it is one of these, with only a *name* inside the delimiters:
+`<proxy-password>` (or its JSON-escaped `\u003c…\u003e` form), `${PROXY_PASSWORD}`, a bare
+`$PROXY_PASSWORD` or `$proxy_password`, `{{proxy_password}}`, `%PROXY_PASSWORD%`, or one character
+repeated (`xxxxxxxx`, `********`). In practice the delimited forms matter for URL credentials and
+database URLs; the `Bearer`, `X-API-Key` and name-then-value rules never capture `<`, `$`, `{` or `%`,
+so only the repeated-character filler reaches them.
+
+Some lookalikes still redact on purpose. `${VAR:-default}` does, because a shell or compose default is
+routinely the real password. So does a "name" that mixes digits with both letter cases
+(`<Xk9mQ2vL8pR4tZ>`), a mixed-case bare `$Var`, and anything where the placeholder is only part of
+the value (`abc<def>ghi`). The prefixed-token rules run first, so a full-length `ghp_…` token
+wrapped in angle brackets is still caught by its own shape. The same check covers a prompt a human
+pastes into a session: that prompt is a record in the same transcript and goes through the same
+redactor.
 
 ### Why the patterns carry their own regexp timeout
 

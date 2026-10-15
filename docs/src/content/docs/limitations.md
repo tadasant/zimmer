@@ -1176,11 +1176,12 @@ gap is worth naming precisely:
   to those two nouns: `password=`, `passphrase=`, `client_secret=` and `api_key=` are unchanged, and a
   UUID, a hex key or anything with an uppercase letter still redacts after `secret=` and `token=` too.
 - **A password shaped like a placeholder is not redacted.** A value-capturing rule skips a value that
-  is wholly an `<angle-bracketed name>`, `${VAR}`, a single-case `$VAR`, `{{var}}`, `%VAR%` or one
-  repeated character, because agents write those as fill-in-the-blanks for a human
-  ([session 24427](https://zimmer.tadasant.com/sessions/24427)). A real password that happens to be,
-  say, `$lowercasepassw0rd` or `<Something>` passes through. Prefixed tokens (`ghp_…`, `sk-…`) are
-  still caught by their own shape first, wherever they sit.
+  is wholly a name in placeholder delimiters (`<…>`, `${VAR}`, a single-case `$VAR`, `{{var}}`,
+  uppercase `%VAR%`) or one repeated character, because agents write those as fill-in-the-blanks for
+  a human ([session 24427](https://zimmer.tadasant.com/sessions/24427)). A real password that looks
+  like a name — `$lowercasepassw0rd`, `<CorrectHorse>` — passes through, and so does a prefixed token
+  too short for its own rule wrapped in angle brackets. Full-length prefixed tokens (`ghp_…`, `sk-…`)
+  are still caught by their own shape first, wherever they sit.
 - **A redaction reaches the agent's own memory, not just the archive.** When a clone is recreated,
   `AgentSessionJob#restore_regressed_transcript_if_needed` writes the stored transcript back to the file
   the runtime reads on `--resume`. That copy is redacted, so the resumed conversation contains
