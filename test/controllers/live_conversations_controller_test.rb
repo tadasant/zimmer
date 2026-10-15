@@ -47,6 +47,12 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to live_conversation_path(conversation)
   end
 
+  test "an unknown mode goes back to the overview" do
+    get live_mode_path("video")
+
+    assert_redirected_to live_path
+  end
+
   test "a mode whose root is missing says so instead of crashing" do
     stub_live_roots(text: nil)
 

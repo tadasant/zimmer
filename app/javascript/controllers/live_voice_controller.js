@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 // The Live Voice call, owned by a dock in the layout (shared/_live_voice_dock,
 // data-turbo-permanent) rather than by the conversation page — a Turbo
@@ -224,11 +225,7 @@ export default class extends Controller {
     return fetch(url, {
       method: "POST",
       credentials: "same-origin",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || ""
-      },
+      headers: csrfHeaders({ Accept: "application/json" }),
       body: JSON.stringify(body)
     })
   }

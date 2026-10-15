@@ -540,7 +540,7 @@ Rails.application.routes.draw do
   # (client_secret, tool_calls, turns). The key has a write and a delete and no
   # read, for the reason the OpenRouter key above has none.
   get "live", to: "live#index", as: :live
-  get "live/:mode", to: "live#show", as: :live_mode, constraints: { mode: /text|voice/ }
+  get "live/:mode", to: "live#show", as: :live_mode
   put "live/openai_key", to: "live#update_openai_key", as: :live_openai_key
   delete "live/openai_key", to: "live#destroy_openai_key", as: :destroy_live_openai_key
   resources :live_conversations, only: [ :show, :create ] do
