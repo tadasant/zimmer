@@ -277,23 +277,24 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   typed. Opened from a session, the new one threads under it (*Thread under #id*, the bubble's
   `parent_session_id`), which you can switch off, and carries that session's page, as the bubble
   sends the page it was typed on ("Page context is included: …"): its web URL and title as
-  `page_url` and `page_title`, and the header's facts — id and title, status, agent root, class,
-  goal — as `page_context`, which is what makes the server wrap all three into the prompt; from the
-  board and the other tabs no page goes. *Open the session when it starts* is on, the bubble's
-  *Submit & Open*; off, the bubble's plain *Submit*: the session starts and the screen stays,
-  which the endpoint allows since it answers with the id and never navigates. The class is
-  always sent: `priority` unless *Run as spot*, the web form's default for a person's session
-  said out loud. All of it goes to `POST /api/v1/quick_router`. **Or from the full form** (the
+  `page_url` and `page_title`, and five facts off the header — id and title, status, agent root,
+  class, goal — as `page_context`, which is what makes the server wrap all three into the prompt.
+  That is much less than the bubble sends, which is the page's DOM reduced to markdown, up to
+  20,000 characters; from the board and the other tabs no page goes. *Open the session when it
+  starts* is on, the bubble's *Submit & Open*; off, the bubble's plain *Submit*: the session starts
+  and the screen stays, which the endpoint allows since it answers with the id and never
+  navigates. The class goes only as *Run as spot*; a native start the server classes priority. All
+  of it goes to `POST /api/v1/quick_router`. **Or from the full form** (the
   pencil in the Sessions toolbar): the web UI's new-session form, with agent root, runtime,
   model, reasoning effort, the auto-compact window (for Claude Code alone, as the web shows it;
   blank is the default, 1,000,000), prompt, title, goal (a predefined one or your own words),
   scheduling class, precedence (blank is 0; a value that is not a whole number is refused in the
   form), the MCP servers, skills, hooks and plugins, each starting at the root's defaults, and
-  *Clone Only*, which sets the clone up with no first turn and drops the prompt as the web
-  button does. The class starts at *Priority*, the class the web form's default resolves to for
-  a person's session: `POST /api/v1/sessions` records a parentless create as `api` genesis,
-  which derives to spot, so a form that sent nothing would leave a phone-started session waiting
-  for quota. *From its origin* is still offered, named for what it gives. The create is
+  *Clone Only*, which sets the clone up with no first turn (`clone_only: true`; the prompt is
+  dropped, as the web button drops it, and the session opens needing input). The class starts at
+  *From its origin*, the web form's shape, and sends nothing: `POST /api/v1/sessions` classes a
+  create from the app priority when it says no class — a person is waiting on it as they are on
+  the web form's — so the option says so, and *Priority* and *Spot* choose. The create is
   retry-safe (`idempotency_key`), and its prompt is recorded as your message when the app acts
   on your behalf.
 - **Has the web UI's other pages as tabs**, their rows in the board's shape (one surface, hairlines,

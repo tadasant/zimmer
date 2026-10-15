@@ -19,9 +19,7 @@ final class QuickRouterTests: XCTestCase {
         XCTAssertEqual(id, 4123)
         let sent = try XCTUnwrap(transport.sent.first)
         XCTAssertEqual(sent.url.path, "/api/v1/quick_router")
-        XCTAssertEqual(try body(sent).keys.sorted(), ["prompt", "scheduling_class"])
-        XCTAssertEqual(try body(sent)["scheduling_class"] as? String, "priority",
-                       "the web form's default for a person's session, said rather than left to the `api` genesis")
+        XCTAssertEqual(try body(sent).keys.sorted(), ["prompt"], "no class: the server classes a native start priority")
     }
 
     func testTheAdvancedChoicesAndAttachmentsRideAlong() async throws {
@@ -43,7 +41,7 @@ final class QuickRouterTests: XCTestCase {
 
     func testBlankChoicesAreNotSent() throws {
         let json = QuickRouterRequest(prompt: "x", runtime: "", model: "", spot: false).json
-        XCTAssertEqual(json.keys.sorted(), ["prompt", "scheduling_class"], "an untouched panel posts nothing but the class, so the server resolves the rest")
+        XCTAssertEqual(json.keys.sorted(), ["prompt"], "an untouched panel posts nothing, so the server resolves the defaults")
     }
 
     func testThePageTheRouterWasOpenedOnRidesAlong() throws {

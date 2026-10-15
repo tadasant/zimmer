@@ -7974,6 +7974,17 @@ the web UI: queued messages, attachments, the new-session form, catalog and mode
 notifications, triggers, costs and health are still browser-only — see
 [Not in the app yet](/extend/ios-app/#not-in-the-app-yet).
 
+A session created from the app is priority by a rule on the create (`POST /api/v1/sessions` writes
+`scheduling_class: priority` when the app sends none), not by a genesis of its own: it is recorded
+as `api`. So *Derive it* on a phone-created session resolves its class from the `api` genesis — spot,
+unless Settings says otherwise — where *Derive it* on a web-created session resolves to priority from
+`web_ui`. The two look the same on the page and go different ways.
+
+The Quick Router's page context from the app is five facts off the session's header — id and title,
+status, agent root, class, goal — where the web bubble sends the whole page, its DOM reduced to
+markdown, up to 20,000 characters. The router sees less of a session from the phone than from the
+browser.
+
 ## The transcript archive's deadline cannot stop a run that is stuck
 
 `TranscriptArchiveJob` stops between sessions once its ten-minute `RUN_DEADLINE` has passed

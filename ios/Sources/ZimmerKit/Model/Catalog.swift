@@ -302,10 +302,13 @@ public struct NewSessionRequest: Hashable, Sendable {
     public var effort: String?
     public var title: String?
     public var goal: String?
-    /// `priority` or `spot`; nil derives it from the session's genesis. A create from the app
-    /// is recorded as `api` genesis, which derives to spot, so the form sends `defaultSchedulingClass`
-    /// unless the person chose otherwise.
+    /// `priority` or `spot`; nil sends none, which the server classes priority for the app's
+    /// token (a person is waiting on it, as on the web form's) and derives from the genesis for
+    /// any other caller.
     public var schedulingClass: String?
+    /// The web form's Clone Only: the clone is set up and no turn runs; the server refuses a
+    /// prompt alongside it.
+    public var cloneOnly: Bool
     /// Where the session lands in the spot queue, higher worked first; nil for the server's 0.
     public var precedence: Int?
     /// Claude Code's auto-compact threshold in tokens; nil for the column default.
@@ -315,16 +318,13 @@ public struct NewSessionRequest: Hashable, Sendable {
     /// Names this create attempt, so a retry after a lost response returns the same session.
     public var idempotencyKey: String
 
-    /// The class the web form starts a person's session under (`web_ui` genesis derives to
-    /// priority). The API records a parentless create as `api`, which derives to spot, so the
-    /// app sends this rather than leaving a phone-started session to wait for quota.
-    public static let defaultSchedulingClass = "priority"
     /// The column default and the most the server takes (`Session::MAX_AUTO_COMPACT_WINDOW`).
     public static let maxAutoCompactWindow = 1_000_000
 
     public init(agentRoot: String, prompt: String, runtime: String? = nil, model: String? = nil, effort: String? = nil,
                 title: String? = nil, goal: String? = nil, schedulingClass: String? = nil, precedence: Int? = nil,
-                autoCompactWindow: Int? = nil, selections: [CatalogKind: [String]] = [:], idempotencyKey: String = UUID().uuidString) {
+                autoCompactWindow: Int? = nil, cloneOnly: Bool = false, selections: [CatalogKind: [String]] = [:],
+                idempotencyKey: String = UUID().uuidString) {
         self.agentRoot = agentRoot
         self.prompt = prompt
         self.runtime = runtime
@@ -335,6 +335,7 @@ public struct NewSessionRequest: Hashable, Sendable {
         self.schedulingClass = schedulingClass
         self.precedence = precedence
         self.autoCompactWindow = autoCompactWindow
+        self.cloneOnly = cloneOnly
         self.selections = selections
         self.idempotencyKey = idempotencyKey
     }
@@ -360,6 +361,7 @@ public struct NewSessionRequest: Hashable, Sendable {
         if let schedulingClass { json["scheduling_class"] = schedulingClass }
         if let precedence { json["precedence"] = precedence }
         if let autoCompactWindow { json["auto_compact_window"] = autoCompactWindow }
+        if cloneOnly { json["clone_only"] = true }
         for (kind, values) in selections { json[kind.parameter] = values }
         return json
     }

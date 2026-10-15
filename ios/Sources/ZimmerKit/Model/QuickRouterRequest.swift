@@ -2,9 +2,8 @@ import Foundation
 
 /// A Quick Router start: the words, and what the web bubble's Advanced accordion and
 /// attach buttons add. Blank options are not sent, so the server resolves them the way it
-/// does for an untouched panel — the router root's harness, the ordinary model chain. The
-/// class is always sent: the web form's default for a person's session is priority, and a
-/// start from the app says so rather than leaving it to the genesis the server records.
+/// does for an untouched panel — the router root's harness, the ordinary model chain, and a
+/// priority start, which is what the server gives a native start that names no class.
 public struct QuickRouterRequest: Hashable, Sendable {
     public var prompt: String
     /// A registered harness, or nil for the router root's own.
@@ -30,12 +29,12 @@ public struct QuickRouterRequest: Hashable, Sendable {
         self.page = page
     }
 
-    /// The body `POST /api/v1/quick_router` reads. Only what was chosen is sent, and the class.
+    /// The body `POST /api/v1/quick_router` reads. Only what was chosen is sent.
     var json: [String: Any] {
         var json: [String: Any] = ["prompt": prompt]
         if let runtime, !runtime.isEmpty { json["agent_runtime"] = runtime }
         if let model, !model.isEmpty { json["model"] = model }
-        json["scheduling_class"] = spot ? "spot" : NewSessionRequest.defaultSchedulingClass
+        if spot { json["scheduling_class"] = "spot" }
         if let parentSessionID { json["parent_session_id"] = parentSessionID }
         if !attachments.isEmpty { json["attachments"] = attachments.map(\.json) }
         if let page {

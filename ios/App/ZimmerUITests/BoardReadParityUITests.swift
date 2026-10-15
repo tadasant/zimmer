@@ -133,9 +133,10 @@ final class BoardReadParityUITests: XCTestCase {
         XCTAssertTrue(started.waitForExistence(timeout: timeout), "the background start is on the board")
     }
 
-    /// The full form starts at priority, the web form's default; the precedence typed into it
-    /// is on the session; and *Clone Only* makes a session with no first turn.
-    func test_the_full_form_starts_at_priority_and_takes_a_precedence_and_clone_only() throws {
+    /// The full form starts at *From its origin*, the web form's shape, and the session it makes
+    /// is priority (the server's rule for the app); the precedence typed into it is on the
+    /// session; and *Clone Only* makes a session with no first turn.
+    func test_the_full_form_starts_from_its_origin_as_priority_and_takes_a_precedence_and_clone_only() throws {
         let app = launch(["-ZimmerFixtureNewSession"])
         let prompt = app.descendants(matching: .any)["newsession.prompt"]
         XCTAssertTrue(prompt.waitForExistence(timeout: timeout))
@@ -144,7 +145,7 @@ final class BoardReadParityUITests: XCTestCase {
         let classPicker = app.descendants(matching: .any)["newsession.class"]
         scrollUntilBelowTheBar(app, classPicker)
         let chosen = (classPicker.value as? String ?? "") + " " + classPicker.label
-        XCTAssertTrue(chosen.contains("Priority"), "the form starts at priority, the web form's default: \(chosen)")
+        XCTAssertTrue(chosen.contains("From its origin"), "the form starts at the web form's default: \(chosen)")
         attachScreenshot(app, named: "new-session-scheduling")
         let precedence = app.descendants(matching: .any)["newsession.precedence"]
         scrollUntilBelowTheBar(app, precedence)
@@ -159,7 +160,7 @@ final class BoardReadParityUITests: XCTestCase {
         let title = app.staticTexts["detail.title"]
         XCTAssertTrue(title.waitForExistence(timeout: timeout))
         XCTAssertEqual(title.label, "Sweep the dependencies")
-        XCTAssertTrue(app.staticTexts["Priority"].waitForExistence(timeout: timeout), "started as priority, not left to the api genesis")
+        XCTAssertTrue(app.staticTexts["Priority"].waitForExistence(timeout: timeout), "no class sent, and the server classes the app's create priority")
         // The precedence is the session's: its row says so. It is waiting, so it is under Active.
         app.navigationBars.buttons["Sessions"].tap()
         XCTAssertTrue(app.buttons["filter.active"].waitForExistence(timeout: timeout))

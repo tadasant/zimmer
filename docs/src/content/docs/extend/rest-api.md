@@ -383,6 +383,12 @@ Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`,
 `branch` defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents`
 default to false wherever they appear.
 
+`clone_only: true` is the web form's *Clone Only*: the session is created `needs_input` with the
+clone-only job queued (`AgentSessionJob.enqueue_for_clone_only`, a clone and no turn), and the
+first prompt arrives through `follow_up`. Nothing is recorded as a human message, since nobody has
+said anything yet. A `prompt` alongside it is a 422 rather than dropped. Without it, a create with
+no `prompt` makes a session that queues nothing and stays `waiting` — a row, not a clone.
+
 `goal` is a goal id from `GET /configs` or a free-text sentence. A single word that is not a known
 id is refused with a 422 that lists the known ids. The same rule applies on `PATCH`, on
 `follow_up` and on enqueued messages. See [where a goal comes from](/sessions/goals/#where-a-goal-comes-from).
@@ -400,7 +406,10 @@ classifies **spot**.
 
 `scheduling_class` **is** caller-supplied, and takes precedence over whatever the genesis would give
 the session. Send `spot` or `priority`; omit it and the session inherits its parent's explicit class
-if it has one, and otherwise derives from its genesis. An unknown value is a `422` (unlike the
+if it has one, and otherwise derives from its genesis — except from the iOS app's token, where an
+omitted class is written as `priority`: a person is waiting on that session as they are on the web
+form's, whose `web_ui` genesis is priority, and the app's `api` genesis would make it wait for quota.
+The Quick Router ingest classes a native start the same way. A class the app sends stands. An unknown value is a `422` (unlike the
 `priority_class`/`genesis` *filters* above, which ignore what they do not recognise — a filter that
 matches nothing is not the same kind of mistake as a session created in the wrong class). It is also
 permitted on `PATCH /sessions/:id`, which is how a spot session already held behind the quota gate is
