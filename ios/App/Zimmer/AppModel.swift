@@ -67,8 +67,12 @@ final class AppModel: ObservableObject {
     /// The session the Quick Router was opened from, so the new one threads under it, as
     /// the web bubble on a session page sends `parent_session_id`.
     var quickRouterParent: Int?
-    /// Words typed in the board's bar, carried into the sheet when it is opened for more.
-    var quickRouterDraft = ""
+    /// Words typed in the board's bar, carried into the sheet when it is opened for more. `nil`
+    /// when the sheet was opened from anywhere else.
+    var quickRouterDraft: String?
+    /// What the bar holds once the sheet it opened has closed: empty after a start, the sheet's
+    /// words after a Cancel. Set only then, so typing in the bar publishes nothing.
+    @Published var quickRouterBarHandback: String?
     /// The full new-session form (the pencil in the Sessions toolbar).
     @Published var showingNewSession = false
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
@@ -223,6 +227,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Open the Quick Router sheet. `parent` is the session it was opened on; `draft` is the
+    /// board bar's words, given only by the bar.
+    func openQuickRouter(parent: Int? = nil, draft: String? = nil) {
+        quickRouterParent = parent
+        quickRouterDraft = draft
+        showingQuickRouter = true
+    }
+
     /// Start a Quick Router session and open it.
     func startQuickRouter(_ prompt: String) async -> Bool {
         await startQuickRouter(QuickRouterRequest(prompt: prompt))
@@ -234,7 +246,6 @@ final class AppModel: ObservableObject {
             let id = try await connection.api.startQuickRouter(request)
             showingQuickRouter = false
             quickRouterParent = nil
-            quickRouterDraft = ""
             path.append(id)
             await refresh()
             return true

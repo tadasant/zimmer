@@ -242,8 +242,11 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   words, photos and files from the paperclip, and under *Advanced* the harness, the model and
   *Run as spot* (wait for quota room, at the top of the spot queue), each picker leading with
   the default rather than preselecting it. The sparkles in the bar open the sheet with the words
-  typed so far. Opened from a session, the new one threads under it (*Thread under #id*, the
-  bubble's `parent_session_id`), which you can switch off. All of it goes to
+  typed so far. A start from the sheet empties the bar too; closing the sheet without starting
+  (*Cancel*, or a swipe down) gives the bar the sheet's words, edits included. The sheet cannot
+  be closed while a start is in flight, and a failed start keeps the words where they were
+  typed. Opened from a session, the new one threads under it (*Thread under #id*, the bubble's
+  `parent_session_id`), which you can switch off. All of it goes to
   `POST /api/v1/quick_router`. **Or from the full form** (the
   pencil in the Sessions toolbar): the web UI's new-session
   form, with agent root, runtime, model, reasoning effort, prompt, title, goal (a predefined one or
