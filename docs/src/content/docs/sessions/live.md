@@ -17,7 +17,7 @@ It starts a background session, says that it has, and checks back on it when you
 | Where it runs | a job on the server | the browser's WebRTC or the phone's WebSocket connection to OpenAI |
 
 Both are entered from the main screen: **Live Voice** and **Live Mode** beside **New Session**, or
-the microphone button and the menu on a phone. `/live` has both, plus the OpenAI key.
+the microphone button and the menu on a phone. `/live` has both, plus whether the OpenAI key is set.
 
 ## One conversation per mode
 
@@ -169,9 +169,14 @@ call, and stays dark until Apple grants the entitlement
 
 Both modes need `LIVE_OPENAI_API_KEY`, resolved through the [secrets chain](/operate/secrets-parameter-store/)
 (Parameter Store, Rails credentials, environment). Without it both modes are off, with that as the
-stated reason. `/live` sets and deletes it through `ManagedSecret`, the same write-only,
-verified-by-reading-back path as Pi's OpenRouter key: nothing reads the value back out. It has its
-own name rather than `OPENAI_API_KEY` because store-resolved variables can reach session
+stated reason. Zimmer does not write the key: set it in the secrets console that administers
+Zimmer's store, as a secret parameter at `/zimmer/<env>/secrets/static/LIVE_OPENAI_API_KEY`, or with
+the `gcloud` commands in [Adding a secret](/operate/secrets-parameter-store/#adding-a-secret). A new
+value reaches Zimmer within a minute, with no redeploy. `/live`'s "OpenAI API key" panel shows
+whether the key is set, which link of the chain holds it, and that path, and links the console when
+`ZIMMER_STORE_CONSOLE_URL` is set. It shows no value and no fingerprint. See
+[Secrets Zimmer itself depends on](/operate/secrets-parameter-store/#secrets-zimmer-itself-depends-on).
+The key has its own name rather than `OPENAI_API_KEY` because store-resolved variables can reach session
 environments, and Codex and Pi read `OPENAI_API_KEY` on their own. A key set for Live must not change
 how those sessions authenticate or bill.
 
@@ -182,6 +187,8 @@ how those sessions authenticate or bill.
 | `LIVE_VOICE_MODEL` | `gpt-realtime-2.1-mini` | Live Voice's model |
 | `LIVE_VOICE_VOICE` | `marin` | Live Voice's voice |
 | `LIVE_OPENAI_BASE_URL` | `https://api.openai.com/v1` | An OpenAI-compatible endpoint instead |
+| `ZIMMER_STORE_CONSOLE_URL` | none | The console over Zimmer's own store, linked from the key panel. Unset, the panel shows the path without a link |
+| `ZIMMER_STORE_CONSOLE_STORE_NAME` | none | What that console calls the store, shown beside the link |
 
 ## From an agent or a script
 

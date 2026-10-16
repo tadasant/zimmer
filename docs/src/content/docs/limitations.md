@@ -6080,24 +6080,24 @@ field ([#999](https://github.com/tadasant/zimmer/issues/999)), so a value seeded
 resolves correctly whatever bytes it carries, and the fake now models a console-written parameter
 so the round trip is covered. Three things still are not:
 
-1. **`ParameterStore::WriteClient` writes literal bytes and declares no encoding**, so the Inference
-   page's Pi tab and `SecretsLocation#envelope_json` both still create the parameter this section
-   describes. A value carrying JSON structure written that way still 400s every `:render`, and
-   `ManagedSecret#write` reports the failed verify as *"the store refused the write"* — which is
-   false: the write landed, and nothing rolls it back.
+1. **`ParameterStore::WriteClient` writes literal bytes and declares no encoding**, and so does the
+   envelope `SecretsLocation#envelope_json` renders on the Connectors page for a human to store. Both
+   create the parameter this section describes, and a value carrying JSON structure stored either
+   way 400s every `:render`. The namespace migration is the only caller of `WriteClient`; its verify
+   reads back through the chain, so it catches the 400 and removes the canonical pair it created.
+   Set such a value in the Secrets Console instead.
 2. **`NamespaceMigration` refuses rather than mis-copying.** It reads decoded values and can only
    write literal ones, so a variable whose pre-rename envelope declares an encoding is reported as
    `:unsupported_encoding` and left in place; re-seed it at the canonical path through the console.
    The migration therefore cannot finish on its own for console-written values.
 3. **The fake still does not model `:render`'s validation**, so the blind spot above is unchanged
    for anything that reaches `:render` with structural bytes.
-4. **Rotating a console-written value from Zimmer breaks it.** `WriteClient#upsert` adds a
-   literal-bytes Secret Manager version and writes an envelope only when the parameter has none, so
-   the console's `"encoding":"base64url"` envelope stays in place over bytes that are not base64url.
-   The resolver then refuses the value (or, for bytes that happen to be valid base64url, decodes
-   them to the wrong value), and `ManagedSecret#write`'s read-back verify reports the write as
-   failed. Rotate a value through the same surface that created it: if it was written in the
-   Secrets Console, rotate it there.
+
+Rotate a value through the same surface that created it. A `gcloud secrets versions add` of literal
+bytes under a console-written `"encoding":"base64url"` envelope leaves bytes that are not
+base64url behind that envelope, and the resolver refuses the value (or, for bytes that happen to be
+valid base64url, decodes them to the wrong value). If it was written in the Secrets Console, rotate
+it there.
 
 ## A store value that is not valid UTF-8 is refused
 
