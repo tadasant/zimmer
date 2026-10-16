@@ -2,7 +2,7 @@
 #
 # Archive the iOS app for a device, and optionally sign it and upload it to TestFlight.
 #
-#   ios/bin/testflight check    # unsigned Release archive + assertions. No credential.
+#   ios/bin/testflight check    # ad hoc signed Release archive + assertions. No credential.
 #   ios/bin/testflight upload   # the same, then sign, upload, and wait for processing.
 #
 # `check` is what the `ios` CI job runs on every change under ios/**, so the half of the
@@ -14,7 +14,7 @@
 # A script rather than YAML for the reason `ios/bin/build-app` is one: a check that exists
 # only in a workflow cannot be run by hand.
 #
-# SIGNING HAPPENS AT EXPORT, IN APPLE'S CLOUD. The archive is unsigned; `-exportArchive`
+# SIGNING HAPPENS AT EXPORT, IN APPLE'S CLOUD. The archive is signed ad hoc; `-exportArchive`
 # with `-allowProvisioningUpdates` and an App Store Connect API key (Admin role) signs it
 # with the team's cloud-managed distribution certificate and creates the App Store
 # provisioning profile itself. So there is no .p12, no profile and no keychain to import
@@ -22,12 +22,20 @@
 # if export-time signing is ever refused: it signs during the archive instead, which also
 # works from the key alone but mints a development certificate per run.
 #
-# ONE ENTITLEMENTS FILE MAY BE SIGNED IN, and only when asked: App/Zimmer/Push.entitlements,
-# when ZIMMER_IOS_PUSH_ENABLED=1 (set once Push Notifications is ticked on the App ID — an
-# entitlement the App ID lacks fails a build to *sign*, not merely to push). The guard below
-# refuses any other file, and refuses that one if it asks for anything but aps-environment —
-# CarPlay above all, which Apple grants by manual review. Each entitlements file the app
-# grows is admitted here by name, with the keys it may ask for.
+# TWO ENTITLEMENTS FILES ARE ADMITTED, each by name and with the one key it may ask for:
+#   App/Zimmer/CarPlay.entitlements  com.apple.developer.carplay-voice-based-conversation,
+#                                    always (Apple granted it; it is ticked on the App ID)
+#   App/Zimmer/Push.entitlements     aps-environment, only when ZIMMER_IOS_PUSH_ENABLED=1
+#                                    (set once Push Notifications is ticked on the App ID)
+# An entitlement the App ID lacks fails a build to *sign*, not merely to lack the feature.
+# With push on, the two are merged into one file under the work directory. The guard below
+# refuses any other file, and either file if it asks for a key beyond its own.
+#
+# THE ARCHIVE IS SIGNED AD HOC, so it carries those entitlements. Export re-signs the app
+# with the entitlements it finds in the archived binary, and an archive built with signing
+# off has none: the upload would succeed and CarPlay would silently never connect. An ad
+# hoc signature needs no certificate, so `check` signs the same way and proves on every PR
+# that the archived app carries the admitted keys.
 #
 # `upload` reads, and never prints:
 #   APP_STORE_CONNECT_API_KEY_ID, APP_STORE_CONNECT_API_ISSUER_ID,
@@ -72,6 +80,8 @@ base_url="${ZIMMER_IOS_API_BASE_URL:-}"
 web_url="${ZIMMER_IOS_WEB_BASE_URL:-}"
 push_enabled="${ZIMMER_IOS_PUSH_ENABLED:-}"
 readonly PUSH_ENTITLEMENTS="Zimmer/Push.entitlements"
+readonly CARPLAY_ENTITLEMENTS="Zimmer/CarPlay.entitlements"
+readonly CARPLAY_KEY="com.apple.developer.carplay-voice-based-conversation"
 signing="${ZIMMER_SIGNING:-export}"
 
 # CFBundleVersion is one to three period-separated integers, and App Store Connect refuses
@@ -127,31 +137,45 @@ build_settings=(
   ZIMMER_DEFAULT_API_BASE_URL="$base_url"
   ZIMMER_DEFAULT_WEB_BASE_URL="$web_url"
 )
+# The key set of a plist, from a JSON rendering rather than by splitting text: a value
+# containing " = " must not be able to hide a second key.
+plist_keys() {
+  plutil -convert json -o - "$1" | python3 -c 'import json, sys; print(" ".join(sorted(json.load(sys.stdin))))'
+}
+
+# Each admitted file must ask for its own key and nothing else, whether or not this build
+# signs it in — so every PR's `check` proves both are safe to sign. Asked of the PARSED
+# plist (PlistBuddy drops comments), never of its bytes: both files' comments name the
+# other's capability.
+admit() {
+  local file="App/$1" want="$2" keys
+  [ -f "$file" ] || fail "$file is missing"
+  /usr/libexec/PlistBuddy -c 'Print' "$file" >/dev/null 2>&1 || fail "$file is not a readable plist"
+  keys="$(plist_keys "$file")" || fail "$file could not be read as JSON"
+  [ "$keys" = "$want" ] || fail "$file asks for '$keys' — only $want is admitted"
+  printf '    ok  %-44s %s only\n' "$1" "$want"
+}
+admit "$PUSH_ENTITLEMENTS" aps-environment
+admit "$CARPLAY_ENTITLEMENTS" "$CARPLAY_KEY"
+
+# What this build signs in. One file is named as is; two are merged under the work
+# directory, because CODE_SIGN_ENTITLEMENTS names exactly one.
 if [ "$push_enabled" = 1 ]; then
-  build_settings+=(CODE_SIGN_ENTITLEMENTS="$PUSH_ENTITLEMENTS")
+  signed_entitlements="$work/Zimmer.entitlements"
+  cp "App/$CARPLAY_ENTITLEMENTS" "$signed_entitlements"
+  /usr/libexec/PlistBuddy -c "Merge App/$PUSH_ENTITLEMENTS" "$signed_entitlements" >/dev/null ||
+    fail "could not merge $PUSH_ENTITLEMENTS into $CARPLAY_ENTITLEMENTS"
+  signed_keys="$CARPLAY_KEY aps-environment"
+else
+  signed_entitlements="$CARPLAY_ENTITLEMENTS"
+  signed_keys="$CARPLAY_KEY"
 fi
+build_settings+=(CODE_SIGN_ENTITLEMENTS="$signed_entitlements")
 
-# The push entitlements file must ask for aps-environment and nothing else, whether or not
-# this build signs it in — so every PR's `check` proves the file is safe to switch on.
-# Asked of the PARSED plist (PlistBuddy drops comments), never of its bytes: the file's own
-# comment names CarPlay.
-push_file="App/$PUSH_ENTITLEMENTS"
-[ -f "$push_file" ] || fail "$push_file is missing"
-requested="$(/usr/libexec/PlistBuddy -c 'Print' "$push_file" 2>/dev/null)" || fail "$push_file is not a readable plist"
-case "$requested" in
-  *[Cc][Aa][Rr][Pp][Ll][Aa][Yy]*) fail "$push_file asks for CarPlay, which is not granted" ;;
-esac
-# The key set from a JSON rendering, not from splitting text: a value containing " = "
-# must not be able to hide a second key.
-keys="$(plutil -convert json -o - "$push_file" | python3 -c 'import json, sys; print(" ".join(sorted(json.load(sys.stdin))))')" ||
-  fail "$push_file could not be read as JSON"
-[ "$keys" = "aps-environment" ] || fail "$push_file asks for '$keys' — only aps-environment is admitted"
-printf '    ok  %-44s %s\n' "$PUSH_ENTITLEMENTS" "aps-environment only"
-
-# The entitlements guard is asked of the build settings, before anything is built: an
-# unsigned archive carries no entitlements to inspect, and the signed binary only exists
-# inside the upload. Captured rather than piped into `grep -q`, which under pipefail can
-# report a match as a miss when the writer dies of SIGPIPE.
+# The entitlements guard is asked of the build settings, before anything is built, so a
+# stray CODE_SIGN_ENTITLEMENTS in the project cannot override the one chosen above.
+# Captured rather than piped into `grep -q`, which under pipefail can report a match as a
+# miss when the writer dies of SIGPIPE.
 settings="$(xcodebuild -showBuildSettings -project App/Zimmer.xcodeproj -scheme Zimmer -configuration Release "${build_settings[@]}" 2>/dev/null)"
 # `sort -u`, because -showBuildSettings prints a block per target in the scheme and a
 # setting passed on the command line is resolved in every one of them. Without it the
@@ -161,18 +185,9 @@ settings="$(xcodebuild -showBuildSettings -project App/Zimmer.xcodeproj -scheme 
 # named them. Two genuinely different values remain two lines, and still fail.
 entitlements="$(printf '%s\n' "$settings" \
   | awk '$1 == "CODE_SIGN_ENTITLEMENTS" { $1 = ""; $2 = ""; print }' | tr -d ' ' | sort -u)"
-case "$entitlements" in
-  "")
-    printf '    ok  %-44s none\n' "CODE_SIGN_ENTITLEMENTS"
-    ;;
-  "$PUSH_ENTITLEMENTS")
-    [ "$push_enabled" = 1 ] || fail "$PUSH_ENTITLEMENTS is signed in without ZIMMER_IOS_PUSH_ENABLED=1"
-    printf '    ok  %-44s %s\n' "CODE_SIGN_ENTITLEMENTS" "push only"
-    ;;
-  *)
-    fail "CODE_SIGN_ENTITLEMENTS is '$entitlements' — only $PUSH_ENTITLEMENTS may be signed in"
-    ;;
-esac
+[ "$entitlements" = "$signed_entitlements" ] ||
+  fail "CODE_SIGN_ENTITLEMENTS is '$entitlements' — expected $signed_entitlements"
+printf '    ok  %-44s %s\n' "CODE_SIGN_ENTITLEMENTS" "$signed_keys"
 
 # Options before build settings.
 if [ "$mode" = upload ] && [ "$signing" = archive ]; then
@@ -184,11 +199,14 @@ if [ "$mode" = upload ] && [ "$signing" = archive ]; then
     CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Automatic \
     DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
 else
+  # Ad hoc: no certificate, no team, no profile — only the entitlements, so export has
+  # them to sign in. Export replaces this signature with the distribution one.
   xcodebuild archive \
     -project App/Zimmer.xcodeproj -scheme Zimmer -configuration Release \
     -destination 'generic/platform=iOS' -archivePath "$archive" \
     "${build_settings[@]}" \
-    CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+    CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO AD_HOC_CODE_SIGNING_ALLOWED=YES \
+    CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER=
 fi
 
 # What App Store Connect would otherwise tell us at the end of an upload, asked of the
@@ -226,6 +244,21 @@ expect ZimmerDefaultWebBaseURL "$web_url"
 [ -f "$app/PrivacyInfo.xcprivacy" ] || fail "no privacy manifest in the app bundle"
 if grep -aq '\$(' "$plist"; then fail "Info.plist carries a malformed \$(...) build setting"; fi
 
+# The archived app's signature carries every admitted key — what export will sign in. A
+# signature made with a team adds its own keys (application-identifier and the like), so
+# this asks that each admitted key is present, not that nothing else is.
+printf '==> inspecting the archived app signature\n'
+signed_plist="$work/archived.entitlements"
+codesign -d --entitlements - --xml "$app" >"$signed_plist" 2>/dev/null ||
+  fail "the archived app is not signed — export would sign in no entitlements"
+archived_keys=" $(plist_keys "$signed_plist" 2>/dev/null || true) "
+for key in $signed_keys; do
+  case "$archived_keys" in
+    *" $key "*) printf '    ok  %-44s signed in\n' "$key" ;;
+    *) fail "the archived app's signature has no $key (it has:$archived_keys)" ;;
+  esac
+done
+
 version="$(value CFBundleShortVersionString)"
 
 if [ "$mode" = check ]; then
@@ -262,6 +295,31 @@ xcodebuild -exportArchive \
   -exportPath "$work/export" \
   -exportOptionsPlist "$export_options" \
   "${auth_args[@]}"
+
+# What export actually signed, from the summary it leaves beside the upload. Asked after the
+# upload because it is the upload's own record; a missing key fails the run, which is the
+# only way a build that cannot reach CarPlay is noticed before someone sits in a car.
+summary="$work/export/DistributionSummary.plist"
+if [ -f "$summary" ]; then
+  printf '==> checking what export signed in\n'
+  exported="$(plutil -convert json -o - "$summary")" || fail "$summary could not be read as JSON"
+  for key in $signed_keys; do
+    printf '%s' "$exported" | python3 -c '
+import json, sys
+key = sys.argv[1]
+def found(node):
+    if isinstance(node, dict):
+        return key in node or any(found(v) for v in node.values())
+    if isinstance(node, list):
+        return any(found(v) for v in node)
+    return False
+sys.exit(0 if found(json.load(sys.stdin)) else 1)' "$key" ||
+      fail "export did not sign in $key — the uploaded build lacks it (is it enabled on the App ID?)"
+    printf '    ok  %-44s signed in at export\n' "$key"
+  done
+else
+  printf '::warning title=No DistributionSummary.plist::export left no summary, so what it signed in is unchecked; dump the build with codesign\n'
+fi
 
 printf '==> waiting for App Store Connect to process %s (%s)\n' "$version" "$build_number"
 python3 tools/app_store_connect.py wait --bundle-id "$BUNDLE_ID" --version "$version" --build "$build_number"

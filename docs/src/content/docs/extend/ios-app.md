@@ -543,9 +543,11 @@ follows the call (Connecting, Listening, Thinking, Speaking, Working on it) and 
 *Hang up*. It is the same call as the phone's (`LiveCall.shared`), so a call started at the desk
 carries on in the car. While a call runs, the section offers *Back to the call*.
 
-**The scene is inert until Apple grants the entitlement.** The entitlement lives in
-`App/Zimmer/CarPlay.entitlements`, which is wired into nothing, and `testflight` refuses to sign
-CarPlay in. This is the same arrangement as Motet's.
+Apple granted the entitlement as a managed capability, and it is enabled on the App ID. It lives
+in `App/Zimmer/CarPlay.entitlements`, which `testflight` signs into every TestFlight build. The
+archive is signed ad hoc so it carries the key into export, and both `check` and `upload` fail if
+it goes missing. To use it, the phone needs iOS 26.4 or later; add Zimmer under Settings → General
+→ CarPlay → your car → Customize if it isn't on the car's home screen.
 
 ## How it is built and shipped
 
@@ -553,10 +555,10 @@ CarPlay in. This is the same arrangement as Motet's.
 | --- | --- | --- |
 | `ios/bin/ci-swift` | `ios_swift_linux` (self-hosted Linux) and `ios` (macOS) | The `ZimmerKit` logic: sign-in protocol, token refresh, edge-refusal handling, list ordering |
 | `ios/bin/build-app` | By hand; in `ios`, `ios/bin/ui-test` builds the same app (Staging is Debug plus its environment) for the simulator it runs on | The app compiles and links for the simulator |
-| `ios/bin/testflight check` | `ios` | An unsigned Release archive is uploadable in shape (bundle keys, icon, privacy manifest, no entitlements) |
+| `ios/bin/testflight check` | `ios` | An ad hoc signed Release archive is uploadable in shape (bundle keys, icon, privacy manifest) and its signature carries the admitted entitlements (CarPlay) |
 | `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and starts a session from a sentence in the Quick Router bar and opens it. Every class in a UI test file the pull request changed runs too |
 | `ios/bin/ui-test` | `ios-ui-tests.yml`, on push to `main` and on dispatch | Every UI test, and a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>` artifact (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
-| `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, and waits for processing |
+| `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, checks export signed the entitlements in, and waits for processing |
 
 The full UI suite does not gate pull requests. It is some 70 tests driven one at a time plus some 70
 photographs, up to an hour on a loaded runner, which is too long to gate every iOS pull request on. A UI test that

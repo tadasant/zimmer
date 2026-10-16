@@ -626,13 +626,12 @@ jobs:
   # public repo, which is what makes an unproven-until-now app buildable in CI with nobody
   # having to own a Mac.
   #
-  # NOTHING HERE SIGNS ANYTHING, and that is the property to preserve. A simulator build
-  # and an unsigned device archive need no identity, no certificate, no provisioning profile
+  # NOTHING HERE SIGNS WITH AN IDENTITY, and that is the property to preserve. A simulator
+  # build and an ad hoc signed device archive need no certificate, no provisioning profile
   # and no App Store Connect key, so this job holds no credential and needs no human in the
-  # loop — which is the only reason it can run on every PR. Signing and the TestFlight upload
-  # live in `testflight.yml`, behind a `main`-only environment; do not add them here, and do
-  # not add `CODE_SIGN_ENTITLEMENTS`: an entitlement Apple has not granted (CarPlay) makes a
-  # build fail to sign rather than merely lack the feature.
+  # loop — which is the only reason it can run on every PR. Real signing and the TestFlight
+  # upload live in `testflight.yml`, behind a `main`-only environment; do not add them here.
+  # Which entitlements are signed in is decided by `ios/bin/testflight`'s guard, not here.
   ios:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
@@ -654,7 +653,7 @@ jobs:
           swift --version
           ls /Applications | grep -i '^Xcode' || true
 
-      - name: Archive the app for a device, unsigned, and check it is uploadable in shape
+      - name: Archive the app for a device, signed ad hoc, and check it is uploadable in shape
         # The credential-free half of `testflight.yml`, run by the same script: the Release
         # configuration, the device SDK, the app icon and the Info.plist keys App Store
         # Connect reads. Without it the first place any of those is checked is an upload,
