@@ -76,7 +76,9 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             summaries = [:]
             for session in sessions.prefix(DrivingFlow.limit) {
                 if let summary = try? await connection.api.session(session.id).statusSummary?.summary {
-                    summaries[session.id] = summary
+                    // The summary is markdown; a list row and a voice read its words, so a
+                    // link is its text without the brackets and the URL.
+                    summaries[session.id] = String(MarkdownInline.attributed(summary).characters)
                 }
             }
             refreshFailure = nil
