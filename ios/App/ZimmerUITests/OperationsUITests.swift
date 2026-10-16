@@ -87,7 +87,7 @@ final class OperationsUITests: XCTestCase {
         // the page, which a lazy List lays out only once scrolled back up to.
         XCTAssertTrue(waitForDisappearance(app.buttons["costs.root.motet"]), "only the narrowed root is left")
         let clear = app.buttons["costs.scope.clear"]
-        XCTAssertTrue(reach(app, "costs.scope.clear", whole: true), "the page says what it is narrowed to")
+        XCTAssertTrue(reach(app, "costs.scope.clear", whole: true, searching: .up), "the page says what it is narrowed to")
         XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].exists)
         clear.tap()
         // The banner goes when the fleet's figures arrive; the roots are below the fold again.
@@ -97,7 +97,7 @@ final class OperationsUITests: XCTestCase {
         XCTAssertTrue(motet.exists)
 
         let window = app.segmentedControls["costs.window"]
-        XCTAssertTrue(reach(app, "costs.window", whole: true), "the window picker heads the page")
+        XCTAssertTrue(reach(app, "costs.window", whole: true, searching: .up), "the window picker heads the page")
         let showing = app.staticTexts["costs.showing"]
         window.buttons["30d"].tap()
         XCTAssertTrue(waitForLabel(showing, "Showing 30 days"))
@@ -112,7 +112,7 @@ final class OperationsUITests: XCTestCase {
         // The other session goes where the page is; the banner heads the page, laid out once
         // scrolled back up to.
         XCTAssertTrue(waitForDisappearance(app.buttons["costs.session.1038"]), "narrowed to the one session")
-        XCTAssertTrue(reach(app, "costs.scope.clear", whole: true), "the page says which session")
+        XCTAssertTrue(reach(app, "costs.scope.clear", whole: true, searching: .up), "the page says which session")
         XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].exists)
     }
 
@@ -182,10 +182,10 @@ final class OperationsUITests: XCTestCase {
         // Narrowed to a root, the fleet-only sections go: the burn rates at the foot, which
         // are laid out where the page is, and the banner at its head once scrolled back to.
         let root = app.buttons["costs.root.zimmer"]
-        XCTAssertTrue(reach(app, "costs.root.zimmer", whole: true))
+        XCTAssertTrue(reach(app, "costs.root.zimmer", whole: true, searching: .up), "the roots are above the burn rates the walk ended on")
         root.tap()
         XCTAssertTrue(waitForDisappearance(app.buttons["costs.root.motet"]), "only the narrowed root is left")
-        XCTAssertTrue(reach(app, "costs.scope.clear", whole: true), "the page says what it is narrowed to")
+        XCTAssertTrue(reach(app, "costs.scope.clear", whole: true, searching: .up), "the page says what it is narrowed to")
         XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].exists)
         XCTAssertTrue(reach(app, "costs.session.1042"), "the narrowed page still lists its session")
         XCTAssertFalse(app.descendants(matching: .any)["costs.experiments"].exists, "experiments are the fleet page's only")
@@ -243,12 +243,16 @@ final class OperationsUITests: XCTestCase {
     /// Bring the element named `identifier` onto the screen — below the navigation bar, above
     /// the tab bar, and whole when it is about to be tapped — by dragging under half a screen
     /// at a time and holding, so there is no fling: on a loaded simulator a fling carries a
-    /// short section past the screen in one go, and a lazy List never lays it out. Down first,
-    /// then back up, giving up after thirty steps; done the moment the element is on screen (a
-    /// `where` clause on the loop would skip the drag and keep checking, thirty times three
-    /// seconds for every section a walk reaches). The first match, since a container's
-    /// identifier can reach more than one element.
-    private func reach(_ app: XCUIApplication, _ identifier: String, whole: Bool = false) -> Bool {
+    /// short section past the screen in one go, and a lazy List never lays it out. Twenty steps
+    /// in `searching`'s direction, then twenty back — a caller at the foot of the page looking
+    /// for its head says `.up`, or the walk spends its steps parked at the bottom — giving up
+    /// after forty; done the moment the element is on screen (a `where` clause on the loop
+    /// would skip the drag and keep checking, thirty times three seconds for every section a
+    /// walk reaches). The first match, since a container's identifier can reach more than one
+    /// element.
+    private enum Direction { case up, down }
+
+    private func reach(_ app: XCUIApplication, _ identifier: String, whole: Bool = false, searching: Direction = .down) -> Bool {
         let element = app.descendants(matching: .any)[identifier].firstMatch
         // The bars do not move while the page scrolls: read once, not five queries a step.
         let bar = app.navigationBars.firstMatch
@@ -260,9 +264,9 @@ final class OperationsUITests: XCTestCase {
             let frame = element.frame
             return frame.minY >= top && (whole ? frame.maxY <= bottom : frame.minY < bottom)
         }
-        for step in 0..<30 {
+        for step in 0..<40 {
             if onScreen() { return true }
-            let down = step < 20
+            let down = (step < 20) == (searching == .down)
             // The start alternates between two heights, a quarter screen apart: a control
             // that takes a drag for itself — the spend-by-day chart, whose selection follows
             // the finger — would otherwise take every step, and the page would never move.
