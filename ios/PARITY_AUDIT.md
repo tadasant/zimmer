@@ -178,7 +178,7 @@ costs.
 | G6 | Long messages and long histories cut off | Full text; scroll back to the start | Each message cut at 4,000 characters; history stops at 200 messages | Yes: full content, a cursor | C: #1308 (server), #1309 (app) |
 | G7 | Drafts lost | Composer drafts kept for 7 days; an undelivered prompt put back | Lost on leaving the screen | No | B: #1307 |
 | G8 | Trash refuses running or queued sessions, no Undo | Trashes a running session outright; *Archive anyway* only when messages are queued; an Undo toast | The API refuses a live turn or a non-empty queue without `force` (a 422 shown as an error); no undo | Yes: `end_turn` | D: #1312 (server), #1310 (app) |
-| G9 | Status summary unreadable | Markdown with live links (`#message-N`, PRs, sessions); on every *Your board* row | Raw markdown on the session page; not on rows | Yes: `include=board_row` | D: #1311 (server), #1313 (app) |
+| G9 | Status summary unreadable | Markdown with live links (`#message-N`, PRs, sessions); on every *Your board* row | Raw markdown on the session page; not on rows | Yes: `include=board_row` | D: #1311 (server), #1313 (app); the session page's copy rendered as markdown: #1340 |
 | G10 | No "why is it waiting" | Spot hold, queued turn with *Force start*, auth outage with reset time, starvation banners | None | Yes: waiting reason, `force_start` | E: #1314 (server), #1315 (app) |
 | G11 | Merge and Reprioritize | Row *Merge* on *Your board*; *Reprioritize* | Missing | Yes | Held: #1283, #1284 |
 | G12 | Title search silently capped | Pages through every match | 100 matches, no notice | No | A: #1305 says when there are more |
