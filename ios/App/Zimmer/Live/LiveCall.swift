@@ -101,7 +101,6 @@ final class LiveCall: ObservableObject {
         do {
             let session = try await api.liveSessionUpdate(conversation)
             guard mine == generation else { return }
-            conductor.note(session: session)
             send(RealtimeConductor.sessionUpdate(session))
         } catch {
             let message = Self.describe(error)

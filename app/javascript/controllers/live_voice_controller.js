@@ -137,11 +137,19 @@ export default class extends Controller {
 
     switch (event.type) {
       case "input_audio_buffer.speech_started":
-        this.setState("listening")
+        // Gated, speech does not cut a reply off, so the reply is still what is happening.
+        if (!(this.gated && this.state === "speaking")) this.setState("listening")
         break
       case "response.created":
         this.responseActive = true
+        this.requested = false
         this.setState("thinking")
+        break
+      // What OpenAI applied, not what was sent: a refused session.update leaves
+      // the call as it was, and so whether it is gated.
+      case "session.created":
+      case "session.updated":
+        this.noteSession(event.session)
         break
       case "response.output_audio.delta":
       case "response.output_audio_transcript.delta":
@@ -161,10 +169,16 @@ export default class extends Controller {
           this.recordTurn("user", event.transcript)
         }
         break
+      case "conversation.item.input_audio_transcription.failed":
+        // Gated, a line nobody could read is not one to answer.
+        if (this.gated && event.item_id) this.send({ type: "conversation.item.delete", item_id: event.item_id })
+        break
       case "response.output_audio_transcript.done":
         this.recordTurn("assistant", event.transcript)
         break
       case "error":
+        // A refused response.create never gets its response.created.
+        this.requested = false
         this.showError(event.error?.message || "OpenAI reported an error.")
         break
     }
@@ -224,8 +238,9 @@ export default class extends Controller {
   }
 
   sendPendingResponse() {
-    if (!this.pendingResponse || this.responseActive) return
+    if (!this.pendingResponse || this.responseActive || this.requested) return
     this.pendingResponse = false
+    this.requested = true
     this.send({ type: "response.create" })
   }
 
@@ -245,12 +260,15 @@ export default class extends Controller {
     }
   }
 
-  // A whole session.update from Zimmer. Its turn detection says whether the
-  // call is gated from here on: create_response false means we ask for replies.
   sendSession(session) {
+    this.send({ type: "session.update", session })
+  }
+
+  // The call's session as OpenAI has it. Its turn detection says whether the
+  // call is gated: create_response false means we ask for each reply.
+  noteSession(session) {
     const detection = session?.audio?.input?.turn_detection
     if (detection && "create_response" in detection) this.gated = detection.create_response === false
-    this.send({ type: "session.update", session })
   }
 
   // Gated: Zimmer decides whether this line is answered. A kept line is
@@ -258,7 +276,11 @@ export default class extends Controller {
   // Zimmer unreachable answers it — a stray reply beats a call gone quiet.
   async hear(event, generation) {
     const content = event.transcript?.trim()
-    if (!content || !this.call) return
+    if (!this.call) return
+    if (!content) {
+      if (event.item_id) this.send({ type: "conversation.item.delete", item_id: event.item_id })
+      return
+    }
     let respond = true
     try {
       const response = await this.post(this.call.turnsUrl, { role: "user", content, listening_modes: 1 })
@@ -313,6 +335,7 @@ export default class extends Controller {
     this.pendingCalls.clear()
     this.pendingResponse = false
     this.responseActive = false
+    this.requested = false
     this.gated = false
     if (!keepError) this.showError(null)
     this.setState("idle")

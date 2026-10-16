@@ -123,7 +123,7 @@ module LiveConversations
       content = content.to_s.strip
       raise Refused, "content can't be blank." if content.empty?
 
-      respond = role.to_s != "user" || Listening.new(@conversation, mode: Listening.mode(capable: @listening_modes)).respond?(content)
+      respond = role.to_s != "user" || listening.respond?(content)
       return Heard.new(turn: nil, respond: false) unless respond
 
       turn = @conversation.turns.create!(role: role.to_s, source: "spoken", content: content.truncate(MESSAGE_MAX_LENGTH))
@@ -137,6 +137,11 @@ module LiveConversations
     end
 
     private
+
+    def listening
+      setting = LiveSetting.current
+      Listening.new(@conversation, mode: Listening.mode(setting, capable: @listening_modes), setting: setting)
+    end
 
     def realtime_session(conversation) = RealtimeSession.new(conversation, listening_modes: @listening_modes)
 

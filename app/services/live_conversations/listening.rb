@@ -4,10 +4,15 @@ module LiveConversations
   # Which spoken lines a voice call answers (LiveSetting `voice_listening`):
   #
   #   always     every line — a private space, the car. OpenAI's turn detection
-  #              starts the reply itself, as it always has.
-  #   wake_word  only a line that says "Zimmer".
-  #   dynamic    a line that says "Zimmer", or one a text model judges was said
-  #              to the assistant, given the last few lines of the thread.
+  #              starts the reply itself.
+  #   wake_word  a line that says "Zimmer", or a follow-up: one heard within
+  #              FOLLOW_UP_SECONDS of the last line kept or spoken, so "yes" to
+  #              a question, or the rest of a sentence split at a pause, counts.
+  #   dynamic    the same, or a line a text model judges was said to the
+  #              assistant, given the last few lines of the thread.
+  #
+  # A line that repeats what the assistant just said is its own voice through
+  # the speaker, and is dropped in both before anything else is asked.
   #
   # In the two gated modes the Realtime session is told not to start replies or
   # cut one off on its own (RealtimeSession#turn_detection). The client records
@@ -18,7 +23,7 @@ module LiveConversations
   #
   # Gating needs a client that does that second half, so it applies only to a
   # client that says it can (`listening_modes`); any other one is answered as
-  # `always`, the way it was built.
+  # `always`.
   class Listening
     MODES = %w[always wake_word dynamic].freeze
     GATED = %w[wake_word dynamic].freeze
@@ -26,8 +31,13 @@ module LiveConversations
 
     # The judge is on the turn's critical path: an answer slower than this is
     # worse than a wrong one.
+    JUDGE_OPEN_TIMEOUT_SECONDS = 2
     JUDGE_TIMEOUT_SECONDS = 6
     CONTEXT_TURNS = 6
+    FOLLOW_UP_SECONDS = 10
+    # Shorter than this, a line inside the assistant's last one is a coincidence
+    # ("yes", "okay"), not an echo.
+    ECHO_MIN_LENGTH = 12
 
     JUDGE_PROMPT = <<~PROMPT.squish
       You screen what a voice assistant named Zimmer hears through an open microphone, which also picks up
@@ -55,13 +65,27 @@ module LiveConversations
     def respond?(transcript)
       text = transcript.to_s
       return true unless self.class.gated?(@mode)
-      return true if text.match?(WAKE_WORD)
+      return false if echo?(text)
+      return true if text.match?(WAKE_WORD) || follow_up?
       return false if @mode == "wake_word"
 
       judge(text)
     end
 
     private
+
+    def echo?(text)
+      heard = normalize(text)
+      said = @conversation.turns.where(role: "assistant").reorder(id: :desc).pick(:content)
+      heard.length >= ECHO_MIN_LENGTH && said.present? && normalize(said).include?(heard)
+    end
+
+    def normalize(text) = text.to_s.downcase.gsub(/[^[:alnum:]]+/, " ").squish
+
+    def follow_up?
+      last = @conversation.turns.where(role: %w[user assistant]).reorder(id: :desc).pick(:created_at)
+      last.present? && last > FOLLOW_UP_SECONDS.seconds.ago
+    end
 
     # Fails open: a call that answers a stray line is a nuisance, one that
     # silently stops answering is the bug a person cannot see.
@@ -89,6 +113,6 @@ module LiveConversations
       "#{context}The last heard line:\nHeard: #{text.truncate(1_000)}"
     end
 
-    def client = @client ||= OpenaiClient.new(read_timeout: JUDGE_TIMEOUT_SECONDS)
+    def client = @client ||= OpenaiClient.new(open_timeout: JUDGE_OPEN_TIMEOUT_SECONDS, read_timeout: JUDGE_TIMEOUT_SECONDS)
   end
 end

@@ -80,6 +80,9 @@ public struct RealtimeConductor: Sendable {
     /// The calls of a finished response still waiting on their results.
     private var awaiting: Set<String> = []
     private var responseActive = false
+    /// A `response.create` was sent and its `response.created` has not come: a second one now
+    /// would be refused for the response already on its way.
+    private var requested = false
     private var pendingResponse = false
     /// The call asks for its own replies (Listening is wake word or dynamic).
     public private(set) var gated = false
@@ -93,9 +96,10 @@ public struct RealtimeConductor: Sendable {
         listening == "wake_word" || listening == "dynamic"
     }
 
-    /// A `session` Zimmer sent the call: its turn detection says from here on whether the call is
-    /// gated (`create_response: false`).
-    public mutating func note(session: JSONValue) {
+    /// The session OpenAI says the call has (`session.created`, `session.updated`): its turn
+    /// detection says from here on whether the call is gated (`create_response: false`). What
+    /// OpenAI applied, not what was sent, so a refused `session.update` changes nothing.
+    mutating func note(session: JSONValue) {
         guard case let .bool(creates)? = session["audio"]?["input"]?["turn_detection"]?["create_response"] else { return }
         gated = !creates
     }
@@ -116,12 +120,16 @@ public struct RealtimeConductor: Sendable {
         switch event["type"]?.string {
         case "input_audio_buffer.speech_started":
             // Gated, speech does not cut the reply off: it may not be meant for the call at all.
-            if gated { return [.state(.listening)] }
+            if gated { return playingItem == nil ? [.state(.listening)] : [] }
             defer { playingItem = nil }
             return (playingItem.map { [Effect.interrupt(itemID: $0)] } ?? []) + [.state(.listening)]
         case "response.created":
             responseActive = true
+            requested = false
             return [.state(.thinking)]
+        case "session.created", "session.updated":
+            note(session: event["session"] ?? .null)
+            return []
         case "response.output_audio.delta":
             guard let delta = event["delta"]?.string, let audio = Data(base64Encoded: delta) else { return [] }
             var effects: [Effect] = []
@@ -135,6 +143,7 @@ public struct RealtimeConductor: Sendable {
             return start(callID: callID, name: name, arguments: event["arguments"]?.string ?? "{}")
         case "response.done":
             responseActive = false
+            playingItem = nil
             if event["response"]?["status"]?.string == "failed" {
                 let message = event["response"]?["status_details"]?["error"]?["message"]?.string
                 return finish(event["response"]) + [.failure(message ?? "OpenAI could not answer that."), .state(.listening)]
@@ -142,11 +151,18 @@ public struct RealtimeConductor: Sendable {
             return finish(event["response"])
         case "conversation.item.input_audio_transcription.completed":
             guard gated else { return record(.user, event["transcript"]?.string) }
-            guard let text = event["transcript"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return [] }
+            guard let text = event["transcript"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+                return heard(itemID: event["item_id"]?.string, respond: false)
+            }
             return [.hear(itemID: event["item_id"]?.string, text: text)]
+        case "conversation.item.input_audio_transcription.failed":
+            // Gated, a line nobody could read is not one to answer.
+            return gated ? heard(itemID: event["item_id"]?.string, respond: false) : []
         case "response.output_audio_transcript.done":
             return record(.assistant, event["transcript"]?.string)
         case "error":
+            // A refused `response.create` never gets its `response.created`.
+            requested = false
             return [.failure(event["error"]?["message"]?.string ?? "OpenAI reported an error.")]
         default:
             return []
@@ -158,7 +174,6 @@ public struct RealtimeConductor: Sendable {
         guard inFlight.remove(callID) != nil else { return [] }
         var effects: [Effect] = []
         if let session = result?.session {
-            note(session: session)
             effects.append(.send(Self.sessionUpdate(session)))
         } else if let result, result.toolsChanged, let tools = result.tools {
             effects.append(.send(Self.sessionUpdate(.object(["type": .string("realtime"), "tools": tools]))))
@@ -241,8 +256,9 @@ public struct RealtimeConductor: Sendable {
     }
 
     private mutating func sendPendingResponse() -> [Effect] {
-        guard pendingResponse, !responseActive else { return [] }
+        guard pendingResponse, !responseActive, !requested else { return [] }
         pendingResponse = false
+        requested = true
         return [.send(.object(["type": .string("response.create")]))]
     }
 

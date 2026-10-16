@@ -32,7 +32,7 @@ class LiveConversations::ListeningTest < ActiveSupport::TestCase
   end
 
   test "dynamic asks a model about a line without the wake word, with the thread for context" do
-    @conversation.turns.create!(role: "assistant", source: "spoken", content: "Want me to start the docs fix?")
+    @conversation.turns.create!(role: "assistant", source: "spoken", content: "Want me to start the docs fix?", created_at: 1.minute.ago)
     client = Fake.new(chat_responses: [ Fake.text("yes"), Fake.text("No.") ])
     listening = LiveConversations::Listening.new(@conversation, mode: "dynamic", client: client)
 
@@ -52,6 +52,49 @@ class LiveConversations::ListeningTest < ActiveSupport::TestCase
     assert listening.respond?("Zimmer, what time is it?")
     assert_empty client.chat_requests
     assert listening.respond?("what time is it")
+  end
+
+  test "a follow-up soon after the last line needs no wake word, and a later one does" do
+    @conversation.turns.create!(role: "assistant", source: "spoken", content: "Want me to start the docs fix?")
+    listening = LiveConversations::Listening.new(@conversation, mode: "wake_word", client: Fake.new)
+
+    assert listening.respond?("Yes please.")
+    travel 11.seconds do
+      refute listening.respond?("Did you grab the groceries?")
+    end
+  end
+
+  test "the assistant's own voice through the speaker is dropped, even when it says Zimmer" do
+    @conversation.turns.create!(role: "assistant", source: "spoken", content: "Zimmer here. Main is green, and the docs fix is merged.")
+    client = Fake.new
+    listening = LiveConversations::Listening.new(@conversation, mode: "dynamic", client: client)
+
+    refute listening.respond?("Zimmer here. Main is green")
+    refute listening.respond?("main is green, and the docs fix")
+    assert listening.respond?("okay"), "a short line inside it is a coincidence, and a follow-up"
+    assert_empty client.chat_requests
+  end
+
+  test "silence turn detection is gated the same way" do
+    LiveConversations::SettingsUpdate.call({ "voice_listening" => "wake_word", "voice_turn_detection" => "server_vad" },
+      actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    client = Fake.new
+
+    LiveConversations::RealtimeSession.mint(@conversation, client: client, listening_modes: true)
+
+    detection = client.secret_requests.sole.dig("session", "audio", "input", "turn_detection")
+    assert_equal [ "server_vad", false, false ], detection.values_at("type", "create_response", "interrupt_response")
+  end
+
+  test "settings OpenAI refuses fall back to the defaults but keep Listening" do
+    listen("wake_word")
+    LiveConversations::SettingsUpdate.call({ "voice_reasoning_effort" => "xhigh" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    client = Fake.new(secret_failures: [ OpenaiClient::Error.new("OpenAI answered 400: unsupported effort", status: 400) ])
+
+    minted = LiveConversations::RealtimeSession.mint(@conversation, client: client, listening_modes: true)
+
+    assert_equal "wake_word", minted[:listening]
+    assert_nil client.secret_requests.last.dig("session", "reasoning")
   end
 
   test "the mode is the setting for a client that can gate, and always for one that cannot" do
