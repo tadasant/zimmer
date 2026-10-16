@@ -468,6 +468,15 @@ public enum CostWindow: Hashable, Sendable {
         return .range(from: start, to: end)
     }
 
+    /// Everything a session has spent: from the day it was made to today, as the web page's
+    /// per-session figure counts every row rather than a window's. The server caps `days` at
+    /// a year but takes any explicit bounds, so this is a range, not a count. Without a
+    /// creation date, the year the server allows.
+    public static func lifetime(from createdAt: Date?, now: Date = Date()) -> CostWindow {
+        guard let createdAt, createdAt <= now else { return .days(maxDays) }
+        return .range(from: createdAt, to: now)
+    }
+
     public var isCustom: Bool {
         if case .range = self { return true }
         return false
