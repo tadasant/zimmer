@@ -234,8 +234,15 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **Keeps itself current.** A session's page reads again every five seconds while a turn is
   running or about to start, and every twenty otherwise (not while the queue's manager is open,
   and never for a session in the trash); the board reads again every thirty seconds while it is
-  the screen in front and you are not selecting or reordering. Both read at once when the app comes back to the front.
-  The web UI streams these changes; the app asks, so a change can take that long to show. A session
+  the screen in front and you are not selecting or reordering (ten seconds after a read that
+  failed). Both read at once when the app comes back to the front, and the board tries again two
+  seconds later if that read fails. The board also reads whenever you close a session's page, and
+  when you choose the Sessions tab again (unless it was read in the last five seconds), so a
+  session trashed on the web, by a router or by its own agent leaves the board as you return to
+  it. A read never replaces the board once a later read has, nor when it was asked before a row
+  action on the phone, so a slow answer never puts a trashed row back.
+  The web UI streams these changes; the app asks, so a change on a board you are looking at can
+  take up to thirty seconds to show. A session
   opens at its newest message, as the web UI's transcript does, and follows new ones while you are
   at the end; scrolled back, it stays where you are.
 - **Keeps every part of a session's page a tap away.** A strip pinned under the navigation bar
