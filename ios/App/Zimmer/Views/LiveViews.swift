@@ -13,6 +13,7 @@ struct LiveHomeView: View {
     @State private var path: [Int] = []
     @State private var error: String?
     @State private var starting: LiveMode?
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -44,6 +45,12 @@ struct LiveHomeView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }.accessibilityIdentifier("live.done")
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    LiveSettingsButton { showingSettings = true }
+                }
+            }
+            .sheet(isPresented: $showingSettings) {
+                NavigationStack { LiveSettingsView(api: model.api) }
             }
             .navigationDestination(for: Int.self) { id in
                 LiveConversationView(id: id, api: model.api) { replacement in path = [replacement] }
@@ -134,6 +141,7 @@ struct LiveConversationView: View {
     @State private var sending = false
     @State private var error: String?
     @State private var confirmingNew = false
+    @State private var showingSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -167,6 +175,9 @@ struct LiveConversationView: View {
         .navigationTitle(conversation?.mode.label ?? "Live")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                LiveSettingsButton { showingSettings = true }
+            }
             if let conversation {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Menu {
@@ -181,6 +192,9 @@ struct LiveConversationView: View {
         }
         .confirmationDialog("End this conversation and start a new one?", isPresented: $confirmingNew, titleVisibility: .visible) {
             Button("New conversation") { Task { await startNew() } }
+        }
+        .sheet(isPresented: $showingSettings) {
+            NavigationStack { LiveSettingsView(api: api) }
         }
         .task(id: id) { await poll() }
         .onChange(of: call.activity) { _, _ in Task { await readNew() } }
@@ -376,6 +390,294 @@ struct LiveTurnRow: View {
                 if !mine { Spacer(minLength: 40) }
             }
             .accessibilityIdentifier("live.turn.\(turn.id)")
+        }
+    }
+}
+
+/// The gear on the Live screens, which opens the Live settings.
+struct LiveSettingsButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "gearshape")
+        }
+        .accessibilityLabel("Live settings")
+        .accessibilityIdentifier("live-settings")
+    }
+}
+
+/// The Live settings and the Live mode guidance — the app's side of `/live/settings`. One set for
+/// the whole deployment: the models, voice, speaking speed and turn detection every live
+/// conversation runs on, and the free text appended to the live model's instructions. Save sends
+/// only the fields edited here, so a change the live agent made meanwhile is not undone; an open
+/// Live Voice call is then brought up to what it can take mid-call. Opened from the gear on the
+/// Live screens. See docs/sessions/live.md.
+struct LiveSettingsView: View {
+    let api: ZimmerAPI
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var settings: LiveSettings?
+    /// What was edited, by key, as text; "" puts the setting back to its default.
+    @State private var edits: [String: String] = [:]
+    @State private var guidance = ""
+    @State private var error: String?
+    @State private var notice: String?
+    @State private var saving = false
+    @State private var confirmingReset = false
+
+    var body: some View {
+        Form {
+            if let error {
+                Text(error).foregroundStyle(.red).accessibilityIdentifier("live-settings.error")
+            }
+            if let notice {
+                Text(notice).font(.subheadline).foregroundStyle(.secondary).accessibilityIdentifier("live-settings.notice")
+            }
+            if let settings {
+                fieldSection("Typed turns", path: "text", settings)
+                fieldSection("Voice", path: "voice", settings)
+                guidanceSection(settings)
+                Section {
+                    Button("Reset settings to defaults", role: .destructive) { confirmingReset = true }
+                        .disabled(saving || settings.overrides.isEmpty)
+                        .accessibilityIdentifier("live-settings.reset")
+                } footer: {
+                    Text("Puts every setting back to its default. The guidance is kept.")
+                }
+                historySection(settings)
+            } else if error == nil {
+                ProgressView().frame(maxWidth: .infinity)
+            }
+        }
+        .accessibilityIdentifier("live-settings-view")
+        .navigationTitle("Live settings")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Done") { dismiss() }.accessibilityIdentifier("live-settings.done")
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button(saving ? "Saving…" : "Save") { Task { await save() } }
+                    .disabled(saving || pendingChanges.isEmpty)
+                    .accessibilityIdentifier("live-settings.save")
+            }
+        }
+        .confirmationDialog("Put every Live setting back to its default?", isPresented: $confirmingReset, titleVisibility: .visible) {
+            Button("Reset settings", role: .destructive) { Task { await reset() } }
+        }
+        .task { await load() }
+        .refreshable { await load() }
+    }
+
+    // MARK: - Sections
+
+    @ViewBuilder
+    private func fieldSection(_ title: String, path: String, _ settings: LiveSettings) -> some View {
+        let fields = settings.fields(on: path)
+        if !fields.isEmpty {
+            Section(title) {
+                ForEach(fields) { field in
+                    fieldRow(field, settings)
+                }
+            }
+        }
+    }
+
+    private func fieldRow(_ field: LiveSettingField, _ settings: LiveSettings) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if field.type == .choice && !field.options.isEmpty {
+                Picker(field.label, selection: binding(field, settings)) {
+                    Text("Default (\(defaultText(field)))").tag("")
+                    ForEach(field.options, id: \.value) { option in
+                        Text(option.label).tag(option.value)
+                    }
+                }
+                .accessibilityIdentifier("live-settings.field.\(field.key)")
+            } else {
+                HStack {
+                    Text(field.label)
+                    Spacer()
+                    TextField("Default (\(defaultText(field)))", text: binding(field, settings))
+                        .keyboardType(field.type == .integer ? .numberPad : .decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("live-settings.field.\(field.key)")
+                }
+                HStack {
+                    if let range = rangeText(field) {
+                        Text(range).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Use default") { edits[field.key] = "" }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .disabled(binding(field, settings).wrappedValue.isEmpty)
+                        .accessibilityIdentifier("live-settings.default.\(field.key)")
+                }
+            }
+            if !field.help.isEmpty {
+                Text(field.help).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func guidanceSection(_ settings: LiveSettings) -> some View {
+        Section {
+            TextEditor(text: $guidance)
+                .frame(minHeight: 140)
+                .font(.callout)
+                .accessibilityIdentifier("live-settings.guidance")
+            HStack {
+                Text("\(guidance.count) / \(settings.guidanceMaxLength)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(guidance.count > settings.guidanceMaxLength ? Color.red : Color.secondary)
+                    .accessibilityIdentifier("live-settings.guidance.count")
+                Spacer()
+                Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = guidance }
+                    .buttonStyle(.borderless)
+                    .disabled(guidance.isEmpty)
+                    .accessibilityIdentifier("live-settings.guidance.copy")
+            }
+        } header: {
+            Text("Live mode guidance")
+        } footer: {
+            Text("Appended to the live model's instructions on every turn, typed and spoken; where it conflicts with the root's AGENTS.md, the guidance wins. The live agent can edit it too, and the history shows when it did.")
+        }
+    }
+
+    @ViewBuilder
+    private func historySection(_ settings: LiveSettings) -> some View {
+        if !settings.history.isEmpty {
+            Section("History") {
+                ForEach(settings.history) { change in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Label(change.byAgent ? "Agent" : "Person", systemImage: change.byAgent ? "cpu" : "person.fill")
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background((change.byAgent ? Color.orange : Color.indigo).opacity(0.15), in: Capsule())
+                            Text(change.actor).font(.caption).lineLimit(1)
+                            Spacer()
+                            if let createdAt = change.createdAt {
+                                Text(createdAt.formatted(.relative(presentation: .named))).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        ForEach(change.keys, id: \.self) { key in
+                            Text(describe(key, change.changes[key], settings)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if change.touchesGuidance {
+                            Button("Restore guidance from before this edit") { Task { await restore(change) } }
+                                .buttonStyle(.borderless)
+                                .font(.caption)
+                                .disabled(saving)
+                                .accessibilityIdentifier("live-settings.restore.\(change.id)")
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    // MARK: - Values
+
+    /// A field's saved value as its editor shows it: "" when it is at its default.
+    private func saved(_ field: LiveSettingField, in settings: LiveSettings) -> String {
+        settings.isOverridden(field.key) ? settings.value(field.key).liveSettingText : ""
+    }
+
+    private func binding(_ field: LiveSettingField, _ settings: LiveSettings) -> Binding<String> {
+        Binding(
+            get: { edits[field.key] ?? saved(field, in: settings) },
+            set: { edits[field.key] = $0 }
+        )
+    }
+
+    private func defaultText(_ field: LiveSettingField) -> String {
+        let text = field.defaultValue?.liveSettingText ?? ""
+        return text.isEmpty ? "not set" : text
+    }
+
+    private func rangeText(_ field: LiveSettingField) -> String? {
+        guard let low = field.min, let high = field.max else { return nil }
+        return "\(JSONValue.number(low).liveSettingText)–\(JSONValue.number(high).liveSettingText)"
+    }
+
+    /// "Speaking speed: 1 → 0.8"; the guidance by name only.
+    private func describe(_ key: String, _ diff: LiveSettingChange.Diff?, _ settings: LiveSettings) -> String {
+        guard key != "guidance" else { return "Live mode guidance edited" }
+        let label = settings.fields.first { $0.key == key }?.label ?? key
+        let before = diff?.before?.liveSettingText ?? ""
+        let after = diff?.after?.liveSettingText ?? ""
+        return "\(label): \(before.isEmpty ? "not set" : before) → \(after.isEmpty ? "not set" : after)"
+    }
+
+    /// The edits that differ from what is saved: the `PATCH` body. Only these are sent.
+    private var pendingChanges: [String: JSONValue] {
+        guard let settings else { return [:] }
+        var changes: [String: JSONValue] = [:]
+        for field in settings.fields {
+            guard let edited = edits[field.key] else { continue }
+            var text = edited.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard text != saved(field, in: settings) else { continue }
+            if field.type != .choice {
+                text = text.replacingOccurrences(of: ",", with: ".")
+                if let number = Double(text) {
+                    changes[field.key] = .number(number)
+                    continue
+                }
+            }
+            changes[field.key] = .string(text)
+        }
+        let trimmed = guidance.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed != settings.guidance { changes["guidance"] = .string(trimmed) }
+        return changes
+    }
+
+    // MARK: - Loading and writing
+
+    private func load() async {
+        do {
+            show(try await api.liveSettings())
+            error = nil
+        } catch {
+            self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't reach Zimmer."
+        }
+    }
+
+    private func show(_ fresh: LiveSettings) {
+        settings = fresh
+        edits = [:]
+        guidance = fresh.guidance
+    }
+
+    private func save() async {
+        let changes = pendingChanges
+        guard !changes.isEmpty else { return }
+        await write { try await api.updateLiveSettings(changes) }
+    }
+
+    private func reset() async {
+        await write { try await api.resetLiveSettings() }
+    }
+
+    private func restore(_ change: LiveSettingChange) async {
+        await write { try await api.restoreLiveGuidance(changeID: change.id) }
+    }
+
+    /// One write. The screen then shows what is saved, and an open Live Voice call is sent the
+    /// `session.update` that brings it up to the new settings.
+    private func write(_ request: () async throws -> LiveSettings) async {
+        saving = true
+        defer { saving = false }
+        do {
+            let fresh = try await request()
+            show(fresh)
+            error = nil
+            notice = fresh.summary
+            if fresh.changed ?? true { await LiveCall.shared.refreshSession() }
+        } catch {
+            self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't save the Live settings."
         }
     }
 }
