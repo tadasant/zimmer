@@ -22,7 +22,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
     @key_headers = { "X-API-Key" => "live-api-test-key" }
     @headers = bearer(app_token(privilege: OauthServer::ACT_AS_HUMAN))
-    stub_live_roots
+    stub_live_root
     stub_live_key
   end
 
@@ -40,6 +40,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     writes = [
       [ "/api/v1/live_conversations", { mode: "text" } ],
       [ "/api/v1/live_conversations/#{conversation.id}/messages", { content: "hi" } ],
+      [ "/api/v1/live_conversations/#{conversation.id}/mode", { mode: "text" } ],
       [ "/api/v1/live_conversations/#{conversation.id}/client_secret", {} ],
       [ "/api/v1/live_conversations/#{conversation.id}/tool_calls", { name: "enable_mcp_server", arguments: { name: "test-clock" }.to_json, call_id: "c" } ],
       [ "/api/v1/live_conversations/#{conversation.id}/turns", { role: "user", content: "hi" } ],
@@ -56,6 +57,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     end
     assert_equal [ "zimmer" ], conversation.reload.mcp_servers, "nothing was enabled"
     assert conversation.active?
+    assert conversation.voice?, "nothing switched it"
   end
 
   test "requires a credential" do
@@ -63,25 +65,30 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
-  test "modes report availability and why not" do
-    stub_live_roots(voice: nil)
-
+  test "live reports one availability, and each mode's model, and why not" do
     get "/api/v1/live", headers: @key_headers
-
     assert_response :success
+    assert response.parsed_body["available"]
+    assert_equal "live-mode", response.parsed_body["agent_root"]
     modes = response.parsed_body["modes"].index_by { |m| m["mode"] }
-    assert modes["text"]["available"]
-    assert_not modes["voice"]["available"]
-    assert_match(/live-voice/, modes["voice"]["reasons"].first)
+    assert_equal "gpt-realtime-2.1-mini", modes["voice"]["model"]
+    assert modes["voice"]["available"]
+
+    stub_live_root(root: nil)
+    get "/api/v1/live", headers: @key_headers
+    assert_not response.parsed_body["available"]
+    assert_match(/live-mode/, response.parsed_body["reasons"].first)
+    assert(response.parsed_body["modes"].none? { |m| m["available"] })
   end
 
   test "start, message, read the thread, and end" do
     assert_enqueued_with(job: LiveConversationPrepareJob) do
-      post "/api/v1/live_conversations", params: { mode: "text" }, headers: @headers
+      post "/api/v1/live_conversations", headers: @headers
     end
     assert_response :created
     id = response.parsed_body["id"]
     assert_equal "preparing", response.parsed_body["status"]
+    assert_equal "text", response.parsed_body["mode"], "typed unless asked for voice"
 
     # Typed while preparing: accepted, answered once active.
     post "/api/v1/live_conversations/#{id}/messages", params: { content: "hello" }, headers: @headers
@@ -89,7 +96,8 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     first_turn = response.parsed_body["id"]
 
     get "/api/v1/live_conversations", headers: @headers
-    assert_equal id, response.parsed_body.dig("current", "text")
+    assert_equal id, response.parsed_body["current_id"]
+    assert_equal({ "text" => id }, response.parsed_body["current"])
 
     LiveConversation.find(id).turns.create!(role: "assistant", content: "Hi.")
     get "/api/v1/live_conversations/#{id}", params: { after_turn_id: first_turn }, headers: @headers
@@ -106,10 +114,37 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     post "/api/v1/live_conversations", params: { mode: "video" }, headers: @headers
     assert_response :unprocessable_entity
 
-    stub_live_roots(voice: nil)
+    stub_live_root(root: nil)
     post "/api/v1/live_conversations", params: { mode: "voice" }, headers: @headers
     assert_response :service_unavailable
-    assert_match(/live-voice/, response.parsed_body["message"])
+    assert_match(/live-mode/, response.parsed_body["message"])
+  end
+
+  test "switching mode mid-conversation: voice on, then the secret; voice off, then typing" do
+    conversation = create_live_conversation(mode: "text")
+    LiveConversations::RealtimeSession.stubs(:mint).returns({ client_secret: "ek_switch" })
+
+    post "/api/v1/live_conversations/#{conversation.id}/client_secret", headers: @headers
+    assert_response :conflict
+
+    post "/api/v1/live_conversations/#{conversation.id}/mode", params: { mode: "voice" }, headers: @headers
+    assert_response :success
+    assert_equal "voice", response.parsed_body["mode"]
+    assert_equal "gpt-realtime-2.1-mini", response.parsed_body["model"]
+    get "/api/v1/live_conversations", headers: @headers
+    assert_equal({ "voice" => conversation.id }, response.parsed_body["current"])
+
+    post "/api/v1/live_conversations/#{conversation.id}/client_secret", headers: @headers
+    assert_equal "ek_switch", response.parsed_body["client_secret"]
+    post "/api/v1/live_conversations/#{conversation.id}/messages", params: { content: "typed?" }, headers: @headers
+    assert_response :unprocessable_entity
+
+    post "/api/v1/live_conversations/#{conversation.id}/mode", params: { mode: "text" }, headers: @headers
+    post "/api/v1/live_conversations/#{conversation.id}/messages", params: { content: "typed." }, headers: @headers
+    assert_response :created
+
+    post "/api/v1/live_conversations/#{conversation.id}/mode", params: { mode: "video" }, headers: @headers
+    assert_response :unprocessable_entity
   end
 
   test "voice relay over the API: secret, tool call that enables a server, transcript" do
