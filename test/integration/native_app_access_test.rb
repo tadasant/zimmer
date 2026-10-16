@@ -116,6 +116,29 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_empty from_key.human_messages
   end
 
+  test "a session the app creates without a class is priority; a key's is left to its genesis" do
+    AgentSessionJob.stubs(:enqueue_new_session).returns(OpenStruct.new(job_id: "job-1"))
+    headers = bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
+
+    post "/api/v1/sessions", params: { agent_root: "zimmer", prompt: "Rotate the staging deploy key" }, headers: headers
+    assert_response :created
+    from_phone = Session.find(JSON.parse(response.body)["session"]["id"])
+    assert_equal SessionGenesis::API, from_phone.genesis
+    assert_equal SessionGenesis::PRIORITY, from_phone.scheduling_class, "a person is waiting on it, as on the web form's"
+    assert from_phone.priority?
+
+    post "/api/v1/sessions", params: { agent_root: "zimmer", prompt: "Long unattended sweep", scheduling_class: "spot" }, headers: headers
+    assert_response :created
+    chosen = Session.find(JSON.parse(response.body)["session"]["id"])
+    assert_equal SessionGenesis::SPOT, chosen.scheduling_class, "a class the app sent stands"
+
+    post "/api/v1/sessions", params: { agent_root: "zimmer", prompt: "From a script" }, headers: { "X-API-Key" => API_KEY }
+    assert_response :created
+    from_key = Session.find(JSON.parse(response.body)["session"]["id"])
+    assert_nil from_key.scheduling_class, "a key's create derives from its genesis, as before"
+    assert_equal SessionGenesis::API, from_key.genesis
+  end
+
   test "a relay-only app's edit records nothing" do
     session = build_zimmer_session(status: :running)
     queued = session.enqueued_messages.create!(content: "deploy", position: 1, status: "pending")

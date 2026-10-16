@@ -941,13 +941,23 @@ extension FakeZimmerAPI {
         let runtime = request.runtime ?? root.defaultRuntime ?? "claude_code"
         let model = request.model ?? root.defaultModel ?? Self.sampleConfigs.runtimeModels[runtime]?.default
         let text = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if request.cloneOnly, !text.isEmpty {
+            throw ZimmerError.http(status: 422, message: "clone_only takes no prompt; send the first prompt through follow_up")
+        }
         let id = all.map(\.id).max().map { $0 + 1 } ?? 1
+        // As the server for the app's token: a parentless create is `api` genesis, which
+        // derives to spot, and a create that names no class is written priority; a clone-only
+        // create opens needing input; the precedence and the compaction window are kept as sent.
+        let klass = request.schedulingClass ?? "priority"
         var session = SessionSummary(
             id: id, title: request.title.flatMap { $0.isEmpty ? nil : $0 } ?? (text.count > 60 ? String(text.prefix(57)) + "…" : text),
-            status: text.isEmpty ? .needsInput : .waiting, agentRuntime: runtime, prompt: text,
+            status: request.cloneOnly ? .needsInput : .waiting, agentRuntime: runtime, prompt: text,
             createdAt: Date(), updatedAt: Date(), goal: request.goal,
-            priorityClass: request.schedulingClass ?? "priority", model: model, agentRoot: root.name
+            priorityClass: klass, precedence: request.precedence, model: model, agentRoot: root.name,
+            genesis: "api", autoCompactWindow: request.autoCompactWindow
         )
+        session.schedulingClass = klass
+        derivedClasses[id] = "spot"
         for kind in CatalogKind.allCases {
             let chosen = request.selections[kind] ?? kind.defaults(of: root)
             session.setSelection(kind, chosen)

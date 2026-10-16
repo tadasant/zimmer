@@ -159,3 +159,12 @@ extension ZimmerHTTPClient {
         return try HealthReport.parse(response.body)
     }
 }
+
+extension OperationsAPI {
+    /// What one session has spent, in dollars at list price, as the web page's header shows
+    /// beside the id (`GET /api/v1/costs?session_id=`, over the session's whole life). Zero
+    /// when the ledger has nothing for it yet, which the web draws as nothing at all.
+    public func sessionCost(_ id: Int, createdAt: Date?, now: Date = Date()) async throws -> Double {
+        try await costs(CostWindow.lifetime(from: createdAt, now: now), scope: .session(id)).totalUSD
+    }
+}
