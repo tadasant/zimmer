@@ -82,9 +82,9 @@ struct SpotPolicyForm: View {
                     if let reason = policy.decision.reason { Text(reason).font(Theme.mono).foregroundStyle(Theme.inkMute) }
                 }
                 if let detail = policy.decision.detail { Text(detail).font(.caption).foregroundStyle(Theme.ink) }
-                Text("A spot session starting right now would be \(policy.decision.allowed ? "started" : "held").")
-                    .font(.caption.weight(policy.decision.allowed ? .regular : .semibold))
-                    .foregroundStyle(policy.decision.allowed ? Theme.inkSoft : Theme.warning)
+                Text(verbatim: startLine)
+                    .font(.caption.weight(startWeight))
+                    .foregroundStyle(startColor)
                 ForEach(policy.hold) { line in
                     (Text(verbatim: "\(line.label): ").bold() + Text(verbatim: line.sentence))
                         .font(.caption)
@@ -106,18 +106,37 @@ struct SpotPolicyForm: View {
         if let active = policy.decision.activeSessions {
             LabeledContent("Sessions on a worker") {
                 VStack(alignment: .trailing, spacing: 1) {
-                    Text(verbatim: policy.decision.fleetCap.map { "\(active) of \($0)" } ?? "\(active)")
-                    if let awaiting = policy.decision.awaitingSessions, awaiting > 0, let slots = policy.workerSlots {
-                        Text(verbatim: "\(awaiting) more waiting for one of the \(slots) worker slots · not counted").font(.caption2).foregroundStyle(Theme.inkMute)
+                    Text(verbatim: workerLine(active))
+                    if let awaitingLine {
+                        Text(verbatim: awaitingLine).font(.caption2).foregroundStyle(Theme.inkMute)
                     }
                 }
             }
         }
         countRow("Spot sessions asleep in the queue", policy.pausedCount, policy.sessionsAsleep)
         countRow("Spot sessions preempted by priority work", policy.preemptedCount, policy.sessionsPreempted)
-        countRow("Spot sessions held before a turn", policy.heldCount,
-                 policy.overdueHoldCount > 0 ? "\(policy.overdueHoldCount) overdue for a re-check. \(policy.sessionsHeld ?? "")" : policy.sessionsHeld)
+        countRow("Spot sessions held before a turn", policy.heldCount, heldSentence)
         countRow("Spot sessions past the starvation age ceiling", policy.starvation.starvedCount, policy.sessionsStarved)
+    }
+
+    // The sentences, worked out away from the view tree: the Release build's type checker
+    // has a budget, and a ternary inside an interpolation inside a modifier chain spends it.
+    private var startLine: String { "A spot session starting right now would be \(policy.decision.allowed ? "started" : "held")." }
+    private var startWeight: Font.Weight { policy.decision.allowed ? .regular : .semibold }
+    private var startColor: Color { policy.decision.allowed ? Theme.inkSoft : Theme.warning }
+
+    private func workerLine(_ active: Int) -> String {
+        policy.decision.fleetCap.map { "\(active) of \($0)" } ?? "\(active)"
+    }
+
+    private var awaitingLine: String? {
+        guard let awaiting = policy.decision.awaitingSessions, awaiting > 0, let slots = policy.workerSlots else { return nil }
+        return "\(awaiting) more waiting for one of the \(slots) worker slots · not counted"
+    }
+
+    private var heldSentence: String? {
+        guard policy.overdueHoldCount > 0 else { return policy.sessionsHeld }
+        return "\(policy.overdueHoldCount) overdue for a re-check. \(policy.sessionsHeld ?? "")"
     }
 
     private func countRow(_ label: String, _ count: Int, _ sentence: String?) -> some View {
@@ -194,10 +213,8 @@ struct FleetTopUpForm: View {
                         note: policy.ceilingNote)
             PolicyField(label: "For at least (minutes)", value: $idle, identifier: "inference.topup.idle_minutes",
                         hint: "How long it has to stay there first, so the gap between one session ending and the next starting is not mistaken for an idle fleet. Checked once a minute.")
-            PolicyField(label: "At most once every (minutes)", value: $cooldown, identifier: "inference.topup.min_fire_interval_minutes",
-                        hint: "The floor between two fires\(policy.cadence.map { " — \($0)" } ?? ""). On a fleet that stays under its ceiling this is the whole of the cadence, while the work backlog has something new.")
-            PolicyField(label: "With nothing new on the backlog (minutes)", value: $quiet, identifier: "inference.topup.quiet_backlog_interval_minutes",
-                        hint: "The longer floor while the work backlog has had nothing new since the last fire, so an idle fleet with an empty backlog tops up \(policy.quietCadence ?? "less often") instead of every cooldown.")
+            PolicyField(label: "At most once every (minutes)", value: $cooldown, identifier: "inference.topup.min_fire_interval_minutes", hint: cooldownHint)
+            PolicyField(label: "With nothing new on the backlog (minutes)", value: $quiet, identifier: "inference.topup.quiet_backlog_interval_minutes", hint: quietHint)
             PolicySave(title: "Save top-up policy", identifier: "inference.topup.save", saving: saving, error: error, notice: notice,
                        errorIdentifier: "inference.topup.error") { Task { await submit() } }
         } header: {
@@ -225,7 +242,7 @@ struct FleetTopUpForm: View {
             LabeledContent("Turns on a worker") {
                 VStack(alignment: .trailing, spacing: 1) {
                     Text(verbatim: "\(policy.runningSessions) of \(policy.maxRunningSessions)")
-                    Text(verbatim: "\(policy.headroom) place\(policy.headroom == 1 ? "" : "s") of headroom").font(.caption2).foregroundStyle(Theme.inkMute)
+                    Text(verbatim: headroomLine).font(.caption2).foregroundStyle(Theme.inkMute)
                     if policy.awaitingSessions > 0, let slots = policy.workerSlots {
                         Text(verbatim: "\(policy.awaitingSessions) more waiting for one of the \(slots) worker slots · not counted").font(.caption2).foregroundStyle(Theme.inkMute)
                     }
@@ -245,6 +262,19 @@ struct FleetTopUpForm: View {
         }
         .font(.subheadline)
         .themeRows()
+    }
+
+    private var cooldownHint: String {
+        let cadence = policy.cadence.map { " — \($0)" } ?? ""
+        return "The floor between two fires\(cadence). On a fleet that stays under its ceiling this is the whole of the cadence, while the work backlog has something new."
+    }
+
+    private var quietHint: String {
+        "The longer floor while the work backlog has had nothing new since the last fire, so an idle fleet with an empty backlog tops up \(policy.quietCadence ?? "less often") instead of every cooldown."
+    }
+
+    private var headroomLine: String {
+        "\(policy.headroom) place\(policy.headroom == 1 ? "" : "s") of headroom"
     }
 
     private func reset(_ policy: FleetTopUp) {
@@ -319,7 +349,7 @@ struct GenesisClassesSection: View {
             if kind.overridden { Text("changed from \(kind.defaultClass)").font(.caption2).foregroundStyle(Theme.warning) }
             if let description = kind.description { Text(description).font(.caption).foregroundStyle(Theme.inkSoft).lineLimit(3) }
             HStack {
-                Text(verbatim: "\(kind.liveSessions) live session\(kind.liveSessions == 1 ? "" : "s")").font(.caption.monospacedDigit()).foregroundStyle(Theme.inkMute)
+                Text(verbatim: liveSessionsLine(kind)).font(.caption.monospacedDigit()).foregroundStyle(Theme.inkMute)
                 Spacer()
                 Button("Make \(kind.target)") { Task { await act { try await move(kind.key, kind.target) } } }
                     .font(.caption.weight(.semibold))
@@ -331,6 +361,10 @@ struct GenesisClassesSection: View {
         .padding(.vertical, 2)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("inference.genesis.row.\(kind.key)")
+    }
+
+    private func liveSessionsLine(_ kind: GenesisClasses.Kind) -> String {
+        "\(kind.liveSessions) live session\(kind.liveSessions == 1 ? "" : "s")"
     }
 
     private func act(_ action: () async throws -> GenesisClassChange) async {

@@ -303,7 +303,7 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   verdict ("Credentials verified against Anthropic 3 days ago", "Token refused"), and its 5-hour
   and 7-day bars with their reset lines; the dry-pool banner when nothing can serve; the pool's
   counts and averaged windows; and the rotation log, each session a tap away. *Refresh* re-probes
-  one account (a failed probe says so on the card). *Make current* and *Delete* ask first in the
+  one account (a failed probe says so on the card). *Switch* and *Delete* ask first in the
   web page's words, and the change persists on the server. *Add account* creates one (email,
   priority, and for Codex an optional API key) and, for an OAuth account, goes straight into the
   login sheet, which *Authenticate* opens for any account: it polls every two seconds as the
@@ -316,7 +316,8 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   ("Spot max concurrent sessions must be less than or equal to 100"). The Pi tab shows the
   OpenRouter key's state (set or not, provider, fingerprint, last write) and never the key; setting
   or deleting it, and *Refresh All*, stay on the web page. Every write takes the app's sign-in on a
-  grant that acts as you; a relay-only grant sees the server's 403 under the control it tapped.
+  grant that acts as you; a relay-only grant sees the server's 403 under the control it tapped, and
+  the login sheet stops polling on it and shows the same sentence.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 

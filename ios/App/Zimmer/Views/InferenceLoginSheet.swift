@@ -156,7 +156,8 @@ struct InferenceLoginSheet: View {
     // MARK: - The poll
 
     /// The page's poller: every two seconds while the attempt is live, backing off on a
-    /// server that stops answering and giving up after ten misses, or at the deadline.
+    /// server that stops answering and giving up after ten misses, or at the deadline. A
+    /// refusal is final at once.
     private func poll() async {
         let deadline = attempt.expiresAt.map { $0.addingTimeInterval(60) }
         var errors = 0
@@ -175,6 +176,10 @@ struct InferenceLoginSheet: View {
                 if attempt.succeeded { Haptics.success() }
             } catch let ZimmerError.http(status, _) where status == 404 {
                 abandoned = "This login is no longer being tracked — its record was removed while it was in flight, or the account it was for was deleted. Authenticate again if an account still needs credentials."
+                return
+            } catch let ZimmerError.http(status, message) where (400..<500).contains(status) {
+                // The poll is person-only: a relay grant's 403 is an answer, not an outage.
+                abandoned = message ?? ZimmerError.http(status: status, message: nil).userMessage
                 return
             } catch {
                 errors += 1
