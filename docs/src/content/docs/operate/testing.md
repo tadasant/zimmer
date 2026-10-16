@@ -321,6 +321,20 @@ and that `cleanup_orphaned_processes` reaches no termination even when every pid
 count as an orphan. A test *of* the scanner constructs a `HostProcessDiscovery` and stubs its own
 `pgrep_output` — the instance, never `Open3`.
 
+`maintenance:cleanup:orphaned_processes` is the second reaper and has the same shape: every `claude
+-p` process on the host that no session tracks gets a SIGTERM. Its `MaintenanceTasksTest` runs the
+real task in active mode, and until [#1368](https://github.com/tadasant/zimmer/issues/1368) it ran its
+own `ps ax`, which went around the setting and killed a sibling session's live turn. It now asks
+`HostProcessDiscovery.configured` (the same factory `HealthMonitorService` uses) for
+`#claude_cli_processes`, so under test it sees nothing. The test's setup asserts that. The cases that
+exercise the reaping stub `configured` to return a fake process list and expect
+`ProcessTerminationService.new` for the untracked pid only.
+
+The same rule covers a pid a test makes up. A fake `process_pid` that reaches a real
+`SystemProcessManager` (a pause, a restart) gets real signals. `999999` sits under this host's
+`pid_max` and can belong to a live agent, so use `999_999_999`, which is above Linux's hard
+`PID_MAX_LIMIT` of 2²².
+
 ### Process-global caches leak between tests in the same worker
 
 The other in-process shape is not a stub at all — it is a cache. `AirCatalogService` holds its resolved artifact

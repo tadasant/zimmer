@@ -565,7 +565,7 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
   test "should pause running session before sending interrupt" do
     session = sessions(:running)
     # Add a fake PID that doesn't exist so we can test pause
-    session.update!(metadata: { "process_pid" => 999999 })
+    session.update!(metadata: { "process_pid" => 999_999_999 })
 
     message = session.enqueued_messages.create!(
       content: "Interrupt message",
