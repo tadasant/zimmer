@@ -749,6 +749,23 @@ class Trigger < ApplicationRecord
     @genesis_override.presence || SessionGenesis.from_condition_types(condition_types)
   end
 
+  # Where the turns this trigger delivers came from, for the turn-source note:
+  # Slack, email or WhatsApp when a person wrote on one of those and the trigger
+  # relayed it, and `trigger` — machine-written — for everything else. Keyed off
+  # the condition types, not #session_genesis, because an Invoke from the web app
+  # still delivers the trigger's own prompt, not words the person typed.
+  #
+  # nil — no note — for a one-time reuse trigger: that is a wake-up a session set
+  # for itself (or a watch on another session), and its prompt is the session's
+  # own words handed back to it, which Zimmer does not label.
+  #
+  # @return [TurnSource, nil]
+  def turn_source
+    return nil if one_time_reuse_trigger?
+
+    TurnSource.for_genesis(condition_genesis)
+  end
+
   # The class this trigger's sessions would carry if it named none — the shipped
   # default for the genesis it derives. What the form shows next to "Use the
   # default", so the operator can see what they are choosing away from.
@@ -1956,7 +1973,8 @@ class Trigger < ApplicationRecord
           session.enqueued_messages.create!(
             content: prompt,
             position: next_position,
-            status: "pending"
+            status: "pending",
+            source_context: turn_source&.to_h
           )
           @last_follow_up_status = :queued
         end
@@ -1970,7 +1988,7 @@ class Trigger < ApplicationRecord
         # See SessionStateMachine#hold_pending_one_time_wakes.
         session.waking_trigger = self if one_time_reuse_trigger?
         begin
-          session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
+          session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS, source: turn_source)
         ensure
           session.waking_trigger = nil
         end
@@ -2615,7 +2633,8 @@ class Trigger < ApplicationRecord
       genesis: session_genesis,
       scheduling_class: session_scheduling_class,
       precedence: session_precedence,
-      metadata: (@fire_session_metadata || {}).merge("trigger_id" => id, "trigger_name" => name)
+      metadata: (@fire_session_metadata || {}).merge("trigger_id" => id, "trigger_name" => name),
+      source: turn_source
     ) do |created|
       @last_fire_created_session = created
       @fire_workflow_run&.update!(session: created)

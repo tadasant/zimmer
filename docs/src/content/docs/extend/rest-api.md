@@ -61,6 +61,13 @@ way, as `ios_app.enqueued_message_edited`, the counterpart of the web UI's
 `POST /sessions`, as `ios_app.new_session` (the web UI's `web_ui.new_session`). A relay-only connection, an approver with no roster row, or a
 follow-up over an API key records nothing.
 
+The app also sends `X-Zimmer-Client: ios/<version>` on every request, and CarPlay's voice loop sends
+`carplay/<version>` with `X-Zimmer-Input-Modality: voice_dictation`. Any REST caller may send
+`X-Zimmer-Input-Modality: text` or `voice_dictation`. These headers only shape the
+[turn-source note](/sessions/turn-sources/) the agent sees. They can narrow `ios` to `carplay` but
+cannot turn an API key into the app. They record no human and authorize nothing. A missing or
+off-list value becomes `unknown`, and the request is never refused because of it.
+
 On a deployment that serves the app from its own hostname behind an access proxy, the app also sends
 `cf-access-token`, the edge's credential, which Rails ignores. It gets that credential from
 `GET /native/access-handoff`, which sits outside `/api/v1`. See
@@ -597,6 +604,11 @@ prompt gone and nothing to say so — see [a follow-up the session is still
 holding](/sessions/lifecycle/#and-a-follow-up-the-session-is-still-holding-outranks-it-too). Nothing
 about the request or the response shape changes; the record is internal.
 
+Each path adds a one-line [turn-source note](/sessions/turn-sources/) to the turn the agent receives.
+The note says where the prompt came from. The direct path adds it before the prompt is stamped and
+enqueued. The queued and interrupted paths record it on the `EnqueuedMessage` (`source_context`, also
+in the `enqueued_message` JSON) and add it when the message is delivered.
+
 `goal` behaves identically on all three: **a non-blank goal is applied to the session, a blank or
 omitted one leaves the session's existing goal alone.** The queued and interrupted paths carry it on
 the `EnqueuedMessage` and `EnqueuedMessageProcessorService` applies it when it claims the message;
@@ -732,9 +744,14 @@ semantics.
 `goal`, `goal_check`, `mcp_servers`, `all_mcp_servers`, `injected_mcp_servers`, `catalog_skills`, `catalog_hooks`,
 `catalog_plugins`, `config`, `metadata`, `custom_metadata`,
 `is_autonomous`, `heartbeat_enabled`, `heartbeat_interval_seconds`, `auto_compact_window`,
-`genesis`, `scheduling_class`, `priority_class`, `session_id`, `job_id`,
+`genesis`, `source_context`, `last_turn_source`, `scheduling_class`, `priority_class`, `session_id`, `job_id`,
 `running_job_id`, `archived_at`, `trash_after`, `created_at`, `updated_at`, `session_notes`,
 `session_notes_updated_at`, `favorited`, `visibility`, `effective_visibility`, `snoozed_until`.
+
+`source_context` and `last_turn_source` give the [turn source](/sessions/turn-sources/) of the
+initial prompt and of the latest tagged follow-up, as `{surface, modality, client_version?,
+live_conversation_id?, label}`. Each is `null` when none was recorded. They are style hints, not
+authorization.
 
 `goal_check` is `null` for a free-text goal or no goal. For a catalog goal with checks it is the
 [goal check](/sessions/goals/#how-a-goal-is-checked):

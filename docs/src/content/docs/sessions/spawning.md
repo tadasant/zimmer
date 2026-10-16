@@ -451,6 +451,7 @@ every follow-up turn, so anything it appends rides along on every turn:
 
 | Block | When |
 | --- | --- |
+| The [turn-source note](/sessions/turn-sources/) | the boundary that accepted the prompt recorded a source. It is already on a follow-up when the follow-up arrives, and is added to the initial prompt from `sessions.source_context`. `TurnSource.finalize` runs first on every prompt: it keeps a note whose signature verifies and defuses any lookalike |
 | The goal suffix | `session.goal` is set — a goal ID resolves to its description, a free-text sentence passes through. A new unknown ID is refused where the goal is set; one a row already held before that check, or an ID since retired, still passes through verbatim |
 | `<session-notes>` | `session_notes` is non-blank |
 | `<unavailable-mcp-servers>` | a server this session was configured with failed to connect |

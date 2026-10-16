@@ -61,7 +61,7 @@ class Api::V1::LiveConversationsController < Api::BaseController
       return render_api_error("Unprocessable Entity", "mode must be one of: #{LiveConversations.mode_keys.join(', ')}", status: :unprocessable_entity)
     end
 
-    conversation = LiveConversations::Start.call(mode)
+    conversation = LiveConversations::Start.call(mode, client_surface: api_turn_source.surface)
     render json: conversation.as_api_json, status: :created
   rescue LiveConversations::Start::Unavailable => e
     render_api_error("Service Unavailable", e.message, status: :service_unavailable)
@@ -118,5 +118,5 @@ class Api::V1::LiveConversationsController < Api::BaseController
     render_api_error("Not Found", "Live conversation not found", status: :not_found) unless @conversation
   end
 
-  def actions = LiveConversations::Actions.new(@conversation)
+  def actions = LiveConversations::Actions.new(@conversation, client_surface: api_turn_source.surface)
 end

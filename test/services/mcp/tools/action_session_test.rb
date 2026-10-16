@@ -368,7 +368,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     session = sessions(:needs_input)
 
     result = nil
-    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, "Keep going" ]) do
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, TurnSource.new(surface: "mcp").annotate("Keep going") ]) do
       result = @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Keep going")
     end
 

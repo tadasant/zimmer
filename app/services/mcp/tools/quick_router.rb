@@ -160,6 +160,7 @@ module Mcp
             oauth_grant_id: context.oauth_grant_id
           }.compact_blank,
           idempotency_key: idempotency_key,
+          source: context.turn_source,
           skip_enqueue: true
         )
 
