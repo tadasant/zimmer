@@ -267,7 +267,12 @@ change the live agent made while the page was open.
 ## On the phone and in the car
 
 The [iOS app](/extend/ios-app/) has Live Mode behind the session list's waveform button, over the
-same REST routes, with the same **Enable voice** and **Type instead**. Starting a call on the phone
+same REST routes, with the same **Enable voice** and **Type instead**. The button lands in the
+current conversation with voice on and the call starting. When none is open it starts a new one
+with voice on. One tap on **Type instead** turns voice off in that thread. **New conversation** on
+the thread's toolbar and its confirmation are the two taps to a fresh one, in whichever mode the
+thread is in. Back leads to the Live list. The web's `/live` keeps its own entry, which opens the
+list. Starting a call on the phone
 turns voice on first (`POST …/mode`), so Enable voice, Talk and CarPlay's Resume all take the same
 path. A call on the phone opens a **WebSocket** to OpenAI rather than WebRTC.
 It uses the `websocket_url` the client-secret call returns, sends 24 kHz PCM16 as
