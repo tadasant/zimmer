@@ -4478,6 +4478,55 @@ that confirming reading still clears the marker, and the session drops back to i
 ceiling until another conflicting reading starts a fresh suspicion. A genuinely conflicting PR that
 GitHub keeps misreading as mergeable can still go un-reported for as long as it keeps doing so.
 
+### The conflict question costs a second GitHub call, and why the first was not enough
+
+The pass's one `gh pr view` reads GraphQL's `mergeable`, and that reading answers PR status, goal
+facts and comments. The conflict question re-reads it from REST (`gh api repos/O/R/pulls/N --jq
+.mergeable`) for every open PR, on the merge-conflict gate only — at most every two minutes per open
+PR. The poller before [#711](https://github.com/tadasant/zimmer/issues/711) read REST for this, with a
+comment saying GraphQL was the less reliable of the two. Fusing the pollers dropped it.
+
+The case that brought it back: on 2026-10-15 tadasant/zimmer#1284 conflicted with `main` after its
+stack parent squash-merged. Session 24237 held the PR and had been told about earlier conflicts on it
+three times, but this time it was never told. Hours of polling followed, three of them with the
+session idle in `needs_input`, where a confirmed conflict is delivered at once. A human typed "Merge
+conflicts". Which reading GraphQL gave in that window is not on record. So this restores the reading
+that was known to work, plus a head-commit re-arm of the "already notified" marker, rather than
+claiming a diagnosis. If REST cannot be read, GraphQL's answer stands.
+
+### Conflicts on PRs nobody recorded, and on producers long gone, still go unnoticed
+
+Three populations are still outside every conflict check:
+
+- **A PR Zimmer never recorded.** The pollers know a session's PRs only from
+  `github_pull_request_urls`, which `TranscriptHooks::GithubPrUrlHook` fills from the session's own
+  `gh pr create`. A PR opened by a subagent, through `gh api`, by a wrapper script, or in a
+  stack the session pushed without creating, is invisible. Session 24237's own
+  tadasant/zimmer#1282 was one: it conflicted alongside #1284 and nothing could have noticed.
+- **A producer that ended more than 7 days ago, or before 2026-10-16.** `GithubOrphanedPrConflictSweepJob`
+  watches the open PRs of archived and failed producers, but only within
+  `Github::OrphanedPrConflictSweep::WATCH_WINDOW`, and never one that ended before `WATCHED_SINCE`,
+  the cutover that keeps the first deploy from reviving a week of producers at once. Past either, nothing
+  watches the PR, and the merge gate is the first to find the conflict. The window counts from
+  `archived_at`. A failed session has no failure timestamp, so it counts from the session's last human
+  activity, which falls back to `created_at` and which opening the session's page moves. Opening a
+  long-failed session can therefore put it back on watch for a week, and a failed session that ran
+  unattended for over a week is never watched.
+- **A live session idle for more than 7 days.** `Github::PrPollPass` stops holding such a session at
+  its 30-minute ceiling and lets it fall to `PollBackoff`'s daily floor, so a conflict there is
+  noticed up to a day late.
+
+Reviving a producer has edges of its own. A human who archived a session to abandon its PR, but
+left the PR open, gets that session back once per conflict episode. The message tells it to say so
+and archive, and the confirmed marker keeps it from coming back for the same conflict. A clean
+reading, or a conflict on a new head commit, starts a new episode. Each PR is
+capped at `MAX_REVIVALS_PER_PR` (3) revivals per session, ever. A replaced session
+(`replaces_session`) is never revived, and neither is one when a newer session tracks the same PR.
+That rule picks a single owner, but it trusts that the newer session is the one working the PR.
+A revived child session is an ordinary live session again, so whatever it reports to its parent
+reaches the parent, which may wake it. At most 2 sessions are revived per run, and the rest wait
+for the next run, two minutes later.
+
 ---
 
 ### The merged message reports what the merge fired, and it cannot tell a deploy from any other push job
@@ -7974,6 +8023,26 @@ the web UI: queued messages, attachments, the new-session form, catalog and mode
 notifications, triggers, costs and health are still browser-only — see
 [Not in the app yet](/extend/ios-app/#not-in-the-app-yet).
 
+A session created from the app is priority by a rule on the create (`POST /api/v1/sessions` writes
+`scheduling_class: priority` when the app sends none), not by a genesis of its own: it is recorded
+as `api`. So *Derive it* on a phone-created session resolves its class from the `api` genesis — spot,
+unless Settings says otherwise — where *Derive it* on a web-created session resolves to priority from
+`web_ui`. The two look the same on the page and go different ways.
+
+The Quick Router's page context from the app is five facts off the session's header — id and title,
+status, agent root, class, goal — where the web bubble sends the whole page, its DOM reduced to
+markdown, up to 20,000 characters. The router sees less of a session from the phone than from the
+browser.
+
+## A Zimmer link in the iOS app opens the browser
+
+The web's Status panel rewrites a summary's link to one of the session's own transcript messages
+into an in-page `#message-N` anchor (`SessionStatusSummary#summary_markdown`), so a tap scrolls the
+transcript. The API sends the stored text, and the app has no handler for Zimmer's own URLs. So in
+the app's *Where things stand* and its transcript, a link to a message, or to another session,
+opens the web page in the browser rather than in the app. A pull request, issue or CI run link
+opens the same either way.
+
 ## The transcript archive's deadline cannot stop a run that is stuck
 
 `TranscriptArchiveJob` stops between sessions once its ten-minute `RUN_DEADLINE` has passed
@@ -8123,6 +8192,71 @@ More edges, all deliberate for now:
 - **A status change written with `update_columns` rings no doorbell.** The wait wakes on
   `Sessions::TurnSignal`, which `Session#broadcast_status_change` sends after commit. A write that
   skips callbacks is picked up by the 5-second backstop re-read instead.
+
+## Live Mode and Live Voice have not talked to OpenAI yet
+
+Every Zimmer-side path of [the live modes](/sessions/live/) has run: the reply loop, the tool bridge,
+in-process delegation, self-enabling a stdio server, the client-secret mint, and the browser's
+data-channel relay. But they ran against a stand-in that speaks OpenAI's documented wire format,
+because no deployment had `LIVE_OPENAI_API_KEY` when they were built. So nothing has shown that
+`gpt-6-luna` takes Chat Completions tools with `reasoning_effort: "none"`, that `gpt-realtime-2.1-mini`
+accepts the session config Zimmer mints, or that the browser's WebRTC offer is answered. Those are
+what the first conversation after the key is set will prove. The model names were current in
+OpenAI's docs on 2026-10-15; `LIVE_MODE_MODEL` and `LIVE_VOICE_MODEL` change them without a deploy.
+
+## The phone's Live Voice call has not run on a device
+
+The iOS app's Live Voice builds in CI's Xcode job, and its protocol rules run in ZimmerKit's tests. Its screens
+run in the simulator against the fixture. The audio half has not run at all: `LiveAudioEngine`
+(microphone, voice processing, reply playback) and `LiveCall`'s WebSocket to OpenAI. A simulator
+has no microphone worth testing echo cancellation on, and no deployment has the OpenAI key yet.
+It is built the way Motet's device-tested Play Live audio is, and that is the extent of the
+evidence. The CarPlay entry is inert with the rest of the scene
+([#1273](https://github.com/tadasant/zimmer/issues/1273)).
+
+## A live conversation's stdio servers start from scratch on every call
+
+A catalog server a live conversation enables runs in the Rails process's container, spawned for one
+call and closed after it. An `npx` server pays its cold start on every call, and a server that keeps
+state between calls — a browser, a logged-in session — keeps none across a conversation. Remote
+(`streamable-http`) servers hold no such cost. A pooled process per conversation would fix both,
+and needs a home that outlives a Puma request, which nothing provides yet.
+
+## A Live Voice tool call holds a web thread for as long as it runs
+
+The browser relays each function call to `POST /live_conversations/:id/tool_calls`, and Rails runs it
+inside that request. That includes a delegated Zimmer tool, a remote server's call (20-second read
+timeout), and a stdio server's spawn and call (60-second read timeout, plus an `npx` cold start).
+Each such call holds a Puma thread for its whole length. The live agent is told to hand anything slow
+to a background session, which keeps most calls short, but nothing enforces it.
+
+## A spoken question can land in the thread after its answer
+
+Live Voice records a line when OpenAI reports it finished: the human's words on
+`conversation.item.input_audio_transcription.completed`, the model's on
+`response.output_audio_transcript.done`. Transcription can finish after the model has already
+answered, so the thread, which is ordered by when lines were recorded, can show an answer above
+the question it answered. The conversation at OpenAI is not affected; only Zimmer's record is.
+
+## What a live conversation says and reads goes to OpenAI
+
+The live model runs at OpenAI, so every turn is sent there, and so is every tool result the model
+reads. That includes a Zimmer tool's output, such as a session's details or a slice of its
+transcript. Background sessions are no different in kind (their model is a vendor's too), but this
+is a second vendor, and nothing redacts a tool result before it goes.
+
+## Live Mode replies share a two-thread lane
+
+`LiveConversationReplyJob` runs on the `inference` queue beside title and status-summary
+generation, which has two threads. A burst of those can delay a typed reply by a job's length. A lane
+of its own would need a `ConnectionBudget` change, and the measured need for one does not exist yet.
+
+## A Live Voice call lives in one browser tab
+
+The call survives Turbo navigation, because the dock that owns it is permanent in the layout. It
+does not survive closing the tab, a full reload, or a deploy that changes the JavaScript bundle
+(Turbo reloads the page when its tracked assets change). Tool calls also relay through that tab, so
+a tab the browser has frozen stops running them.
 
 ## Open questions
 

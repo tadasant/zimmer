@@ -89,6 +89,29 @@ final class TranscriptParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [pasted], timeout: timeout), .completed, "the pasteboard holds the whole URL")
     }
 
+    /// The status summary is markdown the generator writes full of links. 1038's is drawn
+    /// as the transcript draws it: the link reads as its words, not as the brackets and URL
+    /// typed, and a long press on it offers Copy Link.
+    func test_the_status_summary_is_markdown_with_links_that_copy() throws {
+        let app = launch(["-ZimmerFixtureOpenSession", "1038"])
+        let summary = app.descendants(matching: .any)["detail.summary"]
+        XCTAssertTrue(summary.waitForExistence(timeout: timeout))
+        let paragraph = summary.descendants(matching: .any)["markdown.links"].firstMatch
+        XCTAssertTrue(paragraph.waitForExistence(timeout: timeout), "the summary's paragraph carries the link menu")
+        XCTAssertTrue(paragraph.label.contains("PR #1261 is open"), paragraph.label)
+        for marks in ["](", "**", "`"] {
+            XCTAssertFalse(paragraph.label.contains(marks), "no \"\(marks)\" left as typed: \(paragraph.label)")
+        }
+        // The page opens at the newest message; the summary is at the top.
+        scrollUntilHittable(app, paragraph)
+        attachScreenshot(app, named: "status-summary")
+        paragraph.press(forDuration: 1.5)
+        XCTAssertTrue(app.buttons["Open Link"].firstMatch.waitForExistence(timeout: timeout), "the menu opens the link")
+        let copy = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Copy Link")).firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: timeout), "the long press offers Copy Link")
+        attachScreenshot(app, named: "status-summary-copy-link")
+    }
+
     /// 1035 carries three catalog skills; two are a person's to invoke. "/" lists those two,
     /// typing narrows them, and a tap puts the command in the draft.
     func test_typing_a_slash_offers_the_sessions_skills_and_a_tap_inserts_one() throws {
@@ -166,11 +189,17 @@ final class TranscriptParityUITests: XCTestCase {
 
     /// The page opens at its newest message; swipe toward `element` until it can be tapped.
     private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
-        // Below the navigation bar too: isHittable says yes under it, where a tap lands on the bar.
+        // Below the navigation bar and the section strip pinned under it too: isHittable says
+        // yes under them, where a tap lands on them.
         func inView() -> Bool {
             guard element.exists, !element.frame.isEmpty, element.isHittable else { return false }
             let bar = app.navigationBars.firstMatch
-            return element.frame.minY >= (bar.exists ? bar.frame.maxY : 0)
+            let strip = app.descendants(matching: .any)["detail.sections"]
+            // And above the composer and its quick replies, which isHittable can also miss.
+            let field = app.descendants(matching: .any)["followup.field"]
+            let bottom = field.exists ? field.frame.minY - 50 : app.frame.maxY
+            return element.frame.minY >= max(bar.exists ? bar.frame.maxY : 0, strip.exists ? strip.frame.maxY : 0)
+                && element.frame.maxY <= bottom
         }
         for _ in 0..<8 where !inView() {
             if element.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }

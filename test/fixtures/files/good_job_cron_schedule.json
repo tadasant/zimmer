@@ -20,6 +20,11 @@
       "class": "GithubPrPollPassJob",
       "description": "Poll GitHub PR status, CI, merge conflicts and comments for sessions with PR URLs"
     },
+    "github_orphaned_pr_conflict_sweep": {
+      "cron": "*/2 * * * *",
+      "class": "GithubOrphanedPrConflictSweepJob",
+      "description": "Revive archived or failed sessions whose open PR has a merge conflict"
+    },
     "stale_clone_cleanup": {
       "cron": "0 * * * *",
       "class": "StaleCloneCleanupJob",
@@ -312,6 +317,11 @@
       "class": "GithubPrPollPassJob",
       "description": "Poll GitHub PR status, CI, merge conflicts and comments for sessions with PR URLs"
     },
+    "github_orphaned_pr_conflict_sweep": {
+      "cron": "*/2 * * * *",
+      "class": "GithubOrphanedPrConflictSweepJob",
+      "description": "Revive archived or failed sessions whose open PR has a merge conflict"
+    },
     "stale_clone_cleanup": {
       "cron": "0 * * * *",
       "class": "StaleCloneCleanupJob",
@@ -603,6 +613,11 @@
       "cron": "*/30 * * * * *",
       "class": "GithubPrPollPassJob",
       "description": "Poll GitHub PR status, CI, merge conflicts and comments for sessions with PR URLs"
+    },
+    "github_orphaned_pr_conflict_sweep": {
+      "cron": "*/2 * * * *",
+      "class": "GithubOrphanedPrConflictSweepJob",
+      "description": "Revive archived or failed sessions whose open PR has a merge conflict"
     },
     "stale_clone_cleanup": {
       "cron": "0 * * * *",

@@ -67,6 +67,9 @@ final class AppModel: ObservableObject {
     /// The session the Quick Router was opened from, so the new one threads under it, as
     /// the web bubble on a session page sends `parent_session_id`.
     var quickRouterParent: Int?
+    /// The screen the Quick Router was opened on, as the web bubble sends the page it was typed
+    /// on: a session's page, with its web URL and title. Nil from the board and the tabs.
+    var quickRouterPage: QuickRouterPage?
     /// Words typed in the board's bar, carried into the sheet when it is opened for more. `nil`
     /// when the sheet was opened from anywhere else.
     var quickRouterDraft: String?
@@ -75,6 +78,10 @@ final class AppModel: ObservableObject {
     @Published var quickRouterBarHandback: String?
     /// The full new-session form (the pencil in the Sessions toolbar).
     @Published var showingNewSession = false
+    /// Live Mode / Live Voice (LiveHomeView), from the session list's waveform button.
+    @Published var showingLive = false
+    /// Debug fixture: the live conversation LiveHomeView opens straight into.
+    var fixtureLiveConversation: Int?
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
     /// since a UI test cannot drive the system photo and file pickers.
     var fixtureAttachesFile = false
@@ -93,6 +100,11 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureSlash`: the opened session's composer starts with "/" typed, so
     /// `ios/bin/ui-test` can photograph the skills it offers.
     var fixtureTypesSlash = false
+    /// `-ZimmerFixtureSection <section>`: the opened session's page jumps to that section of
+    /// its strip (`hierarchy`, `humanMessages`), as a tap on its chip does.
+    var fixtureSection: SessionPageSection?
+    /// `-ZimmerFixtureFullScreen`: the opened session's transcript opens full screen.
+    var fixtureOpensFullScreen = false
     /// `-ZimmerFixtureTrigger <id>`: the Triggers tab opens on that trigger's page.
     @Published var fixtureTrigger: Int?
     /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
@@ -148,13 +160,30 @@ final class AppModel: ObservableObject {
            arguments.indices.contains(flag + 1), let id = Int(arguments[flag + 1]) {
             path = [id]
         }
-        if arguments.contains("-ZimmerFixtureQuickRouter") { showingQuickRouter = true }
+        if arguments.contains("-ZimmerFixtureQuickRouter") {
+            // Opened on a session's page, the sheet carries that page, as the corner button does.
+            if let id = path.first {
+                Task {
+                    if let session = try? await connection.api.session(id).session { openQuickRouter(from: session) }
+                }
+            } else {
+                showingQuickRouter = true
+            }
+        }
         if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
+        // Live: the home sheet, or straight into one conversation's thread.
+        if arguments.contains("-ZimmerFixtureLiveHome") { showingLive = true }
+        if let flag = arguments.firstIndex(of: "-ZimmerFixtureLiveConversation"),
+           arguments.indices.contains(flag + 1), let id = Int(arguments[flag + 1]) {
+            fixtureLiveConversation = id
+            showingLive = true
+        }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
         fixtureOpensPrompt = arguments.contains("-ZimmerFixtureOpenPrompt")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
         fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
         fixtureTypesSlash = arguments.contains("-ZimmerFixtureSlash")
+        fixtureOpensFullScreen = arguments.contains("-ZimmerFixtureFullScreen")
         func value(_ flag: String) -> String? {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
@@ -172,6 +201,7 @@ final class AppModel: ObservableObject {
         board = value("-ZimmerFixtureBoard").flatMap(BoardFilter.init(rawValue:)) ?? .onBoard
         if arguments.contains("-ZimmerFixtureFilterSheet") { showingFilters = true }
         fixtureOpensCatalog = value("-ZimmerFixtureCatalog").flatMap(CatalogKind.init(rawValue:))
+        fixtureSection = value("-ZimmerFixtureSection").flatMap(SessionPageSection.init(rawValue:))
         Task { await refresh() }
         // The list's search box picks this up and searches, as if typed.
         if let search = value("-ZimmerFixtureSearch") { searchText = search }
@@ -230,12 +260,19 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Open the Quick Router sheet. `parent` is the session it was opened on; `draft` is the
-    /// board bar's words, given only by the bar.
-    func openQuickRouter(parent: Int? = nil, draft: String? = nil) {
+    /// Open the Quick Router sheet. `parent` is the session it was opened on and `page` that
+    /// session's page; `draft` is the board bar's words, given only by the bar.
+    func openQuickRouter(parent: Int? = nil, page: QuickRouterPage? = nil, draft: String? = nil) {
         quickRouterParent = parent
+        quickRouterPage = page
         quickRouterDraft = draft
         showingQuickRouter = true
+    }
+
+    /// The Quick Router from a session's page: the page is that session's, by its web URL, as
+    /// the bubble reads `window.location`.
+    func openQuickRouter(from session: SessionSummary) {
+        openQuickRouter(parent: session.id, page: QuickRouterPage.session(session, url: webURL(for: session.id)))
     }
 
     /// Start a Quick Router session and open it.
@@ -243,13 +280,20 @@ final class AppModel: ObservableObject {
         await startQuickRouter(QuickRouterRequest(prompt: prompt))
     }
 
-    /// Start a Quick Router session with the sheet's choices and open it.
-    func startQuickRouter(_ request: QuickRouterRequest) async -> Bool {
+    /// Start a Quick Router session with the sheet's choices and open it — or, with `open`
+    /// off, the web bubble's plain *Submit*: the session starts and this screen stays.
+    func startQuickRouter(_ request: QuickRouterRequest, open: Bool = true) async -> Bool {
         do {
             let id = try await connection.api.startQuickRouter(request)
             showingQuickRouter = false
             quickRouterParent = nil
-            path.append(id)
+            quickRouterPage = nil
+            if open {
+                path.append(id)
+            } else {
+                notice = "Started session #\(id) in the background"
+                Haptics.success()
+            }
             await refresh()
             return true
         } catch {
@@ -438,6 +482,30 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The User view's Merge: the sign-off that lets a session merge its open, green PR.
+    func authorizeMerge(_ id: Int) async {
+        do {
+            notice = try await connection.api.authorizeMerge(id).message
+            Haptics.success()
+            await refresh()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
+    /// The User view's Reprioritize: the board goes to the reprioritizing session, which
+    /// writes the new order back; the list shows it on the next refresh.
+    func reprioritize() async {
+        do {
+            notice = try await connection.api.reprioritize().message
+            Haptics.success()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
     /// An action the server answers with a sentence rather than the session — a row's
     /// *Refresh Transcript* — then the list as it now stands, and the sentence as the toast.
     func run(_ action: (ZimmerAPI) async throws -> String) async {
@@ -446,6 +514,23 @@ final class AppModel: ObservableObject {
             await refresh()
             notice = message
             Haptics.success()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
+    /// The Ranked row's *Promote to priority* and *Demote to spot* (which lands at the head of
+    /// the spot queue). A promotion starts a waiting session; one that could not says why.
+    func reschedule(_ id: Int, priority: Bool) async {
+        do {
+            let change = try await connection.api.setSchedulingClass(id, priority: priority)
+            let done = priority ? "Promoted to priority" : "Demoted to spot, top of the queue"
+            notice = change.startMessage.map { "\(done). \($0)" } ?? done
+            error = nil
+            if change.startOutcome == "refused" { Haptics.failure() } else { Haptics.success() }
+            // The list is the server's order: a row that changed class belongs in the other half.
+            await refresh()
         } catch {
             handle(error)
             Haptics.failure()

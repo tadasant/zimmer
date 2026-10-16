@@ -61,10 +61,9 @@ module GithubPullRequestMergeability
   #
   # The ref is built from the captures this module validated rather than by
   # re-parsing the url through Github::PrRef, whose pattern is deliberately the
-  # looser one the pollers have always used. Nothing downstream interpolates these
-  # into a path any more — `gh pr view --repo owner/repo` passes them as arguments —
-  # but the tighter check costs nothing and is one fewer thing to re-derive if that
-  # ever changes.
+  # looser one the pollers have always used. The REST mergeability re-read
+  # interpolates them into an API path, and Github::PrSnapshot.fetch_rest_mergeable
+  # refuses a traversal-shaped one itself; this check is the earlier, tighter one.
   #
   # The wall-clock bound comes with the reader (Github::PrSnapshot::TIMEOUT), and is
   # the same 20 seconds this module used to set for itself: generous relative to a
@@ -75,7 +74,7 @@ module GithubPullRequestMergeability
     Github::PrSnapshot.fetch(
       Github::PrRef.new(url: "https://github.com/#{owner}/#{repo}/pull/#{pr_number}",
                         owner: owner, repo: repo, number: pr_number)
-    )
+    )&.with_rest_mergeability
   rescue => e
     # Wider than the reader's own rescue, and deliberately so. Github::PrSnapshot
     # answers nil for a call that failed or could not be parsed, but lets a local,

@@ -13,6 +13,12 @@ struct DetailsCard: View {
     var catalogRead = false
     /// Open the folded rows from the start: the fixture's photograph of them.
     var expanded = false
+    /// Bumped by the page's section strip to open the hierarchy's or the human messages' row.
+    var opensHierarchy = 0
+    var opensHumanMessages = 0
+    /// The strip's bottom edge and what has scrolled up to it: the two rows are its sections.
+    var sectionEdge: CGFloat = 0
+    var reachedSections: Binding<Set<SessionPageSection>> = .constant([])
     let edit: (SessionDetailView.EditedText) -> Void
     /// What the session's agent root supplies of a kind, shown when the session chooses none.
     var rootDefaults: (CatalogKind) -> [String] = { _ in [] }
@@ -63,6 +69,8 @@ struct DetailsCard: View {
                     view(for: row)
                         .padding(.vertical, 9)
                         .padding(.horizontal, 12)
+                        // The whole row under the strip when a chip jumps to it, padding and all.
+                        .pageSection(section(for: row), edge: sectionEdge, reached: reachedSections)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -88,9 +96,18 @@ struct DetailsCard: View {
         case .artifacts:
             ArtifactsRow(session: detail.session, rootDefaults: rootDefaults, edit: editCatalog)
         case let .hierarchy(hierarchy):
-            HierarchyRow(hierarchy: hierarchy, startsOpen: expanded, detach: detach)
+            HierarchyRow(hierarchy: hierarchy, startsOpen: expanded, opens: opensHierarchy, detach: detach)
         case .humanMessages:
-            HumanMessagesRow(detail: detail, startsOpen: expanded)
+            HumanMessagesRow(detail: detail, startsOpen: expanded, opens: opensHumanMessages)
+        }
+    }
+
+    /// The page section a row is the top of, for the section strip.
+    private func section(for row: Row) -> SessionPageSection? {
+        switch row {
+        case .hierarchy: return .hierarchy
+        case .humanMessages: return .humanMessages
+        case .goalCheck, .goal, .notes, .mcpServers, .artifacts: return nil
         }
     }
 }
@@ -435,11 +452,14 @@ private struct HierarchyRow: View {
     let hierarchy: SessionHierarchy
     /// Remove an "also senior" edge: (junior, uncle).
     let detach: (Int, Int) -> Void
+    /// Bumped to open the row: the section strip jumping to it.
+    var opens = 0
     @State private var open: Bool
     @State private var detaching: (junior: Int, uncle: Int)?
 
-    init(hierarchy: SessionHierarchy, startsOpen: Bool = false, detach: @escaping (Int, Int) -> Void) {
+    init(hierarchy: SessionHierarchy, startsOpen: Bool = false, opens: Int = 0, detach: @escaping (Int, Int) -> Void) {
         self.hierarchy = hierarchy
+        self.opens = opens
         self.detach = detach
         _open = State(initialValue: startsOpen || hierarchy.nodes.count <= 4)
     }
@@ -478,6 +498,7 @@ private struct HierarchyRow: View {
             }
         }
         .tint(Theme.inkMute)
+        .onChange(of: opens) { _, _ in withAnimation(.snappy(duration: 0.25)) { open = true } }
         .confirmationDialog(
             detaching.map { "Remove #\($0.uncle) as an additional senior of #\($0.junior)?" } ?? "",
             isPresented: Binding(get: { detaching != nil }, set: { if !$0 { detaching = nil } }),
@@ -581,10 +602,13 @@ private struct HierarchyRow: View {
 /// session it was said in a tap away.
 private struct HumanMessagesRow: View {
     let detail: SessionDetail
+    /// Bumped to open the row: the section strip jumping to it.
+    var opens = 0
     @State private var open: Bool
 
-    init(detail: SessionDetail, startsOpen: Bool = false) {
+    init(detail: SessionDetail, startsOpen: Bool = false, opens: Int = 0) {
         self.detail = detail
+        self.opens = opens
         _open = State(initialValue: startsOpen)
     }
 
@@ -623,6 +647,7 @@ private struct HumanMessagesRow: View {
             }
         }
         .tint(Theme.inkMute)
+        .onChange(of: opens) { _, _ in withAnimation(.snappy(duration: 0.25)) { open = true } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail.humanmessages")
     }
