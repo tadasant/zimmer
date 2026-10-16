@@ -2311,5 +2311,4 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_selector "a[data-live-settings-link]"
     assert_no_horizontal_overflow("live overview")
   end
-
 end

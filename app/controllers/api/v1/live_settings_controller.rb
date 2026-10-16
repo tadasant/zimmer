@@ -25,7 +25,9 @@ class Api::V1::LiveSettingsController < Api::BaseController
   end
 
   def update
-    attributes = params.permit(*LiveSetting::KEYS, :guidance, :append_guidance).to_h
+    # Everything the client sent, unfiltered: SettingsUpdate refuses an unknown
+    # key with a 422, where a permit list would drop a typo and answer 200.
+    attributes = params.to_unsafe_h.except("controller", "action", "format", "live_setting")
     render_result(LiveConversations::SettingsUpdate.call(attributes, actor: actor))
   end
 

@@ -348,11 +348,11 @@ module LiveConversations
     def settings_functions
       properties = LiveSetting::FIELDS.to_h do |field|
         schema = if field.numeric?
-          { type: "number", minimum: field.min, maximum: field.max }
+          { type: %w[number string], minimum: field.min, maximum: field.max }
         else
           { type: "string", enum: [ *LiveSetting.options_for(field).keys, "default" ] }
         end
-        [ field.key.to_s, schema.merge(description: "#{field.label}. #{field.help}") ]
+        [ field.key.to_s, schema.merge(description: "#{field.label}. #{field.help}#{' A number, or "default".' if field.numeric?}") ]
       end
 
       [

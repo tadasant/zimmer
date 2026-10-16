@@ -56,7 +56,7 @@ module LiveConversations
 
       "## Live mode guidance\n\n" \
         "Standing instructions from the person you are talking to, edited on the Live settings page or with " \
-        "`#{ToolBridge::UPDATE_SETTINGS}`. Where they conflict with anything above, they win.\n\n#{text}"
+        "`#{ToolBridge::UPDATE_SETTINGS}`. Follow them.\n\n#{text}"
     end
 
     # A reconnecting voice call starts a fresh Realtime session, which remembers

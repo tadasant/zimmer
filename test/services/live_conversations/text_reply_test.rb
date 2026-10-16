@@ -112,13 +112,14 @@ class LiveConversations::TextReplyTest < ActiveSupport::TestCase
   end
 
   test "settings OpenAI refuses fall back to the defaults for the reply, and the page says so" do
-    LiveConversations::SettingsUpdate.call({ "text_model" => "gpt-6-sol" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    LiveConversations::SettingsUpdate.call({ "text_model" => "gpt-6-sol", "guidance" => "Stay terse." }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
     @conversation.turns.create!(role: "user", source: "typed", content: "hi")
     client = Fake.new(chat_responses: [ OpenaiClient::Error.new("OpenAI answered 404: model not found", status: 404), Fake.text("Hello.") ])
 
     LiveConversations::TextReply.call(@conversation, client: client)
 
     assert_equal %w[gpt-6-sol gpt-6-luna], client.chat_requests.map { |r| r["model"] }
+    assert client.chat_requests.second["messages"].first["content"].end_with?("Stay terse."), "the fallback keeps the guidance"
     assert_equal "Hello.", @conversation.turns.last.content
     assert_match(/ran on the defaults/, @conversation.reload.error_message)
   end

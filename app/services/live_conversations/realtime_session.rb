@@ -40,7 +40,7 @@ module LiveConversations
         # than not at all, and say why.
         warning = "OpenAI refused the Live settings (#{e.message.truncate(200)}), so this call runs on the defaults. Change them on the Live settings page."
         Rails.logger.warn("[LiveConversations::RealtimeSession] #{warning}")
-        @setting = LiveSetting.new
+        @setting = LiveSetting.new(guidance: @setting.guidance)
         config = session_config
         create_secret(config)
       end

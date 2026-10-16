@@ -81,7 +81,7 @@ module LiveConversations
         @settings_warning = "OpenAI refused the Live settings (#{e.message.truncate(200)}), so this reply ran on the defaults. Change them on the Live settings page."
         Rails.logger.warn("[LiveConversations::TextReply] #{@settings_warning}")
         heartbeat!
-        @client.chat_completion(request_body(LiveSetting.new))
+        @client.chat_completion(request_body(LiveSetting.new(guidance: setting.guidance)))
       end
       message = response.dig("choices", 0, "message") || {}
       calls = Array(message["tool_calls"]).select { |call| call["type"] == "function" || call["function"] }

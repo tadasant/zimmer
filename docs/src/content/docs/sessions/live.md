@@ -207,8 +207,8 @@ the conversation's page, and as `settings_warning` from `client_secret`.
 ### Live mode guidance
 
 The guidance is free text, up to 8,000 characters, appended to the system prompt on every turn,
-typed and spoken. It comes after the root's AGENTS.md and Zimmer's section, and the prompt tells the
-model that where they conflict, the guidance wins. It exists for fast iteration: tune it here, then
+typed and spoken. It comes after the root's AGENTS.md and Zimmer's section, last, so it reads as the
+newest word. It exists for fast iteration: tune it here, then
 lift what works into the `live-mode` root's AGENTS.md. **Copy** puts the whole text on the
 clipboard.
 

@@ -86,6 +86,12 @@ class LiveConversations::SettingsUpdateTest < ActiveSupport::TestCase
     assert_equal 1, LiveSettingChange.count
   end
 
+  test "the database holds one row, however a race goes" do
+    LiveSetting.create!
+    assert_raises(ActiveRecord::RecordNotUnique) { LiveSetting.new.save!(validate: false) }
+    assert_equal LiveSetting.first, LiveSetting.editable
+  end
+
   test "the guidance has a length cap" do
     assert_raises(Update::Invalid) do
       Update.call({ "guidance" => "x" * (LiveSetting::GUIDANCE_MAX_LENGTH + 1) }, actor: @human)

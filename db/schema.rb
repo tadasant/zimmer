@@ -544,6 +544,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_16_120000) do
     t.integer "voice_vad_prefix_padding_ms"
     t.integer "voice_vad_silence_duration_ms"
     t.float "voice_vad_threshold"
+    t.index "(true)", name: "index_live_settings_singleton", unique: true
   end
 
   create_table "logs", force: :cascade do |t|
