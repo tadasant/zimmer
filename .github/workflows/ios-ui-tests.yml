@@ -126,7 +126,8 @@ jobs:
           echo "Resolved ${WANTED}."
 
       - name: Run the app on a simulator
-        # The same line `ci.yml`'s `ios` job runs. A check that exists only in a workflow
+        # The same script `ci.yml`'s `ios` shards run, without `--only`: the whole suite
+        # and every photograph on one simulator. A check that exists only in a workflow
         # cannot be run by hand and will rot, so the workflow's whole body is a call to a
         # script anybody with a Mac runs unchanged.
         #

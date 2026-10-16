@@ -525,13 +525,23 @@ CarPlay in. This is the same arrangement as Motet's.
 | `ios/bin/ci-swift` | `ios_swift_linux` (self-hosted Linux) and `ios` (macOS) | The `ZimmerKit` logic: sign-in protocol, token refresh, edge-refusal handling, list ordering |
 | `ios/bin/build-app` | `ios` (GitHub-hosted `macos-latest`) | The app compiles and links for the simulator |
 | `ios/bin/testflight check` | `ios` | An unsigned Release archive is uploadable in shape (bundle keys, icon, privacy manifest, no entitlements) |
-| `ios/bin/ui-test` | `ios` | The app runs on a simulator against its debug fixture, and the screenshots are kept as the `ios-ui-test` artifact, with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
+| `ios/bin/ui-test --only …` | `ios`, three shards | The app runs on a simulator against its debug fixture. Each shard runs a third of the XCUITest classes; the `photos` shard also photographs the key screens. Each keeps an `ios-ui-test-<shard>` artifact (video, result bundle, `shard.txt` naming what it covered, the app's crash reports in `crashes/` with their crashed threads printed in the job's log); the screenshots are in `ios-ui-test-photos` |
 | `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, and waits for processing |
 
 The iOS jobs run only when `ios/**` or one of the three workflows changes. The `ios-changes` job
 decides, and when it cannot tell it builds anyway. All three are in `all-checks-pass`. The macOS
 runner is GitHub-hosted, which costs nothing on a public repository. It is the one exception to the
 self-hosted pool, because nothing in the pool is a Mac.
+
+`ios` is a matrix of three shards (`parity`, `session-page`, `photos`), each on its own macOS runner
+with its own simulator, because the whole suite on one runner took 65 to 105 minutes and a run cut
+off by the job's timeout hides whether the tests passed. Each shard builds the app itself; the
+build is a few minutes and sharing it across jobs is not worth an artifact round-trip. The shards
+are balanced by the per-class timings in the job's comment in `ci.yml`, and
+`test/config/ios_ui_test_shards_test.rb` fails `test-unit` on a class that is in no shard or in two,
+so a class the matrix forgets does not silently stop running. A new test class goes in the lightest
+shard's `classes:` list. One shard's failure does not cancel the others (`fail-fast: false`), and
+`all-checks-pass` sees the matrix as one job that fails when any shard does.
 
 `testflight.yml` is fenced the way Motet's is. Its only triggers are a push to `main` and a dispatch;
 it refuses any other ref or repository; the App Store Connect key is a secret of the `testflight`

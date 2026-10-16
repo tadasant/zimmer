@@ -629,16 +629,58 @@ jobs:
   # not add `CODE_SIGN_ENTITLEMENTS`: an entitlement Apple has not granted (CarPlay) makes a
   # build fail to sign rather than merely lack the feature.
   ios:
+    name: ios (${{ matrix.shard.name }})
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
     runs-on: macos-latest
-    # Raised from 45 when the simulator run joined the job, from 60 when the suite and the
-    # photographs grew to fill it, and from 75 when the suite passed seventy UI tests: on a
-    # loaded macOS runner the simulator step alone is an hour (62 minutes on a green run of
-    # #1347), after two app builds, an archive and the Kit tests, before an artifact upload of
-    # most of a gigabyte. A run cut off here reads as "cancelled", which hides whether the suite
-    # passed. Splitting the suite across two simulators is the real fix for the next growth.
-    timeout-minutes: 100
+    # THREE SIMULATORS, A THIRD OF THE UI SUITE EACH. The whole suite on one runner outgrew
+    # its job: the timeout went 45 → 60 → 75 → 100 as the suite grew to seventy tests, and
+    # at 100 a run where every test passed was cut off at 104 minutes
+    # (actions/runs/38885405012) — a loaded macOS runner takes 40 to 80 minutes for the
+    # simulator step alone, and single tests flake under that load. Each shard is a job of
+    # its own: `ios/bin/ui-test --only <classes>` runs its classes, and one shard also runs
+    # the `simctl` photograph pass the PR body embeds.
+    #
+    # EACH SHARD BUILDS THE APP ITSELF. `build-app`, `testflight check`, `ci-swift` and the
+    # build-for-testing are ~12 minutes of a shard, and they are repeated three times rather
+    # than built once and shared through an artifact: sharing a gigabyte of DerivedData and
+    # a test bundle across jobs is a fourth job, an upload, three downloads and an xctestrun
+    # whose paths have to survive the move, to save minutes that are free on a public repo.
+    # Not worth it; revisit if the hosted runners stop being free.
+    #
+    # THE BALANCE is by the per-class seconds of a green run (actions/runs/38836517207,
+    # `Test Suite '…' passed` lines; LiveUITests from 38885405012, which had it):
+    #   parity        TranscriptParity 303, BoardReadParity 253, SessionParity 143,
+    #                 Operations 132, BoardView 104, LiveUpdates 73            = 1008 s
+    #   session-page  SessionDetailPanels 354, SessionControls 268, SessionActions 135,
+    #                 SessionSections 120, Waiting 116, SessionExtras 87      = 1080 s
+    #   photos        Catalog 74, Decisions 67, Attachments 52, Ranked 49, Live 45,
+    #                 SessionList 35, BoardFilters 28                         =  350 s
+    #                 + the photograph pass, 11 minutes on that run
+    # A new class goes in whichever shard is lightest; test/config/ios_ui_test_shards_test.rb
+    # fails the Linux `test-unit` job on a class that is in no shard or in two, so a class
+    # the matrix forgets never silently stops running.
+    strategy:
+      # One shard's red must not cancel the other two: their artifacts are the evidence for
+      # the tests THEY ran, and nobody here has a Mac to reproduce a cancelled one on.
+      fail-fast: false
+      matrix:
+        shard:
+          - name: parity
+            classes: TranscriptParityUITests,BoardReadParityUITests,SessionParityUITests,OperationsUITests,BoardViewUITests,LiveUpdatesUITests
+            photos: false
+          - name: session-page
+            classes: SessionDetailPanelsUITests,SessionControlsUITests,SessionActionsUITests,SessionSectionsUITests,WaitingUITests,SessionExtrasUITests
+            photos: false
+          - name: photos
+            classes: CatalogUITests,DecisionsUITests,AttachmentsUITests,RankedUITests,LiveUITests,SessionListUITests,BoardFiltersUITests
+            photos: true
+    # Per shard: ~5 minutes of app build, archive and Kit tests, ~7 of build-for-testing,
+    # 6–18 of UI tests at the balance above (double that on a loaded runner), 11 of
+    # photographs on the one shard that takes them, and the upload. A run cut off here reads
+    # as "cancelled", which hides whether the suite passed, so this is sized for the loaded
+    # case — rebalance the shards, or add a fourth, before raising it.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -672,29 +714,43 @@ jobs:
         # a compiler is pointed at the AVFoundation half.
         run: ios/bin/ci-swift
 
-      - name: Run the app on a simulator and photograph it
+      - name: Run this shard of the UI tests on a simulator, and photograph it on the photos shard
         # THE ONLY STEP THAT RUNS THE APP. It drives the Debug-only fixture (an in-memory
-        # Zimmer: an agent cannot complete a Google sign-in) through the session list and its
-        # filters, checks the build reports the environment and server it was built with,
-        # and records a video and screenshots of the key screens.
+        # Zimmer: an agent cannot complete a Google sign-in) through this shard's classes,
+        # checks the build reports the environment and server it was built with, and records
+        # a video; the `photos` shard also screenshots the key screens.
         #
         # `Staging` with a base URL is deliberate: one run proves the staging build variant
         # resolves the server it was given as well as the screens. The host is a
         # reserved-by-RFC-2606 name that can never resolve — the fixture makes no request —
         # because this repository names no deployment, not even in a workflow file.
-        run: >
-          ios/bin/ui-test
-          --configuration Staging
-          --api-base-url https://ui-test.invalid
-          --artifacts "$RUNNER_TEMP/ui-test"
+        #
+        # The shard arrives through `env:` and a bash array rather than `${{ }}` pasted into
+        # the command line: a `false && '' || '--no-photos'` ternary is the expression idiom
+        # that quietly evaluates to `--no-photos` on BOTH branches.
+        env:
+          SHARD_CLASSES: ${{ matrix.shard.classes }}
+          SHARD_PHOTOS: ${{ matrix.shard.photos }}
+        run: |
+          set -euo pipefail
+          args=(--only "$SHARD_CLASSES")
+          [ "$SHARD_PHOTOS" = "true" ] || args+=(--no-photos)
+          ios/bin/ui-test \
+            --configuration Staging \
+            --api-base-url https://ui-test.invalid \
+            --artifacts "$RUNNER_TEMP/ui-test" \
+            "${args[@]}"
 
       - name: Keep what the run produced
         # `always()`: a red run is the one whose video, screenshot and result bundle
-        # somebody needs, and nobody here has a Mac to reproduce it on.
+        # somebody needs, and nobody here has a Mac to reproduce it on. One artifact per
+        # shard, named for it — three jobs uploading the same name would fail the second
+        # and third — and `shard.txt` inside says which classes it covers. The screenshots
+        # a PR body embeds are in `ios-ui-test-photos`.
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: ios-ui-test
+          name: ios-ui-test-${{ matrix.shard.name }}
           path: ${{ runner.temp }}/ui-test
           retention-days: 14
           if-no-files-found: warn
@@ -757,7 +813,9 @@ jobs:
       - retention_logic
       - shellcheck
       # The iOS jobs skip on a change that does not touch ios/**; a skip is a non-answer,
-      # not a pass, which is the property described above.
+      # not a pass, which is the property described above. `ios` is a three-shard matrix,
+      # and one entry covers all of it: a matrix job's `result` is `failure` when any shard
+      # fails (`fail-fast: false` there keeps the other two running, not green).
       - ios-changes
       - ios
       - ios_swift_linux
