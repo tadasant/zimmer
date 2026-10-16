@@ -213,6 +213,22 @@ Rails.application.routes.draw do
       post "quick_router", to: "quick_router#create"
       # Live Mode, for the iOS app; an API key may only read. The same verbs as
       # the web routes; see Api::V1::LiveConversationsController.
+      get "live", to: "live_conversations#modes"
+      get "live/settings", to: "live_settings#show"
+      patch "live/settings", to: "live_settings#update"
+      post "live/settings/reset", to: "live_settings#reset"
+      post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance"
+      resources :live_conversations, only: [ :index, :show, :create ] do
+        member do
+          post :finish
+          post :mode
+          post :messages
+          post :client_secret
+          post :tool_calls
+          post :turns
+          post :session_update
+        end
+      end
       # The Inference page for the iOS app: the account roster with its quota
       # windows, the rotation log, the OpenRouter key's state, and the spot /
       # top-up / genesis policy. Reads take a key; every write takes only the
@@ -231,22 +247,6 @@ Rails.application.routes.draw do
         patch "fleet_top_up", action: :update_fleet_top_up, as: :fleet_top_up
         patch "genesis/:genesis", action: :update_genesis_class, as: :genesis_class
         delete "genesis", action: :reset_genesis_classes, as: :genesis_classes
-      end
-      get "live", to: "live_conversations#modes"
-      get "live/settings", to: "live_settings#show"
-      patch "live/settings", to: "live_settings#update"
-      post "live/settings/reset", to: "live_settings#reset"
-      post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance"
-      resources :live_conversations, only: [ :index, :show, :create ] do
-        member do
-          post :finish
-          post :mode
-          post :messages
-          post :client_secret
-          post :tool_calls
-          post :turns
-          post :session_update
-        end
       end
 
       # A Zimmer plugin's REST surface (ExternalApp): its allowlisted triggers and
