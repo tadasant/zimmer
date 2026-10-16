@@ -86,6 +86,7 @@ final class LiveCall: ObservableObject {
         muted = false
     }
 
+    /// Muted, the microphone sends silence rather than nothing (`RealtimeConductor.appendAudio`).
     func toggleMute() {
         muted.toggle()
     }
@@ -103,6 +104,8 @@ final class LiveCall: ObservableObject {
         } catch {
             let message = Self.describe(error)
             log.error("live session update failed: \(message, privacy: .public)")
+            guard mine == generation else { return }
+            lastError = "The new Live settings did not reach this call: \(message)"
         }
     }
 
@@ -131,8 +134,8 @@ final class LiveCall: ObservableObject {
     }
 
     private func sendAudio(_ pcm: Data, generation: Int) {
-        guard generation == self.generation, !muted, !pcm.isEmpty else { return }
-        send(RealtimeConductor.appendAudio(pcm))
+        guard generation == self.generation, !pcm.isEmpty else { return }
+        send(RealtimeConductor.appendAudio(pcm, muted: muted))
     }
 
     private func send(_ event: JSONValue) {
@@ -188,6 +191,7 @@ final class LiveCall: ObservableObject {
             case let .state(next):
                 state = next
             case let .failure(message):
+                log.error("realtime error: \(message, privacy: .public)")
                 lastError = message
             }
         }

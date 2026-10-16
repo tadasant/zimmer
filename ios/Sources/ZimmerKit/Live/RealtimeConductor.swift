@@ -33,7 +33,9 @@ public enum LiveVoiceState: String, Sendable, Equatable {
 /// - each call runs once, however often its events repeat;
 /// - finished transcript lines are recorded, and the user starting to speak stops the reply
 ///   that is playing and tells OpenAI how much of it was heard (`conversation.item.truncate`,
-///   which a WebSocket client sends itself — over WebRTC the server does it).
+///   which a WebSocket client sends itself — over WebRTC the server does it);
+/// - OpenAI's `error` events, and a response that ended `failed`, come out as `failure` so the
+///   call can say what went wrong instead of sitting in Listening.
 public struct RealtimeConductor: Sendable {
     public enum Effect: Equatable, Sendable {
         /// Send this client event to OpenAI.
@@ -92,6 +94,10 @@ public struct RealtimeConductor: Sendable {
             return start(callID: callID, name: name, arguments: event["arguments"]?.string ?? "{}")
         case "response.done":
             responseActive = false
+            if event["response"]?["status"]?.string == "failed" {
+                let message = event["response"]?["status_details"]?["error"]?["message"]?.string
+                return finish(event["response"]) + [.failure(message ?? "OpenAI could not answer that."), .state(.listening)]
+            }
             return finish(event["response"])
         case "conversation.item.input_audio_transcription.completed":
             return record(.user, event["transcript"]?.string)
@@ -143,9 +149,13 @@ public struct RealtimeConductor: Sendable {
         ])
     }
 
-    /// The microphone's audio, as the event that carries it.
-    public static func appendAudio(_ pcm16: Data) -> JSONValue {
-        .object(["type": .string("input_audio_buffer.append"), "audio": .string(pcm16.base64EncodedString())])
+    /// The microphone's audio, as the event that carries it. Muted, the same length of silence:
+    /// over a WebSocket the server's turn detection hears only what is sent, so a microphone that
+    /// went quiet by sending nothing would leave the turn open forever, stuck in Listening. Silence
+    /// lets it end, the way a disabled WebRTC track does in the browser.
+    public static func appendAudio(_ pcm16: Data, muted: Bool = false) -> JSONValue {
+        let audio = muted ? Data(count: pcm16.count) : pcm16
+        return .object(["type": .string("input_audio_buffer.append"), "audio": .string(audio.base64EncodedString())])
     }
 
     // MARK: - Internals
