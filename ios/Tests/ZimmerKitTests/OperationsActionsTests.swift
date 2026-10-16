@@ -238,6 +238,8 @@ final class OperationsActionsTests: XCTestCase {
         let halted = try await fake.health()
         XCTAssertTrue(halted.queueRecovery?.active ?? false)
         XCTAssertFalse(halted.banners.isEmpty, "the board's banner follows")
+        XCTAssertNil(halted.banners.egressDegraded, "halting the queues is not the network going")
+        XCTAssertFalse(halted.egress?.degraded ?? true)
         let extended = try await fake.enterQueueRecoveryMode(reason: nil, ttlMinutes: 120)
         XCTAssertEqual(extended.reason, "stampede", "an extension keeps the entry's reason")
         XCTAssertEqual(try XCTUnwrap(extended.expiresAt).timeIntervalSinceNow, 120 * 60, accuracy: 5)
