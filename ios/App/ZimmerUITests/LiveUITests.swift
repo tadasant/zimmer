@@ -116,7 +116,7 @@ final class LiveUITests: XCTestCase {
         XCTAssertTrue(app.buttons["live.talk"].exists, "Talk starts the call")
         attachScreenshot(app, named: "live-voice-thread")
 
-        app.buttons["live.voice.disable"].tap()
+        tapWhenEnabled(app.buttons["live.voice.disable"])
         let composer = app.descendants(matching: .any)["live.composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: timeout), "Type instead turns the same thread back to typing")
         XCTAssertTrue(labelled(app, "Is the flaky poller test still failing on main?").exists, "the spoken turns stay in the thread")
