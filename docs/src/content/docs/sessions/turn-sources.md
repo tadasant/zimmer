@@ -20,7 +20,7 @@ into the web app can get full markdown. Zimmer's injected session context explai
 a short **Turn Source Notes** section, so the note itself stays one line
 (`OrchestratorSystemPromptBuilder#turn_source_section`).
 
-The value is `TurnSource` (`app/models/turn_source.rb`).
+The value is `TurnSource` (`app/services/turn_source.rb`).
 
 ## What a source holds
 
@@ -107,7 +107,7 @@ Who is speaking is a different question, with a different answer. It is recorded
 authenticated actor at the input boundary, and this feature does not touch it. A human message's
 `content` is the human's words without the note. A header cannot create one or change its channel.
 
-`test/models/turn_source_test.rb` enforces this structurally. It lists every file that reads or
+`test/services/turn_source_test.rb` enforces this structurally. It lists every file that reads or
 writes a turn source, and it fails when a new file starts reading one. A new reader has to be added
 on purpose, after checking that it only renders or reports the value.
 

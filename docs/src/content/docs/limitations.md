@@ -4593,7 +4593,7 @@ signal that it has fallen behind, and it is an accurate one.
 
 The [turn-source note](/sessions/turn-sources/) is a style hint. These are the places where it is
 missing, coarse, or wrong. None of them reaches authorization, because nothing reads the source for
-that (`test/models/turn_source_test.rb`).
+that (`test/services/turn_source_test.rb`).
 
 ### The modality is whatever the client says
 
