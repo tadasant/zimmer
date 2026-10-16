@@ -130,6 +130,60 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :created
   end
 
+  test "Live settings over the API: a key reads, only a person on the app writes, and a voice call gets its session.update" do
+    get "/api/v1/live/settings", headers: @key_headers
+    assert_response :success
+    body = response.parsed_body
+    assert_in_delta 1.0, body.dig("settings", "voice_speed")
+    speed = body["fields"].find { |f| f["key"] == "voice_speed" }
+    assert_equal [ 0.25, 1.5 ], [ speed["min"], speed["max"] ]
+    assert speed["mid_call"]
+    assert_includes body["fields"].find { |f| f["key"] == "voice_model" }["options"].map { |o| o["value"] }, "gpt-realtime-2.1"
+
+    patch "/api/v1/live/settings", params: { voice_speed: 1.3 }, headers: @key_headers
+    assert_response :forbidden
+
+    patch "/api/v1/live/settings", params: { voice_speed: 1.3, guidance: "Be brief." }, headers: @headers
+    assert_response :success
+    assert response.parsed_body["changed"]
+    assert_in_delta 1.3, response.parsed_body.dig("settings", "voice_speed")
+    assert_equal "Be brief.", response.parsed_body["guidance"]
+    change = LiveSettingChange.sole
+    assert_equal [ "human", "the iOS app" ], [ change.actor_kind, change.actor ]
+    assert_equal change.id, response.parsed_body["history"].first["id"]
+
+    patch "/api/v1/live/settings", params: { voice_model: "gpt-9" }, headers: @headers
+    assert_response :unprocessable_entity
+    patch "/api/v1/live/settings", params: { voice_sped: 1.1 }, headers: @headers, as: :json
+    assert_response :unprocessable_entity
+    assert_match(/Unknown setting "voice_sped"/, response.parsed_body["message"])
+
+    conversation = create_live_conversation(mode: "voice")
+    post "/api/v1/live_conversations/#{conversation.id}/session_update", headers: @headers
+    assert_response :success
+    assert_in_delta 1.3, response.parsed_body.dig("session", "audio", "output", "speed")
+    assert response.parsed_body.dig("session", "instructions").end_with?("Be brief.")
+
+    patch "/api/v1/live/settings", params: { guidance: "Oops." }, headers: @headers
+    post "/api/v1/live/settings/changes/#{LiveSettingChange.recent_first.first.id}/restore_guidance", headers: @headers
+    assert_equal "Be brief.", response.parsed_body["guidance"]
+
+    post "/api/v1/live/settings/reset", headers: @headers
+    assert_in_delta 1.0, response.parsed_body.dig("settings", "voice_speed")
+    assert_equal "Be brief.", response.parsed_body["guidance"]
+  end
+
+  test "a voice tool call that changes the settings hands the client a session.update" do
+    conversation = create_live_conversation(mode: "voice")
+
+    post "/api/v1/live_conversations/#{conversation.id}/tool_calls",
+      params: { name: "update_live_settings", arguments: { voice_speed: 1.4 }.to_json, call_id: "call_s" }, headers: @headers
+
+    assert_response :success
+    assert_in_delta 1.4, response.parsed_body.dig("session", "audio", "output", "speed")
+    assert_nil response.parsed_body.dig("session", "model")
+  end
+
   test "an unknown conversation is a 404" do
     get "/api/v1/live_conversations/999999", headers: @headers
     assert_response :not_found

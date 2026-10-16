@@ -31,6 +31,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var reprioritizerID: Int?
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
     private let live: Bool
+    /// A session trashed somewhere else — the web, a router, its own agent — as soon as the
+    /// Inbox is read, so a board that does not read again on coming back to its tab shows it.
+    private let trashedElsewhere: Int?
     private var conversationReads: [Int: Int] = [:]
     /// Made once, from the `now` the fake starts with: a session read twice is the same session,
     /// as on the server, so a page that reads again sees nothing to redraw.
@@ -59,8 +62,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// conversation runs to a hundred messages, so its details card is far above the newest.
     /// `relayOnly`: the sign-in may not act as you (`-ZimmerFixtureRelayOnly`).
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
-                longTranscript: Bool = false, relayOnly: Bool = false) {
+                longTranscript: Bool = false, relayOnly: Bool = false, trashedElsewhere: Int? = nil) {
         self.live = live
+        self.trashedElsewhere = trashedElsewhere
         self.relayOnly = relayOnly
         self.inference = FakeInference(now: now)
         self.all = sessions
@@ -1067,7 +1071,15 @@ extension SessionSummary {
 // As the server: an unread notification cannot be dismissed, and invoking a disabled
 // trigger is refused.
 extension FakeZimmerAPI {
-    public func notifications() async throws -> [InboxNotification] { inbox }
+    public func notifications() async throws -> [InboxNotification] {
+        if let id = trashedElsewhere, var trashed = all.first(where: { $0.id == id }), trashed.status != .archived {
+            trashed.status = .archived
+            trashed.archivedAt = Date()
+            trashed.updatedAt = Date()
+            replace(trashed)
+        }
+        return inbox
+    }
 
     public func unreadNotificationCount() async throws -> Int { inbox.filter { !$0.read }.count }
 

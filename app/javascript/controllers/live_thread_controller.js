@@ -90,6 +90,7 @@ export default class extends Controller {
         conversationUrl: button.dataset.conversationUrl,
         clientSecretUrl: button.dataset.clientSecretUrl,
         toolCallsUrl: button.dataset.toolCallsUrl,
+        sessionUpdateUrl: button.dataset.sessionUpdateUrl,
         turnsUrl: button.dataset.turnsUrl
       }
     }))

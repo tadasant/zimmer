@@ -10,9 +10,10 @@ module LiveConversationHelpers
   class FakeOpenai
     attr_reader :chat_requests, :secret_requests
 
-    def initialize(chat_responses: [], secret: { "value" => "ek_test_123", "expires_at" => 1_900_000_000 })
+    def initialize(chat_responses: [], secret: { "value" => "ek_test_123", "expires_at" => 1_900_000_000 }, secret_failures: [])
       @chat_responses = chat_responses.dup
       @secret = secret
+      @secret_failures = secret_failures.dup
       @chat_requests = []
       @secret_requests = []
     end
@@ -27,6 +28,9 @@ module LiveConversationHelpers
 
     def create_realtime_client_secret(body)
       @secret_requests << body.deep_stringify_keys
+      failure = @secret_failures.shift
+      raise failure if failure
+
       @secret
     end
 
