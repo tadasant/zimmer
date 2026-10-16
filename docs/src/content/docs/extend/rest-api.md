@@ -44,7 +44,7 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | `/api/v1/triggers` | list, show, toggle, invoke — not create, edit or delete |
 | `GET /api/v1/costs`, `GET /api/v1/costs/records` | read — not `backfill` |
 | `GET /api/v1/health` | read — none of its operator actions |
-| `/api/v1/inference` and its routes | read the Inference page; every write — refresh, activate, delete or add an account, drive a CLI login, change the spot, top-up or genesis policy — only on a grant that acts as you (403 otherwise, and for an API key) |
+| `/api/v1/inference` and its routes | read the Inference page (an in-flight login's link and code only on a grant that acts as you); every write and the login poll — refresh, activate, delete or add an account, drive a CLI login, change the spot, top-up or genesis policy — only on a grant that acts as you (403 otherwise, and for an API key) |
 | `GET /api/v1/sessions/:id/elicitations`, `PATCH /api/v1/elicitations/:id/respond` | list a session's open prompts; answer one only on a grant that acts as you (403 otherwise) — not create or poll |
 | `GET /api/v1/configs`, `/mcp_servers`, `/skills`, `/hooks`, `/plugins`, `/model_catalog_entries` | read the catalogs |
 
@@ -1198,7 +1198,10 @@ column against the reading on file, as opening the page does.
   `rate_limit_tier`, `five_hour` and `seven_day` each `{utilization, effective_utilization, status,
   reset_at, reset_passed}` — `status` is dropped once the window has rolled over, as the badge is
   — and `five_hour_headroom_unusable`), and `login` (`available`, `active_attempt`,
-  `last_attempt`). No OAuth token, refresh token or API key is ever in it.
+  `last_attempt`). No OAuth token, refresh token or API key is ever in it, and an in-flight login's
+  `verification_url` and `verification_code` are `null` unless the caller is a person (the app's
+  token on a grant that acts as you): with the device code, a holder of the fleet's key could
+  finish the login with an account of its own and have it captured under your email.
 - `pool` — the Account Pool card: the four counts, `five_hour_utilization` and `weekly_utilization`
   (the averages the spot gate decides on), the worst account on each, `read_count`,
   `servable_count`, `weekly_spent_count`, `capacity_now`, `next_capacity_at`, `next_weekly_reset`,
@@ -1235,7 +1238,7 @@ record the web writes: a rotation event's `triggered_by` and `AppSetting`'s poli
 | `POST` | `/inference/accounts/:id/activate` | the Switch button: make it the current account, through the same activation path an automatic rotation takes → `{account, message}`. 422 with the page's sentence when it cannot be admitted — no credentials, no refresh token, a token the vendor refuses |
 | `DELETE` | `/inference/accounts/:id` | → `{message, current_account}`; deleting the current account activates the next one whose credentials validate, or leaves the runtime with none. Its snapshots, logins and rotations survive it |
 | `POST` | `/inference/logins` | the Authenticate button: `account_id`. Starts the login CLI in the worker, superseding any in-flight attempt → 201 `{login}` in `starting`. 422 for a Codex API-key account, which carries its credential statically |
-| `GET` | `/inference/logins/:id` | poll it → `{login, account}`. `login` carries `status`, `verification_url` and (Codex) the one-time `verification_code` once the CLI prints them, `awaiting_code` when the Claude flow wants the code pasted back, `code_received`, `error_message`, `expires_at` and `terminal`. 404 once the attempt is pruned or its account deleted — stop polling. Any key or grant may poll |
+| `GET` | `/inference/logins/:id` | poll it → `{login, account}`. `login` carries `status`, `verification_url` and (Codex) the one-time `verification_code` once the CLI prints them, `awaiting_code` when the Claude flow wants the code pasted back, `code_received`, `error_message`, `expires_at` and `terminal`. 404 once the attempt is pruned or its account deleted — stop polling. A person only, like the writes: the link and code are what completes the login |
 | `POST` | `/inference/logins/:id/code` | the Claude flow: `code`, the authorization code the page shows. 422 for a blank code or a finished attempt. The code is handed to the CLI and never echoed |
 | `POST` | `/inference/logins/:id/cancel` | → `{login}`; a finished attempt is left as it finished |
 | `PATCH` | `/inference/spot_policy` | `enabled`, `five_hour_reserve_pct`, `weekly_reserve_pct` (0–100), `max_concurrent_sessions` (1–100), `preemption_enabled`, `starvation_age_ceiling_hours` (0–720; 0 turns the lane off) — the parameters `action_spot_policy set_gating` takes, any subset. → `{changed, spot_policy}`. 422 `Nothing to change` with none, `Invalid spot policy` out of range, nothing persisted |
