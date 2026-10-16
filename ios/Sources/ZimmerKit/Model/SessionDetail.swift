@@ -526,14 +526,18 @@ public struct ConversationMessage: Hashable, Sendable, Codable, Identifiable {
     public var timestamp: Date?
     public var hasToolUse: Bool
     public var hasToolResult: Bool
+    /// Where this message sits in the stored transcript: what `fork` takes to fork here. Nil
+    /// for a message that did not come from a session's own conversation (a subagent's).
+    public var transcriptIndex: Int?
 
-    public init(id: Int, role: Role, content: String, timestamp: Date? = nil, hasToolUse: Bool = false, hasToolResult: Bool = false) {
+    public init(id: Int, role: Role, content: String, timestamp: Date? = nil, hasToolUse: Bool = false, hasToolResult: Bool = false, transcriptIndex: Int? = nil) {
         self.id = id
         self.role = role
         self.content = content
         self.timestamp = timestamp
         self.hasToolUse = hasToolUse
         self.hasToolResult = hasToolResult
+        self.transcriptIndex = transcriptIndex
     }
 
     /// Tool calls and their output: shown folded, because on a phone they bury the words.
@@ -574,6 +578,7 @@ struct ConversationResponse: Decodable {
         let timestamp: String?
         let has_tool_use: Bool?
         let has_tool_result: Bool?
+        let transcript_index: Int?
     }
 
     let messages: [Wire]
@@ -591,7 +596,8 @@ struct ConversationResponse: Decodable {
                 content: wire.content ?? "",
                 timestamp: wire.timestamp.flatMap(ZimmerJSON.parseDate),
                 hasToolUse: wire.has_tool_use ?? false,
-                hasToolResult: wire.has_tool_result ?? false
+                hasToolResult: wire.has_tool_result ?? false,
+                transcriptIndex: wire.transcript_index
             )
         }
         return Conversation(messages: decoded, total: total, truncated: truncated ?? false, firstPosition: offset)
