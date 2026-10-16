@@ -89,7 +89,9 @@ final class QuickRouterKeyboardUITests: XCTestCase {
         XCTAssertTrue(staysWithoutKeyboard(app), "Cancel puts the keyboard away")
         XCTAssertTrue(waitForDisappearance(cancel), "Cancel goes with the keyboard")
         XCTAssertFalse(start.isEnabled, "the words went with Cancel, so there is nothing to send")
-        XCTAssertFalse((field.value as? String ?? "").contains("Rotate"), "the bar is empty")
+        // An empty field reports its placeholder or nothing, depending on the text view behind it.
+        let value = try XCTUnwrap(field.value as? String, "the field reports a value")
+        XCTAssertTrue(["", "What do you want to do?"].contains(value), "the bar is empty, not \(value)")
         attachScreenshot(app, named: "quick-router-bar-cancelled")
     }
 
