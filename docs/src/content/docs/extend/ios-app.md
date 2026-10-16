@@ -374,7 +374,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   *Reschedule* (with its delay) and a *Discard* per job class with jobs ready. Each answer stays
   under its button in the server's words (what was terminated, retried, trashed, re-armed,
   discarded; "Queue recovery mode is on until …"), and the report is read again so the counts
-  move. The thirty-second cooldown on cleanup, retries and trashing is shown in place as the
+  move; the page then scrolls to the section that answered, because a halt or a resume re-lays
+  out the whole page (the banner comes or goes, the section grows or shrinks) and the answer would
+  otherwise land out of sight. The thirty-second cooldown on cleanup, retries and trashing is shown in place as the
   server's "Please wait 30 seconds between actions", not as a failure. Two differences from the
   web panel: the queued-job rows come from the report's ready-by-job-class breakdown (the API has
   no listing by class *and* queue), and the count a discard or reschedule carries is read from

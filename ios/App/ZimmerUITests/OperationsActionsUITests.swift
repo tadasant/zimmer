@@ -66,8 +66,13 @@ final class OperationsActionsUITests: XCTestCase {
         let entered = app.staticTexts["health.action.enterQueueRecovery.result"]
         XCTAssertTrue(waitForLabelContaining(entered, "Queue recovery mode is on until"))
         resume.tap()
-        XCTAssertTrue(waitForDisappearance(app.staticTexts["ON — queues halted"]), "resumed: the mode is off")
-        XCTAssertTrue(waitForLabel(app.staticTexts["health.action.exitQueueRecovery.result"], "Job processing resumed."))
+        // Resuming collapses the section and drops the banner, which shifts the page; the app
+        // brings the section back into view, and the receipt is read there, not where it was.
+        let resumed = app.staticTexts["health.action.exitQueueRecovery.result"]
+        if !resumed.waitForExistence(timeout: 5) { _ = scrollTo(app, resumed, searching: .up) }
+        XCTAssertTrue(waitForLabel(resumed, "Job processing resumed."), "the resume's receipt, in the section")
+        XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)["health.queueRecovery"], searching: .up))
+        XCTAssertFalse(app.staticTexts["ON — queues halted"].exists, "resumed: the mode is off")
         XCTAssertFalse(app.descendants(matching: .any)["banner.queueRecovery"].exists)
     }
 

@@ -25,6 +25,10 @@ struct HealthView: View {
     @State private var recoveryReason = ""
     @State private var recoveryMinutes = HealthReport.QueueRecovery.defaultTTLMinutes
     @State private var extendMinutes = HealthReport.QueueRecovery.defaultTTLMinutes
+    /// The section an action answered in, to bring into view once the report is re-read: a
+    /// halt or a resume re-lays out the whole page (the banner comes or goes, the section
+    /// itself grows or shrinks), and the answer would otherwise land out of sight.
+    @State private var scrollTarget: String?
 
     /// An action's answer, in the tone it deserves: the server's sentence, a cooldown, or a failure.
     private struct Receipt: Equatable {
@@ -87,6 +91,7 @@ struct HealthView: View {
     ]
 
     var body: some View {
+        ScrollViewReader { proxy in
         List {
             if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
             if let report {
@@ -168,6 +173,12 @@ struct HealthView: View {
         } message: { preview in
             Text("Move \(preview.matched) queued job\(preview.matched == 1 ? "" : "s") to run this many minutes from now; 0 is as soon as the queue allows. The work still happens, later.")
         }
+        .onChange(of: scrollTarget) { _, target in
+            guard let target else { return }
+            withAnimation { proxy.scrollTo(target, anchor: .top) }
+            scrollTarget = nil
+        }
+        }
     }
 
     // MARK: - Actions
@@ -183,6 +194,7 @@ struct HealthView: View {
             receipts[key] = Receipt(text: answer, tone: .done)
             Haptics.success()
             await load()
+            scrollTarget = Self.sectionID(for: key)
         } catch {
             let failure = error as? ZimmerError ?? .transport(error)
             receipts[key] = Receipt(text: failure.userMessage, tone: failure.isCooldown ? .wait : .failed)
@@ -236,6 +248,19 @@ struct HealthView: View {
     /// The queue recovery mode's three keys answer in one slot, so a halt's receipt survives the
     /// report reading the mode as on, and a resume's the mode as off.
     private static let recoveryKeys = ["enterQueueRecovery", "extendQueueRecovery", "exitQueueRecovery"]
+
+    /// The section whose body carries an action's receipt.
+    private static func sectionID(for key: String) -> String {
+        if recoveryKeys.contains(key) { return "health.queueRecovery" }
+        if ["queued.", "reschedule.", "discard."].contains(where: { key.hasPrefix($0) }) { return "health.queuedJobs" }
+        switch key {
+        case "cleanupProcesses": return "health.process"
+        case "retrySessions": return "health.session"
+        case "archiveOld": return "health.maintenance"
+        case "runPostDeployTasks": return "health.postDeployTasks"
+        default: return key
+        }
+    }
 
     private func actionButton(_ title: String, key: String, tone: Color, showsReceipt: Bool = true, action: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -335,6 +360,7 @@ struct HealthView: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("health.queueRecovery")
+            .id("health.queueRecovery")
         } header: {
             Text("Queue Recovery Mode").themeLabel()
         }
@@ -383,6 +409,7 @@ struct HealthView: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("health.queuedJobs")
+            .id("health.queuedJobs")
         } header: {
             Text("Queued Job Maintenance").themeLabel()
         } footer: {
@@ -397,6 +424,7 @@ struct HealthView: View {
         Section {
             actionButton("Trash Sessions Older Than 7 Days", key: "archiveOld", tone: Theme.inkSoft) { confirming = .archive }
                 .padding(.vertical, 2)
+                .id("health.maintenance")
         } header: {
             Text("Maintenance Actions").themeLabel()
         }
@@ -903,6 +931,7 @@ struct HealthView: View {
                 .padding(.vertical, 2)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier(identifier)
+                .id(identifier)
         } header: {
             HStack {
                 Text(title).themeLabel()
