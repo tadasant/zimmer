@@ -225,6 +225,10 @@ struct QuickRouterView: View {
     private func start() async {
         isStarting = true
         defer { isStarting = false }
+        // Before the await, and whatever it returns: a start closes the sheet and may push the
+        // session, and the keyboard must not outlive either.
+        focused = false
+        dismissKeyboard()
         // The server validates a model against the harness it was picked for. The app
         // cannot know which root the router is (configs does not say), so a model always
         // travels with the harness the picker listed it under.
@@ -271,6 +275,11 @@ struct QuickRouterBar: View {
         HStack(alignment: .bottom, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
                 Button {
+                    // Let go of the keyboard first: UIKit hands first responder back to the
+                    // field that had it when a sheet closes, so a bar still focused here would
+                    // take the keyboard again as the sheet's start closes it.
+                    focused = false
+                    dismissKeyboard()
                     app.openQuickRouter(draft: prompt)
                 } label: {
                     Image(systemName: "sparkles")
@@ -338,13 +347,15 @@ struct QuickRouterBar: View {
         !isStarting && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// The keyboard goes as the words are sent, not after the answer: by the time the start
+    /// returns, the session's page is pushed over the board and the bar is off screen, and a
+    /// failed start keeps its words in the bar for another try without holding the keyboard.
     private func start() async {
         isStarting = true
         defer { isStarting = false }
-        if await app.startQuickRouter(prompt) {
-            prompt = ""
-            focused = false
-        }
+        focused = false
+        dismissKeyboard()
+        if await app.startQuickRouter(prompt) { prompt = "" }
     }
 }
 
@@ -360,6 +371,9 @@ struct QuickRouterButton: View {
 
     var body: some View {
         Button {
+            // A composer typing on this screen would get the keyboard back as the sheet closes,
+            // over the session the start opens.
+            dismissKeyboard()
             app.openQuickRouter(parent: parent, page: page)
         } label: {
             Image(systemName: "sparkles")
@@ -373,6 +387,14 @@ struct QuickRouterButton: View {
         .accessibilityLabel("Quick Router")
         .accessibilityIdentifier("quickrouter.fab")
     }
+}
+
+/// Resign whatever holds the keyboard. Clearing a `@FocusState` covers the field SwiftUI
+/// knows is focused; this covers the one UIKit made first responder behind its back, as it
+/// does when a sheet closes and hands focus back to the field that had it.
+@MainActor
+func dismissKeyboard() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
 }
 
 extension View {
