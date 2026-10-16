@@ -8258,6 +8258,42 @@ does not survive closing the tab, a full reload, or a deploy that changes the Ja
 (Turbo reloads the page when its tracked assets change). Tool calls also relay through that tab, so
 a tab the browser has frozen stops running them.
 
+## Most Live settings choices have not been tried against OpenAI
+
+The [Live settings](/sessions/live/#live-settings) offer what OpenAI's docs listed on 2026-10-16:
+`gpt-6-sol`, `gpt-realtime-2.1` and `gpt-realtime-2`, the voices, reasoning efforts, VAD knobs and
+transcription models. Zimmer's tests prove the settings reach the request. They do not prove OpenAI
+accepts each combination; `gpt-realtime-2.1-mini` taking `xhigh`, for example, is unverified. A
+refused combination does not take Live Mode down: the reply or the call retries once on the defaults
+and says so on the page. The list is fixed in `LiveSetting`, not read from OpenAI, so a new model is
+a deploy. Only models that take function tools on the path that uses them are offered.
+
+## Live Mode's typed path cannot use the strongest GPT-6 models
+
+Typed turns go through Chat Completions with function tools. There, OpenAI's GPT-6 family takes
+tools only from `gpt-6-luna` and `gpt-6-sol`, and only at `reasoning_effort: "none"`. `gpt-6-astra`
+and `gpt-6.1-sol` take tools only through the Responses API. So the strongest text choice is
+`gpt-6-sol` with no reasoning, and there is no text reasoning-effort setting. Moving `TextReply` to
+the Responses API would open both up.
+
+## The live agent can rewrite its own guidance, including when talked into it
+
+The Live mode guidance is appended to every live turn, and the live model can replace it with
+`update_live_settings`, as it was asked to be able to. That also means text the model reads (a tool
+result, a session's output) could talk it into rewriting its standing instructions for every later
+conversation. Nothing prevents that. What bounds it is that it is visible: every agent write is in
+the settings history with its conversation, shows in the thread as a settings-change note, and can
+be undone with **Restore the guidance from before this edit**.
+
+## A settings change reaches an open voice call only through the client holding it
+
+An open call takes a mid-call change (speed, turn detection, the guidance) as a `session.update`, and
+only the client holding the call can send one. It does when the live model changes a setting itself,
+because the tool-call response carries the update. It also does when a person saves `/live/settings`
+in the same browser as the call dock. Any other change waits for the next call: a save in another
+tab or on another device, the phone's settings screen during a browser call, or an MCP agent. The
+phone's call sends one when its own Live settings screen saves.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
