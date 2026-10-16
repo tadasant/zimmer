@@ -210,6 +210,9 @@ struct SessionListView: View {
 
     private var searchableList: some View {
         list
+            // A scroll of the board puts the bar's keyboard away: the bar sits on the keyboard,
+            // so a drag that has to reach the keyboard (`.interactively`) would rarely get there.
+            .scrollDismissesKeyboard(.immediately)
             // Above the Quick Router bar rather than over it: the Undo toast takes taps.
             .overlay(alignment: .bottom) {
                 VStack(spacing: 0) {
