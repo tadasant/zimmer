@@ -393,7 +393,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
             1044: StatusSummary(
                 summary: "The audit is written up in ios/PARITY_AUDIT.md and the first two slices are open as PRs: the Quick Router on every screen, and the session page's density. The second one is waiting on your look at the screenshots before it goes further; the third slice, the board's rows, is drafted on a branch.",
                 generatedAt: now.addingTimeInterval(-12 * 60), messagesSinceGenerated: 2),
-            1038: StatusSummary(summary: "The PR is open, CI is green and the review is done. It needs your go-ahead to merge.", generatedAt: now.addingTimeInterval(-6 * 60), messagesSinceGenerated: 0),
+            // Markdown with links, as the generator writes it: what the page has to render.
+            1038: StatusSummary(summary: "[PR #1261](https://github.com/tadasant/zimmer/pull/1261) is open, CI is green and the review is done: it **needs your go-ahead to merge**. The scaffold lives in `ios/App`; [the review](https://github.com/tadasant/zimmer/pull/1261#issuecomment-1) found nothing blocking.", generatedAt: now.addingTimeInterval(-6 * 60), messagesSinceGenerated: 0),
             1035: StatusSummary(summary: "Asking whether staging should match production's Postgres 16 or try 17 first."),
             1042: StatusSummary(summary: "Building the CarPlay list template; about halfway through."),
             1027: StatusSummary(summary: "Failed: the deploy key in the secret store is read-only for this session."),
