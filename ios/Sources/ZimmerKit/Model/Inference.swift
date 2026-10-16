@@ -290,19 +290,24 @@ public struct InferenceAccount: Hashable, Sendable, Decodable, Identifiable {
         return nil
     }
 
-    /// The sentence under the card (`InferenceHelper#credential_state_line`), with whether
-    /// it is a warning.
-    public func credentialLine(now: Date = Date()) -> (text: String, warning: Bool) {
-        if isCodex && credentials.stored { return ("Credentials stored. Re-authenticate to replace them.", false) }
+    /// How the credential line reads: plain, amber for a credential not yet checked, red for
+    /// one Anthropic refused — the page's three colours.
+    public enum CredentialTone: Sendable {
+        case plain, warning, danger
+    }
+
+    /// The sentence under the card (`InferenceHelper#credential_state_line`), and its tone.
+    public func credentialLine(now: Date = Date()) -> (text: String, tone: CredentialTone) {
+        if isCodex && credentials.stored { return ("Credentials stored. Re-authenticate to replace them.", .plain) }
         switch credentials.state {
-        case "none": return ("No credentials yet — authenticate to start serving sessions.", false)
+        case "none": return ("No credentials yet — authenticate to start serving sessions.", .plain)
         case "rejected":
             let ago = credentials.rejectedAt.map { InferenceFormat.ago($0, now: now) } ?? "a while ago"
-            return ("Anthropic refused these credentials \(ago) — re-authenticate to replace them.", true)
+            return ("Anthropic refused these credentials \(ago) — re-authenticate to replace them.", .danger)
         case "verified":
             let ago = credentials.verifiedAt.map { InferenceFormat.ago($0, now: now) } ?? "a while ago"
-            return ("Credentials verified against Anthropic \(ago).", false)
-        default: return ("Credentials stored, not yet checked against Anthropic.", true)
+            return ("Credentials verified against Anthropic \(ago).", .plain)
+        default: return ("Credentials stored, not yet checked against Anthropic.", .warning)
         }
     }
 
@@ -315,7 +320,7 @@ public struct InferenceAccount: Hashable, Sendable, Decodable, Identifiable {
     /// Switch is offered to any account but the current one, and to a current Codex account
     /// as Re-activate, which rewrites its credential file from the stored copy.
     public var activateLabel: String? {
-        if !isCurrent { return "Make current" }
+        if !isCurrent { return "Switch" }
         return isCodex ? "Re-activate" : nil
     }
 
@@ -1003,6 +1008,13 @@ public enum InferenceFormat {
         if hours > 0 { parts.append("\(hours)h") }
         if minutes > 0 { parts.append("\(minutes)m") }
         return parts.joined(separator: " ")
+    }
+
+    /// The board's compact age with "ago", which `Format.age` alone cannot carry: under a
+    /// minute it reads "now", and "now ago" is not a phrase.
+    public static func ageLine(_ date: Date, now: Date = Date()) -> String {
+        let age = Format.age(date, now: now)
+        return age == "now" ? "just now" : "\(age) ago"
     }
 
     /// "3 days ago", "41 minutes ago", "just now" — Rails' `time_ago_in_words`, near enough.

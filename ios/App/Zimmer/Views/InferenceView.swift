@@ -19,8 +19,12 @@ struct InferenceView: View {
     /// Accounts with a verb in flight: a second tap waits for the first.
     @State private var busy: Set<Int> = []
     @State private var expandedLog = false
+    /// An account the Add sheet just created, whose login starts once that sheet is gone:
+    /// a sheet presented while another is dismissing can be dropped.
+    @State private var justAdded: InferenceAccount?
     /// `-ZimmerFixtureInferenceLogin`: the first account that can log in starts one on load.
     private let opensLogin: Bool
+    @State private var startedFixtureLogin = false
 
     init(runtime: String = InferenceReport.claudeCode, opensLogin: Bool = false) {
         _runtime = State(initialValue: runtime)
@@ -88,9 +92,9 @@ struct InferenceView: View {
 
     private func sheets(_ content: some View) -> some View {
         content
-            .sheet(isPresented: $adding) {
+            .sheet(isPresented: $adding, onDismiss: { Task { await added() } }) {
                 AddAccountSheet(runtime: runtime, label: report?.runtimeLabel ?? runtime) { account in
-                    await added(account)
+                    justAdded = account
                 }
             }
             .sheet(item: $login, onDismiss: { Task { await load() } }) { target in
@@ -104,7 +108,7 @@ struct InferenceView: View {
             ) { confirmation in
                 switch confirmation {
                 case let .activate(account):
-                    Button(account.activateLabel ?? "Make current") { Task { await activate(account) } }
+                    Button(account.activateLabel ?? "Switch") { Task { await activate(account) } }
                         .accessibilityIdentifier("inference.confirm.activate")
                 case let .delete(account):
                     Button("Delete", role: .destructive) { Task { await delete(account) } }
@@ -228,7 +232,8 @@ struct InferenceView: View {
             guard !Task.isCancelled else { return }
             report = loaded
             error = nil
-            if opensLogin, login == nil, let first = loaded.accounts?.first(where: { $0.login.available && !$0.credentials.stored }) {
+            if opensLogin, !startedFixtureLogin, let first = loaded.accounts?.first(where: { $0.login.available && !$0.credentials.stored }) {
+                startedFixtureLogin = true
                 await startLogin(first)
             }
         } catch {
@@ -282,8 +287,11 @@ struct InferenceView: View {
         }
     }
 
-    /// An account just added: on the roster, and, for one that needs a login, straight into it.
-    private func added(_ account: InferenceAccount) async {
+    /// The Add sheet is gone: the roster is read again and, for an account that needs a
+    /// login, the login sheet opens.
+    private func added() async {
+        guard let account = justAdded else { return }
+        justAdded = nil
         await load()
         if account.login.available, !account.credentials.stored { await startLogin(account) }
     }
@@ -305,7 +313,7 @@ private struct DryPoolBanner: View {
         Section {
             VStack(alignment: .leading, spacing: 4) {
                 Text("No \(runtime) account can serve a session").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.danger)
-                Text("All \(count) account\(count == 1 ? "" : "s") in this pool are unusable: \(dry.breakdown).").font(.caption).foregroundStyle(Theme.ink)
+                Text(verbatim: unusableLine).font(.caption).foregroundStyle(Theme.ink)
                 Text(dry.recovery).font(.caption).foregroundStyle(Theme.inkSoft)
             }
             .padding(.vertical, 2)
@@ -313,6 +321,10 @@ private struct DryPoolBanner: View {
             .accessibilityIdentifier("inference.pool.dry")
         }
         .themeRows()
+    }
+
+    private var unusableLine: String {
+        "All \(count) account\(count == 1 ? "" : "s") in this pool are unusable: \(dry.breakdown)."
     }
 }
 
@@ -384,7 +396,7 @@ private struct RotationLogSection: View {
     private func row(_ event: RotationEvent) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 5) {
-                Text(verbatim: "\(Format.age(event.at)) ago")
+                Text(verbatim: InferenceFormat.ageLine(event.at))
                     .accessibilityLabel(event.at.formatted(.relative(presentation: .named)))
                 Text("·")
                 Text(event.source == "automatic" ? "automatic" : "manual")
@@ -413,22 +425,13 @@ private struct OpenRouterKeyCard: View {
     var body: some View {
         Section {
             if let key {
-                HStack {
-                    Text("OpenRouter API key").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
-                    Spacer()
-                    Text(key.present ? "Set" : "Not set")
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 7).padding(.vertical, 2.5)
-                        .foregroundStyle(key.present ? Theme.success : Theme.inkSoft)
-                        .background((key.present ? Theme.success : Theme.inkMute).opacity(0.14), in: Capsule())
-                        .accessibilityIdentifier("inference.openrouter.state")
-                }
+                header(key)
                 LabeledContent("Variable") { Text(key.variable).font(Theme.mono) }
-                LabeledContent("Resolves from", value: key.present ? (key.providerBadge ?? key.providerLabel ?? "—") : "—")
+                LabeledContent("Resolves from", value: Self.resolvesFrom(key))
                 LabeledContent("Fingerprint (SHA-256)") { Text(key.fingerprint ?? "—").font(Theme.mono) }
-                LabeledContent("Last set from the web page", value: key.lastWrite.map { "\(InferenceFormat.ago($0.at)) (\($0.action))" } ?? "never")
-                if let path = key.path {
-                    LabeledContent("Address") { Text(verbatim: "\(path) in \(key.projectID ?? "?") (\(key.location ?? "?"))").font(Theme.mono).multilineTextAlignment(.trailing) }
+                LabeledContent("Last set from the web page", value: Self.lastWriteLine(key))
+                if let address = Self.addressLine(key) {
+                    LabeledContent("Address") { Text(verbatim: address).font(Theme.mono).multilineTextAlignment(.trailing) }
                 }
                 if !key.writable, let reason = key.writeReason {
                     Text("Zimmer cannot write to the store yet: \(reason).").font(.caption).foregroundStyle(Theme.warning)
@@ -445,8 +448,37 @@ private struct OpenRouterKeyCard: View {
         }
         .font(.subheadline)
         .themeRows()
+    }
+
+    /// The card's title row with the state pill; the row carries the card's identifier.
+    private func header(_ key: OpenRouterKeyState) -> some View {
+        let color = key.present ? Theme.success : Theme.inkMute
+        return HStack {
+            Text("OpenRouter API key").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
+            Spacer()
+            Text(key.present ? "Set" : "Not set")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 7).padding(.vertical, 2.5)
+                .foregroundStyle(color)
+                .background(color.opacity(0.14), in: Capsule())
+                .accessibilityIdentifier("inference.openrouter.state")
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("inference.openrouter")
+    }
+
+    private static func resolvesFrom(_ key: OpenRouterKeyState) -> String {
+        guard key.present else { return "—" }
+        return key.providerBadge ?? key.providerLabel ?? "—"
+    }
+
+    private static func lastWriteLine(_ key: OpenRouterKeyState) -> String {
+        key.lastWrite.map { "\(InferenceFormat.ago($0.at)) (\($0.action))" } ?? "never"
+    }
+
+    private static func addressLine(_ key: OpenRouterKeyState) -> String? {
+        guard let path = key.path else { return nil }
+        return "\(path) in \(key.projectID ?? "?") (\(key.location ?? "?"))"
     }
 }
 
@@ -456,7 +488,8 @@ private struct AddAccountSheet: View {
     @Environment(\.dismiss) private var dismiss
     let runtime: String
     let label: String
-    let added: (InferenceAccount) async -> Void
+    /// Hands the new account back; the page acts on it once this sheet is gone.
+    let added: (InferenceAccount) -> Void
     @State private var email = ""
     @State private var priority = "0"
     @State private var apiKey = ""
@@ -528,8 +561,8 @@ private struct AddAccountSheet: View {
             let change = try await app.api.addInferenceAccount(runtime: runtime, email: email.trimmingCharacters(in: .whitespaces), priority: priorityValue,
                                                                apiKey: isCodex ? apiKey : nil)
             Haptics.success()
+            added(change.account)
             dismiss()
-            await added(change.account)
         } catch {
             self.error = (error as? ZimmerError ?? .transport(error)).userMessage
             Haptics.failure()

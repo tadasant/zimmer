@@ -36,7 +36,7 @@ final class InferenceUITests: XCTestCase {
         let activate = app.buttons["inference.account.12.activate"]
         reveal(app, activate)
         activate.tap()
-        let confirm = app.sheets.buttons["Make current"].firstMatch
+        let confirm = app.sheets.buttons["Switch"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout), "the web page's confirmation, in its words")
         confirm.tap()
         XCTAssertTrue(element(app, "inference.account.12.current").waitForExistence(timeout: timeout), "the marker moved")
@@ -103,6 +103,10 @@ final class InferenceUITests: XCTestCase {
         XCTAssertEqual(field.value as? String, "4")
         field.tap()
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 4) + "250")
+        // The number pad has no Done: a scroll puts the keyboard away (the page dismisses it on
+        // a drag), so the tap on Save lands on Save and not on the keys.
+        app.swipeUp()
+        XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch), "the keyboard is gone")
         let save = app.buttons["inference.spot.save"]
         reveal(app, save)
         save.tap()
@@ -124,7 +128,7 @@ final class InferenceUITests: XCTestCase {
         let activate = app.buttons["inference.account.12.activate"]
         reveal(app, activate)
         activate.tap()
-        let confirm = app.sheets.buttons["Make current"].firstMatch
+        let confirm = app.sheets.buttons["Switch"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
         let refusal = app.staticTexts["inference.error"]

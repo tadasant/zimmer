@@ -4,7 +4,7 @@ import ZimmerKit
 /// One account as the web page's card draws it: the email with the Current marker and the
 /// status badge, the header's tags (a failed probe, quota hits, the reading's age, the
 /// credential tag), the two quota bars with their reset lines, the credential verdict and
-/// the login panel, then the verbs: Refresh, Make current, Delete, Authenticate.
+/// the login panel, then the verbs: Refresh, Switch, Delete, Authenticate.
 struct InferenceAccountCard: View {
     let account: InferenceAccount
     let busy: Bool
@@ -73,7 +73,7 @@ struct InferenceAccountCard: View {
             if account.probeError != nil { Text("Probe failed").foregroundStyle(Theme.danger) }
             if account.quotaHitCount > 0 { Text(verbatim: "\(account.quotaHitCount) hits") }
             if let taken = account.quota?.takenAt {
-                Text(verbatim: "\(Format.age(taken)) ago").accessibilityLabel("read \(taken.formatted(.relative(presentation: .named)))")
+                Text(verbatim: InferenceFormat.ageLine(taken)).accessibilityLabel("read \(taken.formatted(.relative(presentation: .named)))")
             }
             if let tag = account.credentialTag {
                 Text(tag).foregroundStyle(tag == "Token refused" ? Theme.danger : Theme.inkSoft)
@@ -151,11 +151,19 @@ struct InferenceAccountCard: View {
             }
         } else if account.login.available {
             let line = account.credentialLine()
-            Text(line.text).font(.caption).foregroundStyle(line.warning ? Theme.warning : Theme.inkSoft)
+            Text(line.text).font(.caption).foregroundStyle(credentialColor(line.tone))
                 .accessibilityIdentifier("inference.account.\(account.id).credentials")
             if let failure = account.login.lastFailureLine {
                 Text(failure).font(.caption).foregroundStyle(Theme.danger)
             }
+        }
+    }
+
+    private func credentialColor(_ tone: InferenceAccount.CredentialTone) -> Color {
+        switch tone {
+        case .plain: return Theme.inkSoft
+        case .warning: return Theme.warning
+        case .danger: return Theme.danger
         }
     }
 
