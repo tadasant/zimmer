@@ -1315,8 +1315,11 @@ private struct SummaryCard: View {
                     .accessibilityIdentifier("detail.summary.regenerate")
                 }
             }
-            if let text = status.summary {
-                Text(text).font(.callout).foregroundStyle(Theme.ink).fixedSize(horizontal: false, vertical: true)
+            if let text = status.summary, !text.isEmpty {
+                // Markdown, drawn as the transcript draws it, as the web's Status panel does:
+                // its links open on a tap and offer Copy Link on a long press.
+                MarkdownText(blocks: MarkdownBlock.blocks(of: text))
+                    .fixedSize(horizontal: false, vertical: true)
             } else if status.generating == true {
                 Text("Writing a status summary…").font(.callout).foregroundStyle(Theme.inkSoft)
             }
