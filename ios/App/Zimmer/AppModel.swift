@@ -78,7 +78,7 @@ final class AppModel: ObservableObject {
     @Published var quickRouterBarHandback: String?
     /// The full new-session form (the pencil in the Sessions toolbar).
     @Published var showingNewSession = false
-    /// Live Mode / Live Voice (LiveHomeView), from the session list's waveform button.
+    /// Live Mode (LiveHomeView), from the session list's waveform button.
     @Published var showingLive = false
     /// Debug fixture: the live conversation LiveHomeView opens straight into.
     var fixtureLiveConversation: Int?

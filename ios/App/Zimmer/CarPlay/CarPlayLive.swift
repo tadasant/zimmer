@@ -3,8 +3,9 @@ import Combine
 import Foundation
 import ZimmerKit
 
-/// Live Voice in the car: a section on the CarPlay list that starts a new conversation or
-/// resumes the open one, and a call screen that follows the call's state and hangs it up.
+/// Live Mode in the car, voice on: a section on the CarPlay list that starts a new conversation
+/// or resumes the open one — typed until now or not; the call turns voice on — and a call screen
+/// that follows the call's state and hangs it up.
 ///
 /// The call is `LiveCall.shared` — the same one the phone's Live screen drives — so a call
 /// started at the desk carries on in the car and the other way round. Inert, like the rest of
@@ -13,7 +14,7 @@ import ZimmerKit
 @MainActor
 final class CarPlayLive {
     weak var interfaceController: CPInterfaceController?
-    /// The open Live Voice conversation, read with the rest of the list.
+    /// The open Live Mode conversation, read with the rest of the list.
     private(set) var current: Int?
     private var watching: AnyCancellable?
     /// The list redraws the section when a call starts or ends.
@@ -28,15 +29,15 @@ final class CarPlayLive {
         }
     }
 
-    /// Read which Live Voice conversation is open, for the list's Resume row.
+    /// Read which Live Mode conversation is open, for the list's Resume row.
     func refresh() async {
-        current = try? await AppEnvironment.shared.connection.api.liveConversations().current[.voice]
+        current = try? await AppEnvironment.shared.connection.api.liveConversations().current
     }
 
     func section() -> CPListSection {
         var items: [CPListItem] = []
         if call.isActive, let conversation = call.conversationID {
-            let back = CPListItem(text: "Back to the call", detailText: "Live Voice is on")
+            let back = CPListItem(text: "Back to the call", detailText: "Voice is on")
             back.handler = { [weak self] _, completion in
                 self?.showCall(conversation)
                 completion()
@@ -58,7 +59,7 @@ final class CarPlayLive {
                 items.append(resume)
             }
         }
-        return CPListSection(items: items, header: "Live Voice", sectionIndexTitle: nil)
+        return CPListSection(items: items, header: "Live Mode", sectionIndexTitle: nil)
     }
 
     private func start(resuming conversation: Int?) {
@@ -74,13 +75,13 @@ final class CarPlayLive {
                 showCall(id)
                 await call.start(id)
             } catch {
-                showMessage((error as? ZimmerError)?.userMessage ?? "Couldn't start Live Voice.")
+                showMessage((error as? ZimmerError)?.userMessage ?? "Couldn't start the call.")
             }
         }
     }
 
     private func showCall(_ conversation: Int) {
-        let status = CPListItem(text: "Live Voice", detailText: call.state.label)
+        let status = CPListItem(text: "Live Mode", detailText: call.state.label)
         let mute = CPListItem(text: call.muted ? "Unmute" : "Mute", detailText: nil)
         mute.handler = { [weak self] item, completion in
             self?.call.toggleMute()
@@ -93,7 +94,7 @@ final class CarPlayLive {
             self?.interfaceController?.popTemplate(animated: true, completion: nil)
             completion()
         }
-        let template = CPListTemplate(title: "Live Voice", sections: [CPListSection(items: [status, mute, hangUp])])
+        let template = CPListTemplate(title: "Live Mode", sections: [CPListSection(items: [status, mute, hangUp])])
         // LiveCall is main-actor and publishes from there.
         watching = call.$state.combineLatest(call.$lastError).sink { state, error in
             MainActor.assumeIsolated {
@@ -104,7 +105,7 @@ final class CarPlayLive {
     }
 
     private func showMessage(_ text: String) {
-        let template = CPListTemplate(title: "Live Voice", sections: [])
+        let template = CPListTemplate(title: "Live Mode", sections: [])
         template.emptyViewSubtitleVariants = [text]
         interfaceController?.pushTemplate(template, animated: true, completion: nil)
     }

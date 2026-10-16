@@ -5,7 +5,7 @@ require "mocha/minitest"
 
 class LiveSettingsControllerTest < ActionDispatch::IntegrationTest
   setup do
-    stub_live_roots
+    stub_live_root
     stub_live_key
   end
 

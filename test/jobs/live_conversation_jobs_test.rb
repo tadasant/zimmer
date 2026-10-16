@@ -6,29 +6,31 @@ require "mocha/minitest"
 class LiveConversationJobsTest < ActiveJob::TestCase
   Fake = LiveConversationHelpers::FakeOpenai
 
-  test "prepare: reads the root's AGENTS.md, lists default servers' tools, and goes active" do
-    stub_live_roots
+  test "prepare: reads the root's AGENTS.md and mode styles, lists default servers' tools, and goes active" do
+    stub_live_root
     stub_clock_server
     conversation = create_live_conversation(mode: "voice", status: LiveConversation::PREPARING, mcp_servers: [ "zimmer", "test-clock" ], instructions: nil)
     LiveConversations::RootInstructions.expects(:fetch).returns(
-      LiveConversations::RootInstructions::Result.new(text: "# Live Voice\nBe quick.", source: "example/live@abc:agent-roots/live-voice/AGENTS.md")
+      LiveConversations::RootInstructions::Result.new(text: "# Live Mode\nBe quick.", source: "example/live@abc:agent-roots/live-mode/AGENTS.md",
+                                                      modes: { "voice" => "Short spoken turns." })
     )
 
     LiveConversationPrepareJob.perform_now(conversation.id)
 
     conversation.reload
     assert conversation.active?
-    assert_equal "# Live Voice\nBe quick.", conversation.instructions
-    assert_equal "example/live@abc:agent-roots/live-voice/AGENTS.md", conversation.instructions_source
+    assert_equal "# Live Mode\nBe quick.", conversation.instructions
+    assert_equal({ "voice" => "Short spoken turns." }, conversation.mode_instructions)
+    assert_equal "example/live@abc:agent-roots/live-mode/AGENTS.md", conversation.instructions_source
     assert_equal %w[zimmer test-clock], conversation.mcp_servers
     assert_equal %w[current_time env_names], conversation.mcp_tool_cache["test-clock"].map { |t| t["name"] }
   end
 
   test "prepare: a default server that cannot start is dropped with a note, not fatal" do
-    stub_live_roots
+    stub_live_root
     ServersConfig.stubs(:find).with("broken").returns(ServersConfig::Server.new("broken", { "type" => "stdio", "command" => "/nonexistent" }))
     conversation = create_live_conversation(mode: "text", status: LiveConversation::PREPARING, mcp_servers: [ "zimmer", "broken" ])
-    LiveConversations::RootInstructions.stubs(:fetch).returns(LiveConversations::RootInstructions::Result.new(text: "x", source: "s"))
+    LiveConversations::RootInstructions.stubs(:fetch).returns(LiveConversations::RootInstructions::Result.new(text: "x", source: "s", modes: {}))
 
     LiveConversationPrepareJob.perform_now(conversation.id)
 
@@ -38,7 +40,7 @@ class LiveConversationJobsTest < ActiveJob::TestCase
   end
 
   test "prepare: unreadable instructions fail the conversation with the reason" do
-    stub_live_roots
+    stub_live_root
     conversation = create_live_conversation(mode: "text", status: LiveConversation::PREPARING)
     LiveConversations::RootInstructions.stubs(:fetch).raises(LiveConversations::RootInstructions::Error, "Agent root live-mode has no AGENTS.md")
 
@@ -49,7 +51,7 @@ class LiveConversationJobsTest < ActiveJob::TestCase
   end
 
   test "prepare: an unexpected error fails the conversation instead of leaving it preparing" do
-    stub_live_roots
+    stub_live_root
     conversation = create_live_conversation(mode: "voice", status: LiveConversation::PREPARING)
     LiveConversations::RootInstructions.stubs(:fetch).raises(ArgumentError, "surprise")
     ErrorReporter.expects(:report_exception).once
@@ -61,10 +63,10 @@ class LiveConversationJobsTest < ActiveJob::TestCase
   end
 
   test "prepare: a message typed while preparing is answered once active" do
-    stub_live_roots
+    stub_live_root
     conversation = create_live_conversation(mode: "text", status: LiveConversation::PREPARING)
     conversation.turns.create!(role: "user", source: "typed", content: "early")
-    LiveConversations::RootInstructions.stubs(:fetch).returns(LiveConversations::RootInstructions::Result.new(text: "x", source: "s"))
+    LiveConversations::RootInstructions.stubs(:fetch).returns(LiveConversations::RootInstructions::Result.new(text: "x", source: "s", modes: {}))
 
     assert_enqueued_with(job: LiveConversationReplyJob, args: [ conversation.id ]) do
       LiveConversationPrepareJob.perform_now(conversation.id)

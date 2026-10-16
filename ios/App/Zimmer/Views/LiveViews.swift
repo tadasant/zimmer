@@ -1,18 +1,18 @@
 import SwiftUI
 import ZimmerKit
 
-/// Live Mode and Live Voice — the app's side of `/live`. Opened from the session list's
-/// waveform button. Each mode has one current conversation: Resume opens it, New starts a fresh
-/// one (and ends the old). See docs/sessions/live.md.
+/// Live Mode — the app's side of `/live`. Opened from the session list's waveform button. There
+/// is one current conversation: Resume opens it, New starts a fresh one (and ends the old). Voice
+/// is turned on inside the conversation. See docs/sessions/live.md.
 struct LiveHomeView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var call = LiveCall.shared
-    @State private var modes: [LiveModeAvailability] = []
-    @State private var overview = LiveOverview(conversations: [], current: [:])
+    @State private var availability: LiveAvailability?
+    @State private var overview = LiveOverview(conversations: [], current: nil)
     @State private var path: [Int] = []
     @State private var error: String?
-    @State private var starting: LiveMode?
+    @State private var starting = false
     @State private var showingSettings = false
 
     var body: some View {
@@ -21,9 +21,7 @@ struct LiveHomeView: View {
                 if let error {
                     Text(error).foregroundStyle(.red).accessibilityIdentifier("live.error")
                 }
-                ForEach(modes) { mode in
-                    modeSection(mode)
-                }
+                if let availability { liveSection(availability) }
                 if !overview.conversations.isEmpty {
                     Section("Recent conversations") {
                         ForEach(overview.conversations) { conversation in
@@ -67,44 +65,42 @@ struct LiveHomeView: View {
     }
 
     @ViewBuilder
-    private func modeSection(_ mode: LiveModeAvailability) -> some View {
+    private func liveSection(_ availability: LiveAvailability) -> some View {
         Section {
             VStack(alignment: .leading, spacing: 6) {
-                Label(mode.label, systemImage: mode.mode == .voice ? "waveform" : "text.bubble")
-                    .font(.headline)
-                Text(mode.mode == .voice
-                     ? "Talk to Zimmer. It answers out loud and hands real work to background sessions."
-                     : "One continuous typed conversation that hands real work to Zimmer.")
+                Label(availability.label, systemImage: "text.bubble").font(.headline)
+                Text("One continuous conversation with Zimmer. Type, or turn voice on and talk; slow work becomes a background session.")
                     .font(.subheadline).foregroundStyle(.secondary)
-                Text("\(mode.agentRoot) · \(mode.model)").font(.caption.monospaced()).foregroundStyle(.secondary)
-                ForEach(mode.reasons, id: \.self) { reason in
+                Text(([availability.agentRoot] + LiveMode.allCases.compactMap { availability.models[$0] }).joined(separator: " · "))
+                    .font(.caption.monospaced()).foregroundStyle(.secondary)
+                ForEach(availability.reasons, id: \.self) { reason in
                     Text(reason).font(.caption).foregroundStyle(.orange)
                 }
             }
             .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("live.mode.\(mode.mode.rawValue)")
-            if let current = overview.current[mode.mode] {
+            .accessibilityIdentifier("live.mode")
+            if let current = overview.current {
                 NavigationLink(value: current) {
                     Label(call.isActive(for: current) ? "Back to the call" : "Resume conversation", systemImage: "arrow.uturn.forward")
                 }
-                .accessibilityIdentifier("live.resume.\(mode.mode.rawValue)")
+                .accessibilityIdentifier("live.resume")
             }
             Button {
-                Task { await start(mode.mode) }
+                Task { await start() }
             } label: {
-                Label(starting == mode.mode ? "Starting…" : "New conversation", systemImage: "plus.circle")
+                Label(starting ? "Starting…" : "New conversation", systemImage: "plus.circle")
             }
-            .disabled(!mode.available || starting != nil)
-            .accessibilityIdentifier("live.start.\(mode.mode.rawValue)")
+            .disabled(!availability.available || starting)
+            .accessibilityIdentifier("live.start")
         }
     }
 
     private func load() async {
         do {
             let api = model.api
-            async let modes = api.liveModes()
+            async let availability = api.liveAvailability()
             async let overview = api.liveConversations()
-            self.modes = try await modes
+            self.availability = try await availability
             self.overview = try await overview
             error = nil
         } catch {
@@ -112,11 +108,11 @@ struct LiveHomeView: View {
         }
     }
 
-    private func start(_ mode: LiveMode) async {
-        starting = mode
-        defer { starting = nil }
+    private func start() async {
+        starting = true
+        defer { starting = false }
         do {
-            let conversation = try await model.api.startLiveConversation(mode)
+            let conversation = try await model.api.startLiveConversation(.text)
             await load()
             path = [conversation.id]
         } catch {
@@ -126,8 +122,8 @@ struct LiveHomeView: View {
 }
 
 /// One live conversation's thread: what was said or typed, each tool call collapsed to a line,
-/// and the composer (Live Mode) or the call controls (Live Voice). Reads new turns every two
-/// seconds while open, as the session page reads its conversation.
+/// and the composer with Enable voice (typed) or the call controls with Type instead (voice on).
+/// Reads new turns every two seconds while open, as the session page reads its conversation.
 struct LiveConversationView: View {
     let id: Int
     let api: ZimmerAPI
@@ -142,6 +138,7 @@ struct LiveConversationView: View {
     @State private var error: String?
     @State private var confirmingNew = false
     @State private var showingSettings = false
+    @State private var switching = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -150,7 +147,7 @@ struct LiveConversationView: View {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         if let conversation { header(conversation) }
                         if turns.isEmpty, conversation != nil {
-                            Text(conversation?.mode == .voice ? "Press Talk and say what you need." : "Say what you need. Anything slow becomes a background session.")
+                            Text(conversation?.mode == .voice ? "Press Talk and say what you need." : "Say what you need, or turn voice on and talk. Anything slow becomes a background session.")
                                 .font(.subheadline).foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity).padding(.vertical, 24)
                         }
@@ -169,10 +166,16 @@ struct LiveConversationView: View {
             }
             if let conversation, conversation.status.isOpen {
                 Divider()
-                if conversation.mode == .voice { voiceControls(conversation) } else { composer(conversation) }
+                // A call this phone holds keeps its controls even if voice was turned off elsewhere:
+                // the microphone is still open until it hangs up.
+                if conversation.mode == .voice || call.isActive(for: conversation.id) {
+                    voiceControls(conversation)
+                } else {
+                    composer(conversation)
+                }
             }
         }
-        .navigationTitle(conversation?.mode.label ?? "Live")
+        .navigationTitle("Live Mode")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -205,6 +208,13 @@ struct LiveConversationView: View {
             HStack {
                 Text(conversation.title).font(.headline).lineLimit(1)
                 Spacer()
+                if conversation.status.isOpen {
+                    Label(conversation.mode == .voice ? "Voice on" : "Typing", systemImage: conversation.mode == .voice ? "waveform" : "keyboard")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 8).padding(.vertical, 2)
+                        .background(Color.indigo.opacity(conversation.mode == .voice ? 0.15 : 0.06), in: Capsule())
+                        .accessibilityIdentifier("live.mode.\(conversation.mode.rawValue)")
+                }
                 Text(conversation.status.rawValue.capitalized)
                     .font(.caption.weight(.medium))
                     .padding(.horizontal, 8).padding(.vertical, 2)
@@ -231,7 +241,15 @@ struct LiveConversationView: View {
 
     private func composer(_ conversation: LiveConversation) -> some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField("Message \(conversation.mode.label)…", text: $draft, axis: .vertical)
+            Button {
+                Task { await enableVoice() }
+            } label: {
+                Image(systemName: "waveform.circle").font(.title2)
+            }
+            .disabled(switching)
+            .accessibilityLabel("Enable voice")
+            .accessibilityIdentifier("live.voice.enable")
+            TextField("Message Live Mode…", text: $draft, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...5)
                 .accessibilityIdentifier("live.composer")
@@ -272,6 +290,14 @@ struct LiveConversationView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(mine ? .red : .indigo)
                 .accessibilityIdentifier("live.talk")
+                Button {
+                    Task { await disableVoice() }
+                } label: {
+                    Label("Type instead", systemImage: "keyboard")
+                }
+                .buttonStyle(.bordered)
+                .disabled(switching)
+                .accessibilityIdentifier("live.voice.disable")
             }
             Text("Your phone talks to OpenAI directly; Zimmer runs the tools.").font(.caption2).foregroundStyle(.secondary)
         }
@@ -327,6 +353,27 @@ struct LiveConversationView: View {
         }
     }
 
+    /// One press: LiveCall turns voice on for the conversation, then opens the call.
+    private func enableVoice() async {
+        switching = true
+        defer { switching = false }
+        await call.start(id)
+        await readNew()
+        if let message = call.lastError, call.conversationID == id, !call.isActive { self.error = message }
+    }
+
+    private func disableVoice() async {
+        switching = true
+        defer { switching = false }
+        if call.isActive(for: id) { call.hangUp() }
+        do {
+            conversation = try await api.setLiveMode(id, mode: .text)
+            error = nil
+        } catch {
+            self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't turn voice off."
+        }
+    }
+
     private func finish() async {
         if call.isActive(for: id) { call.hangUp() }
         do {
@@ -337,10 +384,9 @@ struct LiveConversationView: View {
     }
 
     private func startNew() async {
-        guard let mode = conversation?.mode else { return }
         if call.isActive(for: id) { call.hangUp() }
         do {
-            let fresh = try await api.startLiveConversation(mode)
+            let fresh = try await api.startLiveConversation(.text)
             replaced(fresh.id)
         } catch {
             self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't start a new conversation."
@@ -411,7 +457,7 @@ struct LiveSettingsButton: View {
 /// the whole deployment: the models, voice, speaking speed and turn detection every live
 /// conversation runs on, and the free text appended to the live model's instructions. Save sends
 /// only the fields edited here, so a change the live agent made meanwhile is not undone; an open
-/// Live Voice call is then brought up to what it can take mid-call. Opened from the gear on the
+/// voice call is then brought up to what it can take mid-call. Opened from the gear on the
 /// Live screens. See docs/sessions/live.md.
 struct LiveSettingsView: View {
     let api: ZimmerAPI
@@ -665,7 +711,7 @@ struct LiveSettingsView: View {
         await write { try await api.restoreLiveGuidance(changeID: change.id) }
     }
 
-    /// One write. The screen then shows what is saved, and an open Live Voice call is sent the
+    /// One write. The screen then shows what is saved, and an open voice call is sent the
     /// `session.update` that brings it up to the new settings.
     private func write(_ request: () async throws -> LiveSettings) async {
         saving = true
