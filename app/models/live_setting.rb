@@ -73,6 +73,12 @@ class LiveSetting < ApplicationRecord
     "medium" => "medium (up to 4s)", "high" => "high — answers soonest (up to 2s)"
   }.freeze
 
+  LISTENING = {
+    "always" => "Always — answers everything it hears (a private space, the car)",
+    "wake_word" => "Wake word — answers only lines that say “Zimmer”",
+    "dynamic" => "Dynamic — answers only lines it judges were said to it"
+  }.freeze
+
   NOISE_REDUCTION = {
     "near_field" => "near field — headphones, a phone at your ear",
     "far_field" => "far field — laptop or car microphone"
@@ -110,6 +116,9 @@ class LiveSetting < ApplicationRecord
     Field.new(key: :voice_max_output_tokens, path: :voice, type: :integer, label: "Voice max output tokens",
               help: "A cap on one spoken reply. Blank is no cap.",
               options: nil, min: 128, max: 4_096),
+    Field.new(key: :voice_listening, path: :voice, type: :enum, label: "Listening",
+              help: "Which lines get an answer. The others are dropped: not answered, not kept in the call, not written to the thread. The microphone still streams to OpenAI in every mode.",
+              options: LISTENING, min: nil, max: nil),
     Field.new(key: :voice_turn_detection, path: :voice, type: :enum, label: "Turn detection",
               help: "How the model decides you have finished talking.",
               options: TURN_DETECTIONS, min: nil, max: nil),
@@ -140,7 +149,7 @@ class LiveSetting < ApplicationRecord
   # The model and voice are fixed for a call's life, and reasoning effort is set
   # with the model; those three apply from the next call.
   MID_CALL_KEYS = %i[
-    voice_speed voice_max_output_tokens voice_turn_detection voice_vad_eagerness voice_vad_threshold
+    voice_speed voice_max_output_tokens voice_listening voice_turn_detection voice_vad_eagerness voice_vad_threshold
     voice_vad_prefix_padding_ms voice_vad_silence_duration_ms voice_noise_reduction voice_transcription_model
   ].freeze
 
@@ -155,6 +164,7 @@ class LiveSetting < ApplicationRecord
     when :voice_model then ENV.fetch("LIVE_VOICE_MODEL", "").presence || "gpt-realtime-2.1-mini"
     when :voice_name then ENV.fetch("LIVE_VOICE_VOICE", "").presence || "marin"
     when :voice_speed then 1.0
+    when :voice_listening then "always"
     when :voice_turn_detection then "semantic_vad"
     when :voice_vad_eagerness then "auto"
     when :voice_vad_threshold then 0.5
