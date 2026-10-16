@@ -29,7 +29,8 @@ final class AccountUITests: XCTestCase {
         // Deployment Information is the last section, below the page's own: a long way down.
         let sha = app.staticTexts["settings.deployment.sha"]
         reveal(app, sha)
-        XCTAssertEqual(sha.label, "b7d4e1c", "the short SHA; the whole one is a long-press away")
+        // The row carries a context menu, so its label reads as the pair "Commit SHA, b7d4e1c".
+        XCTAssertTrue(sha.label.hasSuffix("b7d4e1c"), "the short SHA; the whole one is a long-press away: \(sha.label)")
         let branch = app.staticTexts["settings.deployment.branch"]
         reveal(app, branch)
         XCTAssertEqual(branch.label, "main")
