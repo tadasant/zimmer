@@ -27,15 +27,35 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "overview shows each mode and the key's state without its value" do
-    ManagedSecret.any_instance.stubs(:status).returns(ManagedSecret::Status.new(variable: "LIVE_OPENAI_API_KEY", present: true, provider_badge: "ENV", fingerprint: "abc123def456", missing_permissions: []))
+    status = SecretPresence::Status.new(variable: "LIVE_OPENAI_API_KEY", present: true, provider_badge: "ENV",
+      path: "/zimmer/test/secrets/static/LIVE_OPENAI_API_KEY")
 
-    get live_path
+    SecretPresence.stub(:for, status) do
+      get live_path
+    end
 
     assert_response :success
     assert_select "[data-live-mode-card=text]"
     assert_select "[data-live-mode-card=voice]"
     assert_select "[data-live-key-state=set]"
     assert_no_match(/sk-test-live/, response.body)
+  end
+
+  test "the key panel offers no form, and links the configured console with the path to use" do
+    with_store_console("https://console.example/ui/secrets", "Zimmer test") { get live_path }
+
+    assert_select "#live-openai-key input[type=password]", count: 0
+    assert_select "#live-openai-key form", count: 0
+    assert_select "#live-openai-key a[data-store-console-link][href=?]", "https://console.example/ui/secrets"
+    assert_select "#live-openai-key [data-store-console-note]", text: /Zimmer test/
+    assert_select "#live-openai-key [data-store-console-note] code", text: "/zimmer/test/secrets/static/LIVE_OPENAI_API_KEY"
+  end
+
+  test "with no console configured, the key panel names the path and links nowhere" do
+    with_store_console(nil, nil) { get live_path }
+
+    assert_select "#live-openai-key [data-store-console-link]", count: 0
+    assert_select "#live-openai-key [data-store-console-note] code", text: "/zimmer/test/secrets/static/LIVE_OPENAI_API_KEY"
   end
 
   test "a mode's page offers to start when it can, and resumes the current conversation when there is one" do
@@ -145,5 +165,17 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
 
     assert conversation.reload.ended?
     assert_nil LiveConversation.current("text")
+  end
+
+  private
+
+  def with_store_console(url, store_name)
+    keys = [ SecretsLocation::ENV_STORE_CONSOLE_URL, SecretsLocation::ENV_STORE_CONSOLE_STORE_NAME ]
+    original = keys.to_h { |key| [ key, ENV[key] ] }
+    ENV[keys[0]] = url
+    ENV[keys[1]] = store_name
+    yield
+  ensure
+    original.each { |key, value| ENV[key] = value }
   end
 end
