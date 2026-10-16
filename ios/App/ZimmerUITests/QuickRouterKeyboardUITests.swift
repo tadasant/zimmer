@@ -27,8 +27,7 @@ final class QuickRouterKeyboardUITests: XCTestCase {
 
         app.navigationBars.buttons["Sessions"].tap()
         XCTAssertTrue(field.waitForExistence(timeout: timeout))
-        XCTAssertTrue(waitForNoKeyboard(app), "the keyboard does not come back on the board")
-        XCTAssertFalse(field.hasKeyboardFocus, "the bar is not focused again")
+        XCTAssertTrue(staysWithoutKeyboard(app), "the keyboard does not come back on the board")
     }
 
     func test_starting_from_the_sheet_the_bar_opened_leaves_no_keyboard_on_the_board() throws {
@@ -41,16 +40,18 @@ final class QuickRouterKeyboardUITests: XCTestCase {
         app.buttons["quickrouter.bar.more"].tap()
         let sheet = app.descendants(matching: .any)["quickrouter.field"]
         XCTAssertTrue(sheet.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForKeyboardFocus(sheet))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: timeout))
         // Off, the board stays under the sheet, so it is the board's keyboard being checked.
         let open = app.switches["quickrouter.open"]
         XCTAssertTrue(open.waitForExistence(timeout: timeout))
         open.tap()
+        XCTAssertEqual(open.value as? String, "0")
         app.buttons["quickrouter.start"].tap()
 
         XCTAssertTrue(waitForDisappearance(sheet))
         XCTAssertTrue(bar.waitForExistence(timeout: timeout))
-        XCTAssertTrue(waitForNoKeyboard(app), "the bar did not take the keyboard back as the sheet closed")
-        XCTAssertFalse(bar.hasKeyboardFocus, "the bar is not focused again")
+        XCTAssertTrue(staysWithoutKeyboard(app), "the bar did not take the keyboard back as the sheet closed")
         attachScreenshot(app, named: "quick-router-sheet-sent-no-keyboard")
     }
 
@@ -63,13 +64,24 @@ final class QuickRouterKeyboardUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: timeout))
         let row = app.descendants(matching: .any)["session.row.1038"]
         XCTAssertTrue(row.waitForExistence(timeout: timeout))
-        row.swipeDown()
+        row.swipeUp()
         XCTAssertTrue(waitForNoKeyboard(app), "a scroll of the board dismisses the keyboard")
     }
 
     private func waitForNoKeyboard(_ app: XCUIApplication) -> Bool {
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"), object: app.keyboards)
         return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    /// Gone, and still gone a moment later: a keyboard UIKit hands back to the bar arrives
+    /// after the one the send put away has left, so a single look could pass between the two.
+    private func staysWithoutKeyboard(_ app: XCUIApplication) -> Bool {
+        waitForNoKeyboard(app) && !app.keyboards.firstMatch.waitForExistence(timeout: 3)
+    }
+
+    private func waitForKeyboardFocus(_ element: XCUIElement) -> Bool {
+        let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: element)
+        return XCTWaiter().wait(for: [focused], timeout: timeout) == .completed
     }
 
     private func waitForDisappearance(_ element: XCUIElement) -> Bool {

@@ -371,6 +371,9 @@ struct QuickRouterButton: View {
 
     var body: some View {
         Button {
+            // A composer typing on this screen would get the keyboard back as the sheet closes,
+            // over the session the start opens.
+            dismissKeyboard()
             app.openQuickRouter(parent: parent, page: page)
         } label: {
             Image(systemName: "sparkles")
