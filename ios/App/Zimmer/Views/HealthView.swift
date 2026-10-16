@@ -1,7 +1,7 @@
 import SwiftUI
 import ZimmerKit
 
-/// The web UI's Health page, read-only, section for section in its order: the two site-wide
+/// The web UI's Health page, section for section in its order: the two site-wide
 /// banners when they are up, the overall status, queue recovery mode, then process, session,
 /// system, egress, authentication, the two auto-retry panels, the retry budgets, post-deploy
 /// tasks, cron freshness, log retention, root data, the warm pools, webhook ingest, and the
@@ -35,7 +35,7 @@ struct HealthView: View {
 
     /// The actions the web page puts behind a confirmation, with its words.
     private enum Confirmable: Identifiable {
-        case cleanup(Int), retry(Int), archive, halt, discard(QueuedJobPreview)
+        case cleanup(Int), retry(Int), archive, halt([String]), discard(QueuedJobPreview)
 
         var id: String { key }
 
@@ -55,8 +55,8 @@ struct HealthView: View {
             case let .cleanup(count): return "Are you sure you want to terminate \(count) orphaned process(es)?"
             case let .retry(count): return "Are you sure you want to retry \(count) failed session(s)?"
             case .archive: return "Are you sure you want to move all sessions older than 7 days to trash?"
-            case .halt:
-                return "Halt pollers, triggers, inference, maintenance, default for the whole instance? Agent sessions keep running; everything else stops until you resume or the timer expires."
+            case let .halt(queues):
+                return "Halt \(queues.joined(separator: ", ")) for the whole instance? Agent sessions keep running; everything else stops until you resume or the timer expires."
             case let .discard(preview): return "Discard \(preview.matched) queued \(preview.label)? This is NOT recoverable — those jobs will never run."
             }
         }
@@ -174,9 +174,10 @@ struct HealthView: View {
 
     /// Run one action: its receipt stays under its button, in the server's words, and the
     /// report is read again so the counts it changed move. A cooldown is a wait, not a failure.
-    private func run(_ key: String, _ action: @escaping (ZimmerAPI) async throws -> String) async {
+    private func run(_ key: String, clearing: [String] = [], _ action: @escaping (ZimmerAPI) async throws -> String) async {
         guard busy.insert(key).inserted else { return }
         defer { busy.remove(key) }
+        for other in clearing { receipts[other] = nil }
         do {
             let answer = try await action(app.api)
             receipts[key] = Receipt(text: answer, tone: .done)
@@ -198,9 +199,9 @@ struct HealthView: View {
         case .halt:
             let reason = recoveryReason
             let minutes = recoveryMinutes
-            await run(action.key) { try await $0.enterQueueRecoveryMode(reason: reason, ttlMinutes: minutes).summary }
+            await run(action.key, clearing: Self.recoveryKeys) { try await $0.enterQueueRecoveryMode(reason: reason, ttlMinutes: minutes).summary }
         case let .discard(preview):
-            await run(action.key) {
+            await run(action.key, clearing: ["queued.\(preview.scope.jobClass ?? "")"]) {
                 try await $0.discardQueuedJobs(preview.scope, expectedCount: preview.matched, reason: "discarded from the Health screen in the iOS app").summary
             }
         }
@@ -212,6 +213,11 @@ struct HealthView: View {
         let key = "queued.\(jobClass)"
         do {
             let preview = try await app.api.queuedJobs(QueuedJobScope(jobClass: jobClass))
+            if preview.overCap {
+                receipts[key] = Receipt(text: "\(preview.matched) queued jobs is over the \(preview.maxPerCall ?? 2_000)-per-call cap; the server would refuse to act on them in one call.", tone: .wait)
+                return
+            }
+            receipts[key] = nil
             next(preview)
         } catch {
             let failure = error as? ZimmerError ?? .transport(error)
@@ -221,13 +227,17 @@ struct HealthView: View {
 
     private func reschedule(_ preview: QueuedJobPreview) async {
         let delay = min(max(Int(rescheduleDelay) ?? 0, 0), maxRescheduleDelayMinutes)
-        await run("reschedule.\(preview.scope.jobClass ?? "")") {
+        await run("reschedule.\(preview.scope.jobClass ?? "")", clearing: ["queued.\(preview.scope.jobClass ?? "")"]) {
             try await $0.rescheduleQueuedJobs(preview.scope, expectedCount: preview.matched, delayMinutes: delay).summary
         }
     }
 
     /// The web page's full-width button, with the action's answer under it.
-    private func actionButton(_ title: String, key: String, tone: Color, destructive: Bool = false, action: @escaping () -> Void) -> some View {
+    /// The queue recovery mode's three keys answer in one slot, so a halt's receipt survives the
+    /// report reading the mode as on, and a resume's the mode as off.
+    private static let recoveryKeys = ["enterQueueRecovery", "extendQueueRecovery", "exitQueueRecovery"]
+
+    private func actionButton(_ title: String, key: String, tone: Color, showsReceipt: Bool = true, action: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Button(action: action) {
                 HStack(spacing: 8) {
@@ -242,7 +252,7 @@ struct HealthView: View {
             .buttonStyle(.borderless)
             .disabled(busy.contains(key))
             .accessibilityIdentifier("health.action.\(key)")
-            receipt(key)
+            if showsReceipt { receipt(key) }
         }
     }
 
@@ -297,17 +307,17 @@ struct HealthView: View {
                         Text("Reason: \(reason)").font(.caption).foregroundStyle(Theme.ink)
                     }
                     note("While halted, act on the cause: disable a stampeding trigger on the Triggers tab, discard or reschedule queued jobs by class below, or trash runaway sessions with the maintenance actions.")
-                    actionButton("Resume Job Processing", key: "exitQueueRecovery", tone: Theme.success) {
-                        Task { await run("exitQueueRecovery") { try await $0.exitQueueRecoveryMode().summary } }
+                    actionButton("Resume Job Processing", key: "exitQueueRecovery", tone: Theme.success, showsReceipt: false) {
+                        Task { await run("exitQueueRecovery", clearing: Self.recoveryKeys) { try await $0.exitQueueRecoveryMode().summary } }
                     }
                     Stepper(value: $extendMinutes, in: HealthReport.QueueRecovery.ttlMinutes, step: 5) {
                         Text(verbatim: "Extend by \(extendMinutes) min").font(.caption).foregroundStyle(Theme.inkSoft)
                     }
                     .accessibilityIdentifier("health.recovery.extendMinutes")
-                    actionButton("Extend", key: "extendQueueRecovery", tone: Theme.inkSoft) {
+                    actionButton("Extend", key: "extendQueueRecovery", tone: Theme.inkSoft, showsReceipt: false) {
                         let minutes = extendMinutes
                         let reason = recovery.reason
-                        Task { await run("extendQueueRecovery") { try await $0.enterQueueRecoveryMode(reason: reason, ttlMinutes: minutes).summary } }
+                        Task { await run("extendQueueRecovery", clearing: Self.recoveryKeys) { try await $0.enterQueueRecoveryMode(reason: reason, ttlMinutes: minutes).summary } }
                     }
                 } else {
                     TextField("Reason (shown in the banner and the Slack alert)", text: $recoveryReason, prompt: Text("e.g. trigger stampede, 900 jobs/hour"))
@@ -318,8 +328,10 @@ struct HealthView: View {
                         Text(verbatim: "Auto-resume after \(recoveryMinutes) min").font(.caption).foregroundStyle(Theme.inkSoft)
                     }
                     .accessibilityIdentifier("health.recovery.minutes")
-                    actionButton("Halt Job Processing", key: "enterQueueRecovery", tone: Theme.warning) { confirming = .halt }
+                    actionButton("Halt Job Processing", key: "enterQueueRecovery", tone: Theme.warning, showsReceipt: false) { confirming = .halt(recovery.haltedQueues) }
                 }
+                // Whichever of the three last answered, whichever way the mode now reads.
+                ForEach(Self.recoveryKeys, id: \.self) { key in receipt(key) }
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("health.queueRecovery")
@@ -359,11 +371,14 @@ struct HealthView: View {
                             .accessibilityIdentifier("health.action.discard.\(row.name)")
                         }
                         .font(.caption.weight(.semibold))
-                        receipt("queued.\(row.name)")
-                        receipt("reschedule.\(row.name)")
-                        receipt("discard.\(row.name)")
                     }
                     .padding(.vertical, 2)
+                }
+                // Below the list, not in a row: a discard empties its row, and a reschedule moves
+                // the jobs out of the ready breakdown, so the row an answer is about is the one
+                // the re-read drops.
+                ForEach(receipts.keys.filter { key in ["queued.", "reschedule.", "discard."].contains { key.hasPrefix($0) } }.sorted(), id: \.self) { key in
+                    receipt(key)
                 }
             }
             .accessibilityElement(children: .contain)

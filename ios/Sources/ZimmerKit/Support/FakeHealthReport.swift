@@ -23,6 +23,9 @@ extension FakeZimmerAPI {
         var postDeployRearmed = false
         /// Queued jobs by class and queue, as `QueuedJobMaintenance.breakdown` lists them.
         var queuedJobs: [(jobClass: String, queue: String, count: Int)] = [("SlackTriggerPollerJob", "pollers", 4), ("TriggerEvaluationJob", "triggers", 2)]
+        /// Rescheduled rows: still enqueued, so a maintenance call still counts them, but
+        /// scheduled rather than ready, so the backlog breakdown no longer lists them.
+        var rescheduledJobs: [(jobClass: String, queue: String, count: Int)] = []
         /// When each cooled-down action last ran, for the thirty-second refusal.
         var lastActions: [String: Date] = [:]
 
@@ -71,7 +74,8 @@ extension FakeZimmerAPI {
         let ready = state.queuedJobs.reduce(0) { $0 + $1.count }
 
         let queueStats: [String: Any] = [
-            "pending_count": 8 + ready, "ready_count": ready, "scheduled_count": 8, "claimed_count": 3, "failed_count": 1,
+            "pending_count": 8 + ready + state.rescheduledJobs.reduce(0) { $0 + $1.count }, "ready_count": ready,
+            "scheduled_count": 8 + state.rescheduledJobs.reduce(0) { $0 + $1.count }, "claimed_count": 3, "failed_count": 1,
             "ready_count_by_queue": readyByQueue,
             "ready_count_by_job_class": readyByClass,
             "oldest_ready_age_seconds_by_queue": readyByQueue.mapValues { _ in 48 },
