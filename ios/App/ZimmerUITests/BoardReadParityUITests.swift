@@ -27,10 +27,8 @@ final class BoardReadParityUITests: XCTestCase {
         XCTAssertTrue(merge.label.contains("Agent root zimmer"), "the agent root is on the row: \(merge.label)")
         attachScreenshot(app, named: "ranked-row-facts")
 
-        scrollBelowTheBar(app, sweep)
-        sweep.press(forDuration: 1.2)
-        let promote = app.buttons["Promote to Priority"].firstMatch
-        XCTAssertTrue(promote.waitForExistence(timeout: timeout), "a spot row's long press offers the promotion")
+        let promote = pressForMenu(app, sweep, offering: "Promote to Priority")
+        XCTAssertTrue(promote.exists, "a spot row's long press offers the promotion")
         attachScreenshot(app, named: "ranked-row-menu")
         promote.tap()
         XCTAssertTrue(waitForLabelContaining(sweep, "Priority"), "the sweep is priority: \(sweep.label)")
@@ -40,10 +38,8 @@ final class BoardReadParityUITests: XCTestCase {
         XCTAssertLessThan(sweep.frame.minY, spotQueue.frame.minY, "a promoted row sits in the Priority section")
 
         // And back: a demotion offers itself on a priority row and lands it in the spot queue.
-        scrollBelowTheBar(app, sweep)
-        sweep.press(forDuration: 1.2)
-        let demote = app.buttons["Demote to Spot"].firstMatch
-        XCTAssertTrue(demote.waitForExistence(timeout: timeout), "a priority row's long press offers the demotion")
+        let demote = pressForMenu(app, sweep, offering: "Demote to Spot")
+        XCTAssertTrue(demote.exists, "a priority row's long press offers the demotion")
         demote.tap()
         let demoted = expectation(for: NSPredicate(format: "NOT (label CONTAINS 'Priority')"), evaluatedWith: sweep)
         XCTAssertEqual(XCTWaiter().wait(for: [demoted], timeout: timeout), .completed, "the sweep is spot again: \(sweep.label)")
@@ -57,18 +53,14 @@ final class BoardReadParityUITests: XCTestCase {
         XCTAssertTrue(merge.waitForExistence(timeout: timeout))
         XCTAssertFalse(merge.label.contains("Heartbeat on"), "the fixture's heartbeat starts off")
 
-        scrollBelowTheBar(app, merge)
-        merge.press(forDuration: 1.2)
-        let turnOn = app.buttons["Turn Heartbeat On"].firstMatch
-        XCTAssertTrue(turnOn.waitForExistence(timeout: timeout))
+        let turnOn = pressForMenu(app, merge, offering: "Turn Heartbeat On")
+        XCTAssertTrue(turnOn.exists, "the row's long press offers the heartbeat")
         turnOn.tap()
         XCTAssertTrue(waitForLabelContaining(merge, "Heartbeat on"), "the row wears the heart: \(merge.label)")
         attachScreenshot(app, named: "row-heartbeat")
 
-        scrollBelowTheBar(app, merge)
-        merge.press(forDuration: 1.2)
-        let turnOff = app.buttons["Turn Heartbeat Off"].firstMatch
-        XCTAssertTrue(turnOff.waitForExistence(timeout: timeout), "on, the menu offers off")
+        let turnOff = pressForMenu(app, merge, offering: "Turn Heartbeat Off")
+        XCTAssertTrue(turnOff.exists, "on, the menu offers off")
         turnOff.tap()
         let gone = expectation(for: NSPredicate(format: "NOT (label CONTAINS 'Heartbeat on')"), evaluatedWith: merge)
         XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: timeout), .completed, "the heart leaves the row")
@@ -199,6 +191,23 @@ final class BoardReadParityUITests: XCTestCase {
         let bar = app.navigationBars.firstMatch
         let top = bar.exists ? bar.frame.maxY : 0
         return element.frame.minY >= top && app.frame.contains(CGPoint(x: element.frame.midX, y: element.frame.maxY))
+    }
+
+    /// A row's long press, until its menu offers `item`. Under load the press can land as a
+    /// tap, which opens the session instead (a CI recording shows it), or while the last menu
+    /// is still closing, which opens nothing: come back to the board and press again.
+    private func pressForMenu(_ app: XCUIApplication, _ row: XCUIElement, offering item: String) -> XCUIElement {
+        let button = app.buttons[item].firstMatch
+        for attempt in 0..<3 {
+            if attempt > 0, !row.exists, app.navigationBars.buttons["Sessions"].exists {
+                app.navigationBars.buttons["Sessions"].tap()
+                XCTAssertTrue(row.waitForExistence(timeout: timeout), "back on the board after a press that opened the session")
+            }
+            scrollBelowTheBar(app, row)
+            row.press(forDuration: 1.2)
+            if button.waitForExistence(timeout: 5) { return button }
+        }
+        return button
     }
 
     /// A list row: swipe the list down until the row is clear of the bar.
