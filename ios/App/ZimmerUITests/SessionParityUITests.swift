@@ -191,8 +191,18 @@ final class BoardViewUITests: XCTestCase {
 
     func test_select_several_and_trash_them_with_refusals_reported() throws {
         let app = launch(["-ZimmerFixtureFilter", "active"])
-        app.buttons["board.menu"].tap()
-        app.buttons["Select Sessions"].firstMatch.tap()
+        XCTAssertTrue(row(app, 1027).waitForExistence(timeout: timeout))
+        // Selecting is a state the board has to reach before a row is tapped: on a loaded
+        // simulator the menu opens late, a tap fired at once misses it, and the menu then
+        // stands over the row. So wait for the item, and for edit mode; once more if needed.
+        let done = app.buttons["select.done"]
+        for _ in 0..<2 where !done.exists {
+            app.buttons["board.menu"].tap()
+            let select = app.buttons["Select Sessions"].firstMatch
+            if select.waitForExistence(timeout: 10) { select.tap() }
+            _ = done.waitForExistence(timeout: 10)
+        }
+        XCTAssertTrue(done.exists, "the board is selecting")
 
         // A failed session goes; one with messages queued for it is refused with the
         // server's reason, as the web UI's bulk Trash refuses it.
