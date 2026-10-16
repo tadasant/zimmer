@@ -14,6 +14,12 @@ module LiveConversations
   # git credentials the host already has.
   #
   # AGENTS.md is preferred; CLAUDE.md is accepted for a root that only ships that.
+  #
+  # Beside it the root may ship one style file per mode (`modes/text.md`,
+  # `modes/voice.md`; Mode#style_path): how to answer when typed, how when
+  # spoken. Each is optional. They come back in `modes`, keyed by mode, and
+  # SystemPrompt puts the current mode's after AGENTS.md — Zimmer's own short
+  # default when the root ships none.
   class RootInstructions
     FILENAMES = %w[AGENTS.md CLAUDE.md].freeze
     TIMEOUT_SECONDS = 90
@@ -25,7 +31,10 @@ module LiveConversations
 
     class Error < StandardError; end
 
-    Result = Data.define(:text, :source)
+    # Per mode-style file, smaller still: it is a paragraph or two of style.
+    MAX_MODE_BYTES = 12_000
+
+    Result = Data.define(:text, :source, :modes)
 
     def self.fetch(root, runner: BoundedSubprocess)
       new(root, runner: runner).fetch
@@ -44,12 +53,11 @@ module LiveConversations
         sha = git!(%w[rev-parse HEAD], cwd: dir).strip
 
         FILENAMES.each do |filename|
-          path = [ @root.subdirectory.presence, filename ].compact.join("/")
+          path = root_path(filename)
           text = show(dir, path)
           next if text.nil?
 
-          # NUL is the one byte Postgres text will not store.
-          return Result.new(text: text.byteslice(0, MAX_BYTES).scrub.delete("\u0000"), source: "#{repo_label}@#{sha[0, 12]}:#{path}")
+          return Result.new(text: clean(text, MAX_BYTES), source: "#{repo_label}@#{sha[0, 12]}:#{path}", modes: mode_styles(dir))
         end
       end
 
@@ -60,6 +68,18 @@ module LiveConversations
     end
 
     private
+
+    def root_path(relative) = [ @root.subdirectory.presence, relative ].compact.join("/")
+
+    # NUL is the one byte Postgres text will not store.
+    def clean(text, limit) = text.byteslice(0, limit).scrub.delete("\u0000")
+
+    def mode_styles(dir)
+      LiveConversations::MODES.values.each_with_object({}) do |mode, styles|
+        text = show(dir, root_path(mode.style_path))
+        styles[mode.key] = clean(text, MAX_MODE_BYTES).strip if text.present? && text.strip.present?
+      end
+    end
 
     def clone_into(dir)
       git!([ "clone", "--quiet", "--depth", "1", "--filter=blob:none", "--no-checkout", "--single-branch",

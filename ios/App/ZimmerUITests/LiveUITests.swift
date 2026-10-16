@@ -1,10 +1,10 @@
 import XCTest
 
-/// Live Mode and Live Voice, against the `-ZimmerFixture` in-memory Zimmer: the session list's
-/// waveform button opens Live, a Live Mode conversation is started and typed into and answered,
-/// and a Live Voice thread shows what was said and the call controls. A real call needs a
-/// microphone and OpenAI, neither of which a simulator run has; the call's protocol logic is
-/// `RealtimeConductor`, tested in ZimmerKit.
+/// Live Mode, against the `-ZimmerFixture` in-memory Zimmer: the session list's waveform button
+/// opens Live, one conversation is started and typed into and answered with Enable voice beside
+/// the composer, and a thread with voice on shows what was said, the call controls and Type
+/// instead. A real call needs a microphone and OpenAI, neither of which a simulator run has; the
+/// call's protocol logic is `RealtimeConductor`, tested in ZimmerKit.
 @MainActor
 final class LiveUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -19,15 +19,16 @@ final class LiveUITests: XCTestCase {
         XCTAssertTrue(open.waitForExistence(timeout: timeout), "the waveform button is on the session list")
         open.tap()
 
-        XCTAssertTrue(app.descendants(matching: .any)["live.mode.voice"].waitForExistence(timeout: timeout))
-        XCTAssertTrue(app.descendants(matching: .any)["live.mode.text"].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["live.resume.voice"].exists, "the open Live Voice conversation can be resumed")
+        XCTAssertTrue(app.descendants(matching: .any)["live.mode"].waitForExistence(timeout: timeout), "one Live Mode")
+        XCTAssertFalse(labelled(app, "Live Voice").exists, "no separate Live Voice")
+        XCTAssertTrue(app.descendants(matching: .any)["live.resume"].exists, "the open conversation can be resumed")
         attachScreenshot(app, named: "live-home")
 
-        let start = app.descendants(matching: .any)["live.start.text"].firstMatch
+        let start = app.descendants(matching: .any)["live.start"].firstMatch
         start.tap()
         let composer = app.descendants(matching: .any)["live.composer"].firstMatch
-        XCTAssertTrue(composer.waitForExistence(timeout: timeout), "a new Live Mode conversation opens with its composer")
+        XCTAssertTrue(composer.waitForExistence(timeout: timeout), "a new conversation opens typed, with its composer")
+        XCTAssertTrue(app.buttons["live.voice.enable"].exists, "voice is turned on from inside the conversation")
         composer.tap()
         let typed = "Please look into the flaky poller test"
         composer.typeText(typed)
@@ -48,12 +49,18 @@ final class LiveUITests: XCTestCase {
         XCTAssertTrue(waitForGone(app.descendants(matching: .any)["live.composer"].firstMatch), "an ended conversation takes no more messages")
     }
 
-    func test_a_live_voice_thread_shows_what_was_said_and_the_call_controls() throws {
+    func test_a_thread_with_voice_on_shows_what_was_said_the_call_controls_and_type_instead() throws {
         let app = launch(["-ZimmerFixtureLiveConversation", "21"])
         XCTAssertTrue(labelled(app, "Is the flaky poller test still failing on main?").waitForExistence(timeout: timeout))
         XCTAssertTrue(labelled(app, "quick_router").exists)
         XCTAssertTrue(app.buttons["live.talk"].exists, "Talk starts the call")
         attachScreenshot(app, named: "live-voice-thread")
+
+        app.buttons["live.voice.disable"].tap()
+        let composer = app.descendants(matching: .any)["live.composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: timeout), "Type instead turns the same thread back to typing")
+        XCTAssertTrue(labelled(app, "Is the flaky poller test still failing on main?").exists, "the spoken turns stay in the thread")
+        XCTAssertTrue(app.buttons["live.voice.enable"].exists)
     }
 
     func test_the_gear_on_a_conversation_opens_the_live_settings() throws {

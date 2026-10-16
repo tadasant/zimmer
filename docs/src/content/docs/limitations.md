@@ -8193,9 +8193,9 @@ More edges, all deliberate for now:
   `Sessions::TurnSignal`, which `Session#broadcast_status_change` sends after commit. A write that
   skips callbacks is picked up by the 5-second backstop re-read instead.
 
-## Live Mode and Live Voice have not talked to OpenAI yet
+## Live Mode has not talked to OpenAI yet
 
-Every Zimmer-side path of [the live modes](/sessions/live/) has run: the reply loop, the tool bridge,
+Every Zimmer-side path of [Live Mode](/sessions/live/), typed and spoken, has run: the reply loop, the tool bridge,
 in-process delegation, self-enabling a stdio server, the client-secret mint, and the browser's
 data-channel relay. But they ran against a stand-in that speaks OpenAI's documented wire format,
 because no deployment had `LIVE_OPENAI_API_KEY` when they were built. So nothing has shown that
@@ -8204,9 +8204,9 @@ accepts the session config Zimmer mints, or that the browser's WebRTC offer is a
 what the first conversation after the key is set will prove. The model names were current in
 OpenAI's docs on 2026-10-15; `LIVE_MODE_MODEL` and `LIVE_VOICE_MODEL` change them without a deploy.
 
-## The phone's Live Voice call has not run on a device
+## The phone's voice call has not run on a device
 
-The iOS app's Live Voice builds in CI's Xcode job, and its protocol rules run in ZimmerKit's tests. Its screens
+The iOS app's voice call builds in CI's Xcode job, and its protocol rules run in ZimmerKit's tests. Its screens
 run in the simulator against the fixture. The audio half has not run at all: `LiveAudioEngine`
 (microphone, voice processing, reply playback) and `LiveCall`'s WebSocket to OpenAI. A simulator
 has no microphone worth testing echo cancellation on, and no deployment has the OpenAI key yet.
@@ -8222,7 +8222,7 @@ state between calls — a browser, a logged-in session — keeps none across a c
 (`streamable-http`) servers hold no such cost. A pooled process per conversation would fix both,
 and needs a home that outlives a Puma request, which nothing provides yet.
 
-## A Live Voice tool call holds a web thread for as long as it runs
+## A voice call's tool call holds a web thread for as long as it runs
 
 The browser relays each function call to `POST /live_conversations/:id/tool_calls`, and Rails runs it
 inside that request. That includes a delegated Zimmer tool, a remote server's call (20-second read
@@ -8232,7 +8232,7 @@ to a background session, which keeps most calls short, but nothing enforces it.
 
 ## A spoken question can land in the thread after its answer
 
-Live Voice records a line when OpenAI reports it finished: the human's words on
+A voice call records a line when OpenAI reports it finished: the human's words on
 `conversation.item.input_audio_transcription.completed`, the model's on
 `response.output_audio_transcript.done`. Transcription can finish after the model has already
 answered, so the thread, which is ordered by when lines were recorded, can show an answer above
@@ -8245,13 +8245,13 @@ reads. That includes a Zimmer tool's output, such as a session's details or a sl
 transcript. Background sessions are no different in kind (their model is a vendor's too), but this
 is a second vendor, and nothing redacts a tool result before it goes.
 
-## Live Mode replies share a two-thread lane
+## Typed Live Mode replies share a two-thread lane
 
 `LiveConversationReplyJob` runs on the `inference` queue beside title and status-summary
 generation, which has two threads. A burst of those can delay a typed reply by a job's length. A lane
 of its own would need a `ConnectionBudget` change, and the measured need for one does not exist yet.
 
-## A Live Voice call lives in one browser tab
+## A voice call lives in one browser tab
 
 The call survives Turbo navigation, because the dock that owns it is permanent in the layout. It
 does not survive closing the tab, a full reload, or a deploy that changes the JavaScript bundle
@@ -8293,6 +8293,23 @@ because the tool-call response carries the update. It also does when a person sa
 in the same browser as the call dock. Any other change waits for the next call: a save in another
 tab or on another device, the phone's settings screen during a browser call, or an MCP agent. The
 phone's call sends one when its own Live settings screen saves.
+
+## Voice on a typed AGENTS.md, until the catalog ships mode files
+
+Typing and voice share one agent root, `live-mode`, and how each answers is meant to come from the
+root's `modes/text.md` and `modes/voice.md`. Until the catalog ships them, the voice style is
+Zimmer's short default (`LiveConversations::MODES`), and the `live-mode` AGENTS.md it follows was
+written for a typed thread. Its "How you sound" section asks for chat-style replies. The default
+says it outranks style guidance above it, and comes after AGENTS.md. Nothing has measured how well a realtime
+model honours that against a longer contrary section. The conversation header says when the
+default is in use.
+
+## Voice stays on when a call ends without Type instead
+
+Voice on is a fact about the conversation, not about a call. Closing the tab, a dropped call or a
+hang-up from the dock leaves the conversation in voice, and typing is refused until someone presses
+**Type instead** (or `set_mode`). The page says voice is on and offers both. A call that is still
+connected when another device turns voice off keeps its spoken instructions until it hangs up.
 
 ## Open questions
 

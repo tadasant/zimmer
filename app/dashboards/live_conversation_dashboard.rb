@@ -1,9 +1,9 @@
 require "administrate/base_dashboard"
 
-# Live Mode and Live Voice conversations. Read-only: a conversation is started,
-# talked to and ended through /live and the API (LiveConversations::Actions),
-# which hold its rules — one open conversation per mode, the tool bridge — that
-# an edit form here would walk around.
+# Live Mode conversations. Read-only: a conversation is started, talked to,
+# switched between typing and voice, and ended through /live and the API
+# (LiveConversations::Actions), which hold its rules — one open conversation,
+# the tool bridge — that an edit form here would walk around.
 class LiveConversationDashboard < Administrate::BaseDashboard
   ATTRIBUTE_TYPES = {
     id: Field::Number,
@@ -14,6 +14,7 @@ class LiveConversationDashboard < Administrate::BaseDashboard
     title: Field::String,
     instructions: Field::Text,
     instructions_source: Field::String,
+    mode_instructions: Field::String.with_options(searchable: false),
     mcp_servers: Field::String.with_options(searchable: false),
     mcp_tool_cache: Field::String.with_options(searchable: false),
     error_message: Field::Text,
@@ -29,7 +30,7 @@ class LiveConversationDashboard < Administrate::BaseDashboard
 
   SHOW_PAGE_ATTRIBUTES = %i[
     id mode status agent_root model title instructions_source mcp_servers mcp_tool_cache
-    error_message responding_since last_activity_at ended_at instructions turns created_at updated_at
+    error_message responding_since last_activity_at ended_at instructions mode_instructions turns created_at updated_at
   ].freeze
 
   FORM_ATTRIBUTES = %i[].freeze
