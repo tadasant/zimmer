@@ -2265,7 +2265,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   end
 
   test "Live settings and a voice thread carrying a settings change do not overflow on a phone" do
-    stub_live_roots
+    stub_live_root
     stub_live_key
     conversation = create_live_conversation(mode: "voice")
     LiveConversations::SettingsUpdate.call(

@@ -1,49 +1,78 @@
 import Foundation
 
-/// Live Mode and Live Voice: one continuous conversation with Zimmer, typed or spoken, run by a
-/// fast OpenAI model that hands anything slow to a background session. The server's half is
+/// Live Mode: one continuous conversation with Zimmer, typed or spoken, run by a fast OpenAI
+/// model that hands anything slow to a background session. The server's half is
 /// `LiveConversation` and the `/api/v1/live*` routes (docs/sessions/live.md); this is what the
 /// app reads of it.
+///
+/// Voice is not a separate mode with its own conversation: a conversation is in one of these at
+/// a time and switches mid-thread (`LiveAPI.setLiveMode`).
 public enum LiveMode: String, Codable, Sendable, CaseIterable, Identifiable {
-    /// Live Mode — typed.
+    /// Typed: answered through Chat Completions, on the server.
     case text
-    /// Live Voice — spoken.
+    /// Voice on: a Realtime call the phone holds.
     case voice
 
     public var id: String { rawValue }
 
     public var label: String {
         switch self {
-        case .text: return "Live Mode"
-        case .voice: return "Live Voice"
+        case .text: return "Typed"
+        case .voice: return "Voice"
         }
     }
 }
 
-/// Whether a mode can start, and in words why not (no OpenAI key, or no agent root in the
-/// catalog). `GET /api/v1/live`.
-public struct LiveModeAvailability: Decodable, Sendable, Equatable, Identifiable {
-    public let mode: LiveMode
+/// Whether Live Mode can start, and in words why not (no OpenAI key, or no agent root in the
+/// catalog), with the model each mode answers on. `GET /api/v1/live`.
+public struct LiveAvailability: Decodable, Sendable, Equatable {
     public let label: String
     public let agentRoot: String
-    public let model: String
     public let available: Bool
     public let reasons: [String]
+    public let models: [LiveMode: String]
 
-    public var id: String { mode.rawValue }
-
-    public init(mode: LiveMode, label: String, agentRoot: String, model: String, available: Bool, reasons: [String]) {
-        self.mode = mode
+    public init(label: String = "Live Mode", agentRoot: String, available: Bool, reasons: [String] = [], models: [LiveMode: String] = [:]) {
         self.label = label
         self.agentRoot = agentRoot
-        self.model = model
         self.available = available
         self.reasons = reasons
+        self.models = models
+    }
+
+    /// One entry of `modes`. A server from before voice folded into Live Mode sends only these,
+    /// one per mode with its own root and availability; the typed one stands for the whole.
+    private struct ModeEntry: Decodable {
+        let mode: String
+        let model: String?
+        let agentRoot: String?
+        let available: Bool?
+        let reasons: [String]?
+
+        enum CodingKeys: String, CodingKey {
+            case mode, model, available, reasons
+            case agentRoot = "agent_root"
+        }
     }
 
     enum CodingKeys: String, CodingKey {
-        case mode, label, model, available, reasons
+        case label, available, reasons, modes
         case agentRoot = "agent_root"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let entries = try c.decodeIfPresent([ModeEntry].self, forKey: .modes) ?? []
+        let typed = entries.first { $0.mode == LiveMode.text.rawValue }
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? "Live Mode"
+        agentRoot = try c.decodeIfPresent(String.self, forKey: .agentRoot) ?? typed?.agentRoot ?? "live-mode"
+        available = try c.decodeIfPresent(Bool.self, forKey: .available) ?? typed?.available ?? false
+        reasons = try c.decodeIfPresent([String].self, forKey: .reasons) ?? typed?.reasons ?? []
+        var models: [LiveMode: String] = [:]
+        for entry in entries {
+            if let mode = LiveMode(rawValue: entry.mode), let model = entry.model { models[mode] = model }
+        }
+        self.models = models
     }
 }
 
@@ -55,6 +84,7 @@ public struct LiveConversation: Decodable, Sendable, Equatable, Identifiable {
     }
 
     public let id: Int
+    /// Typed or spoken, right now.
     public let mode: LiveMode
     public let status: Status
     public let title: String
@@ -97,7 +127,7 @@ public struct LiveConversation: Decodable, Sendable, Equatable, Identifiable {
         mode = try c.decode(LiveMode.self, forKey: .mode)
         // A status this version does not know reads as ended: the conversation cannot be used.
         status = Status(rawValue: try c.decode(String.self, forKey: .status)) ?? .ended
-        title = try c.decodeIfPresent(String.self, forKey: .title) ?? mode.label
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? "Live Mode"
         agentRoot = try c.decodeIfPresent(String.self, forKey: .agentRoot) ?? ""
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
         instructionsSource = try c.decodeIfPresent(String.self, forKey: .instructionsSource)
@@ -169,18 +199,19 @@ public struct LiveTurn: Decodable, Sendable, Equatable, Identifiable {
     }
 }
 
-/// `GET /api/v1/live_conversations`: the recent conversations and each mode's open one.
+/// `GET /api/v1/live_conversations`: the recent conversations and the open one.
 public struct LiveOverview: Sendable, Equatable {
     public let conversations: [LiveConversation]
-    public let current: [LiveMode: Int]
+    /// The one open conversation, typed or spoken.
+    public let current: Int?
 
-    public init(conversations: [LiveConversation], current: [LiveMode: Int]) {
+    public init(conversations: [LiveConversation], current: Int?) {
         self.conversations = conversations
         self.current = current
     }
 }
 
-/// What Live Voice opens its audio connection with: a short-lived OpenAI Realtime secret whose
+/// What a voice call opens its audio connection with: a short-lived OpenAI Realtime secret whose
 /// session config Zimmer chose. `POST /api/v1/live_conversations/:id/client_secret`.
 public struct LiveClientSecret: Decodable, Sendable, Equatable {
     public let clientSecret: String

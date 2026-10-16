@@ -1,6 +1,6 @@
 import Foundation
 
-/// What a Live Voice call is doing, for the screen and the car.
+/// What a Live Mode voice call is doing, for the screen and the car.
 public enum LiveVoiceState: String, Sendable, Equatable {
     case idle, connecting, listening, thinking, speaking, working
 
@@ -16,7 +16,7 @@ public enum LiveVoiceState: String, Sendable, Equatable {
     }
 }
 
-/// The Realtime protocol half of a Live Voice call, with no I/O: OpenAI's server events go in,
+/// The Realtime protocol half of a Live Mode voice call, with no I/O: OpenAI's server events go in,
 /// and what to do about them comes out. The same sequencing as the web's call dock
 /// (`live_voice_controller.js`), so the phone and the browser behave alike:
 ///
@@ -198,7 +198,7 @@ public struct RealtimeConductor: Sendable {
     }
 }
 
-/// The audio conversions a Live Voice call needs: the microphone's float samples at whatever
+/// The audio conversions a voice call needs: the microphone's float samples at whatever
 /// rate the hardware runs to the 16-bit mono 24 kHz PCM OpenAI takes, and back for playback.
 public enum RealtimeAudio {
     public static let sampleRate: Double = 24_000

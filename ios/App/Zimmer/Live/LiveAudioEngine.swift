@@ -3,7 +3,7 @@ import Foundation
 import ZimmerKit
 import os
 
-/// Live Voice's audio on the phone: the open microphone up, OpenAI's spoken reply down.
+/// A Live Mode voice call's audio on the phone: the open microphone up, OpenAI's spoken reply down.
 ///
 /// Built the way Motet's Play Live is (`AVLiveAudio` in tadasant/motet): one `AVAudioEngine`
 /// with the input node's voice processing switched on — Apple's echo canceller — and the reply
@@ -21,7 +21,7 @@ final class LiveAudioEngine: @unchecked Sendable {
 
         var description: String {
             switch self {
-            case .microphoneDenied: return "Microphone access is off for Zimmer. Turn it on in Settings → Zimmer to use Live Voice."
+            case .microphoneDenied: return "Microphone access is off for Zimmer. Turn it on in Settings → Zimmer to talk to Live Mode."
             case .noInput: return "No microphone is available."
             }
         }
