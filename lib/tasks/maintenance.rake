@@ -89,7 +89,7 @@ namespace :maintenance do
         puts
 
         # Get all running claude processes — through HostProcessDiscovery, the one
-        # place allowed to ask the host. Under test it is the blind discovery, so a
+        # place that discovers agent processes on the host. Under test it is the blind discovery, so a
         # test database that records no real pid cannot turn every live agent on the
         # machine into an "untracked" process and SIGTERM it (#1368).
         begin
