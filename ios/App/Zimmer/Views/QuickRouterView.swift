@@ -325,8 +325,10 @@ struct QuickRouterBar: View {
                 // the words go and the keyboard with them, as Cancel empties the search.
                 Button("Cancel") { cancel() }
                     .foregroundStyle(Theme.accent)
+                    .fixedSize()
                     .frame(height: 38)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .accessibilityHint("Clears the words and puts the keyboard away")
                     .accessibilityIdentifier("quickrouter.bar.cancel")
             }
         }
