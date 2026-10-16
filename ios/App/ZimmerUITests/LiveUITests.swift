@@ -21,6 +21,7 @@ final class LiveUITests: XCTestCase {
         openLive(app)
         let spoken = labelled(app, "Is the flaky poller test still failing on main?")
         XCTAssertTrue(spoken.waitForExistence(timeout: timeout), "the waveform button lands in the open conversation")
+        // The fixture's open conversation is spoken already; the next test lands in a typed one.
         XCTAssertTrue(element(app, "live.mode.voice").waitForExistence(timeout: timeout), "with voice on")
         XCTAssertTrue(app.buttons["live.talk"].exists, "and the call controls")
         attachScreenshot(app, named: "live-lands-in-voice")
@@ -154,7 +155,9 @@ final class LiveUITests: XCTestCase {
 
     /// The conversation's Back button, to the Live list.
     private func back(_ app: XCUIApplication) {
-        let back = app.navigationBars["Live Mode"].buttons.element(boundBy: 0)
+        let bar = app.navigationBars["Live Mode"]
+        let named = bar.buttons["Live"]
+        let back = named.waitForExistence(timeout: 2) ? named : bar.buttons.element(boundBy: 0)
         XCTAssertTrue(back.waitForExistence(timeout: timeout))
         back.tap()
     }

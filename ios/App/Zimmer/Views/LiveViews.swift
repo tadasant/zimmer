@@ -139,10 +139,10 @@ struct LiveHomeView: View {
         defer { starting = false }
         do {
             let conversation = try await model.api.startLiveConversation(mode)
-            await load()
             var transaction = Transaction()
             transaction.disablesAnimations = !animated
             withTransaction(transaction) { path = [LiveDestination(id: conversation.id, voice: mode == .voice)] }
+            await load()
         } catch {
             self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't start the conversation."
         }
@@ -172,6 +172,8 @@ struct LiveConversationView: View {
     @State private var switching = false
     /// The thread `startsVoice` was acted on for; coming back to it does not turn voice on again.
     @State private var landedIn: Int?
+    /// The landing started this thread's call, and it has not connected yet.
+    @State private var landingCall = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -238,6 +240,13 @@ struct LiveConversationView: View {
         .task(id: id) {
             await landInVoice()
             await poll()
+        }
+        // Back or Done before the landing's call connected: the call was the landing's, not
+        // asked for, so it does not go on with the screen gone. A connected call carries on, as
+        // any call does, and the Live list offers Back to the call.
+        .onDisappear {
+            if landingCall, call.isActive(for: id), call.state == .connecting { call.hangUp() }
+            landingCall = false
         }
         .onChange(of: call.activity) { _, _ in Task { await readNew() } }
     }
@@ -410,14 +419,16 @@ struct LiveConversationView: View {
         guard startsVoice, landedIn != id else { return }
         landedIn = id
         do {
-            _ = try await api.setLiveMode(id, mode: .voice)
+            conversation = try await api.setLiveMode(id, mode: .voice)
         } catch {
             self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't turn voice on."
             return
         }
         guard !AppEnvironment.shared.isFixture else { return }
+        landingCall = true
         Task {
-            await call.start(id)
+            await call.start(id, voiceIsOn: true)
+            landingCall = false
             await readNew()
         }
     }
