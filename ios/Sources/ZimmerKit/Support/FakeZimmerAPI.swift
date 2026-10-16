@@ -45,13 +45,21 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// The class each session's genesis gives it: what *Derive it* goes back to. The samples
     /// choose no class of their own, so it is the class each starts with.
     private var derivedClasses: [Int: String]
+    /// The Inference page: each runtime's roster, the logins in flight, the policy.
+    var inference: FakeInference
+    /// The grant acts as a relay, not as a person: every Inference write is refused with the
+    /// server's 403, and an in-flight login's link and code are withheld.
+    let relayOnly: Bool
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to. `longTranscript`: 1044's
     /// conversation runs to a hundred messages, so its details card is far above the newest.
+    /// `relayOnly`: the sign-in may not act as you (`-ZimmerFixtureRelayOnly`).
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
-                longTranscript: Bool = false) {
+                longTranscript: Bool = false, relayOnly: Bool = false) {
         self.live = live
+        self.relayOnly = relayOnly
+        self.inference = FakeInference(now: now)
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)

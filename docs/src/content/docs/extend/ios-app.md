@@ -297,6 +297,26 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   page then says what it covers, and *All agent roots* widens it again. The burn rate by harness
   and model is on the web page only: `GET /api/v1/costs` does not return it. *Health* is the
   overall status and each section's; its operator actions stay in the browser.
+- **Manages inference accounts** (*More* → *Inference*), the web UI's Inference page over
+  [`GET /api/v1/inference`](/extend/rest-api/#inference): the runtime tabs (Claude Code, Codex,
+  Pi), each account's card with its *Current* marker, status badge, quota hits, the credential
+  verdict ("Credentials verified against Anthropic 3 days ago", "Token refused"), and its 5-hour
+  and 7-day bars with their reset lines; the dry-pool banner when nothing can serve; the pool's
+  counts and averaged windows; and the rotation log, each session a tap away. *Refresh* re-probes
+  one account (a failed probe says so on the card). *Make current* and *Delete* ask first in the
+  web page's words, and the change persists on the server. *Add account* creates one (email,
+  priority, and for Codex an optional API key) and, for an OAuth account, goes straight into the
+  login sheet, which *Authenticate* opens for any account: it polls every two seconds as the
+  page's poller does, offers the verification link to open, shows a Codex one-time code with
+  *Copy* or a field to paste a Claude authorization code back, and says when the credentials were
+  captured, with *Cancel* the whole way. On the Claude Code tab the three policy forms follow — the
+  spot gate's six knobs with the live decision and its hold lines, the backlog top-up's four with
+  the monitor's clocks, and the genesis kinds no trigger starts with *Make spot* / *Make priority*
+  and *Reset to defaults* — each saving the whole form and showing the server's refusal in place
+  ("Spot max concurrent sessions must be less than or equal to 100"). The Pi tab shows the
+  OpenRouter key's state (set or not, provider, fingerprint, last write) and never the key; setting
+  or deleting it, and *Refresh All*, stay on the web page. Every write takes the app's sign-in on a
+  grant that acts as you; a relay-only grant sees the server's 403 under the control it tapped.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
@@ -317,8 +337,8 @@ web it also resumes a failed session and sends the continue nudge to a stalled w
 *Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
 the web says why a row is *drawn under* a session that did not spawn it — reached through a
 senior, or placed there because the tree was cut short — and the app says only that it is: the
-hierarchy nodes do not carry `ceiling_placed`. The admin pages (API keys, inference accounts,
-connectors, settings) stay in the browser; *Open in browser* on any session gets you there.
+hierarchy nodes do not carry `ceiling_placed`. The admin pages (API keys, connectors, settings)
+stay in the browser; *Open in browser* on any session gets you there.
 
 Parts of the web session page wait on the API carrying them. The conversation endpoint returns
 each message's role, words, time and whether it holds a tool call or result, and nothing else, so

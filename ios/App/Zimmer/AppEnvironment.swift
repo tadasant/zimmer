@@ -45,8 +45,11 @@ final class AppEnvironment {
             tokenStore = InMemoryTokenStore(signedIn)
             edgeStore = InMemoryEdgeTokenStore()
             let auth = AuthSession(store: tokenStore, transport: transport)
+            // `-ZimmerFixtureRelayOnly`: the sign-in may not act as you, so the Inference
+            // page's writes are refused with the server's 403.
             connection = Connection(origins: signedIn?.origins, auth: auth, api: FakeZimmerAPI(live: arguments.contains("-ZimmerFixtureLive"),
-                                                                                         longTranscript: arguments.contains("-ZimmerFixtureLongTranscript")), edge: nil)
+                                                                                         longTranscript: arguments.contains("-ZimmerFixtureLongTranscript"),
+                                                                                         relayOnly: arguments.contains("-ZimmerFixtureRelayOnly")), edge: nil)
             isFixture = true
             return
         }
