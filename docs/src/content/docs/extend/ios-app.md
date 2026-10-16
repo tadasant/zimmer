@@ -107,7 +107,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   chips (status, priority class, `#id` and age, each PR coloured by state with its CI dot, board
   visibility) and one line of what runs it (agent root, runtime, model, effort). Then *Where
   things stand* with how fresh it is ("as of 12m · 2 new since", the web's "messages since summary
-  generated") and *Regenerate*; for a failed session, why it failed (`metadata.failure_reason`,
+  generated") and *Regenerate*. The summary is drawn by the transcript's markdown renderer, as
+  the web's Status panel draws it, so its links open on a tap and offer Copy Link on a long press
+  (a [Zimmer link opens the browser](/limitations/#a-zimmer-link-in-the-ios-app-opens-the-browser)); for a failed session, why it failed (`metadata.failure_reason`,
   the exception and exit status, the web's failure details); then one divided card: the **Goal
   check** (the web panel's verdict and one line per criterion, when the goal is a catalog goal
   with checks; its tally names the goal, and a router that recorded no PR of its own says whose
