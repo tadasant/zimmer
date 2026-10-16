@@ -351,7 +351,8 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   overall status and each section's; its operator actions stay in the browser.
 - **Talks to Zimmer, live** ([Live Mode](/sessions/live/)). The waveform button on the session
   list lands in the current conversation with voice on and the call starting, or a new
-  conversation with voice on when none is open. The microphone prompt appears the first time; if
+  conversation with voice on when none is open. Leaving the thread before that call connects hangs
+  it up. The microphone prompt appears the first time; if
   it is refused, the call controls say so and *Type instead* still works. One tap on *Type
   instead* turns voice off in the same thread. *New conversation* on the thread's toolbar, then
   its confirmation, starts a fresh one in the thread's mode. Back leads to the Live list: whether
