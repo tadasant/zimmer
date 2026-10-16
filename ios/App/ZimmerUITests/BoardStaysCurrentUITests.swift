@@ -1,6 +1,6 @@
 import XCTest
 
-/// The board reads again when it comes back to the front, so a session trashed somewhere else
+/// The board reads again when you come back to its tab, so a session trashed somewhere else
 /// leaves it without a pull — against the `-ZimmerFixture` in-memory Zimmer.
 @MainActor
 final class BoardStaysCurrentUITests: XCTestCase {
@@ -10,21 +10,18 @@ final class BoardStaysCurrentUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func test_a_session_trashed_elsewhere_leaves_the_board_when_you_come_back_to_it() throws {
-        // -ZimmerFixtureTrashedElsewhere: 1035 goes to the trash once another session's page is read.
+    func test_a_session_trashed_elsewhere_leaves_the_board_when_you_come_back_to_its_tab() throws {
+        // -ZimmerFixtureTrashedElsewhere: 1035 goes to the trash once the Inbox is read.
         let app = launch(["-ZimmerFixtureTrashedElsewhere", "1035"])
         let trashed = app.descendants(matching: .any)["session.row.1035"]
         XCTAssertTrue(trashed.waitForExistence(timeout: timeout), "on the board at launch")
 
-        let other = app.descendants(matching: .any)["session.row.1038"]
-        XCTAssertTrue(other.waitForExistence(timeout: timeout))
-        other.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["followup.field"].waitForExistence(timeout: timeout))
-        // Long enough on the page that the board's launch read is no longer fresh.
-        _ = XCTWaiter().wait(for: [XCTestExpectation(description: "reading the session")], timeout: 6)
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.tabBars.buttons["Inbox"].tap()
+        // Long enough on the Inbox that the board's launch read is no longer fresh.
+        _ = XCTWaiter().wait(for: [XCTestExpectation(description: "reading the inbox")], timeout: 6)
+        app.tabBars.buttons["Sessions"].tap()
 
-        XCTAssertTrue(other.waitForExistence(timeout: timeout), "back on the board")
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout), "back on the board")
         // Well inside the half-minute poll: the board read on coming back, not on its clock.
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: trashed)
         XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 10), .completed, "the trashed session left without a pull")
