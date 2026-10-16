@@ -11,6 +11,9 @@ struct SessionListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingSettings = false
     @State private var snoozing: SessionSummary?
+    /// A row whose PR is about to be authorized to merge, waiting on the confirmation.
+    @State private var merging: SessionSummary?
+    @State private var confirmingReprioritize = false
     /// A row's *Custom…* snooze, open in its sheet.
     @State private var customSnoozing: SessionSummary?
     @State private var renaming: SessionSummary?
@@ -27,7 +30,7 @@ struct SessionListView: View {
     @State private var reordering = false
 
     var body: some View {
-        promptingList
+        listWithDecisions
             .toolbar { toolbarContent }
             .confirmationDialog(
                 "Snooze until…", isPresented: isSnoozing,
@@ -296,6 +299,13 @@ struct SessionListView: View {
                     } label: {
                         Label("Select Sessions", systemImage: "checkmark.circle")
                     }
+                    if model.view == .yourBoard || model.view == .ranked {
+                        Button {
+                            confirmingReprioritize = true
+                        } label: {
+                            Label("Reprioritize", systemImage: "list.number")
+                        }
+                    }
                     if model.view.isReorderable {
                         Button {
                             reordering = true
@@ -327,6 +337,31 @@ struct SessionListView: View {
         Binding(get: { snoozing != nil }, set: { if !$0 { snoozing = nil } })
     }
 
+    /// The prompting list with Merge's and Reprioritize's confirmations: a separate expression,
+    /// because one modifier chain holding every dialog is more than the type checker will take.
+    private var listWithDecisions: some View {
+        promptingList
+            .confirmationDialog(
+                "Authorize the merge?", isPresented: isMerging,
+                titleVisibility: .visible, presenting: merging
+            ) { session in
+                Button("Merge \(session.mergeablePullRequest?.label ?? "PR")") {
+                    Task { await model.authorizeMerge(session.id) }
+                }
+            } message: { session in
+                Text("Session #\(session.id) is told to check for conflicts, merge \(session.mergeablePullRequest?.label ?? "its PR"), and archive itself. Your tap is the sign-off.")
+            }
+            .confirmationDialog("Reprioritize the board?", isPresented: $confirmingReprioritize, titleVisibility: .visible) {
+                Button("Reprioritize") { Task { await model.reprioritize() } }
+            } message: {
+                Text("Zimmer's reprioritizing session re-ranks this board and writes the order back. You can still drag anything afterwards.")
+            }
+    }
+
+    private var isMerging: Binding<Bool> {
+        Binding(get: { merging != nil }, set: { if !$0 { merging = nil } })
+    }
+
     private var isRenaming: Binding<Bool> {
         Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })
     }
@@ -343,6 +378,7 @@ struct SessionListView: View {
                 newTitle = session.title ?? ""
                 renaming = session
             },
+            merge: { merging = $0 },
             restart: { session in
                 // A failed session restarts at once; one waiting on you is taken over, so the
                 // web UI asks first.
@@ -365,6 +401,7 @@ struct SessionListView: View {
 private struct RowPrompts {
     let customSnooze: (SessionSummary) -> Void
     let rename: (SessionSummary) -> Void
+    let merge: (SessionSummary) -> Void
     let restart: (SessionSummary) -> Void
 }
 
@@ -392,6 +429,14 @@ private struct SwipeableSessionRow: View {
                 Label(session.isFavorite ? "Unfavorite" : "Favorite", systemImage: session.isFavorite ? "star.slash" : "star.fill")
             }
             .tint(Theme.Swipe.favorite)
+            // The web UI's row Merge button: offered only on an open, green PR.
+            if session.mergeablePullRequest != nil {
+                Button { prompts.merge(session) } label: {
+                    Label("Merge", systemImage: "arrow.triangle.merge")
+                }
+                // The web Merge button's green-600.
+                .tint(Theme.Swipe.restore)
+            }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if session.status == .archived {
@@ -462,6 +507,11 @@ private struct SessionContextMenu: View {
     let prompts: RowPrompts
 
     var body: some View {
+        if let pr = session.mergeablePullRequest {
+            Button { prompts.merge(session) } label: {
+                Label("Merge \(pr.label)", systemImage: "arrow.triangle.merge")
+            }
+        }
         Button {
             Task { await model.perform(session.isFavorite ? "Removed from favorites" : "Added to favorites", on: session.id) { try await $0.toggleFavorite(session.id) } }
         } label: {
