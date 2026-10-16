@@ -350,8 +350,14 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   and model is on the web page only: `GET /api/v1/costs` does not return it. *Health* is the
   overall status and each section's; its operator actions stay in the browser.
 - **Talks to Zimmer, live** ([Live Mode](/sessions/live/)). The waveform button on the session
-  list opens Live: whether Live Mode can start (and why not), *Resume conversation* for the open
-  one, *New conversation*, and the recent ones. A conversation is one thread: typed and spoken
+  list lands in the current conversation with voice on and the call starting, or a new
+  conversation with voice on when none is open. The microphone prompt appears the first time; if
+  it is refused, the call controls say so and *Type instead* still works. One tap on *Type
+  instead* turns voice off in the same thread. *New conversation* on the thread's toolbar, then
+  its confirmation, starts a fresh one in the thread's mode. Back leads to the Live list: whether
+  Live Mode can start (and why not), *Resume conversation* for the open one, *New conversation*,
+  and the recent ones. When Live Mode cannot start and nothing is open, the button stops on that
+  list, where the reason shows. A conversation is one thread: typed and spoken
   lines, each tool call as a line that opens to its output (`zimmer → quick_router`), read again
   every two seconds. Typed, it has a composer with *Enable voice* beside it. With voice on, it has
   *Talk* and *Type instead*. Starting a call turns voice on for the conversation (`POST …/mode`),
