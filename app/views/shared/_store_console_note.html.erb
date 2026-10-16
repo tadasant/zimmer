@@ -3,26 +3,35 @@
     SecretsLocation.store_console — or, with none configured, the path alone.
 
     Locals: status (SecretPresence::Status) %>
-<% console = SecretsLocation.store_console %>
+<% console = status.store_configured? ? SecretsLocation.store_console : nil %>
 <div class="mt-4 text-sm text-gray-600" data-store-console-note>
-  <% if console %>
-    <p>
-      <%= status.present? ? "Rotate or delete" : "Set" %> it in
-      <%= link_to "the secrets console", console[:url], target: "_blank", rel: "noopener", class: "font-medium text-indigo-600 hover:text-indigo-500", data: { store_console_link: true } %><% if console[:store_name] %>, store <span class="font-medium text-gray-900"><%= console[:store_name] %></span><% end %>,
-      as a secret parameter at
+  <% if status.store_configured? %>
+    <% verb = if status.in_store? then "Rotate or delete it"
+              elsif status.present? then "It resolves from #{status.provider_badge}. To keep it in the store instead, set it"
+              else "Set it" end %>
+    <p data-store-console-verb>
+      <% if console %>
+        <%= verb %> in
+        <%= link_to "the secrets console", console[:url], target: "_blank", rel: "noopener", class: "font-medium text-indigo-600 hover:text-indigo-500", data: { store_console_link: true } %><% if console[:store_name] %>, store <span class="font-medium text-gray-900"><%= console[:store_name] %></span><% end %>,
+        as a secret parameter at
+      <% else %>
+        <%= verb %> in the secret store Zimmer resolves from, as a secret parameter at
+      <% end %>
+    </p>
+    <p class="mt-1"><code class="font-mono text-xs text-gray-900 break-all"><%= status.path %></code></p>
+    <p class="mt-2 text-xs text-gray-500">
+      Zimmer reads it and never writes it, so there is no form here. A value in the store wins over
+      credentials and the environment, and a new one reaches Zimmer within a minute, with no redeploy.
+      <% unless console %>
+        Set <code class="font-mono">ZIMMER_STORE_CONSOLE_URL</code> to link a console from here;
+        <code class="font-mono">docs/operate/secrets-parameter-store</code> has the commands without one.
+      <% end %>
     </p>
   <% else %>
-    <p>
-      <%= status.present? ? "Rotate or delete" : "Set" %> it in the secret store Zimmer resolves from, as a secret parameter at
+    <p data-store-console-verb>
+      This deployment has no secret store configured, so Zimmer reads
+      <code class="font-mono break-all"><%= status.variable %></code> from its Rails encrypted credentials or the
+      environment. Zimmer never writes it, so there is no form here.
     </p>
   <% end %>
-  <p class="mt-1"><code class="font-mono text-xs text-gray-900 break-all"><%= status.path %></code></p>
-  <p class="mt-2 text-xs text-gray-500">
-    Zimmer reads it and never writes it, so there is no form here. A new value reaches Zimmer within a
-    minute, with no redeploy.
-    <% unless console %>
-      Set <code class="font-mono">ZIMMER_STORE_CONSOLE_URL</code> to link a console from here;
-      <code class="font-mono">docs/operate/secrets-parameter-store</code> has the commands without one.
-    <% end %>
-  </p>
 </div>

@@ -801,7 +801,14 @@ The two pages that depend on a key — the Inference page's Pi tab and `/live`'s
   from"). A store that cannot be consulted reads as Not set, so the page renders
   through an outage.
 - The parameter path, from `ParameterStore::Namespace.parameter_path`.
-- A link to the console, when one is configured.
+- A link to the console, when one is configured. The wording follows where the
+  value came from: "Rotate or delete it" for a value in the store, "It resolves
+  from ENV. To keep it in the store instead, set it" for a value from
+  credentials or the environment, which the console cannot touch, and "Set it"
+  for a missing one.
+- With no Parameter Store link in the chain at all, no path and no link: the
+  note says the variable is read from Rails encrypted credentials or the
+  environment.
 
 There is no value, no fingerprint and no last-set time on either page, because
 nothing on them reads the value.
@@ -810,7 +817,7 @@ The link comes from `SecretsLocation.store_console`, which reads two variables:
 
 | Variable | What it is |
 | --- | --- |
-| `ZIMMER_STORE_CONSOLE_URL` | The console that administers **Zimmer's own store**. Unset, the panel shows the path with no link and says to set this variable. There is no default, so a fresh deployment never links somebody else's console. |
+| `ZIMMER_STORE_CONSOLE_URL` | The console that administers **Zimmer's own store**. Unset, the panel shows the path with no link and says to set this variable. There is no default, so a fresh deployment never links somebody else's console. Only an `http(s)://` address counts; anything else reads as unset. |
 | `ZIMMER_STORE_CONSOLE_STORE_NAME` | Optional. What that console calls the store, for a console that fronts several. The panel names it next to the link. |
 
 Production sets `ZIMMER_STORE_CONSOLE_URL=https://strad.tadasant.com/ui/secrets`

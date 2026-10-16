@@ -60,9 +60,6 @@ Rails.application.routes.draw do
     # session.
     resources :workflow_runs, only: [ :index, :show ]
     resources :logs
-    # Read-only, like the gate ledger above: rows are append-only facts about
-    # what Zimmer wrote to the Parameter Store, and an editable audit log is not
-    # an audit log. The dashboard's FORM_ATTRIBUTES is empty for the same reason.
     # Read-only: live conversations are driven from /live and the API, whose
     # rules (one open per mode, the tool bridge) an edit form would bypass.
     resources :live_conversations, only: [ :index, :show ]

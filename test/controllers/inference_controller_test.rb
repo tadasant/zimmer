@@ -1813,6 +1813,26 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_match "ZIMMER_STORE_CONSOLE_URL", response.body
   end
 
+  test "a key that resolves from ENV is not offered as one the console can rotate or delete" do
+    env_chain = SecretProviders::Chain.new([ pi_fake.provider, SecretProviders::Env.new({ PiAuthProvider::OPENROUTER_API_KEY => PI_KEY }) ])
+    with_store_console(url: "https://console.example/ui/secrets") do
+      SecretProviders.stub(:chain, env_chain) { get inference_url(runtime: "pi") }
+    end
+
+    assert_select "[data-openrouter-key-state=set]"
+    assert_select "#pi_panel [data-store-console-verb]", text: /resolves from ENV/
+    assert_select "#pi_panel [data-store-console-verb]", text: /Rotate or delete/, count: 0
+    assert_no_match(/#{Regexp.escape(PI_KEY)}/, response.body)
+  end
+
+  test "a key in the store is offered as one to rotate or delete in the console" do
+    with_store_console(url: "https://console.example/ui/secrets") do
+      with_pi_chain(value: PI_KEY) { get inference_url(runtime: "pi") }
+    end
+
+    assert_select "#pi_panel [data-store-console-verb]", text: /Rotate or delete it/
+  end
+
   test "no route writes, deletes or reads the key" do
     key_routes = Rails.application.routes.routes.select do |route|
       route.path.spec.to_s.match?(/openrouter_key|openai_key/)

@@ -9,13 +9,21 @@
 # delete, and no fingerprint or other read-back of a value on any surface.
 # Setting or rotating a value happens in the secrets console that administers
 # the store ({SecretsLocation.store_console}), never through Zimmer. So this
-# class answers "is it set" and "where does it belong", and nothing that would
-# need the value to answer.
+# class answers "is it set", "from where", and "where does it belong", and
+# nothing that would need the value to answer.
 class SecretPresence
   # A plain, closed struct: a hash of whatever happened to be handy is how a
   # value ends up on a page by accident.
-  Status = Struct.new(:variable, :present, :provider_label, :provider_badge, :path, keyword_init: true) do
+  #
+  # `store_configured` is whether the chain has a Parameter Store link at all —
+  # without one, `path` names an address nothing reads. `in_store` is whether the
+  # value that resolves came from that link, as opposed to credentials or ENV,
+  # which the console cannot rotate or delete.
+  Status = Struct.new(:variable, :present, :provider_label, :provider_badge, :path,
+    :store_configured, :in_store, keyword_init: true) do
     def present? = !!present
+    def store_configured? = !!store_configured
+    def in_store? = !!in_store
   end
 
   # @param variable [String] an environment-variable name, e.g. LIVE_OPENAI_API_KEY
@@ -29,7 +37,9 @@ class SecretPresence
       present: !provider.nil?,
       provider_label: provider&.label,
       provider_badge: provider&.badge,
-      path: ParameterStore::Namespace.parameter_path(variable)
+      path: ParameterStore::Namespace.parameter_path(variable),
+      store_configured: chain.providers.any? { |link| link.is_a?(SecretProviders::ParameterStoreProvider) },
+      in_store: provider.is_a?(SecretProviders::ParameterStoreProvider)
     )
   end
 

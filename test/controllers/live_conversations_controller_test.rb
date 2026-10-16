@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "support/fake_parameter_store"
 
 class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
   include ActiveJob::TestHelper
@@ -42,7 +43,7 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "the key panel offers no form, and links the configured console with the path to use" do
-    with_store_console("https://console.example/ui/secrets", "Zimmer test") { get live_path }
+    with_store_console("https://console.example/ui/secrets", "Zimmer test") { with_store_chain { get live_path } }
 
     assert_select "#live-openai-key input[type=password]", count: 0
     assert_select "#live-openai-key form", count: 0
@@ -52,10 +53,21 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "with no console configured, the key panel names the path and links nowhere" do
-    with_store_console(nil, nil) { get live_path }
+    with_store_console(nil, nil) { with_store_chain { get live_path } }
 
     assert_select "#live-openai-key [data-store-console-link]", count: 0
     assert_select "#live-openai-key [data-store-console-note] code", text: "/zimmer/test/secrets/static/LIVE_OPENAI_API_KEY"
+  end
+
+  test "with no store configured, the key panel names credentials and the environment and links nowhere" do
+    no_store = SecretProviders::Chain.new([ SecretProviders::Env.new({}) ])
+    with_store_console("https://console.example/ui/secrets", nil) do
+      SecretProviders.stub(:chain, no_store) { get live_path }
+    end
+
+    assert_select "#live-openai-key [data-store-console-link]", count: 0
+    assert_select "#live-openai-key [data-store-console-note] code", text: "/zimmer/test/secrets/static/LIVE_OPENAI_API_KEY", count: 0
+    assert_select "#live-openai-key [data-store-console-verb]", text: /no secret store configured/
   end
 
   test "a mode's page offers to start when it can, and resumes the current conversation when there is one" do
@@ -168,6 +180,10 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   private
+
+  def with_store_chain(&block)
+    SecretProviders.stub(:chain, FakeParameterStore.new.chain, &block)
+  end
 
   def with_store_console(url, store_name)
     keys = [ SecretsLocation::ENV_STORE_CONSOLE_URL, SecretsLocation::ENV_STORE_CONSOLE_STORE_NAME ]

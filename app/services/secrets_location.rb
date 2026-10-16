@@ -81,7 +81,9 @@ class SecretsLocation
     #   configured. `store_name` may be nil.
     def store_console
       url = env_value(ENV_STORE_CONSOLE_URL)
-      return nil if url.nil?
+      # Rendered as an href, so only a web address counts: anything else
+      # (a typo, a `javascript:` URL) reads as no console configured.
+      return nil unless url&.match?(%r{\Ahttps?://\S+\z}i)
 
       { url: url, store_name: env_value(ENV_STORE_CONSOLE_STORE_NAME) }
     end
