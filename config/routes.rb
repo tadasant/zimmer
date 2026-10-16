@@ -68,6 +68,10 @@ Rails.application.routes.draw do
     # rules (one open per mode, the tool bridge) an edit form would bypass.
     resources :live_conversations, only: [ :index, :show ]
     resources :live_conversation_turns, only: [ :index, :show ]
+    # Read-only too: the Live settings are written through SettingsUpdate, which
+    # validates and records every change, on /live/settings, REST and MCP.
+    resources :live_settings, only: [ :index, :show ]
+    resources :live_setting_changes, only: [ :index, :show ]
     # Read-only, both of them. A delivery row is what Webhooks::SlackController verified and
     # accepted, and a claim is a Slack firing path's record that a message has fired. Nothing here
     # is hand-authored, and an edited or deleted claim would re-fire a message the other path
