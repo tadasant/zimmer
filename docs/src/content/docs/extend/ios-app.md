@@ -235,11 +235,12 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   running or about to start, and every twenty otherwise (not while the queue's manager is open,
   and never for a session in the trash); the board reads again every thirty seconds while it is
   the screen in front and you are not selecting or reordering (ten seconds after a read that
-  failed). Both read at once when the app comes back to the front, and the board also reads at once
-  when you come back to it from a session's page or another tab, unless it was read in the last
-  five seconds — so a session trashed on the web, by a router or by its own agent leaves the board
-  as you return to it. Only the newest read may replace the board, and not one that was asked
-  before a row action on the phone, so a slow answer never puts a trashed row back.
+  failed). Both read at once when the app comes back to the front, and the board tries again two
+  seconds later if that read fails. The board also reads whenever you close a session's page, and
+  when you choose the Sessions tab again (unless it was read in the last five seconds), so a
+  session trashed on the web, by a router or by its own agent leaves the board as you return to
+  it. A read never replaces the board once a later read has, nor when it was asked before a row
+  action on the phone, so a slow answer never puts a trashed row back.
   The web UI streams these changes; the app asks, so a change on a board you are looking at can
   take up to thirty seconds to show. A session
   opens at its newest message, as the web UI's transcript does, and follows new ones while you are

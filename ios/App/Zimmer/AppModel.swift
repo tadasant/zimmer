@@ -330,17 +330,24 @@ final class AppModel: ObservableObject {
             listIncomplete = !result.complete
             error = nil
         } catch {
-            freshness.fail(ticket)
-            if !silently || (error as? ZimmerError) == .unauthorized { handle(error) }
+            // A read cancelled with the screen that asked (the board pushed under a session,
+            // another tab chosen) did not fail, and an older read's failure is not worth a
+            // banner over what a newer one brings.
+            if !Task.isCancelled {
+                freshness.fail(ticket)
+                if freshness.isNewest(ticket), !silently || (error as? ZimmerError) == .unauthorized { handle(error) }
+            }
         }
         await refreshEdgeExpiry()
         await refreshUnreadCount()
     }
 
-    /// The board's read of its own (`BoardPoller`): silent, one at a time, and with `ifStale`,
-    /// only when the list was not read moments ago.
+    /// The board's read of its own (`BoardPoller`): silent, one at a time, and only of the
+    /// board in front — not one under an open session or another tab, and not while a selection
+    /// or a drag is in hand. With `ifStale`, only when the list was not read moments ago.
     func pollBoard(ifStale: Bool = false) async {
-        guard !isPolling, !ifStale || freshness.isStale() else { return }
+        guard tab == .sessions, path.isEmpty, !isEditingBoard, !isPolling,
+              !ifStale || freshness.isStale() else { return }
         isPolling = true
         defer { isPolling = false }
         await refresh(silently: true)
@@ -661,6 +668,7 @@ final class AppModel: ObservableObject {
         log.error("request failed: \(String(describing: zimmerError), privacy: .public)")
         if zimmerError == .unauthorized {
             isSignedIn = false
+            freshness.noteLocalChange()
             sessions = []
         }
         self.error = zimmerError

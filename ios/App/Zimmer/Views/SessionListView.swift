@@ -59,8 +59,8 @@ struct SessionListView: View {
             }
             .environment(\.editMode, $editMode)
             // A refresh while rows are selected or being dragged would move them under a finger.
-            // Select and Reorder only: `isEditing` is also true for the transient edit mode
-            // SwiftUI may engage for a row's swipe, which must not stop the board reading.
+            // Select and Reorder only, not the `transient` mode SwiftUI's docs say it may
+            // engage during a swipe: a swipe must never leave the board unable to read.
             .onChange(of: editMode) { _, mode in model.isEditingBoard = mode == .active }
             // Selecting hides the tab bar, as Mail does: the Trash bar takes its place at the bottom.
             .toolbar(editMode.isEditing ? .hidden : .visible, for: .tabBar)

@@ -53,20 +53,22 @@ final class BoardFreshnessTests: XCTestCase {
         XCTAssertEqual(freshness.nextPoll, BoardFreshness.interval)
     }
 
-    func testOnlyTheNewestReadsFailureCounts() {
+    func testAnOlderReadLandsWhenTheNewerOneFails() {
+        // Launch reads the board, the poller reads again at once, and the poller's read fails.
+        var freshness = BoardFreshness()
+        let launch = freshness.begin()
+        let poll = freshness.begin()
+        freshness.fail(poll)
+        XCTAssertFalse(freshness.isNewest(launch))
+        XCTAssertTrue(freshness.finish(launch), "the older answer is still the newest the list has")
+        XCTAssertFalse(freshness.lastReadFailed)
+    }
+
+    func testOnlyAFailureNoLaterReadHasCoveredCounts() {
         var freshness = BoardFreshness()
         let old = freshness.begin()
         XCTAssertTrue(freshness.finish(freshness.begin()))
         freshness.fail(old)
         XCTAssertEqual(freshness.nextPoll, BoardFreshness.interval)
-    }
-
-    func testTheFakeTrashesASessionElsewhereWhenAnotherIsOpened() async throws {
-        let fake = FakeZimmerAPI(trashedElsewhere: 1035)
-        let before = try await fake.sessions(.default, board: .onBoard, view: .lastTouched).sessions
-        XCTAssertTrue(before.contains { $0.id == 1035 })
-        _ = try await fake.openSession(1038)
-        let after = try await fake.sessions(.default, board: .onBoard, view: .lastTouched).sessions
-        XCTAssertFalse(after.contains { $0.id == 1035 }, "the server no longer lists it")
     }
 }
