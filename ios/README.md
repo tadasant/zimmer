@@ -92,7 +92,7 @@ nothing is impossible.
 | `ios/bin/testflight check` | Unsigned Release archive + assertions on the archived app, and the entitlements guard | Xcode |
 | `ios/bin/testflight upload` | The same archive, signed at export, uploaded, processing awaited | Xcode + ASC key |
 | `ios/bin/ui-test [--configuration Debug\|Staging] [--api-base-url …] [--artifacts dir]` | Runs `ZimmerUITests` on a simulator it picks by `simctl` JSON, records video, photographs every key screen in both appearances | Xcode + simulator |
-| `ios/bin/ui-test --smoke [--also ios/App/ZimmerUITests/X.swift …]` | The per-PR subset: the session list, the build's server, one session opened, answered and trashed, plus every class in each `--also` file. No photographs | Xcode + simulator |
+| `ios/bin/ui-test --smoke [--also ios/App/ZimmerUITests/X.swift …]` | The per-PR subset: the session list, the build's server, a session started from a sentence and opened, plus every class in each `--also` file. No photographs | Xcode + simulator |
 
 On Linux: `ZIMMER_SWIFT_SHIM=$(ios/bin/install-swift-toolchain)/swift ios/bin/ci-swift`.
 
