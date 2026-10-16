@@ -519,6 +519,10 @@ The build signs in the `aps-environment` entitlement only when the `testflight` 
 
 ## CarPlay
 
+Every request the app makes carries `X-Zimmer-Client: ios/<version>`. A follow-up spoken in CarPlay's
+voice loop says `carplay/<version>` and `voice_dictation`, so the session receiving it is told it
+was dictated in the car ([turn sources](/sessions/turn-sources/)).
+
 Zimmer's CarPlay scene is a **voice-based conversational app**, Apple's category for apps whose
 primary way in is talking (`com.apple.developer.carplay-voice-based-conversation`, iOS 26.4+). None of
 the other categories fit: Zimmer isn't audio, navigation, messaging, or a driving task. When the

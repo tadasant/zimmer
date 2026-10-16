@@ -2444,7 +2444,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     session.reload
     # Verify the pending follow-up prompt was stored in metadata
-    assert_equal "Please fix the bug", session.metadata["pending_follow_up_prompt"]
+    assert_equal TurnSource.new(surface: "web", modality: "text").annotate("Please fix the bug"),
+      session.metadata["pending_follow_up_prompt"]
     assert_equal "waiting", session.status
     assert_redirected_to session_path(session)
   end

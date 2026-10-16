@@ -16,8 +16,13 @@ module LiveConversations
 
     MESSAGE_MAX_LENGTH = 8_000
 
-    def initialize(conversation)
+    # @param client_surface [String, nil] the TurnSource surface of the client
+    #   making this call. Each action a client takes on the conversation records it
+    #   as the one driving it now, so a delegation the live model makes next is
+    #   tagged with where the person actually is. nil leaves it alone.
+    def initialize(conversation, client_surface: nil)
       @conversation = conversation
+      @client_surface = LiveConversation.normalize_client_surface(client_surface)
     end
 
     # A typed message. Answered by LiveConversationReplyJob — or, when it
@@ -34,6 +39,7 @@ module LiveConversations
       raise Refused, "Message can't be blank." if text.empty?
       raise Refused, "Message is too long (maximum #{MESSAGE_MAX_LENGTH} characters)." if text.length > MESSAGE_MAX_LENGTH
 
+      note_client!
       turn = @conversation.turns.create!(role: "user", source: "typed", content: text)
       @conversation.touch_activity!
       LiveConversationReplyJob.perform_later(@conversation.id)
@@ -48,6 +54,7 @@ module LiveConversations
       raise Refused, "mode must be one of: #{LiveConversations.mode_keys.join(', ')}" unless LiveConversations.mode_keys.include?(mode_key.to_s)
 
       was_voice = @conversation.voice?
+      note_client!
       @conversation.switch_mode!(mode_key)
       # A message typed before voice went on was never answered: the typed
       # path answers it now.
@@ -75,6 +82,7 @@ module LiveConversations
       raise Refused, "name is required." if name.blank?
       raise Refused, "call_id is required." if call_id.blank?
 
+      note_client!
       bridge = ToolBridge.new(@conversation)
       result = bridge.execute(name, arguments, call_id: call_id)
       response = { output: result.output, error: result.error, tools_changed: result.tools_changed, turn_id: result.turn.id }
@@ -114,6 +122,14 @@ module LiveConversations
     end
 
     private
+
+    # A single column write, and not through callbacks: which client last spoke is
+    # bookkeeping for the turn-source note, not a change the page re-renders for.
+    def note_client!
+      return if @client_surface.nil? || @conversation.client_surface == @client_surface
+
+      @conversation.update_column(:client_surface, @client_surface)
+    end
 
     def require_open!
       return if @conversation.open?
