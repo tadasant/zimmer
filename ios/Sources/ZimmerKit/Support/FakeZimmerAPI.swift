@@ -58,6 +58,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var nextKeyID = 3
     /// Set by `signOutEverywhere`: the grant this app signed in on is gone.
     public private(set) var signedOutEverywhere = false
+    /// Live Mode / Live Voice: see FakeZimmerAPI+Live.swift.
+    var liveState = FakeLiveState.sample()
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to. `longTranscript`: 1044's
