@@ -296,8 +296,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   screen (the web's bubble), which opens the sheet. The sheet is the web bubble's panel: the
   words, photos and files from the paperclip, and under *Advanced* the harness, the model and
   *Run as spot* (wait for quota room, at the top of the spot queue), each picker leading with
-  the default rather than preselecting it. The sparkles in the bar open the sheet with the words
-  typed so far. A start from the sheet empties the bar too; closing the sheet without starting
+  the default rather than preselecting it. While the field has the keyboard, a *Cancel* beside it
+  empties it and puts the keyboard away, as the search box's *Cancel* does. The sparkles in the bar
+  open the sheet with the words typed so far. A start from the sheet empties the bar too; closing the sheet without starting
   (*Cancel*, or a swipe down) gives the bar the sheet's words, edits included. The sheet cannot
   be closed while a start is in flight, and a failed start keeps the words where they were
   typed. Opened from a session, the new one threads under it (*Thread under #id*, the bubble's
