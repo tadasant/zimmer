@@ -25,6 +25,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public private(set) var sentAttachments: [Int: [[MessageAttachment]]] = [:]
     /// Every Quick Router start, in order, so a test can see what went with the words.
     public private(set) var quickRouterRequests: [QuickRouterRequest] = []
+    private var prompts: [Int: [PendingElicitation]] = FakeZimmerAPI.samplePrompts()
     /// The PRs a Merge tap has authorized, so a second tap answers as already sent.
     private var mergesAuthorized: Set<URL> = []
     private var reprioritizerID: Int?
@@ -143,14 +144,24 @@ public actor FakeZimmerAPI: ZimmerAPI {
                 conversations[id] = messages
             }
         }
-        let all = conversations[id] ?? []
+        // As the server: each message names its place in the transcript. Here a
+        // conversation is its own transcript, so that is its position.
+        let all = (conversations[id] ?? []).enumerated().map { index, message in
+            var message = message
+            message.transcriptIndex = message.transcriptIndex ?? index
+            return message
+        }
         let window = min(max(limit, 1), Conversation.maxLimit)
         return Conversation(messages: Array(all.suffix(window)), total: all.count, truncated: all.count > window)
     }
 
     public func earlierMessages(_ id: Int, before: Int, limit: Int) async throws -> Conversation {
         _ = try find(id)
-        let all = conversations[id] ?? []
+        let all = (conversations[id] ?? []).enumerated().map { index, message in
+            var message = message
+            message.transcriptIndex = message.transcriptIndex ?? index
+            return message
+        }
         let end = min(max(before, 0), all.count)
         let start = max(end - min(max(limit, 1), Conversation.maxLimit), 0)
         return Conversation(messages: Array(all[start..<end]), total: all.count, truncated: start > 0, firstPosition: start)
@@ -1222,6 +1233,58 @@ extension FakeZimmerAPI {
         let result = now ? try await sendNow(id, prompt: named) : try await followUp(id, prompt: named)
         sentAttachments[id, default: []].append(attachments)
         return result
+    }
+}
+
+// MARK: - Prompts and forks
+//
+// As the server: an answer resolves the prompt, so it leaves the list, and a fork is a new
+// session in `needs_input` holding the conversation up to the message it was made at.
+extension FakeZimmerAPI {
+    public func pendingElicitations(_ id: Int) async throws -> [PendingElicitation] {
+        _ = try find(id)
+        return prompts[id] ?? []
+    }
+
+    public func answerElicitation(_ elicitation: Int, answer: ElicitationAnswer, content: String?) async throws {
+        guard let owner = prompts.first(where: { $0.value.contains { $0.id == elicitation } })?.key else {
+            throw ZimmerError.http(status: 404, message: "Elicitation not found for: \(elicitation)")
+        }
+        prompts[owner]?.removeAll { $0.id == elicitation }
+        if prompts[owner]?.isEmpty ?? true, let index = all.firstIndex(where: { $0.id == owner }) {
+            all[index].status = answer == .cancel ? .needsInput : .running
+        }
+    }
+
+    public func fork(_ id: Int, at transcriptIndex: Int) async throws -> SessionSummary {
+        let source = try find(id)
+        let history = try await conversation(id).messages
+        guard history.contains(where: { $0.transcriptIndex == transcriptIndex }) else {
+            throw ZimmerError.http(status: 422, message: "Message index \(transcriptIndex) is out of range")
+        }
+        let forkID = nextID
+        nextID += 1
+        let forked = SessionSummary(id: forkID, title: "Fork of \(source.title ?? "#\(source.id)")", status: .needsInput,
+                                    agentRuntime: source.agentRuntime, prompt: source.prompt, createdAt: Date(), updatedAt: Date())
+        all.append(forked)
+        conversations[forkID] = history.filter { ($0.transcriptIndex ?? 0) <= transcriptIndex }
+        return forked
+    }
+
+    static func samplePrompts() -> [Int: [PendingElicitation]] {
+        [1035: [PendingElicitation(
+            id: 71,
+            requestID: "req-staging-migrate",
+            message: "Run the pending migrations against staging?",
+            toolName: "run_migrations",
+            context: "3 migrations, the largest backfills 2.1M rows.",
+            expiresAt: Date().addingTimeInterval(50 * 60),
+            form: ElicitationForm(fields: [
+                .init(key: "database", title: "Database", kind: .choice(["staging", "staging-replica"]), required: true),
+                .init(key: "batch_size", title: "Batch size", detail: "Rows per backfill batch.", kind: .number(integer: true), placeholder: "1000"),
+                .init(key: "dry_run", title: "Dry run", kind: .toggle),
+            ])
+        )]]
     }
 }
 

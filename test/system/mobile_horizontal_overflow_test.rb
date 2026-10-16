@@ -1394,29 +1394,30 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-inference-fleet-top-up-375.png")
   end
 
-  # The Pi tab carries the longest unbroken tokens on the surface — a store path,
-  # a GCP project id, provider-qualified model ids, and a list of dotted IAM
-  # permission strings — which is signature 4, the one Zimmer's UI runs into most.
-  # Both write-path states are checked because they render different markup: the
-  # closed one is the permission list, the open one is the form and its buttons.
-  test "the Pi tab does not overflow horizontally on a phone in either write state" do
-    # Built lazily, one store each. An eagerly-built array over one memoized fake
-    # renders the SAME state twice — the second builder's permissions win before
-    # the loop body ever runs — and the test then passes without the closed state
-    # having been on screen at all.
-    { closed: -> { closed_write_path_secret }, open: -> { open_write_path_secret } }.each do |label, build|
-      ManagedSecret.stub(:openrouter_key, build.call) do
-        visit inference_path(runtime: PiAuthProvider::RUNTIME)
-        assert_selector "#pi_panel"
-        # Assert the state actually rendered, so a silent fallback to the other
-        # branch cannot masquerade as coverage.
-        if label == :closed
-          assert_selector "[data-openrouter-write-blocked]"
-        else
-          assert_selector "form[action='#{openrouter_key_inference_path}']"
-        end
+  # The Pi tab and the Live key panel carry long unbroken tokens — a store path,
+  # a console URL, provider-qualified model ids — which is signature 4, the one
+  # Zimmer's UI runs into most. Both states of the console note are checked
+  # because they render different markup: a link and a store name, or the path
+  # and the setting that would add a link.
+  test "the Pi tab and the Live key panel do not overflow horizontally on a phone" do
+    store = FakeParameterStore.new
+    store.seed_secret(PiAuthProvider::OPENROUTER_API_KEY, "sk-or-v1-a-realistically-long-key-value")
 
-        assert_no_horizontal_overflow("inference-pi-#{label}")
+    { linked: "https://secrets-console.example.com/ui/secrets", unlinked: nil }.each do |label, url|
+      with_env(SecretsLocation::ENV_STORE_CONSOLE_URL => url,
+        SecretsLocation::ENV_STORE_CONSOLE_STORE_NAME => url && "Zimmer production") do
+        SecretProviders.stub(:chain, store.chain) do
+          visit inference_path(runtime: PiAuthProvider::RUNTIME)
+          assert_selector "#pi_panel [data-store-console-note]"
+          # Assert the state actually rendered, so a silent fallback to the other
+          # branch cannot masquerade as coverage.
+          assert_selector "#pi_panel [data-store-console-link]", count: url ? 1 : 0
+          assert_no_horizontal_overflow("inference-pi-#{label}")
+
+          visit live_path
+          assert_selector "#live-openai-key [data-store-console-note]"
+          assert_no_horizontal_overflow("live-key-#{label}")
+        end
       end
     end
   end
@@ -2255,32 +2256,11 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     end
   end
 
-  # A store Zimmer can read and cannot write — the state every deployment is in
-  # until the writer IAM grant lands. Renders the missing-permissions list.
-  def closed_write_path_secret
-    store = FakeParameterStore.new
-    store.held_permissions = [
-      ParameterStore::Capabilities::RENDER_PARAMETER,
-      ParameterStore::Capabilities::READ_SECRET_VALUE
-    ]
-    pi_secret(store, identity: :resolver)
-  end
-
-  # The grant in place and a key already set: the form, the Replace and Delete
-  # buttons, and the fingerprint row.
-  def open_write_path_secret
-    store = FakeParameterStore.new
-    store.held_permissions = ParameterStore::Capabilities::PROBED_PERMISSIONS
-    store.seed_secret(ManagedSecret::OPENROUTER_API_KEY, "sk-or-v1-a-realistically-long-key-value")
-    pi_secret(store, identity: :writer)
-  end
-
-  # A FRESH store per call. Sharing one across the two states is what let the
-  # second builder's permissions decide both of them.
-  def pi_secret(store, identity:)
-    ManagedSecret.new(ManagedSecret::OPENROUTER_API_KEY, chain: store.chain,
-      writer: ParameterStore::Writer::Configuration.new(
-        client: store.write_client, identity: identity, reason: nil
-      ))
+  def with_env(values)
+    original = values.keys.to_h { |key| [ key, ENV[key] ] }
+    values.each { |key, value| ENV[key] = value }
+    yield
+  ensure
+    original.each { |key, value| ENV[key] = value }
   end
 end
