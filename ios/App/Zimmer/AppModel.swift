@@ -64,9 +64,16 @@ final class AppModel: ObservableObject {
     @Published var showingQuickRouter = false
     /// The board is in select or reorder mode: a refresh then would move rows under a finger.
     var isEditingBoard = false
+    /// Which reads may replace the list, and when the board reads again.
+    private(set) var freshness = BoardFreshness()
+    /// The board's own read is out: a second would ask the same question.
+    private var isPolling = false
     /// The session the Quick Router was opened from, so the new one threads under it, as
     /// the web bubble on a session page sends `parent_session_id`.
     var quickRouterParent: Int?
+    /// The screen the Quick Router was opened on, as the web bubble sends the page it was typed
+    /// on: a session's page, with its web URL and title. Nil from the board and the tabs.
+    var quickRouterPage: QuickRouterPage?
     /// Words typed in the board's bar, carried into the sheet when it is opened for more. `nil`
     /// when the sheet was opened from anywhere else.
     var quickRouterDraft: String?
@@ -75,9 +82,15 @@ final class AppModel: ObservableObject {
     @Published var quickRouterBarHandback: String?
     /// The full new-session form (the pencil in the Sessions toolbar).
     @Published var showingNewSession = false
+    /// Live Mode (LiveHomeView), from the session list's waveform button.
+    @Published var showingLive = false
+    /// Debug fixture: the live conversation LiveHomeView opens straight into.
+    var fixtureLiveConversation: Int?
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
     /// since a UI test cannot drive the system photo and file pickers.
     var fixtureAttachesFile = false
+    /// `-ZimmerFixtureOpenPrompt`: the opened session shows its first prompt's form, once.
+    var fixtureOpensPrompt = false
     /// `-ZimmerFixtureCustomSnooze`: the opened session's custom snooze sheet starts open, so
     /// `ios/bin/ui-test` can photograph the date picker.
     var fixtureOpensCustomSnooze = false
@@ -151,9 +164,26 @@ final class AppModel: ObservableObject {
            arguments.indices.contains(flag + 1), let id = Int(arguments[flag + 1]) {
             path = [id]
         }
-        if arguments.contains("-ZimmerFixtureQuickRouter") { showingQuickRouter = true }
+        if arguments.contains("-ZimmerFixtureQuickRouter") {
+            // Opened on a session's page, the sheet carries that page, as the corner button does.
+            if let id = path.first {
+                Task {
+                    if let session = try? await connection.api.session(id).session { openQuickRouter(from: session) }
+                }
+            } else {
+                showingQuickRouter = true
+            }
+        }
         if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
+        // Live: the home sheet, or straight into one conversation's thread.
+        if arguments.contains("-ZimmerFixtureLiveHome") { showingLive = true }
+        if let flag = arguments.firstIndex(of: "-ZimmerFixtureLiveConversation"),
+           arguments.indices.contains(flag + 1), let id = Int(arguments[flag + 1]) {
+            fixtureLiveConversation = id
+            showingLive = true
+        }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
+        fixtureOpensPrompt = arguments.contains("-ZimmerFixtureOpenPrompt")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
         fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
         fixtureTypesSlash = arguments.contains("-ZimmerFixtureSlash")
@@ -234,12 +264,19 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Open the Quick Router sheet. `parent` is the session it was opened on; `draft` is the
-    /// board bar's words, given only by the bar.
-    func openQuickRouter(parent: Int? = nil, draft: String? = nil) {
+    /// Open the Quick Router sheet. `parent` is the session it was opened on and `page` that
+    /// session's page; `draft` is the board bar's words, given only by the bar.
+    func openQuickRouter(parent: Int? = nil, page: QuickRouterPage? = nil, draft: String? = nil) {
         quickRouterParent = parent
+        quickRouterPage = page
         quickRouterDraft = draft
         showingQuickRouter = true
+    }
+
+    /// The Quick Router from a session's page: the page is that session's, by its web URL, as
+    /// the bubble reads `window.location`.
+    func openQuickRouter(from session: SessionSummary) {
+        openQuickRouter(parent: session.id, page: QuickRouterPage.session(session, url: webURL(for: session.id)))
     }
 
     /// Start a Quick Router session and open it.
@@ -247,13 +284,20 @@ final class AppModel: ObservableObject {
         await startQuickRouter(QuickRouterRequest(prompt: prompt))
     }
 
-    /// Start a Quick Router session with the sheet's choices and open it.
-    func startQuickRouter(_ request: QuickRouterRequest) async -> Bool {
+    /// Start a Quick Router session with the sheet's choices and open it — or, with `open`
+    /// off, the web bubble's plain *Submit*: the session starts and this screen stays.
+    func startQuickRouter(_ request: QuickRouterRequest, open: Bool = true) async -> Bool {
         do {
             let id = try await connection.api.startQuickRouter(request)
             showingQuickRouter = false
             quickRouterParent = nil
-            path.append(id)
+            quickRouterPage = nil
+            if open {
+                path.append(id)
+            } else {
+                notice = "Started session #\(id) in the background"
+                Haptics.success()
+            }
             await refresh()
             return true
         } catch {
@@ -267,6 +311,7 @@ final class AppModel: ObservableObject {
     func refresh(silently: Bool = false) async {
         if !silently { isLoading = true }
         defer { if !silently { isLoading = false } }
+        let ticket = freshness.begin()
         let requested = effectiveFilters
         let board = board
         let view = view
@@ -279,17 +324,36 @@ final class AppModel: ObservableObject {
             } else {
                 result = try await connection.api.search(query, contents: scope == .transcripts, filters: requested, board: board)
             }
-            // A slower answer to an older request must not overwrite a newer list.
+            // A slower answer to an older request must not overwrite a newer list, nor put
+            // back a row trashed here since it was asked.
             guard requested == effectiveFilters, board == self.board, view == self.view,
-                  query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+                  query == searchText.trimmingCharacters(in: .whitespacesAndNewlines),
+                  freshness.finish(ticket) else { return }
             sessions = result.sessions
             listIncomplete = !result.complete
             error = nil
         } catch {
-            if !silently || (error as? ZimmerError) == .unauthorized { handle(error) }
+            // A read cancelled with the screen that asked (the board pushed under a session,
+            // another tab chosen) did not fail, and an older read's failure is not worth a
+            // banner over what a newer one brings.
+            if !Task.isCancelled {
+                freshness.fail(ticket)
+                if freshness.isNewest(ticket), !silently || (error as? ZimmerError) == .unauthorized { handle(error) }
+            }
         }
         await refreshEdgeExpiry()
         await refreshUnreadCount()
+    }
+
+    /// The board's read of its own (`BoardPoller`): silent, one at a time, and only of the
+    /// board in front — not one under an open session or another tab, and not while a selection
+    /// or a drag is in hand. With `ifStale`, only when the list was not read moments ago.
+    func pollBoard(ifStale: Bool = false) async {
+        guard tab == .sessions, path.isEmpty, !isEditingBoard, !isPolling,
+              !ifStale || freshness.isStale() else { return }
+        isPolling = true
+        defer { isPolling = false }
+        await refresh(silently: true)
     }
 
     func refreshUnreadCount() async {
@@ -351,6 +415,7 @@ final class AppModel: ObservableObject {
     func perform(_ done: String, on id: Int, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
         do {
             var updated = try await action(connection.api)
+            freshness.noteLocalChange()
             withAnimation {
                 if let index = sessions.firstIndex(where: { $0.id == id }) {
                     // An action answers with the session alone: the row's summary stays until
@@ -385,6 +450,7 @@ final class AppModel: ObservableObject {
         do {
             switch try await connection.api.trash(session.id, force: force) {
             case let .trashed(updated):
+                freshness.noteLocalChange()
                 withAnimation {
                     if let index = sessions.firstIndex(where: { $0.id == session.id }) {
                         if belongsOnList(updated) { sessions[index] = updated } else { sessions.remove(at: index) }
@@ -474,6 +540,23 @@ final class AppModel: ObservableObject {
             await refresh()
             notice = message
             Haptics.success()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
+    /// The Ranked row's *Promote to priority* and *Demote to spot* (which lands at the head of
+    /// the spot queue). A promotion starts a waiting session; one that could not says why.
+    func reschedule(_ id: Int, priority: Bool) async {
+        do {
+            let change = try await connection.api.setSchedulingClass(id, priority: priority)
+            let done = priority ? "Promoted to priority" : "Demoted to spot, top of the queue"
+            notice = change.startMessage.map { "\(done). \($0)" } ?? done
+            error = nil
+            if change.startOutcome == "refused" { Haptics.failure() } else { Haptics.success() }
+            // The list is the server's order: a row that changed class belongs in the other half.
+            await refresh()
         } catch {
             handle(error)
             Haptics.failure()
@@ -570,6 +653,7 @@ final class AppModel: ObservableObject {
         await PushCoordinator.shared.unregister()
         await connection.auth.signOut()
         await connection.edge?.forget()
+        freshness.noteLocalChange()
         sessions = []
         signedInOrigins = nil
         edgeExpiry = nil
@@ -587,6 +671,7 @@ final class AppModel: ObservableObject {
         log.error("request failed: \(String(describing: zimmerError), privacy: .public)")
         if zimmerError == .unauthorized {
             isSignedIn = false
+            freshness.noteLocalChange()
             sessions = []
         }
         self.error = zimmerError

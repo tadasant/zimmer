@@ -91,19 +91,23 @@ nothing is impossible.
 | `ios/bin/build-app [--configuration …] [--api-base-url https://…]` | Simulator build, unsigned | Xcode |
 | `ios/bin/testflight check` | Unsigned Release archive + assertions on the archived app, and the entitlements guard | Xcode |
 | `ios/bin/testflight upload` | The same archive, signed at export, uploaded, processing awaited | Xcode + ASC key |
-| `ios/bin/ui-test [--configuration Debug\|Staging] [--api-base-url …] [--artifacts dir]` | Runs `ZimmerUITests` on a simulator it picks by `simctl` JSON, records video, photographs the sign-in and session-list screens | Xcode + simulator |
+| `ios/bin/ui-test [--configuration Debug\|Staging] [--api-base-url …] [--artifacts dir]` | Runs `ZimmerUITests` on a simulator it picks by `simctl` JSON, records video, photographs every key screen in both appearances | Xcode + simulator |
+| `ios/bin/ui-test --smoke [--also ios/App/ZimmerUITests/X.swift …]` | The per-PR subset: the session list, the build's server, a session started from a sentence and opened, plus every class in each `--also` file. No photographs | Xcode + simulator |
 
 On Linux: `ZIMMER_SWIFT_SHIM=$(ios/bin/install-swift-toolchain)/swift ios/bin/ci-swift`.
 
 CI (`.github/workflows/ci.yml`): `ios-changes` (no checkout, `ubuntu-latest`) decides whether
 anything under `ios/**` or the three iOS workflows moved, and fails open to "build". `ios`
-(GitHub-hosted `macos-latest`, free on a public repo) runs `build-app`, `testflight check`,
-`ci-swift` and `ui-test --configuration Staging --api-base-url https://ui-test.invalid`, and
-keeps the `ios-ui-test` artifact (video, screenshots, result bundle, and the app's crash reports in
-`crashes/`, whose crashed thread is also printed in the job's log). `ios_swift_linux`
-(self-hosted) runs `ci-swift` on Linux. All three carry the fork-PR guard and are in
-`all-checks-pass`. `ios-ui-tests.yml` is the same simulator run on demand, against a server named
-by the *name* of a repository variable.
+(GitHub-hosted `macos-latest`, free on a public repo) runs `testflight check`, `ci-swift` and
+`ui-test --smoke --configuration Staging --api-base-url https://ui-test.invalid`, adding an
+`--also` for each UI test file the change touches, and keeps the `ios-ui-test` artifact (video,
+result bundle, and the app's crash reports in `crashes/`, whose crashed thread is also printed in
+the job's log). It does not run `build-app`: `ui-test` builds the same app for the simulator it runs on.
+`ios_swift_linux` (self-hosted) runs `ci-swift` on Linux. All three carry the fork-PR guard and are
+in `all-checks-pass`. `ios-ui-tests.yml` is the full run, every UI test and every screenshot, on
+each push to `main` that touches `ios/**`, and on demand: against a branch
+(`gh workflow run ios-ui-tests.yml --ref <branch>`) or against a server named by the *name* of a
+repository variable.
 
 ## Configurations and what a build is pointed at
 
@@ -254,3 +258,8 @@ Each unblocks the next:
   factor. The UI test drives an in-memory fixture, because an agent cannot complete a Google
   sign-in.
 - **In Xcode**: the project has only ever been read by `xcodebuild` in CI.
+- **Live Mode's voice audio**: `App/Zimmer/Live/LiveAudioEngine.swift` and `LiveCall`'s WebSocket to
+  OpenAI have not run. A simulator has no microphone worth testing echo cancellation on, and no
+  deployment has the OpenAI key yet. The Realtime sequencing they drive (`RealtimeConductor`) and
+  the PCM conversion (`RealtimeAudio`) are covered by ZimmerKit's tests, and the screens by
+  `LiveUITests` against the fixture.

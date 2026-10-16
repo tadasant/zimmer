@@ -6080,24 +6080,24 @@ field ([#999](https://github.com/tadasant/zimmer/issues/999)), so a value seeded
 resolves correctly whatever bytes it carries, and the fake now models a console-written parameter
 so the round trip is covered. Three things still are not:
 
-1. **`ParameterStore::WriteClient` writes literal bytes and declares no encoding**, so the Inference
-   page's Pi tab and `SecretsLocation#envelope_json` both still create the parameter this section
-   describes. A value carrying JSON structure written that way still 400s every `:render`, and
-   `ManagedSecret#write` reports the failed verify as *"the store refused the write"* — which is
-   false: the write landed, and nothing rolls it back.
+1. **`ParameterStore::WriteClient` writes literal bytes and declares no encoding**, and so does the
+   envelope `SecretsLocation#envelope_json` renders on the Connectors page for a human to store. Both
+   create the parameter this section describes, and a value carrying JSON structure stored either
+   way 400s every `:render`. The namespace migration is the only caller of `WriteClient`; its verify
+   reads back through the chain, so it catches the 400 and removes the canonical pair it created.
+   Set such a value in the Secrets Console instead.
 2. **`NamespaceMigration` refuses rather than mis-copying.** It reads decoded values and can only
    write literal ones, so a variable whose pre-rename envelope declares an encoding is reported as
    `:unsupported_encoding` and left in place; re-seed it at the canonical path through the console.
    The migration therefore cannot finish on its own for console-written values.
 3. **The fake still does not model `:render`'s validation**, so the blind spot above is unchanged
    for anything that reaches `:render` with structural bytes.
-4. **Rotating a console-written value from Zimmer breaks it.** `WriteClient#upsert` adds a
-   literal-bytes Secret Manager version and writes an envelope only when the parameter has none, so
-   the console's `"encoding":"base64url"` envelope stays in place over bytes that are not base64url.
-   The resolver then refuses the value (or, for bytes that happen to be valid base64url, decodes
-   them to the wrong value), and `ManagedSecret#write`'s read-back verify reports the write as
-   failed. Rotate a value through the same surface that created it: if it was written in the
-   Secrets Console, rotate it there.
+
+Rotate a value through the same surface that created it. A `gcloud secrets versions add` of literal
+bytes under a console-written `"encoding":"base64url"` envelope leaves bytes that are not
+base64url behind that envelope, and the resolver refuses the value (or, for bytes that happen to be
+valid base64url, decodes them to the wrong value). If it was written in the Secrets Console, rotate
+it there.
 
 ## A store value that is not valid UTF-8 is refused
 
@@ -8023,6 +8023,26 @@ the web UI: queued messages, attachments, the new-session form, catalog and mode
 notifications, triggers, costs and health are still browser-only — see
 [Not in the app yet](/extend/ios-app/#not-in-the-app-yet).
 
+A session created from the app is priority by a rule on the create (`POST /api/v1/sessions` writes
+`scheduling_class: priority` when the app sends none), not by a genesis of its own: it is recorded
+as `api`. So *Derive it* on a phone-created session resolves its class from the `api` genesis — spot,
+unless Settings says otherwise — where *Derive it* on a web-created session resolves to priority from
+`web_ui`. The two look the same on the page and go different ways.
+
+The Quick Router's page context from the app is five facts off the session's header — id and title,
+status, agent root, class, goal — where the web bubble sends the whole page, its DOM reduced to
+markdown, up to 20,000 characters. The router sees less of a session from the phone than from the
+browser.
+
+## A Zimmer link in the iOS app opens the browser
+
+The web's Status panel rewrites a summary's link to one of the session's own transcript messages
+into an in-page `#message-N` anchor (`SessionStatusSummary#summary_markdown`), so a tap scrolls the
+transcript. The API sends the stored text, and the app has no handler for Zimmer's own URLs. So in
+the app's *Where things stand* and its transcript, a link to a message, or to another session,
+opens the web page in the browser rather than in the app. A pull request, issue or CI run link
+opens the same either way.
+
 ## The transcript archive's deadline cannot stop a run that is stuck
 
 `TranscriptArchiveJob` stops between sessions once its ten-minute `RUN_DEADLINE` has passed
@@ -8173,9 +8193,9 @@ More edges, all deliberate for now:
   `Sessions::TurnSignal`, which `Session#broadcast_status_change` sends after commit. A write that
   skips callbacks is picked up by the 5-second backstop re-read instead.
 
-## Live Mode and Live Voice have not talked to OpenAI yet
+## Live Mode has not talked to OpenAI yet
 
-Every Zimmer-side path of [the live modes](/sessions/live/) has run: the reply loop, the tool bridge,
+Every Zimmer-side path of [Live Mode](/sessions/live/), typed and spoken, has run: the reply loop, the tool bridge,
 in-process delegation, self-enabling a stdio server, the client-secret mint, and the browser's
 data-channel relay. But they ran against a stand-in that speaks OpenAI's documented wire format,
 because no deployment had `LIVE_OPENAI_API_KEY` when they were built. So nothing has shown that
@@ -8183,6 +8203,16 @@ because no deployment had `LIVE_OPENAI_API_KEY` when they were built. So nothing
 accepts the session config Zimmer mints, or that the browser's WebRTC offer is answered. Those are
 what the first conversation after the key is set will prove. The model names were current in
 OpenAI's docs on 2026-10-15; `LIVE_MODE_MODEL` and `LIVE_VOICE_MODEL` change them without a deploy.
+
+## The phone's voice call has not run on a device
+
+The iOS app's voice call builds in CI's Xcode job, and its protocol rules run in ZimmerKit's tests. Its screens
+run in the simulator against the fixture. The audio half has not run at all: `LiveAudioEngine`
+(microphone, voice processing, reply playback) and `LiveCall`'s WebSocket to OpenAI. A simulator
+has no microphone worth testing echo cancellation on, and no deployment has the OpenAI key yet.
+It is built the way Motet's device-tested Play Live audio is, and that is the extent of the
+evidence. The CarPlay entry is inert with the rest of the scene
+([#1273](https://github.com/tadasant/zimmer/issues/1273)).
 
 ## A live conversation's stdio servers start from scratch on every call
 
@@ -8192,7 +8222,7 @@ state between calls — a browser, a logged-in session — keeps none across a c
 (`streamable-http`) servers hold no such cost. A pooled process per conversation would fix both,
 and needs a home that outlives a Puma request, which nothing provides yet.
 
-## A Live Voice tool call holds a web thread for as long as it runs
+## A voice call's tool call holds a web thread for as long as it runs
 
 The browser relays each function call to `POST /live_conversations/:id/tool_calls`, and Rails runs it
 inside that request. That includes a delegated Zimmer tool, a remote server's call (20-second read
@@ -8202,7 +8232,7 @@ to a background session, which keeps most calls short, but nothing enforces it.
 
 ## A spoken question can land in the thread after its answer
 
-Live Voice records a line when OpenAI reports it finished: the human's words on
+A voice call records a line when OpenAI reports it finished: the human's words on
 `conversation.item.input_audio_transcription.completed`, the model's on
 `response.output_audio_transcript.done`. Transcription can finish after the model has already
 answered, so the thread, which is ordered by when lines were recorded, can show an answer above
@@ -8215,18 +8245,71 @@ reads. That includes a Zimmer tool's output, such as a session's details or a sl
 transcript. Background sessions are no different in kind (their model is a vendor's too), but this
 is a second vendor, and nothing redacts a tool result before it goes.
 
-## Live Mode replies share a two-thread lane
+## Typed Live Mode replies share a two-thread lane
 
 `LiveConversationReplyJob` runs on the `inference` queue beside title and status-summary
 generation, which has two threads. A burst of those can delay a typed reply by a job's length. A lane
 of its own would need a `ConnectionBudget` change, and the measured need for one does not exist yet.
 
-## A Live Voice call lives in one browser tab
+## A voice call lives in one browser tab
 
 The call survives Turbo navigation, because the dock that owns it is permanent in the layout. It
 does not survive closing the tab, a full reload, or a deploy that changes the JavaScript bundle
 (Turbo reloads the page when its tracked assets change). Tool calls also relay through that tab, so
 a tab the browser has frozen stops running them.
+
+## Most Live settings choices have not been tried against OpenAI
+
+The [Live settings](/sessions/live/#live-settings) offer what OpenAI's docs listed on 2026-10-16:
+`gpt-6-sol`, `gpt-realtime-2.1` and `gpt-realtime-2`, the voices, reasoning efforts, VAD knobs and
+transcription models. Zimmer's tests prove the settings reach the request. They do not prove OpenAI
+accepts each combination; `gpt-realtime-2.1-mini` taking `xhigh`, for example, is unverified. A
+refused combination does not take Live Mode down: the reply or the call retries once on the defaults
+and says so on the page. The list is fixed in `LiveSetting`, not read from OpenAI, so a new model is
+a deploy. Only models that take function tools on the path that uses them are offered.
+
+## Live Mode's typed path cannot use the strongest GPT-6 models
+
+Typed turns go through Chat Completions with function tools. There, OpenAI's GPT-6 family takes
+tools only from `gpt-6-luna` and `gpt-6-sol`, and only at `reasoning_effort: "none"`. `gpt-6-astra`
+and `gpt-6.1-sol` take tools only through the Responses API. So the strongest text choice is
+`gpt-6-sol` with no reasoning, and there is no text reasoning-effort setting. Moving `TextReply` to
+the Responses API would open both up.
+
+## The live agent can rewrite its own guidance, including when talked into it
+
+The Live mode guidance is appended to every live turn, and the live model can replace it with
+`update_live_settings`, as it was asked to be able to. That also means text the model reads (a tool
+result, a session's output) could talk it into rewriting its standing instructions for every later
+conversation. Nothing prevents that. What bounds it is that it is visible: every agent write is in
+the settings history with its conversation, shows in the thread as a settings-change note, and can
+be undone with **Restore the guidance from before this edit**.
+
+## A settings change reaches an open voice call only through the client holding it
+
+An open call takes a mid-call change (speed, turn detection, the guidance) as a `session.update`, and
+only the client holding the call can send one. It does when the live model changes a setting itself,
+because the tool-call response carries the update. It also does when a person saves `/live/settings`
+in the same browser as the call dock. Any other change waits for the next call: a save in another
+tab or on another device, the phone's settings screen during a browser call, or an MCP agent. The
+phone's call sends one when its own Live settings screen saves.
+
+## Voice on a typed AGENTS.md, until the catalog ships mode files
+
+Typing and voice share one agent root, `live-mode`, and how each answers is meant to come from the
+root's `modes/text.md` and `modes/voice.md`. Until the catalog ships them, the voice style is
+Zimmer's short default (`LiveConversations::MODES`), and the `live-mode` AGENTS.md it follows was
+written for a typed thread. Its "How you sound" section asks for chat-style replies. The default
+says it outranks style guidance above it, and comes after AGENTS.md. Nothing has measured how well a realtime
+model honours that against a longer contrary section. The conversation header says when the
+default is in use.
+
+## Voice stays on when a call ends without Type instead
+
+Voice on is a fact about the conversation, not about a call. Closing the tab, a dropped call or a
+hang-up from the dock leaves the conversation in voice, and typing is refused until someone presses
+**Type instead** (or `set_mode`). The page says voice is on and offers both. A call that is still
+connected when another device turns voice off keeps its spoken instructions until it hangs up.
 
 ## Open questions
 

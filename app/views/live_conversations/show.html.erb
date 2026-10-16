@@ -1,6 +1,14 @@
 <% conversation = @conversation %>
 <%= turbo_stream_from conversation.stream_name %>
-<div class="min-h-screen bg-gray-50" data-controller="live-thread" data-live-conversation-id="<%= conversation.id %>">
+<div class="min-h-screen bg-gray-50" data-controller="live-thread"
+     data-live-conversation-id="<%= conversation.id %>"
+     data-live-conversation-mode="<%= conversation.mode %>"
+     data-conversation-url="<%= live_conversation_path(conversation) %>"
+     data-mode-url="<%= mode_live_conversation_path(conversation) %>"
+     data-client-secret-url="<%= client_secret_live_conversation_path(conversation) %>"
+     data-tool-calls-url="<%= tool_calls_live_conversation_path(conversation) %>"
+     data-turns-url="<%= turns_live_conversation_path(conversation) %>"
+     data-session-update-url="<%= session_update_live_conversation_path(conversation) %>">
   <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col min-h-screen">
     <div class="flex items-center justify-between gap-2 mb-4">
       <%= link_to root_path, class: "inline-flex items-center text-sm text-gray-500 hover:text-gray-700", "aria-label" => "Back to sessions" do %>
@@ -11,7 +19,10 @@
       <% end %>
       <div class="flex items-center gap-2">
         <%= link_to "All live", live_path, class: "text-sm text-gray-500 hover:text-gray-700 px-2 py-1" %>
-        <%= button_to "New conversation", live_conversations_path, params: { mode: conversation.mode }, method: :post,
+        <%= link_to live_settings_path, class: "text-gray-500 hover:text-gray-700 p-1", title: "Live settings", "aria-label" => "Live settings", data: { live_settings_link: true } do %>
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+        <% end %>
+        <%= button_to "New conversation", live_conversations_path, method: :post,
             form: { data: { turbo_confirm: (conversation.open? ? "End this conversation and start a new one?" : nil), action: "submit->live-thread#hangUp" } },
             class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
         <% if conversation.open? %>
@@ -27,20 +38,29 @@
     <div id="<%= conversation.turns_dom_id %>" data-live-thread-target="turns" class="flex-1 mt-4 space-y-3 pb-4">
       <% if @turns.empty? %>
         <p class="text-sm text-gray-400 text-center py-8" data-live-empty>
-          <%= conversation.voice? ? "Press Talk and say what you need." : "Say what you need. Anything slow becomes a background session." %>
+          <%= conversation.voice? ? "Press Talk and say what you need." : "Say what you need, or turn voice on and talk. Anything slow becomes a background session." %>
         </p>
       <% end %>
       <%= render partial: "live_conversations/turn", collection: @turns, as: :turn %>
     </div>
 
     <% if conversation.open? %>
-      <div class="sticky bottom-0 bg-gray-50 pt-2 pb-4">
+      <%# Clear of the Quick Router bubble, fixed bottom-right, on a phone. %>
+      <div class="sticky bottom-0 bg-gray-50 pt-2 pb-4 pr-14 sm:pr-0">
         <% if conversation.text? %>
           <%= form_with url: messages_live_conversation_path(conversation), method: :post,
               data: { live_thread_target: "composer", action: "turbo:submit-end->live-thread#reset" },
               class: "flex items-end gap-2" do |form| %>
+            <%# Switches this conversation to voice and starts the call in one
+                press (live-thread#enableVoice). %>
+            <button type="button" data-action="live-thread#enableVoice" data-live-enable-voice
+                    title="Enable voice: talk instead of typing, in this same conversation" aria-label="Enable voice"
+                    class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50">
+              <%= render "live/mode_icon", mode: LiveConversations.mode("voice"), css: "h-5 w-5 text-indigo-600" %>
+              <span class="hidden sm:inline">Enable voice</span>
+            </button>
             <%= form.text_area :content, rows: 2, required: true, maxlength: LiveConversations::Actions::MESSAGE_MAX_LENGTH,
-                placeholder: "Message #{conversation.live_mode.label}…",
+                placeholder: "Message #{LiveConversations::LABEL}…",
                 data: { live_thread_target: "input", action: "keydown->live-thread#submitOnEnter" },
                 class: "flex-1 min-w-0 rounded-lg border border-gray-300 px-3 py-2 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500 resize-none" %>
             <%= form.submit "Send", class: "shrink-0 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-indigo-600 hover:bg-indigo-700" %>
@@ -49,18 +69,18 @@
           <%# Talk hands this conversation to the call dock in the layout
               (shared/_live_voice_dock), which owns the WebRTC connection so a
               Turbo navigation does not drop the call. %>
-          <div class="flex items-center justify-center gap-3">
+          <div class="flex flex-wrap items-center justify-center gap-3">
             <button type="button"
                     data-action="live-thread#talk"
                     data-live-thread-target="talk"
-                    data-conversation-id="<%= conversation.id %>"
-                    data-conversation-url="<%= live_conversation_path(conversation) %>"
-                    data-client-secret-url="<%= client_secret_live_conversation_path(conversation) %>"
-                    data-tool-calls-url="<%= tool_calls_live_conversation_path(conversation) %>"
-                    data-turns-url="<%= turns_live_conversation_path(conversation) %>"
                     class="inline-flex items-center gap-2 px-6 py-3 border border-transparent text-base font-medium rounded-full shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
               <%= render "live/mode_icon", mode: conversation.live_mode, css: "h-5 w-5" %>
               <span data-live-thread-target="talkLabel">Talk</span>
+            </button>
+            <button type="button" data-action="live-thread#disableVoice" data-live-disable-voice
+                    class="inline-flex items-center gap-1.5 px-4 py-2.5 border border-gray-300 text-sm font-medium rounded-full text-gray-700 bg-white hover:bg-gray-50">
+              <%= render "live/mode_icon", mode: LiveConversations.mode("text"), css: "h-4 w-4" %>
+              Type instead
             </button>
           </div>
           <p class="mt-2 text-center text-xs text-gray-500">Your browser talks to OpenAI directly; Zimmer runs the tools. The call keeps going while you look around Zimmer.</p>

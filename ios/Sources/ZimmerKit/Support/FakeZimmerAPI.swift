@@ -25,11 +25,15 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public private(set) var sentAttachments: [Int: [[MessageAttachment]]] = [:]
     /// Every Quick Router start, in order, so a test can see what went with the words.
     public private(set) var quickRouterRequests: [QuickRouterRequest] = []
+    private var prompts: [Int: [PendingElicitation]] = FakeZimmerAPI.samplePrompts()
     /// The PRs a Merge tap has authorized, so a second tap answers as already sent.
     private var mergesAuthorized: Set<URL> = []
     private var reprioritizerID: Int?
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
     private let live: Bool
+    /// A session trashed somewhere else — the web, a router, its own agent — as soon as the
+    /// Inbox is read, so a board that does not read again on coming back to its tab shows it.
+    private let trashedElsewhere: Int?
     private var conversationReads: [Int: Int] = [:]
     /// Made once, from the `now` the fake starts with: a session read twice is the same session,
     /// as on the server, so a page that reads again sees nothing to redraw.
@@ -45,13 +49,16 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// The class each session's genesis gives it: what *Derive it* goes back to. The samples
     /// choose no class of their own, so it is the class each starts with.
     private var derivedClasses: [Int: String]
+    /// Live Mode: see FakeZimmerAPI+Live.swift.
+    var liveState = FakeLiveState.sample()
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to. `longTranscript`: 1044's
     /// conversation runs to a hundred messages, so its details card is far above the newest.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
-                longTranscript: Bool = false) {
+                longTranscript: Bool = false, trashedElsewhere: Int? = nil) {
         self.live = live
+        self.trashedElsewhere = trashedElsewhere
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
@@ -124,14 +131,24 @@ public actor FakeZimmerAPI: ZimmerAPI {
                 conversations[id] = messages
             }
         }
-        let all = conversations[id] ?? []
+        // As the server: each message names its place in the transcript. Here a
+        // conversation is its own transcript, so that is its position.
+        let all = (conversations[id] ?? []).enumerated().map { index, message in
+            var message = message
+            message.transcriptIndex = message.transcriptIndex ?? index
+            return message
+        }
         let window = min(max(limit, 1), Conversation.maxLimit)
         return Conversation(messages: Array(all.suffix(window)), total: all.count, truncated: all.count > window)
     }
 
     public func earlierMessages(_ id: Int, before: Int, limit: Int) async throws -> Conversation {
         _ = try find(id)
-        let all = conversations[id] ?? []
+        let all = (conversations[id] ?? []).enumerated().map { index, message in
+            var message = message
+            message.transcriptIndex = message.transcriptIndex ?? index
+            return message
+        }
         let end = min(max(before, 0), all.count)
         let start = max(end - min(max(limit, 1), Conversation.maxLimit), 0)
         return Conversation(messages: Array(all[start..<end]), total: all.count, truncated: start > 0, firstPosition: start)
@@ -386,7 +403,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
             1044: StatusSummary(
                 summary: "The audit is written up in ios/PARITY_AUDIT.md and the first two slices are open as PRs: the Quick Router on every screen, and the session page's density. The second one is waiting on your look at the screenshots before it goes further; the third slice, the board's rows, is drafted on a branch.",
                 generatedAt: now.addingTimeInterval(-12 * 60), messagesSinceGenerated: 2),
-            1038: StatusSummary(summary: "The PR is open, CI is green and the review is done. It needs your go-ahead to merge.", generatedAt: now.addingTimeInterval(-6 * 60), messagesSinceGenerated: 0),
+            // Markdown with links, as the generator writes it: what the page has to render.
+            1038: StatusSummary(summary: "[PR #1261](https://github.com/tadasant/zimmer/pull/1261) is open, CI is green and the review is done: it **needs your go-ahead to merge**. The scaffold lives in `ios/App`; [the review](https://github.com/tadasant/zimmer/pull/1261#issuecomment-1) found nothing blocking.", generatedAt: now.addingTimeInterval(-6 * 60), messagesSinceGenerated: 0),
             1035: StatusSummary(summary: "Asking whether staging should match production's Postgres 16 or try 17 first."),
             1042: StatusSummary(summary: "Building the CarPlay list template; about halfway through."),
             1027: StatusSummary(summary: "Failed: the deploy key in the secret store is read-only for this session."),
@@ -932,13 +950,23 @@ extension FakeZimmerAPI {
         let runtime = request.runtime ?? root.defaultRuntime ?? "claude_code"
         let model = request.model ?? root.defaultModel ?? Self.sampleConfigs.runtimeModels[runtime]?.default
         let text = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if request.cloneOnly, !text.isEmpty {
+            throw ZimmerError.http(status: 422, message: "clone_only takes no prompt; send the first prompt through follow_up")
+        }
         let id = all.map(\.id).max().map { $0 + 1 } ?? 1
+        // As the server for the app's token: a parentless create is `api` genesis, which
+        // derives to spot, and a create that names no class is written priority; a clone-only
+        // create opens needing input; the precedence and the compaction window are kept as sent.
+        let klass = request.schedulingClass ?? "priority"
         var session = SessionSummary(
             id: id, title: request.title.flatMap { $0.isEmpty ? nil : $0 } ?? (text.count > 60 ? String(text.prefix(57)) + "…" : text),
-            status: text.isEmpty ? .needsInput : .waiting, agentRuntime: runtime, prompt: text,
+            status: request.cloneOnly ? .needsInput : .waiting, agentRuntime: runtime, prompt: text,
             createdAt: Date(), updatedAt: Date(), goal: request.goal,
-            priorityClass: request.schedulingClass ?? "priority", model: model, agentRoot: root.name
+            priorityClass: klass, precedence: request.precedence, model: model, agentRoot: root.name,
+            genesis: "api", autoCompactWindow: request.autoCompactWindow
         )
+        session.schedulingClass = klass
+        derivedClasses[id] = "spot"
         for kind in CatalogKind.allCases {
             let chosen = request.selections[kind] ?? kind.defaults(of: root)
             session.setSelection(kind, chosen)
@@ -1035,7 +1063,15 @@ extension SessionSummary {
 // As the server: an unread notification cannot be dismissed, and invoking a disabled
 // trigger is refused.
 extension FakeZimmerAPI {
-    public func notifications() async throws -> [InboxNotification] { inbox }
+    public func notifications() async throws -> [InboxNotification] {
+        if let id = trashedElsewhere, var trashed = all.first(where: { $0.id == id }), trashed.status != .archived {
+            trashed.status = .archived
+            trashed.archivedAt = Date()
+            trashed.updatedAt = Date()
+            replace(trashed)
+        }
+        return inbox
+    }
 
     public func unreadNotificationCount() async throws -> Int { inbox.filter { !$0.read }.count }
 
@@ -1192,6 +1228,58 @@ extension FakeZimmerAPI {
         let result = now ? try await sendNow(id, prompt: named) : try await followUp(id, prompt: named)
         sentAttachments[id, default: []].append(attachments)
         return result
+    }
+}
+
+// MARK: - Prompts and forks
+//
+// As the server: an answer resolves the prompt, so it leaves the list, and a fork is a new
+// session in `needs_input` holding the conversation up to the message it was made at.
+extension FakeZimmerAPI {
+    public func pendingElicitations(_ id: Int) async throws -> [PendingElicitation] {
+        _ = try find(id)
+        return prompts[id] ?? []
+    }
+
+    public func answerElicitation(_ elicitation: Int, answer: ElicitationAnswer, content: String?) async throws {
+        guard let owner = prompts.first(where: { $0.value.contains { $0.id == elicitation } })?.key else {
+            throw ZimmerError.http(status: 404, message: "Elicitation not found for: \(elicitation)")
+        }
+        prompts[owner]?.removeAll { $0.id == elicitation }
+        if prompts[owner]?.isEmpty ?? true, let index = all.firstIndex(where: { $0.id == owner }) {
+            all[index].status = answer == .cancel ? .needsInput : .running
+        }
+    }
+
+    public func fork(_ id: Int, at transcriptIndex: Int) async throws -> SessionSummary {
+        let source = try find(id)
+        let history = try await conversation(id).messages
+        guard history.contains(where: { $0.transcriptIndex == transcriptIndex }) else {
+            throw ZimmerError.http(status: 422, message: "Message index \(transcriptIndex) is out of range")
+        }
+        let forkID = nextID
+        nextID += 1
+        let forked = SessionSummary(id: forkID, title: "Fork of \(source.title ?? "#\(source.id)")", status: .needsInput,
+                                    agentRuntime: source.agentRuntime, prompt: source.prompt, createdAt: Date(), updatedAt: Date())
+        all.append(forked)
+        conversations[forkID] = history.filter { ($0.transcriptIndex ?? 0) <= transcriptIndex }
+        return forked
+    }
+
+    static func samplePrompts() -> [Int: [PendingElicitation]] {
+        [1035: [PendingElicitation(
+            id: 71,
+            requestID: "req-staging-migrate",
+            message: "Run the pending migrations against staging?",
+            toolName: "run_migrations",
+            context: "3 migrations, the largest backfills 2.1M rows.",
+            expiresAt: Date().addingTimeInterval(50 * 60),
+            form: ElicitationForm(fields: [
+                .init(key: "database", title: "Database", kind: .choice(["staging", "staging-replica"]), required: true),
+                .init(key: "batch_size", title: "Batch size", detail: "Rows per backfill batch.", kind: .number(integer: true), placeholder: "1000"),
+                .init(key: "dry_run", title: "Dry run", kind: .toggle),
+            ])
+        )]]
     }
 }
 

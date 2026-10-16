@@ -36,7 +36,7 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | --- | --- |
 | `/api/v1/sessions` and its member routes (not the nested resources below) | everything an API key may, plus `authorize_merge`, which only the app may call, and only on a grant that acts as you |
 | `POST /api/v1/quick_router`, `/api/v1/apns_devices` | everything |
-| `GET /api/v1/live`, `/api/v1/live_conversations` and its member routes | everything, and only the app may start, message, finish or relay for a conversation, on a grant that acts as you |
+| `GET /api/v1/live`, `/api/v1/live/settings`, `/api/v1/live_conversations` and its member routes | everything, and only the app may start, message, finish or relay for a conversation, or change the Live settings, on a grant that acts as you |
 | `/api/v1/sessions/:id/enqueued_messages` | list, show, edit, delete, reorder, interrupt — not create: the app queues through `follow_up` |
 | `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
 | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
@@ -384,6 +384,12 @@ Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`,
 `branch` defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents`
 default to false wherever they appear.
 
+`clone_only: true` is the web form's *Clone Only*: the session is created `needs_input` with the
+clone-only job queued (`AgentSessionJob.enqueue_for_clone_only`, a clone and no turn), and the
+first prompt arrives through `follow_up`. Nothing is recorded as a human message, since nobody has
+said anything yet. A `prompt` alongside it is a 422 rather than dropped. Without it, a create with
+no `prompt` makes a session that queues nothing and stays `waiting` — a row, not a clone.
+
 `goal` is a goal id from `GET /configs` or a free-text sentence. A single word that is not a known
 id is refused with a 422 that lists the known ids. The same rule applies on `PATCH`, on
 `follow_up` and on enqueued messages. See [where a goal comes from](/sessions/goals/#where-a-goal-comes-from).
@@ -401,7 +407,10 @@ classifies **spot**.
 
 `scheduling_class` **is** caller-supplied, and takes precedence over whatever the genesis would give
 the session. Send `spot` or `priority`; omit it and the session inherits its parent's explicit class
-if it has one, and otherwise derives from its genesis. An unknown value is a `422` (unlike the
+if it has one, and otherwise derives from its genesis — except from the iOS app's token, where an
+omitted class is written as `priority`: a person is waiting on that session as they are on the web
+form's, whose `web_ui` genesis is priority, and the app's `api` genesis would make it wait for quota.
+The Quick Router ingest classes a native start the same way. A class the app sends stands. An unknown value is a `422` (unlike the
 `priority_class`/`genesis` *filters* above, which ignore what they do not recognise — a filter that
 matches nothing is not the same kind of mistake as a session created in the wrong class). It is also
 permitted on `PATCH /sessions/:id`, which is how a spot session already held behind the quota gate is
@@ -1068,50 +1077,85 @@ the status off `failed`, including `POST /triggers/:id/toggle`, clears them.
 
 ## Live conversations
 
-[Live Mode and Live Voice](/sessions/live/): one continuous conversation per mode with a fast OpenAI
-model. The same rules as the `/live` pages (`LiveConversations::Actions`).
+[Live Mode](/sessions/live/): one continuous conversation with a fast OpenAI model, typed or with
+voice on, switching between the two mid-thread. The same rules as the `/live` pages
+(`LiveConversations::Actions`).
 
 An API key may read: `GET /live`, `GET /live_conversations` and `GET /live_conversations/:id`.
-Every `POST` below — start, message, finish, and the voice relay — is **403 for an API key and for a
-relay-only app grant**, like `authorize_merge`. It takes the [iOS app](/extend/ios-app/)'s sign-in
-acting as you. A live model can enable any catalog MCP server, and `tool_calls` runs one directly,
-so an API key, which is the fleet's, must not reach the whole catalog through here. The web pages are
-the other way in, behind the sign-in wall.
+Every `POST` below — start, switch, message, finish, and the voice relay — is **403 for an API key
+and for a relay-only app grant**, like `authorize_merge`. It takes the [iOS app](/extend/ios-app/)'s
+sign-in acting as you. A live model can enable any catalog MCP server, and `tool_calls` runs one
+directly, so an API key, which is the fleet's, must not reach the whole catalog through here. The web
+pages are the other way in, behind the sign-in wall.
 
-`GET /live` → `{modes: [{mode, label, agent_root, model, available, key_configured, root_present,
-reasons}]}` — whether each mode can start, and in words why not (no `LIVE_OPENAI_API_KEY`, or no
-`live-mode` / `live-voice` root in the catalog).
+`GET /live` → `{label, agent_root, available, key_configured, root_present, reasons, modes: [{mode,
+label, model, agent_root, available, key_configured, root_present, reasons}]}` — whether Live Mode
+can start, and in words why not (no `LIVE_OPENAI_API_KEY`, or no `live-mode` root in the catalog),
+with each mode's model. Typing and voice share the prerequisites, so every `modes` entry repeats them.
 
-`GET /live_conversations` (`mode=text|voice`) → `{live_conversations: [...], current: {text, voice}}`,
-the newest 20 and each mode's open conversation id (or null) ·
-`POST /live_conversations` (`mode`) → 201, a `preparing` conversation that ends the mode's open one;
-503 with the reasons when the mode is off, 422 on an unknown mode ·
+`GET /live_conversations` → `{live_conversations: [...], current_id, current: {<mode>: id}}`, the
+newest 20 and the open conversation's id (or null). `current` is the same conversation keyed by the
+mode it is in right now, empty when there is none ·
+`POST /live_conversations` (`mode`, `text` by default or `voice`) → 201, a `preparing` conversation
+that ends the open one; 503 with the reasons when Live Mode is off, 422 on an unknown mode ·
 `GET /live_conversations/:id` (`after_turn_id` for only newer turns) → the conversation with `turns` ·
+`POST /live_conversations/:id/mode` (`mode` text|voice) → the conversation, switched. A no-op when it
+is in that mode already; 409 once it has ended, 422 on an unknown mode ·
 `POST /live_conversations/:id/finish` → the ended conversation.
 
-A conversation is `{id, mode, label, status (preparing|active|ended|failed), title, agent_root, model,
-instructions_source, mcp_servers, responding, error_message, created_at, updated_at,
-last_activity_at, ended_at}`. A turn is `{id, role (user|assistant|tool), source (typed|spoken),
-content, tool_name, call_id, tool_arguments, tool_output, tool_error, created_at}`.
+A conversation is `{id, mode (text|voice — right now), voice, label, mode_label, status
+(preparing|active|ended|failed), title, agent_root, model, instructions_source, mode_styles: {text,
+voice: agent_root|zimmer_default}, mcp_servers, responding, error_message, created_at, updated_at,
+last_activity_at, ended_at}`. `model` follows `mode`. A turn is `{id, role (user|assistant|tool),
+source (typed|spoken), content, tool_name, call_id, tool_arguments, tool_output, tool_error,
+created_at}`.
 
-Live Mode: `POST /live_conversations/:id/messages` (`content`, at most 8,000 characters) → 201, the
+Typed: `POST /live_conversations/:id/messages` (`content`, at most 8,000 characters) → 201, the
 user turn. The reply is written by a job; poll `GET /live_conversations/:id?after_turn_id=`. A message
-sent while the conversation is still `preparing` is accepted and answered once it is active.
+sent while the conversation is still `preparing` is accepted and answered once it is active. 422
+while voice is on.
 
-Live Voice — the relay a client holding the audio connection makes:
+Voice — the relay a client holding the audio connection makes:
 
 - `POST /live_conversations/:id/client_secret` → `{client_secret, expires_at, model, calls_url,
-  websocket_url, tools}`. A ten-minute OpenAI Realtime secret whose session config (instructions,
-  tools, voice, transcription, turn detection) Zimmer chose. Open WebRTC by posting an SDP offer to
-  `calls_url`, or a WebSocket to `websocket_url`, with `Authorization: Bearer <client_secret>`. 409
-  while the conversation is still `preparing`; 502 when OpenAI refuses.
+  websocket_url, tools}`, plus `settings_warning` when OpenAI refused the Live settings and the call
+  runs on the defaults. A ten-minute OpenAI Realtime secret whose session config (instructions for
+  the spoken mode with a recap of the thread, tools, and the [Live settings](/sessions/live/#live-settings))
+  Zimmer chose. Open WebRTC by posting an SDP offer to `calls_url`, or a WebSocket to `websocket_url`,
+  with `Authorization: Bearer <client_secret>`. 409 while the conversation is still `preparing` or
+  voice is off; 502 when OpenAI refuses.
 - `POST /live_conversations/:id/tool_calls` (`name`, `arguments` as the model's JSON string,
-  `call_id`) → `{output, error, tools_changed, turn_id}`, plus `tools` when `tools_changed` — send
-  those in a `session.update`. Send `output` back as a `function_call_output` item.
+  `call_id`) → `{output, error, tools_changed, turn_id}`, plus `tools` when `tools_changed`, and
+  `session` when the call changed a Live setting an open call can take. Send `session` as a
+  `session.update` when it is there, otherwise send `tools` in one. Send `output` back as a
+  `function_call_output` item.
+- `POST /live_conversations/:id/session_update` → `{session}`: the `session.update` payload that
+  brings an open call up to the current Live settings and guidance. Send it after the settings
+  changed somewhere else, such as the app's own settings screen.
 - `POST /live_conversations/:id/turns` (`role` user|assistant, `content`) → 201. A finished
   transcript line, so the thread carries what was said.
 
-Every one answers 409 on a conversation that has ended, and 422 on the wrong mode.
+Every one answers 409 on a conversation that is not active. `tool_calls`, `session_update` and `turns` do not need
+voice to be on, so a call still connected when it is switched off elsewhere finishes cleanly.
+
+### Live settings
+
+The [Live settings](/sessions/live/#live-settings) and the Live mode guidance. An API key may read
+them. The writes take the app's sign-in acting as you, and are recorded as a person's; an agent
+changes them through MCP (`action_live_settings`), where the change is recorded as an agent's.
+
+- `GET /live/settings` → `{settings: {key: value in force}, overrides: [keys set away from their
+  default], guidance, updated_at, updated_by, fields: [{key, path (text|voice), type
+  (enum|float|integer), label, help, options: [{value, label}], min, max, default, mid_call}],
+  guidance_max_length, history: [{id, actor_kind (human|agent), actor, live_conversation_id,
+  changes: {key: {before, after}}, created_at}]}`, the newest 30 changes.
+- `PATCH /live/settings` (any setting key, `guidance` to replace it, `append_guidance` to add a
+  line) → the same, plus `{changed, summary}`. Blank or `"default"` puts a setting back. 422 with
+  every problem, and nothing saved, on an unknown key or a value not among its `options`. A number
+  outside `min`–`max` is clamped, and `summary` says so.
+- `POST /live/settings/reset` → every setting back to its default; the guidance is kept.
+- `POST /live/settings/changes/:id/restore_guidance` → the guidance as it was before that change.
+  422 when the change did not touch the guidance.
 
 ## Notifications
 

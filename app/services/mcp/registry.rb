@@ -17,7 +17,7 @@ module Mcp
   #   external_apps  → register Zimmer plugins and mint their keys. OPT-IN
   #   root_data      → the calling session's agent root's persistent data
   #                    store. OPT-IN
-  #   live_conversations → read and drive Live Mode / Live Voice conversations.
+  #   live_conversations → read and drive Live Mode conversations.
   #                    OPT-IN
   #   self_session   → the curated set auto-injected into every session, so a
   #                    session can manage itself (notes/title/heartbeat/archive),
@@ -290,7 +290,7 @@ module Mcp
       Definition.new(klass: "Mcp::Tools::AppendRootRecord", group: "root_data", write: true),
       Definition.new(klass: "Mcp::Tools::DeleteRootRecord", group: "root_data", write: true),
 
-      # Live Mode and Live Voice — the conversations a human has with Zimmer from
+      # Live Mode — the conversations a human has with Zimmer from
       # /live, read and driven over MCP.
       #
       # OPT-IN, AND NOT IN `sessions`, BECAUSE OF WHAT A LIVE CONVERSATION CAN DO.
@@ -307,7 +307,9 @@ module Mcp
       # A scoping boundary, as everywhere here, not an authorization one: the
       # fleet's shared API key can compose `?tool_groups=live_conversations`.
       Definition.new(klass: "Mcp::Tools::GetLiveConversations", group: "live_conversations", write: false),
-      Definition.new(klass: "Mcp::Tools::ActionLiveConversation", group: "live_conversations", write: true)
+      Definition.new(klass: "Mcp::Tools::ActionLiveConversation", group: "live_conversations", write: true),
+      Definition.new(klass: "Mcp::Tools::GetLiveSettings", group: "live_conversations", write: false),
+      Definition.new(klass: "Mcp::Tools::ActionLiveSettings", group: "live_conversations", write: true)
     ].freeze
 
     module_function

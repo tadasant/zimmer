@@ -62,9 +62,15 @@ extension RootView {
                 .tabItem { Label("More", systemImage: "ellipsis") }
                 .tag(AppTab.more)
         }
+        // Back on the board from another tab: read it, unless it was read moments ago. Here
+        // rather than on the board, which another tab may have taken out of the hierarchy.
+        .onChange(of: model.tab) { _, tab in
+            if tab == .sessions { Task { await model.pollBoard(ifStale: true) } }
+        }
         // Presented from the tabs, not from one screen: the button on any tab opens it.
         .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
         .sheet(isPresented: $model.showingNewSession) { NewSessionView() }
+        .sheet(isPresented: $model.showingLive) { LiveHomeView() }
     }
 }
 
@@ -86,9 +92,15 @@ struct BuildBadge: View {
     }
 }
 
-/// The board reads itself again every half minute while it is the screen in front, and at
-/// once when the app comes back to the front: the web UI's board streams its rows, and a
-/// list on a phone that only changes when pulled reads as broken.
+/// The board reads itself again every half minute while it is the screen in front (ten seconds
+/// after a read that failed), and at once when the app comes back to the front, trying again
+/// shortly if that read fails. The web UI's board streams its rows, and a list on a phone that
+/// only changes when pulled reads as broken.
+///
+/// The clock starts again each time the board is shown, so coming back to the board must read
+/// it, or a session trashed meanwhile stays until the half minute is up: closing a session's
+/// page reads it (`SessionDetailView`'s `sessionChanged`), and choosing the Sessions tab again
+/// does (`RootView.tabs`).
 private struct BoardPoller: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
@@ -97,20 +109,19 @@ private struct BoardPoller: View {
         Color.clear
             .task {
                 while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(30))
+                    try? await Task.sleep(for: model.freshness.nextPoll)
                     guard !Task.isCancelled else { return }
-                    await refreshIfInFront()
+                    await model.pollBoard()
                 }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { Task { await refreshIfInFront() } }
+                guard phase == .active else { return }
+                Task {
+                    await model.pollBoard()
+                    guard model.freshness.lastReadFailed else { return }
+                    try? await Task.sleep(for: BoardFreshness.foregroundRetry)
+                    await model.pollBoard()
+                }
             }
-    }
-
-    /// Only the board in front, not one under an open session or another tab, and not while a
-    /// selection or a drag is in hand.
-    private func refreshIfInFront() async {
-        guard model.tab == .sessions, model.path.isEmpty, !model.isEditingBoard else { return }
-        await model.refresh(silently: true)
     }
 }

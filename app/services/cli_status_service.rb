@@ -178,9 +178,9 @@ class CliStatusService
       auth_instructions: <<~INSTRUCTIONS
         # Pi authenticates from a provider API key in the session environment —
         # there is no interactive login step and no account pool to rotate.
-        # Set it on the Inference page's Pi tab (/inference?runtime=pi), which
-        # writes it to the Parameter Store so it reaches sessions through
-        # SecretsLoader and survives a container rebuild:
+        # Set it in the Parameter Store, through the secrets console the
+        # Inference page's Pi tab (/inference?runtime=pi) links, so it reaches
+        # sessions through SecretsLoader and survives a container rebuild:
         #
         #   OPENROUTER_API_KEY  (every openrouter/* model in ModelCatalog —
         #                        the path this deployment is set up for)
@@ -295,10 +295,10 @@ class CliStatusService
 
     # Check authentication based on auth method
     authenticated = if config[:auth_method] == :env_var
-      # Through the `${VAR}` chain, not bare ENV. A key set on the Inference page's
-      # Pi tab lives in the Parameter Store, which is the chain's first link and
-      # not in this process's environment at all — reading ENV directly would
-      # report Pi unauthenticated while every Pi session was running fine on it.
+      # Through the `${VAR}` chain, not bare ENV. A key in the Parameter Store
+      # lives in the chain's first link and not in this process's environment at
+      # all — reading ENV directly would report Pi unauthenticated while every Pi
+      # session was running fine on it.
       # The chain's last link IS ENV, so a plain export still answers.
       resolved_credential(config[:env_var_name]).present?
     else

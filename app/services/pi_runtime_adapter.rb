@@ -362,7 +362,7 @@ class PiRuntimeAdapter
   # An explicit value in the clone's `.env` still wins, like every other step
   # here — a repo pointing Pi at its own account is not something to override.
   def apply_provider_key(env_vars)
-    variable = ManagedSecret::OPENROUTER_API_KEY
+    variable = PiAuthProvider::OPENROUTER_API_KEY
     return env_vars if env_vars[variable].present?
 
     value = SecretProviders.chain.get(variable)
@@ -376,7 +376,7 @@ class PiRuntimeAdapter
     # A store Zimmer cannot reach must not stop a session spawning. Pi will report
     # its own `not_ready` if the key genuinely never arrives, and that is a much
     # better failure than a session that never starts.
-    @logger.warn "Could not resolve #{ManagedSecret::OPENROUTER_API_KEY} for this Pi session: #{e.class}"
+    @logger.warn "Could not resolve #{PiAuthProvider::OPENROUTER_API_KEY} for this Pi session: #{e.class}"
     env_vars
   end
 
