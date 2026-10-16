@@ -279,9 +279,8 @@ It uses the `websocket_url` the client-secret call returns, sends 24 kHz PCM16 a
 `input_audio_buffer.append`, and plays `response.output_audio.delta`. It relays function calls
 and transcript lines exactly as the browser does: the shared rules are `RealtimeConductor` in
 ZimmerKit. CarPlay offers *New conversation* (which starts with voice on) and *Resume conversation*
-(which turns voice on in the open one, typed until then or not) on the same call, and stays dark
-until Apple grants the entitlement
-([#1273](https://github.com/tadasant/zimmer/issues/1273)).
+(which turns voice on in the open one, typed until then or not) on the same call. Every TestFlight
+build signs in the CarPlay entitlement that makes it reachable.
 
 The gear on the app's Live screens opens the same [Live settings](#live-settings) over
 `/api/v1/live/settings`, guidance and history included. A save there sends an open phone call a
