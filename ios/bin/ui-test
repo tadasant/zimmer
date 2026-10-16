@@ -114,8 +114,10 @@ if [ -n "$only" ]; then
   for class in "${classes[@]}"; do
     class="${class// /}"
     [ -n "$class" ] || continue
-    grep -qE "^final class ${class}: XCTestCase" App/ZimmerUITests/*.swift \
-      || fail "--only names $class, and no \`final class $class\` is under App/ZimmerUITests"
+    # A bare identifier, so the name cannot carry a pattern into the grep or xcodebuild.
+    [[ "$class" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "--only names $class, which is not a class name"
+    grep -rqE "^(final[[:space:]]+)?class[[:space:]]+${class}[[:space:]]*:[[:space:]]*XCTestCase" App/ZimmerUITests \
+      || fail "--only names $class, and no \`class $class: XCTestCase\` is under App/ZimmerUITests"
     only_testing+=("-only-testing:ZimmerUITests/$class")
     covered="${covered:+$covered,}$class"
   done
