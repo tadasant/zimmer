@@ -293,6 +293,8 @@ if [ -d "$app" ]; then
   shoot trigger-detail -ZimmerFixture -ZimmerFixtureTrigger 5
   shoot costs -ZimmerFixture -ZimmerFixtureCosts
   shoot costs-root -ZimmerFixture -ZimmerFixtureCosts zimmer
+  shoot inference -ZimmerFixture -ZimmerFixtureInference
+  shoot inference-login -ZimmerFixture -ZimmerFixtureInference codex -ZimmerFixtureInferenceLogin
   # Dark mode: the app draws its own (on the PWA manifest's navy), so every main screen is
   # photographed in it too.
   xcrun simctl ui "$udid" appearance dark >/dev/null 2>&1 || true
@@ -319,6 +321,7 @@ if [ -d "$app" ]; then
   shoot more-dark -ZimmerFixture -ZimmerFixtureTab more
   shoot trigger-detail-dark -ZimmerFixture -ZimmerFixtureTrigger 5
   shoot costs-dark -ZimmerFixture -ZimmerFixtureCosts
+  shoot inference-dark -ZimmerFixture -ZimmerFixtureInference
   xcrun simctl ui "$udid" appearance light >/dev/null 2>&1 || true
 fi
 
