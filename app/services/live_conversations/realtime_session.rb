@@ -10,57 +10,130 @@ module LiveConversations
   # WebSocket on the phone), relays each function call to Rails
   # (ToolBridge) and each finished transcript line (as a turn), and sends a
   # `session.update` with fresh tools when a call says the tool set changed.
+  #
+  # The session config comes from LiveSetting: the model, voice, speed, turn
+  # detection and the rest are read when the secret is minted, and
+  # #session_update is the subset an open call can change, which the client
+  # sends whenever the settings or the guidance change mid-call.
   class RealtimeSession
     SECRET_TTL_SECONDS = 600
-    TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe"
-    DEFAULT_VOICE = "marin"
 
     def self.mint(conversation, client: OpenaiClient.new) = new(conversation, client: client).mint
 
-    def initialize(conversation, client:)
+    def initialize(conversation, client: nil, setting: LiveSetting.current)
       @conversation = conversation
       @client = client
+      @setting = setting
     end
 
     # @return [Hash] what the client is handed
     def mint
-      secret = @client.create_realtime_client_secret(
-        expires_after: { anchor: "created_at", seconds: SECRET_TTL_SECONDS },
-        session: session_config
-      )
+      config = session_config
+      warning = nil
+      secret = begin
+        create_secret(config)
+      rescue OpenaiClient::Error => e
+        raise unless refused_config?(e)
+
+        # OpenAI refused the configured settings (a model this key cannot use, an
+        # effort that model does not take): start the call on the defaults rather
+        # than not at all, and say why.
+        warning = "OpenAI refused the Live settings (#{e.message.truncate(200)}), so this call runs on the defaults. Change them on the Live settings page."
+        Rails.logger.warn("[LiveConversations::RealtimeSession] #{warning}")
+        @setting = LiveSetting.new
+        config = session_config
+        create_secret(config)
+      end
       value = secret["value"].presence || secret.dig("client_secret", "value")
       raise OpenaiClient::Error, "OpenAI returned no client secret" if value.blank?
 
+      model = config[:model]
+      @conversation.update_columns(model: model) if @conversation.persisted? && @conversation.model != model
       {
         client_secret: value,
         expires_at: secret["expires_at"] || secret.dig("client_secret", "expires_at"),
-        model: @conversation.model,
+        model: model,
         calls_url: "#{OpenaiClient.base_url}/realtime/calls",
-        websocket_url: "#{OpenaiClient.base_url.sub(/\Ahttp/, 'ws')}/realtime?model=#{ERB::Util.url_encode(@conversation.model)}",
-        tools: tools
-      }
+        websocket_url: "#{OpenaiClient.base_url.sub(/\Ahttp/, 'ws')}/realtime?model=#{ERB::Util.url_encode(model)}",
+        tools: tools,
+        settings_warning: warning
+      }.compact
     end
 
     def session_config
-      {
+      config = {
         type: "realtime",
-        model: @conversation.model,
-        instructions: SystemPrompt.build(@conversation, recap: true),
+        model: @setting.effective(:voice_model),
+        instructions: SystemPrompt.build(@conversation, recap: true, setting: @setting),
         tools: tools,
         tool_choice: "auto",
         audio: {
-          input: {
-            transcription: { model: TRANSCRIPTION_MODEL },
-            turn_detection: { type: "semantic_vad", create_response: true, interrupt_response: true }
-          },
-          output: { voice: self.class.voice }
+          input: input_audio.compact,
+          output: { voice: @setting.effective(:voice_name), speed: @setting.effective(:voice_speed) }
         }
+      }
+      config[:max_output_tokens] = @setting.effective(:voice_max_output_tokens) if @setting.overridden?(:voice_max_output_tokens)
+      effort = @setting.effective(:voice_reasoning_effort)
+      config[:reasoning] = { effort: effort } if effort.present?
+      config
+    end
+
+    # What an open call is sent when the settings or the guidance change: the
+    # instructions and tools, and every setting a Realtime session takes mid-call
+    # (LiveSetting::MID_CALL_KEYS). Never the model, voice or reasoning effort —
+    # those are fixed for a call's life and apply from the next one.
+    def session_update
+      update = {
+        type: "realtime",
+        instructions: SystemPrompt.build(@conversation, recap: true, setting: @setting),
+        tools: tools,
+        audio: { input: input_audio, output: { speed: @setting.effective(:voice_speed) } }
+      }
+      update[:max_output_tokens] = @setting.overridden?(:voice_max_output_tokens) ? @setting.effective(:voice_max_output_tokens) : "inf"
+      update
+    end
+
+    private
+
+    # `noise_reduction: nil` turns it off, which a mid-call update has to say
+    # out loud; a new call leaves it out (#session_config compacts it).
+    def input_audio
+      {
+        transcription: { model: @setting.effective(:voice_transcription_model) },
+        turn_detection: turn_detection,
+        noise_reduction: (@setting.effective(:voice_noise_reduction).presence&.then { |type| { type: type } })
       }
     end
 
-    def self.voice = ENV.fetch("LIVE_VOICE_VOICE", "").presence || DEFAULT_VOICE
+    def turn_detection
+      if @setting.effective(:voice_turn_detection) == "server_vad"
+        {
+          type: "server_vad",
+          threshold: @setting.effective(:voice_vad_threshold),
+          prefix_padding_ms: @setting.effective(:voice_vad_prefix_padding_ms),
+          silence_duration_ms: @setting.effective(:voice_vad_silence_duration_ms),
+          create_response: true, interrupt_response: true
+        }
+      else
+        { type: "semantic_vad", eagerness: @setting.effective(:voice_vad_eagerness), create_response: true, interrupt_response: true }
+      end
+    end
 
-    private
+    def create_secret(config)
+      client.create_realtime_client_secret(
+        expires_after: { anchor: "created_at", seconds: SECRET_TTL_SECONDS },
+        session: config
+      )
+    end
+
+    def client = @client ||= OpenaiClient.new
+
+    # A 4xx about the request, from a row that is not all defaults — the case a
+    # retry on the defaults can fix. Anything else (the key, a 5xx, a timeout)
+    # would fail the same way again.
+    def refused_config?(error)
+      [ 400, 404, 422 ].include?(error.status) && LiveSetting::KEYS.any? { |key| @setting.overridden?(key) }
+    end
 
     def tools = @tools ||= ToolBridge.new(@conversation).realtime_tools
   end
