@@ -96,7 +96,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   chips (status, priority class, `#id` and age, each PR coloured by state with its CI dot, board
   visibility) and one line of what runs it (agent root, runtime, model, effort). Then *Where
   things stand* with how fresh it is ("as of 12m · 2 new since", the web's "messages since summary
-  generated") and *Regenerate*; for a failed session, why it failed (`metadata.failure_reason`,
+  generated") and *Regenerate*. The summary is drawn by the transcript's markdown renderer, as
+  the web's Status panel draws it, so its links open on a tap and offer Copy Link on a long press
+  (a [Zimmer link opens the browser](/limitations/#a-zimmer-link-in-the-ios-app-opens-the-browser)); for a failed session, why it failed (`metadata.failure_reason`,
   the exception and exit status, the web's failure details); then one divided card: the **Goal
   check** (the web panel's verdict and one line per criterion, when the goal is a catalog goal
   with checks; its tally names the goal, and a router that recorded no PR of its own says whose
@@ -218,6 +220,17 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   The web UI streams these changes; the app asks, so a change can take that long to show. A session
   opens at its newest message, as the web UI's transcript does, and follows new ones while you are
   at the end; scrolled back, it stays where you are.
+- **Keeps every part of a session's page a tap away.** A strip pinned under the navigation bar
+  has a chip for each part the page draws: *Overview* (the top), *Hierarchy* and *Human messages*
+  (when the details card has those rows) and *Transcript* (the newest message). A chip scrolls
+  there and opens the row if it is folded, so on a long transcript the hierarchy and the human
+  messages do not sit a hundred messages up. The chip for the part being read is filled. On a
+  phone's width the words shorten (*Top*, *Humans*), and at the largest text sizes they become
+  symbols. The web UI's session page has no such strip.
+- **Reads a transcript full screen.** The button at the end of the strip covers the page with the
+  conversation alone, without the header, the cards or the composer; *Done* goes back to the page
+  at the message you reached.
+  Full screen is never remembered: a session always opens on its page.
 - **Attaches photos and files** to a message with the paperclip beside the box: *Photo Library*,
   *Choose Files*, or *Paste Image* when the clipboard holds one (the
   web composer takes a pasted image; iOS asks whether Zimmer may paste from the app it came
@@ -228,6 +241,14 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   send them. Anything that would be refused, or could not be read, is named rather than dropped
   quietly. They go with the message however it is delivered: now, queued behind a turn, or with
   *Send Now*.
+- **Merges.** On a session whose newest PR is open with CI green, the web UI's row *Merge* button is
+  a swipe right, a long-press item, and the first item in the session menu (*Merge #1261*). After a
+  confirmation, the session is told it may merge (`POST /api/v1/sessions/:id/authorize_merge`). The
+  tap is the sign-off, and it is recorded as your message. Only a sign-in that acts on your behalf
+  may give it; a relay-only one shows the server's refusal. The app does not show the web row's
+  *Merge sent* state: a second tap is answered "already authorized" and sends nothing.
+- **Reprioritizes** the board from the view menu in *Your board* and *Ranked*, after a confirmation:
+  the deployment's reprioritizing session re-ranks it and writes the order back.
 - **Trashes** a session as the web UI's Trash does: no question first, and an *Undo* on the board,
   shown for 30 seconds as the web UI shows it (`UNDO_ARCHIVE_WINDOW`), which restores the session.
   A session with a turn in flight goes outright, ending the turn
@@ -281,14 +302,13 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
-Every action above is a route on `/api/v1/sessions` that the app's token could already reach; none
-of them widened what the phone can do on the server.
+Every action above is a route on `/api/v1/sessions`. Merge is the one the app's token reaches
+where an API key cannot: only a person may give it (see the [REST API](/extend/rest-api/)).
 
 ### Not in the app yet
 
-*Reprioritize* and *Authorize merge* are not in the app yet, nor is the web composer's camera
-button: taking a photo cannot be exercised in the simulator, so it waits on a change verified on
-a device. Fork from a message and answering an
+The web composer's camera button is not in the app yet: taking a photo cannot be exercised in the
+simulator, so it waits on a change verified on a device. Fork from a message and answering an
 elicitation stay in the browser until the app draws them; the API they need is in place. Switching a trigger's *Enqueue messages* and
 *Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update),
 saying whether re-arming a failed trigger fires it again (the trigger JSON does not say whether a

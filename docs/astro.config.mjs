@@ -88,6 +88,7 @@ export default defineConfig({
             { label: "Workflows", slug: "sessions/workflows" },
             { label: "Root data", slug: "sessions/root-data" },
             { label: "Elicitation", slug: "sessions/elicitation" },
+            { label: "Live Mode and Live Voice", slug: "sessions/live" },
             { label: "Hierarchy and human messages", slug: "sessions/hierarchy-and-human-messages" },
             { label: "The Status summary", slug: "sessions/status-summary" },
             { label: "Spot and priority", slug: "sessions/spot-and-priority" },
