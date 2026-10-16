@@ -17,9 +17,9 @@
 # `openrouter/*` id, so one key covers the whole list rather than one per vendor.
 # `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` still drive the direct ids kept in that
 # catalog, and nothing here stops them — they are simply not what this
-# deployment supplies. The Inference page's Pi tab is where the key is set
-# (ManagedSecret); this class still pools nothing, because a key is not an
-# account.
+# deployment supplies. The Inference page's Pi tab says whether the key is set
+# and where to set it (SecretPresence); this class still pools nothing, because
+# a key is not an account.
 #
 # So every pooling method here is a deliberate, documented no-op rather than an
 # unimplemented stub. `#accounts` returns the (always empty) `pi`-scoped relation
@@ -51,6 +51,10 @@
 # surprise.
 class PiAuthProvider < RuntimeAuthProvider
   RUNTIME = "pi"
+
+  # The provider key Zimmer feeds Pi. OpenRouter is a first-class provider in the
+  # pinned Pi (`OPENROUTER_API_KEY` in its provider table).
+  OPENROUTER_API_KEY = "OPENROUTER_API_KEY"
 
   def initialize(logger: Rails.logger)
     @logger = logger

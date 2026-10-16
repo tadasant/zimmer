@@ -190,8 +190,10 @@ precisely because callers chain `.available.exists?` onto it. There is no Pi ide
 current, nothing to refresh, and no Pi entry in `RuntimeAuthProvider::RUNTIMES` (the constant that
 drives the token-refresh sweep and the auth warm-up fan-out).
 
-The key is `OPENROUTER_API_KEY`, set on the Inference page's Pi tab, which writes it to the
-Parameter Store — see [How the key reaches a Pi
+The key is `OPENROUTER_API_KEY`, set in the Parameter Store through the secrets console the
+Inference page's Pi tab links (Zimmer does not write it; see [Secrets Zimmer itself depends
+on](/operate/secrets-parameter-store/#secrets-zimmer-itself-depends-on)). The tab shows whether it is
+set, which link of the chain holds it, and its path. See [How the key reaches a Pi
 session](/operate/secrets-parameter-store/#how-the-key-reaches-a-pi-session). It reaches the
 process through `PiRuntimeAdapter#apply_provider_key` rather than through the session `.env`
 writer, because that writer reads Rails-encrypted `mcp_secrets` only and never consults
