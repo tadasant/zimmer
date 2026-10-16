@@ -13,9 +13,11 @@ final class OperationsActionsUITests: XCTestCase {
 
     func test_cleaning_up_orphans_asks_in_the_webs_words_then_the_count_moves() throws {
         let app = launch(["-ZimmerFixtureHealth"])
-        XCTAssertTrue(app.staticTexts["PID 48112"].waitForExistence(timeout: timeout), "the orphan is listed")
+        XCTAssertTrue(app.descendants(matching: .any)["health.overall"].waitForExistence(timeout: timeout))
+        // The process section is below the fold, and a List keeps only the rows on screen.
         let cleanup = app.buttons["health.action.cleanupProcesses"]
         XCTAssertTrue(scrollTo(app, cleanup))
+        XCTAssertTrue(app.staticTexts["PID 48112"].exists, "the orphan is listed")
         cleanup.tap()
         // The web button's data-confirm, as the sheet's title; its label as the button.
         XCTAssertTrue(app.staticTexts["Are you sure you want to terminate 1 orphaned process(es)?"].waitForExistence(timeout: timeout))
@@ -99,6 +101,8 @@ final class OperationsActionsUITests: XCTestCase {
 
         app.buttons["clis.actions"].tap()
         app.buttons["Refresh"].firstMatch.tap()
+        // The headline is back above the fold, where the List has it again.
+        XCTAssertTrue(scrollTo(app, status, searching: .up))
         XCTAssertTrue(waitForLabel(status, "Checked just now"), "the status line follows the fresh check")
 
         // The More row carries the web board's badge.
@@ -115,17 +119,29 @@ final class OperationsActionsUITests: XCTestCase {
         return app
     }
 
-    /// Scroll until `element` sits below the navigation bar, where a tap lands on it rather
-    /// than on the bar; false if ten swipes do not find it.
-    private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
-        func belowTheBar() -> Bool {
-            guard element.exists, !element.frame.isEmpty else { return false }
+    private enum Direction { case up, down }
+
+    /// Scroll until `element` sits between the navigation bar and the tab bar, where a tap
+    /// lands on it rather than on either. A quarter-screen drag with no fling, so where the
+    /// element lands is where the next check reads it: a flung swipe carries a row past the
+    /// bar between one check and the next, and a List keeps only the rows on screen, so an
+    /// element not in the hierarchy is looked for in `searching`'s direction.
+    private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement, searching: Direction = .down) -> Bool {
+        func placement() -> Direction? {
+            guard element.exists, !element.frame.isEmpty else { return searching }
             let bar = app.navigationBars.firstMatch
             let top = bar.exists ? bar.frame.maxY : 0
-            return element.frame.minY >= top && element.frame.maxY < app.frame.maxY
+            if element.frame.minY < top { return .up }
+            if element.frame.maxY > app.frame.maxY - 100 { return .down }
+            return nil
         }
-        for _ in 0..<10 where !belowTheBar() { app.swipeUp() }
-        return belowTheBar()
+        for _ in 0..<24 {
+            guard let direction = placement() else { return true }
+            let (from, to): (CGFloat, CGFloat) = direction == .down ? (0.7, 0.45) : (0.45, 0.7)
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
+                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)))
+        }
+        return placement() == nil
     }
 
     private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {

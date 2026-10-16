@@ -15,6 +15,9 @@ extension FakeZimmerAPI {
         /// Sessions the stale sweep has trashed, which the status breakdown counts as archived.
         var archivedOld: [Int] = []
         var recoveryActive: Bool
+        /// The resolver outage: its own fact, not the mode's — halting the queues from the
+        /// phone must not read as the network going.
+        var egressDegraded: Bool
         var recoveryEnteredAt: Date?
         var recoveryExpiresAt: Date?
         var recoveryReason: String?
@@ -31,6 +34,7 @@ extension FakeZimmerAPI {
 
         init(degraded: Bool, now: Date = Date()) {
             recoveryActive = degraded
+            egressDegraded = degraded
             if degraded {
                 recoveryEnteredAt = now.addingTimeInterval(-18 * 60)
                 recoveryExpiresAt = now.addingTimeInterval(42 * 60)
@@ -47,7 +51,7 @@ extension FakeZimmerAPI {
     static func sampleHealthJSON(now: Date, state: HealthState) -> [String: Any] {
         func iso(_ offset: TimeInterval) -> String { now.addingTimeInterval(offset).formatted(.iso8601) }
         func status(_ word: String, _ message: String) -> [String: Any] { ["status": word, "message": message] }
-        let degraded = state.recoveryActive
+        let degraded = state.egressDegraded
 
         let failures: [[String: Any]] = [
             ["id": 1027, "slug": "rotate-key", "title": "Rotate the staging deploy key", "status": "failed", "git_root": "zimmer",
