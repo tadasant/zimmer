@@ -35,6 +35,11 @@ from typing import Any
 API = "https://api.appstoreconnect.apple.com"
 TOKEN_LIFETIME_SECONDS = 15 * 60  # Apple refuses anything over 20 minutes.
 POLL_SECONDS = 30
+# The pre-archive check is asked this many times, waiting PREFLIGHT_BACKOFF_SECONDS, then
+# twice that, and so on between attempts: about two minutes of waiting in all. A single
+# read timeout from Apple once failed a merge's upload here and paged #alerts.
+PREFLIGHT_ATTEMPTS = 4
+PREFLIGHT_BACKOFF_SECONDS = 15
 
 
 class TransientError(Exception):
@@ -167,11 +172,27 @@ def _app_id(client: Client, bundle_id: str) -> str:
 
 
 def preflight(args: argparse.Namespace) -> None:
-    try:
-        _app_id(Client(), args.bundle_id)
-    except TransientError as error:
-        # Nothing has been built yet, so failing here costs a re-run and nothing else.
-        raise SystemExit(f"App Store Connect could not be asked: {error}") from None
+    """Only a TransientError (a timeout, a dropped connection, a 429 or a 5xx) is asked
+    again. A refused key, a missing app record or any other 4xx is a SystemExit from the
+    first attempt, because asking again cannot change the answer."""
+    client = Client()
+    delay = PREFLIGHT_BACKOFF_SECONDS
+    for attempt in range(1, PREFLIGHT_ATTEMPTS + 1):
+        try:
+            _app_id(client, args.bundle_id)
+            return
+        except TransientError as error:
+            if attempt == PREFLIGHT_ATTEMPTS:
+                # Nothing has been built yet, so failing here costs a re-run and nothing else.
+                raise SystemExit(
+                    f"App Store Connect could not be asked ({attempt} attempts): {error}"
+                ) from None
+            _say(
+                f"  App Store Connect did not answer (attempt {attempt} of "
+                f"{PREFLIGHT_ATTEMPTS}), asking again in {delay}s: {error}"
+            )
+            time.sleep(delay)
+            delay *= 2
 
 
 def wait(args: argparse.Namespace) -> None:
