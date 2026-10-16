@@ -21,6 +21,12 @@ module LiveConversations
   # 3. **Direct tools** — every tool of every enabled non-Zimmer server, exposed
   #    as `<server>__<tool>` and executed through CatalogServer, so a capability
   #    the live agent keeps using costs one hop instead of a background session.
+  # 4. **Its own settings** — `get_live_settings` and `update_live_settings`, so
+  #    "talk faster" or "from now on, always …" said to the live agent becomes a
+  #    change it makes itself (LiveSetting, through SettingsUpdate). Always
+  #    present, whatever servers are enabled. A write is recorded in the settings
+  #    history as this conversation's, and its tool turn shows on the page as a
+  #    settings change; a voice client is handed a `session.update` for it.
   #
   # Every call is recorded as a `tool` turn on the conversation.
   class ToolBridge
@@ -29,6 +35,8 @@ module LiveConversations
     LIST_SERVERS = "list_mcp_servers"
     ENABLE_SERVER = "enable_mcp_server"
     DISABLE_SERVER = "disable_mcp_server"
+    GET_SETTINGS = "get_live_settings"
+    UPDATE_SETTINGS = "update_live_settings"
     DIRECT_SEPARATOR = "__"
 
     MAX_ENABLED_SERVERS = 8
@@ -37,7 +45,9 @@ module LiveConversations
     FUNCTION_NAME_LIMIT = 64
 
     Function = Data.define(:name, :description, :parameters)
-    Result = Data.define(:turn, :output, :error, :tools_changed)
+    # `session_changed`: the call changed a setting an open voice call can take
+    # mid-call, so the client should send a fresh `session.update`.
+    Result = Data.define(:turn, :output, :error, :tools_changed, :session_changed)
 
     class ToolFailure < StandardError; end
 
@@ -50,6 +60,7 @@ module LiveConversations
       list = []
       list.concat(zimmer_functions) if zimmer_tools.any?
       list.concat(server_functions)
+      list.concat(settings_functions)
       list.concat(direct_functions.map(&:first))
       list
     end
@@ -72,6 +83,7 @@ module LiveConversations
     # @return [Result]
     def execute(name, arguments, call_id:)
       args = nil
+      @session_changed = false
       begin
         args = parse_arguments(arguments)
         output, error, tools_changed = dispatch(name.to_s, args)
@@ -90,7 +102,8 @@ module LiveConversations
         tool_output: output.to_s, tool_error: error ? true : false
       )
       @conversation.touch_activity!
-      Result.new(turn: turn, output: turn.model_output, error: turn.tool_error, tools_changed: tools_changed ? true : false)
+      Result.new(turn: turn, output: turn.model_output, error: turn.tool_error, tools_changed: tools_changed ? true : false,
+                 session_changed: @session_changed && !turn.tool_error)
     end
 
     private
@@ -102,6 +115,8 @@ module LiveConversations
       when LIST_SERVERS then [ JSON.pretty_generate(server_listing), false, false ]
       when ENABLE_SERVER then [ enable_server(args), false, true ]
       when DISABLE_SERVER then [ disable_server(args), false, true ]
+      when GET_SETTINGS then [ settings_listing, false, false ]
+      when UPDATE_SETTINGS then [ update_settings(args), false, false ]
       else
         server_name, tool_name = direct_lookup[name]
         raise ToolFailure, "No function named #{name}. Call #{LIST_SERVERS} to see what is available." if server_name.nil?
@@ -326,6 +341,60 @@ module LiveConversations
       end
       reset!
       "Disabled #{name}."
+    end
+
+    # --- Its own settings -------------------------------------------------------
+
+    def settings_functions
+      properties = LiveSetting::FIELDS.to_h do |field|
+        schema = if field.numeric?
+          { type: %w[number string], minimum: field.min, maximum: field.max }
+        else
+          { type: "string", enum: [ *LiveSetting.options_for(field).keys, "default" ] }
+        end
+        [ field.key.to_s, schema.merge(description: "#{field.label}. #{field.help}#{' A number, or "default".' if field.numeric?}") ]
+      end
+
+      [
+        Function.new(
+          name: GET_SETTINGS,
+          description: "Read your own Live settings — models, voice, speaking speed, turn detection, output caps — " \
+                       "with each one's choices or range, and the Live mode guidance.",
+          parameters: { type: "object", properties: {} }
+        ),
+        Function.new(
+          name: UPDATE_SETTINGS,
+          description: "Change your own Live settings when the person asks. Pass only what changes; \"default\" puts a " \
+                       "setting back. Speaking speed and turn detection change from your next reply; the models, " \
+                       "voice and voice reasoning effort from the next call. `append_guidance` adds a standing " \
+                       "instruction to the Live mode guidance; `guidance` replaces all of it — read it first. Every " \
+                       "change is recorded and shown to the person; say out loud what you changed.",
+          parameters: {
+            type: "object",
+            properties: properties.merge(
+              "append_guidance" => { type: "string", description: "A standing instruction to add to the Live mode guidance, as its own line." },
+              "guidance" => { type: "string", description: "The whole Live mode guidance, replacing what is there. Empty clears it." },
+              "reset_to_defaults" => { type: "boolean", description: "Put every setting (not the guidance) back on its default." }
+            )
+          }
+        )
+      ]
+    end
+
+    def settings_listing = LiveSetting.current.describe
+
+    def update_settings(args)
+      reset = ActiveModel::Type::Boolean.new.cast(args["reset_to_defaults"]) ? true : false
+      actor = SettingsUpdate::Actor.agent("live conversation ##{@conversation.id}", live_conversation: @conversation)
+      result = SettingsUpdate.call(args.except("reset_to_defaults"), actor: actor, reset: reset)
+      @session_changed = result.mid_call_changed?
+      return "Nothing changed: those are already the settings." unless result.changed?
+
+      later = result.keys.map(&:to_sym) & %i[voice_model voice_name voice_reasoning_effort]
+      tail = later.any? ? "\n(#{later.map { |key| LiveSetting.field(key).label }.join(', ')}: from the next call.)" : ""
+      "Changed:\n#{result.summary}#{tail}"
+    rescue SettingsUpdate::Invalid => e
+      raise ToolFailure, "Nothing changed. #{e.message}"
     end
 
     # --- Direct tools ----------------------------------------------------------
