@@ -54,7 +54,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// The sign-in is a relay-only grant: the MCP Apps keys are refused, as the server
     /// refuses them before reading anything else.
     private let relayOnly: Bool
-    /// Live Mode / Live Voice: see FakeZimmerAPI+Live.swift.
+        /// Live Mode: see FakeZimmerAPI+Live.swift.
     var liveState = FakeLiveState.sample()
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
