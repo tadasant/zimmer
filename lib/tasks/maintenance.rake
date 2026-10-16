@@ -88,72 +88,63 @@ namespace :maintenance do
         puts "=" * 80
         puts
 
-        # Get all running claude processes
-        # Using Open3 with array syntax to prevent command injection
+        # Get all running claude processes — through HostProcessDiscovery, the one
+        # place allowed to ask the host. Under test it is the blind discovery, so a
+        # test database that records no real pid cannot turn every live agent on the
+        # machine into an "untracked" process and SIGTERM it (#1368).
         begin
-          require "open3"
-          ps_output, status = Open3.capture2("ps", "ax", "-o", "pid,command")
+          discovery = HostProcessDiscovery.configured(
+            process_manager: process_manager,
+            logger: StructuredLogger.new({ service: "maintenance:cleanup:orphaned_processes" })
+          )
+          claude_processes = discovery.claude_cli_processes
 
-          if SubprocessStatus.success?(status)
-            claude_processes = []
-            ps_output.each_line do |line|
-              # Look for claude command processes
-              # Match patterns like: "claude -p ..." or paths containing claude
-              if line.match?(/\bclaude\b.*-p\s/) || line.match?(/\/claude\s/)
-                parts = line.strip.split(nil, 2)
-                pid = parts[0].to_i
-                command = parts[1]
-                claude_processes << { pid: pid, command: command }
-              end
-            end
+          puts "Found #{claude_processes.count} running Claude CLI process(es)"
+          puts
 
-            puts "Found #{claude_processes.count} running Claude CLI process(es)"
-            puts
+          if claude_processes.any?
+            # Check which ones are not in our database
+            tracked_pids = sessions_with_pids.map { |s| s.metadata["process_pid"] }.compact
+            untracked_processes = claude_processes.reject { |p| tracked_pids.include?(p[:pid]) }
 
-            if claude_processes.any?
-              # Check which ones are not in our database
-              tracked_pids = sessions_with_pids.map { |s| s.metadata["process_pid"] }.compact
-              untracked_processes = claude_processes.reject { |p| tracked_pids.include?(p[:pid]) }
+            if untracked_processes.any?
+              puts "Found #{untracked_processes.count} untracked Claude process(es):"
+              untracked_processes.each do |proc|
+                puts "  PID #{proc[:pid]}: #{proc[:command][0..80]}..."
+                puts "    [WARNING] Process not tracked in database"
 
-              if untracked_processes.any?
-                puts "Found #{untracked_processes.count} untracked Claude process(es):"
-                untracked_processes.each do |proc|
-                  puts "  PID #{proc[:pid]}: #{proc[:command][0..80]}..."
-                  puts "    [WARNING] Process not tracked in database"
+                if dry_run
+                  puts "    [DRY RUN] Would attempt to terminate this process"
+                else
+                  puts "    [ACTIVE] Attempting to terminate..."
 
-                  if dry_run
-                    puts "    [DRY RUN] Would attempt to terminate this process"
+                  # Use ProcessTerminationService to safely terminate
+                  termination_service = ProcessTerminationService.new(
+                    process_pid: proc[:pid],
+                    process_manager: process_manager
+                  )
+
+                  result = termination_service.terminate
+
+                  if result.success?
+                    cleaned_count += 1
+                    puts "    ✓ #{result.message}"
+                  elsif result.status == :permission_denied
+                    permission_denied_count += 1
+                    puts "    ✗ Permission denied - cannot terminate (different user)"
                   else
-                    puts "    [ACTIVE] Attempting to terminate..."
-
-                    # Use ProcessTerminationService to safely terminate
-                    termination_service = ProcessTerminationService.new(
-                      process_pid: proc[:pid],
-                      process_manager: process_manager
-                    )
-
-                    result = termination_service.terminate
-
-                    if result.success?
-                      cleaned_count += 1
-                      puts "    ✓ #{result.message}"
-                    elsif result.status == :permission_denied
-                      permission_denied_count += 1
-                      puts "    ✗ Permission denied - cannot terminate (different user)"
-                    else
-                      errors << "PID #{proc[:pid]}: #{result.message}"
-                      puts "    ✗ #{result.message}"
-                    end
+                    errors << "PID #{proc[:pid]}: #{result.message}"
+                    puts "    ✗ #{result.message}"
                   end
-                  puts
                 end
-              else
-                puts "All running Claude processes are tracked in database."
+                puts
               end
+            else
+              puts "All running Claude processes are tracked in database."
             end
-          else
-            puts "Warning: Could not retrieve process list (ps command failed)"
           end
+        rescue HostProcessDiscovery::ScanFailed
+          puts "Warning: Could not retrieve process list (ps command failed)"
         rescue => e
           puts "Error checking for untracked processes: #{e.message}"
           errors << "Process check failed: #{e.message}"
