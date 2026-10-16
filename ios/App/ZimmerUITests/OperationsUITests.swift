@@ -67,7 +67,7 @@ final class OperationsUITests: XCTestCase {
 
         let actions = app.buttons["trigger.detail.actions"]
         actions.tap()
-        app.buttons["Invoke Now"].firstMatch.tap()
+        app.buttons["Run Now"].firstMatch.tap()
         let confirm = app.sheets.buttons["Invoke Nightly dependency sweep"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
@@ -78,24 +78,21 @@ final class OperationsUITests: XCTestCase {
         let app = launch()
         app.tabBars.buttons["More"].tap()
         app.descendants(matching: .any)["more.costs"].firstMatch.tap()
-        // The range's fields sit above the figures, so the roots may start below the fold.
+        // The coverage, tiles and chart sit above the roots, so they start below the fold.
         let root = app.buttons["costs.root.zimmer"]
         XCTAssertTrue(app.staticTexts["costs.total"].waitForExistence(timeout: timeout))
-        var swipes = 0
-        while !(root.exists && root.isHittable) && swipes < 6 { app.swipeUp(); swipes += 1 }
+        XCTAssertTrue(scrollTo(app, root), "the zimmer root is on the page")
         root.tap()
         XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].waitForExistence(timeout: timeout), "the page says what it is narrowed to")
         XCTAssertTrue(waitForDisappearance(app.buttons["costs.root.motet"]), "only the narrowed root is left")
         let clear = app.buttons["costs.scope.clear"]
-        swipes = 0
+        var swipes = 0
         while !(clear.exists && clear.isHittable) && swipes < 6 { app.swipeDown(); swipes += 1 }
         clear.tap()
         // The banner goes when the fleet's figures arrive; the roots are below the fold again.
         XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["costs.scope"]), "back to the fleet")
         let motet = app.buttons["costs.root.motet"]
-        swipes = 0
-        while !(motet.exists && motet.isHittable) && swipes < 6 { app.swipeUp(); swipes += 1 }
-        XCTAssertTrue(motet.exists && motet.isHittable, "back to every root")
+        XCTAssertTrue(scrollTo(app, motet), "back to every root")
 
         let window = app.segmentedControls["costs.window"]
         swipes = 0
@@ -126,9 +123,10 @@ final class OperationsUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["banner.queueRecovery"].exists, "queue recovery mode is announced")
         XCTAssertTrue(app.descendants(matching: .any)["banner.egress"].exists, "degraded egress is announced")
         // Then the web page's sections, in its order, each from the report's own numbers.
-        XCTAssertTrue(app.descendants(matching: .any)["health.queueRecovery"].exists)
+        XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)["health.queueRecovery"]))
         XCTAssertTrue(app.staticTexts["ON — queues halted"].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["health.process"].exists)
+        // A List lays out lazily: a section below the fold is not in the hierarchy until scrolled to.
+        XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)["health.process"]))
         XCTAssertTrue(app.staticTexts["PID 48112"].exists, "the orphan list")
         for identifier in ["health.session", "health.system", "health.egress", "health.auth", "health.sigtermRetry", "health.apiErrorRetry",
                            "health.retryBudgets", "health.postDeployTasks", "health.cron", "health.logRetention", "health.rootData",
@@ -152,7 +150,7 @@ final class OperationsUITests: XCTestCase {
 
     func test_the_board_has_no_banner_while_nothing_is_wrong() throws {
         let app = launch()
-        XCTAssertTrue(app.descendants(matching: .any)["session.1038"].firstMatch.waitForExistence(timeout: timeout))
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].firstMatch.waitForExistence(timeout: timeout))
         XCTAssertFalse(app.descendants(matching: .any)["banner.queueRecovery"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["banner.egress"].exists)
     }
@@ -183,8 +181,8 @@ final class OperationsUITests: XCTestCase {
     func test_run_now_asks_for_the_templates_variables_and_the_session_carries_them() throws {
         let app = launch(["-ZimmerFixtureTrigger", "7"])
         XCTAssertTrue(app.navigationBars["Slack thread triage"].waitForExistence(timeout: timeout))
-        XCTAssertTrue(app.descendants(matching: .any)["trigger.detail.schedulingClass"].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["trigger.detail.catalog_hooks"].exists, "the hooks chips")
+        XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)["trigger.detail.schedulingClass"]))
+        XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)["trigger.detail.catalog_hooks"]), "the hooks chips")
 
         app.buttons["trigger.detail.actions"].tap()
         app.buttons["Run Now"].firstMatch.tap()
@@ -225,8 +223,10 @@ final class OperationsUITests: XCTestCase {
     }
 
     /// Scroll until `element` sits below the navigation bar, where a tap lands on it rather
-    /// than on the bar; false if six swipes do not find it.
-    private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+    /// than on the bar; false if ten swipes do not find it. The first match, since a
+    /// container's identifier can reach more than one element.
+    private func scrollTo(_ app: XCUIApplication, _ query: XCUIElement) -> Bool {
+        let element = query.firstMatch
         func belowTheBar() -> Bool {
             guard element.exists, !element.frame.isEmpty else { return false }
             let bar = app.navigationBars.firstMatch
