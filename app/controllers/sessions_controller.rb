@@ -2534,24 +2534,23 @@ class SessionsController < ApplicationController
   # PATCH /sessions/:id/update_precedence
   # Set one session's rank in the spot queue. JSON for the ranked view, which
   # re-sorts the row in place; HTML for the session detail page's form.
+  #
+  # Presentation ONLY — the write and its log row are Sessions::UpdatePrecedence,
+  # shared with the `change_precedence` MCP action.
   def update_precedence
     @session = find_session
 
-    previous = @session.precedence
-    unless with_db_retry { @session.update(precedence: params[:precedence]) }
+    begin
+      with_db_retry { Sessions::UpdatePrecedence.call(session: @session, precedence: params[:precedence], actor: :web) }
+    rescue ActiveRecord::RecordInvalid
       message = "Could not update precedence: #{@session.errors.full_messages.join(', ')}"
       return respond_to do |format|
         format.json { render json: { error: message }, status: :unprocessable_entity }
         format.html { redirect_back fallback_location: session_path(@session), alert: message }
       end
     end
-
-    if previous != @session.precedence
-      @session.logs.create!(
-        content: "Precedence set to #{@session.precedence} (was #{previous})",
-        level: "info"
-      )
-    end
+    # with_db_retry has already answered when it ran out of attempts.
+    return if performed?
 
     respond_to do |format|
       format.json { render json: precedence_payload(@session) }
