@@ -11,8 +11,8 @@
 # NOTHING HERE SIGNS ANYTHING, and that is the property to preserve: a simulator build
 # needs no identity, no certificate, no provisioning profile and no App Store Connect key,
 # which is what lets this run in CI with no credential and no human. Do not add signing,
-# and do not set CODE_SIGN_ENTITLEMENTS — an entitlement Apple has not granted (CarPlay is
-# granted by manual review) fails a build TO SIGN rather than merely lacking the feature.
+# and do not set CODE_SIGN_ENTITLEMENTS: entitlements are signed in only by
+# `ios/bin/testflight`, behind its guard.
 #
 # Usage:
 #   ios/bin/build-app                                  # Debug, no default server

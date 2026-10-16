@@ -42,7 +42,7 @@
 #   APP_STORE_CONNECT_API_KEY_P8 (the .p8's contents), APPLE_TEAM_ID
 # and, in both modes:
 #   ZIMMER_BUILD_NUMBER            CFBundleVersion, default 1
-#   ZIMMER_IOS_PUSH_ENABLED        1 to sign in App/Zimmer/Push.entitlements; anything else, none
+#   ZIMMER_IOS_PUSH_ENABLED        1 to sign in App/Zimmer/Push.entitlements too; anything else, CarPlay only
 #   ZIMMER_IOS_WEB_BASE_URL        where the build signs in (the OAuth issuer), https origin
 #   ZIMMER_IOS_API_BASE_URL        where its machine calls go (the app host), https origin
 #                                 Either alone means one origin for both; upload needs one.
@@ -125,7 +125,7 @@ if [ "$mode" = upload ]; then
 fi
 
 printf '    using %s\n' "$(xcodebuild -version | head -1)"
-printf '==> archiving build %s (signing: %s)\n' "$build_number" "$([ "$mode" = check ] && echo none || echo "$signing")"
+printf '==> archiving build %s (signing: %s)\n' "$build_number" "$([ "$mode" = check ] && echo 'ad hoc' || echo "$signing")"
 
 archive="$work/Zimmer.xcarchive"
 
@@ -263,7 +263,7 @@ version="$(value CFBundleShortVersionString)"
 
 if [ "$mode" = check ]; then
   printf '\n\033[1;32m==> archive %s (%s) is uploadable in shape\033[0m\n' "$version" "$build_number"
-  printf '    Signing and the upload are not exercised here; they need the Apple key.\n\n'
+  printf '    Distribution signing and the upload are not exercised here; they need the Apple key.\n\n'
   exit 0
 fi
 
