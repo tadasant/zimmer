@@ -521,8 +521,26 @@ private struct SessionContextMenu: View {
                 Label("Put back on the board", systemImage: "eye")
             }
         }
-        if let pr = session.pullRequests.last {
+        // Every PR, as the session menu lists them: the row's line has room for the newest only.
+        if session.pullRequests.count == 1, let pr = session.pullRequests.first {
             Button { openURL(pr.url) } label: { Label("View PR \(pr.label)", systemImage: "arrow.triangle.pull") }
+        } else if !session.pullRequests.isEmpty {
+            Menu {
+                ForEach(session.pullRequests.reversed()) { pr in
+                    Button("\(pr.label) (\(pr.state?.capitalized ?? "Unknown"))") { openURL(pr.url) }
+                }
+            } label: {
+                Label("View PR (\(session.pullRequests.count))", systemImage: "arrow.triangle.pull")
+            }
+        }
+        // The web card's heart, on the views that draw cards.
+        if model.view == .lastTouched || model.view == .created, session.status != .archived {
+            let enabled = session.heartbeatEnabled ?? false
+            Button {
+                Task { await model.perform(enabled ? "Heartbeat off" : "Heartbeat on", on: session.id) { try await $0.setHeartbeat(session.id, enabled: !enabled) } }
+            } label: {
+                Label(enabled ? "Turn Heartbeat Off" : "Turn Heartbeat On", systemImage: enabled ? "heart.slash" : "heart")
+            }
         }
         if let url = model.webURL(for: session.id) {
             Button { openURL(url) } label: { Label("Open in browser", systemImage: "safari") }
@@ -537,6 +555,16 @@ private struct SessionContextMenu: View {
             }
         }
         Divider()
+        // The Ranked row's ⋮: a promotion starts a waiting session; a demotion lands at the
+        // head of the spot queue.
+        if model.view == .ranked, session.status != .archived {
+            Button {
+                Task { await model.reschedule(session.id, priority: !session.isPriority) }
+            } label: {
+                Label(session.isPriority ? "Demote to Spot" : "Promote to Priority",
+                      systemImage: session.isPriority ? "arrow.down.to.line" : "arrow.up.to.line")
+            }
+        }
         if session.status == .running {
             Button {
                 Task { await model.perform("Paused", on: session.id) { try await $0.pause(session.id) } }
@@ -640,8 +668,10 @@ private struct FilterSummary: View {
 
 /// One row of the web UI's board: the title on two lines at most, then one line of what the
 /// card carries — the status pill, Priority, `#id`, a compact age, the latest PR, a notes
-/// mark — and a star when it is a favourite. A trashed session reads in the quieter ink, as
-/// Motet dims what is done, so the ones waiting on you stand out without a heavier face.
+/// mark — then the web rows' facts line — the agent root, the genesis, the precedence, the
+/// heart when the heartbeat is on — and a star when it is a favourite. A trashed session
+/// reads in the quieter ink, as Motet dims what is done, so the ones waiting on you stand out
+/// without a heavier face.
 struct SessionRow: View {
     let session: SessionSummary
     /// Your board's rows carry the session's "where things stand", as the web UI's do.
@@ -698,6 +728,7 @@ struct SessionRow: View {
             .font(.caption.monospacedDigit())
             .foregroundStyle(Theme.inkSoft)
             .lineLimit(1)
+            RowFacts(session: session)
             if session.boardVisibility != .visible {
                 VisibilityLabel(session: session)
                     .font(.caption2.weight(.medium))
@@ -716,8 +747,52 @@ struct SessionRow: View {
     }
 }
 
+/// The web rows' facts, on one quiet line: the agent root (`_session_card`, `_user_view_row`,
+/// `_ranked_row`), the genesis (the card's `genesis · class` pill; the class is the Priority
+/// tag above), the precedence (`_user_view_row`'s `#N`, Ranked's rank) and the heart when the
+/// heartbeat is on (the card's top-right heart). Nothing when there is nothing to say.
+private struct RowFacts: View {
+    let session: SessionSummary
+
+    var body: some View {
+        let rank = session.precedence
+        let beating = session.heartbeatEnabled == true
+        if session.agentRoot != nil || session.genesis != nil || rank != nil || beating {
+            HStack(spacing: 5) {
+                if let root = session.agentRoot {
+                    Text(verbatim: root)
+                        .font(Theme.mono)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .accessibilityLabel("Agent root \(root)")
+                }
+                if let genesis = session.genesis {
+                    if session.agentRoot != nil { Text("·") }
+                    Text(verbatim: genesis)
+                        .lineLimit(1)
+                        .accessibilityLabel("Origin \(genesis)")
+                }
+                if let rank {
+                    if session.agentRoot != nil || session.genesis != nil { Text("·") }
+                    // The web's "Precedence — higher is worked sooner"; "rank", since `#` is the id.
+                    Text(verbatim: "rank \(rank)")
+                        .accessibilityLabel("Precedence \(rank)")
+                }
+                if beating {
+                    Image(systemName: "heart.fill")
+                        .foregroundStyle(Theme.danger)
+                        .accessibilityLabel("Heartbeat on")
+                }
+            }
+            .font(.caption2.weight(.medium).monospacedDigit())
+            .foregroundStyle(Theme.inkMute)
+        }
+    }
+}
+
 /// Your board's summary under a row, as the web UI draws it: the cached "where things stand"
-/// as inline markdown on three lines at most, then how current it is, and the agent root.
+/// as inline markdown on three lines at most, then how current it is. The agent root is on
+/// the row's facts line, as on every view.
 private struct RowSummary: View {
     let session: SessionSummary
 
@@ -755,15 +830,6 @@ private struct RowSummary: View {
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(Theme.inkMute)
                 .lineLimit(1)
-            }
-            // On its own line, as the web UI's row puts it on the action line: the root, else
-            // the genesis.
-            if let root = session.agentRoot ?? session.genesis {
-                Text(verbatim: root)
-                    .font(Theme.mono)
-                    .foregroundStyle(Theme.inkMute)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
         }
         .padding(.top, 1)
