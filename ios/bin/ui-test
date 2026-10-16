@@ -9,8 +9,8 @@
 #
 # Its own script rather than YAML, for the reason every other check here is a script: a
 # check that exists only in a workflow cannot be run by hand and will rot. The
-# `ios-ui-tests.yml` workflow's whole body is a call to this, and the `ios` job in `ci.yml`
-# calls exactly the same line.
+# `ios-ui-tests.yml` workflow's whole body is a call to this, and each shard of the `ios`
+# job in `ci.yml` calls the same line with `--only` naming its third of the classes.
 #
 # NOTHING HERE SIGNS ANYTHING and nothing here holds a credential: a simulator build needs
 # no identity, and the app under test signs into nothing (an agent cannot complete a Google
@@ -21,23 +21,36 @@
 #   ios/bin/ui-test --configuration Staging \
 #                   --api-base-url https://example.test   # the staging variant
 #   ios/bin/ui-test --artifacts out/                      # where video and results land
+#   ios/bin/ui-test --only WaitingUITests,LiveUITests     # a shard: these classes only
+#   ios/bin/ui-test --no-photos                           # the tests, not the photographs
+#
+# With no arguments it runs the whole suite and photographs every key screen. `--only` takes
+# a comma-separated list of `ZimmerUITests` classes and is what `ci.yml` splits the suite
+# across three simulators with; `--no-photos` skips the `simctl` photograph pass that
+# follows the tests, so only one of those three carries it.
 #
 # NO HOSTNAME IS WRITTEN IN THIS REPOSITORY. `--api-base-url` defaults to
 # $ZIMMER_IOS_API_BASE_URL, so a workflow sets one variable and this file names nothing.
 set -euo pipefail
 
+# Resolved before the `cd`, so `--help` finds this file from any directory.
+script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 
 configuration=Debug
 base_url="${ZIMMER_IOS_API_BASE_URL:-}"
 artifacts="${ZIMMER_UI_TEST_ARTIFACTS:-$PWD/.ui-test}"
+only=""
+photos=yes
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --configuration) configuration="${2:?--configuration needs a value}"; shift 2 ;;
     --api-base-url) base_url="${2:?--api-base-url needs a value}"; shift 2 ;;
     --artifacts) artifacts="${2:?--artifacts needs a value}"; shift 2 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    --only) only="${2:?--only needs a comma-separated list of test classes}"; shift 2 ;;
+    --no-photos) photos=no; shift ;;
+    -h|--help) sed -n '2,33p' "$script"; exit 0 ;;
     *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -83,12 +96,42 @@ if [ -n "$base_url" ]; then
   expect_host="$(printf '%s' "$base_url" | sed -e 's#^https://##' -e 's#[:/].*$##' | tr 'A-Z' 'a-z')"
 fi
 
+# ---------------------------------------------------------------------------------------
+# A shard of the suite, by class.
+#
+# `ci.yml` runs this on three simulators at once, each `--only` a third of the classes and
+# all but one `--no-photos`, because the whole suite on one hosted runner outgrew its job.
+# Every class named is checked against the sources BEFORE the seven-minute build: an
+# `-only-testing` that matches no class makes xcodebuild run nothing and exit 0, so a
+# misspelled shard would report green on tests nothing ran. The other half of the guard is
+# test/config/ios_ui_test_shards_test.rb, which holds every class to exactly one shard.
+# ---------------------------------------------------------------------------------------
+only_testing=()
+covered=all
+if [ -n "$only" ]; then
+  covered=""
+  IFS=, read -r -a classes <<<"$only"
+  for class in "${classes[@]}"; do
+    class="${class// /}"
+    [ -n "$class" ] || continue
+    grep -qE "^final class ${class}: XCTestCase" App/ZimmerUITests/*.swift \
+      || fail "--only names $class, and no \`final class $class\` is under App/ZimmerUITests"
+    only_testing+=("-only-testing:ZimmerUITests/$class")
+    covered="${covered:+$covered,}$class"
+  done
+  [ "${#only_testing[@]}" -gt 0 ] || fail "--only was given an empty list"
+fi
+
 rm -rf "$artifacts"
 mkdir -p "$artifacts"
 derived="$artifacts/DerivedData"
 
 printf '    using %s\n' "$(xcodebuild -version | head -1)"
 printf '    configuration %s, default server %s\n' "$configuration" "${base_url:-none}"
+printf '    classes %s, photographs %s\n' "$covered" "$photos"
+# What this run covered, in the artifact beside the evidence, so a downloaded bundle says
+# which shard it is without the workflow log.
+printf '%s\n' "classes=$covered" "photos=$photos" >"$artifacts/shard.txt"
 
 # ---------------------------------------------------------------------------------------
 # A simulator of our own, by UDID.
@@ -209,6 +252,7 @@ xcodebuild test-without-building \
   -resultBundlePath "$artifacts/ZimmerUITests.xcresult" \
   -test-timeouts-enabled YES \
   -maximum-test-execution-time-allowance 300 \
+  ${only_testing[@]+"${only_testing[@]}"} \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO || status=$?
 
@@ -229,7 +273,9 @@ shoot() {
   xcrun simctl io "$udid" screenshot "$artifacts/screen-$name.png" 2>/dev/null || true
   xcrun simctl terminate "$udid" "$BUNDLE_ID" >/dev/null 2>&1 || true
 }
-if [ -d "$app" ]; then
+if [ "$photos" = no ]; then
+  printf '==> not photographing the key screens (--no-photos)\n'
+elif [ -d "$app" ]; then
   printf '==> photographing the key screens\n'
   xcrun simctl install "$udid" "$app" >/dev/null 2>&1 || true
   # Light mode and a fixed status bar, so pictures from different runs compare.

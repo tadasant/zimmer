@@ -91,19 +91,24 @@ nothing is impossible.
 | `ios/bin/build-app [--configuration …] [--api-base-url https://…]` | Simulator build, unsigned | Xcode |
 | `ios/bin/testflight check` | Unsigned Release archive + assertions on the archived app, and the entitlements guard | Xcode |
 | `ios/bin/testflight upload` | The same archive, signed at export, uploaded, processing awaited | Xcode + ASC key |
-| `ios/bin/ui-test [--configuration Debug\|Staging] [--api-base-url …] [--artifacts dir]` | Runs `ZimmerUITests` on a simulator it picks by `simctl` JSON, records video, photographs the sign-in and session-list screens | Xcode + simulator |
+| `ios/bin/ui-test [--configuration Debug\|Staging] [--api-base-url …] [--artifacts dir] [--only Class,Class,…] [--no-photos]` | Runs `ZimmerUITests` on a simulator it picks by `simctl` JSON, records video, photographs the key screens. `--only` runs the named test classes (what CI's shards pass); `--no-photos` skips the photograph pass | Xcode + simulator |
 
 On Linux: `ZIMMER_SWIFT_SHIM=$(ios/bin/install-swift-toolchain)/swift ios/bin/ci-swift`.
 
 CI (`.github/workflows/ci.yml`): `ios-changes` (no checkout, `ubuntu-latest`) decides whether
 anything under `ios/**` or the three iOS workflows moved, and fails open to "build". `ios`
 (GitHub-hosted `macos-latest`, free on a public repo) runs `build-app`, `testflight check`,
-`ci-swift` and `ui-test --configuration Staging --api-base-url https://ui-test.invalid`, and
-keeps the `ios-ui-test` artifact (video, screenshots, result bundle, and the app's crash reports in
-`crashes/`, whose crashed thread is also printed in the job's log). `ios_swift_linux`
-(self-hosted) runs `ci-swift` on Linux. All three carry the fork-PR guard and are in
-`all-checks-pass`. `ios-ui-tests.yml` is the same simulator run on demand, against a server named
-by the *name* of a repository variable.
+`ci-swift` and `ui-test --configuration Staging --api-base-url https://ui-test.invalid --only …`
+as a matrix of three shards — `parity`, `session-page` and `photos` — each on its own runner and
+simulator with a third of the XCUITest classes, because the whole suite on one runner outgrew the
+job's timeout. Each shard keeps an `ios-ui-test-<shard>` artifact (video, result bundle,
+`shard.txt` naming the classes it ran, and the app's crash reports in `crashes/`, whose crashed
+thread is also printed in the job's log); only the `photos` shard takes the screenshots, so those
+are in `ios-ui-test-photos`. The shard lists live in the job's `matrix:` with the per-class timings
+they were balanced by; `test/config/ios_ui_test_shards_test.rb` fails on a class that is in no
+shard or in two. `ios_swift_linux` (self-hosted) runs `ci-swift` on Linux. All three carry the
+fork-PR guard and are in `all-checks-pass`. `ios-ui-tests.yml` is the whole suite in one simulator
+run on demand, against a server named by the *name* of a repository variable.
 
 ## Configurations and what a build is pointed at
 
