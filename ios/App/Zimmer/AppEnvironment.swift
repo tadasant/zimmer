@@ -90,7 +90,8 @@ final class AppEnvironment {
         }
         let edgeCredential: EdgeCredential = edge ?? NoEdgeCredential()
         let auth = AuthSession(store: tokenStore, transport: transport, edge: edgeCredential)
-        let api = ZimmerHTTPClient(auth: auth, transport: transport, edge: edgeCredential)
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        let api = ZimmerHTTPClient(auth: auth, transport: transport, edge: edgeCredential, source: .app(version: version))
         return Connection(origins: origins, auth: auth, api: api, edge: edge)
     }
 }

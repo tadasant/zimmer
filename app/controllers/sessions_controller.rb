@@ -321,6 +321,7 @@ class SessionsController < ApplicationController
     @session = Session.new(session_params)
     # The new-session form is a human at a keyboard in the Zimmer web app.
     @session.genesis = SessionGenesis::WEB_UI
+    @session.source_context = web_turn_source.to_h
 
     # The form always submits an mcp_servers key (the multi-select emits a blank
     # hidden input when nothing is selected), so an empty list here is a user who
@@ -465,6 +466,7 @@ class SessionsController < ApplicationController
         agent_runtime: runtime,
         metadata: { source: "quick_prompt" },
         genesis: SessionGenesis::WEB_UI,
+        source: web_turn_source,
         scheduling_class: scheduling_class,
         precedence: quick_router_precedence(scheduling_class),
         config: model ? { "model" => model } : nil,
@@ -605,6 +607,7 @@ class SessionsController < ApplicationController
         # answer, and #resolve_model! leaves an already-set config["model"] alone.
         agent_runtime: runtime,
         metadata: { source: "chat_bubble", original_prompt: prompt, current_url: current_url },
+        source: web_turn_source,
         # Declared, not inherited: the chat bubble carries a parent session so the
         # conversation threads, but a human typed this. Letting it inherit would
         # classify Tadas's own message spot whenever he opened the bubble from a
@@ -1469,7 +1472,8 @@ class SessionsController < ApplicationController
           content: follow_up_prompt,
           goal: goal,
           position: next_position,
-          status: "pending"
+          status: "pending",
+          source_context: web_turn_source.to_h
         )
 
         # Recorded at the moment the human typed it, not at delivery: the
@@ -1548,7 +1552,8 @@ class SessionsController < ApplicationController
             "last_user_activity_at" => sent_at.iso8601
           },
           images: images,
-          files: attached_files
+          files: attached_files,
+          source: web_turn_source
         )
 
         # Logged after the delivery so the timeline reads

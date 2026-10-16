@@ -4589,6 +4589,74 @@ signal that it has fallen behind, and it is an accurate one.
 
 ---
 
+## Turn sources
+
+The [turn-source note](/sessions/turn-sources/) is a style hint. These are the places where it is
+missing, coarse, or wrong. None of them reaches authorization, because nothing reads the source for
+that (`test/models/turn_source_test.rb`).
+
+### The modality is whatever the client says
+
+`X-Zimmer-Input-Modality` is the client's own claim, and nothing checks it. An API-key caller can
+claim `voice_dictation` and get a dictation hint. That is by design, and it is the reason the value
+is never an authorization signal. The Live modalities cannot be claimed this way. They come only from
+the Live conversation a delegation ran in.
+
+### Keyboard dictation on the phone is invisible
+
+The phone's composers are plain text fields. iOS keyboard dictation fills them like typing and the
+app cannot see it, so a phone message is tagged `ios` with an `unknown` modality. Only CarPlay's own
+speech loop (`VoiceIO`) is tagged `voice_dictation`.
+
+### A Live call from CarPlay is tagged as the phone
+
+CarPlay's Live call is the phone's `LiveCall`, using the same client, so its delegations are tagged
+`ios · live_voice` rather than `carplay`. `live_conversations.client_surface` is last-writer-wins: if
+the web app and the phone both drive one conversation, the next delegation names whichever spoke
+last.
+
+### An API key is `api`, even when an agent holds it
+
+The REST API's full key belongs to the whole fleet. A call is tagged `agent` only when it names
+`acting_session_id` or spawns under a parent. Otherwise an agent calling the REST API by hand is
+tagged `api`. The MCP surface does not have this gap, because the connection is stamped with its
+session.
+
+### Some turns arrive with no note
+
+These turns arrive with no note:
+
+- A replayed prompt: a nudge to a never-started session replays `sent_message`, `prompt` or
+  `original_prompt` (`AgentSessionJob#replayable_prompt`).
+- A follow-up folded into a never-started session's `prompt`. Its note comes off the column, and its
+  source becomes the session's initial source only when the session had none recorded.
+- A message Zimmer writes itself.
+- A prompt within 1,000 characters of `PROMPT_MAX_LENGTH`. The note is left off so a requeue never
+  fails the queue's length validation. The source is still recorded in `last_turn_source`.
+
+### A whole turn replayed verbatim keeps its note
+
+The signature covers the note's fields and the exact text in front of it. It does not cover the
+session or the moment. An untagged path that delivers byte-for-byte the same text and note that an
+earlier turn carried keeps that note as genuine. For example, a session could copy one of its own
+past turns into a `wake_me_up_later` prompt. The note then still describes how those words were
+first produced, so the lift gains nothing. Binding the signature to a session id would close this,
+at the cost of threading the session through every comparison.
+
+### Lookalikes the neutralizer does not match
+
+`TurnSource.neutralize` defuses `<zimmer-turn-source`, with optional whitespace and `/`,
+case-insensitively and line by line. It does not catch HTML-escaped (`&lt;…`), fullwidth (`＜`) or
+zero-width-split spellings, which a model might still read as the tag. The agent-facing explanation
+names only the intact element as Zimmer's.
+
+### Changing the note's wording defuses notes already in flight
+
+`finalize` keeps a note only if it re-renders byte for byte. A deploy that changes a label or a hint
+therefore defuses notes signed before it but not yet delivered (`‹zimmer-turn-source›`), for example
+on a prompt sitting in `pending_follow_up_prompt` or the queue. The turn is still delivered, just
+without a usable note. Rotating `secret_key_base` has the same effect.
+
 ## Triggers
 
 ### Workflow triggers exist, and nothing fires one

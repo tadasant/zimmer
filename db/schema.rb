@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_16_160000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_16_200000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -297,6 +297,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_16_160000) do
     t.string "origin", default: "caller", null: false
     t.integer "position", null: false
     t.bigint "session_id", null: false
+    t.jsonb "source_context"
     t.string "status", default: "pending", null: false
     t.datetime "updated_at", null: false
     t.index ["session_id", "status"], name: "index_enqueued_messages_on_session_id_and_status"
@@ -495,6 +496,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_16_160000) do
 
   create_table "live_conversations", force: :cascade do |t|
     t.string "agent_root", null: false
+    t.string "client_surface"
     t.datetime "created_at", null: false
     t.datetime "ended_at"
     t.text "error_message"
@@ -960,6 +962,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_16_160000) do
     t.string "slug"
     t.datetime "snoozed_until"
     t.integer "sort_order", default: 0, null: false
+    t.jsonb "source_context"
     t.integer "status", default: 1
     t.string "subdirectory"
     t.string "title"

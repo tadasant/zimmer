@@ -166,7 +166,11 @@ module LiveConversations
       @mcp_context ||= Mcp::Context.new(
         tool_groups: zimmer_groups.join(","),
         base_url: AppUrl.base_url,
-        caller_fingerprint: HealthActionCooldown.fingerprint("live_conversation:#{@conversation.id}")
+        caller_fingerprint: HealthActionCooldown.fingerprint("live_conversation:#{@conversation.id}"),
+        # A session this conversation starts or messages is told it came out of
+        # Live Mode, typed or spoken, and from which client — so a background agent
+        # can keep what it reports back short enough to be said aloud.
+        turn_source: TurnSource.for_live_conversation(@conversation)
       )
     end
 

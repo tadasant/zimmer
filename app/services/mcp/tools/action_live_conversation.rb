@@ -54,7 +54,7 @@ module Mcp
         mode = args["mode"].presence || "text"
         raise ToolError, mode_error unless LiveConversations.mode_keys.include?(mode.to_s)
 
-        conversation = LiveConversations::Start.call(mode)
+        conversation = LiveConversations::Start.call(mode, client_surface: "mcp")
         "## Live conversation started\n\n- **ID:** #{conversation.id}\n- **Mode:** #{conversation.live_mode.label}\n" \
           "- **Status:** #{conversation.status} (reading #{conversation.agent_root}'s AGENTS.md)\n" \
           "- **URL:** #{context.base_url}/live_conversations/#{conversation.id}"
@@ -62,7 +62,7 @@ module Mcp
 
       def send_message(args)
         conversation = find(args)
-        turn = LiveConversations::Actions.new(conversation).post_message(require_arg(args, :content))
+        turn = LiveConversations::Actions.new(conversation, client_surface: "mcp").post_message(require_arg(args, :content))
         "## Message sent\n\nTurn #{turn.id} on live conversation ##{conversation.id}. The reply arrives as a later turn."
       end
 
@@ -71,7 +71,7 @@ module Mcp
         mode = require_arg(args, :mode).to_s
         raise ToolError, mode_error unless LiveConversations.mode_keys.include?(mode)
 
-        LiveConversations::Actions.new(conversation).switch_mode(mode)
+        LiveConversations::Actions.new(conversation, client_surface: "mcp").switch_mode(mode)
         "## Live conversation ##{conversation.id} is #{conversation.voice? ? 'spoken (voice on)' : 'typed (voice off)'}\n\n" \
           "Model: `#{conversation.model}`. Its instructions follow the mode from the next answer."
       end
@@ -80,7 +80,7 @@ module Mcp
 
       def finish(args)
         conversation = find(args)
-        LiveConversations::Actions.new(conversation).finish
+        LiveConversations::Actions.new(conversation, client_surface: "mcp").finish
         "## Live conversation ##{conversation.id} ended"
       end
 

@@ -138,7 +138,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         var actions: [CPAlertAction] = [
             CPAlertAction(title: "Approve", style: .default) { [weak self] _ in
                 self?.dismissThen {
-                    if await self?.perform(.followUp(sessionID: session.id, text: VoiceCommand.approvalText)) == true {
+                    if await self?.perform(.followUp(sessionID: session.id, text: VoiceCommand.approvalText), spoken: false) == true {
                         await self?.refresh()
                     }
                 }
@@ -152,7 +152,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         }
         actions.append(CPAlertAction(title: "Archive", style: .destructive) { [weak self] _ in
             self?.dismissThen {
-                if await self?.perform(.archive(sessionID: session.id)) == true {
+                if await self?.perform(.archive(sessionID: session.id), spoken: false) == true {
                     await self?.refresh()
                 }
             }
@@ -226,7 +226,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
                         template.activateVoiceControlState(withIdentifier: VoiceState.speaking)
                         await self.voice.speak(line)
                     case .followUp, .archive:
-                        if await self.perform(effect) { acted = true } else { skipNextLine = true }
+                        if await self.perform(effect, spoken: true) { acted = true } else { skipNextLine = true }
                     }
                 }
                 // Refresh after the confirmation is spoken, not before it: a driver should
@@ -247,12 +247,16 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
     /// The effects that touch Zimmer; true when they worked. A failure is spoken here.
     /// Speech and the end of the conversation are handled by the loop above.
-    private func perform(_ effect: DrivingFlow.Effect) async -> Bool {
+    /// `spoken`: the driver said it, so the session is told it was dictated in the car;
+    /// a tapped button is still the car, but says nothing about how.
+    private func perform(_ effect: DrivingFlow.Effect, spoken: Bool) async -> Bool {
         let api = AppEnvironment.shared.connection.api
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        let source = ClientSource.app(version: version).onCarPlay(modality: spoken ? .voiceDictation : nil)
         do {
             switch effect {
             case let .followUp(sessionID, text):
-                _ = try await api.followUp(sessionID, prompt: text)
+                _ = try await api.followUp(sessionID, prompt: text, from: source)
             case let .archive(sessionID):
                 _ = try await api.archive(sessionID)
             case .speak, .end:
