@@ -8,10 +8,6 @@ final class OperationsUITests: XCTestCase {
 
     override func setUp() {
         continueAfterFailure = false
-        // The page walks below reach every section of the Costs and Health pages, a dozen
-        // and more each, and on a loaded simulator a step is seconds: more than the
-        // five-minute default, less than the ten `ios/bin/ui-test` allows.
-        executionTimeAllowance = 600
     }
 
     func test_a_notification_opens_its_session_on_the_sessions_tab() throws {
@@ -248,7 +244,9 @@ final class OperationsUITests: XCTestCase {
     /// the tab bar, and whole when it is about to be tapped — by dragging under half a screen
     /// at a time and holding, so there is no fling: on a loaded simulator a fling carries a
     /// short section past the screen in one go, and a lazy List never lays it out. Down first,
-    /// then back up, giving up after thirty steps. The first match, since a container's
+    /// then back up, giving up after thirty steps; done the moment the element is on screen (a
+    /// `where` clause on the loop would skip the drag and keep checking, thirty times three
+    /// seconds for every section a walk reaches). The first match, since a container's
     /// identifier can reach more than one element.
     private func reach(_ app: XCUIApplication, _ identifier: String, whole: Bool = false) -> Bool {
         let element = app.descendants(matching: .any)[identifier].firstMatch
@@ -262,7 +260,8 @@ final class OperationsUITests: XCTestCase {
             let frame = element.frame
             return frame.minY >= top && (whole ? frame.maxY <= bottom : frame.minY < bottom)
         }
-        for step in 0..<30 where !onScreen() {
+        for step in 0..<30 {
+            if onScreen() { return true }
             let down = step < 20
             // The start alternates between two heights, a quarter screen apart: a control
             // that takes a drag for itself — the spend-by-day chart, whose selection follows
