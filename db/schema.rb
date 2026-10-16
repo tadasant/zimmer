@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_16_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_16_160000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -504,13 +504,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_16_120000) do
     t.jsonb "mcp_servers", default: [], null: false
     t.jsonb "mcp_tool_cache", default: {}, null: false
     t.string "mode", null: false
+    t.jsonb "mode_instructions", default: {}, null: false
     t.string "model", null: false
     t.datetime "responding_since"
     t.string "status", default: "preparing", null: false
     t.string "title"
     t.datetime "updated_at", null: false
+    t.index "(true)", name: "index_live_conversations_one_open", unique: true, where: "(((status)::text = 'preparing'::text) OR ((status)::text = 'active'::text))"
     t.index ["mode", "status"], name: "index_live_conversations_on_mode_and_status"
-    t.index ["mode"], name: "index_live_conversations_one_open_per_mode", unique: true, where: "(((status)::text = 'preparing'::text) OR ((status)::text = 'active'::text))"
     t.index ["updated_at"], name: "index_live_conversations_on_updated_at"
   end
 

@@ -1,8 +1,8 @@
 import XCTest
 @testable import ZimmerKit
 
-/// Live Mode and Live Voice: what the app sends and reads over `/api/v1/live*`, and the Realtime
-/// sequencing a Live Voice call runs (the same rules as the web's call dock).
+/// Live Mode: what the app sends and reads over `/api/v1/live*`, and the Realtime sequencing a
+/// voice call runs (the same rules as the web's call dock).
 final class LiveAPITests: XCTestCase {
     private func client(_ handlers: [ScriptedTransport.Handler]) -> (ZimmerHTTPClient, ScriptedTransport) {
         let transport = ScriptedTransport(handlers)
@@ -14,8 +14,8 @@ final class LiveAPITests: XCTestCase {
     }
 
     private static func conversation() -> [String: Any] { [
-        "id": 7, "mode": "voice", "label": "Live Voice", "status": "active", "title": "Live Voice · Oct 15",
-        "agent_root": "live-voice", "model": "gpt-realtime-2.1-mini", "instructions_source": "x@abc:AGENTS.md",
+        "id": 7, "mode": "voice", "voice": true, "label": "Live Mode", "mode_label": "Voice", "status": "active", "title": "Live Mode · Oct 15",
+        "agent_root": "live-mode", "model": "gpt-realtime-2.1-mini", "instructions_source": "x@abc:AGENTS.md",
         "mcp_servers": ["zimmer", "demo-clock"], "responding": false, "error_message": NSNull(),
         "turns": [
             ["id": 1, "role": "user", "source": "spoken", "content": "Is main green?", "tool_name": NSNull(), "tool_arguments": NSNull(), "tool_output": NSNull(), "tool_error": false],
@@ -24,17 +24,32 @@ final class LiveAPITests: XCTestCase {
         ],
     ] }
 
-    func testModesDecodeWithTheirReasons() async throws {
-        let (api, transport) = client([{ _ in Fixtures.json(200, ["modes": [
-            ["mode": "text", "label": "Live Mode", "agent_root": "live-mode", "model": "gpt-6-luna", "available": true, "key_configured": true, "root_present": true, "reasons": []],
-            ["mode": "voice", "label": "Live Voice", "agent_root": "live-voice", "model": "gpt-realtime-2.1-mini", "available": false, "key_configured": false, "root_present": true,
-             "reasons": ["LIVE_OPENAI_API_KEY is not set."]],
-        ]]) }])
-        let modes = try await api.liveModes()
+    func testAvailabilityDecodesWithItsReasonsAndEachModesModel() async throws {
+        let (api, transport) = client([{ _ in
+            let shared: [String: Any] = ["agent_root": "live-mode", "available": false, "key_configured": false, "root_present": true,
+                                         "reasons": ["LIVE_OPENAI_API_KEY is not set."]]
+            return Fixtures.json(200, shared.merging(["label": "Live Mode", "modes": [
+                shared.merging(["mode": "text", "label": "Text", "model": "gpt-6-luna"]) { $1 },
+                shared.merging(["mode": "voice", "label": "Voice", "model": "gpt-realtime-2.1-mini"]) { $1 },
+            ]]) { $1 })
+        }])
+        let availability = try await api.liveAvailability()
         XCTAssertEqual(transport.sent.first?.url.path, "/api/v1/live")
-        XCTAssertEqual(modes.map(\.mode), [.text, .voice])
-        XCTAssertFalse(modes[1].available)
-        XCTAssertEqual(modes[1].reasons, ["LIVE_OPENAI_API_KEY is not set."])
+        XCTAssertFalse(availability.available)
+        XCTAssertEqual(availability.agentRoot, "live-mode")
+        XCTAssertEqual(availability.reasons, ["LIVE_OPENAI_API_KEY is not set."])
+        XCTAssertEqual(availability.models, [.text: "gpt-6-luna", .voice: "gpt-realtime-2.1-mini"])
+    }
+
+    func testAvailabilityFromAServerThatStillHasTwoModesReadsTheTypedOne() async throws {
+        let (api, _) = client([{ _ in Fixtures.json(200, ["modes": [
+            ["mode": "text", "label": "Live Mode", "agent_root": "live-mode", "model": "gpt-6-luna", "available": true, "reasons": []],
+            ["mode": "voice", "label": "Live Voice", "agent_root": "live-voice", "model": "gpt-realtime-2.1-mini", "available": false, "reasons": ["no root"]],
+        ]]) }])
+        let availability = try await api.liveAvailability()
+        XCTAssertTrue(availability.available)
+        XCTAssertEqual(availability.agentRoot, "live-mode")
+        XCTAssertEqual(availability.reasons, [])
     }
 
     func testAConversationDecodesWithItsTurnsAndTheGatewayToolItCalled() async throws {
@@ -49,11 +64,25 @@ final class LiveAPITests: XCTestCase {
         XCTAssertEqual(turns[1].toolLabel, "zimmer → quick_router")
     }
 
-    func testTheIndexMapsEachModesCurrentConversation() async throws {
-        let (api, _) = client([{ _ in Fixtures.json(200, ["live_conversations": [LiveAPITests.conversation()], "current": ["text": NSNull(), "voice": 7]]) }])
+    func testTheIndexReadsTheOneCurrentConversation() async throws {
+        let (api, _) = client([{ _ in Fixtures.json(200, ["live_conversations": [LiveAPITests.conversation()], "current_id": 7, "current": ["voice": 7]]) }])
         let overview = try await api.liveConversations()
-        XCTAssertEqual(overview.current, [.voice: 7])
+        XCTAssertEqual(overview.current, 7)
         XCTAssertEqual(overview.conversations.map(\.id), [7])
+    }
+
+    func testTheIndexFromAServerWithoutCurrentIDReadsTheKeyedOne() async throws {
+        let (api, _) = client([{ _ in Fixtures.json(200, ["live_conversations": [], "current": ["text": NSNull(), "voice": 7]]) }])
+        let overview = try await api.liveConversations()
+        XCTAssertEqual(overview.current, 7)
+    }
+
+    func testSwitchingModePostsTheMode() async throws {
+        let (api, transport) = client([{ _ in Fixtures.json(200, LiveAPITests.conversation()) }])
+        let conversation = try await api.setLiveMode(7, mode: .voice)
+        XCTAssertEqual(transport.sent.first?.url.path, "/api/v1/live_conversations/7/mode")
+        XCTAssertEqual(try body(transport.sent[0])["mode"] as? String, "voice")
+        XCTAssertEqual(conversation.mode, .voice)
     }
 
     func testStartMessageAndFinishSendWhatTheServerTakes() async throws {
@@ -236,13 +265,14 @@ final class LiveAPITests: XCTestCase {
         XCTAssertEqual(reset.overrides, [])
     }
 
-    func testTheFixtureKeepsOneOpenConversationPerModeAndAnswersTypedMessages() async throws {
+    func testTheFixtureKeepsOneOpenConversationAndAnswersTypedMessages() async throws {
         let api = FakeZimmerAPI()
         let first = try await api.startLiveConversation(.text)
         let second = try await api.startLiveConversation(.text)
         let overview = try await api.liveConversations()
-        XCTAssertEqual(overview.current[.text], second.id)
+        XCTAssertEqual(overview.current, second.id)
         XCTAssertEqual(overview.conversations.first { $0.id == first.id }?.status, .ended)
+        XCTAssertEqual(overview.conversations.first { $0.id == 21 }?.status, .ended, "starting ends the open voice conversation too")
 
         _ = try await api.sendLiveMessage(second.id, content: "please look into the poller")
         let turns = try await api.liveConversation(second.id, afterTurn: nil).turns ?? []
@@ -250,7 +280,16 @@ final class LiveAPITests: XCTestCase {
         let newer = try await api.liveConversation(second.id, afterTurn: turns[0].id).turns ?? []
         XCTAssertEqual(newer.count, 2)
         await XCTAssertThrowsAsync(try await api.sendLiveMessage(first.id, content: "again"), "an ended conversation takes no messages")
-        await XCTAssertThrowsAsync(try await api.sendLiveMessage(21, content: "typed"), "a voice conversation takes no typed messages")
+        await XCTAssertThrowsAsync(try await api.liveClientSecret(second.id), "no secret while voice is off")
+
+        let spoken = try await api.setLiveMode(second.id, mode: .voice)
+        XCTAssertEqual(spoken.model, "gpt-realtime-2.1-mini")
+        await XCTAssertThrowsAsync(try await api.sendLiveMessage(second.id, content: "typed"), "no typing while voice is on")
+        _ = try await api.liveClientSecret(second.id)
+        let typed = try await api.setLiveMode(second.id, mode: .text)
+        XCTAssertEqual(typed.mode, .text)
+        let after = try await api.liveConversation(second.id, afterTurn: nil)
+        XCTAssertEqual(after.turns?.count, 3, "the thread survives the switch")
     }
 }
 
