@@ -317,9 +317,11 @@ struct LiveConversationView: View {
         let mine = call.isActive(for: conversation.id)
         return VStack(spacing: 8) {
             if mine {
-                Text(call.state.label).font(.subheadline).foregroundStyle(.secondary).accessibilityIdentifier("live.call.state")
-            } else if let message = call.lastError, call.conversationID == conversation.id {
-                Text(message).font(.footnote).foregroundStyle(.red)
+                Text(call.state.label(muted: call.muted)).font(.subheadline).foregroundStyle(.secondary).accessibilityIdentifier("live.call.state")
+            }
+            // OpenAI's errors show during the call too, not only once it has ended.
+            if let message = call.lastError, call.conversationID == conversation.id {
+                Text(message).font(.footnote).foregroundStyle(.red).accessibilityIdentifier("live.call.error")
             }
             HStack(spacing: 16) {
                 if mine {

@@ -95,9 +95,10 @@ final class CarPlayLive {
         }
         let template = CPListTemplate(title: "Live Mode", sections: [CPListSection(items: [status, mute, hangUp])])
         // LiveCall is main-actor and publishes from there.
-        watching = call.$state.combineLatest(call.$lastError).sink { state, error in
+        watching = call.$state.combineLatest(call.$lastError, call.$muted).sink { state, error, muted in
             MainActor.assumeIsolated {
-                status.setDetailText(state == .idle ? (error ?? state.label) : state.label)
+                let label = state.label(muted: muted)
+                status.setDetailText(error.map { state == .idle ? $0 : "\(label) · \($0)" } ?? label)
             }
         }
         interfaceController?.pushTemplate(template, animated: true, completion: nil)
