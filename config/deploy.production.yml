@@ -291,6 +291,10 @@ env:
     # without touching a secret. Absent, the chain is just credentials -> ENV.
     ZIMMER_PARAMS_PROJECT_ID: zimmer-secrets-prod
     ZIMMER_PARAMS_LOCATION: global
+    # Zimmer never writes to that store. The pages that depend on a store secret
+    # (/live, the Inference page's Pi tab) link this console to set it instead.
+    ZIMMER_STORE_CONSOLE_URL: https://strad.tadasant.com/ui/secrets
+    ZIMMER_STORE_CONSOLE_STORE_NAME: Zimmer production
   secret:
     - SECRET_KEY_BASE
     - RAILS_MASTER_KEY
@@ -307,10 +311,6 @@ env:
     # the same env-file reason as the SSH key above, spelled out in
     # .kamal/secrets.production. Its two non-secret companions are in env.clear.
     - ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON
-    # Base64 of the SEPARATE writer service-account key, for the one surface that
-    # writes to the store (the Inference page's Pi tab). Optional: unset means
-    # that tab reports the write path closed. See .kamal/secrets.production.
-    - ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON
     - SENTRY_DSN_BACKEND
     - OTEL_LOGS_EXPORTER_ENDPOINT
     - OTEL_LOGS_EXPORTER_BEARER_TOKEN

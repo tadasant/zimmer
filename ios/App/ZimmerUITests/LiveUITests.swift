@@ -50,6 +50,21 @@ final class LiveUITests: XCTestCase {
         attachScreenshot(app, named: "live-voice-thread")
     }
 
+    func test_the_gear_on_a_conversation_opens_the_live_settings() throws {
+        let app = launch(["-ZimmerFixtureLiveConversation", "21"])
+        XCTAssertTrue(labelled(app, "Is the flaky poller test still failing on main?").waitForExistence(timeout: timeout))
+        let gear = app.buttons["live-settings"].firstMatch
+        XCTAssertTrue(gear.waitForExistence(timeout: timeout), "the gear is on the conversation's toolbar")
+        gear.tap()
+
+        XCTAssertTrue(app.descendants(matching: .any)["live-settings-view"].firstMatch.waitForExistence(timeout: timeout))
+        XCTAssertTrue(labelled(app, "Speaking speed").waitForExistence(timeout: timeout), "each field is listed")
+        attachScreenshot(app, named: "live-settings")
+
+        app.buttons["live-settings.done"].tap()
+        XCTAssertTrue(waitForGone(app.descendants(matching: .any)["live-settings-view"].firstMatch))
+    }
+
     private func launch(_ arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-ZimmerFixture"] + arguments

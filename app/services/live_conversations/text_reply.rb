@@ -41,7 +41,11 @@ module LiveConversations
         end
         step
       end
-      @conversation.update!(error_message: nil) if @conversation.error_message.present?
+      if @settings_warning
+        @conversation.update!(error_message: @settings_warning)
+      elsif @conversation.error_message.present?
+        @conversation.update!(error_message: nil)
+      end
     end
 
     private
@@ -66,13 +70,19 @@ module LiveConversations
 
     def step
       heartbeat!
-      response = @client.chat_completion(
-        model: @conversation.model,
-        reasoning_effort: "none",
-        messages: messages,
-        tools: @bridge.chat_tools,
-        tool_choice: "auto"
-      )
+      setting = LiveSetting.current
+      response = begin
+        @client.chat_completion(request_body(setting))
+      rescue OpenaiClient::Error => e
+        raise unless refused_settings?(e, setting)
+
+        # OpenAI refused the configured settings (a model this key cannot use):
+        # answer on the defaults rather than not at all, and say why on the page.
+        @settings_warning = "OpenAI refused the Live settings (#{e.message.truncate(200)}), so this reply ran on the defaults. Change them on the Live settings page."
+        Rails.logger.warn("[LiveConversations::TextReply] #{@settings_warning}")
+        heartbeat!
+        @client.chat_completion(request_body(LiveSetting.new(guidance: setting.guidance)))
+      end
       message = response.dig("choices", 0, "message") || {}
       calls = Array(message["tool_calls"]).select { |call| call["type"] == "function" || call["function"] }
       text = message["content"].to_s.strip
@@ -90,8 +100,30 @@ module LiveConversations
       end
     end
 
-    def messages
-      list = [ { role: "system", content: SystemPrompt.build(@conversation) } ]
+    # Read from LiveSetting on every request, so a change applies from the next
+    # turn. `reasoning_effort` is always "none": it is the only effort at which
+    # Chat Completions takes function tools from the GPT-6 models (LiveSetting).
+    def request_body(setting)
+      model = setting.effective(:text_model)
+      @conversation.update_columns(model: model) if @conversation.model != model
+      body = {
+        model: model,
+        reasoning_effort: "none",
+        messages: messages(setting),
+        tools: @bridge.chat_tools,
+        tool_choice: "auto"
+      }
+      body[:temperature] = setting.effective(:text_temperature) if setting.overridden?(:text_temperature)
+      body[:max_completion_tokens] = setting.effective(:text_max_output_tokens) if setting.overridden?(:text_max_output_tokens)
+      body
+    end
+
+    def refused_settings?(error, setting)
+      [ 400, 404, 422 ].include?(error.status) && LiveSetting::KEYS.any? { |key| key.start_with?("text_") && setting.overridden?(key) }
+    end
+
+    def messages(setting)
+      list = [ { role: "system", content: SystemPrompt.build(@conversation, setting: setting) } ]
       turns = @conversation.turns.reorder(id: :desc).limit(HISTORY_TURNS).to_a.reverse
       @answered_through = turns.select(&:user?).map(&:id).max
       turns.shift while turns.first&.tool? # never open on an orphaned tool result

@@ -2,7 +2,8 @@
 
 # One live conversation's page, and the calls its page makes. Live Voice's
 # browser client (live_voice_controller.js) uses the JSON member routes to mint
-# its Realtime secret, relay function calls, and record transcript lines.
+# its Realtime secret, relay function calls, record transcript lines, and fetch
+# a `session.update` when the Live settings change mid-call.
 class LiveConversationsController < ApplicationController
   before_action :set_conversation, except: :create
 
@@ -50,6 +51,14 @@ class LiveConversationsController < ApplicationController
 
   def tool_calls
     render json: actions.tool_call(name: params[:name].to_s, arguments: params[:arguments], call_id: params[:call_id].to_s)
+  rescue LiveConversations::Actions::Refused => e
+    render json: { error: e.message }, status: e.status
+  end
+
+  # Live Voice: the `session.update` that brings the open call up to the current
+  # Live settings and guidance, which the dock sends after they changed.
+  def session_update
+    render json: { session: actions.session_update }
   rescue LiveConversations::Actions::Refused => e
     render json: { error: e.message }, status: e.status
   end

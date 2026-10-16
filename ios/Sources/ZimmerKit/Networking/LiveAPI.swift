@@ -20,10 +20,29 @@ public protocol LiveAPI: Sendable {
     func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult
     /// Live Voice: a finished transcript line, so the thread carries what was said.
     func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String) async throws -> LiveTurn
+    /// Live Voice: the `session` of a `session.update` that brings an open call up to the current
+    /// Live settings and guidance — sent after they changed somewhere else, such as the settings
+    /// screen.
+    func liveSessionUpdate(_ id: Int) async throws -> JSONValue
+
+    /// The Live settings, each field's choices or range, the guidance, and recent history.
+    func liveSettings() async throws -> LiveSettings
+    /// Change some: setting keys (a string or a number; `""` or `"default"` puts one back),
+    /// `guidance` to replace it, `append_guidance` to add a line. 422 on an unknown key or a
+    /// value not among a field's options; a number out of range is clamped and `summary` says so.
+    func updateLiveSettings(_ changes: [String: JSONValue]) async throws -> LiveSettings
+    /// Every setting back to its default. The guidance is kept.
+    func resetLiveSettings() async throws -> LiveSettings
+    /// The guidance as it was before change `changeID`. 422 when that change did not touch it.
+    func restoreLiveGuidance(changeID: Int) async throws -> LiveSettings
 }
 
 struct LiveModesResponse: Decodable {
     let modes: [LiveModeAvailability]
+}
+
+struct LiveSessionUpdateResponse: Decodable {
+    let session: JSONValue
 }
 
 struct LiveIndexResponse: Decodable {
@@ -76,5 +95,26 @@ extension ZimmerHTTPClient {
 
     public func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String) async throws -> LiveTurn {
         try await post("/api/v1/live_conversations/\(id)/turns", json: ["role": role.rawValue, "content": content])
+    }
+
+    public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
+        let response: LiveSessionUpdateResponse = try await post("/api/v1/live_conversations/\(id)/session_update", json: [:])
+        return response.session
+    }
+
+    public func liveSettings() async throws -> LiveSettings {
+        try await get("/api/v1/live/settings")
+    }
+
+    public func updateLiveSettings(_ changes: [String: JSONValue]) async throws -> LiveSettings {
+        try await patch("/api/v1/live/settings", json: changes.mapValues(\.foundationObject))
+    }
+
+    public func resetLiveSettings() async throws -> LiveSettings {
+        try await post("/api/v1/live/settings/reset", json: [:])
+    }
+
+    public func restoreLiveGuidance(changeID: Int) async throws -> LiveSettings {
+        try await post("/api/v1/live/settings/changes/\(changeID)/restore_guidance", json: [:])
     }
 }
