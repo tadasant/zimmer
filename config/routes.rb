@@ -211,8 +211,8 @@ Rails.application.routes.draw do
       # page. Write-only by shape — one action, one response — and opened by an
       # ApiKey with the `quick_router` grant, which nothing else here accepts.
       post "quick_router", to: "quick_router#create"
-      # Live Mode and Live Voice, for the iOS app; an API key may only read. The same
-      # verbs as the web routes; see Api::V1::LiveConversationsController.
+      # Live Mode, for the iOS app; an API key may only read. The same verbs as
+      # the web routes; see Api::V1::LiveConversationsController.
       get "live", to: "live_conversations#modes"
       get "live/settings", to: "live_settings#show"
       patch "live/settings", to: "live_settings#update"
@@ -221,6 +221,7 @@ Rails.application.routes.draw do
       resources :live_conversations, only: [ :index, :show, :create ] do
         member do
           post :finish
+          post :mode
           post :messages
           post :client_secret
           post :tool_calls
@@ -547,24 +548,27 @@ Rails.application.routes.draw do
   patch "inference/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class
   delete "inference/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
 
-  # Live Mode and Live Voice: one continuous conversation per mode, entered from
-  # the main screen. /live is the overview and the OpenAI key's status; /live/:mode
-  # resumes the mode's current conversation or offers to start one. The member
-  # routes are the shared thread (messages) and Live Voice's client relay
-  # (client_secret, tool_calls, turns).
+  # Live Mode: one continuous conversation, typed or spoken, entered from the
+  # main screen. /live is the overview and the OpenAI key's status;
+  # /live/current resumes the current conversation or offers to start one. The
+  # member routes are the thread (messages), the typed ⇄ spoken switch (mode)
+  # and the voice client's relay (client_secret, tool_calls, turns).
   get "live", to: "live#index", as: :live
   # Live settings: the models, voice, speed and turn detection, and the Live
   # mode guidance appended to the live model's instructions — one global row
-  # (LiveSetting), with its edit history. Above /live/:mode so "settings" is
-  # never read as a mode.
+  # (LiveSetting), with its edit history. Above the /live/:mode redirect so
+  # "settings" is never read as a mode.
   get "live/settings", to: "live_settings#show", as: :live_settings
   patch "live/settings", to: "live_settings#update"
   post "live/settings/reset", to: "live_settings#reset", as: :reset_live_settings
   post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance", as: :restore_live_settings_guidance
-  get "live/:mode", to: "live#show", as: :live_mode
+  get "live/current", to: "live#show", as: :current_live
+  # The two-mode URLs from before voice folded into Live Mode, for bookmarks.
+  get "live/:mode", to: redirect("/live/current"), constraints: { mode: /text|voice/ }
   resources :live_conversations, only: [ :show, :create ] do
     member do
       post :finish
+      post :mode
       post :messages
       post :client_secret
       post :tool_calls

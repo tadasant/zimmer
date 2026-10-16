@@ -2,7 +2,7 @@
 
 module LiveConversations
   # The functions a live model can call, and what happens when it calls one.
-  # Shared by both modes: Live Mode runs it inside its reply job, Live Voice runs
+  # Shared by both modes: a typed reply runs it inside its reply job, a voice call runs
   # it when the browser or phone relays a Realtime `function_call` to Rails.
   #
   # Three kinds of function:
@@ -317,7 +317,7 @@ module LiveConversations
       end
 
       tools = CatalogServer.find!(name).list_tools
-      # Under the row lock and re-read: Live Voice runs tool calls side by side,
+      # Under the row lock and re-read: a voice call runs tool calls side by side,
       # and two enables that both started from the old list must not drop one.
       @conversation.with_lock do
         @conversation.update!(
