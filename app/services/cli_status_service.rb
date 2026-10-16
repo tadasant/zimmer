@@ -296,9 +296,9 @@ class CliStatusService
     # Check authentication based on auth method
     authenticated = if config[:auth_method] == :env_var
       # Through the `${VAR}` chain, not bare ENV. A key in the Parameter Store
-      # lives in the chain's first link and not in this process's environment
-      # at all — reading ENV directly would
-      # report Pi unauthenticated while every Pi session was running fine on it.
+      # lives in the chain's first link and not in this process's environment at
+      # all — reading ENV directly would report Pi unauthenticated while every Pi
+      # session was running fine on it.
       # The chain's last link IS ENV, so a plain export still answers.
       resolved_credential(config[:env_var_name]).present?
     else
