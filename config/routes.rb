@@ -64,6 +64,10 @@ Rails.application.routes.draw do
     # rules (one open per mode, the tool bridge) an edit form would bypass.
     resources :live_conversations, only: [ :index, :show ]
     resources :live_conversation_turns, only: [ :index, :show ]
+    # Read-only too: the Live settings are written through SettingsUpdate, which
+    # validates and records every change, on /live/settings, REST and MCP.
+    resources :live_settings, only: [ :index, :show ]
+    resources :live_setting_changes, only: [ :index, :show ]
     # Read-only, both of them. A delivery row is what Webhooks::SlackController verified and
     # accepted, and a claim is a Slack firing path's record that a message has fired. Nothing here
     # is hand-authored, and an edited or deleted claim would re-fire a message the other path
@@ -210,6 +214,10 @@ Rails.application.routes.draw do
       # Live Mode and Live Voice, for the iOS app; an API key may only read. The same
       # verbs as the web routes; see Api::V1::LiveConversationsController.
       get "live", to: "live_conversations#modes"
+      get "live/settings", to: "live_settings#show"
+      patch "live/settings", to: "live_settings#update"
+      post "live/settings/reset", to: "live_settings#reset"
+      post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance"
       resources :live_conversations, only: [ :index, :show, :create ] do
         member do
           post :finish
@@ -217,6 +225,7 @@ Rails.application.routes.draw do
           post :client_secret
           post :tool_calls
           post :turns
+          post :session_update
         end
       end
 
@@ -532,6 +541,14 @@ Rails.application.routes.draw do
   # routes are the shared thread (messages) and Live Voice's client relay
   # (client_secret, tool_calls, turns).
   get "live", to: "live#index", as: :live
+  # Live settings: the models, voice, speed and turn detection, and the Live
+  # mode guidance appended to the live model's instructions — one global row
+  # (LiveSetting), with its edit history. Above /live/:mode so "settings" is
+  # never read as a mode.
+  get "live/settings", to: "live_settings#show", as: :live_settings
+  patch "live/settings", to: "live_settings#update"
+  post "live/settings/reset", to: "live_settings#reset", as: :reset_live_settings
+  post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance", as: :restore_live_settings_guidance
   get "live/:mode", to: "live#show", as: :live_mode
   resources :live_conversations, only: [ :show, :create ] do
     member do
@@ -540,6 +557,7 @@ Rails.application.routes.draw do
       post :client_secret
       post :tool_calls
       post :turns
+      post :session_update
     end
   end
 

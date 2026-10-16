@@ -78,4 +78,13 @@ final class TrashTests: XCTestCase {
         guard case let .trashed(session) = try await fake.trash(1042, force: true) else { return XCTFail("not trashed") }
         XCTAssertEqual(session.status, .archived)
     }
+
+    func testTheFakeTrashesASessionElsewhereWhenTheInboxIsRead() async throws {
+        let fake = FakeZimmerAPI(trashedElsewhere: 1035)
+        let before = try await fake.sessions(.default, board: .onBoard, view: .lastTouched).sessions
+        XCTAssertTrue(before.contains { $0.id == 1035 })
+        _ = try await fake.notifications()
+        let after = try await fake.sessions(.default, board: .onBoard, view: .lastTouched).sessions
+        XCTAssertFalse(after.contains { $0.id == 1035 }, "the server no longer lists it")
+    }
 }

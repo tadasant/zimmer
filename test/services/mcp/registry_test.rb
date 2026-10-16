@@ -30,10 +30,10 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
   # A live model can enable any catalog server, so steering one must not come
   # with `sessions` or the unscoped surface.
   test "the live-conversation tools are only in their own opt-in group" do
-    live = %w[get_live_conversations action_live_conversation]
+    live = %w[get_live_conversations action_live_conversation get_live_settings action_live_settings]
 
     assert_equal live.sort, Mcp::Registry.tools_for([ "live_conversations" ]).map(&:tool_name).sort
-    assert_equal [ "get_live_conversations" ], Mcp::Registry.tools_for([ "live_conversations_readonly" ]).map(&:tool_name)
+    assert_equal %w[get_live_conversations get_live_settings], Mcp::Registry.tools_for([ "live_conversations_readonly" ]).map(&:tool_name)
     assert_empty live & Mcp::Registry.tools_for([ "sessions" ]).map(&:tool_name)
     assert_empty live & Mcp::Registry.tools_for([ "sessions_readonly" ]).map(&:tool_name)
     assert_empty live & Mcp::Registry.tools_for([ "self_session" ]).map(&:tool_name)
@@ -96,7 +96,7 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     names = Mcp::Registry::ALL_TOOLS.map { |d| d.klass.constantize.tool_name }
 
     assert_equal names.uniq.size, names.size, "duplicate tool names: #{names.tally.select { |_, c| c > 1 }.keys}"
-    assert_equal 47, names.size
+    assert_equal 49, names.size
   end
 
   # A spawn, so it rides with start_session; a session managing itself has no

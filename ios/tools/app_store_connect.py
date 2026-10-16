@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import subprocess
@@ -35,6 +36,11 @@ from typing import Any
 API = "https://api.appstoreconnect.apple.com"
 TOKEN_LIFETIME_SECONDS = 15 * 60  # Apple refuses anything over 20 minutes.
 POLL_SECONDS = 30
+# App Store Connect occasionally times out a single read, so the pre-archive check is asked
+# this many times, sleeping PREFLIGHT_BACKOFF_SECONDS, then twice that, between attempts:
+# 105 seconds of sleeping, about four minutes in all with each attempt's request timeout.
+PREFLIGHT_ATTEMPTS = 4
+PREFLIGHT_BACKOFF_SECONDS = 15
 
 
 class TransientError(Exception):
@@ -115,7 +121,11 @@ class Client:
         request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
-                body: dict[str, Any] = json.load(response)
+                try:
+                    body: dict[str, Any] = json.load(response)
+                except json.JSONDecodeError as error:
+                    # A 200 whose body was cut off, or an edge's HTML page.
+                    raise TransientError(f"{path}: unreadable answer ({error})") from None
                 return body
         except urllib.error.HTTPError as error:
             detail = _error_detail(error)
@@ -136,7 +146,10 @@ class Client:
             raise SystemExit(
                 f"App Store Connect answered {error.code} for {path}. {detail}"
             ) from None
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        except (OSError, http.client.HTTPException) as error:
+            # After HTTPError, which is itself an OSError. OSError covers URLError, a timeout
+            # on any Python 3 (socket.timeout before 3.10), a reset and an SSL EOF;
+            # HTTPException covers an IncompleteRead or a BadStatusLine.
             raise TransientError(f"{path}: {error}") from None
 
 
@@ -167,11 +180,27 @@ def _app_id(client: Client, bundle_id: str) -> str:
 
 
 def preflight(args: argparse.Namespace) -> None:
-    try:
-        _app_id(Client(), args.bundle_id)
-    except TransientError as error:
-        # Nothing has been built yet, so failing here costs a re-run and nothing else.
-        raise SystemExit(f"App Store Connect could not be asked: {error}") from None
+    """Only a TransientError (a timeout, a dropped connection, a 429 or a 5xx) is asked
+    again. A refused key, a missing app record or any other 4xx is a SystemExit from the
+    first attempt, because asking again cannot change the answer."""
+    client = Client()
+    delay = PREFLIGHT_BACKOFF_SECONDS
+    for attempt in range(1, PREFLIGHT_ATTEMPTS + 1):
+        try:
+            _app_id(client, args.bundle_id)
+            return
+        except TransientError as error:
+            if attempt == PREFLIGHT_ATTEMPTS:
+                # Nothing has been built yet, so failing here costs a re-run and nothing else.
+                raise SystemExit(
+                    f"App Store Connect could not be asked ({attempt} attempts): {error}"
+                ) from None
+            _say(
+                f"  App Store Connect did not answer (attempt {attempt} of "
+                f"{PREFLIGHT_ATTEMPTS}), asking again in {delay}s: {error}"
+            )
+            time.sleep(delay)
+            delay *= 2
 
 
 def wait(args: argparse.Namespace) -> None:
