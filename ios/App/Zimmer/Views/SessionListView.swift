@@ -59,7 +59,9 @@ struct SessionListView: View {
             }
             .environment(\.editMode, $editMode)
             // A refresh while rows are selected or being dragged would move them under a finger.
-            .onChange(of: editMode.isEditing) { _, editing in model.isEditingBoard = editing }
+            // Select and Reorder only, not the `transient` mode SwiftUI's docs say it may
+            // engage during a swipe: a swipe must never leave the board unable to read.
+            .onChange(of: isSelectingOrReordering) { _, editing in model.isEditingBoard = editing }
             // Selecting hides the tab bar, as Mail does: the Trash bar takes its place at the bottom.
             .toolbar(editMode.isEditing ? .hidden : .visible, for: .tabBar)
             // A selection only ever names rows on screen: a filter, search or view change drops the rest.
@@ -181,6 +183,9 @@ struct SessionListView: View {
     }
 
     private var isSelecting: Bool { editMode.isEditing && !reordering }
+
+    /// Select or Reorder, as the board's poller has to know: `.active` only.
+    private var isSelectingOrReordering: Bool { editMode == .active }
 
     /// Drag handles while reordering: on Your board, its spot rows; on Ranked, the spot queue.
     private func moveHandler(for section: BoardSection) -> ((IndexSet, Int) -> Void)? {
