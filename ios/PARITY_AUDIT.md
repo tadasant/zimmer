@@ -23,8 +23,8 @@ This audit was derived from the web app's source instead: every HTML route a sig
 | B Session page | 90 | 18 | 20 | 3 | 131 |
 | C Board & starting sessions | 79 | 24 | 11 | 1 | 115 |
 | D Operations | 34 | 29 | 84 | 3 | 150 |
-| E Global chrome | 20 | 5 | 10 | 8 | 43 |
-| **Total** | **239** | **95** | **250** | **18** | **602** |
+| E Global chrome | 21 | 5 | 10 | 8 | 44 |
+| **Total** | **240** | **95** | **250** | **18** | **603** |
 
 Counted from the rows below after removing the 44 duplicate copies of items two areas both rowed. Four rows in B are `present` only with #1282, and two in C are `partial` only with #1284, both open; the counts take them as those PRs leave them. The 205 Administrate routes under `/supervisor` and the GoodJob mount are one `web-only` row each in D, not 206.
 
@@ -893,6 +893,7 @@ Ranked within each group by how often a person on a phone runs into it. The area
 | `live/show.html.erb` (`GET /live/:mode`): start a conversation in a mode, recent conversations | Start a live conversation | `LiveViews.swift` (6556c1b3): start, or resume the recent one | present | `POST /api/v1/live_conversations` |
 | `live_conversations/show.html.erb`, `_turn`, `_header`: the conversation's turns, typed input, the session it runs in | Read and continue a live conversation, typed | `LiveViews.swift` (6556c1b3): the single-thread view with a composer, re-read every two seconds | present | — |
 | `shared/_live_voice_dock.html.erb` (in the layout): the voice call's dock — mute, hang up, dismiss — above every page | A spoken conversation, continuous, with the call's controls on every page | `LiveCall.swift`, `LiveAudioEngine.swift`, `RealtimeConductor.swift` (6556c1b3): *Talk* opens a Realtime call, with Hang up; the same call in CarPlay | partial | the web's dock follows you to every page; the app's call controls live on the Live screen and in CarPlay |
+| `live_settings/show.html.erb` (`GET /live/settings`): the Live settings (models, voice, speaking speed, turn detection), the Live mode guidance with Copy, Reset settings to defaults, and the History with Restore guidance | Tune how Live Mode thinks, sounds and listens, edit the guidance, and see who changed what | `LiveViews.swift` `LiveSettingsView`, from the gear on the Live screens; `LiveCall.refreshSession()` | present | `GET`/`PATCH /api/v1/live/settings`, `POST …/reset`, `POST …/changes/:id/restore_guidance`; after a save an open call is sent `POST /live_conversations/:id/session_update` as a `session.update` |
 
 Inventory notes from this area, not counted (neither side has it, or iOS has it and the web does not):
 

@@ -88,4 +88,39 @@ class LiveConversations::TextReplyTest < ActiveSupport::TestCase
     assert_equal [ "first", "second", "One.", "Two." ], @conversation.turns.map(&:content)
     assert_equal %w[system user user assistant], client.chat_requests.second["messages"].map { |m| m["role"] }
   end
+
+  test "every request reads the Live settings and the guidance fresh" do
+    LiveConversations::SettingsUpdate.call(
+      { "text_model" => "gpt-6-sol", "text_temperature" => 0.3, "text_max_output_tokens" => 2_000, "guidance" => "Always answer in French." },
+      actor: LiveConversations::SettingsUpdate::Actor.human("test")
+    )
+    @conversation.turns.create!(role: "user", source: "typed", content: "hi")
+    client = Fake.new(chat_responses: [ Fake.text("Bonjour.") ])
+
+    LiveConversations::TextReply.call(@conversation, client: client)
+
+    request = client.chat_requests.sole
+    assert_equal "gpt-6-sol", request["model"]
+    assert_equal "none", request["reasoning_effort"]
+    assert_in_delta 0.3, request["temperature"]
+    assert_equal 2_000, request["max_completion_tokens"]
+    system = request["messages"].first["content"]
+    # After the root's AGENTS.md and Zimmer's section, last.
+    assert_operator system.index("## This conversation (written by Zimmer)"), :<, system.index("## Live mode guidance")
+    assert system.end_with?("Always answer in French.")
+    assert_equal "gpt-6-sol", @conversation.reload.model
+  end
+
+  test "settings OpenAI refuses fall back to the defaults for the reply, and the page says so" do
+    LiveConversations::SettingsUpdate.call({ "text_model" => "gpt-6-sol", "guidance" => "Stay terse." }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    @conversation.turns.create!(role: "user", source: "typed", content: "hi")
+    client = Fake.new(chat_responses: [ OpenaiClient::Error.new("OpenAI answered 404: model not found", status: 404), Fake.text("Hello.") ])
+
+    LiveConversations::TextReply.call(@conversation, client: client)
+
+    assert_equal %w[gpt-6-sol gpt-6-luna], client.chat_requests.map { |r| r["model"] }
+    assert client.chat_requests.second["messages"].first["content"].end_with?("Stay terse."), "the fallback keeps the guidance"
+    assert_equal "Hello.", @conversation.turns.last.content
+    assert_match(/ran on the defaults/, @conversation.reload.error_message)
+  end
 end
