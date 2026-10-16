@@ -109,7 +109,7 @@ class MobileOverlaySubmitTest < ApplicationSystemTestCase
     # asserts is the hand-over.
     session.reload
     assert_equal "waiting", session.status
-    assert_equal "Mobile follow-up message", session.metadata["pending_follow_up_prompt"]
+    assert_equal "Mobile follow-up message", TurnSource.strip(session.metadata["pending_follow_up_prompt"])
   end
 
   test "mobile overlay shows queue mode for running session" do
