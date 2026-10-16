@@ -8,8 +8,8 @@ module Mcp
     #
     # Not here, deliberately: Live Voice's relay (client secret, tool calls,
     # transcript lines) — those belong to a client holding an audio connection —
-    # and the OpenAI key, which ManagedSecret keeps off every agent surface for
-    # the reason it gives.
+    # and the OpenAI key, which Zimmer does not manage on any surface: it is set
+    # in the secrets console that administers the store.
     class ActionLiveConversation < Tool
       ACTIONS = %w[start send_message finish].freeze
 

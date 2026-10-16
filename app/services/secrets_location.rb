@@ -59,7 +59,35 @@ class SecretsLocation
   GATEWAY_HOST = "strad.tadasant.com"
   GATEWAY_NAMESPACE = "/strad/prod/mcp"
 
+  # The console that administers ZIMMER'S OWN store: where a human sets a secret
+  # Zimmer itself depends on (LIVE_OPENAI_API_KEY, OPENROUTER_API_KEY). Zimmer
+  # never writes to its store, so the pages that need such a secret link here
+  # instead of offering a form.
+  #
+  # Separate from {.console} on purpose. That one is the console over strad's
+  # project, and the pages that use it check {.console_administers?} before
+  # claiming it can set a Zimmer variable; this one is configured by the operator
+  # as the console for Zimmer's store, so there is no default — an unset URL
+  # means "no console is known", and the page names the path without a link
+  # rather than pointing a stranger's deployment at somebody else's console.
+  ENV_STORE_CONSOLE_URL = "ZIMMER_STORE_CONSOLE_URL"
+  # What the console calls this store, when it fronts several.
+  ENV_STORE_CONSOLE_STORE_NAME = "ZIMMER_STORE_CONSOLE_STORE_NAME"
+
   class << self
+    # --- The console over Zimmer's own store -----------------------------------
+
+    # @return [Hash, nil] `{ url:, store_name: }`, or nil when no console is
+    #   configured. `store_name` may be nil.
+    def store_console
+      url = env_value(ENV_STORE_CONSOLE_URL)
+      # Rendered as an href, so only a web address counts: anything else
+      # (a typo, a `javascript:` URL) reads as no console configured.
+      return nil unless url&.match?(%r{\Ahttps?://\S+\z}i)
+
+      { url: url, store_name: env_value(ENV_STORE_CONSOLE_STORE_NAME) }
+    end
+
     # --- The Secrets Console -------------------------------------------------
 
     # The console's address and the one project (in one location) it administers,
