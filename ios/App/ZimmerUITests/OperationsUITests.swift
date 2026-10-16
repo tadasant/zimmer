@@ -8,6 +8,10 @@ final class OperationsUITests: XCTestCase {
 
     override func setUp() {
         continueAfterFailure = false
+        // The page walks below reach every section of the Costs and Health pages, a dozen
+        // and more each, and on a loaded simulator a step is seconds: more than the
+        // five-minute default, less than the ten `ios/bin/ui-test` allows.
+        executionTimeAllowance = 600
     }
 
     func test_a_notification_opens_its_session_on_the_sessions_tab() throws {
@@ -248,12 +252,13 @@ final class OperationsUITests: XCTestCase {
     /// identifier can reach more than one element.
     private func reach(_ app: XCUIApplication, _ identifier: String, whole: Bool = false) -> Bool {
         let element = app.descendants(matching: .any)[identifier].firstMatch
+        // The bars do not move while the page scrolls: read once, not five queries a step.
+        let bar = app.navigationBars.firstMatch
+        let top = bar.exists ? bar.frame.maxY : 0
+        let tabBar = app.tabBars.firstMatch
+        let bottom = tabBar.exists ? tabBar.frame.minY : app.frame.maxY
         func onScreen() -> Bool {
-            guard element.waitForExistence(timeout: 2), !element.frame.isEmpty else { return false }
-            let bar = app.navigationBars.firstMatch
-            let top = bar.exists ? bar.frame.maxY : 0
-            let tabBar = app.tabBars.firstMatch
-            let bottom = tabBar.exists ? tabBar.frame.minY : app.frame.maxY
+            guard element.waitForExistence(timeout: 1), !element.frame.isEmpty else { return false }
             let frame = element.frame
             return frame.minY >= top && (whole ? frame.maxY <= bottom : frame.minY < bottom)
         }

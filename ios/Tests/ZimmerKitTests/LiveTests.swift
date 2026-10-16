@@ -107,6 +107,135 @@ final class LiveAPITests: XCTestCase {
         XCTAssertFalse(conversation.status.isOpen)
     }
 
+    /// `GET /api/v1/live/settings`, or a write's answer (`written`), as the server renders it.
+    private static func settings(written: Bool = false) -> [String: Any] {
+        var json: [String: Any] = [
+            "settings": ["text_model": "gpt-6-sol", "text_temperature": NSNull(), "voice_speed": 0.75] as [String: Any],
+            "overrides": ["text_model", "voice_speed"],
+            "guidance": "Keep answers short.",
+            "updated_at": "2026-10-16T12:00:00.000Z",
+            "updated_by": "agent:live conversation #7",
+            "fields": [
+                ["key": "text_model", "path": "text", "type": "enum", "label": "Text model", "help": "Answers typed turns.",
+                 "options": [["value": "gpt-6-luna", "label": "gpt-6-luna — fastest"], ["value": "gpt-6-sol", "label": "gpt-6-sol — stronger"]],
+                 "default": "gpt-6-luna"] as [String: Any],
+                ["key": "text_temperature", "path": "text", "type": "float", "label": "Text temperature", "help": "", "min": 0, "max": 2] as [String: Any],
+                ["key": "voice_speed", "path": "voice", "type": "float", "label": "Speaking speed", "help": "",
+                 "min": 0.25, "max": 1.5, "default": 1, "mid_call": true] as [String: Any],
+            ],
+            "guidance_max_length": 8000,
+            "history": [
+                ["id": 4, "actor_kind": "agent", "actor": "live conversation #7", "live_conversation_id": 7,
+                 "changes": ["guidance": ["before": "", "after": "Keep answers short."], "voice_speed": ["before": 1, "after": 0.75]] as [String: Any],
+                 "created_at": "2026-10-16T11:59:00Z"] as [String: Any],
+                ["id": 3, "actor_kind": "human", "actor": "the iOS app", "live_conversation_id": NSNull(),
+                 "changes": ["text_model": ["before": NSNull(), "after": "gpt-6-sol"] as [String: Any]] as [String: Any],
+                 "created_at": "2026-10-16T11:00:00Z"] as [String: Any],
+            ],
+        ]
+        if written {
+            json["changed"] = true
+            json["summary"] = "Speaking speed 0.75."
+        }
+        return json
+    }
+
+    func testLiveSettingsDecodeWithTheirFieldsAndHistory() async throws {
+        let (api, transport) = client([{ _ in Fixtures.json(200, LiveAPITests.settings()) }])
+        let settings = try await api.liveSettings()
+        XCTAssertEqual(transport.sent.first?.url.path, "/api/v1/live/settings")
+        XCTAssertEqual(transport.sent.first?.method, "GET")
+        XCTAssertEqual(settings.value("text_model"), .string("gpt-6-sol"))
+        XCTAssertEqual(settings.value("voice_speed"), .number(0.75))
+        XCTAssertEqual(settings.value("text_temperature"), .null, "a setting with no value is null, not missing")
+        XCTAssertTrue(settings.isOverridden("voice_speed"))
+        XCTAssertFalse(settings.isOverridden("text_temperature"))
+        XCTAssertEqual(settings.guidance, "Keep answers short.")
+        XCTAssertEqual(settings.guidanceMaxLength, 8000)
+        XCTAssertNotNil(settings.updatedAt)
+        XCTAssertNil(settings.changed, "a read carries no write's answer")
+
+        XCTAssertEqual(settings.fields(on: "text").map(\.key), ["text_model", "text_temperature"])
+        XCTAssertEqual(settings.fields(on: "voice").map(\.key), ["voice_speed"])
+        let model = settings.fields[0]
+        XCTAssertEqual(model.type, .choice)
+        XCTAssertEqual(model.options.map(\.value), ["gpt-6-luna", "gpt-6-sol"])
+        XCTAssertEqual(model.defaultValue, .string("gpt-6-luna"))
+        XCTAssertEqual(model.label(for: .string("gpt-6-sol")), "gpt-6-sol — stronger")
+        XCTAssertNil(settings.fields[1].defaultValue, "no default is \"not set\"")
+        let speed = settings.fields[2]
+        XCTAssertEqual(speed.type, .float)
+        XCTAssertEqual(speed.min, 0.25)
+        XCTAssertEqual(speed.max, 1.5)
+        XCTAssertEqual(speed.midCall, true)
+        XCTAssertEqual(speed.defaultValue?.liveSettingText, "1", "a whole number reads without its .0")
+
+        XCTAssertEqual(settings.history.map(\.id), [4, 3])
+        let agent = settings.history[0]
+        XCTAssertTrue(agent.byAgent)
+        XCTAssertTrue(agent.touchesGuidance)
+        XCTAssertEqual(agent.liveConversationID, 7)
+        XCTAssertEqual(agent.keys, ["guidance", "voice_speed"])
+        XCTAssertEqual(agent.changes["voice_speed"]?.after, .number(0.75))
+        let person = settings.history[1]
+        XCTAssertFalse(person.byAgent)
+        XCTAssertFalse(person.touchesGuidance)
+        XCTAssertNil(person.liveConversationID)
+        XCTAssertNil(person.changes["text_model"]?.before, "a setting that was not set reads as nil before")
+    }
+
+    func testLiveSettingsWritesAndTheMidCallSessionUpdate() async throws {
+        let (api, transport) = client([
+            { _ in Fixtures.json(200, LiveAPITests.settings(written: true)) },
+            { _ in Fixtures.json(200, LiveAPITests.settings(written: true)) },
+            { _ in Fixtures.json(200, LiveAPITests.settings(written: true)) },
+            { _ in Fixtures.json(200, ["session": ["type": "realtime", "audio": ["output": ["speed": 0.75]]] as [String: Any]]) },
+        ])
+        let written = try await api.updateLiveSettings([
+            "voice_speed": .number(0.75), "text_max_output_tokens": .number(512), "text_model": .string("default"),
+        ])
+        XCTAssertEqual(written.changed, true)
+        XCTAssertEqual(written.summary, "Speaking speed 0.75.")
+        XCTAssertEqual(transport.sent[0].method, "PATCH")
+        let sent = try body(transport.sent[0])
+        XCTAssertEqual((sent["voice_speed"] as? NSNumber)?.doubleValue, 0.75)
+        XCTAssertEqual((sent["text_max_output_tokens"] as? NSNumber)?.intValue, 512)
+        XCTAssertEqual(sent["text_model"] as? String, "default")
+        XCTAssertEqual(sent.count, 3, "only what was passed is sent")
+
+        _ = try await api.resetLiveSettings()
+        _ = try await api.restoreLiveGuidance(changeID: 4)
+        let session = try await api.liveSessionUpdate(7)
+        XCTAssertEqual(transport.sent.map(\.url.path), [
+            "/api/v1/live/settings", "/api/v1/live/settings/reset", "/api/v1/live/settings/changes/4/restore_guidance",
+            "/api/v1/live_conversations/7/session_update",
+        ])
+        XCTAssertEqual(transport.sent.dropFirst().map(\.method), ["POST", "POST", "POST"])
+        XCTAssertEqual(session["audio"]?["output"]?["speed"], .number(0.75))
+    }
+
+    func testTheFixturesLiveSettingsApplyChangesAndRestoreTheGuidance() async throws {
+        let api = FakeZimmerAPI()
+        let start = try await api.liveSettings()
+        XCTAssertEqual(start.value("voice_speed"), .number(1))
+        XCTAssertEqual(start.guidance, "")
+
+        let faster = try await api.updateLiveSettings(["voice_speed": .number(3), "guidance": .string("Be brief.")])
+        XCTAssertEqual(faster.changed, true)
+        XCTAssertEqual(faster.value("voice_speed"), .number(1.5), "a number is clamped to its range")
+        XCTAssertEqual(faster.guidance, "Be brief.")
+        XCTAssertEqual(faster.overrides, ["voice_speed"])
+        await XCTAssertThrowsAsync(try await api.updateLiveSettings(["voice_name": .string("nobody")]), "a choice not offered is refused")
+
+        let change = try XCTUnwrap(faster.history.first)
+        XCTAssertTrue(change.touchesGuidance)
+        let restored = try await api.restoreLiveGuidance(changeID: change.id)
+        XCTAssertEqual(restored.guidance, "")
+        let reset = try await api.resetLiveSettings()
+        XCTAssertEqual(reset.value("voice_speed"), .number(1))
+        XCTAssertEqual(reset.overrides, [])
+    }
+
     func testTheFixtureKeepsOneOpenConversationPerModeAndAnswersTypedMessages() async throws {
         let api = FakeZimmerAPI()
         let first = try await api.startLiveConversation(.text)
@@ -215,6 +344,26 @@ final class RealtimeConductorTests: XCTestCase {
         XCTAssertEqual(sent(effects), ["conversation.item.create:e1", "session.update"])
         guard case let .send(update) = effects[1] else { return XCTFail("expected a session.update") }
         XCTAssertEqual(update["session"]?["tools"], tools)
+    }
+
+    func testASettingsChangeSendsZimmersSessionInsteadOfTheToolsOnlyOne() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"s1","name":"zimmer","arguments":"{}"}"#))
+        let tools = JSONValue.parse(#"[{"type":"function","name":"zimmer"}]"#)
+        let session = JSONValue.parse(#"{"type":"realtime","instructions":"Be brief.","tools":[{"type":"function","name":"zimmer"}],"audio":{"output":{"speed":0.75}}}"#)
+        let effects = conductor.relayed(callID: "s1", result: LiveToolResult(output: "Saved", toolsChanged: true, tools: tools, session: session))
+        XCTAssertEqual(sent(effects), ["conversation.item.create:s1", "session.update"], "one session.update, not two")
+        guard case let .send(update) = effects[1] else { return XCTFail("expected a session.update") }
+        XCTAssertEqual(update, RealtimeConductor.sessionUpdate(session!))
+        XCTAssertEqual(update["session"], session)
+        XCTAssertEqual(update["session"]?["audio"]?["output"]?["speed"], .number(0.75))
+    }
+
+    func testASessionUpdateCarriesTheSessionAsGiven() {
+        let session = JSONValue.object(["type": .string("realtime"), "max_output_tokens": .string("inf")])
+        let update = RealtimeConductor.sessionUpdate(session)
+        XCTAssertEqual(update["type"]?.string, "session.update")
+        XCTAssertEqual(update["session"], session)
     }
 
     func testAFailedRelayStillAnswersTheModel() {
