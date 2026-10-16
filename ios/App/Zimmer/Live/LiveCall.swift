@@ -189,6 +189,8 @@ final class LiveCall: ObservableObject {
                 let heard = audio.stopPlayback()
                 send(RealtimeConductor.truncate(itemID: itemID, audioEndMs: heard))
             case let .state(next):
+                // A reply coming through means the call recovered from whatever went wrong.
+                if next == .speaking { lastError = nil }
                 state = next
             case let .failure(message):
                 log.error("realtime error: \(message, privacy: .public)")
