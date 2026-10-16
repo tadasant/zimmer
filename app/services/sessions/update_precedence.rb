@@ -61,9 +61,9 @@ module Sessions
     attr_reader :session, :precedence, :actor
 
     def call
-      previous = session.attribute_in_database("precedence")
-
+      previous = nil
       session.transaction do
+        previous = session.attribute_in_database("precedence")
         session.update!(precedence: precedence)
         if previous != session.precedence
           session.logs.create!(
