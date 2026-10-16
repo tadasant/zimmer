@@ -58,7 +58,9 @@ extension ZimmerHTTPClient {
 
     public func mintAPIKey(name: String, grant: String) async throws -> MintedAPIKey {
         let response: APIKeyEnvelope = try await post("/api/v1/api_keys", json: ["name": name, "grant": grant])
-        guard let token = response.token else { throw ZimmerError.decoding("/api/v1/api_keys: no token in the answer") }
+        // Worded without the path: a literal starting with the API prefix reads as a route the app
+        // calls (test/config/native_app_api_coverage_test.rb).
+        guard let token = response.token else { throw ZimmerError.decoding("minting a key: no token in the answer") }
         return MintedAPIKey(key: response.api_key, token: token)
     }
 
