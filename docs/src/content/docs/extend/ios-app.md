@@ -369,8 +369,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   `RealtimeConductor` (ZimmerKit), the same sequencing as the web's call dock and unit-tested on
   Linux. *Mute* sends silence rather than nothing: over a WebSocket OpenAI's turn detection hears
   only what the phone sends, so a microphone that went quiet would leave the turn open, stuck in
-  Listening. An error OpenAI reports mid-call (an `error` event, a response that ended `failed`,
-  settings that could not be applied) shows under the call's status while the call is still up.
+  Listening. An error during the call (an OpenAI `error` event, a response that ended `failed`, new
+  settings Zimmer could not send) shows under the call's status, and in CarPlay's status row, while
+  the call is still up, until a reply comes through.
   The call keeps going with the screen locked (`UIBackgroundModes` `audio`), and the car shares it.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.

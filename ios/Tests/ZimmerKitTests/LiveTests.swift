@@ -451,6 +451,12 @@ final class RealtimeConductorTests: XCTestCase {
         XCTAssertEqual(muted["audio"]?.string.flatMap { Data(base64Encoded: $0) }, Data(count: 4), "as much silence as the microphone gave")
     }
 
+    func testMutedIsSaidBesideTheCallsState() {
+        XCTAssertEqual(LiveVoiceState.speaking.label(muted: true), "Speaking · Muted")
+        XCTAssertEqual(LiveVoiceState.listening.label(muted: false), "Listening")
+        XCTAssertEqual(LiveVoiceState.idle.label(muted: true), "Call ended")
+    }
+
     func testAFailedResponseSaysWhyAndGoesBackToListening() {
         var conductor = RealtimeConductor()
         _ = conductor.handle(event(#"{"type":"response.created"}"#))

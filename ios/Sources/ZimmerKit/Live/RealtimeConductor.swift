@@ -14,6 +14,12 @@ public enum LiveVoiceState: String, Sendable, Equatable {
         case .working: return "Working on it…"
         }
     }
+
+    /// The call's status line, on the phone and in the car: muted is said beside the state, not
+    /// instead of it, so a reply under way still shows.
+    public func label(muted: Bool) -> String {
+        muted && self != .idle ? "\(label) · Muted" : label
+    }
 }
 
 /// The Realtime protocol half of a Live Mode voice call, with no I/O: OpenAI's server events go in,
