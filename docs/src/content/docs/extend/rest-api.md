@@ -1077,44 +1077,53 @@ the status off `failed`, including `POST /triggers/:id/toggle`, clears them.
 
 ## Live conversations
 
-[Live Mode and Live Voice](/sessions/live/): one continuous conversation per mode with a fast OpenAI
-model. The same rules as the `/live` pages (`LiveConversations::Actions`).
+[Live Mode](/sessions/live/): one continuous conversation with a fast OpenAI model, typed or with
+voice on, switching between the two mid-thread. The same rules as the `/live` pages
+(`LiveConversations::Actions`).
 
 An API key may read: `GET /live`, `GET /live_conversations` and `GET /live_conversations/:id`.
-Every `POST` below — start, message, finish, and the voice relay — is **403 for an API key and for a
-relay-only app grant**, like `authorize_merge`. It takes the [iOS app](/extend/ios-app/)'s sign-in
-acting as you. A live model can enable any catalog MCP server, and `tool_calls` runs one directly,
-so an API key, which is the fleet's, must not reach the whole catalog through here. The web pages are
-the other way in, behind the sign-in wall.
+Every `POST` below — start, switch, message, finish, and the voice relay — is **403 for an API key
+and for a relay-only app grant**, like `authorize_merge`. It takes the [iOS app](/extend/ios-app/)'s
+sign-in acting as you. A live model can enable any catalog MCP server, and `tool_calls` runs one
+directly, so an API key, which is the fleet's, must not reach the whole catalog through here. The web
+pages are the other way in, behind the sign-in wall.
 
-`GET /live` → `{modes: [{mode, label, agent_root, model, available, key_configured, root_present,
-reasons}]}` — whether each mode can start, and in words why not (no `LIVE_OPENAI_API_KEY`, or no
-`live-mode` / `live-voice` root in the catalog).
+`GET /live` → `{label, agent_root, available, key_configured, root_present, reasons, modes: [{mode,
+label, model, agent_root, available, key_configured, root_present, reasons}]}` — whether Live Mode
+can start, and in words why not (no `LIVE_OPENAI_API_KEY`, or no `live-mode` root in the catalog),
+with each mode's model. Typing and voice share the prerequisites, so every `modes` entry repeats them.
 
-`GET /live_conversations` (`mode=text|voice`) → `{live_conversations: [...], current: {text, voice}}`,
-the newest 20 and each mode's open conversation id (or null) ·
-`POST /live_conversations` (`mode`) → 201, a `preparing` conversation that ends the mode's open one;
-503 with the reasons when the mode is off, 422 on an unknown mode ·
+`GET /live_conversations` → `{live_conversations: [...], current_id, current: {<mode>: id}}`, the
+newest 20 and the open conversation's id (or null). `current` is the same conversation keyed by the
+mode it is in right now, empty when there is none ·
+`POST /live_conversations` (`mode`, `text` by default or `voice`) → 201, a `preparing` conversation
+that ends the open one; 503 with the reasons when Live Mode is off, 422 on an unknown mode ·
 `GET /live_conversations/:id` (`after_turn_id` for only newer turns) → the conversation with `turns` ·
+`POST /live_conversations/:id/mode` (`mode` text|voice) → the conversation, switched. A no-op when it
+is in that mode already; 409 once it has ended, 422 on an unknown mode ·
 `POST /live_conversations/:id/finish` → the ended conversation.
 
-A conversation is `{id, mode, label, status (preparing|active|ended|failed), title, agent_root, model,
-instructions_source, mcp_servers, responding, error_message, created_at, updated_at,
-last_activity_at, ended_at}`. A turn is `{id, role (user|assistant|tool), source (typed|spoken),
-content, tool_name, call_id, tool_arguments, tool_output, tool_error, created_at}`.
+A conversation is `{id, mode (text|voice — right now), voice, label, mode_label, status
+(preparing|active|ended|failed), title, agent_root, model, instructions_source, mode_styles: {text,
+voice: agent_root|zimmer_default}, mcp_servers, responding, error_message, created_at, updated_at,
+last_activity_at, ended_at}`. `model` follows `mode`. A turn is `{id, role (user|assistant|tool),
+source (typed|spoken), content, tool_name, call_id, tool_arguments, tool_output, tool_error,
+created_at}`.
 
-Live Mode: `POST /live_conversations/:id/messages` (`content`, at most 8,000 characters) → 201, the
+Typed: `POST /live_conversations/:id/messages` (`content`, at most 8,000 characters) → 201, the
 user turn. The reply is written by a job; poll `GET /live_conversations/:id?after_turn_id=`. A message
-sent while the conversation is still `preparing` is accepted and answered once it is active.
+sent while the conversation is still `preparing` is accepted and answered once it is active. 422
+while voice is on.
 
-Live Voice — the relay a client holding the audio connection makes:
+Voice — the relay a client holding the audio connection makes:
 
 - `POST /live_conversations/:id/client_secret` → `{client_secret, expires_at, model, calls_url,
   websocket_url, tools}`, plus `settings_warning` when OpenAI refused the Live settings and the call
-  runs on the defaults. A ten-minute OpenAI Realtime secret whose session config (instructions,
-  tools, and the [Live settings](/sessions/live/#live-settings)) Zimmer chose. Open WebRTC by posting an SDP offer to
-  `calls_url`, or a WebSocket to `websocket_url`, with `Authorization: Bearer <client_secret>`. 409
-  while the conversation is still `preparing`; 502 when OpenAI refuses.
+  runs on the defaults. A ten-minute OpenAI Realtime secret whose session config (instructions for
+  the spoken mode with a recap of the thread, tools, and the [Live settings](/sessions/live/#live-settings))
+  Zimmer chose. Open WebRTC by posting an SDP offer to `calls_url`, or a WebSocket to `websocket_url`,
+  with `Authorization: Bearer <client_secret>`. 409 while the conversation is still `preparing` or
+  voice is off; 502 when OpenAI refuses.
 - `POST /live_conversations/:id/tool_calls` (`name`, `arguments` as the model's JSON string,
   `call_id`) → `{output, error, tools_changed, turn_id}`, plus `tools` when `tools_changed`, and
   `session` when the call changed a Live setting an open call can take. Send `session` as a
@@ -1126,7 +1135,8 @@ Live Voice — the relay a client holding the audio connection makes:
 - `POST /live_conversations/:id/turns` (`role` user|assistant, `content`) → 201. A finished
   transcript line, so the thread carries what was said.
 
-Every one answers 409 on a conversation that has ended, and 422 on the wrong mode.
+Every one answers 409 on a conversation that is not active. `tool_calls`, `session_update` and `turns` do not need
+voice to be on, so a call still connected when it is switched off elsewhere finishes cleanly.
 
 ### Live settings
 

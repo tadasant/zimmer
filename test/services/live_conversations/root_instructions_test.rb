@@ -8,7 +8,9 @@ class LiveConversations::RootInstructionsTest < ActiveSupport::TestCase
   setup do
     @dir = Dir.mktmpdir("live-root-repo-")
     git("init", "-q", "-b", "main")
-    write("agent-roots/live-voice/AGENTS.md", "# Live Voice\nTalk briefly.\n")
+    write("agent-roots/live-mode/AGENTS.md", "# Live Mode\nBe brief.\n")
+    write("agent-roots/live-mode/modes/voice.md", "Short spoken turns.\n")
+    write("agent-roots/live-mode/modes/text.md", "  \n")
     write("agent-roots/claude-only/CLAUDE.md", "# Only CLAUDE.md\n")
     git("add", "-A")
     git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "roots")
@@ -19,10 +21,22 @@ class LiveConversations::RootInstructionsTest < ActiveSupport::TestCase
   teardown { FileUtils.rm_rf(@dir) }
 
   test "reads AGENTS.md from the root's subdirectory and says where it came from" do
-    result = LiveConversations::RootInstructions.fetch(root("agent-roots/live-voice"))
+    result = LiveConversations::RootInstructions.fetch(root("agent-roots/live-mode"))
 
-    assert_equal "# Live Voice\nTalk briefly.\n", result.text
-    assert_match %r{@[0-9a-f]{12}:agent-roots/live-voice/AGENTS\.md\z}, result.source
+    assert_equal "# Live Mode\nBe brief.\n", result.text
+    assert_match %r{@[0-9a-f]{12}:agent-roots/live-mode/AGENTS\.md\z}, result.source
+  end
+
+  test "reads the per-mode style files the root ships, and skips a blank one" do
+    result = LiveConversations::RootInstructions.fetch(root("agent-roots/live-mode"))
+
+    assert_equal({ "voice" => "Short spoken turns." }, result.modes)
+  end
+
+  test "a root without mode files has no mode styles" do
+    result = LiveConversations::RootInstructions.fetch(root("agent-roots/claude-only"))
+
+    assert_equal({}, result.modes)
   end
 
   test "falls back to CLAUDE.md for a root that only ships that" do
@@ -49,7 +63,7 @@ class LiveConversations::RootInstructionsTest < ActiveSupport::TestCase
   private
 
   def root(subdirectory)
-    AgentRootsConfig::AgentRoot.new("live-voice", { "url" => "file://#{@dir}", "default_branch" => "main", "subdirectory" => subdirectory })
+    AgentRootsConfig::AgentRoot.new("live-mode", { "url" => "file://#{@dir}", "default_branch" => "main", "subdirectory" => subdirectory })
   end
 
   def write(path, content)

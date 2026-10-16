@@ -1,7 +1,7 @@
 import { Controller } from "@hotwired/stimulus"
 import { csrfHeaders } from "lib/csrf"
 
-// The Live Voice call, owned by a dock in the layout (shared/_live_voice_dock,
+// The Live Mode voice call, owned by a dock in the layout (shared/_live_voice_dock,
 // data-turbo-permanent) rather than by the conversation page — a Turbo
 // navigation replaces the page body, and a peer connection living in it would
 // drop the call on every click.
@@ -34,9 +34,8 @@ export default class extends Controller {
 
   connect() {
     this.onStart = (event) => this.start(event.detail)
-    // A hang-up names its conversation; one for another conversation (ending a
-    // Live Mode thread) is not this call's business. The dock's own button
-    // calls hangUp() directly.
+    // A hang-up names its conversation; one for another conversation is not
+    // this call's business. The dock's own button calls hangUp() directly.
     this.onHangup = (event) => {
       const target = event.detail?.conversationId
       if (target && this.call && String(target) !== String(this.call.conversationId)) return

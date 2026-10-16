@@ -2,8 +2,12 @@ import Foundation
 import ZimmerKit
 import os
 
-/// The one Live Voice call the app can have, shared by the phone's screens and the CarPlay
-/// scene — a call started in one carries on in the other.
+/// The one voice call the app can have, shared by the phone's screens and the CarPlay scene — a
+/// call started in one carries on in the other.
+///
+/// Starting a call turns voice on for its conversation first (`POST …/mode`), so Enable voice on
+/// a typed thread, Talk on a spoken one and CarPlay's Resume all take the same path: Zimmer
+/// mints a secret only for a conversation in voice, with instructions written for speech.
 ///
 /// The audio never touches Zimmer. Zimmer mints a short-lived OpenAI Realtime secret whose
 /// session config it chose (`POST /live_conversations/:id/client_secret`); the phone opens a
@@ -46,6 +50,8 @@ final class LiveCall: ObservableObject {
         muted = false
         state = .connecting
         do {
+            try await turnVoiceOn(conversation)
+            guard mine == generation else { return }
             let secret = try await mintSecret(conversation)
             guard mine == generation else { return }
             var request = URLRequest(url: secret.websocketURL)
@@ -99,6 +105,16 @@ final class LiveCall: ObservableObject {
     }
 
     // MARK: - Internals
+
+    /// A no-op when it is on already. A server from before voice folded into Live Mode has no
+    /// such route (404), and there a voice conversation needs nothing switched.
+    private func turnVoiceOn(_ conversation: Int) async throws {
+        do {
+            _ = try await api.setLiveMode(conversation, mode: .voice)
+        } catch let ZimmerError.http(status, _) where status == 404 {
+            return
+        }
+    }
 
     /// The conversation may still be reading its AGENTS.md (409); give it a moment.
     private func mintSecret(_ conversation: Int) async throws -> LiveClientSecret {

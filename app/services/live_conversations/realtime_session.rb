@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module LiveConversations
-  # Mints what a Live Voice client needs to open its own audio connection to
+  # Mints what a voice client needs to open its own audio connection to
   # OpenAI: a short-lived client secret whose session config Rails decides —
   # model, instructions, tools, transcription, turn detection, voice — so the
   # client never holds the real key and never decides what the model is told.
@@ -15,6 +15,10 @@ module LiveConversations
   # detection and the rest are read when the secret is minted, and
   # #session_update is the subset an open call can change, which the client
   # sends whenever the settings or the guidance change mid-call.
+  #
+  # The instructions are SystemPrompt's for the spoken mode, with a recap of the
+  # thread: the conversation may have been typed until a moment ago, and a new
+  # Realtime session remembers nothing.
   class RealtimeSession
     SECRET_TTL_SECONDS = 600
 
