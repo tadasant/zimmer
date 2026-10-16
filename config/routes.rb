@@ -60,10 +60,6 @@ Rails.application.routes.draw do
     # session.
     resources :workflow_runs, only: [ :index, :show ]
     resources :logs
-    # Read-only, like the gate ledger above: rows are append-only facts about
-    # what Zimmer wrote to the Parameter Store, and an editable audit log is not
-    # an audit log. The dashboard's FORM_ATTRIBUTES is empty for the same reason.
-    resources :managed_secret_writes, only: [ :index, :show ]
     # Read-only: live conversations are driven from /live and the API, whose
     # rules (one open per mode, the tool bridge) an edit form would bypass.
     resources :live_conversations, only: [ :index, :show ]
@@ -535,11 +531,6 @@ Rails.application.routes.draw do
   get "inference/login/:attempt_id", to: "inference#login_status", as: :login_status_inference
   post "inference/login/:attempt_id/code", to: "inference#submit_login_code", as: :submit_login_code_inference
   post "inference/login/:attempt_id/cancel", to: "inference#cancel_login", as: :cancel_login_inference
-  # The Pi tab's OpenRouter API key. Create/update and delete only: there is
-  # deliberately no route that reads the value back out — see
-  # ManagedSecret::OpenrouterKey.
-  put "inference/pi/openrouter_key", to: "inference#update_openrouter_key", as: :openrouter_key_inference
-  delete "inference/pi/openrouter_key", to: "inference#destroy_openrouter_key", as: :destroy_openrouter_key_inference
   # The spot gate card, which lives on this page because it reads the quota
   # windows this page reports: the policy form, then one click per genesis kind.
   patch "inference/spot_policy", to: "spot_policies#update", as: :spot_policy
@@ -548,15 +539,12 @@ Rails.application.routes.draw do
   delete "inference/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
 
   # Live Mode and Live Voice: one continuous conversation per mode, entered from
-  # the main screen. /live is the overview and the OpenAI key; /live/:mode
+  # the main screen. /live is the overview and the OpenAI key's status; /live/:mode
   # resumes the mode's current conversation or offers to start one. The member
   # routes are the shared thread (messages) and Live Voice's client relay
-  # (client_secret, tool_calls, turns). The key has a write and a delete and no
-  # read, for the reason the OpenRouter key above has none.
+  # (client_secret, tool_calls, turns).
   get "live", to: "live#index", as: :live
   get "live/:mode", to: "live#show", as: :live_mode
-  put "live/openai_key", to: "live#update_openai_key", as: :live_openai_key
-  delete "live/openai_key", to: "live#destroy_openai_key", as: :destroy_live_openai_key
   resources :live_conversations, only: [ :show, :create ] do
     member do
       post :finish

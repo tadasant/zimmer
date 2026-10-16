@@ -46,6 +46,8 @@ final class SessionDetailModel: ObservableObject {
     var pollPaused = false
     /// Photos and files going with the next message.
     @Published var attachments: [MessageAttachment] = []
+    /// What MCP servers have asked and are waiting on (`PromptCard`).
+    @Published var prompts: [PendingElicitation] = []
     /// The catalog (`GET /api/v1/configs`), read once: what names the session's goal and
     /// what the goal picker offers. Nil until it reads, and the page works without it.
     @Published private(set) var configs: AppConfigs?
@@ -87,6 +89,11 @@ final class SessionDetailModel: ObservableObject {
             do {
                 queue = try await api.queue(id)
                 undelivered = try await api.undeliveredMessages(id)
+            } catch ZimmerError.unauthorized {
+                report(.unauthorized)
+            } catch {}
+            do {
+                prompts = try await api.pendingElicitations(id)
             } catch ZimmerError.unauthorized {
                 report(.unauthorized)
             } catch {}
@@ -325,6 +332,48 @@ final class SessionDetailModel: ObservableObject {
         }
     }
 
+    /// Answer a prompt. A refusal (a relay-only sign-in, a prompt already answered) is shown
+    /// in the sheet, which stays open; nil means it went through.
+    func answer(_ prompt: PendingElicitation, _ answer: ElicitationAnswer, content: String?) async -> String? {
+        do {
+            try await api.answerElicitation(prompt.id, answer: answer, content: content)
+            switch answer {
+            case .accept: notice = "Accepted"
+            case .decline: notice = "Declined"
+            case .cancel: notice = "Dismissed — the MCP server was told nobody decided."
+            }
+            Haptics.success()
+            await load()
+            return nil
+        } catch let failure as ZimmerError {
+            switch failure {
+            case .unauthorized: report(failure)
+            case .http(status: 403, _): break
+            // Answered elsewhere, or expired: the card goes when the list is read again.
+            default: await load()
+            }
+            Haptics.failure()
+            return failure.userMessage
+        } catch {
+            Haptics.failure()
+            return ZimmerError.transport(error).userMessage
+        }
+    }
+
+    /// Fork at a message: a new session holding the conversation up to it. Returns its id.
+    func fork(at message: ConversationMessage) async -> Int? {
+        guard let index = message.transcriptIndex else { return nil }
+        do {
+            let forked = try await api.fork(id, at: index)
+            notice = "Forked to #\(forked.id)"
+            Haptics.success()
+            return forked.id
+        } catch {
+            fail(error)
+            return nil
+        }
+    }
+
     /// An action the server answers with a sentence rather than the session.
     func run(_ action: (ZimmerAPI) async throws -> String) async {
         do {
@@ -360,6 +409,8 @@ struct SessionDetailView: View {
     @State private var showingLogs = false
     @State private var showingSubagents = false
     @State private var newTitle = ""
+    @State private var answering: PendingElicitation?
+    @State private var forking: ConversationMessage?
     /// The queued-turn banner's Force, waiting on its confirmation: the turn it would stop,
     /// and the server's words for what that costs.
     @State private var forcing: (victim: Int, confirm: String)?
@@ -497,6 +548,21 @@ struct SessionDetailView: View {
             // The web page's own confirm text for this session's restart.
             Text(confirmingRestart ?? "")
         }
+        .sheet(item: $answering) { prompt in
+            ElicitationSheet(prompt: prompt) { answer, content in
+                await model.answer(prompt, answer, content: content)
+            }
+        }
+        .confirmationDialog("Fork from this message?", isPresented: Binding(get: { forking != nil }, set: { if !$0 { forking = nil } }), titleVisibility: .visible, presenting: forking) { message in
+            Button("Fork") {
+                Task {
+                    if let id = await model.fork(at: message) { app.path.append(id) }
+                }
+            }
+            .accessibilityIdentifier("fork.confirm")
+        } message: { _ in
+            Text("A new session starts from the conversation up to here, waiting for your next message. This one is unchanged.")
+        }
     }
 
     static let endAnchor = "conversation.end"
@@ -547,6 +613,10 @@ struct SessionDetailView: View {
                     LoadingState(text: "Loading session…").padding(.top, 60)
                 }
                 if let error = model.error { ErrorBanner(error: error) }
+                // At the top, as the web UI's approval banner is: the session is stopped on it.
+                ForEach(model.prompts) { prompt in
+                    PromptCard(prompt: prompt) { answering = prompt }
+                }
                 if let conversation = model.shownConversation {
                     conversationSection(conversation, edge: stripBottom, reading: pageReading)
                         .pageSection(.transcript, edge: stripBottom, reached: $reachedSections)
@@ -748,6 +818,10 @@ struct SessionDetailView: View {
                 if app.fixtureAttachesFile {
                     app.fixtureAttachesFile = false
                     model.attach([MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8))])
+                }
+                if app.fixtureOpensPrompt, let prompt = model.prompts.first {
+                    app.fixtureOpensPrompt = false
+                    answering = prompt
                 }
                 if app.fixtureOpensCustomSnooze {
                     app.fixtureOpensCustomSnooze = false
@@ -1257,6 +1331,19 @@ struct SessionDetailView: View {
             ForEach(Array(shown.enumerated()), id: \.element.id) { index, message in
                 if index > 0 { Theme.rule.frame(height: 1).padding(.vertical, 8) }
                 MessageBubble(message: message, folded: level.foldsToolTraffic)
+                    .contextMenu {
+                        Button {
+                            UIPasteboard.general.string = message.content
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                        if message.transcriptIndex != nil {
+                            Button { forking = message } label: {
+                                Label("Fork from Here", systemImage: "arrow.triangle.branch")
+                            }
+                            .accessibilityIdentifier("message.fork")
+                        }
+                    }
                     .id(ReadingPosition.anchor(message.id))
                     .tracksReading(message.id, edge: edge, in: reading)
             }
@@ -1542,7 +1629,6 @@ struct MessageBubble: View {
             .padding(.horizontal, fromAgent && !message.isToolTraffic ? 0 : 12)
             .padding(.vertical, fromAgent && !message.isToolTraffic ? 0 : 8)
             .background(bubble(fromAgent: fromAgent))
-            .textSelection(.enabled)
         }
         // A reply from you sits to the right and stops short of the far edge, as in Messages.
         .padding(.leading, fromAgent ? 0 : 36)

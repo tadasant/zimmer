@@ -286,25 +286,25 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
   test "spawn_process puts the OpenRouter key from the ${VAR} chain into Pi's environment" do
     @file_system.mkdir_p(WORKING_DIR)
 
-    with_chain_holding(ManagedSecret::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
+    with_chain_holding(PiAuthProvider::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
       @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
     end
 
     assert_equal "sk-or-v1-from-the-store",
-      @process_manager.spawned_processes.first[:env][ManagedSecret::OPENROUTER_API_KEY]
+      @process_manager.spawned_processes.first[:env][PiAuthProvider::OPENROUTER_API_KEY]
   end
 
   test "a value in the clone's own .env wins over the chain" do
     @file_system.mkdir_p(WORKING_DIR)
     @file_system.write(File.join(WORKING_DIR, ".env"),
-      "#{ManagedSecret::OPENROUTER_API_KEY}=sk-or-v1-this-repos-own-account")
+      "#{PiAuthProvider::OPENROUTER_API_KEY}=sk-or-v1-this-repos-own-account")
 
-    with_chain_holding(ManagedSecret::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
+    with_chain_holding(PiAuthProvider::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
       @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
     end
 
     assert_equal "sk-or-v1-this-repos-own-account",
-      @process_manager.spawned_processes.first[:env][ManagedSecret::OPENROUTER_API_KEY]
+      @process_manager.spawned_processes.first[:env][PiAuthProvider::OPENROUTER_API_KEY]
   end
 
   test "no key in the chain leaves the variable unset rather than blank" do
@@ -314,7 +314,7 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
       @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
     end
 
-    assert_nil @process_manager.spawned_processes.first[:env][ManagedSecret::OPENROUTER_API_KEY]
+    assert_nil @process_manager.spawned_processes.first[:env][PiAuthProvider::OPENROUTER_API_KEY]
   end
 
   # A store Zimmer cannot reach must not stop a Pi session spawning. Pi reports
@@ -332,7 +332,7 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
     end
 
     assert_equal 1, @process_manager.spawned_processes.size
-    assert_nil @process_manager.spawned_processes.first[:env][ManagedSecret::OPENROUTER_API_KEY]
+    assert_nil @process_manager.spawned_processes.first[:env][PiAuthProvider::OPENROUTER_API_KEY]
   end
 
   # zimmer#908: this probe used to sit under `Timeout.timeout { Open3.capture3 }`,
