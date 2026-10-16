@@ -1148,8 +1148,16 @@ Voice — the relay a client holding the audio connection makes:
 - `POST /live_conversations/:id/session_update` → `{session}`: the `session.update` payload that
   brings an open call up to the current Live settings and guidance. Send it after the settings
   changed somewhere else, such as the app's own settings screen.
-- `POST /live_conversations/:id/turns` (`role` user|assistant, `content`) → 201. A finished
-  transcript line, so the thread carries what was said.
+- `POST /live_conversations/:id/turns` (`role` user|assistant, `content`) → 201 with the turn and
+  `respond: true`. A finished transcript line, so the thread carries what was said. With
+  `listening_modes` on a call whose [Listening](/sessions/live/#listening-which-lines-get-an-answer)
+  is gated, a user line is also where Zimmer decides whether the call answers it. Kept, it is 201
+  with `respond: true`: send `response.create`. Dropped, it is 200 `{respond: false, dropped: true}`
+  and nothing is written: send `conversation.item.delete` for the line's item.
+
+`client_secret`, `session_update` and `tool_calls` take `listening_modes` too. It says the client
+asks for its own replies when Listening is gated, and `client_secret` then answers `listening`
+(`always`, `wake_word` or `dynamic`). Without it, the call is built to answer everything.
 
 Every one answers 409 on a conversation that is not active. `tool_calls`, `session_update` and `turns` do not need
 voice to be on, so a call still connected when it is switched off elsewhere finishes cleanly.

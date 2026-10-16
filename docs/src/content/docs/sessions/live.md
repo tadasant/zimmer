@@ -193,6 +193,38 @@ Audio never passes through Zimmer:
    `response.output_audio_transcript.done`) are posted as turns, so the thread on the page and in
    the API carries what was said.
 
+### Listening: which lines get an answer
+
+An open microphone hears more than the person talking to Zimmer: a passenger, the radio, a
+conversation across the room. **Listening** (a [Live setting](#live-settings)) picks what the call
+answers:
+
+| Mode | Answers | For |
+| --- | --- | --- |
+| Always (default) | every line it hears | a private space, the car |
+| Wake word | a line that says "Zimmer", anywhere in it, or a follow-up within ten seconds of the last line kept or spoken | a room with other people in it |
+| Dynamic | the same, or a line a text model judges was said to Zimmer | the same, without the wake word |
+
+In Always, OpenAI's turn detection starts each reply itself. In the two gated modes, Zimmer builds
+the call with `create_response: false` and `interrupt_response: false`, so turn detection does
+neither. Each finished user line goes to `POST turns`, and `LiveConversations::Listening` decides.
+A line that repeats Zimmer's last reply is its own voice coming back through the speaker, and is
+dropped first. The wake word is a match on the transcript. The follow-up window means "yes" to a
+question, or the second half of a sentence split at a pause, does not need the wake word. Dynamic
+sends the line to the text model (`reasoning_effort: "none"`, a three-token answer) along with the
+last six lines of the thread, so an answer to Zimmer counts and two people talking to each other
+don't. If the judge cannot be reached (two seconds to connect, six to answer), the line is answered.
+A kept line is written to the thread, and the client sends `response.create`. A dropped line, or one
+that could not be transcribed, is not written anywhere, and the client deletes it from the call with
+`conversation.item.delete`, so it never colours a later reply.
+
+Gating needs a client that does its half. A client says it does with `listening_modes` on
+`client_secret`, `session_update`, `tool_calls` and gated `turns`. Without it, an iOS build from
+before Listening for instance, the call answers everything whatever the setting says. Which mode a
+call is in follows from what OpenAI applied: `client_secret` answers `listening`, and after that the
+client reads `create_response` from each `session.created` and `session.updated`. A refused
+`session.update` does not leave the client thinking the call is gated when it isn't.
+
 The call is owned by a dock in the layout (`shared/_live_voice_dock`, `data-turbo-permanent`), not by
 the conversation page. A Turbo navigation replaces the page body, and a peer connection living in it
 would drop on every click. The dock keeps the call, its mute and hang-up buttons, and a link back to
@@ -221,6 +253,7 @@ and blank means the shipped default: the behaviour from before any of this was t
 | Voice | voice | `marin` (or `LIVE_VOICE_VOICE`) | OpenAI's ten voices | next call |
 | Speaking speed | voice | 1.0 | 0.25–1.5 | mid-call |
 | Voice max output tokens | voice | no cap | 128–4,096 | mid-call |
+| Listening | voice | `always` | `always`, `wake_word`, `dynamic` ([Listening](#listening-which-lines-get-an-answer)) | mid-call |
 | Turn detection | voice | `semantic_vad` | `semantic_vad`, `server_vad` | mid-call |
 | Eagerness (semantic) | voice | `auto` | `auto`, `low`, `medium`, `high` | mid-call |
 | Threshold, prefix padding, silence duration (silence) | voice | 0.5, 300 ms, 500 ms | 0.1–0.95, 0–1,000 ms, 200–3,000 ms | mid-call |
