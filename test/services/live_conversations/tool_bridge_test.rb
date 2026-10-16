@@ -235,5 +235,10 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
 
     assert_not result.session_changed
     assert_match(/from the next call/, result.output)
+
+    @bridge.execute("update_live_settings", JSON.generate(voice_speed: 1.2), call_id: "c5")
+    @bridge.execute("update_live_settings", JSON.generate(voice_speed: "default"), call_id: "c6")
+    assert_nil LiveSetting.current.voice_speed, "one numeric setting can go back to its default"
+    assert_equal "gpt-realtime-2.1", LiveSetting.current.voice_model
   end
 end

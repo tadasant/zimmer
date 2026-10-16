@@ -9,7 +9,7 @@
       <div data-controller="live-settings-saved" hidden></div>
     <% end %>
 
-    <%= form_with url: live_settings_path, method: :patch, scope: :live_setting, data: { turbo: false }, html: { id: "live-settings-form" } do |form| %>
+    <%= form_with url: live_settings_path, method: :patch, scope: :live_setting, html: { id: "live-settings-form" } do |form| %>
       <%# What the page showed, so a save writes only what was edited here and does
           not undo a change Live Mode made itself while the page was open. %>
       <% LiveSetting::KEYS.each do |key| %>
@@ -43,7 +43,7 @@
                 <% else %>
                   <input type="number" name="live_setting[<%= field.key %>]" id="<%= id %>"
                          value="<%= setting[field.key] %>" min="<%= field.min %>" max="<%= field.max %>"
-                         step="<%= field.type == :integer ? 1 : 0.05 %>" inputmode="decimal"
+                         step="<%= field.type == :integer ? 1 : "any" %>" inputmode="decimal"
                          placeholder="Default (<%= default_label %>)"
                          class="mt-1 block w-full min-w-0 rounded-md border-gray-300 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500 px-3 py-2">
                 <% end %>

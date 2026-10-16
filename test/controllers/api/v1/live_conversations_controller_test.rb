@@ -154,6 +154,9 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
 
     patch "/api/v1/live/settings", params: { voice_model: "gpt-9" }, headers: @headers
     assert_response :unprocessable_entity
+    patch "/api/v1/live/settings", params: { voice_sped: 1.1 }, headers: @headers, as: :json
+    assert_response :unprocessable_entity
+    assert_match(/Unknown setting "voice_sped"/, response.parsed_body["message"])
 
     conversation = create_live_conversation(mode: "voice")
     post "/api/v1/live_conversations/#{conversation.id}/session_update", headers: @headers

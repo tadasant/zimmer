@@ -32,6 +32,9 @@ class CreateLiveSettings < ActiveRecord::Migration[8.1]
       t.string :updated_by
       t.timestamps
     end
+    # One row for the deployment, enforced where a race cannot get past it:
+    # every row indexes the same constant, so a second insert is RecordNotUnique.
+    add_index :live_settings, "(true)", unique: true, name: "index_live_settings_singleton"
 
     create_table :live_setting_changes do |t|
       t.jsonb :changeset, null: false, default: {}

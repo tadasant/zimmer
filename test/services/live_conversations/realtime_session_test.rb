@@ -67,7 +67,7 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
   end
 
   test "settings OpenAI refuses start the call on the defaults rather than not at all" do
-    LiveConversations::SettingsUpdate.call({ "voice_reasoning_effort" => "xhigh" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    LiveConversations::SettingsUpdate.call({ "voice_reasoning_effort" => "xhigh", "guidance" => "Stay terse." }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
     client = LiveConversationHelpers::FakeOpenai.new(secret_failures: [ OpenaiClient::Error.new("OpenAI answered 400: unsupported effort", status: 400) ])
 
     minted = LiveConversations::RealtimeSession.mint(create_live_conversation(mode: "voice"), client: client)
@@ -76,6 +76,7 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
     assert_match(/runs on the defaults/, minted[:settings_warning])
     assert_equal({ "effort" => "xhigh" }, client.secret_requests.first.dig("session", "reasoning"))
     assert_nil client.secret_requests.second.dig("session", "reasoning")
+    assert client.secret_requests.second.dig("session", "instructions").end_with?("Stay terse."), "the fallback keeps the guidance"
   end
 
   test "a mid-call update carries what a call can change, and never the model or the voice" do

@@ -8276,6 +8276,15 @@ and `gpt-6.1-sol` take tools only through the Responses API. So the strongest te
 `gpt-6-sol` with no reasoning, and there is no text reasoning-effort setting. Moving `TextReply` to
 the Responses API would open both up.
 
+## The live agent can rewrite its own guidance, including when talked into it
+
+The Live mode guidance is appended to every live turn, and the live model can replace it with
+`update_live_settings`, as it was asked to be able to. That also means text the model reads (a tool
+result, a session's output) could talk it into rewriting its standing instructions for every later
+conversation. Nothing prevents that. What bounds it is that it is visible: every agent write is in
+the settings history with its conversation, shows in the thread as a settings-change note, and can
+be undone with **Restore the guidance from before this edit**.
+
 ## A settings change reaches an open voice call only through the client holding it
 
 An open call takes a mid-call change (speed, turn detection, the guidance) as a `session.update`, and

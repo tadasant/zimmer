@@ -95,6 +95,10 @@ module LiveConversations
           if key == "append_guidance"
             key = "guidance"
             value = [ setting.guidance_text, value ].compact_blank.join("\n")
+            # Re-checked under the lock: a concurrent append may have grown it.
+            if value.length > LiveSetting::GUIDANCE_MAX_LENGTH
+              raise Invalid, "Appending that would take the guidance past its #{LiveSetting::GUIDANCE_MAX_LENGTH}-character limit; rewrite it shorter instead."
+            end
           end
           before = key == "guidance" ? setting.guidance_text : setting[key]
           next if before == value
