@@ -182,6 +182,7 @@ struct TriggerDetailView: View {
                     Text("A fire spawns nothing while a session it started is still pending.").font(.caption).foregroundStyle(Theme.inkMute)
                 }
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("trigger.detail.skipPending")
             VStack(alignment: .leading, spacing: 3) {
                 row("Coalescing window") {
@@ -196,6 +197,7 @@ struct TriggerDetailView: View {
                 }
                 Text(coalescingNote(trigger)).font(.caption).foregroundStyle(Theme.inkMute)
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("trigger.detail.coalescing")
             if trigger.missedFireCount > 0 {
                 VStack(alignment: .leading, spacing: 3) {
@@ -208,7 +210,8 @@ struct TriggerDetailView: View {
                     Text("The re-used session is still holding an undelivered prompt, so the scheduled work has not run. It resumes on its own once that session takes a turn.")
                         .font(.caption).foregroundStyle(Theme.inkMute)
                 }
-                .accessibilityIdentifier("trigger.detail.missedFires")
+                .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("trigger.detail.missedFires")
             }
             row("Max sessions / minute") {
                 HStack(spacing: 6) {
@@ -228,6 +231,7 @@ struct TriggerDetailView: View {
                     }
                 }
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("trigger.detail.schedulingClass")
             row("Precedence") {
                 if let precedence = trigger.precedence {
@@ -239,6 +243,7 @@ struct TriggerDetailView: View {
                     Text("none predefined").foregroundStyle(Theme.inkMute)
                 }
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("trigger.detail.precedence")
             chips("MCP servers", trigger.mcpServers, list: "mcp_servers", trigger: trigger, tone: Theme.accent)
             chips("Skills", trigger.catalogSkills, list: "catalog_skills", trigger: trigger, tone: Theme.success)
