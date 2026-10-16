@@ -7970,9 +7970,9 @@ value is read only from the secret chain.
 
 ## The CarPlay scene has never connected to a car
 
-The CarPlay scene is built and its conversation logic (`DrivingFlow`) is unit-tested. But CarPlay
-connects an app only when its signed build carries a granted CarPlay entitlement, and Apple has not
-granted one, so no head unit or CarPlay Simulator has shown it. Speech recognition in a moving car,
+The CarPlay scene is built, its conversation logic (`DrivingFlow`) is unit-tested, and every
+TestFlight build signs in the granted entitlement. But no head unit or CarPlay Simulator has shown
+it yet. Speech recognition in a moving car,
 the voice-control template's states, and whether iOS 26.4 starts the conversation the way the
 category expects are all unobserved. Recognition is on-device only, so on a phone without an on-device
 model for its language, the car can talk but can't listen.
