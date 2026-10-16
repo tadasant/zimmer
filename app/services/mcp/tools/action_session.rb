@@ -1076,6 +1076,9 @@ module Mcp
       # Where this session sits in the spot queue. Answered for every session,
       # priority included: the value is carried on the row either way, and a
       # priority session that is later demoted lands on the rank it is holding.
+      #
+      # Argument parsing and presentation ONLY — the write and its log row are
+      # Sessions::UpdatePrecedence, shared with the web rank editor.
       def change_precedence(session, args)
         unless precedence_named?(args)
           raise ToolError, "The \"precedence\" parameter is required for the \"change_precedence\" action. " \
@@ -1083,19 +1086,16 @@ module Mcp
                            "to put this session at the head of the spot queue."
         end
 
-        previous = session.precedence
-        session.update!(precedence: resolved_precedence(args, exclude: session))
-
-        if previous != session.precedence
-          session.logs.create!(content: "Precedence set via MCP to #{session.precedence} (was #{previous})", level: "info")
-        end
+        result = Sessions::UpdatePrecedence.call(
+          session: session, precedence: resolved_precedence(args, exclude: session), actor: :mcp
+        )
 
         [
           "## Precedence Updated",
           "",
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
-          "- **Precedence:** #{session.precedence} (was #{previous})",
+          "- **Precedence:** #{session.precedence} (was #{result.previous})",
           "- **Scheduling class:** #{session.priority_class}",
           ("- Note: this session is priority, so precedence does not affect when it starts — " \
            "it applies if the session is later demoted to spot." if session.priority?)

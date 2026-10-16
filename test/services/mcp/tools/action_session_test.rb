@@ -107,6 +107,18 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal 900, session.reload.precedence
     assert_includes output, "## Precedence Updated"
     assert_includes output, "- **Precedence:** 900 (was 10)"
+    assert_equal "Precedence set via MCP to 900 (was 10)", session.logs.order(:created_at).last.content
+  end
+
+  test "change_precedence to the rank the session already holds logs nothing" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 10)
+
+    output = nil
+    assert_no_difference -> { session.logs.count } do
+      output = @tool.call("action" => "change_precedence", "session_id" => session.id, "precedence" => 10)
+    end
+    assert_includes output, "- **Precedence:** 10 (was 10)"
   end
 
   # A priority session carries a rank it does not currently use. Saying so beats
