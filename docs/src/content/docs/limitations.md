@@ -7972,9 +7972,8 @@ value is read only from the secret chain.
 
 The CarPlay scene is built, its conversation logic (`DrivingFlow`) is unit-tested, and every
 TestFlight build signs in the granted entitlement. But no head unit or CarPlay Simulator has shown
-it yet. Speech recognition in a moving car,
-the voice-control template's states, and whether iOS 26.4 starts the conversation the way the
-category expects are all unobserved. Recognition is on-device only, so on a phone without an on-device
+it yet. Speech recognition in a moving car, the voice-control template's states, and whether iOS
+26.4 starts the conversation the way the category expects are all unobserved. Recognition is on-device only, so on a phone without an on-device
 model for its language, the car can talk but can't listen.
 
 ## No iOS push has been sent to a real phone
@@ -8211,8 +8210,7 @@ run in the simulator against the fixture. The audio half has not run at all: `Li
 (microphone, voice processing, reply playback) and `LiveCall`'s WebSocket to OpenAI. A simulator
 has no microphone worth testing echo cancellation on, and no deployment has the OpenAI key yet.
 It is built the way Motet's device-tested Play Live audio is, and that is the extent of the
-evidence. The CarPlay entry is inert with the rest of the scene
-([#1273](https://github.com/tadasant/zimmer/issues/1273)).
+evidence. CarPlay's Live Voice entry has not run in a car either.
 
 ## A live conversation's stdio servers start from scratch on every call
 

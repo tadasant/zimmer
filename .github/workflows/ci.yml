@@ -660,6 +660,13 @@ jobs:
         # which needs the Apple key and a human to notice it failed.
         run: ios/bin/testflight check
 
+      - name: Archive it again with push on, and check both entitlements are signed in
+        # The merged Push + CarPlay entitlements path, which no TestFlight run takes until
+        # `ZIMMER_IOS_PUSH_ENABLED` is set. Proven here first, so setting it is not the test.
+        env:
+          ZIMMER_IOS_PUSH_ENABLED: "1"
+        run: ios/bin/testflight check
+
       - name: Run the ZimmerKit tests against Apple's toolchain
         # The same script `bin/ci` calls on Linux — it picks up whichever Swift is on PATH,
         # which here is Xcode's. So this asserts nothing new about the logic and everything

@@ -545,8 +545,8 @@ carries on in the car. While a call runs, the section offers *Back to the call*.
 
 Apple granted the entitlement as a managed capability, and it is enabled on the App ID. It lives
 in `App/Zimmer/CarPlay.entitlements`, which `testflight` signs into every TestFlight build. The
-archive is signed ad hoc so it carries the key into export, and both `check` and `upload` fail if
-it goes missing. To use it, the phone needs iOS 26.4 or later; add Zimmer under Settings → General
+archive is signed ad hoc so it carries the key into export. `check` fails if the archived app lacks
+it, and `upload` fails afterwards if export's summary shows it was dropped. To use it, the phone needs iOS 26.4 or later; add Zimmer under Settings → General
 → CarPlay → your car → Customize if it isn't on the car's home screen.
 
 ## How it is built and shipped

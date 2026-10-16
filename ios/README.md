@@ -208,8 +208,9 @@ control templates, with a depth of three, and requires voice as the primary moda
 - **Signed into every TestFlight build.** Apple granted the entitlement to the team as a managed
   capability, and it is ticked on the App ID. `App/Zimmer/CarPlay.entitlements` holds the key and
   is in the project's exception set; `ios/bin/testflight` signs it in, merged with
-  `Push.entitlements` when push is on. Apple's managed-capability workflow puts it in the profile
-  that cloud signing creates at export, so no profile is made by hand. Simulator builds stay
+  `Push.entitlements` when push is on. Apple documents that its managed-capability workflow puts it
+  in the profile cloud signing creates at export, so no profile is made by hand; the first signed
+  build is what confirms it. Simulator builds stay
   unsigned and carry no entitlements.
 
 ## Distribution
