@@ -167,7 +167,8 @@ final class TriggerEditorUITests: XCTestCase {
             return element.frame.minY >= top && element.frame.maxY <= bottom
         }
         // A row off screen is not in the accessibility tree, so look for it after every step.
-        for _ in 0..<30 where !reachable() {
+        for _ in 0..<30 {
+            if reachable() { break }
             let aboveTheBar = element.exists && !element.frame.isEmpty && element.frame.minY < app.navigationBars.firstMatch.frame.maxY
             scroll(app, down: !(aboveTheBar || (!element.exists && !upward)))
         }
