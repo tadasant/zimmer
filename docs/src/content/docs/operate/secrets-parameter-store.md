@@ -202,7 +202,7 @@ answer to "someone then runs `rake …`" is a post-deploy task. This is the
 exception, for the reason the design exists: **Zimmer's resolver credential holds
 no write permission**, deliberately and checkably, and it is the one credential
 baked into the image. Shipping the migration as a job would mean deploying the
-[writer's key](#a-writer-identity-for-the-pi-tab) into that image to run once —
+[writer's key](#a-writer-identity-for-the-namespace-migration) into that image to run once —
 permanently widening the blast radius of the baked credential to save a human one
 command.
 
@@ -339,9 +339,10 @@ writes both resolve correctly.
 
 Two consequences of that asymmetry, both recorded in
 [limitations](/limitations/#-the-envelope-zimmer-tells-you-to-store-breaks-on-any-secret-containing-a-quote-brace-or-newline):
-a value whose bytes carry JSON structure **must not** be written through the Pi
-tab — the write lands, the subsequent `:render` 400s, and one such parameter
-fails the resolve of the whole project — so use the console for those. And
+a value whose bytes carry JSON structure **must not** be stored as literal bytes
+— by `WriteClient` or by the [`gcloud` seeding flow](#adding-a-secret) — because
+the write lands, the subsequent `:render` 400s, and one such parameter fails the
+resolve of the whole project; use the console for those. And
 `parameter_store:migrate_namespace` refuses to copy a variable whose pre-rename
 envelope declares an encoding, reporting it as `unsupported_encoding`, because it
 reads decoded bytes and could only write literal ones; re-seed those at the
@@ -356,10 +357,9 @@ prerequisite, exactly as it was for strad's resolver.
 
 Run the whole section in one sitting.
 
-The same is true of the **writer** identity the Inference page's Pi tab needs —
-see [A writer identity, for the Pi tab](#a-writer-identity-for-the-pi-tab). That
-grant does not exist yet, and no agent can make it; the tab is built to say so
-rather than to fail at the point of use.
+The same is true of the **writer** identity the namespace migration needs — see
+[A writer identity, for the namespace migration](#a-writer-identity-for-the-namespace-migration).
+No agent can make that grant, and the running app never holds the key.
 
 ### 1. The project and its APIs
 
@@ -418,8 +418,10 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
 Deliberately **not** granted:
 
 - `roles/parametermanager.admin` / `roles/secretmanager.admin` — that pair is the
-  console's admin identity. The resolver never writes, and Zimmer's one write path
-  runs as [a separate identity](#a-writer-identity-for-the-pi-tab) holding neither.
+  console's admin identity. The resolver never writes, and the one write path in this repo, the
+  namespace migration, runs as
+  [a separate identity](#a-writer-identity-for-the-namespace-migration) holding
+  neither.
 - `roles/editor`, `roles/owner` — both grant `versions.access` **and** write.
   Either makes the split decorative.
 - `roles/secretmanager.viewer` — metadata-only reads Zimmer never performs.
@@ -491,10 +493,10 @@ curl -s -X POST \
 # empty, the SA has no project access at all and something above failed.
 #
 # `ParameterStore::Capabilities::WRITE_PERMISSIONS` is the same list in code, and
-# `Capabilities#least_privilege?` is this assertion at runtime. The write path
-# added for the Inference page's Pi tab uses a SEPARATE identity — see
-# "A writer identity, for the Pi tab" below — precisely so that this audit keeps
-# returning the same four.
+# `Capabilities#least_privilege?` is this assertion at runtime. The namespace
+# migration, the one thing that writes, uses a SEPARATE identity — see
+# "A writer identity, for the namespace migration" below — precisely so that
+# this audit keeps returning the same four.
 
 gcloud config set account <your-own-account>   # switch back off the SA
 ```
@@ -778,18 +780,89 @@ printf %s '<the-new-value>' | gcloud secrets versions add "$ID" --project "$PROJ
 Zimmer picks a rotation up within the 60-second snapshot TTL, and a newly added
 name within the 10-second negative TTL. No redeploy.
 
-## A writer identity, for the Pi tab
+## Secrets Zimmer itself depends on
 
-Everything above describes a Zimmer that **reads** the store. Two surfaces
-write to it, both through `ManagedSecret`: the Inference page's Pi tab creates,
-rotates and deletes `OPENROUTER_API_KEY`, the provider key every Pi session runs
-on, and [`/live`](/sessions/live/#the-openai-key) does the same for
-`LIVE_OPENAI_API_KEY`, the live modes' OpenAI key.
+Two values in this store are for Zimmer's own use, not for an MCP server:
+`OPENROUTER_API_KEY`, the provider key every Pi session runs on, and
+`LIVE_OPENAI_API_KEY`, the OpenAI key behind [`/live`](/sessions/live/#the-openai-key).
 
-**That write path is closed on this deployment today, and it stays closed until
-a human makes the IAM grant below.** Until then the tab (and `/live`'s key panel)
-says so, names the exact permissions it is missing, and offers no form. This is deliberate — the
-alternative is a Save button that 403s.
+**Zimmer does not write to its store.** No page, endpoint or MCP tool creates,
+rotates, deletes or reads back a value. A human sets both keys the same way as any
+other secret: in the secrets console that administers this store, or with the
+`gcloud` commands in [Adding a secret](#adding-a-secret). The path is
+`/zimmer/<env>/secrets/static/<NAME>`, for example
+`/zimmer/production/secrets/static/OPENROUTER_API_KEY`. A new value reaches Zimmer
+within the 60-second snapshot TTL, with no redeploy.
+
+The two pages that depend on a key — the Inference page's Pi tab and `/live`'s
+"OpenAI API key" panel — show what `SecretPresence.for` returns and nothing else:
+
+- **Set** or **Not set**, and which link of the chain holds the value ("Resolves
+  from"). A store that cannot be consulted reads as Not set, so the page renders
+  through an outage.
+- The parameter path, from `ParameterStore::Namespace.parameter_path`.
+- A link to the console, when one is configured. The wording follows where the
+  value came from: "Rotate or delete it" for a value in the store, "It resolves
+  from ENV. To keep it in the store instead, set it" for a value from
+  credentials or the environment, which the console cannot touch, and "Set it"
+  for a missing one.
+- With no Parameter Store link in the chain at all, no path and no link: the
+  note says the variable is read from Rails encrypted credentials or the
+  environment.
+
+There is no value, no fingerprint and no last-set time on either page, because
+nothing on them reads the value.
+
+The link comes from `SecretsLocation.store_console`, which reads two variables:
+
+| Variable | What it is |
+| --- | --- |
+| `ZIMMER_STORE_CONSOLE_URL` | The console that administers **Zimmer's own store**. Unset, the panel shows the path with no link and says to set this variable. There is no default, so a fresh deployment never links somebody else's console. Only an `http(s)://` address counts; anything else reads as unset. |
+| `ZIMMER_STORE_CONSOLE_STORE_NAME` | Optional. What that console calls the store, for a console that fronts several. The panel names it next to the link. |
+
+Production sets `ZIMMER_STORE_CONSOLE_URL=https://strad.tadasant.com/ui/secrets`
+and `ZIMMER_STORE_CONSOLE_STORE_NAME=Zimmer production` in
+`config/deploy.production.yml`'s `env.clear`. These are separate from the
+`ZIMMER_SECRETS_CONSOLE_*` triple in [The Secrets Console, and which project it
+administers](#the-secrets-console-and-which-project-it-administers). That triple
+describes the console over strad's project and is what the Connectors page checks
+before it claims a console can set a Zimmer variable. The store-console pair is
+the operator saying "this is where Zimmer's own store is administered", so it
+carries no project comparison.
+
+### How the key reaches a Pi session
+
+Worth stating, because it is the step it would be natural to assume some other
+layer performs. It does not: `SessionEnvFile` writes a clone's `.env` from
+`SecretsLoader.all`, which reads Rails encrypted `mcp_secrets` **only** and never
+consults `SecretProviders` — so a value living in the Parameter Store does not
+land in a session `.env` by that route. (And of the names it *does* read, a clone
+receives only the subset its own artifacts declare — see
+[What reaches a session clone's `.env`](/operate/provisioning/#what-reaches-a-session-clones-env).)
+
+Every store-backed name reaches its consumer some other way. An MCP config's
+`${VAR}` is interpolated by Zimmer before the server is launched. `GH_TOKEN` is
+published into the worker's own environment by `GhTokenProvisioner`. Pi has
+neither path — it reads the variable out of its own process environment — so
+`PiRuntimeAdapter#apply_provider_key` resolves `OPENROUTER_API_KEY`
+(`PiAuthProvider::OPENROUTER_API_KEY`) through the chain and puts it in the spawn
+environment, **for Pi sessions only**. An inference key authorises spend and a
+Claude Code or Codex session has no use for it, so it is not published
+process-wide. A value in the clone's own `.env` still wins, like every other step
+there.
+
+`OpenaiClient` reads `LIVE_OPENAI_API_KEY` through the same chain.
+`CliStatusService` reads `OPENROUTER_API_KEY` through it too, rather than bare
+`ENV`, so the CLIs page answers the same question the session will.
+
+## A writer identity, for the namespace migration
+
+Everything above describes a Zimmer that **reads** the store. The one thing in
+this repo that writes to it is the [namespace migration](#running-the-migration),
+`parameter_store:migrate_namespace`, run from an operator's own shell. It needs a
+credential that can create and delete parameter/secret pairs, and that credential
+is **not** the resolver's and is **not delivered to the app**: no deploy sets
+`ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON` in a Zimmer container.
 
 ### Why a second service account, and not a wider first one
 
@@ -798,7 +871,7 @@ The resolver's key is baked into the image and sits on the path every session's
 every Zimmer secret" into "can rewrite every Zimmer secret", and it deletes the
 property the audit above exists to assert. A separate identity keeps the audit
 returning the same four permissions and confines the write blast radius to one
-key, held by the web tier and by whoever runs the namespace migration.
+key, held only by whoever runs the migration.
 
 ```bash
 PROJECT=zimmer-secrets-prod
@@ -806,7 +879,7 @@ WRITER=zimmer-secrets-writer
 
 gcloud iam service-accounts create "$WRITER" \
   --project "$PROJECT" \
-  --display-name "Zimmer secrets (Pi tab writer: creates/rotates/deletes managed secrets)"
+  --display-name "Zimmer secrets (namespace-migration writer: creates/deletes parameter+secret pairs)"
 
 WRITER_EMAIL="${WRITER}@${PROJECT}.iam.gserviceaccount.com"
 
@@ -838,10 +911,10 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
   --member "serviceAccount:${WRITER_EMAIL}" \
   --role "projects/${PROJECT}/roles/zimmerSecretsWriter" --condition=None
 
-gcloud iam service-accounts keys create /tmp/zimmer-secrets-writer.json \
+gcloud iam service-accounts keys create writer-key.json \
   --iam-account "$WRITER_EMAIL"
-base64 -w0 /tmp/zimmer-secrets-writer.json   # -> ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON
-rm -f /tmp/zimmer-secrets-writer.json
+# -> ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON="$(cat writer-key.json)" for the
+#    migration run. Delete the file, and revoke the key, when the run is done.
 ```
 
 **The role grants no verb that returns a value.** It holds neither
@@ -850,7 +923,7 @@ the two permissions that turn a name in this store into bytes. `WriteClient`
 calls neither, and the
 [audit above](#4-audit-it--assert-exactly-these-roles-and-nothing-more) asserts
 they belong to the resolver. The writer cannot resolve this store the way Zimmer
-does.
+does. The migration's verify step reads back through the resolver, not the writer.
 
 **Treat it as a read-capable credential anyway.**
 `secretmanager.secrets.setIamPolicy` is load-bearing — it is the step that lets a
@@ -861,21 +934,12 @@ the honest claim for the custom role is narrower than "cannot read": reading
 takes a deliberate policy mutation, which lands in the secret's own IAM policy
 and in Cloud Audit Logs, instead of being a permission the credential already
 sits on. A leaked writer key is at least as urgent as a leaked resolver key, and
-it can also destroy things.
+it can also destroy things. Mint it for a migration and revoke it after.
 
-Deliver the base64 as `ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON`, exactly
-as the resolver key is delivered in [Deliver the key to
-Zimmer](#5-deliver-the-key-to-zimmer) — base64 for the same env-file reason. The
-Kamal plumbing already exists on both environments (`.kamal/secrets.*`,
-`config/deploy.*.yml`, and the staging workflow's env block), so the only step is
-setting the GitHub Actions secret — `PROD_ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON`
-on the private production repo, `STAGING_…` on this one — and deploying. **No
-shell on the box**, per [Ops actions ship with the deploy](/operate/deploying/).
-
-`CliSpawnEnv` clears this variable from every spawned agent session, for a
-stronger reason than it clears the resolver: a session holding the writer key
-could rewrite or delete every Zimmer secret, and grant itself the read of every
-one, which is the blast radius the separate identity exists to avoid.
+`CliSpawnEnv` clears `ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON` from every
+spawned agent session even though no deploy sets it: a process that somehow holds
+it must not pass it on, because a session holding the writer key could rewrite or
+delete every Zimmer secret, and grant itself the read of every one.
 
 Staging gets its own writer if it gets one at all. A credential that may *delete*
 secrets is the last one to share across environments.
@@ -899,36 +963,27 @@ because the principal changed:
   surfaces besides.
 
 Use them only as a deliberate, temporary shortcut — while diagnosing a permission
-problem, say — and replace them with the custom role before the key is delivered
-to a running Zimmer.
+problem, say — and replace them with the custom role before a live run.
 
-### Why the binding is project-level and not on the one parameter
+### Why the binding is project-level
 
-The narrower thing to want is a binding on the single parameter and the single
-secret behind `OPENROUTER_API_KEY`. It does not work, for three reasons — one in
-GCP's authorization model, two in this repo:
+The migration drives `WriteClient` over **every** variable in the store
+(`ParameterStore::NamespaceMigration` upserts at the canonical path and deletes at
+the pre-rename one), so a binding scoped to particular parameters cannot cover it.
+Two more reasons hold even for a single pair:
 
 1. **Two of the permissions are parent-scoped by construction.**
    `parametermanager.parameters.create` and `secretmanager.secrets.create` are
    checked against the *parent* — the project, and for Parameter Manager the
    project's location, neither of which is a per-secret handle. `WriteClient#upsert`
    creates the pair, so on a first write there is no resource to have bound them to.
-2. **Zimmer's own preflight asks the project.** `Capabilities.probe` calls
+2. **The preflight asks the project.** `Capabilities.probe` calls
    `projects:testIamPermissions` on Cloud Resource Manager
    (`WriteClient#held_permissions`), which reports permissions held on the
    *project* — including any inherited from a folder or the organisation, but not
-   ones granted on a child resource. A permission bound only to the parameter is
-   invisible to it, so `can_upsert?` stays false, `ManagedSecret#write` refuses
-   before any call goes out, and the Pi tab renders "the writer credential is
-   missing … on this project". On a first write the API would have refused too,
-   per reason 1, so the preflight is right; on a *rotation* of an
-   already-created pair it would have succeeded, and the binding fails **closed**
-   at the moment a human is provisioning production.
-3. **`OPENROUTER_API_KEY` is not the only thing this credential writes.** The
-   [namespace migration](#running-the-migration) drives the same client over
-   **every** variable in the store (`ParameterStore::NamespaceMigration` upserts
-   at the canonical path and deletes at the pre-rename one), so a binding scoped
-   to one pair breaks it.
+   ones granted on a child resource. A permission bound only to a parameter is
+   invisible to it, so `can_upsert?` stays false and `MigrationTask` refuses a
+   live run before anything is written.
 
 So the resource scope stays project-wide and the *permission* set is what gets
 cut — from two full admin surfaces to twelve verbs, none of which reads a value.
@@ -940,11 +995,12 @@ pinned to today's resources goes stale the moment a human adds a secret.
 
 Twelve permissions, each traced to the call in `ParameterStore::WriteClient` that
 needs it. This is the union of `ParameterStore::Capabilities::UPSERT_PERMISSIONS`
-and `DELETE_PERMISSIONS`. The two are checked separately: `can_upsert?` gates the
-form and `can_delete?` gates the Delete button, so a role holding only the nine
-upsert permissions is a coherent posture and a visible one. (`Capabilities.probe`
-asks about fourteen, not twelve — it adds `parameterVersions.render` and
-`versions.access` so the page can report a credential that holds them.)
+and `DELETE_PERMISSIONS`. `MigrationTask` checks them separately: a live run
+refuses without `can_upsert?`, and refuses without `can_delete?` unless
+`PRUNE=false`, so a role holding only the nine upsert permissions can still do the
+copy-only half-step. (`Capabilities.probe` asks about fourteen, not twelve — it
+adds `parameterVersions.render` and `versions.access` so a credential that holds
+them can be reported.)
 
 | Permission | Called by |
 | --- | --- |
@@ -971,63 +1027,6 @@ omits `secrets.get` and `parameters.get` although `refuse_unmanaged!` calls both
 No permission on Cloud Resource Manager is needed for the probe itself, but
 `cloudresourcemanager.googleapis.com` must be enabled on the project — see [the
 project and its APIs](#1-the-project-and-its-apis).
-
-Zimmer never assumes any of these. `Capabilities.probe` asks Google before every
-write and refuses locally when the answer is no, so a missing permission is a
-sentence on the page rather than a 403 from a form submit.
-
-### A write is not finished until it reads back
-
-The documented trap for this store is a write that is **accepted and never
-readable by Zimmer** — a value in the wrong project, or a parameter with no IAM
-binding letting it dereference its own secret. Both report success and then
-resolve to nothing, forever, while the store banner stays green.
-
-So `ManagedSecret#write` does not report a save when Google returns 200. It
-invalidates the resolver snapshot, reads the variable back **through the ordinary
-resolution chain** — the same path a spawning session takes — and compares
-SHA-256 digests. A write it cannot read back is reported as a failure, in those
-words, and recorded as failed in `managed_secret_writes` so the page does not
-claim a last-set time it has not earned.
-
-### The value does not come back out
-
-The Pi tab creates, updates and deletes. It does not read. There is no `GET` on
-the key, no reveal, no prefill, and nothing in `ManagedSecret::Status` derived
-from the value that a reader could invert: the page shows whether the key is
-set, which link of the chain holds it, when Zimmer last wrote it, and a
-**truncated SHA-256** of it. The digest is chosen over a last-four mask
-deliberately — it leaks no character of the key, and answers a more useful
-question, which is "is the key in the store the one on my clipboard". Hash your
-copy and compare.
-
-`ManagedSecretWrite` rows hold the same digest and never the value. Rails'
-`filter_parameters` already covers the form field (`_key` matches
-`openrouter_api_key`), and a test pins that along with the absence of the value
-from every response body, flash and audit row.
-
-### How the key reaches a Pi session
-
-Worth stating, because it is the step it would be natural to assume some other
-layer performs. It does not: `SessionEnvFile` writes a clone's `.env` from
-`SecretsLoader.all`, which reads Rails encrypted `mcp_secrets` **only** and never
-consults `SecretProviders` — so a value living in the Parameter Store does not
-land in a session `.env` by that route. (And of the names it *does* read, a clone
-receives only the subset its own artifacts declare — see
-[What reaches a session clone's `.env`](/operate/provisioning/#what-reaches-a-session-clones-env).)
-
-Every store-backed name reaches its consumer some other way. An MCP config's
-`${VAR}` is interpolated by Zimmer before the server is launched. `GH_TOKEN` is
-published into the worker's own environment by `GhTokenProvisioner`. Pi has
-neither path — it reads the variable out of its own process environment — so
-`PiRuntimeAdapter#apply_provider_key` resolves `OPENROUTER_API_KEY` through the
-chain and puts it in the spawn environment, **for Pi sessions only**. An
-inference key authorises spend and a Claude Code or Codex session has no use for
-it, so it is not published process-wide. A value in the clone's own `.env` still
-wins, like every other step there.
-
-`CliStatusService` reads the same chain rather than bare `ENV`, so the CLIs page
-answers the same question the session will.
 
 ## The Secrets Console, and which project it administers
 
@@ -1159,6 +1158,14 @@ The rest live in `tadasant-internal`'s `zimmer/` root and need a human:
    store-backed secret sits outside both, so the "proof it landed" story needs an
    analogue. The Connectors page is the interim answer: it reports presence per
    variable, without values.
+5. **The writer key, out of the deploy wiring.** No Zimmer container receives
+   `ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON` — this repo's `.kamal/secrets.*`,
+   `config/deploy.*.yml` and `deploy-staging.yml` do not map it. So the GitHub
+   Actions secrets `PROD_ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON` (and any
+   passthrough of it in `zimmer-deploy-prod.yml`, which lives in
+   `tadasant-internal`) and `STAGING_ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON`
+   (in this repo) can be deleted. Once no namespace migration is pending, revoke
+   the writer service account's key too; mint a fresh one for the next migration.
 
 ## When it does not resolve
 

@@ -54,7 +54,7 @@ class MochaRequireContractTest < ActiveSupport::TestCase
   #
   # Deliberately absent are `stub` and `mock`. Mocha defines both, but so does
   # minitest-mock — `Object#stub` and `Minitest::Mock.new` — and this repo uses
-  # the minitest ones (`ManagedSecret.stub(:openrouter_key, …) do`). Flagging
+  # the minitest ones (`SecretPresence.stub(:for, …) do`). Flagging
   # them would demand a mocha require of files that legitimately have no mocha
   # in them.
   CALLS = %i[stubs expects unstub any_instance stub_everything].freeze

@@ -259,6 +259,15 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   send them. Anything that would be refused, or could not be read, is named rather than dropped
   quietly. They go with the message however it is delivered: now, queued behind a turn, or with
   *Send Now*.
+- **Answers an MCP server's prompt** (an elicitation). A session stopped on one shows an
+  *Approval Needed* card above the conversation, as the web UI shows its banner. Tapping it opens the prompt's
+  form, one control per field in the banner's order: a switch, a menu of choices, a number or a
+  text field. *Accept* sends the fields. A required field left empty is refused in the app, by name,
+  before anything is sent. *Decline* refuses, and *Dismiss Without Answering* tells the server
+  nobody decided. Only a connection that acts on your behalf may answer. A relay-only one shows
+  the server's refusal in the form.
+- **Forks at a message.** Touch and hold a message for *Fork from Here* (and *Copy*). After a
+  confirmation, the fork, a new session holding the conversation up to that message, opens on top.
 - **Merges.** On a session whose newest PR is open with CI green, the web UI's row *Merge* button is
   a swipe right, a long-press item, and the first item in the session menu (*Merge #1261*). After a
   confirmation, the session is told it may merge (`POST /api/v1/sessions/:id/authorize_merge`). The
@@ -428,16 +437,18 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   and Settings prints `env=… host=… source=…`.
 
 Every session action above is a route on `/api/v1/sessions`. Merge is the one the app's token reaches
-where an API key cannot: only a person may give it (see the [REST API](/extend/rest-api/)). The
-Health, Costs and CLIs actions are the routes `accepts_native_app_tokens` opens for exactly them
-(`Api::V1::HealthController`, `CostsController#backfill`, `ClisController`): each is a button the
-web page offers any signed-in person, and the phone is that person's other screen.
+where an API key cannot: only a person may give it (see the [REST API](/extend/rest-api/)). Prompts
+are the other exception: they are listed at `/api/v1/sessions/:id/elicitations` and answered at
+`/api/v1/elicitations/:id/respond`, both opened to the app's token for this (see the
+[REST API](/extend/rest-api/#elicitations)). The Health, Costs and CLIs actions are the routes
+`accepts_native_app_tokens` opens for exactly them (`Api::V1::HealthController`,
+`CostsController#backfill`, `ClisController`): each is a button the web page offers any signed-in
+person, and the phone is that person's other screen.
 
 ### Not in the app yet
 
 The web composer's camera button is not in the app yet: taking a photo cannot be exercised in the
-simulator, so it waits on a change verified on a device. Fork from a message and answering an
-elicitation stay in the browser until the app draws them; the API they need is in place. Switching a trigger's *Enqueue messages* and
+simulator, so it waits on a change verified on a device. Switching a trigger's *Enqueue messages* and
 *Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update), and
 saying whether re-arming a failed trigger fires it again (the trigger JSON does not say whether a
 one-time wake was already spent; the web page does) come in their own change. So does the rest of the web card's refresh: on the
