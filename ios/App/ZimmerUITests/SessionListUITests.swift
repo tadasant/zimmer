@@ -49,7 +49,8 @@ final class SessionListUITests: XCTestCase {
         // and a Form row off screen is not in the accessibility tree: deliberate drags down
         // the form, a third of a screen each (a fling overshoots), until it is.
         let line = app.staticTexts["build.target"]
-        for _ in 0..<30 where !line.exists {
+        for _ in 0..<30 {
+            if line.exists { break }
             let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
             let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
             from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)

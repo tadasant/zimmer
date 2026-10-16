@@ -236,7 +236,8 @@ final class AccountUITests: XCTestCase {
             guard element.exists, !element.frame.isEmpty else { return false }
             return element.frame.minY >= barBottom() && element.frame.maxY <= app.frame.maxY - 24
         }
-        for _ in 0..<30 where !placed() {
+        for _ in 0..<30 {
+            if placed() { break }
             let onScreen = element.exists && !element.frame.isEmpty
             let towardTop = onScreen ? element.frame.minY < barBottom() : above
             drag(app, towardTop: towardTop)
