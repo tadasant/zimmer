@@ -679,8 +679,10 @@ jobs:
     # 6–18 of UI tests at the balance above (double that on a loaded runner), 11 of
     # photographs on the one shard that takes them, and the upload. A run cut off here reads
     # as "cancelled", which hides whether the suite passed, so this is sized for the loaded
-    # case — rebalance the shards, or add a fourth, before raising it.
-    timeout-minutes: 60
+    # case: the heaviest shard is five minutes of boot, ten of builds, eighteen of tests and
+    # the upload, and a loaded runner doubles the middle two — rebalance the shards, or add
+    # a fourth, before raising it.
+    timeout-minutes: 75
 
     steps:
       - uses: actions/checkout@v4

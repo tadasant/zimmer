@@ -15,9 +15,10 @@ require "yaml"
 class IosUiTestShardsTest < ActiveSupport::TestCase
   WORKFLOW = Rails.root.join(".github/workflows/ci.yml")
   SOURCES = Rails.root.join("ios/App/ZimmerUITests")
-  # `ios/bin/ui-test` greps for exactly this shape, so a class that matches here is one
-  # the script will accept in `--only`.
-  CLASS = /^final class (\w+UITests): XCTestCase/
+  # Any XCTestCase subclass, `final` or not, however it spaces the colon: a class this
+  # misses is one that never runs and is never reported missing. `ios/bin/ui-test` accepts
+  # the same shape in `--only`.
+  CLASS = /^(?:final\s+)?class\s+(\w+)\s*:\s*XCTestCase/
 
   def shards
     @shards ||= YAML.load_file(WORKFLOW, aliases: true).dig("jobs", "ios", "strategy", "matrix", "shard")
@@ -33,7 +34,7 @@ class IosUiTestShardsTest < ActiveSupport::TestCase
 
   test "the sources define UI test classes and the matrix has shards, so this is checking something" do
     assert_includes classes_in_sources, "SessionListUITests"
-    assert_operator shards.size, :>=, 2, "the ios job is no longer a matrix of shards"
+    assert_operator shards.size, :>=, 2, "the ios job is not a matrix of shards"
   end
 
   test "every UI test class is in exactly one shard" do
