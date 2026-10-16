@@ -11,8 +11,9 @@ module ParameterStore
   # makes "the resolver cannot write" checkable by reading one file.
   #
   # The write verbs live in {WriteClient}, built from a separate credential by
-  # {Writer} and reached only from the Inference page's Pi tab. Everything else
-  # is still set by a human through the Secrets Console or `gcloud`.
+  # {Writer} and reached only from the namespace-migration rake task, run from an
+  # operator's shell. The running app holds no writer credential; every value is
+  # set by a human through the Secrets Console or `gcloud`.
   #
   # ## How a value is actually stored
   #

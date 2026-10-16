@@ -57,7 +57,18 @@ module LiveConversations
       result = bridge.execute(name, arguments, call_id: call_id)
       response = { output: result.output, error: result.error, tools_changed: result.tools_changed, turn_id: result.turn.id }
       response[:tools] = ToolBridge.new(@conversation.reload).realtime_tools if result.tools_changed
+      # The live model changed its own settings: hand the client the
+      # `session.update` that applies them to the call it is on.
+      response[:session] = RealtimeSession.new(@conversation.reload).session_update if result.session_changed
       response
+    end
+
+    # Live Voice: the `session.update` that brings an open call up to the current
+    # settings and guidance — what a client sends after a person changed them on
+    # the settings page or in the app mid-call.
+    def session_update
+      require_voice!
+      RealtimeSession.new(@conversation).session_update
     end
 
     # Live Voice: a finished transcript line, so the thread on the page and in

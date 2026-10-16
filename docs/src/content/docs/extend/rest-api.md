@@ -36,7 +36,7 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | --- | --- |
 | `/api/v1/sessions` and its member routes (not the nested resources below) | everything an API key may, plus `authorize_merge`, which only the app may call, and only on a grant that acts as you |
 | `POST /api/v1/quick_router`, `/api/v1/apns_devices` | everything |
-| `GET /api/v1/live`, `/api/v1/live_conversations` and its member routes | everything, and only the app may start, message, finish or relay for a conversation, on a grant that acts as you |
+| `GET /api/v1/live`, `/api/v1/live/settings`, `/api/v1/live_conversations` and its member routes | everything, and only the app may start, message, finish or relay for a conversation, or change the Live settings, on a grant that acts as you |
 | `/api/v1/sessions/:id/enqueued_messages` | list, show, edit, delete, reorder, interrupt — not create: the app queues through `follow_up` |
 | `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
 | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
@@ -1113,17 +1113,42 @@ sent while the conversation is still `preparing` is accepted and answered once i
 Live Voice — the relay a client holding the audio connection makes:
 
 - `POST /live_conversations/:id/client_secret` → `{client_secret, expires_at, model, calls_url,
-  websocket_url, tools}`. A ten-minute OpenAI Realtime secret whose session config (instructions,
-  tools, voice, transcription, turn detection) Zimmer chose. Open WebRTC by posting an SDP offer to
+  websocket_url, tools}`, plus `settings_warning` when OpenAI refused the Live settings and the call
+  runs on the defaults. A ten-minute OpenAI Realtime secret whose session config (instructions,
+  tools, and the [Live settings](/sessions/live/#live-settings)) Zimmer chose. Open WebRTC by posting an SDP offer to
   `calls_url`, or a WebSocket to `websocket_url`, with `Authorization: Bearer <client_secret>`. 409
   while the conversation is still `preparing`; 502 when OpenAI refuses.
 - `POST /live_conversations/:id/tool_calls` (`name`, `arguments` as the model's JSON string,
-  `call_id`) → `{output, error, tools_changed, turn_id}`, plus `tools` when `tools_changed` — send
-  those in a `session.update`. Send `output` back as a `function_call_output` item.
+  `call_id`) → `{output, error, tools_changed, turn_id}`, plus `tools` when `tools_changed`, and
+  `session` when the call changed a Live setting an open call can take. Send `session` as a
+  `session.update` when it is there, otherwise send `tools` in one. Send `output` back as a
+  `function_call_output` item.
+- `POST /live_conversations/:id/session_update` → `{session}`: the `session.update` payload that
+  brings an open call up to the current Live settings and guidance. Send it after the settings
+  changed somewhere else, such as the app's own settings screen.
 - `POST /live_conversations/:id/turns` (`role` user|assistant, `content`) → 201. A finished
   transcript line, so the thread carries what was said.
 
 Every one answers 409 on a conversation that has ended, and 422 on the wrong mode.
+
+### Live settings
+
+The [Live settings](/sessions/live/#live-settings) and the Live mode guidance. An API key may read
+them. The writes take the app's sign-in acting as you, and are recorded as a person's; an agent
+changes them through MCP (`action_live_settings`), where the change is recorded as an agent's.
+
+- `GET /live/settings` → `{settings: {key: value in force}, overrides: [keys set away from their
+  default], guidance, updated_at, updated_by, fields: [{key, path (text|voice), type
+  (enum|float|integer), label, help, options: [{value, label}], min, max, default, mid_call}],
+  guidance_max_length, history: [{id, actor_kind (human|agent), actor, live_conversation_id,
+  changes: {key: {before, after}}, created_at}]}`, the newest 30 changes.
+- `PATCH /live/settings` (any setting key, `guidance` to replace it, `append_guidance` to add a
+  line) → the same, plus `{changed, summary}`. Blank or `"default"` puts a setting back. 422 with
+  every problem, and nothing saved, on an unknown key or a value not among its `options`. A number
+  outside `min`–`max` is clamped, and `summary` says so.
+- `POST /live/settings/reset` → every setting back to its default; the guidance is kept.
+- `POST /live/settings/changes/:id/restore_guidance` → the guidance as it was before that change.
+  422 when the change did not touch the guidance.
 
 ## Notifications
 
