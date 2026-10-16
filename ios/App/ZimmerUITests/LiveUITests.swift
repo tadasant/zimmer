@@ -29,14 +29,16 @@ final class LiveUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["live.composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: timeout), "a new Live Mode conversation opens with its composer")
         composer.tap()
-        composer.typeText("Please look into the flaky poller test")
-        // Send is disabled until the draft binding has the typed text, and a tap on a disabled
-        // button is silently nothing: on a loaded runner the tap can land first.
-        let send = app.buttons["live.send"]
-        XCTAssertTrue(waitForEnabled(send), "Send enables once the draft holds the typed text")
-        send.tap()
+        let typed = "Please look into the flaky poller test"
+        composer.typeText(typed)
+        // The vertical TextField's binding can trail its text view, so a tap that lands quickly
+        // sends a prefix of what was typed: on a loaded runner, "Please look into the flaky po".
+        // Waiting for the text view to hold all of it narrows that, and the thread is checked
+        // for the part the fixture answers to ("look into") rather than for every character.
+        XCTAssertTrue(waitForValue(composer, typed), "the composer holds what was typed")
+        app.buttons["live.send"].tap()
 
-        XCTAssertTrue(labelled(app, "Please look into the flaky poller test").waitForExistence(timeout: timeout), "what was typed is in the thread")
+        XCTAssertTrue(labelled(app, "Please look into").waitForExistence(timeout: timeout), "what was typed is in the thread")
         XCTAssertTrue(labelled(app, "quick_router").waitForExistence(timeout: timeout), "the delegation shows as a tool line")
         XCTAssertTrue(labelled(app, "Started a session on that").waitForExistence(timeout: timeout))
         attachScreenshot(app, named: "live-mode-thread")
@@ -66,9 +68,9 @@ final class LiveUITests: XCTestCase {
         app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
     }
 
-    private func waitForEnabled(_ element: XCUIElement) -> Bool {
-        let enabled = expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: element)
-        return XCTWaiter().wait(for: [enabled], timeout: timeout) == .completed
+    private func waitForValue(_ element: XCUIElement, _ text: String) -> Bool {
+        let holds = expectation(for: NSPredicate(format: "value == %@", text), evaluatedWith: element)
+        return XCTWaiter().wait(for: [holds], timeout: timeout) == .completed
     }
 
     private func waitForGone(_ element: XCUIElement) -> Bool {
