@@ -15,10 +15,9 @@ import os
 /// conversation. Every template used — list, action sheet, voice control — is one the
 /// category allows, and the stack never goes deeper than three.
 ///
-/// **Inert until Apple grants the entitlement**, as Motet's CarPlay scene is: the scene is
-/// declared in Info.plist, but without the entitlement signed in, CarPlay never connects
-/// it. `App/Zimmer/CarPlay.entitlements` holds the key and is wired into nothing; see
-/// ios/README.md, "CarPlay".
+/// CarPlay connects the scene declared in Info.plist only in a build that signs in the
+/// entitlement: `App/Zimmer/CarPlay.entitlements`, which `ios/bin/testflight` signs into every
+/// TestFlight build. A simulator build carries none; see ios/README.md, "CarPlay".
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private var interfaceController: CPInterfaceController?
     private var sessions: [SessionSummary] = []
