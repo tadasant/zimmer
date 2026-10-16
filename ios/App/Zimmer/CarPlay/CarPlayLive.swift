@@ -97,7 +97,7 @@ final class CarPlayLive {
         // LiveCall is main-actor and publishes from there.
         watching = call.$state.combineLatest(call.$lastError).sink { state, error in
             MainActor.assumeIsolated {
-                status.setDetailText(state == .idle ? (error ?? state.label) : state.label)
+                status.setDetailText(error.map { state == .idle ? $0 : "\(state.label) · \($0)" } ?? state.label)
             }
         }
         interfaceController?.pushTemplate(template, animated: true, completion: nil)

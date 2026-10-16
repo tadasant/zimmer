@@ -444,4 +444,23 @@ final class RealtimeConductorTests: XCTestCase {
         XCTAssertEqual(append["type"]?.string, "input_audio_buffer.append")
         XCTAssertEqual(append["audio"]?.string, "AQI=")
     }
+
+    func testAMutedMicrophoneSendsSilenceSoTheTurnCanEnd() {
+        let muted = RealtimeConductor.appendAudio(Data([1, 2, 3, 4]), muted: true)
+        XCTAssertEqual(muted["type"]?.string, "input_audio_buffer.append", "still sent: sending nothing leaves the server's turn open")
+        XCTAssertEqual(muted["audio"]?.string.flatMap { Data(base64Encoded: $0) }, Data(count: 4), "as much silence as the microphone gave")
+    }
+
+    func testAFailedResponseSaysWhyAndGoesBackToListening() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        XCTAssertEqual(
+            conductor.handle(event(#"{"type":"response.done","response":{"status":"failed","status_details":{"type":"failed","error":{"type":"invalid_request_error","message":"Invalid turn_detection"}},"output":[]}}"#)),
+            [.failure("Invalid turn_detection"), .state(.listening)]
+        )
+        XCTAssertEqual(
+            conductor.handle(event(#"{"type":"response.done","response":{"status":"failed","output":[]}}"#)),
+            [.failure("OpenAI could not answer that."), .state(.listening)]
+        )
+    }
 }
