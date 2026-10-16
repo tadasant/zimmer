@@ -27,8 +27,13 @@ final class SessionExtrasUITests: XCTestCase {
         app.buttons["queue.edit.save"].tap()
         XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["queue.message.501"], "Please."))
 
-        // Delete the second, after the confirmation the web UI asks for too.
-        app.buttons["queue.actions.502"].tap()
+        // Delete the second, after the confirmation the web UI asks for too. The edit made the
+        // first longer, which can push the second's button under the composer and its quick
+        // replies: above them first.
+        let secondActions = app.buttons["queue.actions.502"]
+        let composer = app.descendants(matching: .any)["followup.field"]
+        for _ in 0..<3 where secondActions.frame.maxY > composer.frame.minY - 60 { app.swipeUp(velocity: .slow) }
+        secondActions.tap()
         app.buttons["Delete"].firstMatch.tap()
         let confirmDelete = app.sheets.buttons["Delete"].firstMatch
         XCTAssertTrue(confirmDelete.waitForExistence(timeout: timeout))

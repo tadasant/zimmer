@@ -207,6 +207,13 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var lastTouchedAt: Date? { metadata?.lastUserActivityAt ?? createdAt }
     public var pullRequests: [PullRequestLink] { customMetadata?.pullRequests ?? [] }
 
+    /// The PR the web UI's Merge button is offered for: the newest one, open, with CI green
+    /// (`Sessions::PrSummary#mergeable?`). Nothing else counts as green.
+    public var mergeablePullRequest: PullRequestLink? {
+        guard let latest = pullRequests.last, latest.state == "open", latest.ci == "pass" else { return nil }
+        return latest
+    }
+
     /// What the board shows for this session's visibility, with an expired snooze read as visible.
     public var boardVisibility: SessionVisibility { effectiveVisibility ?? visibility ?? .visible }
 

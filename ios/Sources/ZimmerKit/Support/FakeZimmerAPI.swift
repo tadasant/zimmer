@@ -25,6 +25,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public private(set) var sentAttachments: [Int: [[MessageAttachment]]] = [:]
     /// Every Quick Router start, in order, so a test can see what went with the words.
     public private(set) var quickRouterRequests: [QuickRouterRequest] = []
+    /// The PRs a Merge tap has authorized, so a second tap answers as already sent.
+    private var mergesAuthorized: Set<URL> = []
+    private var reprioritizerID: Int?
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
     private let live: Bool
     private var conversationReads: [Int: Int] = [:]
@@ -44,8 +47,10 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var derivedClasses: [Int: String]
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
-    /// after the first, so a screen that reads again can be seen to.
-    public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false) {
+    /// after the first, so a screen that reads again can be seen to. `longTranscript`: 1044's
+    /// conversation runs to a hundred messages, so its details card is far above the newest.
+    public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
+                longTranscript: Bool = false) {
         self.live = live
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
@@ -58,6 +63,24 @@ public actor FakeZimmerAPI: ZimmerAPI {
                 ConversationMessage(id: index, role: index.isMultiple(of: 2) ? .assistant : .user,
                                     content: "Earlier step \(index) of the CarPlay scene.", timestamp: now.addingTimeInterval(Double(index - 30) * 60))
             }
+        }
+        if longTranscript, let sample = conversations[1044] {
+            // The sample's opening request first, then steps of work, then the sample's tail.
+            let steps = (0..<92).map { index in
+                let tool = index.isMultiple(of: 3)
+                return ConversationMessage(
+                    id: index + 1, role: .assistant,
+                    content: tool
+                        ? "Using tool: Bash\nswift test --filter Slice\(index / 3 + 1)"
+                        : "Step \(index + 1) of the parity audit: the session page's \(index.isMultiple(of: 2) ? "header and its chips" : "details card and its rows") checked against the PWA on a phone.",
+                    timestamp: now.addingTimeInterval(-Double(2_990 - index) * 60), hasToolUse: tool)
+            }
+            let tail = sample.dropFirst().enumerated().map { offset, message in
+                var message = message
+                message.id = steps.count + 1 + offset
+                return message
+            }
+            conversations[1044] = [sample[0]] + steps + tail
         }
         // Past every session the fake can open, the family 1045–1049 included, so a new one
         // never takes an id an existing page answers to.
@@ -363,7 +386,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
             1044: StatusSummary(
                 summary: "The audit is written up in ios/PARITY_AUDIT.md and the first two slices are open as PRs: the Quick Router on every screen, and the session page's density. The second one is waiting on your look at the screenshots before it goes further; the third slice, the board's rows, is drafted on a branch.",
                 generatedAt: now.addingTimeInterval(-12 * 60), messagesSinceGenerated: 2),
-            1038: StatusSummary(summary: "The PR is open, CI is green and the review is done. It needs your go-ahead to merge.", generatedAt: now.addingTimeInterval(-6 * 60), messagesSinceGenerated: 0),
+            // Markdown with links, as the generator writes it: what the page has to render.
+            1038: StatusSummary(summary: "[PR #1261](https://github.com/tadasant/zimmer/pull/1261) is open, CI is green and the review is done: it **needs your go-ahead to merge**. The scaffold lives in `ios/App`; [the review](https://github.com/tadasant/zimmer/pull/1261#issuecomment-1) found nothing blocking.", generatedAt: now.addingTimeInterval(-6 * 60), messagesSinceGenerated: 0),
             1035: StatusSummary(summary: "Asking whether staging should match production's Postgres 16 or try 17 first."),
             1042: StatusSummary(summary: "Building the CarPlay list template; about halfway through."),
             1027: StatusSummary(summary: "Failed: the deploy key in the secret store is read-only for this session."),
@@ -1172,6 +1196,37 @@ extension FakeZimmerAPI {
     }
 }
 
+// MARK: - Merge and Reprioritize
+//
+// As the server: Merge is offered only on an open, green PR and answers a second tap as
+// already sent; Reprioritize hands the board to one reprioritizing session, reused.
+extension FakeZimmerAPI {
+    public func authorizeMerge(_ id: Int) async throws -> MergeAuthorization {
+        let session = try find(id)
+        guard let pr = session.mergeablePullRequest else {
+            throw ZimmerError.http(status: 422, message: "Cannot merge: this session has no open PR with CI green.")
+        }
+        if mergesAuthorized.contains(pr.url) {
+            return MergeAuthorization(alreadySent: true, message: "Merge already authorized for \(pr.url.absoluteString) — the session has the message.")
+        }
+        mergesAuthorized.insert(pr.url)
+        return MergeAuthorization(alreadySent: false, message: "Merge authorized. Session \(id) has been told to merge \(pr.url.absoluteString).")
+    }
+
+    public func reprioritize() async throws -> Reprioritization {
+        let id: Int
+        if let existing = reprioritizerID {
+            id = existing
+        } else {
+            id = nextID
+            nextID += 1
+            all.append(SessionSummary(id: id, title: "Dashboard reprioritizer", status: .running, agentRuntime: "claude_code",
+                                      prompt: "Re-rank the board.", createdAt: Date(), updatedAt: Date()))
+            reprioritizerID = id
+        }
+        return Reprioritization(sessionID: id, message: "Reprioritizing — session \(id) is re-ranking the board.")
+    }
+}
 
 // MARK: - Why it is waiting
 //

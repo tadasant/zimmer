@@ -224,12 +224,17 @@ final class SessionDetailPanelsUITests: XCTestCase {
     private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
         // Ask for hittability only of an element on the page with a frame: asking it of one the
         // lazy list has not laid out throws rather than answering no.
-        // And below the navigation bar: isHittable says yes for an element still under it, where
-        // a tap lands on the bar.
+        // And below the navigation bar and the section strip pinned under it: isHittable says
+        // yes for an element still under them, where a tap lands on them.
         func inView() -> Bool {
             guard element.exists, !element.frame.isEmpty, element.isHittable else { return false }
             let bar = app.navigationBars.firstMatch
-            return element.frame.minY >= (bar.exists ? bar.frame.maxY : 0)
+            let strip = app.descendants(matching: .any)["detail.sections"]
+            // And above the composer and its quick replies, which isHittable can also miss.
+            let field = app.descendants(matching: .any)["followup.field"]
+            let bottom = field.exists ? field.frame.minY - 50 : app.frame.maxY
+            return element.frame.minY >= max(bar.exists ? bar.frame.maxY : 0, strip.exists ? strip.frame.maxY : 0)
+                && element.frame.maxY <= bottom
         }
         for _ in 0..<8 where !inView() {
             // Not laid out yet means above: the page opens at its newest message, under the panels.

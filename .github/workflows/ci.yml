@@ -632,9 +632,11 @@ jobs:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
     runs-on: macos-latest
-    # Raised from 45 when the simulator run joined the job: it is a second full app build
-    # plus a boot and a two-test run on top of the three steps that were already here.
-    timeout-minutes: 60
+    # Raised from 45 when the simulator run joined the job, then from 60 when the suite and the
+    # photographs grew to fill it: a full run is about 30 minutes of UI tests and 10 of
+    # photographs after two app builds and an archive, then an artifact upload of most of a
+    # gigabyte, and the upload is what ran past 60.
+    timeout-minutes: 75
 
     steps:
       - uses: actions/checkout@v4
