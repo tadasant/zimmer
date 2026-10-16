@@ -39,7 +39,9 @@ final class LiveCall: ObservableObject {
 
     func isActive(for conversation: Int) -> Bool { isActive && conversationID == conversation }
 
-    func start(_ conversation: Int) async {
+    /// `voiceIsOn`: the caller has just turned voice on, so a second `POST …/mode` is not raced
+    /// against a Type instead pressed while the call connects.
+    func start(_ conversation: Int, voiceIsOn: Bool = false) async {
         if isActive(for: conversation) { return }
         hangUp()
         generation += 1
@@ -50,7 +52,7 @@ final class LiveCall: ObservableObject {
         muted = false
         state = .connecting
         do {
-            try await turnVoiceOn(conversation)
+            if !voiceIsOn { try await turnVoiceOn(conversation) }
             guard mine == generation else { return }
             let secret = try await mintSecret(conversation)
             guard mine == generation else { return }
