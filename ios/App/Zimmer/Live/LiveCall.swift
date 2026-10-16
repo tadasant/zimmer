@@ -82,6 +82,22 @@ final class LiveCall: ObservableObject {
         muted.toggle()
     }
 
+    /// The Live settings or guidance changed (the settings screen saved): bring an open call up
+    /// to them with the `session.update` Zimmer builds. The model, voice and reasoning effort
+    /// stay as they are until the next call; OpenAI fixes those for a call's life.
+    func refreshSession() async {
+        guard isActive, socket != nil, let conversation = conversationID else { return }
+        let mine = generation
+        do {
+            let session = try await api.liveSessionUpdate(conversation)
+            guard mine == generation else { return }
+            send(RealtimeConductor.sessionUpdate(session))
+        } catch {
+            let message = Self.describe(error)
+            log.error("live session update failed: \(message, privacy: .public)")
+        }
+    }
+
     // MARK: - Internals
 
     /// The conversation may still be reading its AGENTS.md (409); give it a moment.

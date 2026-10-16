@@ -29,10 +29,16 @@ final class LiveUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["live.composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: timeout), "a new Live Mode conversation opens with its composer")
         composer.tap()
-        composer.typeText("Please look into the flaky poller test")
+        let typed = "Please look into the flaky poller test"
+        composer.typeText(typed)
+        // The vertical TextField's binding can trail its text view, so a tap that lands quickly
+        // sends a prefix of what was typed: on a loaded runner, "Please look into the flaky po".
+        // Waiting for the text view to hold all of it narrows that, and the thread is checked
+        // for the part the fixture answers to ("look into") rather than for every character.
+        XCTAssertTrue(waitForValue(composer, typed), "the composer holds what was typed")
         app.buttons["live.send"].tap()
 
-        XCTAssertTrue(labelled(app, "Please look into the flaky poller test").waitForExistence(timeout: timeout), "what was typed is in the thread")
+        XCTAssertTrue(labelled(app, "Please look into").waitForExistence(timeout: timeout), "what was typed is in the thread")
         XCTAssertTrue(labelled(app, "quick_router").waitForExistence(timeout: timeout), "the delegation shows as a tool line")
         XCTAssertTrue(labelled(app, "Started a session on that").waitForExistence(timeout: timeout))
         attachScreenshot(app, named: "live-mode-thread")
@@ -50,6 +56,21 @@ final class LiveUITests: XCTestCase {
         attachScreenshot(app, named: "live-voice-thread")
     }
 
+    func test_the_gear_on_a_conversation_opens_the_live_settings() throws {
+        let app = launch(["-ZimmerFixtureLiveConversation", "21"])
+        XCTAssertTrue(labelled(app, "Is the flaky poller test still failing on main?").waitForExistence(timeout: timeout))
+        let gear = app.buttons["live-settings"].firstMatch
+        XCTAssertTrue(gear.waitForExistence(timeout: timeout), "the gear is on the conversation's toolbar")
+        gear.tap()
+
+        XCTAssertTrue(app.descendants(matching: .any)["live-settings-view"].firstMatch.waitForExistence(timeout: timeout))
+        XCTAssertTrue(labelled(app, "Speaking speed").waitForExistence(timeout: timeout), "each field is listed")
+        attachScreenshot(app, named: "live-settings")
+
+        app.buttons["live-settings.done"].tap()
+        XCTAssertTrue(waitForGone(app.descendants(matching: .any)["live-settings-view"].firstMatch))
+    }
+
     private func launch(_ arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-ZimmerFixture"] + arguments
@@ -60,6 +81,11 @@ final class LiveUITests: XCTestCase {
     /// The first element whose label contains `text`, whatever kind of element SwiftUI made it.
     private func labelled(_ app: XCUIApplication, _ text: String) -> XCUIElement {
         app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+    }
+
+    private func waitForValue(_ element: XCUIElement, _ text: String) -> Bool {
+        let holds = expectation(for: NSPredicate(format: "value == %@", text), evaluatedWith: element)
+        return XCTWaiter().wait(for: [holds], timeout: timeout) == .completed
     }
 
     private func waitForGone(_ element: XCUIElement) -> Bool {
