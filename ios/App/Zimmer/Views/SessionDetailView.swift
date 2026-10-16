@@ -351,6 +351,7 @@ struct SessionDetailView: View {
     /// The web UI's log-level filter, as far as the conversation goes. Minimal by default:
     /// on a phone the tool traffic buries the words.
     @State private var level: ConversationLevel = .minimal
+    @State private var confirmingMerge = false
     @State private var editing: EditedText?
     @State private var renaming = false
     /// The web page's precedence field, in an alert as the rename is.
@@ -502,6 +503,12 @@ struct SessionDetailView: View {
     static let panelsAnchor = "detail.panels.anchor"
 
     private func page(_ proxy: ScrollViewProxy) -> some View {
+        // Four expressions, not one: a single chain this long exceeds the Release build's
+        // type-check budget (#1284's TestFlight build), where the Debug build's is larger.
+        chrome(sheets(dialogs(scrollPage(proxy))))
+    }
+
+    private func scrollPage(_ proxy: ScrollViewProxy) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 if let detail = model.detail {
@@ -588,146 +595,179 @@ struct SessionDetailView: View {
         .navigationTitle(Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
-        .modifier(QueuedTrashQuestion { $0.id == model.id && app.path.last == model.id })
-        // Trashed — here, or after *Trash anyway* — the page goes and the board offers Undo.
-        .onChange(of: app.undoable?.id) { _, trashed in
-            if trashed == model.id { dismiss() }
-        }
-        .confirmationDialog(
-            "Force a worker thread?",
-            isPresented: Binding(get: { forcing != nil }, set: { if !$0 { forcing = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button("Force", role: .destructive) {
-                if let victim = forcing?.victim {
+    }
+
+    // The two strings the dialogs interpolate, built here: an interpolation with `??` inside a
+    // literal is the kind of expression the type checker spends longest on.
+    private var mergeButtonTitle: String {
+        "Merge \(model.detail?.session.mergeablePullRequest?.label ?? "PR")"
+    }
+
+    private var authorizingMessage: String {
+        let names = authorizing ?? []
+        return "\(names.joined(separator: ", ")) \(names.count == 1 ? "needs" : "need") OAuth, which happens in the browser: authorize from the session's page there. Its next turn waits until they are."
+    }
+
+    /// The page's dialogs and alerts.
+    private func dialogs(_ content: some View) -> some View {
+        content
+            .confirmationDialog("Authorize the merge?", isPresented: $confirmingMerge, titleVisibility: .visible) {
+                Button(mergeButtonTitle) {
+                    Task { await model.run { try await $0.authorizeMerge(model.id).message } }
+                }
+            } message: {
+                Text("The session is told to check for conflicts, merge, and archive itself. Your tap is the sign-off.")
+            }
+            .modifier(QueuedTrashQuestion { $0.id == model.id && app.path.last == model.id })
+            // Trashed — here, or after *Trash anyway* — the page goes and the board offers Undo.
+            .onChange(of: app.undoable?.id) { _, trashed in
+                if trashed == model.id { dismiss() }
+            }
+            .confirmationDialog(
+                "Force a worker thread?",
+                isPresented: Binding(get: { forcing != nil }, set: { if !$0 { forcing = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Force", role: .destructive) {
+                    if let victim = forcing?.victim {
+                        let id = model.id
+                        act { await model.run { try await $0.forceStart(id, expectedVictimID: victim).message } }
+                    }
+                }
+                .accessibilityIdentifier("waiting.force.confirm")
+            } message: {
+                // The web page's own confirm text: whose turn stops, and what it loses.
+                Text(forcing?.confirm ?? "")
+            }
+            .alert("Rename session", isPresented: $renaming) {
+                TextField("Title", text: $newTitle)
+                    .accessibilityIdentifier("rename.field")
+                Button("Cancel", role: .cancel) {}
+                Button("Save") {
+                    let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Task { await model.apply("Renamed") { try await $0.rename(model.id, title: title) } }
+                }
+                .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .alert("Precedence", isPresented: $editingPrecedence) {
+                TextField("Precedence", text: $newPrecedence)
+                    .keyboardType(.numbersAndPunctuation)
+                    .accessibilityIdentifier("precedence.field")
+                Button("Cancel", role: .cancel) {}
+                Button("Set") {
+                    guard let value = Precedence.parse(newPrecedence) else { return }
                     let id = model.id
-                    act { await model.run { try await $0.forceStart(id, expectedVictimID: victim).message } }
+                    Task { await model.apply("Precedence is now \(value).") { try await $0.setPrecedence(id, value) } }
+                }
+                .disabled(Precedence.parse(newPrecedence) == nil)
+            } message: {
+                // The web page's words beside the field: what the number does for this session.
+                Text(model.detail?.session.precedenceHint ?? "")
+            }
+    }
+
+    /// The page's sheets.
+    private func sheets(_ content: some View) -> some View {
+        content
+            .sheet(isPresented: $choosingModel) { modelSheet }
+            .sheet(item: $editingCatalog, onDismiss: {
+                authorizing = pendingAuthorizing
+                pendingAuthorizing = nil
+            }) { kind in catalogSheet(kind) }
+            .alert("Authorize in the browser", isPresented: Binding(get: { authorizing != nil }, set: { if !$0 { authorizing = nil } })) {
+                if let url = app.webURL(for: model.id) {
+                    Button("Open the session page") { openURL(url) }
+                }
+                Button("Later", role: .cancel) {}
+            } message: {
+                Text(verbatim: authorizingMessage)
+            }
+            .sheet(item: $editing) { field in
+                switch field {
+                case .notes:
+                    TextEditSheet(title: "Edit Notes", placeholder: "Notes for this session", initial: model.detail?.session.notes ?? "") { text in
+                        await model.apply("Notes saved") { try await $0.updateNotes(model.id, notes: text) }
+                    }
+                case .goal:
+                    // The web page's goal picker: the catalog's goals by name, or your own words.
+                    GoalPickerSheet(goals: model.configs?.goals ?? [], current: model.detail?.session.goal) { text in
+                        let name = model.configs?.goal(matching: text)?.title
+                        let done: String = text.isEmpty ? "Goal cleared" : name.map { "Goal: \($0)" } ?? "Goal updated"
+                        let saved = await model.apply(done) { try await $0.updateGoal(model.id, goal: text) }
+                        // The goal check rides on the session's page, not the PATCH's answer: read
+                        // it again so it follows the goal, without holding the sheet open for it.
+                        if saved { Task { await model.load() } }
+                        return saved
+                    }
                 }
             }
-            .accessibilityIdentifier("waiting.force.confirm")
-        } message: {
-            // The web page's own confirm text: whose turn stops, and what it loses.
-            Text(forcing?.confirm ?? "")
-        }
-        .alert("Rename session", isPresented: $renaming) {
-            TextField("Title", text: $newTitle)
-                .accessibilityIdentifier("rename.field")
-            Button("Cancel", role: .cancel) {}
-            Button("Save") {
-                let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                Task { await model.apply("Renamed") { try await $0.rename(model.id, title: title) } }
-            }
-            .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-        .alert("Precedence", isPresented: $editingPrecedence) {
-            TextField("Precedence", text: $newPrecedence)
-                .keyboardType(.numbersAndPunctuation)
-                .accessibilityIdentifier("precedence.field")
-            Button("Cancel", role: .cancel) {}
-            Button("Set") {
-                guard let value = Precedence.parse(newPrecedence) else { return }
-                let id = model.id
-                Task { await model.apply("Precedence is now \(value).") { try await $0.setPrecedence(id, value) } }
-            }
-            .disabled(Precedence.parse(newPrecedence) == nil)
-        } message: {
-            // The web page's words beside the field: what the number does for this session.
-            Text(model.detail?.session.precedenceHint ?? "")
-        }
-        .sheet(isPresented: $choosingModel) { modelSheet }
-        .sheet(item: $editingCatalog, onDismiss: {
-            authorizing = pendingAuthorizing
-            pendingAuthorizing = nil
-        }) { kind in catalogSheet(kind) }
-        .alert("Authorize in the browser", isPresented: Binding(get: { authorizing != nil }, set: { if !$0 { authorizing = nil } })) {
-            if let url = app.webURL(for: model.id) {
-                Button("Open the session page") { openURL(url) }
-            }
-            Button("Later", role: .cancel) {}
-        } message: {
-            Text(verbatim: "\((authorizing ?? []).joined(separator: ", ")) \((authorizing ?? []).count == 1 ? "needs" : "need") OAuth, which happens in the browser: authorize from the session's page there. Its next turn waits until they are.")
-        }
-        .sheet(item: $editing) { field in
-            switch field {
-            case .notes:
-                TextEditSheet(title: "Edit Notes", placeholder: "Notes for this session", initial: model.detail?.session.notes ?? "") { text in
-                    await model.apply("Notes saved") { try await $0.updateNotes(model.id, notes: text) }
+            .sheet(isPresented: $showingLogs) { SessionLogsView(id: model.id, api: model.api) }
+            .sheet(isPresented: $showingSubagents) { SubagentsView(id: model.id, api: model.api) }
+            .fullScreenCover(isPresented: $readingFullScreen) {
+                FullScreenTranscript(model: model, position: fullScreenReading) { edge, reading in
+                    if let conversation = model.shownConversation {
+                        conversationSection(conversation, edge: edge, reading: reading)
+                    }
                 }
-            case .goal:
-                // The web page's goal picker: the catalog's goals by name, or your own words.
-                GoalPickerSheet(goals: model.configs?.goals ?? [], current: model.detail?.session.goal) { text in
-                    let name = model.configs?.goal(matching: text)?.title
-                    let done: String = text.isEmpty ? "Goal cleared" : name.map { "Goal: \($0)" } ?? "Goal updated"
-                    let saved = await model.apply(done) { try await $0.updateGoal(model.id, goal: text) }
-                    // The goal check rides on the session's page, not the PATCH's answer: read
-                    // it again so it follows the goal, without holding the sheet open for it.
-                    if saved { Task { await model.load() } }
-                    return saved
-                }
+                .environmentObject(app)
             }
-        }
-        .sheet(isPresented: $showingLogs) { SessionLogsView(id: model.id, api: model.api) }
-        .sheet(isPresented: $showingSubagents) { SubagentsView(id: model.id, api: model.api) }
-        .fullScreenCover(isPresented: $readingFullScreen) {
-            FullScreenTranscript(model: model, position: fullScreenReading) { edge, reading in
-                if let conversation = model.shownConversation {
-                    conversationSection(conversation, edge: edge, reading: reading)
+    }
+
+    /// What surrounds the page: the toast, the bubble, the composer, the reads and the fixture openers.
+    private func chrome(_ content: some View) -> some View {
+        content
+            .overlay(alignment: .bottom) {
+                // Above the composer, which is a bottom inset.
+                Toast(text: $model.notice, identifier: "followup.notice")
+            }
+            // The web UI's bubble, above the composer as its joystick is. A session started
+            // from here threads under this one, as the bubble's `parent_session_id` does, and
+            // carries this page, as the bubble carries the page it was typed on.
+            .quickRouterCorner(parent: model.id, page: model.detail.map { QuickRouterPage.session($0.session, url: app.webURL(for: model.id)) })
+            .safeAreaInset(edge: .bottom) {
+                if model.detail?.acceptsFollowUp ?? false { composer }
+            }
+            .refreshable { await model.load() }
+            .task {
+                model.report = { [weak app] error in app?.noteError(error) }
+                // Opening marks the session's notifications read: the Inbox badge follows.
+                model.onOpened = { [weak app] in Task { await app?.refreshUnreadCount() } }
+                if app.fixtureOpensPanels {
+                    app.fixtureOpensPanels = false
+                    fixtureOpensPanels = true
+                }
+                if let section = app.fixtureSection {
+                    app.fixtureSection = nil
+                    fixtureSection = section
+                }
+                if app.fixtureOpensFullScreen {
+                    app.fixtureOpensFullScreen = false
+                    fixtureFullScreen = true
+                }
+                await model.load()
+                if app.fixtureAttachesFile {
+                    app.fixtureAttachesFile = false
+                    model.attach([MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8))])
+                }
+                if app.fixtureOpensCustomSnooze {
+                    app.fixtureOpensCustomSnooze = false
+                    customSnoozing = true
+                }
+                if app.fixtureTypesSlash {
+                    app.fixtureTypesSlash = false
+                    model.draft = "/"
+                }
+                if let kind = app.fixtureOpensCatalog {
+                    app.fixtureOpensCatalog = nil
+                    editingCatalog = kind
                 }
             }
-            .environmentObject(app)
-        }
-        .overlay(alignment: .bottom) {
-            // Above the composer, which is a bottom inset.
-            Toast(text: $model.notice, identifier: "followup.notice")
-        }
-        // The web UI's bubble, above the composer as its joystick is. A session started
-        // from here threads under this one, as the bubble's `parent_session_id` does, and
-        // carries this page, as the bubble carries the page it was typed on.
-        .quickRouterCorner(parent: model.id, page: model.detail.map { QuickRouterPage.session($0.session, url: app.webURL(for: model.id)) })
-        .safeAreaInset(edge: .bottom) {
-            if model.detail?.acceptsFollowUp ?? false { composer }
-        }
-        .refreshable { await model.load() }
-        .task {
-            model.report = { [weak app] error in app?.noteError(error) }
-            // Opening marks the session's notifications read: the Inbox badge follows.
-            model.onOpened = { [weak app] in Task { await app?.refreshUnreadCount() } }
-            if app.fixtureOpensPanels {
-                app.fixtureOpensPanels = false
-                fixtureOpensPanels = true
+            .onDisappear {
+                // The full-screen transcript covers the page without leaving it.
+                guard !readingFullScreen else { return }
+                // What changed here (a star, a snooze, a restore) shows on the list behind.
+                Task { await app.sessionChanged() }
             }
-            if let section = app.fixtureSection {
-                app.fixtureSection = nil
-                fixtureSection = section
-            }
-            if app.fixtureOpensFullScreen {
-                app.fixtureOpensFullScreen = false
-                fixtureFullScreen = true
-            }
-            await model.load()
-            if app.fixtureAttachesFile {
-                app.fixtureAttachesFile = false
-                model.attach([MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8))])
-            }
-            if app.fixtureOpensCustomSnooze {
-                app.fixtureOpensCustomSnooze = false
-                customSnoozing = true
-            }
-            if app.fixtureTypesSlash {
-                app.fixtureTypesSlash = false
-                model.draft = "/"
-            }
-            if let kind = app.fixtureOpensCatalog {
-                app.fixtureOpensCatalog = nil
-                editingCatalog = kind
-            }
-        }
-        .onDisappear {
-            // The full-screen transcript covers the page without leaving it.
-            guard !readingFullScreen else { return }
-            // What changed here (a star, a snooze, a restore) shows on the list behind.
-            Task { await app.sessionChanged() }
-        }
     }
 
     @ToolbarContentBuilder
@@ -954,6 +994,13 @@ struct SessionDetailView: View {
     /// settings its desktop metadata block edits.
     private func actionsMenu(_ session: SessionSummary) -> some View {
         Menu {
+            if let pr = session.mergeablePullRequest {
+                Section {
+                    Button { confirmingMerge = true } label: {
+                        Label("Merge \(pr.label)", systemImage: "arrow.triangle.merge")
+                    }
+                }
+            }
             Section {
                 Button { app.openQuickRouter(from: session) } label: { Label("Quick Router", systemImage: "sparkles") }
                 Button { editing = .notes } label: { Label("Edit Notes", systemImage: "note.text") }
