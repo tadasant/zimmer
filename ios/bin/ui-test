@@ -255,9 +255,6 @@ recorder=$!
 # Crash reports newer than this are the run's own.
 touch "$artifacts/.started"
 
-# Tests time out at five minutes each unless a class asks for more, up to ten: a page walk
-# that reaches every section of the Health or Costs page on a loaded simulator, where each
-# query takes seconds, is the one that does.
 printf '==> running the UI tests\n'
 status=0
 xcodebuild test-without-building \
@@ -270,7 +267,7 @@ xcodebuild test-without-building \
   ${only_testing[@]+"${only_testing[@]}"} \
   -resultBundlePath "$artifacts/ZimmerUITests.xcresult" \
   -test-timeouts-enabled YES \
-  -maximum-test-execution-time-allowance 600 \
+  -maximum-test-execution-time-allowance 300 \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO || status=$?
 
