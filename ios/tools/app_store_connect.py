@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import subprocess
@@ -35,9 +36,9 @@ from typing import Any
 API = "https://api.appstoreconnect.apple.com"
 TOKEN_LIFETIME_SECONDS = 15 * 60  # Apple refuses anything over 20 minutes.
 POLL_SECONDS = 30
-# The pre-archive check is asked this many times, waiting PREFLIGHT_BACKOFF_SECONDS, then
-# twice that, and so on between attempts: about two minutes of waiting in all. A single
-# read timeout from Apple once failed a merge's upload here and paged #alerts.
+# App Store Connect occasionally times out a single read, so the pre-archive check is asked
+# this many times, sleeping PREFLIGHT_BACKOFF_SECONDS, then twice that, between attempts:
+# 105 seconds of sleeping, about four minutes in all with each attempt's request timeout.
 PREFLIGHT_ATTEMPTS = 4
 PREFLIGHT_BACKOFF_SECONDS = 15
 
@@ -120,7 +121,11 @@ class Client:
         request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
-                body: dict[str, Any] = json.load(response)
+                try:
+                    body: dict[str, Any] = json.load(response)
+                except json.JSONDecodeError as error:
+                    # A 200 whose body was cut off, or an edge's HTML page.
+                    raise TransientError(f"{path}: unreadable answer ({error})") from None
                 return body
         except urllib.error.HTTPError as error:
             detail = _error_detail(error)
@@ -141,7 +146,10 @@ class Client:
             raise SystemExit(
                 f"App Store Connect answered {error.code} for {path}. {detail}"
             ) from None
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        except (OSError, http.client.HTTPException) as error:
+            # After HTTPError, which is itself an OSError. OSError covers URLError, a timeout
+            # on any Python 3 (socket.timeout before 3.10), a reset and an SSL EOF;
+            # HTTPException covers an IncompleteRead or a BadStatusLine.
             raise TransientError(f"{path}: {error}") from None
 
 
