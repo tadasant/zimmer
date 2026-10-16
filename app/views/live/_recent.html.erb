@@ -1,0 +1,19 @@
+<%# Locals: conversations %>
+<% if conversations.any? %>
+  <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+    <h2 class="px-4 py-3 border-b border-gray-200 text-sm font-semibold text-gray-900">Recent conversations</h2>
+    <ul class="divide-y divide-gray-100">
+      <% conversations.each do |conversation| %>
+        <li>
+          <%= link_to live_conversation_path(conversation), class: "flex items-center justify-between gap-3 px-4 py-3 hover:bg-gray-50" do %>
+            <span class="min-w-0">
+              <span class="block text-sm font-medium text-gray-900 truncate"><%= conversation.display_title %></span>
+              <span class="block text-xs text-gray-500"><%= conversation.live_mode.label %> · <%= pluralize(conversation.turns.size, "turn") %></span>
+            </span>
+            <%= render "live_conversations/status_badge", conversation: conversation %>
+          <% end %>
+        </li>
+      <% end %>
+    </ul>
+  </div>
+<% end %>

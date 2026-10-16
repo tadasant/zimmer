@@ -7,6 +7,9 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
   setup do
     @session_with_pr = sessions(:with_pr_url)
     @session_without_pr = sessions(:running)
+    # No test here reaches GitHub. The REST re-read answers "could not ask" unless a
+    # test says otherwise, which leaves every snapshot as PrSnapshot.fetch built it.
+    Github::PrSnapshot.stubs(:fetch_rest_mergeable).returns(nil)
   end
 
   # ---- the enumeration the three jobs each used to make ----
@@ -71,12 +74,34 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
 
     Github::PrStatusEvaluator.any_instance.expects(:evaluate)
       .with { |_s, _refs, snapshots| snapshots[PR_URL].equal?(snapshot) }
+    # REST could not be read, so the conflict evaluator keeps the same reading too.
     Github::MergeConflictEvaluator.any_instance.expects(:evaluate)
       .with { |_s, _refs, snapshots| snapshots[PR_URL].equal?(snapshot) }
     # The comment evaluator takes the same reading: it is what tells it the thread is
     # over (#214).
     Github::CommentEvaluator.any_instance.expects(:evaluate)
       .with { |_s, _refs, snapshots| snapshots[PR_URL].equal?(snapshot) }
+
+    Github::PrPollPass.new.run
+  end
+
+  # GraphQL's `mergeable` was not enough to notice tadasant/zimmer#1284 conflicting;
+  # the poller before #711 read REST for this question, and the pass does again.
+  test "the merge conflict evaluator reads REST's mergeability, and only it" do
+    active_session_tracking(PR_URL)
+    isolate
+
+    snapshot = Github::PrSnapshot.new(
+      ref: Github::PrRef.parse(PR_URL), state: "OPEN", merged_at: nil, mergeable: "MERGEABLE", head_sha: "abc123"
+    )
+    Github::PrSnapshot.expects(:fetch).once.returns(snapshot)
+    Github::PrSnapshot.expects(:fetch_rest_mergeable).once.returns([ Github::PrSnapshot::MERGEABLE_CONFLICTING, nil ])
+
+    Github::PrStatusEvaluator.any_instance.expects(:evaluate)
+      .with { |_s, _refs, snapshots| snapshots[PR_URL].equal?(snapshot) }
+    Github::MergeConflictEvaluator.any_instance.expects(:evaluate)
+      .with { |_s, _refs, snapshots| snapshots[PR_URL].conflicting? == true && snapshots[PR_URL].head_sha == "abc123" }
+    Github::CommentEvaluator.any_instance.stubs(:evaluate)
 
     Github::PrPollPass.new.run
   end
@@ -553,7 +578,7 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
     Github::CommentEvaluator.any_instance.stubs(:evaluate)
   end
 
-  # The two `gh` calls a pass makes for an open PR, answered the way GitHub would.
+  # The `gh` calls a pass makes for an open PR, answered the way GitHub would.
   def fake_github(body:, labels:, ci_buckets:)
     view = {
       "state" => "OPEN", "mergedAt" => nil, "mergeable" => "MERGEABLE",
