@@ -40,6 +40,9 @@ public enum LiveVoiceState: String, Sendable, Equatable {
 /// - finished transcript lines are recorded, and the user starting to speak stops the reply
 ///   that is playing and tells OpenAI how much of it was heard (`conversation.item.truncate`,
 ///   which a WebSocket client sends itself — over WebRTC the server does it);
+/// - with Listening gated (wake word, dynamic) turn detection starts no reply and cuts none off:
+///   a finished user line comes out as `hear`, Zimmer says whether to answer it, and `heard`
+///   asks for the reply — or deletes the line from the call;
 /// - OpenAI's `error` events, and a response that ended `failed`, come out as `failure` so the
 ///   call can say what went wrong instead of sitting in Listening.
 public struct RealtimeConductor: Sendable {
@@ -50,6 +53,9 @@ public struct RealtimeConductor: Sendable {
         case relay(callID: String, name: String, arguments: String)
         /// A finished transcript line, for the thread.
         case record(role: LiveTurn.Role, text: String)
+        /// Gated: record this user line with Zimmer, which says whether to answer it; then call
+        /// `heard(itemID:respond:)`.
+        case hear(itemID: String?, text: String)
         /// Play this reply audio: 16-bit mono PCM at 24 kHz.
         case play(Data)
         /// A new reply item started playing: count its audio from here.
@@ -75,13 +81,42 @@ public struct RealtimeConductor: Sendable {
     private var awaiting: Set<String> = []
     private var responseActive = false
     private var pendingResponse = false
+    /// The call asks for its own replies (Listening is wake word or dynamic).
+    public private(set) var gated = false
 
-    public init() {}
+    public init(listening: String? = nil) {
+        gated = Self.gates(listening)
+    }
+
+    /// Whether a call with this Listening mode asks for its own replies.
+    public static func gates(_ listening: String?) -> Bool {
+        listening == "wake_word" || listening == "dynamic"
+    }
+
+    /// A `session` Zimmer sent the call: its turn detection says from here on whether the call is
+    /// gated (`create_response: false`).
+    public mutating func note(session: JSONValue) {
+        guard case let .bool(creates)? = session["audio"]?["input"]?["turn_detection"]?["create_response"] else { return }
+        gated = !creates
+    }
+
+    /// Zimmer's answer for a line `hear` sent: ask for the reply once nothing else is running, or
+    /// take the line out of the call.
+    public mutating func heard(itemID: String?, respond: Bool) -> [Effect] {
+        if respond {
+            pendingResponse = true
+            return sendPendingResponse()
+        }
+        guard let itemID else { return [] }
+        return [.send(.object(["type": .string("conversation.item.delete"), "item_id": .string(itemID)]))]
+    }
 
     /// One server event.
     public mutating func handle(_ event: JSONValue) -> [Effect] {
         switch event["type"]?.string {
         case "input_audio_buffer.speech_started":
+            // Gated, speech does not cut the reply off: it may not be meant for the call at all.
+            if gated { return [.state(.listening)] }
             defer { playingItem = nil }
             return (playingItem.map { [Effect.interrupt(itemID: $0)] } ?? []) + [.state(.listening)]
         case "response.created":
@@ -106,7 +141,9 @@ public struct RealtimeConductor: Sendable {
             }
             return finish(event["response"])
         case "conversation.item.input_audio_transcription.completed":
-            return record(.user, event["transcript"]?.string)
+            guard gated else { return record(.user, event["transcript"]?.string) }
+            guard let text = event["transcript"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return [] }
+            return [.hear(itemID: event["item_id"]?.string, text: text)]
         case "response.output_audio_transcript.done":
             return record(.assistant, event["transcript"]?.string)
         case "error":
@@ -121,6 +158,7 @@ public struct RealtimeConductor: Sendable {
         guard inFlight.remove(callID) != nil else { return [] }
         var effects: [Effect] = []
         if let session = result?.session {
+            note(session: session)
             effects.append(.send(Self.sessionUpdate(session)))
         } else if let result, result.toolsChanged, let tools = result.tools {
             effects.append(.send(Self.sessionUpdate(.object(["type": .string("realtime"), "tools": tools]))))

@@ -20,9 +20,13 @@ module LiveConversations
     #   making this call. Each action a client takes on the conversation records it
     #   as the one driving it now, so a delegation the live model makes next is
     #   tagged with where the person actually is. nil leaves it alone.
-    def initialize(conversation, client_surface: nil)
+    # @param listening_modes [Boolean] whether the client asks for each reply
+    #   itself when the Listening setting is gated (Listening). One that does
+    #   not is always answered as `always`.
+    def initialize(conversation, client_surface: nil, listening_modes: false)
       @conversation = conversation
       @client_surface = LiveConversation.normalize_client_surface(client_surface)
+      @listening_modes = listening_modes
     end
 
     # A typed message. Answered by LiveConversationReplyJob — or, when it
@@ -65,7 +69,7 @@ module LiveConversations
     # Voice: a short-lived secret the client opens its audio connection with.
     def client_secret
       require_voice!
-      RealtimeSession.mint(@conversation)
+      RealtimeSession.mint(@conversation, listening_modes: @listening_modes)
     rescue OpenaiClient::NotConfiguredError => e
       raise Refused.new(e.message, status: :service_unavailable)
     rescue OpenaiClient::Error => e
@@ -89,7 +93,7 @@ module LiveConversations
       response[:tools] = ToolBridge.new(@conversation.reload).realtime_tools if result.tools_changed
       # The live model changed its own settings: hand the client the
       # `session.update` that applies them to the call it is on.
-      response[:session] = RealtimeSession.new(@conversation.reload).session_update if result.session_changed
+      response[:session] = realtime_session(@conversation.reload).session_update if result.session_changed
       response
     end
 
@@ -99,11 +103,19 @@ module LiveConversations
     # reason as tool_call below.
     def session_update
       require_active!
-      RealtimeSession.new(@conversation).session_update
+      realtime_session(@conversation).session_update
+    end
+
+    # What record_turn answers: the line it kept (nil when it dropped one), and
+    # whether the call should answer it.
+    Heard = Data.define(:turn, :respond) do
+      def as_api_json = (turn ? turn.as_api_json : {}).merge(respond: respond, dropped: turn.nil?)
     end
 
     # Voice: a finished transcript line, so the thread on the page and in the
-    # API carries what was said.
+    # API carries what was said. A user line is also where Listening decides
+    # whether the call answers it; in a gated mode a line it will not answer is
+    # dropped rather than kept.
     def record_turn(role:, content:)
       require_active!
       raise Refused, "role must be user or assistant." unless %w[user assistant].include?(role.to_s)
@@ -111,9 +123,12 @@ module LiveConversations
       content = content.to_s.strip
       raise Refused, "content can't be blank." if content.empty?
 
+      respond = role.to_s != "user" || Listening.new(@conversation, mode: Listening.mode(capable: @listening_modes)).respond?(content)
+      return Heard.new(turn: nil, respond: false) unless respond
+
       turn = @conversation.turns.create!(role: role.to_s, source: "spoken", content: content.truncate(MESSAGE_MAX_LENGTH))
       @conversation.touch_activity!
-      turn
+      Heard.new(turn: turn, respond: true)
     end
 
     def finish
@@ -122,6 +137,8 @@ module LiveConversations
     end
 
     private
+
+    def realtime_session(conversation) = RealtimeSession.new(conversation, listening_modes: @listening_modes)
 
     # A single column write, and not through callbacks: which client last spoke is
     # bookkeeping for the turn-source note, not a change the page re-renders for.

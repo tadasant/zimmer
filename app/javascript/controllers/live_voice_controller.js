@@ -21,6 +21,10 @@ import { csrfHeaders } from "lib/csrf"
 //                   session.update; a save on /live/settings dispatches
 //                   live-voice:settings-changed, and the dock fetches one
 //                   (POST session_update) → session.update
+//   listening       with the Listening setting gated (wake word, dynamic), turn
+//                   detection starts no reply itself: each finished user line
+//                   goes to POST turns, which answers whether to reply →
+//                   response.create, or conversation.item.delete to drop it
 export default class extends Controller {
   static targets = ["panel", "status", "title", "link", "mute", "error"]
 
@@ -74,6 +78,7 @@ export default class extends Controller {
     try {
       const session = await this.mintSecret(call.clientSecretUrl)
       if (mine !== this.generation) return
+      this.gated = ["wake_word", "dynamic"].includes(session.listening)
 
       this.mic = await navigator.mediaDevices.getUserMedia({ audio: true })
       if (mine !== this.generation) { this.stopMic(); return }
@@ -116,7 +121,7 @@ export default class extends Controller {
   // The conversation may still be reading its AGENTS.md (409); give it a moment.
   async mintSecret(url) {
     for (let attempt = 0; attempt < 6; attempt++) {
-      const response = await this.post(url, {})
+      const response = await this.post(url, { listening_modes: 1 })
       if (response.ok) return response.json()
       const body = await response.json().catch(() => ({}))
       if (response.status !== 409 || !/still reading/i.test(body.error || "")) {
@@ -150,7 +155,11 @@ export default class extends Controller {
         this.finishResponse(event.response, generation)
         break
       case "conversation.item.input_audio_transcription.completed":
-        this.recordTurn("user", event.transcript)
+        if (this.gated) {
+          this.hear(event, generation)
+        } else {
+          this.recordTurn("user", event.transcript)
+        }
         break
       case "response.output_audio_transcript.done":
         this.recordTurn("assistant", event.transcript)
@@ -166,14 +175,14 @@ export default class extends Controller {
   relayToolCall({ call_id: callId, name, arguments: args }, generation) {
     if (!callId || this.pendingCalls.has(callId)) return
     this.setState("working")
-    const pending = this.post(this.call.toolCallsUrl, { call_id: callId, name, arguments: args })
+    const pending = this.post(this.call.toolCallsUrl, { call_id: callId, name, arguments: args, listening_modes: 1 })
       .then(async (response) => {
         const body = await response.json().catch(() => ({}))
         if (generation !== this.generation) return
         const output = response.ok ? body.output : `Zimmer could not run ${name}: ${body.error || response.status}`
         this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: String(output ?? "") } })
         if (response.ok && body.session) {
-          this.send({ type: "session.update", session: body.session })
+          this.sendSession(body.session)
         } else if (response.ok && body.tools_changed && Array.isArray(body.tools)) {
           this.send({ type: "session.update", session: { type: "realtime", tools: body.tools } })
         }
@@ -227,12 +236,43 @@ export default class extends Controller {
     if (this.state === "idle" || !this.call?.sessionUpdateUrl) return
     const generation = this.generation
     try {
-      const response = await this.post(this.call.sessionUpdateUrl, {})
+      const response = await this.post(this.call.sessionUpdateUrl, { listening_modes: 1 })
       const body = await response.json().catch(() => ({}))
       if (generation !== this.generation) return
-      if (response.ok && body.session) this.send({ type: "session.update", session: body.session })
+      if (response.ok && body.session) this.sendSession(body.session)
     } catch (_error) {
       // The next call starts on the new settings anyway.
+    }
+  }
+
+  // A whole session.update from Zimmer. Its turn detection says whether the
+  // call is gated from here on: create_response false means we ask for replies.
+  sendSession(session) {
+    const detection = session?.audio?.input?.turn_detection
+    if (detection && "create_response" in detection) this.gated = detection.create_response === false
+    this.send({ type: "session.update", session })
+  }
+
+  // Gated: Zimmer decides whether this line is answered. A kept line is
+  // answered once nothing else is running; a dropped one leaves the call too.
+  // Zimmer unreachable answers it — a stray reply beats a call gone quiet.
+  async hear(event, generation) {
+    const content = event.transcript?.trim()
+    if (!content || !this.call) return
+    let respond = true
+    try {
+      const response = await this.post(this.call.turnsUrl, { role: "user", content, listening_modes: 1 })
+      const body = await response.json().catch(() => ({}))
+      if (response.ok) respond = body.respond !== false
+    } catch (_error) {
+      // Answer it.
+    }
+    if (generation !== this.generation) return
+    if (respond) {
+      this.pendingResponse = true
+      this.sendPendingResponse()
+    } else if (event.item_id) {
+      this.send({ type: "conversation.item.delete", item_id: event.item_id })
     }
   }
 
@@ -273,6 +313,7 @@ export default class extends Controller {
     this.pendingCalls.clear()
     this.pendingResponse = false
     this.responseActive = false
+    this.gated = false
     if (!keepError) this.showError(null)
     this.setState("idle")
   }

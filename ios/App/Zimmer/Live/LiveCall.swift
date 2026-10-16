@@ -56,6 +56,7 @@ final class LiveCall: ObservableObject {
             guard mine == generation else { return }
             let secret = try await mintSecret(conversation)
             guard mine == generation else { return }
+            conductor = RealtimeConductor(listening: secret.listening)
             var request = URLRequest(url: secret.websocketURL)
             request.setValue("Bearer \(secret.clientSecret)", forHTTPHeaderField: "Authorization")
             let task = URLSession.shared.webSocketTask(with: request)
@@ -100,6 +101,7 @@ final class LiveCall: ObservableObject {
         do {
             let session = try await api.liveSessionUpdate(conversation)
             guard mine == generation else { return }
+            conductor.note(session: session)
             send(RealtimeConductor.sessionUpdate(session))
         } catch {
             let message = Self.describe(error)
@@ -178,9 +180,11 @@ final class LiveCall: ObservableObject {
             case let .record(role, text):
                 guard let conversation = conversationID else { continue }
                 Task {
-                    _ = try? await api.recordLiveTurn(conversation, role: role, content: text)
+                    _ = try? await api.recordLiveTurn(conversation, role: role, content: text, gated: false)
                     activity += 1
                 }
+            case let .hear(itemID, text):
+                hear(itemID: itemID, text: text, generation: generation)
             case let .play(pcm):
                 audio.play(pcm)
             case .replyStarted:
@@ -196,6 +200,18 @@ final class LiveCall: ObservableObject {
                 log.error("realtime error: \(message, privacy: .public)")
                 lastError = message
             }
+        }
+    }
+
+    /// Gated: Zimmer decides whether the call answers this line. Unreachable, it is answered — a
+    /// stray reply beats a call gone quiet.
+    private func hear(itemID: String?, text: String, generation: Int) {
+        guard let conversation = conversationID else { return }
+        Task {
+            let heard = try? await api.recordLiveTurn(conversation, role: .user, content: text, gated: true)
+            guard generation == self.generation else { return }
+            if heard?.dropped != true { activity += 1 }
+            apply(conductor.heard(itemID: itemID, respond: heard?.respond ?? true), generation: generation)
         }
     }
 

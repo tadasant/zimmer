@@ -125,8 +125,9 @@ extension FakeZimmerAPI {
         return LiveToolResult(output: "ok")
     }
 
-    public func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String) async throws -> LiveTurn {
-        appendLiveTurn(id, LiveTurn(id: 0, role: role, source: "spoken", content: content))
+    public func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String, gated: Bool) async throws -> LiveHeard {
+        _ = appendLiveTurn(id, LiveTurn(id: 0, role: role, source: "spoken", content: content))
+        return LiveHeard(respond: true)
     }
 
     public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
