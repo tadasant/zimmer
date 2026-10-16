@@ -8382,14 +8382,20 @@ connected when another device turns voice off keeps its spoken instructions unti
 Wake word and Dynamic decide which lines get an answer. They do not decide what OpenAI hears: in
 every mode the microphone streams to OpenAI and every line is transcribed there. A dropped line is
 kept out of the thread and deleted from the call, but it was heard. Truly private listening would
-need the wake word spotted on the device, which the phone's on-device speech recognition could do
-and which nothing here does yet.
+need the wake word spotted on the device. The phone's on-device speech recognition could do that;
+nothing here does.
 
-Three costs come with gating. Talking over a reply no longer cuts it off, because ambient speech
-would too. Every answered line waits for one round trip to Zimmer, and under Dynamic also for a
-text model's yes or no, which is up to six seconds before the line is answered anyway. And the
-wake word is the transcript containing "Zimmer", so a transcription that hears "Simmer" drops the
-line.
+Gating has costs:
+
+- Talking over a reply doesn't cut it off, because ambient speech would too.
+- Every answered line waits for a round trip to Zimmer. Under Dynamic it also waits for a text
+  model's yes or no, up to about eight seconds before the line is answered anyway.
+- The wake word is the transcript containing "Zimmer". A transcription that hears "Simmer" drops
+  the line.
+- The ten-second follow-up window answers anything said in it, including the next line of a
+  conversation that isn't for Zimmer.
+- A dropped line sits in the call until Zimmer has decided. A reply that starts in that moment can
+  hear it.
 
 ## Open questions
 

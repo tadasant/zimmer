@@ -54,7 +54,8 @@ module LiveConversations
         # than not at all, and say why.
         warning = "OpenAI refused the Live settings (#{e.message.truncate(200)}), so this call runs on the defaults. Change them on the Live settings page."
         Rails.logger.warn("[LiveConversations::RealtimeSession] #{warning}")
-        @setting = LiveSetting.new(guidance: @setting.guidance)
+        # Listening is Zimmer's, not OpenAI's: it stays as set.
+        @setting = LiveSetting.new(guidance: @setting.guidance, voice_listening: @setting.voice_listening)
         config = session_config
         create_secret(config)
       end
