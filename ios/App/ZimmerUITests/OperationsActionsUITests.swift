@@ -56,12 +56,15 @@ final class OperationsActionsUITests: XCTestCase {
         app.sheets.buttons["Halt Job Processing"].firstMatch.tap()
 
         XCTAssertTrue(app.staticTexts["ON — queues halted"].waitForExistence(timeout: timeout), "the section reads the mode on")
-        XCTAssertTrue(app.descendants(matching: .any)["banner.queueRecovery"].exists, "and the site-wide banner is up")
+        XCTAssertTrue(app.descendants(matching: .any)["banner.queueRecovery"].waitForExistence(timeout: timeout), "and the site-wide banner is up")
+
+        // The halt re-lays out the page — the banners head it, the section grows — so Resume
+        // is found afresh once the mode has flipped, and the receipt read beside it.
+        let resume = app.buttons["health.action.exitQueueRecovery"]
+        XCTAssertTrue(resume.waitForExistence(timeout: timeout), "the halted section offers Resume")
+        XCTAssertTrue(scrollTo(app, resume))
         let entered = app.staticTexts["health.action.enterQueueRecovery.result"]
         XCTAssertTrue(waitForLabelContaining(entered, "Queue recovery mode is on until"))
-
-        let resume = app.buttons["health.action.exitQueueRecovery"]
-        XCTAssertTrue(scrollTo(app, resume))
         resume.tap()
         XCTAssertTrue(waitForDisappearance(app.staticTexts["ON — queues halted"]), "resumed: the mode is off")
         XCTAssertTrue(waitForLabel(app.staticTexts["health.action.exitQueueRecovery.result"], "Job processing resumed."))
@@ -125,7 +128,10 @@ final class OperationsActionsUITests: XCTestCase {
     /// lands on it rather than on either. A quarter-screen drag with no fling, so where the
     /// element lands is where the next check reads it: a flung swipe carries a row past the
     /// bar between one check and the next, and a List keeps only the rows on screen, so an
-    /// element not in the hierarchy is looked for in `searching`'s direction.
+    /// element not in the hierarchy is looked for in `searching`'s direction. The drag starts
+    /// from one of three heights in turn: a press that lands on a full-width button is
+    /// swallowed by it and moves nothing (a recording shows twenty seconds of that), and the
+    /// next height is clear of it.
     private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement, searching: Direction = .down) -> Bool {
         func placement() -> Direction? {
             guard element.exists, !element.frame.isEmpty else { return searching }
@@ -135,9 +141,12 @@ final class OperationsActionsUITests: XCTestCase {
             if element.frame.maxY > app.frame.maxY - 100 { return .down }
             return nil
         }
-        for _ in 0..<24 {
+        _ = element.waitForExistence(timeout: 2)
+        let starts: [CGFloat] = [0.7, 0.6, 0.5]
+        for attempt in 0..<24 {
             guard let direction = placement() else { return true }
-            let (from, to): (CGFloat, CGFloat) = direction == .down ? (0.7, 0.45) : (0.45, 0.7)
+            let start = starts[attempt % starts.count]
+            let (from, to): (CGFloat, CGFloat) = direction == .down ? (start, start - 0.25) : (start - 0.25, start)
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
                 .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)))
         }
