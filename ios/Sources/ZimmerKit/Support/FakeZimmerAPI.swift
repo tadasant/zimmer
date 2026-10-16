@@ -30,6 +30,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var reprioritizerID: Int?
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
     private let live: Bool
+    /// A session trashed somewhere else — the web, a router, its own agent — as soon as another
+    /// session's page is read, so a board that does not read again on coming back shows it.
+    private let trashedElsewhere: Int?
     private var conversationReads: [Int: Int] = [:]
     /// Made once, from the `now` the fake starts with: a session read twice is the same session,
     /// as on the server, so a page that reads again sees nothing to redraw.
@@ -52,8 +55,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// after the first, so a screen that reads again can be seen to. `longTranscript`: 1044's
     /// conversation runs to a hundred messages, so its details card is far above the newest.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
-                longTranscript: Bool = false) {
+                longTranscript: Bool = false, trashedElsewhere: Int? = nil) {
         self.live = live
+        self.trashedElsewhere = trashedElsewhere
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
@@ -94,6 +98,12 @@ public actor FakeZimmerAPI: ZimmerAPI {
     }
 
     public func session(_ id: Int) async throws -> SessionDetail {
+        if let other = trashedElsewhere, other != id, var trashed = all.first(where: { $0.id == other }), trashed.status != .archived {
+            trashed.status = .archived
+            trashed.archivedAt = Date()
+            trashed.updatedAt = Date()
+            replace(trashed)
+        }
         var hierarchy = Self.sampleHierarchy(for: id, in: all)
         let seniors = uncles
         if let nodes = hierarchy?.nodes {
