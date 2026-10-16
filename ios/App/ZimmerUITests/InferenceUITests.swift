@@ -163,7 +163,8 @@ final class InferenceUITests: XCTestCase {
             guard element.exists, !element.frame.isEmpty else { return false }
             return element.frame.minY >= top() && element.frame.maxY <= app.frame.maxY - 110
         }
-        for _ in 0..<24 where !visible() {
+        for _ in 0..<24 {
+            if visible() { break }
             if element.exists, !element.frame.isEmpty, element.frame.minY < top() {
                 app.swipeDown()
             } else {
