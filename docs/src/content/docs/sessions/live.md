@@ -14,7 +14,7 @@ It starts a background session, says that it has, and checks back on it when you
 | Turns | typed | spoken, answered out loud |
 | Model | `gpt-6-luna`, Chat Completions, `reasoning_effort: "none"` | `gpt-realtime-2.1-mini`, Realtime API |
 | Agent root | `live-mode` | `live-voice` |
-| Where it runs | a job on the server | the browser's (or phone's) own connection to OpenAI |
+| Where it runs | a job on the server | the browser's WebRTC or the phone's WebSocket connection to OpenAI |
 
 Both are entered from the main screen: **Live Voice** and **Live Mode** beside **New Session**, or
 the microphone button and the menu on a phone. `/live` has both, plus the OpenAI key.
@@ -153,6 +153,17 @@ The call is owned by a dock in the layout (`shared/_live_voice_dock`, `data-turb
 the conversation page. A Turbo navigation replaces the page body, and a peer connection living in it
 would drop on every click. The dock keeps the call, its mute and hang-up buttons, and a link back to
 the thread while you look around Zimmer.
+
+## On the phone and in the car
+
+The [iOS app](/extend/ios-app/) has both modes behind the session list's waveform button, over
+the same REST routes. Live Voice on the phone opens a **WebSocket** to OpenAI rather than WebRTC.
+It uses the `websocket_url` the client-secret call returns, sends 24 kHz PCM16 as
+`input_audio_buffer.append`, and plays `response.output_audio.delta`. It relays function calls
+and transcript lines exactly as the browser does: the shared rules are `RealtimeConductor` in
+ZimmerKit. CarPlay offers *New conversation* and *Resume conversation* for Live Voice on the same
+call, and stays dark until Apple grants the entitlement
+([#1273](https://github.com/tadasant/zimmer/issues/1273)).
 
 ## The OpenAI key
 
