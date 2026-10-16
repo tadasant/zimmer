@@ -29,14 +29,14 @@ final class AccountUITests: XCTestCase {
         // Deployment Information is the last section, below the page's own: a long way down.
         let sha = app.staticTexts["settings.deployment.sha"]
         reveal(app, sha)
-        // The row carries a context menu, so its label reads as the pair "Commit SHA, b7d4e1c".
+        // A LabeledContent row reads as the pair "Commit SHA, b7d4e1c": the value is its suffix.
         XCTAssertTrue(sha.label.hasSuffix("b7d4e1c"), "the short SHA; the whole one is a long-press away: \(sha.label)")
         let branch = app.staticTexts["settings.deployment.branch"]
         reveal(app, branch)
-        XCTAssertEqual(branch.label, "main")
+        XCTAssertTrue(branch.label.hasSuffix("main"), branch.label)
         let environment = app.staticTexts["settings.deployment.environment"]
         reveal(app, environment)
-        XCTAssertEqual(environment.label, "production")
+        XCTAssertTrue(environment.label.hasSuffix("production"), environment.label)
     }
 
     func test_the_connections_screen_marks_this_phone_and_a_revoke_marks_the_other_revoked() throws {
