@@ -30,7 +30,11 @@ final class LiveUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: timeout), "a new Live Mode conversation opens with its composer")
         composer.tap()
         composer.typeText("Please look into the flaky poller test")
-        app.buttons["live.send"].tap()
+        // Send is disabled until the draft binding has the typed text, and a tap on a disabled
+        // button is silently nothing: on a loaded runner the tap can land first.
+        let send = app.buttons["live.send"]
+        XCTAssertTrue(waitForEnabled(send), "Send enables once the draft holds the typed text")
+        send.tap()
 
         XCTAssertTrue(labelled(app, "Please look into the flaky poller test").waitForExistence(timeout: timeout), "what was typed is in the thread")
         XCTAssertTrue(labelled(app, "quick_router").waitForExistence(timeout: timeout), "the delegation shows as a tool line")
@@ -60,6 +64,11 @@ final class LiveUITests: XCTestCase {
     /// The first element whose label contains `text`, whatever kind of element SwiftUI made it.
     private func labelled(_ app: XCUIApplication, _ text: String) -> XCUIElement {
         app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+    }
+
+    private func waitForEnabled(_ element: XCUIElement) -> Bool {
+        let enabled = expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [enabled], timeout: timeout) == .completed
     }
 
     private func waitForGone(_ element: XCUIElement) -> Bool {
