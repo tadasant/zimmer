@@ -153,7 +153,7 @@ final class TriggerEditorUITests: XCTestCase {
 
     /// Scroll the form until `element` is on screen, below the navigation bar — a tap on a row
     /// still under the bar lands on the bar — and above the keyboard, which a tap on a row under
-    /// it lands on; and return whether it is. A swipe also puts the keyboard away.
+    /// it lands on; and return whether it is. The form puts the keyboard away on the first drag.
     /// `upward` is which way to look for a row that is not in the tree: further down the form
     /// (the default), or back up past the bar.
     @discardableResult
@@ -166,12 +166,25 @@ final class TriggerEditorUITests: XCTestCase {
             let bottom = keyboard.exists ? keyboard.frame.minY : app.frame.maxY
             return element.frame.minY >= top && element.frame.maxY <= bottom
         }
-        // A row off screen is not in the accessibility tree, so look for it after every swipe.
-        for _ in 0..<8 where !reachable() {
+        // A row off screen is not in the accessibility tree, so look for it after every step.
+        for _ in 0..<30 where !reachable() {
             let aboveTheBar = element.exists && !element.frame.isEmpty && element.frame.minY < app.navigationBars.firstMatch.frame.maxY
-            if aboveTheBar || (!element.exists && !upward) { app.swipeDown() } else { app.swipeUp() }
+            scroll(app, down: !(aboveTheBar || (!element.exists && !upward)))
         }
         return reachable()
+    }
+
+    /// A deliberate drag of a third of the screen, not a flick: a flick carries a row from under
+    /// the keyboard to above the bar in one go, and a row off screen is not in the tree to be
+    /// seen passing. Started above the keyboard, where a drag scrolls rather than types.
+    private func scroll(_ app: XCUIApplication, down: Bool) {
+        let keyboard = app.keyboards.firstMatch
+        let lowest = keyboard.exists ? keyboard.frame.minY / app.frame.height - 0.06 : 0.75
+        let low = min(0.65, lowest)
+        let high = max(0.25, low - 0.35)
+        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? low : high))
+        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? high : low))
+        from.press(forDuration: 0.1, thenDragTo: to)
     }
 
     /// Pick an option from one of the form's menu pickers, by the option's words.
