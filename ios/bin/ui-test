@@ -26,8 +26,9 @@
 #     --also ios/App/ZimmerUITests/WaitingUITests.swift   # ...plus every class in that file
 #
 # THE FULL RUN AND THE SMOKE RUN. With no `--smoke` this runs every UI test and photographs
-# every key screen in both appearances: about 45 minutes on a hosted runner, nearly all of it
-# some 60 tests driven one at a time and more than 60 screenshots with a settle wait each. That run is
+# every key screen in both appearances: 45 minutes to an hour on a hosted runner, nearly all
+# of it some 70 tests driven one at a time and some 70 screenshots with a settle wait each.
+# That run is
 # `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**` and on demand.
 # `--smoke` is what `ci.yml` gates every pull request on: SMOKE_TESTS below, which launch the
 # app, prove the build reports the server it was built with, and drive one session from

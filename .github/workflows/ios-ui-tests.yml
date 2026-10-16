@@ -6,8 +6,8 @@ name: iOS UI tests
 # THE FULL RUN. `ci.yml`'s `ios` job gates every pull request on `ios/bin/ui-test --smoke`:
 # a few tests, plus the classes the pull request's own changed UI test files declare, and no
 # photographs. Every other UI test and every screenshot runs here, after the merge, because
-# the whole of it — some 60 tests driven one at a time and more than 60 photographs — takes
-# about 45 minutes, which is too long to gate every iOS pull request on.
+# the whole of it — some 70 tests driven one at a time and some 70 photographs — takes up to
+# an hour on a loaded runner, which is too long to gate every iOS pull request on.
 # A failure on `main` reaches `#alerts` through `alert-ci-failure.yml`, like any other.
 #
 # THE ENTRY POINT AN AGENT CAN START. A branch's full run and screenshots, before it merges:
@@ -45,8 +45,8 @@ name: iOS UI tests
 #
 # THE COST. It runs on a GitHub-hosted macOS runner, which GitHub bills at roughly ten
 # times the Linux multiplier — free on a public repository, which this is, and not free on
-# a private one. A run is about 50 minutes: one Xcode build, then about 45 of UI tests and
-# photographs.
+# a private one. A run is about an hour: one Xcode build, then the UI tests and photographs,
+# which took 62 minutes on a loaded runner once the suite passed seventy tests.
 
 on:
   # A push carries no inputs: it runs Staging against the reserved-by-RFC-2606
@@ -83,7 +83,7 @@ permissions:
 # One run at a time per trigger. A dispatch cancels an older dispatch, which nobody is
 # waiting on mid-run. A push run is never cancelled: it is the post-merge gate for every UI
 # test the pull request's smoke run skipped, and `alert-ci-failure.yml` is silent on a
-# cancelled run, so a merge landing inside the previous run's ~50 minutes would otherwise
+# cancelled run, so a merge landing inside the previous run's hour would otherwise
 # hide a red suite on `main` for good. Pushes queue instead; GitHub keeps only the newest
 # pending one, so the queue is never more than one deep.
 concurrency:
@@ -94,7 +94,11 @@ jobs:
   ui-test:
     if: ${{ github.repository == 'tadasant/zimmer' }}
     runs-on: macos-latest
-    timeout-minutes: 75
+    # The budget `ci.yml`'s `ios` job had while it ran this suite: a 62-minute simulator step
+    # on a loaded runner, an artifact upload of most of a gigabyte, and room to grow. A run cut
+    # off reads as "cancelled", which `alert-ci-failure.yml` does not report. Splitting the
+    # suite across two simulators is the real fix for the next growth.
+    timeout-minutes: 100
 
     steps:
       - uses: actions/checkout@v4

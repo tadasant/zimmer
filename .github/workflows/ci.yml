@@ -639,8 +639,8 @@ jobs:
     runs-on: macos-latest
     # About 12 minutes: an archive, the ZimmerKit tests, one simulator build and the smoke
     # run. The headroom is for a pull request that touches several UI test files, whose
-    # classes the smoke run adds at roughly 35 seconds a test. The full UI suite, about 45
-    # minutes on its own, is `ios-ui-tests.yml`.
+    # classes the smoke run adds at roughly 35 seconds a test, and for a loaded runner. The
+    # full UI suite, up to an hour on its own, is `ios-ui-tests.yml`.
     timeout-minutes: 45
 
     steps:
@@ -680,8 +680,8 @@ jobs:
         # a video and a picture of the last screen; there is no photograph pass.
         #
         # The other UI tests and the photographs of every key screen are
-        # `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**`: some 60 tests
-        # driven one at a time, about 45 minutes — too long to gate every pull request on.
+        # `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**`: some 70 tests
+        # driven one at a time, up to an hour — too long to gate every pull request on.
         # To get them for a branch before it merges:
         #   gh workflow run ios-ui-tests.yml --ref <branch>
         #
