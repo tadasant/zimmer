@@ -4,16 +4,17 @@ import ZimmerKit
 
 /// The web UI's CLIs page: whether each command-line tool is installed and signed in, as the
 /// worker last checked, with the page's install and sign-in hints and a Copy on each; Refresh
-/// queues a fresh check and Clear Cache the worker's npm and pip cache clear. The SSH hint names
-/// the signed-in server, as the page does when it has no Tailscale address to print.
+/// queues a fresh check and Clear Cache the worker's npm and pip cache clear. The page's SSH hint
+/// is not here: it prints the box's Tailscale address, which the API does not carry.
 struct CliToolsView: View {
     @EnvironmentObject private var app: AppModel
     @State private var report: CliStatusReport?
     @State private var error: ZimmerError?
     /// The last action's answer, in the server's words, under the status line.
     @State private var notice: String?
-    @State private var refreshing = false
-    @State private var confirmingClear = false
+    /// The check's stamp when a refresh was asked for; the status line reads queued until the
+    /// worker's check moves past it.
+    @State private var refreshRequestedPast: Date?
     /// What was last copied, named beside its button for a moment.
     @State private var copied: String?
 
@@ -22,7 +23,6 @@ struct CliToolsView: View {
             if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
             if let report {
                 headline(report)
-                sshHint
                 ForEach(report.tools) { tool in toolSection(tool) }
             }
         }
@@ -41,7 +41,7 @@ struct CliToolsView: View {
                     }
                     .accessibilityIdentifier("clis.refresh")
                     Button(role: .destructive) {
-                        confirmingClear = true
+                        Task { await clearCache() }
                     } label: {
                         Label("Clear Cache", systemImage: "trash")
                     }
@@ -52,16 +52,6 @@ struct CliToolsView: View {
                 .accessibilityLabel("CLI actions")
                 .accessibilityIdentifier("clis.actions")
             }
-        }
-        .confirmationDialog(
-            "Clear the worker's npm and pip caches and reinstall the MCP packages?",
-            isPresented: $confirmingClear,
-            titleVisibility: .visible
-        ) {
-            Button("Clear Cache", role: .destructive) { Task { await clearCache() } }
-                .accessibilityIdentifier("clis.clearCache.confirm")
-        } message: {
-            Text("For MCP servers that fail to start on a corrupted cache (ENOTEMPTY, missing files). It runs in the worker container, where the servers are spawned.")
         }
     }
 
@@ -89,31 +79,10 @@ struct CliToolsView: View {
     }
 
     private func statusLine(_ report: CliStatusReport) -> String {
-        if refreshing { return "Refresh queued — checking…" }
+        if refreshRequestedPast != nil { return "Refresh queued — checking…" }
         guard let at = report.generatedAt else { return "Not checked yet; the worker checks every two minutes." }
         let age = Format.age(at)
         return age == "now" ? "Checked just now" : "Checked \(age) ago"
-    }
-
-    /// The server the tools are on, as the page's first step: `ssh root@…`.
-    private var sshHint: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("First, SSH into the server:").font(.caption).foregroundStyle(Theme.inkSoft)
-                codeBlock(sshCommand, key: "ssh")
-                Text("All commands below should be run on the server after connecting.").font(.caption2).foregroundStyle(Theme.inkMute)
-            }
-            .padding(.vertical, 2)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("clis.ssh")
-        } header: {
-            Text("Connect to Server").themeLabel()
-        }
-        .themeRows()
-    }
-
-    private var sshCommand: String {
-        "ssh root@\(app.signedInOrigins?.web.host ?? "zimmer")"
     }
 
     private func toolSection(_ tool: CliStatusReport.Tool) -> some View {
@@ -211,29 +180,42 @@ struct CliToolsView: View {
 
     private func load() async {
         do {
-            report = try await app.api.cliStatus()
+            let fresh = try await app.api.cliStatus()
+            show(fresh)
             error = nil
-            app.cliIssues = report?.unauthenticatedCount ?? 0
         } catch {
-            self.error = error as? ZimmerError ?? .transport(error)
-            app.noteError(self.error!)
+            let failure = error as? ZimmerError ?? .transport(error)
+            self.error = failure
+            app.noteError(failure)
         }
     }
 
-    /// Queue a fresh check, show it queued, then read the status again once the worker has
-    /// had a moment: the answer to the refresh is the status as cached when it was asked.
+    /// A read of the status: the badge follows it, and a refresh that was waiting on the
+    /// worker's check is over once the check's stamp has moved.
+    private func show(_ fresh: CliStatusReport) {
+        report = fresh
+        app.cliIssues = fresh.unauthenticatedCount
+        if let past = refreshRequestedPast, let at = fresh.generatedAt, at > past { refreshRequestedPast = nil }
+    }
+
+    /// Queue a fresh check. The answer is the status as cached when it was asked, so the line
+    /// reads queued until a later read carries a check newer than that — the screen reads again
+    /// every few seconds for a minute, and a pull reads again at any time.
     private func refresh() async {
-        guard !refreshing else { return }
-        refreshing = true
+        guard refreshRequestedPast == nil else { return }
+        refreshRequestedPast = report?.generatedAt ?? .distantPast
         do {
-            report = try await app.api.refreshCliStatus()
+            let answer = try await app.api.refreshCliStatus()
+            show(answer)
             notice = "CLI status refresh queued. Results update shortly."
             error = nil
-            try? await Task.sleep(for: .seconds(2))
-            refreshing = false
-            await load()
+            for _ in 0..<20 where refreshRequestedPast != nil {
+                try? await Task.sleep(for: .seconds(3))
+                await load()
+            }
+            refreshRequestedPast = nil
         } catch {
-            refreshing = false
+            refreshRequestedPast = nil
             self.error = error as? ZimmerError ?? .transport(error)
             Haptics.failure()
         }

@@ -295,7 +295,7 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   confirmation. *Enqueue messages* and *Resuscitate archived* are shown, not switched: the API
   that would switch them is the trigger update, which the app's token does not open. Creating
   and editing a trigger, and those two switches, stay in the browser; *Open in browser* on a
-  trigger's page gets you there. *More* holds *Costs* and *Health*, read-only. *Costs* is the
+  trigger's page gets you there. *More* holds *Costs*, *Health* and *CLIs*. *Costs* is the
   web page, section for section, from the whole of `GET /api/v1/costs`: the ledger's coverage
   (backfilled, running with its progress, queued, or not yet, and what the ledger covers since),
   the total with the tokens, API calls and ad hoc share beside it, the unpriced-models warning,
@@ -347,13 +347,15 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   refuses an action on a set that moved since. The two dashboard links in Maintenance Actions are
   web pages. *CLIs*, also under More, is the web page: the banner (all tools ready, or how many
   need attention, which is also the red count on the More row, as on the web board's CLIs
-  button), when the worker last checked, the `ssh root@…` hint with Copy, and per tool its
-  version, Installed and Authenticated badges, the install hint when it is not installed and the
-  sign-in hint (or the environment variable to set) when it is installed and signed out, each
-  with Copy. *Refresh* queues a fresh check and the status line says so until the next read;
-  *Clear Cache* asks first, then queues the worker's npm and pip cache clear. The SSH hint names
-  the signed-in server's host: the web page prints the box's Tailscale address, which the API
-  does not carry.
+  button; the row's count is read each time More comes to the front), when the worker last
+  checked, and per tool its version, Installed and Authenticated badges, the install hint when it
+  is not installed and the sign-in hint (or the environment variable to set) when it is installed
+  and signed out, each with Copy. *Refresh* queues a fresh check and the status line reads
+  *Refresh queued* until a read carries a check newer than the one on screen — the screen reads
+  again every few seconds for a minute, and a pull reads again at any time. *Clear Cache* queues
+  the worker's npm and pip cache clear, without a confirmation, as on the web. The web page's
+  *Connect to Server* card is not in the app: it prints the box's Tailscale address, which the
+  API does not carry, and a copyable `ssh` line that does not connect would be worse than none.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 

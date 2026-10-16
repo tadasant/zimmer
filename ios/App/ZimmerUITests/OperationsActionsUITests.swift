@@ -84,8 +84,6 @@ final class OperationsActionsUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureClis"])
         XCTAssertTrue(app.descendants(matching: .any)["clis.tool.gh"].waitForExistence(timeout: timeout))
         XCTAssertTrue(app.staticTexts["2 CLI tools need attention"].exists, "the web banner's count")
-        XCTAssertTrue(app.descendants(matching: .any)["clis.ssh"].exists, "the SSH hint")
-        XCTAssertTrue(app.buttons["clis.copy.ssh"].exists)
         let status = app.staticTexts["clis.status"]
         XCTAssertTrue(status.label.hasPrefix("Checked "))
         XCTAssertNotEqual(status.label, "Checked just now", "the worker's check is two minutes old")

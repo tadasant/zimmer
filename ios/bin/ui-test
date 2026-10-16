@@ -297,7 +297,7 @@ if [ -d "$app" ]; then
   shoot health -ZimmerFixture -ZimmerFixtureHealth
   shoot health-degraded -ZimmerFixture -ZimmerFixtureHealth -ZimmerFixtureDegraded
   shoot sessions-degraded -ZimmerFixture -ZimmerFixtureDegraded
-  # The CLIs page: the attention banner, the SSH hint, a tool signed out, one not installed.
+  # The CLIs page: the attention banner, a tool signed out, one not installed.
   shoot clis -ZimmerFixture -ZimmerFixtureClis
   # Dark mode: the app draws its own (on the PWA manifest's navy), so every main screen is
   # photographed in it too.

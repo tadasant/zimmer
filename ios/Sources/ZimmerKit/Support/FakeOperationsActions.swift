@@ -85,7 +85,7 @@ extension FakeZimmerAPI {
         if scope.queueName == "agents" || scope.jobClass == "AgentSessionJob" {
             throw ZimmerError.http(status: 422, message: "Refusing to touch \(scope.label): an unfinished job there is a live session.")
         }
-        return healthState.queuedJobs.filter { row in
+        return (healthState.queuedJobs + healthState.rescheduledJobs).filter { row in
             (scope.jobClass == nil || scope.jobClass == row.jobClass) && (scope.queueName == nil || scope.queueName == row.queue)
         }
     }
@@ -103,9 +103,11 @@ extension FakeZimmerAPI {
         guard matched == expectedCount else {
             throw ZimmerError.http(status: 422, message: "Expected \(expectedCount) queued jobs in scope, found \(matched); nothing was changed. Reload and try again.")
         }
-        if action == "discard" {
-            healthState.queuedJobs.removeAll { row in rows.contains { $0.jobClass == row.jobClass && $0.queue == row.queue } }
-        }
+        // A discard ends the rows; a reschedule moves them from ready to scheduled, where the
+        // server's backlog breakdown no longer lists them but a maintenance call still counts them.
+        healthState.queuedJobs.removeAll { row in rows.contains { $0.jobClass == row.jobClass && $0.queue == row.queue } }
+        healthState.rescheduledJobs.removeAll { row in rows.contains { $0.jobClass == row.jobClass && $0.queue == row.queue } }
+        if action == "reschedule" { healthState.rescheduledJobs += rows }
         return QueuedJobReceipt(action: action, scope: scope, matched: matched, affected: matched,
                                 byJobClass: rows.map { HealthReport.Count($0.jobClass, $0.count) },
                                 byQueue: rows.map { HealthReport.Count($0.queue, $0.count) }, scheduledAt: scheduledAt)

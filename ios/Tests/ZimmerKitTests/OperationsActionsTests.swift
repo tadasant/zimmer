@@ -268,7 +268,10 @@ final class OperationsActionsTests: XCTestCase {
         let rescheduled = try await fake.rescheduleQueuedJobs(QueuedJobScope(jobClass: "TriggerEvaluationJob"), expectedCount: 2, delayMinutes: 10)
         XCTAssertEqual(rescheduled.affected, 2)
         let afterReschedule = try await fake.health()
-        XCTAssertEqual(afterReschedule.system?.readyByJobClass.count, 1, "rescheduled jobs are still queued")
+        XCTAssertEqual(afterReschedule.system?.readyByJobClass.count, 0, "rescheduled jobs are scheduled, not ready, so the backlog breakdown drops them")
+        XCTAssertEqual(afterReschedule.system?.scheduled, 10, "and the scheduled count carries them")
+        let stillQueued = try await fake.queuedJobs(QueuedJobScope(jobClass: "TriggerEvaluationJob"))
+        XCTAssertEqual(stillQueued.matched, 2, "but they are still enqueued, so a maintenance call still counts them")
     }
 
     func testTheFixturesSweepIsInFlightThenDoneOnTheNextRead() async throws {
