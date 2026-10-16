@@ -148,7 +148,7 @@ class Api::BaseController < ActionController::API
   # a relay-only grant was approved to carry messages, not to decide. Wire it
   # with `before_action :require_a_person_on_the_app, only: [...]`.
   def require_a_person_on_the_app
-    return if native_app_request? && native_app_grant.acts_as_human?
+    return if person_on_the_app?
 
     message = if native_app_request?
       "This sign-in may not act as you; sign in again and allow acting as you"
@@ -156,6 +156,13 @@ class Api::BaseController < ActionController::API
       "Only a person can do this: it takes the iOS app's sign-in, acting as you, or the web UI"
     end
     render_api_error("Forbidden", message, status: :forbidden)
+  end
+
+  # Whether this request is a person: the iOS app's token, on a grant that acts
+  # as its approver. What the fence above checks, and what decides whether a
+  # response may carry something the web shows only to a signed-in person.
+  def person_on_the_app?
+    native_app_request? && native_app_grant.acts_as_human?
   end
 
   # Who a person-only write is recorded as: the grant's email, and the surface.

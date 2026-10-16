@@ -9,7 +9,7 @@
 #   POST   /api/v1/inference/accounts/:id/activate   make it the current account
 #   DELETE /api/v1/inference/accounts/:id            remove it (the current one hands over)
 #   POST   /api/v1/inference/logins                  start the CLI login for an account (account_id)
-#   GET    /api/v1/inference/logins/:id              poll it: status, verification URL, device code
+#   GET    /api/v1/inference/logins/:id              poll it: status, verification URL, device code (a person only)
 #   POST   /api/v1/inference/logins/:id/code         paste the authorization code back (code)
 #   POST   /api/v1/inference/logins/:id/cancel       stop it
 #   PATCH  /api/v1/inference/spot_policy             the spot gate's six knobs
@@ -20,7 +20,11 @@
 # The read takes an API key. Every write takes only the iOS app's sign-in, on a
 # grant that acts as its person — these are the operator's levers over which
 # account the fleet runs on and how much work it does, and an agent must not
-# reach them through the fleet's key. The web page is the other way in.
+# reach them through the fleet's key. So does the login poll, and the roster
+# carries an in-flight login's verification URL and device code only to a
+# person: with those, a holder of the fleet's key could finish the login with
+# an account of its own and have it captured under the operator's email. The
+# web page is the other way in.
 #
 # The policy writes take the parameter names `action_spot_policy` takes and
 # apply its validation; the account verbs share ClaudeAccountActions with the
@@ -31,7 +35,7 @@ class Api::V1::InferenceController < Api::BaseController
 
   PERSON_ACTIONS = %i[
     create_account refresh_account activate_account destroy_account
-    start_login submit_login_code cancel_login
+    start_login login_status submit_login_code cancel_login
     update_spot_policy update_fleet_top_up update_genesis_class reset_genesis_classes
   ].freeze
 
@@ -47,7 +51,8 @@ class Api::V1::InferenceController < Api::BaseController
   # Converges a stale quota_exceeded column against the reading on file first, as
   # opening the page does — so the roster the phone shows is the pool that serves.
   def show
-    report = InferenceReport.new(runtime: InferenceReport.normalize_runtime(params[:runtime]))
+    report = InferenceReport.new(runtime: InferenceReport.normalize_runtime(params[:runtime]),
+      reveal_login_secrets: person_on_the_app?)
     ClaudeAccountActions.heal(report.runtime, report.snapshots, log_tag: "Api::V1::InferenceController") unless report.pi?
 
     render json: report.as_json
@@ -101,7 +106,7 @@ class Api::V1::InferenceController < Api::BaseController
     attempt = ClaudeAccountActions.start_login!(account)
     Rails.logger.info("[Api::V1::InferenceController] #{native_app_actor} started login attempt #{attempt.id} for #{account.email}")
 
-    render json: { login: InferenceReport.login_attempt_json(attempt) }, status: :created
+    render json: { login: InferenceReport.login_attempt_json(attempt, reveal_secrets: true) }, status: :created
   end
 
   # GET /api/v1/inference/logins/:id
@@ -111,7 +116,7 @@ class Api::V1::InferenceController < Api::BaseController
   def login_status
     @attempt.fail_orphaned!
 
-    render json: { login: InferenceReport.login_attempt_json(@attempt), account: account_json(@attempt.claude_account) }
+    render json: { login: InferenceReport.login_attempt_json(@attempt, reveal_secrets: true), account: account_json(@attempt.claude_account) }
   end
 
   # POST /api/v1/inference/logins/:id/code
@@ -123,7 +128,7 @@ class Api::V1::InferenceController < Api::BaseController
     end
 
     @attempt.update!(pasted_code: code)
-    render json: { login: InferenceReport.login_attempt_json(@attempt) }
+    render json: { login: InferenceReport.login_attempt_json(@attempt, reveal_secrets: true) }
   end
 
   # POST /api/v1/inference/logins/:id/cancel
@@ -131,7 +136,7 @@ class Api::V1::InferenceController < Api::BaseController
   def cancel_login
     @attempt.update!(status: "canceled", pasted_code: nil) unless @attempt.terminal?
 
-    render json: { login: InferenceReport.login_attempt_json(@attempt) }
+    render json: { login: InferenceReport.login_attempt_json(@attempt, reveal_secrets: true) }
   end
 
   # PATCH /api/v1/inference/spot_policy
@@ -267,7 +272,8 @@ class Api::V1::InferenceController < Api::BaseController
   def account_json(account, error: nil)
     snapshot = account.latest_snapshot
     is_current = account == ClaudeAccount.current_account(account.runtime)
-    InferenceReport.account_json(account, snapshot: snapshot, is_current: is_current, error: error)
+    InferenceReport.account_json(account, snapshot: snapshot, is_current: is_current, error: error,
+      reveal_login_secrets: person_on_the_app?)
   end
 
   def pool_json(runtime)

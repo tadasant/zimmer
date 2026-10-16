@@ -87,17 +87,6 @@ class Api::V1::LiveConversationsController < Api::BaseController
 
   private
 
-  def require_a_person_on_the_app
-    return if native_app_request? && native_app_grant.acts_as_human?
-
-    message = if native_app_request?
-      "This sign-in may not act as you; sign in again and allow acting as you"
-    else
-      "Only a person can start or steer a live conversation: it takes the iOS app's sign-in, acting as you, or the web UI"
-    end
-    render_api_error("Forbidden", message, status: :forbidden)
-  end
-
   def set_conversation
     @conversation = LiveConversation.find_by(id: params[:id])
     render_api_error("Not Found", "Live conversation not found", status: :not_found) unless @conversation

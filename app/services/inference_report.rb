@@ -8,7 +8,11 @@
 #
 # Nothing secret leaves here: no OAuth token, no refresh token, no API key, no
 # OpenRouter key — the roster carries emails and verdicts, the key card a
-# fingerprint at most, exactly as the page does.
+# fingerprint at most, exactly as the page does. An in-flight login's
+# verification URL and device code are the one thing the page shows only to a
+# signed-in person, and they go only to one here (`reveal_login_secrets`): with
+# them, any holder of the fleet's key could complete the login with an account
+# of its own and have it captured under the operator's email.
 class InferenceReport
   RUNTIMES = RuntimeRegistry::BUNDLES.keys.freeze
 
@@ -22,7 +26,9 @@ class InferenceReport
   # @param snapshot [ClaudeAccountQuotaSnapshot, nil] the account's latest reading
   # @param is_current [Boolean]
   # @param error [String, nil] a probe's failure, on a refresh response only
-  def self.account_json(account, snapshot:, is_current:, error: nil)
+  # @param reveal_login_secrets [Boolean] whether the caller is a person, who may
+  #   see an in-flight login's verification URL and device code
+  def self.account_json(account, snapshot:, is_current:, error: nil, reveal_login_secrets: false)
     api_key_account = account.codex? && account.codex_api_key_account?
 
     {
@@ -48,21 +54,23 @@ class InferenceReport
       probe_error: error,
       # Codex has no usage-quota probe, so its card renders no windows.
       quota: account.codex? ? nil : quota_json(snapshot),
-      login: login_json(account, api_key_account: api_key_account)
+      login: login_json(account, api_key_account: api_key_account, reveal_secrets: reveal_login_secrets)
     }
   end
 
   # One login attempt as the panel renders it. The pasted authorization code is
   # a secret the worker consumes; only whether one has been received is reported.
-  def self.login_attempt_json(attempt)
+  # The verification URL and device code are nulled unless `reveal_secrets` —
+  # the status still says a login is in progress, as a relay grant may know.
+  def self.login_attempt_json(attempt, reveal_secrets:)
     {
       id: attempt.id,
       account_id: attempt.claude_account_id,
       runtime: attempt.runtime,
       status: attempt.status,
       terminal: attempt.terminal?,
-      verification_url: attempt.verification_url,
-      verification_code: attempt.verification_code,
+      verification_url: reveal_secrets ? attempt.verification_url : nil,
+      verification_code: reveal_secrets ? attempt.verification_code : nil,
       awaiting_code: attempt.status == "awaiting_code",
       code_received: attempt.pasted_code.present?,
       error_message: attempt.error_message,
@@ -109,7 +117,7 @@ class InferenceReport
     effective.nil? || effective < 1.0
   end
 
-  def self.login_json(account, api_key_account:)
+  def self.login_json(account, api_key_account:, reveal_secrets:)
     # An API-key account carries its credential statically; the panel is skipped.
     return { available: false, active_attempt: nil, last_attempt: nil } if api_key_account
 
@@ -119,17 +127,19 @@ class InferenceReport
 
     {
       available: true,
-      active_attempt: active && login_attempt_json(active),
+      active_attempt: active && login_attempt_json(active, reveal_secrets: reveal_secrets),
       last_attempt: last && { id: last.id, status: last.status, error_message: last.error_message }
     }
   end
 
-  def initialize(runtime:)
+  # @param reveal_login_secrets [Boolean] see .account_json
+  def initialize(runtime:, reveal_login_secrets: false)
     @runtime = runtime
+    @reveal_login_secrets = reveal_login_secrets
     @setting = AppSetting.current
   end
 
-  attr_reader :runtime, :setting
+  attr_reader :runtime, :setting, :reveal_login_secrets
 
   def pi? = runtime == PiAuthProvider::RUNTIME
 
@@ -163,7 +173,8 @@ class InferenceReport
   end
 
   def account_json(account, error: nil)
-    self.class.account_json(account, snapshot: snapshots[account.id], is_current: account == current_account, error: error)
+    self.class.account_json(account, snapshot: snapshots[account.id], is_current: account == current_account,
+      error: error, reveal_login_secrets: reveal_login_secrets)
   end
 
   # The Account Pool card: the four counts, the averaged windows, when held work

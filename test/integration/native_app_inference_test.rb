@@ -127,6 +127,7 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
       [ :post, "/api/v1/inference/accounts/#{account.id}/activate", {} ],
       [ :delete, "/api/v1/inference/accounts/#{account.id}", {} ],
       [ :post, "/api/v1/inference/logins", { account_id: account.id } ],
+      [ :get, "/api/v1/inference/logins/#{attempt.id}", {} ],
       [ :post, "/api/v1/inference/logins/#{attempt.id}/code", { code: "abc" } ],
       [ :post, "/api/v1/inference/logins/#{attempt.id}/cancel", {} ],
       [ :patch, "/api/v1/inference/spot_policy", { enabled: true } ],
@@ -267,7 +268,7 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
 
     # The worker surfaces the link; the poll carries it, and the account beside it.
     attempt.update!(status: "awaiting_code", verification_url: "https://claude.ai/oauth/authorize?x=1", heartbeat_at: Time.current)
-    get "/api/v1/inference/logins/#{attempt.id}", headers: bearer(token)
+    get "/api/v1/inference/logins/#{attempt.id}", headers: headers
     assert_response :success, response.body
     body = JSON.parse(response.body)
     assert_equal "https://claude.ai/oauth/authorize?x=1", body["login"]["verification_url"]
@@ -287,6 +288,35 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
     assert_nil attempt.pasted_code
   end
 
+  # The fleet's key is held by every agent session. With the device code it could
+  # finish the login with an account of its own, captured under the operator's
+  # email — so a key or a relay-only grant learns that a login is in progress and
+  # nothing it could enter at the vendor.
+  test "an in-flight login's verification link and code reach only a person" do
+    account = claude_accounts(:unconfigured)
+    attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_user",
+      verification_url: "https://auth.openai.com/device?user_code=WXYZ", verification_code: "WXYZ-1234", heartbeat_at: Time.current)
+
+    [ { "X-API-Key" => API_KEY }, bearer(token) ].each do |headers|
+      get "/api/v1/inference", headers: headers
+      assert_response :success, response.body
+      active = JSON.parse(response.body)["accounts"].find { |a| a["id"] == account.id }["login"]["active_attempt"]
+      assert_equal "awaiting_user", active["status"], "that a login is in progress is not a secret"
+      assert_nil active["verification_url"]
+      assert_nil active["verification_code"]
+      assert_no_match(/WXYZ/, response.body)
+
+      get "/api/v1/inference/logins/#{attempt.id}", headers: headers
+      assert_response :forbidden
+      assert_no_match(/WXYZ/, response.body)
+    end
+
+    get "/api/v1/inference", headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
+    active = JSON.parse(response.body)["accounts"].find { |a| a["id"] == account.id }["login"]["active_attempt"]
+    assert_equal "WXYZ-1234", active["verification_code"]
+    assert_equal "https://auth.openai.com/device?user_code=WXYZ", active["verification_url"]
+  end
+
   test "a login for an API-key account is refused, and a pruned attempt is a 404" do
     RuntimeLoginJob.expects(:perform_later).never
 
@@ -295,7 +325,7 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert_match(/don't use the login flow/, JSON.parse(response.body)["message"])
 
-    get "/api/v1/inference/logins/0", headers: bearer(token)
+    get "/api/v1/inference/logins/0", headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
     assert_response :not_found
     assert_match(/no longer tracked/, JSON.parse(response.body)["message"])
   end
