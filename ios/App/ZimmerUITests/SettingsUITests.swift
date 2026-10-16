@@ -33,7 +33,7 @@ final class SettingsUITests: XCTestCase {
         XCTAssertTrue(waitForLabel(router, "Warm Quick Router process is ON."))
         XCTAssertEqual(toggle.value as? String, "1")
         // Back up to the first row: a Form row scrolled off is not in the accessibility tree.
-        reveal(app, search)
+        reveal(app, search, above: true)
         XCTAssertEqual(search.label, "MCP tool search is ON (recommended default).", "the other toggles are untouched")
 
         closeSettings(app)
@@ -156,9 +156,9 @@ final class SettingsUITests: XCTestCase {
 
     /// Scroll until `element` is on screen and below the navigation bar, where a tap lands on
     /// it rather than on the bar (`isHittable` says yes under the bar). A Form row off screen
-    /// is not in the accessibility tree, so until it appears the scrolling is blind, down
-    /// the form.
-    private func reveal(_ app: XCUIApplication, _ element: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
+    /// is not in the accessibility tree, so until it appears the scrolling is blind: down the
+    /// form, or back up it when the row is known to be `above` what is on screen.
+    private func reveal(_ app: XCUIApplication, _ element: XCUIElement, above: Bool = false, file: StaticString = #filePath, line: UInt = #line) {
         func barBottom() -> CGFloat {
             app.navigationBars.allElementsBoundByIndex.map(\.frame.maxY).max() ?? 0
         }
@@ -167,8 +167,9 @@ final class SettingsUITests: XCTestCase {
             return element.frame.minY >= barBottom() && element.frame.maxY <= app.frame.maxY - 24
         }
         for _ in 0..<14 where !placed() {
-            let underTheBar = element.exists && !element.frame.isEmpty && element.frame.minY < barBottom()
-            scroll(app, down: underTheBar)
+            let onScreen = element.exists && !element.frame.isEmpty
+            let underTheBar = onScreen && element.frame.minY < barBottom()
+            scroll(app, down: underTheBar || (!onScreen && above))
         }
         XCTAssertTrue(placed(), "\(element) is scrolled into view", file: file, line: line)
     }
