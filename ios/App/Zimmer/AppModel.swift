@@ -67,6 +67,9 @@ final class AppModel: ObservableObject {
     /// The session the Quick Router was opened from, so the new one threads under it, as
     /// the web bubble on a session page sends `parent_session_id`.
     var quickRouterParent: Int?
+    /// The screen the Quick Router was opened on, as the web bubble sends the page it was typed
+    /// on: a session's page, with its web URL and title. Nil from the board and the tabs.
+    var quickRouterPage: QuickRouterPage?
     /// Words typed in the board's bar, carried into the sheet when it is opened for more. `nil`
     /// when the sheet was opened from anywhere else.
     var quickRouterDraft: String?
@@ -164,7 +167,16 @@ final class AppModel: ObservableObject {
            arguments.indices.contains(flag + 1), let id = Int(arguments[flag + 1]) {
             path = [id]
         }
-        if arguments.contains("-ZimmerFixtureQuickRouter") { showingQuickRouter = true }
+        if arguments.contains("-ZimmerFixtureQuickRouter") {
+            // Opened on a session's page, the sheet carries that page, as the corner button does.
+            if let id = path.first {
+                Task {
+                    if let session = try? await connection.api.session(id).session { openQuickRouter(from: session) }
+                }
+            } else {
+                showingQuickRouter = true
+            }
+        }
         if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
@@ -253,12 +265,19 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Open the Quick Router sheet. `parent` is the session it was opened on; `draft` is the
-    /// board bar's words, given only by the bar.
-    func openQuickRouter(parent: Int? = nil, draft: String? = nil) {
+    /// Open the Quick Router sheet. `parent` is the session it was opened on and `page` that
+    /// session's page; `draft` is the board bar's words, given only by the bar.
+    func openQuickRouter(parent: Int? = nil, page: QuickRouterPage? = nil, draft: String? = nil) {
         quickRouterParent = parent
+        quickRouterPage = page
         quickRouterDraft = draft
         showingQuickRouter = true
+    }
+
+    /// The Quick Router from a session's page: the page is that session's, by its web URL, as
+    /// the bubble reads `window.location`.
+    func openQuickRouter(from session: SessionSummary) {
+        openQuickRouter(parent: session.id, page: QuickRouterPage.session(session, url: webURL(for: session.id)))
     }
 
     /// Start a Quick Router session and open it.
@@ -266,13 +285,20 @@ final class AppModel: ObservableObject {
         await startQuickRouter(QuickRouterRequest(prompt: prompt))
     }
 
-    /// Start a Quick Router session with the sheet's choices and open it.
-    func startQuickRouter(_ request: QuickRouterRequest) async -> Bool {
+    /// Start a Quick Router session with the sheet's choices and open it — or, with `open`
+    /// off, the web bubble's plain *Submit*: the session starts and this screen stays.
+    func startQuickRouter(_ request: QuickRouterRequest, open: Bool = true) async -> Bool {
         do {
             let id = try await connection.api.startQuickRouter(request)
             showingQuickRouter = false
             quickRouterParent = nil
-            path.append(id)
+            quickRouterPage = nil
+            if open {
+                path.append(id)
+            } else {
+                notice = "Started session #\(id) in the background"
+                Haptics.success()
+            }
             await refresh()
             return true
         } catch {
@@ -512,6 +538,23 @@ final class AppModel: ObservableObject {
             await refresh()
             notice = message
             Haptics.success()
+        } catch {
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
+    /// The Ranked row's *Promote to priority* and *Demote to spot* (which lands at the head of
+    /// the spot queue). A promotion starts a waiting session; one that could not says why.
+    func reschedule(_ id: Int, priority: Bool) async {
+        do {
+            let change = try await connection.api.setSchedulingClass(id, priority: priority)
+            let done = priority ? "Promoted to priority" : "Demoted to spot, top of the queue"
+            notice = change.startMessage.map { "\(done). \($0)" } ?? done
+            error = nil
+            if change.startOutcome == "refused" { Haptics.failure() } else { Haptics.success() }
+            // The list is the server's order: a row that changed class belongs in the other half.
+            await refresh()
         } catch {
             handle(error)
             Haptics.failure()
