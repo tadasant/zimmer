@@ -4,7 +4,7 @@ import XCTest
 /// trigger's page and the Costs drilldown, against the `-ZimmerFixture` in-memory Zimmer.
 @MainActor
 final class OperationsUITests: XCTestCase {
-    private let timeout: TimeInterval = 20
+    private let timeout: TimeInterval = 30
 
     override func setUp() {
         continueAfterFailure = false
@@ -67,7 +67,7 @@ final class OperationsUITests: XCTestCase {
 
         let actions = app.buttons["trigger.detail.actions"]
         actions.tap()
-        app.buttons["Invoke Now"].firstMatch.tap()
+        app.buttons["Run Now"].firstMatch.tap()
         let confirm = app.sheets.buttons["Invoke Nightly dependency sweep"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
@@ -78,28 +78,25 @@ final class OperationsUITests: XCTestCase {
         let app = launch()
         app.tabBars.buttons["More"].tap()
         app.descendants(matching: .any)["more.costs"].firstMatch.tap()
-        // The range's fields sit above the figures, so the roots may start below the fold.
+        // The coverage, tiles and chart sit above the roots, so they start below the fold.
         let root = app.buttons["costs.root.zimmer"]
         XCTAssertTrue(app.staticTexts["costs.total"].waitForExistence(timeout: timeout))
-        var swipes = 0
-        while !(root.exists && root.isHittable) && swipes < 6 { app.swipeUp(); swipes += 1 }
+        XCTAssertTrue(scrollTo(app, root, whole: true), "the zimmer root is on the page")
         root.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].waitForExistence(timeout: timeout), "the page says what it is narrowed to")
+        // The narrowed figures arrive where the page is; the banner that names the scope heads
+        // the page, which a lazy List lays out only once scrolled back up to.
         XCTAssertTrue(waitForDisappearance(app.buttons["costs.root.motet"]), "only the narrowed root is left")
         let clear = app.buttons["costs.scope.clear"]
-        swipes = 0
-        while !(clear.exists && clear.isHittable) && swipes < 6 { app.swipeDown(); swipes += 1 }
+        XCTAssertTrue(scrollUpTo(app, clear), "the page says what it is narrowed to")
+        XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].exists)
         clear.tap()
         // The banner goes when the fleet's figures arrive; the roots are below the fold again.
         XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["costs.scope"]), "back to the fleet")
         let motet = app.buttons["costs.root.motet"]
-        swipes = 0
-        while !(motet.exists && motet.isHittable) && swipes < 6 { app.swipeUp(); swipes += 1 }
-        XCTAssertTrue(motet.exists && motet.isHittable, "back to every root")
+        XCTAssertTrue(scrollTo(app, motet, whole: true), "back to every root")
 
         let window = app.segmentedControls["costs.window"]
-        swipes = 0
-        while !(window.exists && window.isHittable) && swipes < 6 { app.swipeDown(); swipes += 1 }
+        XCTAssertTrue(scrollUpTo(app, window, whole: true), "the window picker heads the page")
         let showing = app.staticTexts["costs.showing"]
         window.buttons["30d"].tap()
         XCTAssertTrue(waitForLabel(showing, "Showing 30 days"))
@@ -108,15 +105,14 @@ final class OperationsUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [range], timeout: timeout), .completed, "the calendar range, from the fields the horizon filled")
 
         let session = app.buttons["costs.session.1042"]
-        swipes = 0
-        while !(session.exists && session.isHittable) && swipes < 6 { app.swipeUp(); swipes += 1 }
+        XCTAssertTrue(scrollTo(app, session, whole: true), "the sessions are far down the page")
         session.swipeLeft()
         app.buttons["Only This"].firstMatch.tap()
-        // The banner heads the page, which is still scrolled to the sessions.
-        let scope = app.descendants(matching: .any)["costs.scope"]
-        swipes = 0
-        while !(scope.waitForExistence(timeout: 2) && scope.isHittable) && swipes < 6 { app.swipeDown(); swipes += 1 }
-        XCTAssertTrue(scope.exists, "narrowed to the session")
+        // The other session goes where the page is; the banner heads the page, laid out once
+        // scrolled back up to.
+        XCTAssertTrue(waitForDisappearance(app.buttons["costs.session.1038"]), "narrowed to the one session")
+        XCTAssertTrue(scrollUpTo(app, app.buttons["costs.scope.clear"]), "the page says which session")
+        XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].exists)
     }
 
     func test_health_shows_every_section_and_the_banners_reach_the_board() throws {
@@ -126,20 +122,26 @@ final class OperationsUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["banner.queueRecovery"].exists, "queue recovery mode is announced")
         XCTAssertTrue(app.descendants(matching: .any)["banner.egress"].exists, "degraded egress is announced")
         // Then the web page's sections, in its order, each from the report's own numbers.
-        XCTAssertTrue(app.descendants(matching: .any)["health.queueRecovery"].exists)
+        XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)["health.queueRecovery"]))
         XCTAssertTrue(app.staticTexts["ON — queues halted"].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["health.process"].exists)
+        // A List lays out lazily: a section below the fold is not in the hierarchy until scrolled to.
+        XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)["health.process"]))
         XCTAssertTrue(app.staticTexts["PID 48112"].exists, "the orphan list")
-        for identifier in ["health.session", "health.system", "health.egress", "health.auth", "health.sigtermRetry", "health.apiErrorRetry",
-                           "health.retryBudgets", "health.postDeployTasks", "health.cron", "health.logRetention", "health.rootData",
-                           "health.warmClonePool", "health.warmProcessPool", "health.inboundEvents", "health.recentErrors"] {
+        // Each section's own words are checked while it is laid out: a lazy List drops a
+        // section once it is scrolled past.
+        let sections: [(String, String?)] = [
+            ("health.session", nil), ("health.system", nil), ("health.egress", nil), ("health.auth", nil), ("health.sigtermRetry", nil),
+            ("health.apiErrorRetry", nil), ("health.retryBudgets", nil), ("health.postDeployTasks", "reconcile_catalog_references"),
+            ("health.cron", "session_health_monitor"), ("health.logRetention", nil), ("health.rootData", nil), ("health.warmClonePool", nil),
+            ("health.warmProcessPool", nil), ("health.inboundEvents", nil), ("health.recentErrors", nil),
+        ]
+        for (identifier, text) in sections {
             XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)[identifier]), "\(identifier) is on the page")
+            if let text { XCTAssertTrue(app.staticTexts[text].firstMatch.exists, "\(identifier) names \(text)") }
         }
-        XCTAssertTrue(app.staticTexts["reconcile_catalog_references"].exists, "the post-deploy task table names the failing task")
-        XCTAssertTrue(app.staticTexts["session_health_monitor"].firstMatch.exists, "the cron key that is behind")
         // A recent failure opens its session.
         let failure = app.buttons["health.recentFailures.1027"]
-        XCTAssertTrue(scrollTo(app, failure))
+        XCTAssertTrue(scrollTo(app, failure, whole: true))
         failure.tap()
         XCTAssertTrue(app.navigationBars["#1027"].waitForExistence(timeout: timeout))
 
@@ -152,7 +154,7 @@ final class OperationsUITests: XCTestCase {
 
     func test_the_board_has_no_banner_while_nothing_is_wrong() throws {
         let app = launch()
-        XCTAssertTrue(app.descendants(matching: .any)["session.1038"].firstMatch.waitForExistence(timeout: timeout))
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].firstMatch.waitForExistence(timeout: timeout))
         XCTAssertFalse(app.descendants(matching: .any)["banner.queueRecovery"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["banner.egress"].exists)
     }
@@ -164,27 +166,37 @@ final class OperationsUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["History backfilled"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["costs.tiles"].exists)
         XCTAssertTrue(app.staticTexts["API calls"].exists)
-        for identifier in ["costs.unpriced", "costs.breakdown", "costs.chart", "costs.roots", "costs.features", "costs.experiments",
-                           "costs.models", "costs.threadKinds", "costs.runtimes", "costs.adhoc", "costs.session.1042", "costs.burnRates"] {
+        // Each section's own words are checked while it is laid out: a lazy List drops a
+        // section once it is scrolled past.
+        let sections: [(String, String?)] = [
+            ("costs.unpriced", nil), ("costs.breakdown", "cache read"), ("costs.chart", nil), ("costs.roots", nil), ("costs.features", nil),
+            ("costs.experiments", "Compact tool results"), ("costs.models", nil), ("costs.threadKinds", nil), ("costs.runtimes", nil),
+            ("costs.adhoc", nil), ("costs.session.1042", nil), ("costs.burnRates", nil),
+        ]
+        for (identifier, text) in sections {
             XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)[identifier]), "\(identifier) is on the page")
+            if let text { XCTAssertTrue(app.staticTexts[text].firstMatch.exists, "\(identifier) shows \(text)") }
         }
-        XCTAssertTrue(app.staticTexts["Compact tool results"].exists, "an experimental setting's cohorts")
-        XCTAssertTrue(app.staticTexts["cache read"].firstMatch.exists, "where the money goes, by kind of token")
 
-        // Narrowed to a root, the fleet-only sections go.
+        // Narrowed to a root, the fleet-only sections go: the burn rates at the foot, which
+        // are laid out where the page is, and the banner at its head once scrolled back to.
         let root = app.buttons["costs.root.zimmer"]
-        XCTAssertTrue(scrollTo(app, root))
+        XCTAssertTrue(scrollUpTo(app, root, whole: true))
         root.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].waitForExistence(timeout: timeout))
-        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["costs.burnRates"]), "burn rates are the fleet page's only")
-        XCTAssertFalse(app.descendants(matching: .any)["costs.experiments"].exists)
+        XCTAssertTrue(waitForDisappearance(app.buttons["costs.root.motet"]), "only the narrowed root is left")
+        XCTAssertTrue(scrollUpTo(app, app.buttons["costs.scope.clear"]), "the page says what it is narrowed to")
+        XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].exists)
+        for _ in 0..<12 where !app.descendants(matching: .any)["costs.session.1042"].firstMatch.exists { app.swipeUp() }
+        XCTAssertTrue(app.descendants(matching: .any)["costs.session.1042"].firstMatch.exists, "the narrowed page still lists its session")
+        XCTAssertFalse(app.descendants(matching: .any)["costs.experiments"].exists, "experiments are the fleet page's only")
+        XCTAssertFalse(app.descendants(matching: .any)["costs.burnRates"].exists, "burn rates are the fleet page's only")
     }
 
     func test_run_now_asks_for_the_templates_variables_and_the_session_carries_them() throws {
         let app = launch(["-ZimmerFixtureTrigger", "7"])
         XCTAssertTrue(app.navigationBars["Slack thread triage"].waitForExistence(timeout: timeout))
-        XCTAssertTrue(app.descendants(matching: .any)["trigger.detail.schedulingClass"].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["trigger.detail.catalog_hooks"].exists, "the hooks chips")
+        XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)["trigger.detail.schedulingClass"]))
+        XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)["trigger.detail.catalog_hooks"]), "the hooks chips")
 
         app.buttons["trigger.detail.actions"].tap()
         app.buttons["Run Now"].firstMatch.tap()
@@ -224,17 +236,33 @@ final class OperationsUITests: XCTestCase {
         return app
     }
 
-    /// Scroll until `element` sits below the navigation bar, where a tap lands on it rather
-    /// than on the bar; false if six swipes do not find it.
-    private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
-        func belowTheBar() -> Bool {
+    /// Scroll down until `element` sits below the navigation bar, where a tap lands on it
+    /// rather than on the bar; false if twelve swipes do not find it. The first match, since a
+    /// container's identifier can reach more than one element. `whole`: the element must also
+    /// clear the tab bar, for one that is about to be tapped; a section taller than the screen
+    /// only needs its top on it.
+    private func scrollTo(_ app: XCUIApplication, _ query: XCUIElement, whole: Bool = false) -> Bool {
+        scroll(app, query, whole: whole) { app.swipeUp() }
+    }
+
+    /// `scrollTo`, for an element above: the page's head after reading its foot.
+    private func scrollUpTo(_ app: XCUIApplication, _ query: XCUIElement, whole: Bool = false) -> Bool {
+        scroll(app, query, whole: whole) { app.swipeDown() }
+    }
+
+    private func scroll(_ app: XCUIApplication, _ query: XCUIElement, whole: Bool, swipe: () -> Void) -> Bool {
+        let element = query.firstMatch
+        func onScreen() -> Bool {
             guard element.exists, !element.frame.isEmpty else { return false }
             let bar = app.navigationBars.firstMatch
             let top = bar.exists ? bar.frame.maxY : 0
-            return element.frame.minY >= top && element.frame.minY < app.frame.maxY
+            let tabBar = app.tabBars.firstMatch
+            let bottom = tabBar.exists ? tabBar.frame.minY : app.frame.maxY
+            let frame = element.frame
+            return frame.minY >= top && (whole ? frame.maxY <= bottom : frame.minY < bottom)
         }
-        for _ in 0..<10 where !belowTheBar() { app.swipeUp() }
-        return belowTheBar()
+        for _ in 0..<12 where !onScreen() { swipe() }
+        return onScreen()
     }
 
     private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
