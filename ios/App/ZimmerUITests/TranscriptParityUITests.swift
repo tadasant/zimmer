@@ -89,6 +89,29 @@ final class TranscriptParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [pasted], timeout: timeout), .completed, "the pasteboard holds the whole URL")
     }
 
+    /// The status summary is markdown the generator writes full of links. 1038's is drawn
+    /// as the transcript draws it: the link reads as its words, not as the brackets and URL
+    /// typed, and a long press on it offers Copy Link.
+    func test_the_status_summary_is_markdown_with_links_that_copy() throws {
+        let app = launch(["-ZimmerFixtureOpenSession", "1038"])
+        let summary = app.descendants(matching: .any)["detail.summary"]
+        XCTAssertTrue(summary.waitForExistence(timeout: timeout))
+        let paragraph = summary.descendants(matching: .any)["markdown.links"].firstMatch
+        XCTAssertTrue(paragraph.waitForExistence(timeout: timeout), "the summary's paragraph carries the link menu")
+        XCTAssertTrue(paragraph.label.contains("PR #1261 is open"), paragraph.label)
+        for marks in ["](", "**", "`"] {
+            XCTAssertFalse(paragraph.label.contains(marks), "no \"\(marks)\" left as typed: \(paragraph.label)")
+        }
+        // The page opens at the newest message; the summary is at the top.
+        scrollUntilHittable(app, paragraph)
+        attachScreenshot(app, named: "status-summary")
+        paragraph.press(forDuration: 1.5)
+        XCTAssertTrue(app.buttons["Open Link"].firstMatch.waitForExistence(timeout: timeout), "the menu opens the link")
+        let copy = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Copy Link")).firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: timeout), "the long press offers Copy Link")
+        attachScreenshot(app, named: "status-summary-copy-link")
+    }
+
     /// 1035 carries three catalog skills; two are a person's to invoke. "/" lists those two,
     /// typing narrows them, and a tap puts the command in the draft.
     func test_typing_a_slash_offers_the_sessions_skills_and_a_tap_inserts_one() throws {
@@ -119,7 +142,8 @@ final class TranscriptParityUITests: XCTestCase {
     func test_the_precedence_and_the_scheduling_class_are_set_from_the_session_menu() throws {
         let app = launch(["-ZimmerFixtureOpenSession", "1038"])
         XCTAssertTrue(app.staticTexts["detail.title"].waitForExistence(timeout: timeout))
-        let notice = app.descendants(matching: .any)["followup.notice"]
+        // Each change is read back from the session menu, which says what is in force: the
+        // toast that confirms it is gone before a slow runner looks for it.
 
         // Precedence, in an alert that says what it does for a priority session.
         openMenu(app, "Precedence: 5")
@@ -128,7 +152,7 @@ final class TranscriptParityUITests: XCTestCase {
         XCTAssertTrue(app.alerts.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Unused while this session is priority")).firstMatch.exists)
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6) + "40")
         app.alerts.buttons["Set"].tap()
-        XCTAssertTrue(waitForLabelContaining(notice, "Precedence is now 40."))
+        XCTAssertTrue(waitForDisappearance(app.alerts.firstMatch))
         app.buttons["detail.actions"].tap()
         XCTAssertTrue(app.buttons["Precedence: 40"].firstMatch.waitForExistence(timeout: timeout), "the menu says the precedence in force")
 
@@ -136,8 +160,9 @@ final class TranscriptParityUITests: XCTestCase {
         // rank it runs at in the spot queue.
         tapMenuItem(app, "Scheduling class: priority")
         tapMenuItem(app, "Spot")
-        XCTAssertTrue(waitForLabelContaining(notice, "This session is now spot."))
+        XCTAssertTrue(waitForDisappearance(app.buttons["Spot"].firstMatch), "the menu closes on the choice")
         app.buttons["detail.actions"].tap()
+        XCTAssertTrue(app.buttons["Scheduling class: spot"].firstMatch.waitForExistence(timeout: timeout), "the menu says the class in force")
         XCTAssertTrue(app.buttons["Precedence: 40"].firstMatch.waitForExistence(timeout: timeout), "the demotion kept the precedence")
         app.buttons["Precedence: 40"].firstMatch.tap()
         XCTAssertTrue(app.alerts.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Higher is worked first")).firstMatch.waitForExistence(timeout: timeout),
@@ -147,7 +172,7 @@ final class TranscriptParityUITests: XCTestCase {
         // Derive it: the class chosen is cleared, and the genesis's priority is back.
         openMenu(app, "Scheduling class: spot")
         tapMenuItem(app, "Derive it")
-        XCTAssertTrue(waitForLabelContaining(notice, "This session is now priority."))
+        XCTAssertTrue(waitForDisappearance(app.buttons["Derive it"].firstMatch), "the menu closes on the choice")
 
         openMenu(app, "Scheduling class: priority")
         XCTAssertTrue(app.buttons["Derive it (priority)"].firstMatch.waitForExistence(timeout: timeout),

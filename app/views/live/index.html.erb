@@ -1,27 +1,26 @@
+<% availability = @availability %>
 <div class="min-h-screen bg-gray-50">
   <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-    <%= render "live/back_header", title: "Live", back_path: root_path,
-        subtitle: "One continuous conversation with Zimmer, typed or spoken. Quick things it answers itself; anything slower it hands to a background session and tells you how it went." %>
+    <%= render "live/back_header", title: "Live", back_path: root_path, subtitle: LiveConversations::TAGLINE %>
 
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-      <% @availabilities.each do |availability| %>
-        <% mode = availability.mode %>
-        <div class="bg-white shadow-sm rounded-lg border border-gray-200 p-4 flex flex-col" data-live-mode-card="<%= mode.key %>">
-          <div class="flex items-center gap-2">
-            <%= render "live/mode_icon", mode: mode, css: "h-5 w-5 text-indigo-600" %>
-            <h2 class="text-lg font-medium text-gray-900"><%= mode.label %></h2>
-          </div>
-          <p class="mt-1 text-sm text-gray-600 flex-1"><%= mode.tagline %></p>
-          <dl class="mt-3 text-xs text-gray-500 space-y-0.5">
-            <div>Agent root: <code class="font-mono"><%= mode.agent_root %></code> <%= availability.root_present? ? "✓" : "— not in the catalog" %></div>
-            <div>Model: <code class="font-mono break-all"><%= mode.model %></code></div>
-          </dl>
-          <%= link_to live_mode_path(mode.key), class: "mt-4 inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700" do %>
-            Open <%= mode.label %>
-          <% end %>
-        </div>
+    <div class="bg-white shadow-sm rounded-lg border border-gray-200 p-4 flex flex-col mb-6" data-live-mode-card>
+      <div class="flex items-center gap-2">
+        <%= render "live/mode_icon", mode: LiveConversations.mode("text"), css: "h-5 w-5 text-indigo-600" %>
+        <h2 class="text-lg font-medium text-gray-900"><%= LiveConversations::LABEL %></h2>
+      </div>
+      <p class="mt-1 text-sm text-gray-600">Type, or turn voice on inside the conversation and talk. One thread either way.</p>
+      <dl class="mt-3 text-xs text-gray-500 space-y-0.5">
+        <div>Agent root: <code class="font-mono"><%= LiveConversations::AGENT_ROOT %></code> <%= availability.root_present? ? "✓" : "— not in the catalog" %></div>
+        <% LiveConversations::MODES.each_value do |mode| %>
+          <div><%= mode.label %>: <code class="font-mono break-all"><%= mode.model %></code></div>
+        <% end %>
+      </dl>
+      <%= link_to current_live_path, class: "mt-4 inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700" do %>
+        <%= @current ? "Resume the conversation" : "Open #{LiveConversations::LABEL}" %>
       <% end %>
     </div>
+
+    <div class="mb-6"><%= render "live/settings_link" %></div>
 
     <%= render "live/openai_key_panel", status: @key_status %>
 

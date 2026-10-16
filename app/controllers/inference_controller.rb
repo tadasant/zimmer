@@ -236,27 +236,6 @@ class InferenceController < ApplicationController
     render_login_panel(attempt.claude_account)
   end
 
-  # PUT: Create or rotate Pi's OpenRouter key in the Parameter Store.
-  #
-  # The value is read from params, handed to ManagedSecret, and never touched
-  # again — not echoed into the flash, not logged (`_key` is already in
-  # `config.filter_parameters`, and a test pins that), not returned in the
-  # response. What comes back is a fingerprint at most.
-  def update_openrouter_key
-    result = ManagedSecret.openrouter_key.write(params[:openrouter_api_key].to_s)
-
-    redirect_to inference_path(runtime: PiAuthProvider::RUNTIME),
-      **flash_for(result)
-  end
-
-  # DELETE: Remove the key from the store.
-  def destroy_openrouter_key
-    result = ManagedSecret.openrouter_key.delete
-
-    redirect_to inference_path(runtime: PiAuthProvider::RUNTIME),
-      **flash_for(result)
-  end
-
   private
 
   # The spot gate card: the policy, the reading it acts on, and the per-genesis
@@ -416,18 +395,9 @@ class InferenceController < ApplicationController
     ClaudeAccountPool.latest_snapshots(accounts)
   end
 
-  # The Pi tab. One object, carrying no secret value — see ManagedSecret.
+  # The Pi tab. One object, carrying no secret value — see SecretPresence.
   def show_pi
-    @openrouter_status = ManagedSecret.openrouter_key.status
+    @openrouter_status = SecretPresence.for(PiAuthProvider::OPENROUTER_API_KEY)
     render :show
-  end
-
-  # A Result's two sentences, as a redirect flash. The detail is a second
-  # sentence rather than a second flash so a partial success — written, but not
-  # readable — reads as one event.
-  def flash_for(result)
-    message = [ result.message, result.detail ].compact.join(" ")
-
-    result.ok? ? { notice: message } : { alert: message }
   end
 end

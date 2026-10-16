@@ -57,8 +57,12 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   *Snoozed & hidden* and *Both* in the view menu and the form. Pull to refresh. Rows sit on one surface with hairlines between them,
   as the web board's Your board and Ranked rows do: the title on up to two lines, then one line
   with the status pill, a *Priority* tag, `#id`, a compact age ("41m", "3h"), the latest PR with
-  its CI dot and a notes marker; a star for a favourite; and a snoozed or hidden one adds when
-  the snooze ends. A trashed session reads in the quieter ink and says when its restore window
+  its CI dot and a notes marker; then the web rows' facts on one quiet line — the agent root
+  (the card's, `_user_view_row`'s and `_ranked_row`'s), the genesis (the card's `genesis · class`
+  pill; the class is the *Priority* tag above), the precedence as "rank 50" (`_user_view_row`'s
+  `#N` and Ranked's rank; "rank", since `#` is the id) and a heart when the heartbeat is on (the
+  card's top-right heart), all off `session_json`; a star for a favourite; and a snoozed or hidden
+  one adds when the snooze ends. A trashed session reads in the quieter ink and says when its restore window
   closes ("Expires Oct 16", from `trash_after`; "Deletion pending" once that date has passed), as
   the web page's "Expires 3 days from now" does, as a date. What is deleted then is what was held
   for a restore — the preserved clone, the scratch directory, prompt attachments — not the session. On *Your board*, as on the web
@@ -67,6 +71,13 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   *Regenerating*), when it was written, and the agent root, or the genesis where it has none
   (`GET /api/v1/sessions?view=user&include=board_row`, and the same on search). A row an action
   just answered keeps its summary until the next read; a server that sends no rows draws none.
+  Press and hold a row for the card's actions; *View PR* lists every PR the session opened, as
+  the session menu does, where the row's line has room for the newest alone. On Ranked the long
+  press also has the web row's ⋮ items *Promote to Priority* (which starts a waiting session; a
+  promotion that could not start it says why) and *Demote to Spot* (to the head of the spot
+  queue, `PATCH /api/v1/sessions/:id` with `place: top_of_spot`), and on Last Touched and
+  Created, the views the web draws as cards, the card's heart: *Turn Heartbeat On* / *Off*
+  (`PATCH /api/v1/sessions/:id/heartbeat`); the interval is set from the session's page.
 - **Selects several to trash** (*Select Sessions* in the view menu). A session mid-turn goes, ending
   the turn, as in the web UI's bulk Trash (`end_turn`); one with queued messages is refused with the
   server's reason and stays; the rest go.
@@ -96,7 +107,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   chips (status, priority class, `#id` and age, each PR coloured by state with its CI dot, board
   visibility) and one line of what runs it (agent root, runtime, model, effort). Then *Where
   things stand* with how fresh it is ("as of 12m · 2 new since", the web's "messages since summary
-  generated") and *Regenerate*; for a failed session, why it failed (`metadata.failure_reason`,
+  generated") and *Regenerate*. The summary is drawn by the transcript's markdown renderer, as
+  the web's Status panel draws it, so its links open on a tap and offer Copy Link on a long press
+  (a [Zimmer link opens the browser](/limitations/#a-zimmer-link-in-the-ios-app-opens-the-browser)); for a failed session, why it failed (`metadata.failure_reason`,
   the exception and exit status, the web's failure details); then one divided card: the **Goal
   check** (the web panel's verdict and one line per criterion, when the goal is a catalog goal
   with checks; its tally names the goal, and a router that recorded no PR of its own says whose
@@ -201,6 +214,13 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   as it is), Generate Status Summary when there is none, and Open in browser. *Snooze until…*
   ends in *Custom…*, as on the row. A trashed session's header says when its restore window closes. A promotion that could
   not start the session says why. The star and the trash (or restore) are in the toolbar.
+  The header carries what the session has spent, beside the id, as the web header's muted
+  `session_cost_badge` does: `GET /api/v1/costs?session_id=` from the day the session was made
+  to today (the server caps `days` at a year but takes explicit bounds), the total at list
+  price, three places under a dollar, and nothing at all for zero — a session not swept into the
+  ledger yet is not free. It is read beside the page on each load, not on the polls between.
+  The metadata line adds "compacts at N tokens" for a Claude Code session whose auto-compact
+  window was set to something other than the default; the editor itself has no API route.
 - **Sends a follow-up** from a box at the bottom, with quick replies for the common answers.
   Typing "/" at the start of a line or after a space opens the web composer's typeahead in the
   quick replies' place: the session's own catalog skills that a person may invoke
@@ -214,8 +234,15 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **Keeps itself current.** A session's page reads again every five seconds while a turn is
   running or about to start, and every twenty otherwise (not while the queue's manager is open,
   and never for a session in the trash); the board reads again every thirty seconds while it is
-  the screen in front and you are not selecting or reordering. Both read at once when the app comes back to the front.
-  The web UI streams these changes; the app asks, so a change can take that long to show. A session
+  the screen in front and you are not selecting or reordering (ten seconds after a read that
+  failed). Both read at once when the app comes back to the front, and the board tries again two
+  seconds later if that read fails. The board also reads whenever you close a session's page, and
+  when you choose the Sessions tab again (unless it was read in the last five seconds), so a
+  session trashed on the web, by a router or by its own agent leaves the board as you return to
+  it. A read never replaces the board once a later read has, nor when it was asked before a row
+  action on the phone, so a slow answer never puts a trashed row back.
+  The web UI streams these changes; the app asks, so a change on a board you are looking at can
+  take up to thirty seconds to show. A session
   opens at its newest message, as the web UI's transcript does, and follows new ones while you are
   at the end; scrolled back, it stays where you are.
 - **Keeps every part of a session's page a tap away.** A strip pinned under the navigation bar
@@ -239,6 +266,15 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   send them. Anything that would be refused, or could not be read, is named rather than dropped
   quietly. They go with the message however it is delivered: now, queued behind a turn, or with
   *Send Now*.
+- **Answers an MCP server's prompt** (an elicitation). A session stopped on one shows an
+  *Approval Needed* card above the conversation, as the web UI shows its banner. Tapping it opens the prompt's
+  form, one control per field in the banner's order: a switch, a menu of choices, a number or a
+  text field. *Accept* sends the fields. A required field left empty is refused in the app, by name,
+  before anything is sent. *Decline* refuses, and *Dismiss Without Answering* tells the server
+  nobody decided. Only a connection that acts on your behalf may answer. A relay-only one shows
+  the server's refusal in the form.
+- **Forks at a message.** Touch and hold a message for *Fork from Here* (and *Copy*). After a
+  confirmation, the fork, a new session holding the conversation up to that message, opens on top.
 - **Merges.** On a session whose newest PR is open with CI green, the web UI's row *Merge* button is
   a swipe right, a long-press item, and the first item in the session menu (*Merge #1261*). After a
   confirmation, the session is told it may merge (`POST /api/v1/sessions/:id/authorize_merge`). The
@@ -265,13 +301,28 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   (*Cancel*, or a swipe down) gives the bar the sheet's words, edits included. The sheet cannot
   be closed while a start is in flight, and a failed start keeps the words where they were
   typed. Opened from a session, the new one threads under it (*Thread under #id*, the bubble's
-  `parent_session_id`), which you can switch off. All of it goes to
-  `POST /api/v1/quick_router`. **Or from the full form** (the
-  pencil in the Sessions toolbar): the web UI's new-session
-  form, with agent root, runtime, model, reasoning effort, prompt, title, goal (a predefined one or
-  your own words), scheduling class, and the MCP servers, skills, hooks and plugins, each starting
-  at the root's defaults. The create is retry-safe (`idempotency_key`), and its prompt is recorded
-  as your message when the app acts on your behalf.
+  `parent_session_id`), which you can switch off, and carries that session's page, as the bubble
+  sends the page it was typed on ("Page context is included: …"): its web URL and title as
+  `page_url` and `page_title`, and five facts off the header — id and title, status, agent root,
+  class, goal — as `page_context`, which is what makes the server wrap all three into the prompt.
+  That is much less than the bubble sends, which is the page's DOM reduced to markdown, up to
+  20,000 characters; from the board and the other tabs no page goes. *Open the session when it
+  starts* is on, the bubble's *Submit & Open*; off, the bubble's plain *Submit*: the session starts
+  and the screen stays, which the endpoint allows since it answers with the id and never
+  navigates. The class goes only as *Run as spot*; a native start the server classes priority. All
+  of it goes to `POST /api/v1/quick_router`. **Or from the full form** (the
+  pencil in the Sessions toolbar): the web UI's new-session form, with agent root, runtime,
+  model, reasoning effort, the auto-compact window (for Claude Code alone, as the web shows it;
+  blank is the default, 1,000,000), prompt, title, goal (a predefined one or your own words),
+  scheduling class, precedence (blank is 0; a value that is not a whole number is refused in the
+  form), the MCP servers, skills, hooks and plugins, each starting at the root's defaults, and
+  *Clone Only*, which sets the clone up with no first turn (`clone_only: true`; the prompt is
+  dropped, as the web button drops it, and the session opens needing input). The class starts at
+  *From its origin*, the web form's shape, and sends nothing: `POST /api/v1/sessions` classes a
+  create from the app priority when it says no class — a person is waiting on it as they are on
+  the web form's — so the option says so, and *Priority* and *Spot* choose. The create is
+  retry-safe (`idempotency_key`), and its prompt is recorded as your message when the app acts
+  on your behalf.
 - **Has the web UI's other pages as tabs**, their rows in the board's shape (one surface, hairlines,
   compact ages). *Inbox* is the notifications inbox, with the unread count on its badge: each row
   is the kind as a small label, the session's title, and its status, id and age; unread rows are in
@@ -297,9 +348,32 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   page then says what it covers, and *All agent roots* widens it again. The burn rate by harness
   and model is on the web page only: `GET /api/v1/costs` does not return it. *Health* is the
   overall status and each section's; its operator actions stay in the browser.
+- **Talks to Zimmer, live** ([Live Mode](/sessions/live/)). The waveform button on the session
+  list opens Live: whether Live Mode can start (and why not), *Resume conversation* for the open
+  one, *New conversation*, and the recent ones. A conversation is one thread: typed and spoken
+  lines, each tool call as a line that opens to its output (`zimmer → quick_router`), read again
+  every two seconds. Typed, it has a composer with *Enable voice* beside it. With voice on, it has
+  *Talk* and *Type instead*. Starting a call turns voice on for the conversation (`POST …/mode`),
+  then the phone asks Zimmer for a short-lived OpenAI Realtime secret, opens a WebSocket to OpenAI with
+  it, and streams the microphone up and the reply down through one `AVAudioEngine` with voice
+  processing on, so the model does not hear itself. Function calls go to Zimmer and back, and
+  finished lines are recorded in the thread. What to do with each Realtime event is
+  `RealtimeConductor` (ZimmerKit), the same sequencing as the web's call dock and unit-tested on
+  Linux. The call keeps going with the screen locked (`UIBackgroundModes` `audio`), and the car
+  shares it.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
+Every action above except answering a prompt is a route on `/api/v1/sessions` that the app's token
+could already reach. Prompts are the one exception: they are listed at
+`/api/v1/sessions/:id/elicitations` and answered at `/api/v1/elicitations/:id/respond`, both opened
+to the app's token for this (see the [REST API](/extend/rest-api/#elicitations)).
+
+### Not in the app yet
+
+*Reprioritize* and *Authorize merge* are not in the app yet, nor is the web composer's camera
+button: taking a photo cannot be exercised in the simulator, so it waits on a change verified on
+a device. Switching a trigger's *Enqueue messages* and
 Every action above is a route on `/api/v1/sessions`. Merge is the one the app's token reaches
 where an API key cannot: only a person may give it (see the [REST API](/extend/rest-api/)).
 
@@ -326,11 +400,15 @@ the transcript's thinking blocks, compaction markers, errors, runtime notices, q
 image badges are not on the phone. The web composer's "/" also offers the skills and commands
 found in the session's own clone (`.claude/skills`, `.claude/commands`), which no API route
 returns; the app offers the session's catalog skills alone. The web header's per-session push
-notifications bell and the *Context window* (auto-compact window) editor have no API route, and the
+notifications bell and the *Context window* (auto-compact window) editor have no API route (the
+window is set on the create form and read on the page, not edited), and the
 session JSON does not say whether push is on; *Derive it* cannot name the genesis's class while a
 class is chosen, because the API reports only the class in force. A class or precedence changed
 from the app is not in the session's log: the web page writes "Scheduling class set to … (was …)"
-and "Precedence set to … (was …)" there, and `PATCH /api/v1/sessions/:id` writes neither.
+and "Precedence set to … (was …)" there, and `PATCH /api/v1/sessions/:id` writes neither. The
+Ranked row's inline precedence field is not on the phone's row: the rank is read there and edited
+from the session's page. The session's cost is one more read per page load; the board's rows carry
+no cost, since `session_json` does not.
 
 ## Two origins
 
@@ -457,6 +535,13 @@ recognise its language on the device says so instead of asking for an answer, an
 Archive on the screen without Reply by voice. The audio session is held only while
 the conversation runs. The rules live in `DrivingFlow`, which the unit tests cover.
 
+**Live Mode in the car, voice on.** Under the list, a *Live Mode* section starts a *New
+conversation* or resumes the open one (*Resume conversation*), turning voice on in it whether it was
+typed until then or not. It then shows a call screen whose status row
+follows the call (Connecting, Listening, Thinking, Speaking, Working on it) and has *Mute* and
+*Hang up*. It is the same call as the phone's (`LiveCall.shared`), so a call started at the desk
+carries on in the car. While a call runs, the section offers *Back to the call*.
+
 **The scene is inert until Apple grants the entitlement.** The entitlement lives in
 `App/Zimmer/CarPlay.entitlements`, which is wired into nothing, and `testflight` refuses to sign
 CarPlay in. This is the same arrangement as Motet's.
@@ -466,10 +551,17 @@ CarPlay in. This is the same arrangement as Motet's.
 | Check | Where it runs | What it proves |
 | --- | --- | --- |
 | `ios/bin/ci-swift` | `ios_swift_linux` (self-hosted Linux) and `ios` (macOS) | The `ZimmerKit` logic: sign-in protocol, token refresh, edge-refusal handling, list ordering |
-| `ios/bin/build-app` | `ios` (GitHub-hosted `macos-latest`) | The app compiles and links for the simulator |
+| `ios/bin/build-app` | By hand; in `ios`, `ios/bin/ui-test` builds the same app (Staging is Debug plus its environment) for the simulator it runs on | The app compiles and links for the simulator |
 | `ios/bin/testflight check` | `ios` | An unsigned Release archive is uploadable in shape (bundle keys, icon, privacy manifest, no entitlements) |
-| `ios/bin/ui-test` | `ios` | The app runs on a simulator against its debug fixture, and the screenshots are kept as the `ios-ui-test` artifact, with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
+| `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and starts a session from a sentence in the Quick Router bar and opens it. Every class in a UI test file the pull request changed runs too |
+| `ios/bin/ui-test` | `ios-ui-tests.yml`, on push to `main` and on dispatch | Every UI test, and a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>` artifact (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
 | `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, and waits for processing |
+
+The full UI suite does not gate pull requests. It is some 70 tests driven one at a time plus some 70
+photographs, up to an hour on a loaded runner, which is too long to gate every iOS pull request on. A UI test that
+the smoke run does not cover is therefore first run on `main`, where a failure alerts like any other.
+To get the whole run and the screenshots for a branch before it merges, dispatch it:
+`gh workflow run ios-ui-tests.yml --ref <branch>`.
 
 The iOS jobs run only when `ios/**` or one of the three workflows changes. The `ios-changes` job
 decides, and when it cannot tell it builds anyway. All three are in `all-checks-pass`. The macOS
