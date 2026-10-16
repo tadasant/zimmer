@@ -491,9 +491,9 @@ struct SessionDetailView: View {
     static let panelsAnchor = "detail.panels.anchor"
 
     private func page(_ proxy: ScrollViewProxy) -> some View {
-        // Three expressions, not one: the Release build's type checker gave up on the
-        // single chain of modifiers (#1284's TestFlight build), where the Debug build had not.
-        chrome(dialogs(scrollPage(proxy)))
+        // Four expressions, not one: a single chain this long exceeds the Release build's
+        // type-check budget (#1284's TestFlight build), where the Debug build's is larger.
+        chrome(sheets(dialogs(scrollPage(proxy))))
     }
 
     private func scrollPage(_ proxy: ScrollViewProxy) -> some View {
@@ -585,11 +585,22 @@ struct SessionDetailView: View {
         .toolbar { toolbarContent }
     }
 
-    /// The page's dialogs, alerts and sheets.
+    // The two strings the dialogs interpolate, built here: an interpolation with `??` inside a
+    // literal is the kind of expression the type checker spends longest on.
+    private var mergeButtonTitle: String {
+        "Merge \(model.detail?.session.mergeablePullRequest?.label ?? "PR")"
+    }
+
+    private var authorizingMessage: String {
+        let names = authorizing ?? []
+        return "\(names.joined(separator: ", ")) \(names.count == 1 ? "needs" : "need") OAuth, which happens in the browser: authorize from the session's page there. Its next turn waits until they are."
+    }
+
+    /// The page's dialogs and alerts.
     private func dialogs(_ content: some View) -> some View {
         content
             .confirmationDialog("Authorize the merge?", isPresented: $confirmingMerge, titleVisibility: .visible) {
-                Button("Merge \(model.detail?.session.mergeablePullRequest?.label ?? "PR")") {
+                Button(mergeButtonTitle) {
                     Task { await model.run { try await $0.authorizeMerge(model.id).message } }
                 }
             } message: {
@@ -641,6 +652,11 @@ struct SessionDetailView: View {
                 // The web page's words beside the field: what the number does for this session.
                 Text(model.detail?.session.precedenceHint ?? "")
             }
+    }
+
+    /// The page's sheets.
+    private func sheets(_ content: some View) -> some View {
+        content
             .sheet(isPresented: $choosingModel) { modelSheet }
             .sheet(item: $editingCatalog, onDismiss: {
                 authorizing = pendingAuthorizing
@@ -652,7 +668,7 @@ struct SessionDetailView: View {
                 }
                 Button("Later", role: .cancel) {}
             } message: {
-                Text(verbatim: "\((authorizing ?? []).joined(separator: ", ")) \((authorizing ?? []).count == 1 ? "needs" : "need") OAuth, which happens in the browser: authorize from the session's page there. Its next turn waits until they are.")
+                Text(verbatim: authorizingMessage)
             }
             .sheet(item: $editing) { field in
                 switch field {
