@@ -24,7 +24,7 @@ final class VoiceIO: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     func begin() {
-        // A Live Voice call owns the audio session while it runs; leave it alone.
+        // A Live Mode voice call owns the audio session while it runs; leave it alone.
         guard !LiveCall.shared.isActive else { return }
         do {
             let session = AVAudioSession.sharedInstance()
