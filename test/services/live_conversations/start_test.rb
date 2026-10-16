@@ -133,7 +133,7 @@ class LiveConversations::StartTest < ActiveSupport::TestCase
     conversation = create_live_conversation(mode: "voice")
     conversation.switch_mode!("text")
 
-    turn = LiveConversations::Actions.new(conversation).record_turn(role: "assistant", content: "Okay, done.")
+    turn = LiveConversations::Actions.new(conversation).record_turn(role: "assistant", content: "Okay, done.").turn
 
     assert_equal "spoken", turn.source
   end

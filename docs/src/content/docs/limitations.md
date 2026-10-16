@@ -8377,6 +8377,26 @@ hang-up from the dock leaves the conversation in voice, and typing is refused un
 **Type instead** (or `set_mode`). The page says voice is on and offers both. A call that is still
 connected when another device turns voice off keeps its spoken instructions until it hangs up.
 
+## Listening gates the answer, not the microphone
+
+Wake word and Dynamic decide which lines get an answer. They do not decide what OpenAI hears: in
+every mode the microphone streams to OpenAI and every line is transcribed there. A dropped line is
+kept out of the thread and deleted from the call, but it was heard. Truly private listening would
+need the wake word spotted on the device. The phone's on-device speech recognition could do that;
+nothing here does.
+
+Gating has costs:
+
+- Talking over a reply doesn't cut it off, because ambient speech would too.
+- Every answered line waits for a round trip to Zimmer. Under Dynamic it also waits for a text
+  model's yes or no, up to about eight seconds before the line is answered anyway.
+- The wake word is the transcript containing "Zimmer". A transcription that hears "Simmer" drops
+  the line.
+- The ten-second follow-up window answers anything said in it, including the next line of a
+  conversation that isn't for Zimmer.
+- A dropped line sits in the call until Zimmer has decided. A reply that starts in that moment can
+  hear it.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
