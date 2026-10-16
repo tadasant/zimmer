@@ -325,8 +325,8 @@ struct SessionListView: View {
             }
             .accessibilityLabel("View options")
             .accessibilityIdentifier("board.menu")
-            // Live Mode: one continuous conversation with Zimmer, typed or spoken.
-            Button { model.showingLive = true } label: { Image(systemName: "waveform") }
+            // Live Mode: one continuous conversation with Zimmer. Lands in it with voice on.
+            Button { model.openLive() } label: { Image(systemName: "waveform") }
                 .accessibilityLabel("Live")
                 .accessibilityIdentifier("live.open")
             // The full form. The Quick Router is the bar at the foot of the screen.
