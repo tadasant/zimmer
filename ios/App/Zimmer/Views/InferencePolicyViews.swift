@@ -397,13 +397,19 @@ private struct PolicyField: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            LabeledContent(label) {
+            // An HStack rather than LabeledContent: LabeledContent folds the label into the
+            // field's accessibility element, whose frame then spans the row, so a tap at its
+            // centre lands on the words and never focuses the field.
+            HStack {
+                Text(label).foregroundStyle(Theme.ink)
+                Spacer()
                 TextField("", text: $value)
                     .keyboardType(.numberPad)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 88)
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(Theme.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .accessibilityLabel(label)
                     .accessibilityIdentifier(identifier)
             }
             .font(.subheadline)
