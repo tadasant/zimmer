@@ -64,6 +64,10 @@ final class AppModel: ObservableObject {
     @Published var showingQuickRouter = false
     /// The board is in select or reorder mode: a refresh then would move rows under a finger.
     var isEditingBoard = false
+    /// Which reads may replace the list, and when the board reads again.
+    private(set) var freshness = BoardFreshness()
+    /// The board's own read is out: a second would ask the same question.
+    private var isPolling = false
     /// The session the Quick Router was opened from, so the new one threads under it, as
     /// the web bubble on a session page sends `parent_session_id`.
     var quickRouterParent: Int?
@@ -321,6 +325,7 @@ final class AppModel: ObservableObject {
     func refresh(silently: Bool = false) async {
         if !silently { isLoading = true }
         defer { if !silently { isLoading = false } }
+        let ticket = freshness.begin()
         let requested = effectiveFilters
         let board = board
         let view = view
@@ -333,17 +338,36 @@ final class AppModel: ObservableObject {
             } else {
                 result = try await connection.api.search(query, contents: scope == .transcripts, filters: requested, board: board)
             }
-            // A slower answer to an older request must not overwrite a newer list.
+            // A slower answer to an older request must not overwrite a newer list, nor put
+            // back a row trashed here since it was asked.
             guard requested == effectiveFilters, board == self.board, view == self.view,
-                  query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+                  query == searchText.trimmingCharacters(in: .whitespacesAndNewlines),
+                  freshness.finish(ticket) else { return }
             sessions = result.sessions
             listIncomplete = !result.complete
             error = nil
         } catch {
-            if !silently || (error as? ZimmerError) == .unauthorized { handle(error) }
+            // A read cancelled with the screen that asked (the board pushed under a session,
+            // another tab chosen) did not fail, and an older read's failure is not worth a
+            // banner over what a newer one brings.
+            if !Task.isCancelled {
+                freshness.fail(ticket)
+                if freshness.isNewest(ticket), !silently || (error as? ZimmerError) == .unauthorized { handle(error) }
+            }
         }
         await refreshEdgeExpiry()
         await refreshUnreadCount()
+    }
+
+    /// The board's read of its own (`BoardPoller`): silent, one at a time, and only of the
+    /// board in front — not one under an open session or another tab, and not while a selection
+    /// or a drag is in hand. With `ifStale`, only when the list was not read moments ago.
+    func pollBoard(ifStale: Bool = false) async {
+        guard tab == .sessions, path.isEmpty, !isEditingBoard, !isPolling,
+              !ifStale || freshness.isStale() else { return }
+        isPolling = true
+        defer { isPolling = false }
+        await refresh(silently: true)
     }
 
     func refreshUnreadCount() async {
@@ -405,6 +429,7 @@ final class AppModel: ObservableObject {
     func perform(_ done: String, on id: Int, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
         do {
             var updated = try await action(connection.api)
+            freshness.noteLocalChange()
             withAnimation {
                 if let index = sessions.firstIndex(where: { $0.id == id }) {
                     // An action answers with the session alone: the row's summary stays until
@@ -439,6 +464,7 @@ final class AppModel: ObservableObject {
         do {
             switch try await connection.api.trash(session.id, force: force) {
             case let .trashed(updated):
+                freshness.noteLocalChange()
                 withAnimation {
                     if let index = sessions.firstIndex(where: { $0.id == session.id }) {
                         if belongsOnList(updated) { sessions[index] = updated } else { sessions.remove(at: index) }
@@ -641,6 +667,7 @@ final class AppModel: ObservableObject {
         await PushCoordinator.shared.unregister()
         await connection.auth.signOut()
         await connection.edge?.forget()
+        freshness.noteLocalChange()
         sessions = []
         signedInOrigins = nil
         edgeExpiry = nil
@@ -658,6 +685,7 @@ final class AppModel: ObservableObject {
         log.error("request failed: \(String(describing: zimmerError), privacy: .public)")
         if zimmerError == .unauthorized {
             isSignedIn = false
+            freshness.noteLocalChange()
             sessions = []
         }
         self.error = zimmerError

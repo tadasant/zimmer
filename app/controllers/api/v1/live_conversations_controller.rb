@@ -12,6 +12,9 @@
 #   POST /api/v1/live_conversations/:id/client_secret  Live Voice: mint a Realtime client secret
 #   POST /api/v1/live_conversations/:id/tool_calls     Live Voice: run a function call (name, arguments, call_id)
 #   POST /api/v1/live_conversations/:id/turns          Live Voice: record a transcript line (role, content)
+#   POST /api/v1/live_conversations/:id/session_update Live Voice: the `session.update` for the current Live settings
+#
+# The Live settings themselves are Api::V1::LiveSettingsController's.
 #
 # The reads take an API key. Everything that starts, steers or speaks for a
 # conversation takes only the iOS app's sign-in, on a grant that acts as its
@@ -22,7 +25,7 @@ class Api::V1::LiveConversationsController < Api::BaseController
   accepts_native_app_tokens
 
   INDEX_LIMIT = 20
-  PERSON_ACTIONS = %i[create finish messages client_secret tool_calls turns].freeze
+  PERSON_ACTIONS = %i[create finish messages client_secret tool_calls turns session_update].freeze
 
   before_action :require_a_person_on_the_app, only: PERSON_ACTIONS
   before_action :set_conversation, except: %i[modes index create]
@@ -75,6 +78,10 @@ class Api::V1::LiveConversationsController < Api::BaseController
 
   def tool_calls
     render json: actions.tool_call(name: params[:name].to_s, arguments: params[:arguments], call_id: params[:call_id].to_s)
+  end
+
+  def session_update
+    render json: { session: actions.session_update }
   end
 
   def turns

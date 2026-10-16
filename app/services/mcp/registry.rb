@@ -307,7 +307,9 @@ module Mcp
       # A scoping boundary, as everywhere here, not an authorization one: the
       # fleet's shared API key can compose `?tool_groups=live_conversations`.
       Definition.new(klass: "Mcp::Tools::GetLiveConversations", group: "live_conversations", write: false),
-      Definition.new(klass: "Mcp::Tools::ActionLiveConversation", group: "live_conversations", write: true)
+      Definition.new(klass: "Mcp::Tools::ActionLiveConversation", group: "live_conversations", write: true),
+      Definition.new(klass: "Mcp::Tools::GetLiveSettings", group: "live_conversations", write: false),
+      Definition.new(klass: "Mcp::Tools::ActionLiveSettings", group: "live_conversations", write: true)
     ].freeze
 
     module_function
