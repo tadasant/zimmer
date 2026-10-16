@@ -56,13 +56,15 @@ final class OperationsActionsUITests: XCTestCase {
         app.sheets.buttons["Halt Job Processing"].firstMatch.tap()
 
         XCTAssertTrue(app.staticTexts["ON — queues halted"].waitForExistence(timeout: timeout), "the section reads the mode on")
-        XCTAssertTrue(app.descendants(matching: .any)["banner.queueRecovery"].waitForExistence(timeout: timeout), "and the site-wide banner is up")
+        // The banner heads the page, a screen above the section the app scrolled to, and a
+        // List keeps only the rows on screen: reached, not waited for.
+        XCTAssertTrue(scrollTo(app, app.descendants(matching: .any)["banner.queueRecovery"], searching: .up), "and the site-wide banner is up")
 
         // The halt re-lays out the page — the banners head it, the section grows — so Resume
-        // is found afresh once the mode has flipped, and the receipt read beside it.
+        // is found afresh once the mode has flipped, back down the page, and the receipt read
+        // beside it.
         let resume = app.buttons["health.action.exitQueueRecovery"]
-        XCTAssertTrue(resume.waitForExistence(timeout: timeout), "the halted section offers Resume")
-        XCTAssertTrue(scrollTo(app, resume))
+        XCTAssertTrue(scrollTo(app, resume), "the halted section offers Resume")
         let entered = app.staticTexts["health.action.enterQueueRecovery.result"]
         XCTAssertTrue(waitForLabelContaining(entered, "Queue recovery mode is on until"))
         resume.tap()
