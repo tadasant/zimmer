@@ -50,6 +50,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// The grant acts as a relay, not as a person: every Inference write is refused with the
     /// server's 403, and an in-flight login's link and code are withheld.
     let relayOnly: Bool
+    /// Live Mode / Live Voice: see FakeZimmerAPI+Live.swift.
+    var liveState = FakeLiveState.sample()
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to. `longTranscript`: 1044's

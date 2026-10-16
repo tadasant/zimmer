@@ -353,6 +353,18 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   or deleting it, and *Refresh All*, stay on the web page. Every write takes the app's sign-in on a
   grant that acts as you; a relay-only grant sees the server's 403 under the control it tapped, and
   the login sheet stops polling on it and shows the same sentence.
+- **Talks to Zimmer, live** ([Live Mode and Live Voice](/sessions/live/)). The waveform button
+  on the session list opens Live: each mode with whether it can start (and why not), *Resume
+  conversation* for its open one, *New conversation*, and the recent ones. A conversation is one
+  thread: typed and spoken lines, each tool call as a line that opens to its output (`zimmer →
+  quick_router`), read again every two seconds. Live Mode has a composer. Live Voice has *Talk*:
+  the phone asks Zimmer for a short-lived OpenAI Realtime secret, opens a WebSocket to OpenAI with
+  it, and streams the microphone up and the reply down through one `AVAudioEngine` with voice
+  processing on, so the model does not hear itself. Function calls go to Zimmer and back, and
+  finished lines are recorded in the thread. What to do with each Realtime event is
+  `RealtimeConductor` (ZimmerKit), the same sequencing as the web's call dock and unit-tested on
+  Linux. The call keeps going with the screen locked (`UIBackgroundModes` `audio`), and the car
+  shares it.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
@@ -516,6 +528,12 @@ category allows, and the stack never goes deeper than three. Speech is recognise
 recognise its language on the device says so instead of asking for an answer, and offers Approve and
 Archive on the screen without Reply by voice. The audio session is held only while
 the conversation runs. The rules live in `DrivingFlow`, which the unit tests cover.
+
+**Live Voice in the car.** Under the list, a *Live Voice* section starts a *New conversation* or
+resumes the open one (*Resume conversation*). It then shows a call screen whose status row
+follows the call (Connecting, Listening, Thinking, Speaking, Working on it) and has *Mute* and
+*Hang up*. It is the same call as the phone's (`LiveCall.shared`), so a call started at the desk
+carries on in the car. While a call runs, the section offers *Back to the call*.
 
 **The scene is inert until Apple grants the entitlement.** The entitlement lives in
 `App/Zimmer/CarPlay.entitlements`, which is wired into nothing, and `testflight` refuses to sign
