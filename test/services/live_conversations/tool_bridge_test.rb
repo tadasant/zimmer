@@ -12,7 +12,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   test "a conversation with the zimmer server gets the gateway, not one function per Zimmer tool" do
     names = @bridge.functions.map(&:name)
 
-    assert_equal %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server], names
+    assert_equal %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings], names
     gateway = @bridge.functions.first
     assert_includes gateway.parameters[:properties][:tool][:enum], "quick_router"
     assert_includes gateway.parameters[:properties][:tool][:enum], "get_system_health"
@@ -203,5 +203,37 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_not result.error, result.output
     assert_match(/through the zimmer function/, result.output)
     assert_empty @conversation.reload.mcp_tool_cache
+  end
+
+  test "the live model reads and changes its own settings, and the change is recorded as its own" do
+    listing = @bridge.execute("get_live_settings", "{}", call_id: "c1")
+    assert_match(/voice_speed = 1\.0 \(default\)/, listing.output)
+
+    result = @bridge.execute("update_live_settings", JSON.generate(voice_speed: 1.3, append_guidance: "Talk faster by default."), call_id: "c2")
+
+    assert_not result.error
+    assert result.session_changed
+    assert_match(/Speaking speed: default \(1\.0\) → 1\.3/, result.output)
+    assert_in_delta 1.3, LiveSetting.current.voice_speed
+    change = LiveSettingChange.sole
+    assert_equal "agent", change.actor_kind
+    assert_equal "live conversation ##{@conversation.id}", change.actor
+    assert_equal @conversation, change.live_conversation
+  end
+
+  test "a bad settings write is refused as a tool error and changes nothing" do
+    result = @bridge.execute("update_live_settings", JSON.generate(voice_model: "gpt-9", voice_speed: 1.2), call_id: "c3")
+
+    assert result.error
+    assert_not result.session_changed
+    assert_match(/Nothing changed/, result.output)
+    assert_not LiveSetting.exists?
+  end
+
+  test "a model or voice change applies from the next call, so it does not ask for a session.update" do
+    result = @bridge.execute("update_live_settings", JSON.generate(voice_model: "gpt-realtime-2.1"), call_id: "c4")
+
+    assert_not result.session_changed
+    assert_match(/from the next call/, result.output)
   end
 end

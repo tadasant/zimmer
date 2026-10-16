@@ -2283,4 +2283,33 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
         client: store.write_client, identity: identity, reason: nil
       ))
   end
+
+  test "Live settings and a voice thread carrying a settings change do not overflow on a phone" do
+    stub_live_roots
+    stub_live_key
+    conversation = create_live_conversation(mode: "voice")
+    LiveConversations::SettingsUpdate.call(
+      { "voice_model" => "gpt-realtime-2.1", "voice_speed" => 1.3,
+        "guidance" => "Keep answers under two sentences. Never read https://zimmer.tadasant.com/sessions/25063?with=a_very_long_unbroken_query_string aloud." },
+      actor: LiveConversations::SettingsUpdate::Actor.human("the settings page")
+    )
+    LiveConversations::ToolBridge.new(conversation).execute(
+      "update_live_settings", { voice_speed: 1.45, append_guidance: "Talk faster by default." }.to_json, call_id: "c1"
+    )
+
+    visit live_settings_path
+    assert_selector "[data-live-setting-field=voice_speed]"
+    assert_no_horizontal_overflow("live settings")
+    page.save_screenshot(Rails.root.join("tmp/screenshots/live-settings-375.png").to_s)
+
+    visit live_conversation_path(conversation)
+    assert_selector "[data-live-settings-change]"
+    assert_no_horizontal_overflow("live conversation with a settings change")
+    page.save_screenshot(Rails.root.join("tmp/screenshots/live-thread-375.png").to_s)
+
+    visit live_path
+    assert_selector "a[data-live-settings-link]"
+    assert_no_horizontal_overflow("live overview")
+  end
+
 end

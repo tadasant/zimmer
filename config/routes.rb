@@ -214,6 +214,10 @@ Rails.application.routes.draw do
       # Live Mode and Live Voice, for the iOS app; an API key may only read. The same
       # verbs as the web routes; see Api::V1::LiveConversationsController.
       get "live", to: "live_conversations#modes"
+      get "live/settings", to: "live_settings#show"
+      patch "live/settings", to: "live_settings#update"
+      post "live/settings/reset", to: "live_settings#reset"
+      post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance"
       resources :live_conversations, only: [ :index, :show, :create ] do
         member do
           post :finish
@@ -221,6 +225,7 @@ Rails.application.routes.draw do
           post :client_secret
           post :tool_calls
           post :turns
+          post :session_update
         end
       end
 
@@ -540,6 +545,14 @@ Rails.application.routes.draw do
   # (client_secret, tool_calls, turns). The key has a write and a delete and no
   # read, for the reason the OpenRouter key above has none.
   get "live", to: "live#index", as: :live
+  # Live settings: the models, voice, speed and turn detection, and the Live
+  # mode guidance appended to the live model's instructions — one global row
+  # (LiveSetting), with its edit history. Above /live/:mode so "settings" is
+  # never read as a mode.
+  get "live/settings", to: "live_settings#show", as: :live_settings
+  patch "live/settings", to: "live_settings#update"
+  post "live/settings/reset", to: "live_settings#reset", as: :reset_live_settings
+  post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance", as: :restore_live_settings_guidance
   get "live/:mode", to: "live#show", as: :live_mode
   put "live/openai_key", to: "live#update_openai_key", as: :live_openai_key
   delete "live/openai_key", to: "live#destroy_openai_key", as: :destroy_live_openai_key
@@ -550,6 +563,7 @@ Rails.application.routes.draw do
       post :client_secret
       post :tool_calls
       post :turns
+      post :session_update
     end
   end
 
