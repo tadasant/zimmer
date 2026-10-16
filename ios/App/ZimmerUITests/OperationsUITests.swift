@@ -259,8 +259,14 @@ final class OperationsUITests: XCTestCase {
         }
         for step in 0..<30 where !onScreen() {
             let down = step < 20
-            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.75 : 0.3))
-            let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.3 : 0.75))
+            // The start alternates between two heights, a quarter screen apart: a control
+            // that takes a drag for itself — the spend-by-day chart, whose selection follows
+            // the finger — would otherwise take every step, and the page would never move.
+            // And left of centre, clear of the Quick Router button at the bottom right.
+            let near = step.isMultiple(of: 2) ? 0.82 : 0.57
+            let far = near - 0.4
+            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: down ? near : far))
+            let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: down ? far : near))
             from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.3)
         }
         return onScreen()
