@@ -11,10 +11,11 @@ require "net/http"
 #   long-lived key never leaves the server.
 #
 # The key is `LIVE_OPENAI_API_KEY`, resolved through SecretProviders (Parameter
-# Store, then Rails credentials, then ENV) and settable from the Live page through
-# ManagedSecret. Deliberately not `OPENAI_API_KEY`: store-resolved variables can
-# reach session environments, and that name is one Codex and Pi read on their
-# own — a key set for Live must not quietly change how those sessions
+# Store, then Rails credentials, then ENV). Zimmer never writes it: the Live page
+# says whether it is set and links the console that sets it. Deliberately not
+# `OPENAI_API_KEY`: store-resolved variables can reach session environments, and
+# that name is one Codex and Pi read on their own — a key set for Live must not
+# quietly change how those sessions
 # authenticate or bill. `LIVE_OPENAI_BASE_URL` points the client somewhere else — an
 # OpenAI-compatible proxy, or a local stand-in when proving the flow end to end.
 class OpenaiClient

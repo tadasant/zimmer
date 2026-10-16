@@ -85,6 +85,8 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
     /// since a UI test cannot drive the system photo and file pickers.
     var fixtureAttachesFile = false
+    /// `-ZimmerFixtureOpenPrompt`: the opened session shows its first prompt's form, once.
+    var fixtureOpensPrompt = false
     /// `-ZimmerFixtureCustomSnooze`: the opened session's custom snooze sheet starts open, so
     /// `ios/bin/ui-test` can photograph the date picker.
     var fixtureOpensCustomSnooze = false
@@ -186,6 +188,7 @@ final class AppModel: ObservableObject {
             showingLive = true
         }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
+        fixtureOpensPrompt = arguments.contains("-ZimmerFixtureOpenPrompt")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
         fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
         fixtureTypesSlash = arguments.contains("-ZimmerFixtureSlash")
