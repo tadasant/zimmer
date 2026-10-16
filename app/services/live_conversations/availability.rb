@@ -1,26 +1,20 @@
 # frozen_string_literal: true
 
 module LiveConversations
-  # Can this mode start right now, and if not, why not — in words a human can
-  # act on. The two prerequisites are the OpenAI key and the mode's agent root.
-  # The roots live in whatever catalog a deployment runs, which may not carry
-  # them, so a missing root is an expected state with a readable answer, not a
-  # crash.
+  # Can Live Mode start right now, and if not, why not — in words a human can
+  # act on. The two prerequisites are the OpenAI key and the `live-mode` agent
+  # root. The root lives in whatever catalog a deployment runs, which may not
+  # carry it, so a missing root is an expected state with a readable answer, not
+  # a crash. Typing and talking share both, so they are available together.
   class Availability
-    attr_reader :mode
-
-    def self.for(mode_key) = new(LiveConversations.mode(mode_key))
-
-    def initialize(mode)
-      @mode = mode
-    end
+    def self.current = new
 
     def key_configured? = @key_configured ||= OpenaiClient.configured?
 
     def root
       return @root if defined?(@root)
 
-      @root = AgentRootsConfig.find(mode.agent_root)
+      @root = AgentRootsConfig.find(AGENT_ROOT)
     end
 
     def root_present? = !root.nil?
@@ -31,25 +25,23 @@ module LiveConversations
       list = []
       unless key_configured?
         list << "#{OpenaiClient::API_KEY_VARIABLE} is not set. Add an OpenAI API key on the Live page " \
-                "(or in the Parameter Store) to turn #{mode.label} on."
+                "(or in the Parameter Store) to turn #{LABEL} on."
       end
       unless root_present?
-        list << "The catalog has no `#{mode.agent_root}` agent root yet. #{mode.label} reads its instructions " \
+        list << "The catalog has no `#{AGENT_ROOT}` agent root yet. #{LABEL} reads its instructions " \
                 "from that root's AGENTS.md, so it stays off until the catalog carries it."
       end
       list
     end
 
+    # `modes` lists each way a conversation can run, with its model; the
+    # prerequisites are shared, so each entry repeats them.
     def as_api_json
+      shared = { agent_root: AGENT_ROOT, available: available?, key_configured: key_configured?, root_present: root_present?, reasons: reasons }
       {
-        mode: mode.key,
-        label: mode.label,
-        agent_root: mode.agent_root,
-        model: mode.model,
-        available: available?,
-        key_configured: key_configured?,
-        root_present: root_present?,
-        reasons: reasons
+        label: LABEL,
+        **shared,
+        modes: MODES.values.map { |mode| { mode: mode.key, label: mode.label, model: mode.model, **shared } }
       }
     end
   end

@@ -258,7 +258,7 @@ Each unblocks the next:
   factor. The UI test drives an in-memory fixture, because an agent cannot complete a Google
   sign-in.
 - **In Xcode**: the project has only ever been read by `xcodebuild` in CI.
-- **Live Voice's audio**: `App/Zimmer/Live/LiveAudioEngine.swift` and `LiveCall`'s WebSocket to
+- **Live Mode's voice audio**: `App/Zimmer/Live/LiveAudioEngine.swift` and `LiveCall`'s WebSocket to
   OpenAI have not run. A simulator has no microphone worth testing echo cancellation on, and no
   deployment has the OpenAI key yet. The Realtime sequencing they drive (`RealtimeConductor`) and
   the PCM conversion (`RealtimeAudio`) are covered by ZimmerKit's tests, and the screens by
