@@ -23,7 +23,8 @@ public enum LiveVoiceState: String, Sendable, Equatable {
 /// - a function call is relayed to Zimmer as soon as its arguments are complete
 ///   (`response.function_call_arguments.done`), several side by side;
 /// - each result goes back as a `function_call_output` item, followed by a `session.update` when
-///   the call enabled or disabled a server;
+///   the call enabled or disabled a server or changed a Live setting (Zimmer's `session` when it
+///   sent one, otherwise just the tools);
 /// - once the response that asked for them is done and every result is in, exactly one
 ///   `response.create` — and never on top of a response already running (the user speaking
 ///   mid-tool starts one), in which case it waits for that response to finish;
@@ -107,9 +108,10 @@ public struct RealtimeConductor: Sendable {
     public mutating func relayed(callID: String, result: LiveToolResult?, failure: String? = nil) -> [Effect] {
         guard inFlight.remove(callID) != nil else { return [] }
         var effects: [Effect] = []
-        if let result, result.toolsChanged, let tools = result.tools {
-            effects.append(.send(.object(["type": .string("session.update"),
-                                          "session": .object(["type": .string("realtime"), "tools": tools])])))
+        if let session = result?.session {
+            effects.append(.send(Self.sessionUpdate(session)))
+        } else if let result, result.toolsChanged, let tools = result.tools {
+            effects.append(.send(Self.sessionUpdate(.object(["type": .string("realtime"), "tools": tools]))))
         }
         let output = result?.output ?? "Zimmer could not run that: \(failure ?? "no answer")."
         effects.insert(.send(.object([
@@ -124,6 +126,13 @@ public struct RealtimeConductor: Sendable {
             answered.insert(callID)
         }
         return effects + sendPendingResponse()
+    }
+
+    /// The `session.update` client event carrying `session` — what Zimmer answered for a tool
+    /// call that changed a Live setting, or `POST /live_conversations/:id/session_update` after
+    /// the settings changed somewhere else.
+    public static func sessionUpdate(_ session: JSONValue) -> JSONValue {
+        .object(["type": .string("session.update"), "session": session])
     }
 
     /// Tell OpenAI the user heard only the first `audioEndMs` of reply `itemID`.

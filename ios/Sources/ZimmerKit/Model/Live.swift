@@ -209,16 +209,20 @@ public struct LiveToolResult: Decodable, Sendable, Equatable {
     /// The call enabled or disabled a server: send `tools` in a `session.update`.
     public let toolsChanged: Bool
     public let tools: JSONValue?
+    /// The call changed a Live setting an open call can take: send this as the `session.update`
+    /// instead of the tools-only one. It carries the tools too.
+    public let session: JSONValue?
 
-    public init(output: String, error: Bool = false, toolsChanged: Bool = false, tools: JSONValue? = nil) {
+    public init(output: String, error: Bool = false, toolsChanged: Bool = false, tools: JSONValue? = nil, session: JSONValue? = nil) {
         self.output = output
         self.error = error
         self.toolsChanged = toolsChanged
         self.tools = tools
+        self.session = session
     }
 
     enum CodingKeys: String, CodingKey {
-        case output, error, tools
+        case output, error, tools, session
         case toolsChanged = "tools_changed"
     }
 }
