@@ -8204,6 +8204,16 @@ accepts the session config Zimmer mints, or that the browser's WebRTC offer is a
 what the first conversation after the key is set will prove. The model names were current in
 OpenAI's docs on 2026-10-15; `LIVE_MODE_MODEL` and `LIVE_VOICE_MODEL` change them without a deploy.
 
+## The phone's Live Voice call has not run on a device
+
+The iOS app's Live Voice builds in CI's Xcode job, and its protocol rules run in ZimmerKit's tests. Its screens
+run in the simulator against the fixture. The audio half has not run at all: `LiveAudioEngine`
+(microphone, voice processing, reply playback) and `LiveCall`'s WebSocket to OpenAI. A simulator
+has no microphone worth testing echo cancellation on, and no deployment has the OpenAI key yet.
+It is built the way Motet's device-tested Play Live audio is, and that is the extent of the
+evidence. The CarPlay entry is inert with the rest of the scene
+([#1273](https://github.com/tadasant/zimmer/issues/1273)).
+
 ## A live conversation's stdio servers start from scratch on every call
 
 A catalog server a live conversation enables runs in the Rails process's container, spawned for one
