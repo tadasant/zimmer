@@ -44,7 +44,11 @@ final class SessionListUITests: XCTestCase {
     func test_the_build_reports_the_environment_and_server_it_was_built_with() throws {
         let app = launch()
         app.buttons["settings.open"].tap()
+        XCTAssertTrue(app.staticTexts["settings.server"].waitForExistence(timeout: timeout))
+        // "This build" is below the page's own sections, and a Form row off screen is not in
+        // the accessibility tree: scroll until it is.
         let line = app.staticTexts["build.target"]
+        for _ in 0..<8 where !line.exists { app.swipeUp() }
         XCTAssertTrue(line.waitForExistence(timeout: timeout))
         let fields = Dictionary(uniqueKeysWithValues: line.label.split(separator: " ").compactMap { pair -> (String, String)? in
             let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
