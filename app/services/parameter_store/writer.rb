@@ -1,8 +1,10 @@
 # frozen_string_literal: true
 
 module ParameterStore
-  # Builds the WRITE client from the process environment, and answers whether
-  # Zimmer can write to the store at all.
+  # Builds the WRITE client from the process environment, for the one caller that
+  # writes to the store: the namespace migration (MigrationTask, run as a rake
+  # task from an operator's shell). The running app never holds this credential
+  # and has no surface that writes — values are set in the secrets console.
   #
   # ## Why this is a second credential and not a wider first one
   #
@@ -22,9 +24,8 @@ module ParameterStore
   # which *did* choose to widen the resolver is described accurately rather than
   # told the store is unconfigured.
   #
-  # ABSENCE IS A NORMAL STATE, exactly as it is for the resolver. A Zimmer with
-  # no writer credential boots and runs; the Pi tab says the write path is
-  # closed, and names the grant that would open it.
+  # ABSENCE IS THE NORMAL STATE. MigrationTask refuses to start without it and
+  # names the grant it is missing.
   module Writer
     ENV_KEY_JSON = "ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON"
 
