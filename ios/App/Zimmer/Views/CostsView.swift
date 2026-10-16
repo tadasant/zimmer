@@ -331,6 +331,8 @@ struct CostsView: View {
             .chartXAxis(.hidden)
             .chartXSelection(value: $selectedDay)
             .frame(height: 140)
+            // One element for the test to find, not one per bar.
+            .accessibilityElement(children: .contain)
             .accessibilityLabel("Spend by day")
             .accessibilityIdentifier("costs.chart")
             if let selectedDay, let day = days.first(where: { $0.day == selectedDay }) {
