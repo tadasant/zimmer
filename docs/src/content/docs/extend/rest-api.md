@@ -36,6 +36,7 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | --- | --- |
 | `/api/v1/sessions` and its member routes (not the nested resources below) | everything an API key may, plus `authorize_merge`, which only the app may call, and only on a grant that acts as you |
 | `POST /api/v1/quick_router`, `/api/v1/apns_devices` | everything |
+| `GET /api/v1/live`, `/api/v1/live_conversations` and its member routes | everything, and only the app may start, message, finish or relay for a conversation, on a grant that acts as you |
 | `/api/v1/sessions/:id/enqueued_messages` | list, show, edit, delete, reorder, interrupt — not create: the app queues through `follow_up` |
 | `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
 | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
@@ -1068,6 +1069,53 @@ schedule or a [session-scoped `ao_event` wake](/sessions/triggers/#when-an-ao_ev
 `failed_at` and `last_error` alongside it, both `null` on a healthy trigger — any write that moves
 the status off `failed`, including `POST /triggers/:id/toggle`, clears them.
 
+## Live conversations
+
+[Live Mode and Live Voice](/sessions/live/): one continuous conversation per mode with a fast OpenAI
+model. The same rules as the `/live` pages (`LiveConversations::Actions`).
+
+An API key may read: `GET /live`, `GET /live_conversations` and `GET /live_conversations/:id`.
+Every `POST` below — start, message, finish, and the voice relay — is **403 for an API key and for a
+relay-only app grant**, like `authorize_merge`. It takes the [iOS app](/extend/ios-app/)'s sign-in
+acting as you. A live model can enable any catalog MCP server, and `tool_calls` runs one directly,
+so an API key, which is the fleet's, must not reach the whole catalog through here. The web pages are
+the other way in, behind the sign-in wall.
+
+`GET /live` → `{modes: [{mode, label, agent_root, model, available, key_configured, root_present,
+reasons}]}` — whether each mode can start, and in words why not (no `LIVE_OPENAI_API_KEY`, or no
+`live-mode` / `live-voice` root in the catalog).
+
+`GET /live_conversations` (`mode=text|voice`) → `{live_conversations: [...], current: {text, voice}}`,
+the newest 20 and each mode's open conversation id (or null) ·
+`POST /live_conversations` (`mode`) → 201, a `preparing` conversation that ends the mode's open one;
+503 with the reasons when the mode is off, 422 on an unknown mode ·
+`GET /live_conversations/:id` (`after_turn_id` for only newer turns) → the conversation with `turns` ·
+`POST /live_conversations/:id/finish` → the ended conversation.
+
+A conversation is `{id, mode, label, status (preparing|active|ended|failed), title, agent_root, model,
+instructions_source, mcp_servers, responding, error_message, created_at, updated_at,
+last_activity_at, ended_at}`. A turn is `{id, role (user|assistant|tool), source (typed|spoken),
+content, tool_name, call_id, tool_arguments, tool_output, tool_error, created_at}`.
+
+Live Mode: `POST /live_conversations/:id/messages` (`content`, at most 8,000 characters) → 201, the
+user turn. The reply is written by a job; poll `GET /live_conversations/:id?after_turn_id=`. A message
+sent while the conversation is still `preparing` is accepted and answered once it is active.
+
+Live Voice — the relay a client holding the audio connection makes:
+
+- `POST /live_conversations/:id/client_secret` → `{client_secret, expires_at, model, calls_url,
+  websocket_url, tools}`. A ten-minute OpenAI Realtime secret whose session config (instructions,
+  tools, voice, transcription, turn detection) Zimmer chose. Open WebRTC by posting an SDP offer to
+  `calls_url`, or a WebSocket to `websocket_url`, with `Authorization: Bearer <client_secret>`. 409
+  while the conversation is still `preparing`; 502 when OpenAI refuses.
+- `POST /live_conversations/:id/tool_calls` (`name`, `arguments` as the model's JSON string,
+  `call_id`) → `{output, error, tools_changed, turn_id}`, plus `tools` when `tools_changed` — send
+  those in a `session.update`. Send `output` back as a `function_call_output` item.
+- `POST /live_conversations/:id/turns` (`role` user|assistant, `content`) → 201. A finished
+  transcript line, so the thread carries what was said.
+
+Every one answers 409 on a conversation that has ended, and 422 on the wrong mode.
+
 ## Notifications
 
 `GET /notifications` (`status=read|unread`) · `GET /notifications/:id` ·
@@ -1466,9 +1514,10 @@ One shape, everywhere:
 of responses carry an extra top-level key alongside these — `retry_after` on the health 429.
 
 **Status codes in use:** 200 · 201 · 202 (follow-up queued) · 204 · 400 (search only) · 401 · 404 ·
-409 (follow-up position collision, interrupt races) · 422 · 429 (health cooldown; the Quick Router
-ingest's per-address limit) · 500 · 503 (Slack unconfigured; health maintenance refused because no
-usable cache store is configured).
+409 (follow-up position collision, interrupt races; a live conversation that has ended or is still
+preparing) · 422 · 429 (health cooldown; the Quick Router ingest's per-address limit) · 500 · 502 (OpenAI
+refused a live conversation's client secret) · 503 (Slack unconfigured; health maintenance refused
+because no usable cache store is configured; a live mode that is off).
 
 :::note[Missing required params return 422]
 `follow_up` without a prompt, `fork` without `message_index`, `bulk_archive` without `session_ids`,

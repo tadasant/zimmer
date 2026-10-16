@@ -17,6 +17,8 @@ module Mcp
   #   external_apps  → register Zimmer plugins and mint their keys. OPT-IN
   #   root_data      → the calling session's agent root's persistent data
   #                    store. OPT-IN
+  #   live_conversations → read and drive Live Mode / Live Voice conversations.
+  #                    OPT-IN
   #   self_session   → the curated set auto-injected into every session, so a
   #                    session can manage itself (notes/title/heartbeat/archive),
   #                    notify its user, and schedule its own wake-ups
@@ -38,7 +40,7 @@ module Mcp
     # included — but deliberately outside the default-everything set, the way
     # COMPOSITE_GROUPS is. A group lands here when the cost of every unscoped
     # connection carrying its write tools outweighs the convenience.
-    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings external_apps root_data].freeze
+    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings external_apps root_data live_conversations].freeze
 
     COMPOSITE_GROUPS = %w[self_session].freeze
 
@@ -286,7 +288,26 @@ module Mcp
       Definition.new(klass: "Mcp::Tools::GetRootRecord", group: "root_data", write: false),
       Definition.new(klass: "Mcp::Tools::PutRootRecord", group: "root_data", write: true),
       Definition.new(klass: "Mcp::Tools::AppendRootRecord", group: "root_data", write: true),
-      Definition.new(klass: "Mcp::Tools::DeleteRootRecord", group: "root_data", write: true)
+      Definition.new(klass: "Mcp::Tools::DeleteRootRecord", group: "root_data", write: true),
+
+      # Live Mode and Live Voice — the conversations a human has with Zimmer from
+      # /live, read and driven over MCP.
+      #
+      # OPT-IN, AND NOT IN `sessions`, BECAUSE OF WHAT A LIVE CONVERSATION CAN DO.
+      # Its model can switch on any catalog MCP server and call it with the
+      # credentials Rails resolves (LiveConversations::ToolBridge). A session
+      # reaches only the servers it was given; `send_message` hands a live model an
+      # instruction, so in `sessions` every session carrying `zimmer-sessions` —
+      # or the unscoped `zimmer` server — could reach through it to the whole
+      # catalog. A connection names `live_conversations` to get both tools, and
+      # `live_conversations_readonly` the read alone. No catalog entry names
+      # either, so nothing carries them by default. The live agent's own gateway
+      # does not either: it is built from the groups its `zimmer` entries name.
+      #
+      # A scoping boundary, as everywhere here, not an authorization one: the
+      # fleet's shared API key can compose `?tool_groups=live_conversations`.
+      Definition.new(klass: "Mcp::Tools::GetLiveConversations", group: "live_conversations", write: false),
+      Definition.new(klass: "Mcp::Tools::ActionLiveConversation", group: "live_conversations", write: true)
     ].freeze
 
     module_function
