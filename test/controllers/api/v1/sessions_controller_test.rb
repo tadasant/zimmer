@@ -259,6 +259,45 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_nil json["session"]["job_id"]
   end
 
+  test "clone_only creates the session needs_input with the clone-only job queued and no prompt" do
+    post api_v1_sessions_path, params: {
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      clone_only: true
+    }, headers: @headers
+
+    assert_response :created
+    session = Session.find(JSON.parse(response.body)["session"]["id"])
+    assert_equal "needs_input", session.status, "ready for the first follow-up, as the web form's Clone Only leaves it"
+    assert_nil session.prompt.presence
+    assert_nil session.job_id
+    assert_empty session.human_messages, "nothing a person said yet, so nothing recorded"
+
+    # The same job the web's Clone Only queues: a clone and no turn.
+    job = enqueued_jobs.find { |j| j[:job] == AgentSessionJob }
+    assert_not_nil job
+    assert_equal session.id, job[:args][0]
+    assert_nil job[:args][1]
+    assert_equal false, job[:args][2]["resume_monitoring"]
+    assert_equal true, job[:args][2]["clone_only"]
+  end
+
+  test "clone_only with a prompt is refused rather than dropping the words" do
+    assert_no_difference("Session.count") do
+      post api_v1_sessions_path, params: {
+        agent_runtime: "claude_code",
+        git_root: "https://github.com/test/repo.git",
+        branch: "main",
+        prompt: "Rotate the key",
+        clone_only: true
+      }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    assert_includes JSON.parse(response.body)["messages"].join, "clone_only takes no prompt"
+  end
+
   test "should reject session without git_root" do
     assert_no_difference("Session.count") do
       post api_v1_sessions_path, params: {
