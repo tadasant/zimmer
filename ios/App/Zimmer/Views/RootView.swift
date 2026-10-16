@@ -87,9 +87,14 @@ struct BuildBadge: View {
     }
 }
 
-/// The board reads itself again every half minute while it is the screen in front, and at
-/// once when the app comes back to the front: the web UI's board streams its rows, and a
-/// list on a phone that only changes when pulled reads as broken.
+/// The board reads itself again every half minute while it is the screen in front (sooner
+/// after a read that failed), and at once whenever it comes back to the front: the app back
+/// from the background, a session's page closed, the Sessions tab chosen again. The web UI's
+/// board streams its rows, and a list on a phone that only changes when pulled reads as broken.
+///
+/// The read on coming back is what keeps a trashed session off the board. The half-minute
+/// clock starts again each time the board is shown, so working down the board session by
+/// session, back each time within the half minute, would otherwise never read it at all.
 private struct BoardPoller: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
@@ -97,8 +102,9 @@ private struct BoardPoller: View {
     var body: some View {
         Color.clear
             .task {
+                await refreshIfInFront(ifStale: true)
                 while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(30))
+                    try? await Task.sleep(for: model.freshness.nextPoll)
                     guard !Task.isCancelled else { return }
                     await refreshIfInFront()
                 }
@@ -106,12 +112,18 @@ private struct BoardPoller: View {
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { Task { await refreshIfInFront() } }
             }
+            .onChange(of: model.path.isEmpty) { _, isEmpty in
+                if isEmpty { Task { await refreshIfInFront(ifStale: true) } }
+            }
+            .onChange(of: model.tab) { _, tab in
+                if tab == .sessions { Task { await refreshIfInFront(ifStale: true) } }
+            }
     }
 
     /// Only the board in front, not one under an open session or another tab, and not while a
     /// selection or a drag is in hand.
-    private func refreshIfInFront() async {
+    private func refreshIfInFront(ifStale: Bool = false) async {
         guard model.tab == .sessions, model.path.isEmpty, !model.isEditingBoard else { return }
-        await model.refresh(silently: true)
+        await model.pollBoard(ifStale: ifStale)
     }
 }
