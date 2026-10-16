@@ -60,14 +60,14 @@ Rails.application.routes.draw do
     # session.
     resources :workflow_runs, only: [ :index, :show ]
     resources :logs
-    # Read-only, like the gate ledger above: rows are append-only facts about
-    # what Zimmer wrote to the Parameter Store, and an editable audit log is not
-    # an audit log. The dashboard's FORM_ATTRIBUTES is empty for the same reason.
-    resources :managed_secret_writes, only: [ :index, :show ]
     # Read-only: live conversations are driven from /live and the API, whose
     # rules (one open per mode, the tool bridge) an edit form would bypass.
     resources :live_conversations, only: [ :index, :show ]
     resources :live_conversation_turns, only: [ :index, :show ]
+    # Read-only too: the Live settings are written through SettingsUpdate, which
+    # validates and records every change, on /live/settings, REST and MCP.
+    resources :live_settings, only: [ :index, :show ]
+    resources :live_setting_changes, only: [ :index, :show ]
     # Read-only, both of them. A delivery row is what Webhooks::SlackController verified and
     # accepted, and a claim is a Slack firing path's record that a message has fired. Nothing here
     # is hand-authored, and an edited or deleted claim would re-fire a message the other path
@@ -214,6 +214,10 @@ Rails.application.routes.draw do
       # Live Mode and Live Voice, for the iOS app; an API key may only read. The same
       # verbs as the web routes; see Api::V1::LiveConversationsController.
       get "live", to: "live_conversations#modes"
+      get "live/settings", to: "live_settings#show"
+      patch "live/settings", to: "live_settings#update"
+      post "live/settings/reset", to: "live_settings#reset"
+      post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance"
       resources :live_conversations, only: [ :index, :show, :create ] do
         member do
           post :finish
@@ -221,6 +225,7 @@ Rails.application.routes.draw do
           post :client_secret
           post :tool_calls
           post :turns
+          post :session_update
         end
       end
 
@@ -521,11 +526,6 @@ Rails.application.routes.draw do
   get "inference/login/:attempt_id", to: "inference#login_status", as: :login_status_inference
   post "inference/login/:attempt_id/code", to: "inference#submit_login_code", as: :submit_login_code_inference
   post "inference/login/:attempt_id/cancel", to: "inference#cancel_login", as: :cancel_login_inference
-  # The Pi tab's OpenRouter API key. Create/update and delete only: there is
-  # deliberately no route that reads the value back out — see
-  # ManagedSecret::OpenrouterKey.
-  put "inference/pi/openrouter_key", to: "inference#update_openrouter_key", as: :openrouter_key_inference
-  delete "inference/pi/openrouter_key", to: "inference#destroy_openrouter_key", as: :destroy_openrouter_key_inference
   # The spot gate card, which lives on this page because it reads the quota
   # windows this page reports: the policy form, then one click per genesis kind.
   patch "inference/spot_policy", to: "spot_policies#update", as: :spot_policy
@@ -534,15 +534,20 @@ Rails.application.routes.draw do
   delete "inference/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
 
   # Live Mode and Live Voice: one continuous conversation per mode, entered from
-  # the main screen. /live is the overview and the OpenAI key; /live/:mode
+  # the main screen. /live is the overview and the OpenAI key's status; /live/:mode
   # resumes the mode's current conversation or offers to start one. The member
   # routes are the shared thread (messages) and Live Voice's client relay
-  # (client_secret, tool_calls, turns). The key has a write and a delete and no
-  # read, for the reason the OpenRouter key above has none.
+  # (client_secret, tool_calls, turns).
   get "live", to: "live#index", as: :live
+  # Live settings: the models, voice, speed and turn detection, and the Live
+  # mode guidance appended to the live model's instructions — one global row
+  # (LiveSetting), with its edit history. Above /live/:mode so "settings" is
+  # never read as a mode.
+  get "live/settings", to: "live_settings#show", as: :live_settings
+  patch "live/settings", to: "live_settings#update"
+  post "live/settings/reset", to: "live_settings#reset", as: :reset_live_settings
+  post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance", as: :restore_live_settings_guidance
   get "live/:mode", to: "live#show", as: :live_mode
-  put "live/openai_key", to: "live#update_openai_key", as: :live_openai_key
-  delete "live/openai_key", to: "live#destroy_openai_key", as: :destroy_live_openai_key
   resources :live_conversations, only: [ :show, :create ] do
     member do
       post :finish
@@ -550,6 +555,7 @@ Rails.application.routes.draw do
       post :client_secret
       post :tool_calls
       post :turns
+      post :session_update
     end
   end
 

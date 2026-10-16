@@ -56,9 +56,10 @@ Pi is deliberately **not** in `RuntimeAuthProvider::RUNTIMES`. That constant dri
 token-refresh dispatcher and the auth warm-up fan-out, and a runtime with no tokens to refresh has
 no business in either sweep.
 
-What Pi needs instead is one environment variable, `OPENROUTER_API_KEY`, set on the Inference
-page's Pi tab. The write goes to the Parameter Store rather than to an account row, which is why
-setting it is a store write and not an account activation. `PiRuntimeAdapter#apply_provider_key`
+What Pi needs instead is one environment variable, `OPENROUTER_API_KEY`, in the Parameter Store.
+A human sets it in the secrets console the Inference page's Pi tab links; Zimmer does not write it.
+It lives in the store rather than in an account row, which is why setting it is a store write and
+not an account activation. `PiRuntimeAdapter#apply_provider_key`
 resolves it from the `${VAR}` chain into the spawn environment at each spawn. See
 [Runtimes](/sessions/runtimes/#credentials) and [How the key reaches a Pi
 session](/operate/secrets-parameter-store/#how-the-key-reaches-a-pi-session).

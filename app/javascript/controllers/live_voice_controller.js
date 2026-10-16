@@ -17,6 +17,10 @@ import { csrfHeaders } from "lib/csrf"
 //                   response.output_audio_transcript.done → POST turns
 //   tool changes    a tool call that enabled or disabled a server returns the
 //                   new tool list → session.update
+//   settings        a tool call that changed the Live settings returns a whole
+//                   session.update; a save on /live/settings dispatches
+//                   live-voice:settings-changed, and the dock fetches one
+//                   (POST session_update) → session.update
 export default class extends Controller {
   static targets = ["panel", "status", "title", "link", "mute", "error"]
 
@@ -39,7 +43,9 @@ export default class extends Controller {
       this.hangUp()
     }
     this.onQuery = () => this.broadcast()
+    this.onSettingsChanged = () => this.refreshSession()
     window.addEventListener("live-voice:start", this.onStart)
+    window.addEventListener("live-voice:settings-changed", this.onSettingsChanged)
     window.addEventListener("live-voice:hangup", this.onHangup)
     window.addEventListener("live-voice:query", this.onQuery)
     // Re-attached after a navigation: the new page asked before we were back.
@@ -50,6 +56,7 @@ export default class extends Controller {
     window.removeEventListener("live-voice:start", this.onStart)
     window.removeEventListener("live-voice:hangup", this.onHangup)
     window.removeEventListener("live-voice:query", this.onQuery)
+    window.removeEventListener("live-voice:settings-changed", this.onSettingsChanged)
     // Deliberately no hangUp(): see initialize(). Closing the tab ends the
     // call with the page; nothing else should.
   }
@@ -166,7 +173,9 @@ export default class extends Controller {
         if (generation !== this.generation) return
         const output = response.ok ? body.output : `Zimmer could not run ${name}: ${body.error || response.status}`
         this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: String(output ?? "") } })
-        if (response.ok && body.tools_changed && Array.isArray(body.tools)) {
+        if (response.ok && body.session) {
+          this.send({ type: "session.update", session: body.session })
+        } else if (response.ok && body.tools_changed && Array.isArray(body.tools)) {
           this.send({ type: "session.update", session: { type: "realtime", tools: body.tools } })
         }
       })
@@ -210,6 +219,22 @@ export default class extends Controller {
     if (!this.pendingResponse || this.responseActive) return
     this.pendingResponse = false
     this.send({ type: "response.create" })
+  }
+
+  // The Live settings changed somewhere other than this call's own tool calls:
+  // bring the open call up to them. The model and voice stay as they are until
+  // the next call; the server leaves them out.
+  async refreshSession() {
+    if (this.state === "idle" || !this.call?.sessionUpdateUrl) return
+    const generation = this.generation
+    try {
+      const response = await this.post(this.call.sessionUpdateUrl, {})
+      const body = await response.json().catch(() => ({}))
+      if (generation !== this.generation) return
+      if (response.ok && body.session) this.send({ type: "session.update", session: body.session })
+    } catch (_error) {
+      // The next call starts on the new settings anyway.
+    }
   }
 
   recordTurn(role, content) {

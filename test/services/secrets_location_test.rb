@@ -219,4 +219,31 @@ class SecretsLocationTest < ActiveSupport::TestCase
     assert_equal SecretsLocation.credentials_path, instructions[:path]
     assert_equal SecretsLocation.edit_command, instructions[:command]
   end
+
+  test "the store console is unset by default, and needs a web address" do
+    with_store_console_env(nil, nil) { assert_nil SecretsLocation.store_console }
+    with_store_console_env("javascript:alert(1)", "X") { assert_nil SecretsLocation.store_console }
+    with_store_console_env("strad.example/ui/secrets", "X") { assert_nil SecretsLocation.store_console }
+  end
+
+  test "the store console carries its URL and the optional store name" do
+    with_store_console_env("https://console.example/ui/secrets", "Zimmer test") do
+      assert_equal({ url: "https://console.example/ui/secrets", store_name: "Zimmer test" }, SecretsLocation.store_console)
+    end
+    with_store_console_env("https://console.example/ui/secrets", nil) do
+      assert_equal({ url: "https://console.example/ui/secrets", store_name: nil }, SecretsLocation.store_console)
+    end
+  end
+
+  private
+
+  def with_store_console_env(url, store_name)
+    keys = [ SecretsLocation::ENV_STORE_CONSOLE_URL, SecretsLocation::ENV_STORE_CONSOLE_STORE_NAME ]
+    original = keys.to_h { |key| [ key, ENV[key] ] }
+    ENV[keys[0]] = url
+    ENV[keys[1]] = store_name
+    yield
+  ensure
+    original.each { |key, value| ENV[key] = value }
+  end
 end
