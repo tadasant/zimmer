@@ -137,6 +137,12 @@ The agent root's AGENTS.md owns the policy. The intended shape, which Zimmer's o
 one line, is this: anything that takes more than about five seconds becomes a background session,
 and the live model stays responsive. The sessions it starts are ordinary sessions on the board.
 
+Every session the live model starts, follows up or routes is told where the request came from. The
+[turn-source note](/sessions/turn-sources/) reads `live_voice` or `live_text`, from the
+conversation's mode when the tool runs, and names the client that last drove the conversation
+(`live_conversations.client_surface`: web, ios, carplay or mcp). The background agent can then keep
+what it reports back short enough for the live model to say aloud.
+
 ### Self-enabling a catalog server
 
 When the live agent keeps reaching the same capability through a background session, it can call

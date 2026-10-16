@@ -219,6 +219,7 @@ class Api::V1::SessionsController < Api::BaseController
     # continuing an existing line of work, so assign_genesis inherits that parent's
     # genesis and leaves `api` alone; `api` is only what a parentless call gets.
     @session.genesis = SessionGenesis::API if @session.parent_session_id.blank?
+    @session.source_context = api_turn_source(spawned_under_parent: @session.parent_session_id.present?).to_h
     # A person at the app, not a script: `api` genesis derives to spot, but someone is waiting
     # on this session as they are on the web form's (`web_ui`, priority). One rule for any app
     # client, as the Quick Router ingest classes a native start; a class the app sent stands.
@@ -488,6 +489,7 @@ class Api::V1::SessionsController < Api::BaseController
           goal: goal,
           position: max_position + 1,
           status: "pending",
+          source_context: api_turn_source.to_h,
           **attachments_for_the_record(attachments)
         )
       end
@@ -541,6 +543,7 @@ class Api::V1::SessionsController < Api::BaseController
         goal: goal,
         position: max_position + 1,
         status: "pending",
+        source_context: api_turn_source.to_h,
         **attachments_for_the_record(attachments)
       )
       @session.logs.create!(
@@ -594,14 +597,15 @@ class Api::V1::SessionsController < Api::BaseController
       # worker shutdown discards: the session was then resumed on a SYSTEM_RECOVERY
       # nudge and the caller, already answered "Follow-up prompt sent", had no way
       # to tell that from delivery.
-      @session.merge_metadata!("pending_follow_up_prompt" => prompt)
+      delivered_prompt, source_updates = @session.tag_turn(prompt, api_turn_source)
+      @session.merge_metadata!(source_updates.merge("pending_follow_up_prompt" => delivered_prompt))
       # Before the enqueue, and in the same transaction: the job this line
       # creates builds the next prompt for the session, and it must see the edge
       # — a job that starts first renders a hierarchy missing exactly the human
       # context the edge exists to carry. A rollback takes the edge with it, so a
       # failed send still records nothing.
       record_uncle_edge(@session, "api_v1:sessions.follow_up")
-      job = AgentSessionJob.enqueue_with_prompt(@session.id, prompt, images: attachments[:images], files: attachments[:files])
+      job = AgentSessionJob.enqueue_with_prompt(@session.id, delivered_prompt, images: attachments[:images], files: attachments[:files])
       @session.update!(running_job_id: job.job_id)
       log_follow_up_attachments(attachments)
     end

@@ -41,6 +41,8 @@ class SessionDashboard < Administrate::BaseDashboard
     scheduling_class: Field::String,
     precedence: Field::Number,
     genesis: Field::String,
+    # Where the initial prompt came from (TurnSource), as JSON.
+    source_context: Field::String.with_options(searchable: false),
     # `parent_session` carries the table's foreign key. Administrate cannot infer
     # the class behind it, hence class_name.
     parent_session: Field::BelongsTo.with_options(class_name: "Session"),

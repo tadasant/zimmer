@@ -35,7 +35,7 @@ class Api::V1::SessionsFollowUpAttachmentsTest < ActionDispatch::IntegrationTest
     session = sessions(:needs_input)
     reap(session)
     AgentSessionJob.expects(:enqueue_with_prompt).with do |id, prompt, images:, files:|
-      id == session.id && prompt == "What broke?" &&
+      id == session.id && TurnSource.strip(prompt) == "What broke?" &&
         images.sole[:media_type] == "image/png" && File.exist?(images.sole[:path]) &&
         files.sole[:original_filename] == "deploy.log" && File.read(files.sole[:path]) == "deploy failed at step 3\n"
     end.returns(OpenStruct.new(job_id: "job-1"))
@@ -94,7 +94,7 @@ class Api::V1::SessionsFollowUpAttachmentsTest < ActionDispatch::IntegrationTest
 
   test "a follow-up without attachments is unchanged" do
     session = sessions(:needs_input)
-    AgentSessionJob.expects(:enqueue_with_prompt).with(session.id, "Plain", images: nil, files: nil).returns(OpenStruct.new(job_id: "job-2"))
+    AgentSessionJob.expects(:enqueue_with_prompt).with(session.id, TurnSource.new(surface: "api").annotate("Plain"), images: nil, files: nil).returns(OpenStruct.new(job_id: "job-2"))
 
     post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Plain" }, headers: @headers, as: :json
 

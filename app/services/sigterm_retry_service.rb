@@ -168,7 +168,9 @@ class SigtermRetryService
 
       add_log("No existing conversation found, starting fresh with original prompt", level: "info")
       return cli_adapter.execute(
-        prompt: session.prompt,
+        # With its turn-source note, and any lookalike defused, as AgentSessionJob
+        # would have delivered it.
+        prompt: TurnSource.finalize(session.initial_prompt_for_delivery),
         session_id: session.session_id,
         working_dir: working_directory,
         mcp_config_path: session.metadata&.dig("mcp_config_path"),
@@ -188,7 +190,7 @@ class SigtermRetryService
       with_db_retry do
         session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
       end
-      pending_prompt
+      TurnSource.finalize(pending_prompt)
     else
       AutomatedPrompts::SYSTEM_RECOVERY
     end

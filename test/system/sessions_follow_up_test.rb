@@ -103,7 +103,7 @@ class SessionsFollowUpTest < ApplicationSystemTestCase
     session.reload
     assert_equal "waiting", session.status
     assert_equal "Please continue with the implementation",
-      session.metadata["pending_follow_up_prompt"],
+      TurnSource.strip(session.metadata["pending_follow_up_prompt"]),
       "the accepted prompt has to be on the row for the turn that picks it up"
   end
 
@@ -232,7 +232,7 @@ class SessionsFollowUpTest < ApplicationSystemTestCase
     session.reload
     assert_equal "waiting", session.status
     assert_equal "Now add password reset functionality",
-      session.metadata["pending_follow_up_prompt"]
+      TurnSource.strip(session.metadata["pending_follow_up_prompt"])
   end
 
   # Test undo functionality for follow-up prompts via keyboard shortcut

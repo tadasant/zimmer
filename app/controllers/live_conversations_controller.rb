@@ -13,7 +13,7 @@ class LiveConversationsController < ApplicationController
   end
 
   def create
-    conversation = LiveConversations::Start.call(params[:mode].presence || "text")
+    conversation = LiveConversations::Start.call(params[:mode].presence || "text", client_surface: "web")
     redirect_to live_conversation_path(conversation)
   rescue LiveConversations::Start::Unavailable => e
     redirect_to current_live_path(start: 1), alert: e.message
@@ -90,5 +90,5 @@ class LiveConversationsController < ApplicationController
     @conversation = LiveConversation.find(params[:id])
   end
 
-  def actions = LiveConversations::Actions.new(@conversation)
+  def actions = LiveConversations::Actions.new(@conversation, client_surface: "web")
 end

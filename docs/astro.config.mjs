@@ -90,6 +90,7 @@ export default defineConfig({
             { label: "Elicitation", slug: "sessions/elicitation" },
             { label: "Live Mode", slug: "sessions/live" },
             { label: "Hierarchy and human messages", slug: "sessions/hierarchy-and-human-messages" },
+            { label: "Turn sources", slug: "sessions/turn-sources" },
             { label: "The Status summary", slug: "sessions/status-summary" },
             { label: "Spot and priority", slug: "sessions/spot-and-priority" },
             { label: "Board visibility", slug: "sessions/board-visibility" },

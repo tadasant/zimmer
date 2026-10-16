@@ -62,7 +62,8 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
       content: content,
       goal: params[:goal].to_s.strip.presence,
       position: max_position + 1,
-      status: "pending"
+      status: "pending",
+      source_context: api_turn_source.to_h
     )
 
     if @enqueued_message.save
@@ -197,6 +198,9 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
       # somebody is waiting on from one Zimmer wrote to itself — see
       # EnqueuedMessage::ORIGINS.
       origin: message.origin,
+      # Where the message came from (TurnSource), rendered into the turn when it
+      # is delivered. null when none was recorded.
+      source_context: message.turn_source&.as_json,
       created_at: message.created_at.iso8601,
       updated_at: message.updated_at.iso8601
     }
