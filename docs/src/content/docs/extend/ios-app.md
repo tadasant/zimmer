@@ -364,6 +364,37 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   the board re-reads them from the health report at most every five minutes, and a visit to
   Health refreshes them. Health's operator actions (cleanup, retries, entering recovery mode,
   re-arming tasks) stay in the browser; their routes refuse the app's token.
+  sessions it has made; turn one on or off (a trigger that is off reads in the quieter ink), invoke it now (after a
+  confirmation, then open the session it started), or open its last session. Tap one for its page
+  (`GET /api/v1/triggers/:id`): its status and the web page's labels beside it (*Re-uses session*,
+  *Enqueues messages*, missed fires and the rest), why it failed and a *Re-arm* switch if it did,
+  when it last fired and the session it last started, each condition and when it last fired, the
+  agent root (flagged when the catalog has no such root), the re-use settings, the goal and prompt
+  template, and the ten sessions it made most recently. *Enqueue messages* and *Resuscitate
+  archived* are shown, not switched: the API that would switch them is the trigger update, which
+  the app's token does not open. Creating and editing a trigger, and those two switches, stay in
+  the browser; *Open in browser* on a trigger's page gets you there. *More* holds *Costs* and
+  *Health*, read-only. *Costs* is the window's total, spend by day as a chart, by agent root and by
+  model, and the most expensive sessions with their titles, calls and tokens, each a tap away. Its
+  window is one of the web page's horizons (24 hours to a year) or a range of calendar days from
+  the two date fields, both ends included, in the phone's time zone. Tap an agent root to narrow
+  the whole page to it, or, on the page for every root, swipe a session and choose *Only This*,
+  the web page's drilldown; the
+  page then says what it covers, and *All agent roots* widens it again. The burn rate by harness
+  and model is on the web page only: `GET /api/v1/costs` does not return it. *Health* is the
+  overall status and each section's; its operator actions stay in the browser.
+- **Talks to Zimmer, live** ([Live Mode and Live Voice](/sessions/live/)). The waveform button
+  on the session list opens Live: each mode with whether it can start (and why not), *Resume
+  conversation* for its open one, *New conversation*, and the recent ones. A conversation is one
+  thread: typed and spoken lines, each tool call as a line that opens to its output (`zimmer →
+  quick_router`), read again every two seconds. Live Mode has a composer. Live Voice has *Talk*:
+  the phone asks Zimmer for a short-lived OpenAI Realtime secret, opens a WebSocket to OpenAI with
+  it, and streams the microphone up and the reply down through one `AVAudioEngine` with voice
+  processing on, so the model does not hear itself. Function calls go to Zimmer and back, and
+  finished lines are recorded in the thread. What to do with each Realtime event is
+  `RealtimeConductor` (ZimmerKit), the same sequencing as the web's call dock and unit-tested on
+  Linux. The call keeps going with the screen locked (`UIBackgroundModes` `audio`), and the car
+  shares it.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
@@ -526,6 +557,12 @@ category allows, and the stack never goes deeper than three. Speech is recognise
 recognise its language on the device says so instead of asking for an answer, and offers Approve and
 Archive on the screen without Reply by voice. The audio session is held only while
 the conversation runs. The rules live in `DrivingFlow`, which the unit tests cover.
+
+**Live Voice in the car.** Under the list, a *Live Voice* section starts a *New conversation* or
+resumes the open one (*Resume conversation*). It then shows a call screen whose status row
+follows the call (Connecting, Listening, Thinking, Speaking, Working on it) and has *Mute* and
+*Hang up*. It is the same call as the phone's (`LiveCall.shared`), so a call started at the desk
+carries on in the car. While a call runs, the section offers *Back to the call*.
 
 **The scene is inert until Apple grants the entitlement.** The entitlement lives in
 `App/Zimmer/CarPlay.entitlements`, which is wired into nothing, and `testflight` refuses to sign
