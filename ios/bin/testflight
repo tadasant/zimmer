@@ -159,7 +159,9 @@ admit "$PUSH_ENTITLEMENTS" aps-environment
 admit "$CARPLAY_ENTITLEMENTS" "$CARPLAY_KEY"
 
 # What this build signs in. One file is named as is; two are merged under the work
-# directory, because CODE_SIGN_ENTITLEMENTS names exactly one.
+# directory, because CODE_SIGN_ENTITLEMENTS names exactly one. Always an absolute path: a
+# setting on the command line reaches every target, the Swift package's included, and each
+# resolves a relative path against its own project directory (ios/, not ios/App/).
 if [ "$push_enabled" = 1 ]; then
   signed_entitlements="$work/Zimmer.entitlements"
   cp "App/$CARPLAY_ENTITLEMENTS" "$signed_entitlements"
@@ -167,7 +169,7 @@ if [ "$push_enabled" = 1 ]; then
     fail "could not merge $PUSH_ENTITLEMENTS into $CARPLAY_ENTITLEMENTS"
   signed_keys="$CARPLAY_KEY aps-environment"
 else
-  signed_entitlements="$CARPLAY_ENTITLEMENTS"
+  signed_entitlements="$PWD/App/$CARPLAY_ENTITLEMENTS"
   signed_keys="$CARPLAY_KEY"
 fi
 build_settings+=(CODE_SIGN_ENTITLEMENTS="$signed_entitlements")
@@ -183,8 +185,7 @@ settings="$(xcodebuild -showBuildSettings -project App/Zimmer.xcodeproj -scheme 
 # permitted file — so the guard failed a correct build (run 34776726410). Deduplicating
 # keeps the check it is actually making: *which* files are signed in, not how many blocks
 # named them. Two genuinely different values remain two lines, and still fail.
-entitlements="$(printf '%s\n' "$settings" \
-  | awk '$1 == "CODE_SIGN_ENTITLEMENTS" { $1 = ""; $2 = ""; print }' | tr -d ' ' | sort -u)"
+entitlements="$(printf '%s\n' "$settings" | sed -n 's/^ *CODE_SIGN_ENTITLEMENTS = //p' | sort -u)"
 [ "$entitlements" = "$signed_entitlements" ] ||
   fail "CODE_SIGN_ENTITLEMENTS is '$entitlements' — expected $signed_entitlements"
 printf '    ok  %-44s %s\n' "CODE_SIGN_ENTITLEMENTS" "$signed_keys"
