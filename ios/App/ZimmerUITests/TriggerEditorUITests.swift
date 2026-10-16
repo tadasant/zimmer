@@ -76,15 +76,16 @@ final class TriggerEditorUITests: XCTestCase {
 
         let prompt = app.descendants(matching: .any)["trigger.form.prompt"]
         XCTAssertTrue(reveal(app, prompt))
-        // The cursor lands where the tap does; the trailing corner is after the last word.
-        prompt.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.9)).tap()
-        prompt.typeText(" Say what you skipped.")
+        // The cursor lands where the tap does, somewhere in the stored words; what is typed
+        // there is still the edit the page has to show.
+        prompt.tap()
+        prompt.typeText(" (Say what you skipped.) ")
         app.buttons["trigger.form.save"].tap()
 
         XCTAssertTrue(app.navigationBars["Nightly dependency sweep (quiet)"].waitForExistence(timeout: timeout), "the page has the name entered")
         let page = app.descendants(matching: .any)["trigger.detail.prompt"]
         XCTAssertTrue(reveal(app, page))
-        XCTAssertTrue(page.label.hasSuffix("Say what you skipped."), "and the prompt as edited: \(page.label)")
+        XCTAssertTrue(page.label.contains("(Say what you skipped.)"), "and the prompt as edited: \(page.label)")
 
         app.navigationBars.buttons.element(boundBy: 0).tap()
         let row = app.descendants(matching: .any)["trigger.5"].firstMatch
@@ -107,8 +108,10 @@ final class TriggerEditorUITests: XCTestCase {
         prompt.typeText("Answer the thread.")
         app.buttons["trigger.form.save"].tap()
 
+        // The refusal heads the form, which is scrolled to the prompt: a row scrolled past is
+        // not in the hierarchy until it is scrolled back to.
         let refusal = app.descendants(matching: .any)["trigger.form.error"]
-        XCTAssertTrue(refusal.waitForExistence(timeout: timeout), "the refusal heads the form")
+        XCTAssertTrue(reveal(app, refusal, upward: false), "the refusal heads the form")
         XCTAssertTrue(refusal.label.contains("prohibited this trigger from being saved"), "the web form's heading: \(refusal.label)")
         XCTAssertTrue(refusal.label.contains("Name can't be blank"), "the server's reason")
         XCTAssertTrue(refusal.label.contains("must include channel_id for Slack conditions"), "and the Slack condition's")
@@ -148,24 +151,27 @@ final class TriggerEditorUITests: XCTestCase {
         return app
     }
 
-    /// Scroll the form until `element` is on screen and below the navigation bar — a tap on a
-    /// row still under the bar lands on the bar — and return whether it is.
+    /// Scroll the form until `element` is on screen, below the navigation bar — a tap on a row
+    /// still under the bar lands on the bar — and above the keyboard, which a tap on a row under
+    /// it lands on; and return whether it is. A swipe also puts the keyboard away.
     /// `upward` is which way to look for a row that is not in the tree: further down the form
     /// (the default), or back up past the bar.
     @discardableResult
     private func reveal(_ app: XCUIApplication, _ element: XCUIElement, upward: Bool = true) -> Bool {
-        func belowTheBar() -> Bool {
+        func reachable() -> Bool {
             guard element.exists, !element.frame.isEmpty else { return false }
             let bar = app.navigationBars.firstMatch
             let top = bar.exists ? bar.frame.maxY : 0
-            return element.frame.minY >= top && app.frame.contains(CGPoint(x: element.frame.midX, y: element.frame.maxY))
+            let keyboard = app.keyboards.firstMatch
+            let bottom = keyboard.exists ? keyboard.frame.minY : app.frame.maxY
+            return element.frame.minY >= top && element.frame.maxY <= bottom
         }
         // A row off screen is not in the accessibility tree, so look for it after every swipe.
-        for _ in 0..<8 where !belowTheBar() {
+        for _ in 0..<8 where !reachable() {
             let aboveTheBar = element.exists && !element.frame.isEmpty && element.frame.minY < app.navigationBars.firstMatch.frame.maxY
             if aboveTheBar || (!element.exists && !upward) { app.swipeDown() } else { app.swipeUp() }
         }
-        return belowTheBar()
+        return reachable()
     }
 
     /// Pick an option from one of the form's menu pickers, by the option's words.
@@ -179,10 +185,11 @@ final class TriggerEditorUITests: XCTestCase {
     }
 
     /// Replace a single-line field's text: the cursor goes after the last character, which a tap
-    /// past the end of a short value puts it at, then as many deletes as there are characters.
+    /// past the end of a short value puts it at (well inside the field: its last points are its
+    /// border), then as many deletes as there are characters.
     private func replace(_ field: XCUIElement, with text: String) {
         let current = field.value as? String ?? ""
-        field.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)).tap()
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count) + text)
     }
 

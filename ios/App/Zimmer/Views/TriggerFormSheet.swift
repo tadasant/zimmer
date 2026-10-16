@@ -39,7 +39,9 @@ struct TriggerFormSheet: View {
                 conditionsSections
                 templateSections
             }
-            .scrollDismissesKeyboard(.interactively)
+            // Any scroll puts the keyboard away: a form this long is scrolled with the keyboard
+            // up, and a row under the keyboard is not one a finger can reach.
+            .scrollDismissesKeyboard(.immediately)
             .themeGround()
             .navigationTitle(editing == nil ? "New Trigger" : "Edit Trigger")
             .navigationBarTitleDisplayMode(.inline)
