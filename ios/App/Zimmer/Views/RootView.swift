@@ -65,6 +65,7 @@ extension RootView {
         // Presented from the tabs, not from one screen: the button on any tab opens it.
         .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
         .sheet(isPresented: $model.showingNewSession) { NewSessionView() }
+        .sheet(isPresented: $model.showingLive) { LiveHomeView() }
     }
 }
 

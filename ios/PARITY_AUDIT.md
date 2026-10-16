@@ -23,8 +23,8 @@ This audit was derived from the web app's source instead: every HTML route a sig
 | B Session page | 90 | 18 | 20 | 3 | 131 |
 | C Board & starting sessions | 79 | 24 | 11 | 1 | 115 |
 | D Operations | 34 | 29 | 84 | 3 | 150 |
-| E Global chrome | 17 | 3 | 15 | 8 | 43 |
-| **Total** | **236** | **93** | **255** | **18** | **602** |
+| E Global chrome | 20 | 5 | 10 | 8 | 43 |
+| **Total** | **239** | **95** | **250** | **18** | **602** |
 
 Counted from the rows below after removing the 44 duplicate copies of items two areas both rowed. Four rows in B are `present` only with #1282, and two in C are `partial` only with #1284, both open; the counts take them as those PRs leave them. The 205 Administrate routes under `/supervisor` and the GoodJob mount are one `web-only` row each in D, not 206.
 
@@ -44,33 +44,32 @@ Ranked within each group by how often a person on a phone runs into it. The area
 8. Promote/demote and heartbeat are on the session page only, not on the row (C `_ranked_row:100-111`, `_session_heartbeat` on the card); the session page does not show the session's cost though `GET /api/v1/costs?session_id=` exists (B `_detail:123`).
 9. Verbose logs are unreachable (`logs?level=` exists) and subagent transcripts are a separate modal rather than inline (B `timeline_items/_log`, `subagent_transcripts/_accordion`).
 10. Supervisor and the Jobs dashboard have no "Open in browser" row under More (E `sessions/index.html.erb:72, 79`); "Set up a new authenticator" could open `/login/second_factor/setup` in the sign-in sheet (A `_web_sign_in:25`).
-11. Live Mode and Live Voice — a continuous conversation with Zimmer, typed or spoken, with a call dock on every page (`/live`, `/live/:mode`, `live_conversations/*`, `shared/_live_voice_dock`): `GET /api/v1/live` and `/api/v1/live_conversations` exist and take the app's token; the app has no entry, no screen and no voice path (E).
 
 **Needs a route opened to the app's token (`accepts_native_app_tokens`)**
 
-12. Trigger create, edit and delete, plus the Slack channel and WhatsApp chat pickers — `POST/PATCH/DELETE /api/v1/triggers`, `#channels`, `#whatsapp_chats` exist and permit every form field (D `triggers/_form.html.erb`, `_condition_fields.html.erb`).
-13. The two trigger switches, Enqueue messages and Resuscitate archived — the API half is in #1318; the app half is not written (D `triggers/show.html.erb:264-287`).
-14. Health's operator actions: clean up orphans, retry failed, trash old, enter/exit queue recovery, re-arm post-deploy tasks, discard/reschedule queued jobs — all exist under `/api/v1/health` (D `_health_content:69, 138, 607`, `_queue_recovery_mode`, `_queued_job_maintenance`, `_post_deploy_tasks:112`).
-15. CLIs: status, the attention badge, refresh and clear cache — `api/v1/clis#status/refresh/clear_cache` exist (A `clis/*`, E nav badge).
-16. Outcomes, gate decisions and the work backlog: `outcome_analyses#index/show`, `goal_checks#index`, `gate_decisions#index/show`, `work_backlog_items#index/show/start_now/pin/unpin/remove/hold` exist (D, three sections). Analyze/analyze-all/cancel, stats, the issue trend, the GitHub read and gate feedback need new routes.
-17. Costs "Sweep now" — `POST /api/v1/costs/backfill` exists (D `costs/show:106-109`).
-18. Add and remove a model — `POST`/`DELETE /api/v1/model_catalog_entries` exist; index is already open (A `model_catalog_entries/index.html.erb:43-86, 155-160`).
+11. Trigger create, edit and delete, plus the Slack channel and WhatsApp chat pickers — `POST/PATCH/DELETE /api/v1/triggers`, `#channels`, `#whatsapp_chats` exist and permit every form field (D `triggers/_form.html.erb`, `_condition_fields.html.erb`).
+12. The two trigger switches, Enqueue messages and Resuscitate archived — the API half is in #1318; the app half is not written (D `triggers/show.html.erb:264-287`).
+13. Health's operator actions: clean up orphans, retry failed, trash old, enter/exit queue recovery, re-arm post-deploy tasks, discard/reschedule queued jobs — all exist under `/api/v1/health` (D `_health_content:69, 138, 607`, `_queue_recovery_mode`, `_queued_job_maintenance`, `_post_deploy_tasks:112`).
+14. CLIs: status, the attention badge, refresh and clear cache — `api/v1/clis#status/refresh/clear_cache` exist (A `clis/*`, E nav badge).
+15. Outcomes, gate decisions and the work backlog: `outcome_analyses#index/show`, `goal_checks#index`, `gate_decisions#index/show`, `work_backlog_items#index/show/start_now/pin/unpin/remove/hold` exist (D, three sections). Analyze/analyze-all/cancel, stats, the issue trend, the GitHub read and gate feedback need new routes.
+16. Costs "Sweep now" — `POST /api/v1/costs/backfill` exists (D `costs/show:106-109`).
+17. Add and remove a model — `POST`/`DELETE /api/v1/model_catalog_entries` exist; index is already open (A `model_catalog_entries/index.html.erb:43-86, 155-160`).
 
 **Needs a new API**
 
-19. The Inference page: account roster, per-account quota windows, refresh/switch/delete, the CLI login flow, the rotation log, the OpenRouter key, the spot gate, backlog top-up and genesis classes — 47 rows, no REST at all; MCP `get_spot_policy` / `action_spot_policy` cover the policy half (A §2).
-20. App settings read and write: the global default runtime and model, the three experimental toggles, the MCP Apps switch and allowlist, catalog pins — MCP covers all but MCP Apps and pins; REST for all but the pins is in #1341, open (A §1).
-21. API keys and OAuth grants, including the phone's own grant: list, mint, revoke, restore, change privilege — nothing under `/api/v1` (A §4, E).
-22. Connectors: per-server state, the secret-store banner, start and complete an MCP OAuth flow from the phone, disconnect, unclaimed credentials — nothing under `/api/v1`; the session page already hands OAuth to the browser (A §3).
-23. Rich transcript rows: thinking, compaction, error, runtime notices, queue events, MCP logs, image badges, tool parameters, `is_error`, `#message-N` anchors, MCP App views — `conversation` emits user/assistant/tool only (B `timeline_items/_item.html.erb`).
-24. Fields the board and session page need: `last_timeline_entry_at` (running elapsed), per-session cost on the index, `off_board_count`, `merge_authorized_at`, the web `refresh` semantics (restart + nudge), `failure_summary` / `failure_detail` (B, C).
-25. Per-session push toggle, auto-compact window edit, `touch_activity`, the scratch path, `sent_message` restore (B `_session_header_actions:26-43`, `_session_metadata:409-456`, `_github_pr_link`).
-26. Attachments on `POST /api/v1/sessions`, and a `genesis` for native-app creates: today a phone-created session is `genesis: api`, which classifies as spot while the web's default is priority (C `new.html.erb:216-232, 273-346`).
-27. Catalog refresh and catalog health on `/configs`; identity (`/me`), sign-out-everywhere, server deploy info; external-app (plugin) management (REST; MCP exists); trigger `spent_one_shot_wake` and the pending-session id; a push channel for live updates or an accepted poll (C `new.html.erb:14-33`; A §1, §5; D; C `index.html.erb:30`).
+18. The Inference page: account roster, per-account quota windows, refresh/switch/delete, the CLI login flow, the rotation log, the OpenRouter key, the spot gate, backlog top-up and genesis classes — 47 rows, no REST at all; MCP `get_spot_policy` / `action_spot_policy` cover the policy half (A §2).
+19. App settings read and write: the global default runtime and model, the three experimental toggles, the MCP Apps switch and allowlist, catalog pins — MCP covers all but MCP Apps and pins; REST for all but the pins is in #1341, open (A §1).
+20. API keys and OAuth grants, including the phone's own grant: list, mint, revoke, restore, change privilege — nothing under `/api/v1` (A §4, E).
+21. Connectors: per-server state, the secret-store banner, start and complete an MCP OAuth flow from the phone, disconnect, unclaimed credentials — nothing under `/api/v1`; the session page already hands OAuth to the browser (A §3).
+22. Rich transcript rows: thinking, compaction, error, runtime notices, queue events, MCP logs, image badges, tool parameters, `is_error`, `#message-N` anchors, MCP App views — `conversation` emits user/assistant/tool only (B `timeline_items/_item.html.erb`).
+23. Fields the board and session page need: `last_timeline_entry_at` (running elapsed), per-session cost on the index, `off_board_count`, `merge_authorized_at`, the web `refresh` semantics (restart + nudge), `failure_summary` / `failure_detail` (B, C).
+24. Per-session push toggle, auto-compact window edit, `touch_activity`, the scratch path, `sent_message` restore (B `_session_header_actions:26-43`, `_session_metadata:409-456`, `_github_pr_link`).
+25. Attachments on `POST /api/v1/sessions`, and a `genesis` for native-app creates: today a phone-created session is `genesis: api`, which classifies as spot while the web's default is priority (C `new.html.erb:216-232, 273-346`).
+26. Catalog refresh and catalog health on `/configs`; identity (`/me`), sign-out-everywhere, server deploy info; external-app (plugin) management (REST; MCP exists); trigger `spent_one_shot_wake` and the pending-session id; a push channel for live updates or an accepted poll (C `new.html.erb:14-33`; A §1, §5; D; C `index.html.erb:30`).
 
 **Needs something outside this repo**
 
-28. Universal links: a tapped `https://<zimmer>/sessions/:id` never opens the app. Needs the Associated Domains entitlement enabled in the Apple developer portal, plus an `apple-app-site-association` served by Rails and `onOpenURL` in the app (E).
+27. Universal links: a tapped `https://<zimmer>/sessions/:id` never opens the app. Needs the Associated Domains entitlement enabled in the Apple developer portal, plus an `apple-app-site-association` served by Rails and `onOpenURL` in the app (E).
 
 ## Matrix
 
@@ -889,11 +888,11 @@ Ranked within each group by how often a person on a phone runs into it. The area
 | --- | --- | --- | --- | --- |
 | (web → app) any `https://<zimmer>/sessions/:id` link: from a web push on another device, Slack, email, the transcript's `#message-N` links | Opening a Zimmer URL lands in the browser | App/Zimmer/Info.plist has no `CFBundleURLTypes` for content; no Associated Domains entitlement; the only scheme is `com.tadasant.zimmer:` for OAuth/Access callbacks (OAuthSignIn.swift:21-22) | missing | A tapped link on the phone never opens the app. needs: `/.well-known/apple-app-site-association` served by Rails, the `associated-domains` entitlement (Apple developer portal), and `onOpenURL` → `model.path` |
 | `GET /up`, `GET /up/deep` | Liveness/deep health probes | — | web-only | Infrastructure probes. |
-| `sessions/index.html.erb` (Live entry: the voice icon beside the board's controls, and a menu of the live modes) | Open Live Mode from the board | — | missing | `GET /api/v1/live` lists the modes; no app entry |
-| `live/index.html.erb` (`GET /live`): the overview — "One continuous conversation with Zimmer, typed or spoken", a card per mode, the OpenAI key panel | Read the modes and set or delete the OpenAI key | — | missing | modes: `GET /api/v1/live`; the key's set/delete is the page's (`live_openai_key`), no REST |
-| `live/show.html.erb` (`GET /live/:mode`): start a conversation in a mode, recent conversations | Start a live conversation | — | missing | `POST /api/v1/live_conversations` exists and takes the app's token (a person's grant to speak as you) |
-| `live_conversations/show.html.erb`, `_turn`, `_header`: the conversation's turns, typed input, the session it runs in | Read and continue a live conversation, typed | — | missing | `GET /api/v1/live_conversations/:id` and its turns exist; no screen |
-| `shared/_live_voice_dock.html.erb` (in the layout): the voice call's dock — mute, hang up, dismiss — above every page | A spoken conversation, continuous, with the call's controls on every page | — | missing | needs the phone's microphone and audio session on top of the API; the app has no voice path |
+| `sessions/index.html.erb` (Live entry: the voice icon beside the board's controls, and a menu of the live modes) | Open Live Mode from the board | `SessionListView.swift` waveform button → `LiveViews.swift` (6556c1b3) | present | the modes from `GET /api/v1/live`, each with whether it can start |
+| `live/index.html.erb` (`GET /live`): the overview — "One continuous conversation with Zimmer, typed or spoken", a card per mode, the OpenAI key panel | Read the modes and set or delete the OpenAI key | `LiveViews.swift` (6556c1b3): the modes and why one cannot start | partial | the OpenAI key's set/delete is the page's (`live_openai_key`), no REST; the app says to set it on the web |
+| `live/show.html.erb` (`GET /live/:mode`): start a conversation in a mode, recent conversations | Start a live conversation | `LiveViews.swift` (6556c1b3): start, or resume the recent one | present | `POST /api/v1/live_conversations` |
+| `live_conversations/show.html.erb`, `_turn`, `_header`: the conversation's turns, typed input, the session it runs in | Read and continue a live conversation, typed | `LiveViews.swift` (6556c1b3): the single-thread view with a composer, re-read every two seconds | present | — |
+| `shared/_live_voice_dock.html.erb` (in the layout): the voice call's dock — mute, hang up, dismiss — above every page | A spoken conversation, continuous, with the call's controls on every page | `LiveCall.swift`, `LiveAudioEngine.swift`, `RealtimeConductor.swift` (6556c1b3): *Talk* opens a Realtime call, with Hang up; the same call in CarPlay | partial | the web's dock follows you to every page; the app's call controls live on the Live screen and in CarPlay |
 
 Inventory notes from this area, not counted (neither side has it, or iOS has it and the web does not):
 
