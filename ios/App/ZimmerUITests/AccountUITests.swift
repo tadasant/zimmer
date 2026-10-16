@@ -26,11 +26,16 @@ final class AccountUITests: XCTestCase {
         reveal(app, everywhere)
         XCTAssertTrue(everywhere.isEnabled, "offered once the server has said who this is")
 
+        // Deployment Information is the last section, below the page's own: a long way down.
         let sha = app.staticTexts["settings.deployment.sha"]
         reveal(app, sha)
         XCTAssertEqual(sha.label, "b7d4e1c", "the short SHA; the whole one is a long-press away")
-        XCTAssertEqual(app.staticTexts["settings.deployment.branch"].label, "main")
-        XCTAssertEqual(app.staticTexts["settings.deployment.environment"].label, "production")
+        let branch = app.staticTexts["settings.deployment.branch"]
+        reveal(app, branch)
+        XCTAssertEqual(branch.label, "main")
+        let environment = app.staticTexts["settings.deployment.environment"]
+        reveal(app, environment)
+        XCTAssertEqual(environment.label, "production")
     }
 
     func test_the_connections_screen_marks_this_phone_and_a_revoke_marks_the_other_revoked() throws {
@@ -77,8 +82,9 @@ final class AccountUITests: XCTestCase {
         name.tap()
         name.typeText("phone\n")
 
+        // Return dismissed the keyboard and minted; the token sits above the field.
         let token = app.staticTexts["account.key.token"]
-        reveal(app, token)
+        reveal(app, token, above: true)
         let shown = token.label
         XCTAssertTrue(shown.hasPrefix("zmr_"), "the token, in the clear, this once: \(shown)")
 
@@ -217,9 +223,11 @@ final class AccountUITests: XCTestCase {
 
     /// Scroll until `element` is on screen and below the navigation bar, where a tap lands on
     /// it rather than on the bar (`isHittable` says yes under the bar). A Form row off screen
-    /// is not in the accessibility tree, so until it appears the scrolling is blind: down
-    /// the form first, then back up, since what was just minted sits above the field.
-    private func reveal(_ app: XCUIApplication, _ element: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
+    /// is not in the accessibility tree, so until it appears the scrolling is blind: on down
+    /// the form, or back up it when `above` says the row is behind us (what was just minted
+    /// sits above the field). Deliberate drags, a third of a screen each, with a wait after
+    /// every one, since a row takes a moment to enter the tree.
+    private func reveal(_ app: XCUIApplication, _ element: XCUIElement, above: Bool = false, file: StaticString = #filePath, line: UInt = #line) {
         func barBottom() -> CGFloat {
             app.navigationBars.allElementsBoundByIndex.map(\.frame.maxY).max() ?? 0
         }
@@ -227,18 +235,20 @@ final class AccountUITests: XCTestCase {
             guard element.exists, !element.frame.isEmpty else { return false }
             return element.frame.minY >= barBottom() && element.frame.maxY <= app.frame.maxY - 24
         }
-        for attempt in 0..<16 where !placed() {
-            let visible = element.exists && !element.frame.isEmpty
-            let up = visible ? element.frame.minY < barBottom() : attempt >= 8
-            scroll(app, down: !up)
+        for _ in 0..<30 where !placed() {
+            let onScreen = element.exists && !element.frame.isEmpty
+            let towardTop = onScreen ? element.frame.minY < barBottom() : above
+            drag(app, towardTop: towardTop)
+            _ = element.waitForExistence(timeout: 1)
         }
         XCTAssertTrue(placed(), "\(element) is scrolled into view", file: file, line: line)
     }
 
-    /// A third of the screen, held at the end so there is no fling to overshoot by.
-    private func scroll(_ app: XCUIApplication, down: Bool) {
-        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.45 : 0.75))
-        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.75 : 0.45))
+    /// A third of the screen, held at the end so there is no fling to overshoot by. The
+    /// finger moves down to bring what is above into view, up for what is below.
+    private func drag(_ app: XCUIApplication, towardTop: Bool) {
+        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: towardTop ? 0.45 : 0.75))
+        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: towardTop ? 0.75 : 0.45))
         from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
     }
 
