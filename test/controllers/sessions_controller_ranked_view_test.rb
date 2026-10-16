@@ -402,7 +402,40 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
       params: { precedence: SessionPrecedence::MAX + 1 }, as: :json
 
     assert_response :unprocessable_entity
+    assert_match(/\ACould not update precedence: Precedence must be less than or equal to/, response.parsed_body["error"])
     assert_equal 10, session.reload.precedence
+  end
+
+  test "update_precedence from the detail page's form redirects with a notice" do
+    session = spot(10)
+
+    patch update_precedence_session_url(session), params: { precedence: 70 }
+
+    assert_redirected_to session_path(session)
+    assert_equal "Precedence is now 70.", flash[:notice]
+    assert_equal 70, session.reload.precedence
+  end
+
+  test "update_precedence from the detail page's form says why it refused, and logs nothing" do
+    session = spot(10)
+
+    assert_no_difference -> { session.logs.count } do
+      patch update_precedence_session_url(session), params: { precedence: "urgent" }
+    end
+
+    assert_redirected_to session_path(session)
+    assert_match(/\ACould not update precedence: Precedence is not a number/, flash[:alert])
+    assert_equal 10, session.reload.precedence
+  end
+
+  test "update_precedence to the rank the session already holds logs nothing" do
+    session = spot(10)
+
+    assert_no_difference -> { session.logs.count } do
+      patch update_precedence_session_url(session), params: { precedence: 10 }, as: :json
+    end
+
+    assert_response :success
   end
 
   # --- dragging ---------------------------------------------------------------
