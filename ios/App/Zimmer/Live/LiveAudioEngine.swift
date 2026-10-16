@@ -84,7 +84,11 @@ final class LiveAudioEngine: @unchecked Sendable {
         let input = engine.inputNode
         // The echo canceller. Not fatal when refused: the mic still works, and headphones
         // sidestep echo entirely.
-        try? input.setVoiceProcessingEnabled(true)
+        do {
+            try input.setVoiceProcessingEnabled(true)
+        } catch {
+            Self.log.error("voice processing refused, so the reply may echo: \(error.localizedDescription, privacy: .public)")
+        }
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw Failure.noInput }
         let rate = format.sampleRate
