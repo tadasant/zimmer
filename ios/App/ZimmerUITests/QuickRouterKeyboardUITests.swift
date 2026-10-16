@@ -2,7 +2,8 @@ import XCTest
 
 /// The keyboard goes when the Quick Router sends, from the board's bar and from the sheet the
 /// bar opened, and stays gone on the session that opens and back on the board. A scroll of the
-/// board puts it away by hand.
+/// board puts it away by hand, and so does the bar's Cancel, which empties it as the search
+/// box's Cancel empties the search.
 @MainActor
 final class QuickRouterKeyboardUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -68,6 +69,30 @@ final class QuickRouterKeyboardUITests: XCTestCase {
         XCTAssertTrue(waitForNoKeyboard(app), "a scroll of the board dismisses the keyboard")
     }
 
+    func test_cancel_puts_the_bar_back_at_rest() throws {
+        let app = launch()
+
+        let field = app.descendants(matching: .any)["quickrouter.bar.field"]
+        let cancel = app.buttons["quickrouter.bar.cancel"]
+        let start = app.buttons["quickrouter.bar.start"]
+        XCTAssertTrue(field.waitForExistence(timeout: timeout))
+        XCTAssertFalse(cancel.exists, "no Cancel while the bar is at rest")
+        field.tap()
+        field.typeText("Rotate the staging deploy key")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: timeout))
+        XCTAssertTrue(cancel.waitForExistence(timeout: timeout), "Cancel stands beside the bar while it has the keyboard")
+        XCTAssertTrue(start.isEnabled)
+        attachScreenshot(app, named: "quick-router-bar-focused-cancel")
+
+        cancel.tap()
+
+        XCTAssertTrue(staysWithoutKeyboard(app), "Cancel puts the keyboard away")
+        XCTAssertTrue(waitForDisappearance(cancel), "Cancel goes with the keyboard")
+        XCTAssertFalse(start.isEnabled, "the words went with Cancel, so there is nothing to send")
+        XCTAssertFalse((field.value as? String ?? "").contains("Rotate"), "the bar is empty")
+        attachScreenshot(app, named: "quick-router-bar-cancelled")
+    }
+
     private func waitForNoKeyboard(_ app: XCUIApplication) -> Bool {
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"), object: app.keyboards)
         return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
@@ -97,9 +122,14 @@ final class QuickRouterKeyboardUITests: XCTestCase {
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let shot = app.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+        // Beside the result bundle too, where a pull request can take it from the artifact.
+        if let directory = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"], !directory.isEmpty {
+            try? shot.pngRepresentation.write(to: URL(fileURLWithPath: directory).appendingPathComponent("test-\(name).png"))
+        }
     }
 }
