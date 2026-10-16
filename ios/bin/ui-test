@@ -261,6 +261,12 @@ if [ -d "$app" ]; then
   # brought by a plugin, read-only; then the MCP checklist that Add or Edit opens.
   shoot session-detail-artifacts -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureOpenPanels
   shoot catalog-mcp -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCatalog mcpServers
+  # A hundred messages under the details card: the section strip pinned under the bar, a chip's
+  # jump to the human messages and to the hierarchy (each opened), and the transcript full screen.
+  shoot session-detail-sections -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044
+  shoot session-detail-sections-human -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044 -ZimmerFixtureSection humanMessages
+  shoot session-detail-sections-hierarchy -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044 -ZimmerFixtureSection hierarchy
+  shoot session-detail-fullscreen -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044 -ZimmerFixtureFullScreen
   # Why a session is waiting: the spot gate's hold with "Make this session priority", a turn
   # queued for a worker with Force, and a renewed MCP grant beside a message never delivered.
   shoot session-detail-waiting -ZimmerFixture -ZimmerFixtureOpenSession 1031
@@ -280,7 +286,10 @@ if [ -d "$app" ]; then
   shoot prompt-form -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureOpenPrompt
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
   shoot quick-router-advanced -ZimmerFixture -ZimmerFixtureQuickRouter -ZimmerFixtureQuickRouterAdvanced
+  shoot quick-router-from-session -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureQuickRouter
   shoot new-session -ZimmerFixture -ZimmerFixtureNewSession
+  shoot live-home -ZimmerFixture -ZimmerFixtureLiveHome
+  shoot live-voice-thread -ZimmerFixture -ZimmerFixtureLiveConversation 21
   shoot trash-undo -ZimmerFixture -ZimmerFixtureTrash 1038
   shoot trash-queued -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureTrash 1042
   shoot inbox -ZimmerFixture -ZimmerFixtureTab inbox
@@ -301,6 +310,8 @@ if [ -d "$app" ]; then
   shoot session-detail-panels-dark -ZimmerFixture -ZimmerFixtureOpenSession 1044 -ZimmerFixtureOpenPanels
   shoot session-detail-artifacts-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureOpenPanels
   shoot catalog-mcp-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCatalog mcpServers
+  shoot session-detail-sections-dark -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044
+  shoot session-detail-fullscreen-dark -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044 -ZimmerFixtureFullScreen
   shoot session-detail-waiting-dark -ZimmerFixture -ZimmerFixtureOpenSession 1031
   shoot composer-attachment-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   shoot session-detail-custom-snooze-dark -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCustomSnooze
@@ -308,6 +319,8 @@ if [ -d "$app" ]; then
   shoot composer-slash-dark -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureSlash
   shoot session-detail-markdown-dark -ZimmerFixture -ZimmerFixtureOpenSession 1048
   shoot new-session-dark -ZimmerFixture -ZimmerFixtureNewSession
+  shoot live-home-dark -ZimmerFixture -ZimmerFixtureLiveHome
+  shoot live-voice-thread-dark -ZimmerFixture -ZimmerFixtureLiveConversation 21
   shoot inbox-dark -ZimmerFixture -ZimmerFixtureTab inbox
   shoot triggers-dark -ZimmerFixture -ZimmerFixtureTab triggers
   shoot more-dark -ZimmerFixture -ZimmerFixtureTab more

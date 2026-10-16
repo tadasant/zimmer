@@ -55,6 +55,10 @@ final class SessionDetailModel: ObservableObject {
     /// narrowed to this session's own. Nil until it reads, and the composer works without it.
     @Published private(set) var skills: [CatalogItem]?
     private var loadingConfigs = false
+    /// What the session has spent, in dollars at list price (`GET /api/v1/costs?session_id=`,
+    /// over its whole life): the web header's muted figure beside the id. Read beside the page
+    /// on each load, not on polls; nil until it reads, and zero draws nothing, as on the web.
+    @Published private(set) var cost: Double?
 
     init(id: Int, api: ZimmerAPI) {
         self.id = id
@@ -94,9 +98,17 @@ final class SessionDetailModel: ObservableObject {
                 report(.unauthorized)
             } catch {}
             error = nil
+            // Beside the page, not before it: the figure is a secondary signal.
+            Task { await loadCost() }
         } catch {
             fail(error)
         }
+    }
+
+    /// A ledger that will not read leaves the figure as it was; the next load tries again.
+    private func loadCost() async {
+        guard let session = detail?.session else { return }
+        if let spent = try? await api.sessionCost(session.id, createdAt: session.createdAt) { cost = spent }
     }
 
     /// The catalog and the skills, once each. One that will not read leaves the goal's words,
@@ -388,6 +400,7 @@ struct SessionDetailView: View {
     /// The web UI's log-level filter, as far as the conversation goes. Minimal by default:
     /// on a phone the tool traffic buries the words.
     @State private var level: ConversationLevel = .minimal
+    @State private var confirmingMerge = false
     @State private var editing: EditedText?
     @State private var renaming = false
     /// The web page's precedence field, in an alert as the rename is.
@@ -421,6 +434,28 @@ struct SessionDetailView: View {
     /// `-ZimmerFixtureOpenPanels`: the page opens at the details card with its folded rows
     /// open, so `ios/bin/ui-test` can photograph them.
     @State private var fixtureOpensPanels = false
+    /// `-ZimmerFixtureSection` and `-ZimmerFixtureFullScreen`: the page opens jumped to a
+    /// section, or with its transcript full screen, so `ios/bin/ui-test` can photograph them.
+    @State private var fixtureSection: SessionPageSection?
+    @State private var fixtureFullScreen = false
+    /// The strip's sections whose top has scrolled up to it; the one being read is the last.
+    @State private var reachedSections: Set<SessionPageSection> = []
+    /// The section a chip just jumped to: lit until the reader scrolls on from it.
+    @State private var jumpedTo: SessionPageSection?
+    /// The jump is still scrolling: the sections it passes do not take the light from it.
+    @State private var jumping = false
+    /// Counts the jumps, so only the latest one's end clears `jumping`.
+    @State private var jumps = 0
+    /// Where the strip ends, in global coordinates: the top of what the page shows.
+    @State private var stripBottom: CGFloat = 0
+    /// Bumped to open the hierarchy's or the human messages' folded row as a chip jumps to it.
+    @State private var opensHierarchy = 0
+    @State private var opensHumanMessages = 0
+    /// The transcript is full screen. Never kept: the page always opens without it.
+    @State private var readingFullScreen = false
+    /// The message reached on the page, and in the full-screen transcript.
+    @State private var pageReading = ReadingPosition()
+    @State private var fullScreenReading = ReadingPosition()
 
     /// Short answers a person gives most often — on a phone, typing is the expensive part.
     static let quickReplies = ["Yes, go ahead.", "Merge it.", "Not yet — hold off."]
@@ -437,7 +472,7 @@ struct SessionDetailView: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            page
+            page(proxy)
                 .onChange(of: model.conversation?.messages.last?.id) { _, _ in
                     guard model.conversation != nil else { return }
                     // Open at the newest message, as the web UI's transcript does; afterwards
@@ -445,6 +480,7 @@ struct SessionDetailView: View {
                     if !openedAtNewest {
                         openedAtNewest = true
                         let panels = fixtureOpensPanels
+                        let section = fixtureSection
                         // After the layout that adds the messages, or the scroll can miss.
                         Task { @MainActor in
                             if panels {
@@ -452,9 +488,27 @@ struct SessionDetailView: View {
                             } else {
                                 proxy.scrollTo(Self.endAnchor, anchor: .bottom)
                             }
+                            if let section { jump(to: section, proxy) }
+                            if fixtureFullScreen {
+                                // Once the page has settled at the end, so the cover opens there.
+                                try? await Task.sleep(for: .milliseconds(500))
+                                openFullScreen()
+                            }
                         }
                     } else if atEnd {
                         withAnimation { proxy.scrollTo(Self.endAnchor, anchor: .bottom) }
+                    }
+                }
+                .onChange(of: readingFullScreen) { _, fullScreen in
+                    guard !fullScreen else { return }
+                    // Back at the message reached full screen, or at the newest.
+                    let target = fullScreenReading.target(in: shownMessages)
+                    Task { @MainActor in
+                        if let target {
+                            proxy.scrollTo(ReadingPosition.anchor(target), anchor: .top)
+                        } else {
+                            proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+                        }
                     }
                 }
         }
@@ -466,6 +520,8 @@ struct SessionDetailView: View {
                 guard !Task.isCancelled else { return }
                 // Only while this session is the screen in front, whatever SwiftUI keeps alive.
                 guard app.path.last == model.id, app.tab == .sessions else { continue }
+                // The full-screen transcript reads for itself while it covers the page.
+                guard !readingFullScreen else { continue }
                 await model.poll()
             }
         }
@@ -512,11 +568,18 @@ struct SessionDetailView: View {
     static let endAnchor = "conversation.end"
     static let panelsAnchor = "detail.panels.anchor"
 
-    private var page: some View {
+    private func page(_ proxy: ScrollViewProxy) -> some View {
+        // Four expressions, not one: a single chain this long exceeds the Release build's
+        // type-check budget (#1284's TestFlight build), where the Debug build's is larger.
+        chrome(sheets(dialogs(scrollPage(proxy))))
+    }
+
+    private func scrollPage(_ proxy: ScrollViewProxy) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 if let detail = model.detail {
                     header(detail)
+                        .pageSection(.overview, edge: stripBottom, reached: $reachedSections)
                     // Why it is waiting and what to do about it: under the header, as the web
                     // page's header stacks them, above everything else.
                     WaitingBanners(banners: detail.waiting.banners, busy: acting) { perform($0) }
@@ -535,6 +598,10 @@ struct SessionDetailView: View {
                         goal: model.configs?.goal(matching: detail.session.goal),
                         catalogRead: model.configs != nil,
                         expanded: fixtureOpensPanels,
+                        opensHierarchy: opensHierarchy,
+                        opensHumanMessages: opensHumanMessages,
+                        sectionEdge: stripBottom,
+                        reachedSections: $reachedSections,
                         edit: { editing = $0 },
                         rootDefaults: { $0.rootDefaults(for: detail.session, in: model.configs) },
                         editCatalog: { editingCatalog = $0 }
@@ -551,7 +618,8 @@ struct SessionDetailView: View {
                     PromptCard(prompt: prompt) { answering = prompt }
                 }
                 if let conversation = model.shownConversation {
-                    conversationSection(conversation)
+                    conversationSection(conversation, edge: stripBottom, reading: pageReading)
+                        .pageSection(.transcript, edge: stripBottom, reached: $reachedSections)
                 }
                 // Under the conversation and above the composer, where the web UI puts them.
                 if !model.undelivered.isEmpty {
@@ -563,142 +631,217 @@ struct SessionDetailView: View {
                 Color.clear
                     .frame(height: 1)
                     .id(Self.endAnchor)
-                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .scrollView).minY } action: { endY = $0 }
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .scrollView).minY } action: { y in
+                        endY = y
+                        pageReading.atEnd = y <= viewportHeight + 80
+                    }
             }
             .padding(.horizontal, Theme.margin)
             .padding(.vertical, 12)
             .animation(.snappy(duration: 0.3), value: model.detail == nil)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
+        // Pinned under the navigation bar, however long the transcript: every section a tap away.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let detail = model.detail {
+                let sections = SessionPageSection.available(in: detail, hasConversation: model.shownConversation != nil)
+                // A lone chip with nothing to read full screen is no navigation at all.
+                if sections.count > 1 {
+                    SectionStrip(
+                        sections: sections,
+                        current: jumpedTo ?? SessionPageSection.current(reached: reachedSections, in: sections),
+                        jump: { jump(to: $0, proxy) },
+                        fullScreen: model.shownConversation == nil ? nil : { openFullScreen() }
+                    )
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { stripBottom = $0 }
+                }
+            }
+        }
+        .onChange(of: reachedSections) { _, _ in
+            // Scrolling on from a jump hands the light back to what is being read.
+            if !jumping { jumpedTo = nil }
+        }
         .background(Theme.ground)
         .navigationTitle(Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
-        .modifier(QueuedTrashQuestion { $0.id == model.id && app.path.last == model.id })
-        // Trashed — here, or after *Trash anyway* — the page goes and the board offers Undo.
-        .onChange(of: app.undoable?.id) { _, trashed in
-            if trashed == model.id { dismiss() }
-        }
-        .confirmationDialog(
-            "Force a worker thread?",
-            isPresented: Binding(get: { forcing != nil }, set: { if !$0 { forcing = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button("Force", role: .destructive) {
-                if let victim = forcing?.victim {
+    }
+
+    // The two strings the dialogs interpolate, built here: an interpolation with `??` inside a
+    // literal is the kind of expression the type checker spends longest on.
+    private var mergeButtonTitle: String {
+        "Merge \(model.detail?.session.mergeablePullRequest?.label ?? "PR")"
+    }
+
+    private var authorizingMessage: String {
+        let names = authorizing ?? []
+        return "\(names.joined(separator: ", ")) \(names.count == 1 ? "needs" : "need") OAuth, which happens in the browser: authorize from the session's page there. Its next turn waits until they are."
+    }
+
+    /// The page's dialogs and alerts.
+    private func dialogs(_ content: some View) -> some View {
+        content
+            .confirmationDialog("Authorize the merge?", isPresented: $confirmingMerge, titleVisibility: .visible) {
+                Button(mergeButtonTitle) {
+                    Task { await model.run { try await $0.authorizeMerge(model.id).message } }
+                }
+            } message: {
+                Text("The session is told to check for conflicts, merge, and archive itself. Your tap is the sign-off.")
+            }
+            .modifier(QueuedTrashQuestion { $0.id == model.id && app.path.last == model.id })
+            // Trashed — here, or after *Trash anyway* — the page goes and the board offers Undo.
+            .onChange(of: app.undoable?.id) { _, trashed in
+                if trashed == model.id { dismiss() }
+            }
+            .confirmationDialog(
+                "Force a worker thread?",
+                isPresented: Binding(get: { forcing != nil }, set: { if !$0 { forcing = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Force", role: .destructive) {
+                    if let victim = forcing?.victim {
+                        let id = model.id
+                        act { await model.run { try await $0.forceStart(id, expectedVictimID: victim).message } }
+                    }
+                }
+                .accessibilityIdentifier("waiting.force.confirm")
+            } message: {
+                // The web page's own confirm text: whose turn stops, and what it loses.
+                Text(forcing?.confirm ?? "")
+            }
+            .alert("Rename session", isPresented: $renaming) {
+                TextField("Title", text: $newTitle)
+                    .accessibilityIdentifier("rename.field")
+                Button("Cancel", role: .cancel) {}
+                Button("Save") {
+                    let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Task { await model.apply("Renamed") { try await $0.rename(model.id, title: title) } }
+                }
+                .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .alert("Precedence", isPresented: $editingPrecedence) {
+                TextField("Precedence", text: $newPrecedence)
+                    .keyboardType(.numbersAndPunctuation)
+                    .accessibilityIdentifier("precedence.field")
+                Button("Cancel", role: .cancel) {}
+                Button("Set") {
+                    guard let value = Precedence.parse(newPrecedence) else { return }
                     let id = model.id
-                    act { await model.run { try await $0.forceStart(id, expectedVictimID: victim).message } }
+                    Task { await model.apply("Precedence is now \(value).") { try await $0.setPrecedence(id, value) } }
+                }
+                .disabled(Precedence.parse(newPrecedence) == nil)
+            } message: {
+                // The web page's words beside the field: what the number does for this session.
+                Text(model.detail?.session.precedenceHint ?? "")
+            }
+    }
+
+    /// The page's sheets.
+    private func sheets(_ content: some View) -> some View {
+        content
+            .sheet(isPresented: $choosingModel) { modelSheet }
+            .sheet(item: $editingCatalog, onDismiss: {
+                authorizing = pendingAuthorizing
+                pendingAuthorizing = nil
+            }) { kind in catalogSheet(kind) }
+            .alert("Authorize in the browser", isPresented: Binding(get: { authorizing != nil }, set: { if !$0 { authorizing = nil } })) {
+                if let url = app.webURL(for: model.id) {
+                    Button("Open the session page") { openURL(url) }
+                }
+                Button("Later", role: .cancel) {}
+            } message: {
+                Text(verbatim: authorizingMessage)
+            }
+            .sheet(item: $editing) { field in
+                switch field {
+                case .notes:
+                    TextEditSheet(title: "Edit Notes", placeholder: "Notes for this session", initial: model.detail?.session.notes ?? "") { text in
+                        await model.apply("Notes saved") { try await $0.updateNotes(model.id, notes: text) }
+                    }
+                case .goal:
+                    // The web page's goal picker: the catalog's goals by name, or your own words.
+                    GoalPickerSheet(goals: model.configs?.goals ?? [], current: model.detail?.session.goal) { text in
+                        let name = model.configs?.goal(matching: text)?.title
+                        let done: String = text.isEmpty ? "Goal cleared" : name.map { "Goal: \($0)" } ?? "Goal updated"
+                        let saved = await model.apply(done) { try await $0.updateGoal(model.id, goal: text) }
+                        // The goal check rides on the session's page, not the PATCH's answer: read
+                        // it again so it follows the goal, without holding the sheet open for it.
+                        if saved { Task { await model.load() } }
+                        return saved
+                    }
                 }
             }
-            .accessibilityIdentifier("waiting.force.confirm")
-        } message: {
-            // The web page's own confirm text: whose turn stops, and what it loses.
-            Text(forcing?.confirm ?? "")
-        }
-        .alert("Rename session", isPresented: $renaming) {
-            TextField("Title", text: $newTitle)
-                .accessibilityIdentifier("rename.field")
-            Button("Cancel", role: .cancel) {}
-            Button("Save") {
-                let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                Task { await model.apply("Renamed") { try await $0.rename(model.id, title: title) } }
-            }
-            .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-        .alert("Precedence", isPresented: $editingPrecedence) {
-            TextField("Precedence", text: $newPrecedence)
-                .keyboardType(.numbersAndPunctuation)
-                .accessibilityIdentifier("precedence.field")
-            Button("Cancel", role: .cancel) {}
-            Button("Set") {
-                guard let value = Precedence.parse(newPrecedence) else { return }
-                let id = model.id
-                Task { await model.apply("Precedence is now \(value).") { try await $0.setPrecedence(id, value) } }
-            }
-            .disabled(Precedence.parse(newPrecedence) == nil)
-        } message: {
-            // The web page's words beside the field: what the number does for this session.
-            Text(model.detail?.session.precedenceHint ?? "")
-        }
-        .sheet(isPresented: $choosingModel) { modelSheet }
-        .sheet(item: $editingCatalog, onDismiss: {
-            authorizing = pendingAuthorizing
-            pendingAuthorizing = nil
-        }) { kind in catalogSheet(kind) }
-        .alert("Authorize in the browser", isPresented: Binding(get: { authorizing != nil }, set: { if !$0 { authorizing = nil } })) {
-            if let url = app.webURL(for: model.id) {
-                Button("Open the session page") { openURL(url) }
-            }
-            Button("Later", role: .cancel) {}
-        } message: {
-            Text(verbatim: "\((authorizing ?? []).joined(separator: ", ")) \((authorizing ?? []).count == 1 ? "needs" : "need") OAuth, which happens in the browser: authorize from the session's page there. Its next turn waits until they are.")
-        }
-        .sheet(item: $editing) { field in
-            switch field {
-            case .notes:
-                TextEditSheet(title: "Edit Notes", placeholder: "Notes for this session", initial: model.detail?.session.notes ?? "") { text in
-                    await model.apply("Notes saved") { try await $0.updateNotes(model.id, notes: text) }
+            .sheet(isPresented: $showingLogs) { SessionLogsView(id: model.id, api: model.api) }
+            .sheet(isPresented: $showingSubagents) { SubagentsView(id: model.id, api: model.api) }
+            .fullScreenCover(isPresented: $readingFullScreen) {
+                FullScreenTranscript(model: model, position: fullScreenReading) { edge, reading in
+                    if let conversation = model.shownConversation {
+                        conversationSection(conversation, edge: edge, reading: reading)
+                    }
                 }
-            case .goal:
-                // The web page's goal picker: the catalog's goals by name, or your own words.
-                GoalPickerSheet(goals: model.configs?.goals ?? [], current: model.detail?.session.goal) { text in
-                    let name = model.configs?.goal(matching: text)?.title
-                    let done: String = text.isEmpty ? "Goal cleared" : name.map { "Goal: \($0)" } ?? "Goal updated"
-                    let saved = await model.apply(done) { try await $0.updateGoal(model.id, goal: text) }
-                    // The goal check rides on the session's page, not the PATCH's answer: read
-                    // it again so it follows the goal, without holding the sheet open for it.
-                    if saved { Task { await model.load() } }
-                    return saved
+                .environmentObject(app)
+            }
+    }
+
+    /// What surrounds the page: the toast, the bubble, the composer, the reads and the fixture openers.
+    private func chrome(_ content: some View) -> some View {
+        content
+            .overlay(alignment: .bottom) {
+                // Above the composer, which is a bottom inset.
+                Toast(text: $model.notice, identifier: "followup.notice")
+            }
+            // The web UI's bubble, above the composer as its joystick is. A session started
+            // from here threads under this one, as the bubble's `parent_session_id` does, and
+            // carries this page, as the bubble carries the page it was typed on.
+            .quickRouterCorner(parent: model.id, page: model.detail.map { QuickRouterPage.session($0.session, url: app.webURL(for: model.id)) })
+            .safeAreaInset(edge: .bottom) {
+                if model.detail?.acceptsFollowUp ?? false { composer }
+            }
+            .refreshable { await model.load() }
+            .task {
+                model.report = { [weak app] error in app?.noteError(error) }
+                // Opening marks the session's notifications read: the Inbox badge follows.
+                model.onOpened = { [weak app] in Task { await app?.refreshUnreadCount() } }
+                if app.fixtureOpensPanels {
+                    app.fixtureOpensPanels = false
+                    fixtureOpensPanels = true
+                }
+                if let section = app.fixtureSection {
+                    app.fixtureSection = nil
+                    fixtureSection = section
+                }
+                if app.fixtureOpensFullScreen {
+                    app.fixtureOpensFullScreen = false
+                    fixtureFullScreen = true
+                }
+                await model.load()
+                if app.fixtureAttachesFile {
+                    app.fixtureAttachesFile = false
+                    model.attach([MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8))])
+                }
+                if app.fixtureOpensPrompt, let prompt = model.prompts.first {
+                    app.fixtureOpensPrompt = false
+                    answering = prompt
+                }
+                if app.fixtureOpensCustomSnooze {
+                    app.fixtureOpensCustomSnooze = false
+                    customSnoozing = true
+                }
+                if app.fixtureTypesSlash {
+                    app.fixtureTypesSlash = false
+                    model.draft = "/"
+                }
+                if let kind = app.fixtureOpensCatalog {
+                    app.fixtureOpensCatalog = nil
+                    editingCatalog = kind
                 }
             }
-        }
-        .sheet(isPresented: $showingLogs) { SessionLogsView(id: model.id, api: model.api) }
-        .sheet(isPresented: $showingSubagents) { SubagentsView(id: model.id, api: model.api) }
-        .overlay(alignment: .bottom) {
-            // Above the composer, which is a bottom inset.
-            Toast(text: $model.notice, identifier: "followup.notice")
-        }
-        // The web UI's bubble, above the composer as its joystick is. A session started
-        // from here threads under this one, as the bubble's `parent_session_id` does.
-        .quickRouterCorner(parent: model.id)
-        .safeAreaInset(edge: .bottom) {
-            if model.detail?.acceptsFollowUp ?? false { composer }
-        }
-        .refreshable { await model.load() }
-        .task {
-            model.report = { [weak app] error in app?.noteError(error) }
-            // Opening marks the session's notifications read: the Inbox badge follows.
-            model.onOpened = { [weak app] in Task { await app?.refreshUnreadCount() } }
-            if app.fixtureOpensPanels {
-                app.fixtureOpensPanels = false
-                fixtureOpensPanels = true
+            .onDisappear {
+                // The full-screen transcript covers the page without leaving it.
+                guard !readingFullScreen else { return }
+                // What changed here (a star, a snooze, a restore) shows on the list behind.
+                Task { await app.sessionChanged() }
             }
-            await model.load()
-            if app.fixtureAttachesFile {
-                app.fixtureAttachesFile = false
-                model.attach([MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8))])
-            }
-            if app.fixtureOpensPrompt, let prompt = model.prompts.first {
-                app.fixtureOpensPrompt = false
-                answering = prompt
-            }
-            if app.fixtureOpensCustomSnooze {
-                app.fixtureOpensCustomSnooze = false
-                customSnoozing = true
-            }
-            if app.fixtureTypesSlash {
-                app.fixtureTypesSlash = false
-                model.draft = "/"
-            }
-            if let kind = app.fixtureOpensCatalog {
-                app.fixtureOpensCatalog = nil
-                editingCatalog = kind
-            }
-        }
-        .onDisappear {
-            // What changed here (a star, a snooze, a restore) shows on the list behind.
-            Task { await app.sessionChanged() }
-        }
     }
 
     @ToolbarContentBuilder
@@ -732,6 +875,45 @@ struct SessionDetailView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Sections
+
+    /// A chip's jump: the section's top under the strip, its folded row opened, and the chip lit
+    /// until the reader scrolls on. The transcript's chip goes to the newest message.
+    private func jump(to section: SessionPageSection, _ proxy: ScrollViewProxy) {
+        jumpedTo = section
+        jumping = true
+        jumps += 1
+        let jump = jumps
+        switch section {
+        case .hierarchy: opensHierarchy += 1
+        case .humanMessages: opensHumanMessages += 1
+        case .overview, .transcript: break
+        }
+        withAnimation(.snappy(duration: 0.35)) {
+            if section == .transcript {
+                proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+            } else {
+                proxy.scrollTo(section.anchor, anchor: .top)
+            }
+        }
+        Haptics.selection()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(700))
+            if jumps == jump { jumping = false }
+        }
+    }
+
+    /// The transcript over everything else, opened at the message being read on the page.
+    private func openFullScreen() {
+        fullScreenReading = ReadingPosition(start: pageReading.target(in: shownMessages))
+        readingFullScreen = true
+    }
+
+    /// The messages the conversation draws at the chosen level.
+    private var shownMessages: [ConversationMessage] {
+        model.shownConversation?.messages(at: level) ?? []
     }
 
     // MARK: - Waiting banners
@@ -822,6 +1004,16 @@ struct SessionDetailView: View {
                 Text(verbatim: idAndAge(session))
                     .font(Theme.mono)
                     .foregroundStyle(Theme.inkMute)
+                // The web header's `session_cost_badge`: muted, beside the id, nothing for zero
+                // (a session not swept yet is not free). Three places under a dollar, as the web.
+                if let cost = model.cost, cost > 0 {
+                    Text(cost, format: .currency(code: "USD").precision(.fractionLength(cost < 1 ? 3 : 2)))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(Theme.inkMute)
+                        .accessibilityLabel("Estimated inference cost \(cost.formatted(.currency(code: "USD")))")
+                        .accessibilityHint("At current list prices, from Zimmer's own ledger. See Costs.")
+                        .accessibilityIdentifier("detail.cost")
+                }
                 ForEach(session.pullRequests.reversed()) { PullRequestChip(pullRequest: $0, compact: true) }
                 VisibilityLabel(session: session)
                     .font(.caption.weight(.medium))
@@ -862,6 +1054,11 @@ struct SessionDetailView: View {
         if let runtime = session.agentRuntime { parts.append(runtime) }
         if let model = session.model { parts.append(Format.modelName(model)) }
         if let effort = session.effort?.level { parts.append("effort \(effort)") }
+        // The web metadata block's "Context window", read-only here (no route edits it), and
+        // only when it was set: the column default on every Claude Code session is not news.
+        if session.agentRuntime == "claude_code", let window = session.autoCompactWindow, window != NewSessionRequest.maxAutoCompactWindow {
+            parts.append("compacts at \(window.formatted()) tokens")
+        }
         return parts
     }
 
@@ -871,8 +1068,15 @@ struct SessionDetailView: View {
     /// settings its desktop metadata block edits.
     private func actionsMenu(_ session: SessionSummary) -> some View {
         Menu {
+            if let pr = session.mergeablePullRequest {
+                Section {
+                    Button { confirmingMerge = true } label: {
+                        Label("Merge \(pr.label)", systemImage: "arrow.triangle.merge")
+                    }
+                }
+            }
             Section {
-                Button { app.openQuickRouter(parent: session.id) } label: { Label("Quick Router", systemImage: "sparkles") }
+                Button { app.openQuickRouter(from: session) } label: { Label("Quick Router", systemImage: "sparkles") }
                 Button { editing = .notes } label: { Label("Edit Notes", systemImage: "note.text") }
                 Button { showingLogs = true } label: { Label("Show Logs", systemImage: "doc.plaintext") }
                 Button { showingSubagents = true } label: { Label("Subagents", systemImage: "person.2") }
@@ -1079,7 +1283,9 @@ struct SessionDetailView: View {
 
     // MARK: - Conversation
 
-    private func conversationSection(_ conversation: Conversation) -> some View {
+    /// The conversation, each message telling `reading` when it scrolls above `edge`: the page's
+    /// and the full-screen transcript's, the same section in both.
+    private func conversationSection(_ conversation: Conversation, edge: CGFloat, reading: ReadingPosition) -> some View {
         let shown = conversation.messages(at: level)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -1138,6 +1344,8 @@ struct SessionDetailView: View {
                             .accessibilityIdentifier("message.fork")
                         }
                     }
+                    .id(ReadingPosition.anchor(message.id))
+                    .tracksReading(message.id, edge: edge, in: reading)
             }
         }
     }
@@ -1254,8 +1462,11 @@ private struct SummaryCard: View {
                     .accessibilityIdentifier("detail.summary.regenerate")
                 }
             }
-            if let text = status.summary {
-                Text(text).font(.callout).foregroundStyle(Theme.ink).fixedSize(horizontal: false, vertical: true)
+            if let text = status.summary, !text.isEmpty {
+                // Markdown, drawn as the transcript draws it, as the web's Status panel does:
+                // its links open on a tap and offer Copy Link on a long press.
+                MarkdownText(blocks: MarkdownBlock.blocks(of: text))
+                    .fixedSize(horizontal: false, vertical: true)
             } else if status.generating == true {
                 Text("Writing a status summary…").font(.callout).foregroundStyle(Theme.inkSoft)
             }

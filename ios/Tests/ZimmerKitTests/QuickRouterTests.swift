@@ -19,7 +19,7 @@ final class QuickRouterTests: XCTestCase {
         XCTAssertEqual(id, 4123)
         let sent = try XCTUnwrap(transport.sent.first)
         XCTAssertEqual(sent.url.path, "/api/v1/quick_router")
-        XCTAssertEqual(try body(sent).keys.sorted(), ["prompt"])
+        XCTAssertEqual(try body(sent).keys.sorted(), ["prompt"], "no class: the server classes a native start priority")
     }
 
     func testTheAdvancedChoicesAndAttachmentsRideAlong() async throws {
@@ -42,6 +42,26 @@ final class QuickRouterTests: XCTestCase {
     func testBlankChoicesAreNotSent() throws {
         let json = QuickRouterRequest(prompt: "x", runtime: "", model: "", spot: false).json
         XCTAssertEqual(json.keys.sorted(), ["prompt"], "an untouched panel posts nothing, so the server resolves the defaults")
+    }
+
+    func testThePageTheRouterWasOpenedOnRidesAlong() throws {
+        let session = SessionSummary(id: 1038, title: "PR #1261 is green and ready — merge it?", status: .needsInput,
+                                     goal: "Unmerged PR is open and CI is green.", priorityClass: "priority", agentRoot: "zimmer")
+        let page = QuickRouterPage.session(session, url: URL(string: "https://zimmer.example.test/sessions/1038"))
+        XCTAssertEqual(page.title, "PR #1261 is green and ready — merge it?")
+        XCTAssertEqual(page.context, "Zimmer session #1038: PR #1261 is green and ready — merge it?\nStatus: Needs input\nAgent root: zimmer\nScheduling class: priority\nGoal: Unmerged PR is open and CI is green.")
+
+        let json = QuickRouterRequest(prompt: "Merge it", parentSessionID: 1038, page: page).json
+        XCTAssertEqual(json["page_url"] as? String, "https://zimmer.example.test/sessions/1038")
+        XCTAssertEqual(json["page_title"] as? String, page.title)
+        XCTAssertEqual(json["page_context"] as? String, page.context)
+
+        // The page is the screen, not the thread: it goes whether or not the start threads under the session.
+        let unthreaded = QuickRouterRequest(prompt: "Merge it", page: QuickRouterPage(url: nil, title: "Costs")).json
+        XCTAssertNil(unthreaded["parent_session_id"])
+        XCTAssertNil(unthreaded["page_url"], "a screen with no web page sends no URL")
+        XCTAssertEqual(unthreaded["page_title"] as? String, "Costs")
+        XCTAssertNil(unthreaded["page_context"])
     }
 
     func testTheFixtureRefusesWhatTheServerRefuses() async throws {

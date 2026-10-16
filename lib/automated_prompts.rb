@@ -271,6 +271,30 @@ module AutomatedPrompts
     format(MERGE_CONFLICT_TEMPLATE, pr_url: pr_url)
   end
 
+  # The paragraph Github::OrphanedPrConflictSweep appends to the merge-conflict
+  # message when it had to bring the producing session back to deliver it.
+  #
+  # The session ended believing its work was done, so the message says why it is
+  # running again and what "done" is this time. It also gives the session a way
+  # to decline: a PR nobody wants any more is not worth a rebase.
+  MERGE_CONFLICT_REVIVAL_TEMPLATE = <<~PROMPT.strip
+    Zimmer brought this session back from `%{from_status}` to deliver this. The PR is still open, and while a session is %{from_status} nothing else tells anyone the PR has stopped merging cleanly.
+
+    Once the conflict is resolved and pushed, hand the PR back the way you did before: wait for CI and follow the `open-pr` skill's terminal steps. If the PR is no longer wanted, say so in your final message and archive without resolving anything. Zimmer will not bring you back for this same conflict. It will if the PR conflicts again after its head changes, or after GitHub reads it as conflict-free.
+  PROMPT
+
+  # The merge-conflict message, for a producer that had archived or failed.
+  #
+  # Starts with the ordinary message, so MERGE_CONFLICT_PR_URL_PATTERN still reads
+  # the PR back out of it.
+  #
+  # @param pr_url [String]
+  # @param from_status [String] "archived" or "failed"
+  # @return [String]
+  def self.merge_conflict_revival_message(pr_url, from_status:)
+    "#{merge_conflict_message(pr_url)}\n\n#{format(MERGE_CONFLICT_REVIVAL_TEMPLATE, from_status: from_status)}"
+  end
+
   # The PR URL a merge-conflict message names, or nil if this is not one.
   #
   # @param prompt [Object]

@@ -11,6 +11,9 @@ struct SessionListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingSettings = false
     @State private var snoozing: SessionSummary?
+    /// A row whose PR is about to be authorized to merge, waiting on the confirmation.
+    @State private var merging: SessionSummary?
+    @State private var confirmingReprioritize = false
     /// A row's *Custom…* snooze, open in its sheet.
     @State private var customSnoozing: SessionSummary?
     @State private var renaming: SessionSummary?
@@ -27,7 +30,7 @@ struct SessionListView: View {
     @State private var reordering = false
 
     var body: some View {
-        promptingList
+        listWithDecisions
             .toolbar { toolbarContent }
             .confirmationDialog(
                 "Snooze until…", isPresented: isSnoozing,
@@ -287,6 +290,13 @@ struct SessionListView: View {
                     } label: {
                         Label("Select Sessions", systemImage: "checkmark.circle")
                     }
+                    if model.view == .yourBoard || model.view == .ranked {
+                        Button {
+                            confirmingReprioritize = true
+                        } label: {
+                            Label("Reprioritize", systemImage: "list.number")
+                        }
+                    }
                     if model.view.isReorderable {
                         Button {
                             reordering = true
@@ -307,6 +317,10 @@ struct SessionListView: View {
             }
             .accessibilityLabel("View options")
             .accessibilityIdentifier("board.menu")
+            // Live Mode and Live Voice: one continuous conversation with Zimmer.
+            Button { model.showingLive = true } label: { Image(systemName: "waveform") }
+                .accessibilityLabel("Live")
+                .accessibilityIdentifier("live.open")
             // The full form. The Quick Router is the bar at the foot of the screen.
             Button { model.showingNewSession = true } label: { Image(systemName: "square.and.pencil") }
                 .accessibilityLabel("New session")
@@ -316,6 +330,31 @@ struct SessionListView: View {
 
     private var isSnoozing: Binding<Bool> {
         Binding(get: { snoozing != nil }, set: { if !$0 { snoozing = nil } })
+    }
+
+    /// The prompting list with Merge's and Reprioritize's confirmations: a separate expression,
+    /// because one modifier chain holding every dialog is more than the type checker will take.
+    private var listWithDecisions: some View {
+        promptingList
+            .confirmationDialog(
+                "Authorize the merge?", isPresented: isMerging,
+                titleVisibility: .visible, presenting: merging
+            ) { session in
+                Button("Merge \(session.mergeablePullRequest?.label ?? "PR")") {
+                    Task { await model.authorizeMerge(session.id) }
+                }
+            } message: { session in
+                Text("Session #\(session.id) is told to check for conflicts, merge \(session.mergeablePullRequest?.label ?? "its PR"), and archive itself. Your tap is the sign-off.")
+            }
+            .confirmationDialog("Reprioritize the board?", isPresented: $confirmingReprioritize, titleVisibility: .visible) {
+                Button("Reprioritize") { Task { await model.reprioritize() } }
+            } message: {
+                Text("Zimmer's reprioritizing session re-ranks this board and writes the order back. You can still drag anything afterwards.")
+            }
+    }
+
+    private var isMerging: Binding<Bool> {
+        Binding(get: { merging != nil }, set: { if !$0 { merging = nil } })
     }
 
     private var isRenaming: Binding<Bool> {
@@ -334,6 +373,7 @@ struct SessionListView: View {
                 newTitle = session.title ?? ""
                 renaming = session
             },
+            merge: { merging = $0 },
             restart: { session in
                 // A failed session restarts at once; one waiting on you is taken over, so the
                 // web UI asks first.
@@ -356,6 +396,7 @@ struct SessionListView: View {
 private struct RowPrompts {
     let customSnooze: (SessionSummary) -> Void
     let rename: (SessionSummary) -> Void
+    let merge: (SessionSummary) -> Void
     let restart: (SessionSummary) -> Void
 }
 
@@ -383,6 +424,14 @@ private struct SwipeableSessionRow: View {
                 Label(session.isFavorite ? "Unfavorite" : "Favorite", systemImage: session.isFavorite ? "star.slash" : "star.fill")
             }
             .tint(Theme.Swipe.favorite)
+            // The web UI's row Merge button: offered only on an open, green PR.
+            if session.mergeablePullRequest != nil {
+                Button { prompts.merge(session) } label: {
+                    Label("Merge", systemImage: "arrow.triangle.merge")
+                }
+                // The web Merge button's green-600.
+                .tint(Theme.Swipe.restore)
+            }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if session.status == .archived {
@@ -453,6 +502,11 @@ private struct SessionContextMenu: View {
     let prompts: RowPrompts
 
     var body: some View {
+        if let pr = session.mergeablePullRequest {
+            Button { prompts.merge(session) } label: {
+                Label("Merge \(pr.label)", systemImage: "arrow.triangle.merge")
+            }
+        }
         Button {
             Task { await model.perform(session.isFavorite ? "Removed from favorites" : "Added to favorites", on: session.id) { try await $0.toggleFavorite(session.id) } }
         } label: {
@@ -471,8 +525,26 @@ private struct SessionContextMenu: View {
                 Label("Put back on the board", systemImage: "eye")
             }
         }
-        if let pr = session.pullRequests.last {
+        // Every PR, as the session menu lists them: the row's line has room for the newest only.
+        if session.pullRequests.count == 1, let pr = session.pullRequests.first {
             Button { openURL(pr.url) } label: { Label("View PR \(pr.label)", systemImage: "arrow.triangle.pull") }
+        } else if !session.pullRequests.isEmpty {
+            Menu {
+                ForEach(session.pullRequests.reversed()) { pr in
+                    Button("\(pr.label) (\(pr.state?.capitalized ?? "Unknown"))") { openURL(pr.url) }
+                }
+            } label: {
+                Label("View PR (\(session.pullRequests.count))", systemImage: "arrow.triangle.pull")
+            }
+        }
+        // The web card's heart, on the views that draw cards.
+        if model.view == .lastTouched || model.view == .created, session.status != .archived {
+            let enabled = session.heartbeatEnabled ?? false
+            Button {
+                Task { await model.perform(enabled ? "Heartbeat off" : "Heartbeat on", on: session.id) { try await $0.setHeartbeat(session.id, enabled: !enabled) } }
+            } label: {
+                Label(enabled ? "Turn Heartbeat Off" : "Turn Heartbeat On", systemImage: enabled ? "heart.slash" : "heart")
+            }
         }
         if let url = model.webURL(for: session.id) {
             Button { openURL(url) } label: { Label("Open in browser", systemImage: "safari") }
@@ -487,6 +559,16 @@ private struct SessionContextMenu: View {
             }
         }
         Divider()
+        // The Ranked row's ⋮: a promotion starts a waiting session; a demotion lands at the
+        // head of the spot queue.
+        if model.view == .ranked, session.status != .archived {
+            Button {
+                Task { await model.reschedule(session.id, priority: !session.isPriority) }
+            } label: {
+                Label(session.isPriority ? "Demote to Spot" : "Promote to Priority",
+                      systemImage: session.isPriority ? "arrow.down.to.line" : "arrow.up.to.line")
+            }
+        }
         if session.status == .running {
             Button {
                 Task { await model.perform("Paused", on: session.id) { try await $0.pause(session.id) } }
@@ -590,8 +672,10 @@ private struct FilterSummary: View {
 
 /// One row of the web UI's board: the title on two lines at most, then one line of what the
 /// card carries — the status pill, Priority, `#id`, a compact age, the latest PR, a notes
-/// mark — and a star when it is a favourite. A trashed session reads in the quieter ink, as
-/// Motet dims what is done, so the ones waiting on you stand out without a heavier face.
+/// mark — then the web rows' facts line — the agent root, the genesis, the precedence, the
+/// heart when the heartbeat is on — and a star when it is a favourite. A trashed session
+/// reads in the quieter ink, as Motet dims what is done, so the ones waiting on you stand out
+/// without a heavier face.
 struct SessionRow: View {
     let session: SessionSummary
     /// Your board's rows carry the session's "where things stand", as the web UI's do.
@@ -648,6 +732,7 @@ struct SessionRow: View {
             .font(.caption.monospacedDigit())
             .foregroundStyle(Theme.inkSoft)
             .lineLimit(1)
+            RowFacts(session: session)
             if session.boardVisibility != .visible {
                 VisibilityLabel(session: session)
                     .font(.caption2.weight(.medium))
@@ -666,8 +751,52 @@ struct SessionRow: View {
     }
 }
 
+/// The web rows' facts, on one quiet line: the agent root (`_session_card`, `_user_view_row`,
+/// `_ranked_row`), the genesis (the card's `genesis · class` pill; the class is the Priority
+/// tag above), the precedence (`_user_view_row`'s `#N`, Ranked's rank) and the heart when the
+/// heartbeat is on (the card's top-right heart). Nothing when there is nothing to say.
+private struct RowFacts: View {
+    let session: SessionSummary
+
+    var body: some View {
+        let rank = session.precedence
+        let beating = session.heartbeatEnabled == true
+        if session.agentRoot != nil || session.genesis != nil || rank != nil || beating {
+            HStack(spacing: 5) {
+                if let root = session.agentRoot {
+                    Text(verbatim: root)
+                        .font(Theme.mono)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .accessibilityLabel("Agent root \(root)")
+                }
+                if let genesis = session.genesis {
+                    if session.agentRoot != nil { Text("·") }
+                    Text(verbatim: genesis)
+                        .lineLimit(1)
+                        .accessibilityLabel("Origin \(genesis)")
+                }
+                if let rank {
+                    if session.agentRoot != nil || session.genesis != nil { Text("·") }
+                    // The web's "Precedence — higher is worked sooner"; "rank", since `#` is the id.
+                    Text(verbatim: "rank \(rank)")
+                        .accessibilityLabel("Precedence \(rank)")
+                }
+                if beating {
+                    Image(systemName: "heart.fill")
+                        .foregroundStyle(Theme.danger)
+                        .accessibilityLabel("Heartbeat on")
+                }
+            }
+            .font(.caption2.weight(.medium).monospacedDigit())
+            .foregroundStyle(Theme.inkMute)
+        }
+    }
+}
+
 /// Your board's summary under a row, as the web UI draws it: the cached "where things stand"
-/// as inline markdown on three lines at most, then how current it is, and the agent root.
+/// as inline markdown on three lines at most, then how current it is. The agent root is on
+/// the row's facts line, as on every view.
 private struct RowSummary: View {
     let session: SessionSummary
 
@@ -705,15 +834,6 @@ private struct RowSummary: View {
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(Theme.inkMute)
                 .lineLimit(1)
-            }
-            // On its own line, as the web UI's row puts it on the action line: the root, else
-            // the genesis.
-            if let root = session.agentRoot ?? session.genesis {
-                Text(verbatim: root)
-                    .font(Theme.mono)
-                    .foregroundStyle(Theme.inkMute)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
         }
         .padding(.top, 1)

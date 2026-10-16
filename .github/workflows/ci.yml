@@ -632,9 +632,13 @@ jobs:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
     runs-on: macos-latest
-    # Raised from 45 when the simulator run joined the job: it is a second full app build
-    # plus a boot and a two-test run on top of the three steps that were already here.
-    timeout-minutes: 60
+    # Raised from 45 when the simulator run joined the job, from 60 when the suite and the
+    # photographs grew to fill it, and from 75 when the suite passed seventy UI tests: on a
+    # loaded macOS runner the simulator step alone is an hour (62 minutes on a green run of
+    # #1347), after two app builds, an archive and the Kit tests, before an artifact upload of
+    # most of a gigabyte. A run cut off here reads as "cancelled", which hides whether the suite
+    # passed. Splitting the suite across two simulators is the real fix for the next growth.
+    timeout-minutes: 100
 
     steps:
       - uses: actions/checkout@v4
