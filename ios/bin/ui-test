@@ -31,8 +31,8 @@
 # That run is
 # `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**` and on demand.
 # `--smoke` is what `ci.yml` gates every pull request on: SMOKE_TESTS below, which launch the
-# app, prove the build reports the server it was built with, and drive one session from
-# the list through an answer to the trash, plus the classes in any UI test file named by
+# app, prove the build reports the server it was built with, and start a session from a
+# sentence in the Quick Router bar and open it, plus the classes in any UI test file named by
 # `--also` (the pull request's own changed tests), and no photograph pass.
 #
 # NO HOSTNAME IS WRITTEN IN THIS REPOSITORY. `--api-base-url` defaults to
@@ -50,10 +50,14 @@ also_files=()
 
 # The per-PR subset. Cheap ones that between them launch the app signed out and signed in,
 # check the built environment and server (the half of the Staging check only a running app
-# can make), and take one session through the core loop: open, answer, trash.
+# can make), and start a session from a sentence and land on its page.
+#
+# Nothing here may wait on a transient: on a cold simulator, a hosted runner can take
+# longer to start waiting than a 2.5-second toast stays up, which is why the
+# open-answer-trash test (it waits on the follow-up toast) is left to the full run.
 SMOKE_TESTS=(
   ZimmerUITests/SessionListUITests
-  ZimmerUITests/SessionActionsUITests/test_open_a_session_answer_it_and_trash_it
+  ZimmerUITests/SessionActionsUITests/test_the_quick_router_bar_starts_a_session_from_a_sentence_and_opens_it
 )
 
 while [ $# -gt 0 ]; do

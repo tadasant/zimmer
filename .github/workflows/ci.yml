@@ -674,8 +674,8 @@ jobs:
         # separate `ios/bin/build-app` step, because this builds the same app for the same
         # SDK on the way to running it. It drives the Debug-only fixture (an in-memory
         # Zimmer: an agent cannot complete a Google sign-in) through `--smoke`: the session
-        # list, the build reporting the environment and server it was built with, and one
-        # session opened, answered and trashed — plus every class in a UI test file this
+        # list, the build reporting the environment and server it was built with, and a
+        # session started from a sentence and opened — plus every class in a UI test file this
         # change touches, so a new or edited UI test is proven before it merges. It records
         # a video and a picture of the last screen; there is no photograph pass.
         #
