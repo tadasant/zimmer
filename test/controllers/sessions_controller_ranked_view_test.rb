@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # The Ranked view and the writes it makes: the queue screen where spot work is
 # ordered, and priority work is demoted into it.
@@ -425,6 +426,44 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to session_path(session)
     assert_match(/\ACould not update precedence: Precedence is not a number/, flash[:alert])
+    assert_equal 10, session.reload.precedence
+  end
+
+  # The first attempt deadlocks; the second runs the real service, so the move
+  # lands and is logged once.
+  test "update_precedence retries a deadlock and logs the move once" do
+    session = spot(10)
+    attempts = 0
+    real_call = Sessions::UpdatePrecedence.method(:call)
+    flaky_call = lambda do |**kwargs|
+      attempts += 1
+      raise ActiveRecord::Deadlocked, "simulated" if attempts == 1
+      real_call.call(**kwargs)
+    end
+    SessionsController.any_instance.stubs(:sleep)
+
+    Sessions::UpdatePrecedence.stub(:call, flaky_call) do
+      patch update_precedence_session_url(session), params: { precedence: 640 }, as: :json
+    end
+
+    assert_response :success
+    assert_equal 2, attempts
+    assert_equal 640, session.reload.precedence
+    assert_equal 1, session.logs.where(content: "Precedence set to 640 (was 10)").count
+  end
+
+  # with_db_retry answers a 503 itself when it runs out of attempts; the action
+  # must not render a second response on top of it.
+  test "update_precedence answers once with a 503 when the database stays unavailable" do
+    session = spot(10)
+    SessionsController.any_instance.stubs(:sleep)
+
+    Sessions::UpdatePrecedence.stub(:call, ->(**) { raise ActiveRecord::ConnectionFailed, "simulated" }) do
+      patch update_precedence_session_url(session), params: { precedence: 640 }, as: :json
+    end
+
+    assert_response :service_unavailable
+    assert_match(/high server activity/, response.parsed_body["error"])
     assert_equal 10, session.reload.precedence
   end
 
