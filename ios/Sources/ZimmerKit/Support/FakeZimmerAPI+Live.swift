@@ -1,8 +1,8 @@
 import Foundation
 
-/// The fake's live conversations: one Live Voice thread already under way (a spoken question,
-/// a delegation through the Zimmer gateway, a spoken answer), so the screens have something to
-/// show, and a Live Mode that answers every typed message.
+/// The fake's live conversations: one Live Mode thread already under way with voice on (a spoken
+/// question, a delegation through the Zimmer gateway, a spoken answer), so the screens have
+/// something to show, and typed turns that are answered at once.
 struct FakeLiveState: Sendable {
     var conversations: [Int: LiveConversation]
     var turns: [Int: [LiveTurn]]
@@ -32,8 +32,8 @@ struct FakeLiveState: Sendable {
 
     static func sample() -> FakeLiveState {
         let voice = LiveConversation(
-            id: 21, mode: .voice, status: .active, title: "Live Voice · this morning", agentRoot: "live-voice",
-            model: "gpt-realtime-2.1-mini", instructionsSource: "tadasant/tadasant-internal@4f2a9c:artifacts/agent-roots/live-voice/AGENTS.md",
+            id: 21, mode: .voice, status: .active, title: "Live Mode · this morning", agentRoot: "live-mode",
+            model: "gpt-realtime-2.1-mini", instructionsSource: "tadasant/tadasant-internal@4f2a9c:artifacts/agent-roots/live-mode/AGENTS.md",
             mcpServers: ["zimmer"]
         )
         let turns: [LiveTurn] = [
@@ -48,20 +48,14 @@ struct FakeLiveState: Sendable {
 }
 
 extension FakeZimmerAPI {
-    public func liveModes() async throws -> [LiveModeAvailability] {
-        [
-            LiveModeAvailability(mode: .voice, label: "Live Voice", agentRoot: "live-voice", model: "gpt-realtime-2.1-mini", available: true, reasons: []),
-            LiveModeAvailability(mode: .text, label: "Live Mode", agentRoot: "live-mode", model: "gpt-6-luna", available: true, reasons: []),
-        ]
+    public func liveAvailability() async throws -> LiveAvailability {
+        LiveAvailability(agentRoot: "live-mode", available: true,
+                         models: [.text: "gpt-6-luna", .voice: "gpt-realtime-2.1-mini"])
     }
 
     public func liveConversations() async throws -> LiveOverview {
         let all = liveState.conversations.values.sorted { $0.id > $1.id }
-        var current: [LiveMode: Int] = [:]
-        for conversation in all where conversation.status.isOpen && current[conversation.mode] == nil {
-            current[conversation.mode] = conversation.id
-        }
-        return LiveOverview(conversations: all, current: current)
+        return LiveOverview(conversations: all, current: all.first { $0.status.isOpen }?.id)
     }
 
     public func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation {
@@ -71,14 +65,14 @@ extension FakeZimmerAPI {
     }
 
     public func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation {
-        for (id, conversation) in liveState.conversations where conversation.mode == mode && conversation.status.isOpen {
+        for (id, conversation) in liveState.conversations where conversation.status.isOpen {
             liveState.conversations[id] = conversation.with(status: .ended)
         }
         let id = liveState.nextConversationID
         liveState.nextConversationID += 1
         let conversation = LiveConversation(
-            id: id, mode: mode, status: .active, title: "\(mode.label) · now", agentRoot: mode == .voice ? "live-voice" : "live-mode",
-            model: mode == .voice ? "gpt-realtime-2.1-mini" : "gpt-6-luna", mcpServers: ["zimmer"]
+            id: id, mode: mode, status: .active, title: "Live Mode · now", agentRoot: "live-mode",
+            model: Self.liveModel(mode), mcpServers: ["zimmer"]
         )
         liveState.conversations[id] = conversation
         liveState.turns[id] = []
@@ -92,13 +86,24 @@ extension FakeZimmerAPI {
         return ended
     }
 
+    public func setLiveMode(_ id: Int, mode: LiveMode) async throws -> LiveConversation {
+        guard let conversation = liveState.conversations[id], conversation.status.isOpen else {
+            throw ZimmerError.http(status: 409, message: "This conversation has ended. Start a new one.")
+        }
+        let switched = conversation.with(mode: mode)
+        liveState.conversations[id] = switched
+        return switched
+    }
+
+    static func liveModel(_ mode: LiveMode) -> String { mode == .voice ? "gpt-realtime-2.1-mini" : "gpt-6-luna" }
+
     /// Answers at once, as the reply job would a moment later: a delegation for anything that
     /// sounds like work, a short answer otherwise.
     public func sendLiveMessage(_ id: Int, content: String) async throws -> LiveTurn {
         guard let conversation = liveState.conversations[id], conversation.status.isOpen else {
             throw ZimmerError.http(status: 409, message: "This conversation has ended. Start a new one.")
         }
-        guard conversation.mode == .text else { throw ZimmerError.http(status: 422, message: "Live Voice takes spoken turns, not typed messages.") }
+        guard conversation.mode == .text else { throw ZimmerError.http(status: 422, message: "Voice is on for this conversation. Turn it off to type.") }
         let user = appendLiveTurn(id, LiveTurn(id: 0, role: .user, source: "typed", content: content))
         if content.lowercased().contains("look into") || content.lowercased().contains("fix") {
             _ = appendLiveTurn(id, LiveTurn(id: 0, role: .tool, toolName: "zimmer", zimmerTool: "quick_router", toolOutput: "Started session #1102"))
@@ -110,7 +115,7 @@ extension FakeZimmerAPI {
     }
 
     public func liveClientSecret(_ id: Int) async throws -> LiveClientSecret {
-        guard liveState.conversations[id]?.mode == .voice else { throw ZimmerError.http(status: 422, message: "Not a Live Voice conversation.") }
+        guard liveState.conversations[id]?.mode == .voice else { throw ZimmerError.http(status: 409, message: "Voice is off for this conversation. Turn it on first.") }
         return LiveClientSecret(clientSecret: "ek_fixture", model: "gpt-realtime-2.1-mini",
                                 websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!)
     }
@@ -120,12 +125,13 @@ extension FakeZimmerAPI {
         return LiveToolResult(output: "ok")
     }
 
-    public func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String) async throws -> LiveTurn {
-        appendLiveTurn(id, LiveTurn(id: 0, role: role, source: "spoken", content: content))
+    public func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String, gated: Bool) async throws -> LiveHeard {
+        _ = appendLiveTurn(id, LiveTurn(id: 0, role: role, source: "spoken", content: content))
+        return LiveHeard(respond: true)
     }
 
     public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
-        guard liveState.conversations[id]?.mode == .voice else { throw ZimmerError.http(status: 422, message: "Not a Live Voice conversation.") }
+        guard liveState.conversations[id]?.status == .active else { throw ZimmerError.http(status: 409, message: "This conversation is not active.") }
         let speed = liveState.settingOverrides["voice_speed"] ?? .number(1.0)
         return .object(["type": .string("realtime"), "audio": .object(["output": .object(["speed": speed])])])
     }
@@ -228,8 +234,9 @@ extension FakeZimmerAPI {
 }
 
 extension LiveConversation {
-    func with(status: Status? = nil, turns: [LiveTurn]? = nil) -> LiveConversation {
-        LiveConversation(id: id, mode: mode, status: status ?? self.status, title: title, agentRoot: agentRoot, model: model,
+    func with(status: Status? = nil, mode: LiveMode? = nil, turns: [LiveTurn]? = nil) -> LiveConversation {
+        LiveConversation(id: id, mode: mode ?? self.mode, status: status ?? self.status, title: title, agentRoot: agentRoot,
+                         model: mode.map(FakeZimmerAPI.liveModel) ?? model,
                          instructionsSource: instructionsSource, mcpServers: mcpServers, responding: responding,
                          errorMessage: errorMessage, turns: turns ?? self.turns)
     }

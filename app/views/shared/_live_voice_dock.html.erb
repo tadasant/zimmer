@@ -1,4 +1,4 @@
-<%# The Live Voice call dock. In the layout and data-turbo-permanent so the call
+<%# The Live Mode voice call dock. In the layout and data-turbo-permanent so the call
     (live_voice_controller.js) survives navigation; hidden until a conversation
     page's Talk button starts a call. Bottom-left, clear of the Quick Router
     bubble in the bottom-right. %>
@@ -11,7 +11,7 @@
           <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
           <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
         </span>
-        <span class="text-sm font-semibold text-gray-900 truncate">Live Voice</span>
+        <span class="text-sm font-semibold text-gray-900 truncate">Voice</span>
         <span data-live-voice-target="status" class="text-xs text-gray-500 truncate">Connecting…</span>
       </a>
       <button type="button" data-action="live-voice#dismiss" class="p-1 text-gray-400 hover:text-gray-600" aria-label="Dismiss">
