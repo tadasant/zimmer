@@ -235,6 +235,11 @@
       "class": "QuotaCapacityCalibrationJob",
       "description": "Re-estimate what each Claude quota window is worth in Opus dollars, from spend over that window"
     },
+    "account_rebalance": {
+      "cron": "*/5 * * * *",
+      "class": "AccountRebalanceJob",
+      "description": "Move an idle Claude Code pool onto its best-scoring account once the prompt cache has expired"
+    },
     "claude_usage_sampler": {
       "cron": "*/15 * * * *",
       "class": "ClaudeUsageSamplerJob",
@@ -531,6 +536,11 @@
       "cron": "*/15 * * * *",
       "class": "QuotaCapacityCalibrationJob",
       "description": "Re-estimate what each Claude quota window is worth in Opus dollars, from spend over that window"
+    },
+    "account_rebalance": {
+      "cron": "*/5 * * * *",
+      "class": "AccountRebalanceJob",
+      "description": "Move an idle Claude Code pool onto its best-scoring account once the prompt cache has expired"
     },
     "claude_usage_sampler": {
       "cron": "*/15 * * * *",

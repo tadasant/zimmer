@@ -33,8 +33,8 @@ class Api::V1::AppSettingsController < Api::BaseController
   # PATCH /api/v1/app_settings
   #
   # Request body, every key optional — only the keys present are touched:
-  #   - default_runtime: a runtime id from `runtimes`; "" clears the override
-  #   - default_model: a model id valid for that runtime; "" clears the override
+  #   - default_runtime: a runtime id from `runtimes`; "" clears the override, null leaves it
+  #   - default_model: a model id valid for that runtime; "" clears the override, null leaves it
   #   - experimental: { "<key>": true|false, ... } keyed as `experimental[].key`
   #   - mcp_apps_enabled: the master switch (a person's sign-in only)
   #   - mcp_apps_allowed_servers: [names] from `mcp_apps.eligible_servers`;
@@ -47,12 +47,16 @@ class Api::V1::AppSettingsController < Api::BaseController
     setting = AppSetting.editable
     setting.policy_change_source = change_source
 
-    if attrs.key?("default_runtime") || attrs.key?("default_model")
-      setting.default_runtime = attrs["default_runtime"].to_s.strip.presence if attrs.key?("default_runtime")
-      setting.default_model = attrs["default_model"].to_s.strip.presence if attrs.key?("default_model")
-    end
+    # A null leaves a half alone, as action_app_settings reads it; "" clears it.
+    setting.default_runtime = attrs["default_runtime"].to_s.strip.presence unless attrs["default_runtime"].nil?
+    setting.default_model = attrs["default_model"].to_s.strip.presence unless attrs["default_model"].nil?
 
-    if (experimental = attrs["experimental"]).respond_to?(:each_pair)
+    if attrs.key?("experimental")
+      experimental = attrs["experimental"]
+      unless experimental.respond_to?(:each_pair)
+        return render_api_error("Settings not saved", "experimental must be an object of key: boolean", status: :unprocessable_entity)
+      end
+
       experimental.each_pair do |key, value|
         entry = ExperimentalSettingsRegistry.find(key)
         unless entry
@@ -103,9 +107,10 @@ class Api::V1::AppSettingsController < Api::BaseController
   end
 
   # Named on the `[AppSettings]` audit line, beside the page's `web:/settings`
-  # and the MCP tool's, so a change made from the phone reads as the phone's.
+  # and the MCP tool's, so a change made from the phone reads as the phone's,
+  # and whose phone.
   def change_source
-    native_app_request? ? "ios-app:/settings" : "api:/app_settings"
+    native_app_request? ? "ios-app:/settings (#{native_app_grant.user_email})" : "api:/app_settings"
   end
 
   def app_settings_json(setting)
@@ -123,12 +128,14 @@ class Api::V1::AppSettingsController < Api::BaseController
       runtimes: RuntimeRegistry.registered_runtimes.map do |id|
         { id: id, label: RuntimeRegistry.label_for(id), default_model: ModelCatalog.default_for(id), models: ModelCatalog.model_ids_for(id) }
       end,
+      # Read off the row in hand, not re-read per entry: the answer to a PATCH is
+      # the row it saved.
       experimental: ExperimentalSettingsRegistry.all.map do |entry|
         {
           key: entry.key,
           title: entry.title,
           description: entry.description,
-          enabled: entry.current_value,
+          enabled: entry.extension? ? setting.extension_enabled?(entry.extension.id, default: entry.extension.default_enabled?) : setting.public_send(:"#{entry.attribute}?"),
           default_enabled: ExperimentalSettingsRegistry.default_on?(entry),
           extension: entry.extension?
         }
