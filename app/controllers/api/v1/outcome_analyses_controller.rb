@@ -8,6 +8,11 @@
 # There is no create-by-side-effect anywhere in Zimmer: an analysis exists
 # because something explicitly posted one here or called the tool.
 class Api::V1::OutcomeAnalysesController < Api::BaseController
+  # Zimmer's iOS app: the Outcomes ledger and one analysis with its tree. Not
+  # `create` — an analysis is an analyzer session's to post, and the Outcomes page
+  # offers a person no form for one; its Analyze buttons spawn that session.
+  accepts_native_app_tokens only: %i[index show]
+
   before_action :set_session, only: [ :create ]
 
   # GET /api/v1/outcome_analyses

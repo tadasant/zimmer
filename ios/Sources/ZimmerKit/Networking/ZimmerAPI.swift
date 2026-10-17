@@ -2,7 +2,7 @@ import Foundation
 
 /// What the app asks of Zimmer. A protocol so screens and tests can run against
 /// `FakeZimmerAPI` with no server and no sign-in.
-public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI, OperationsAPI, AttachmentsAPI, InteractionAPI, AppSettingsAPI, DecisionsAPI, LiveAPI {
+public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI, OperationsAPI, OperationsActionsAPI, AttachmentsAPI, InteractionAPI, AppSettingsAPI, DecisionsAPI, LiveAPI {
     func sessions(_ filter: SessionFilter) async throws -> [SessionSummary]
     func session(_ id: Int) async throws -> SessionDetail
     /// The newest `limit` messages (the server caps it at 200), whole, and how many there are.
