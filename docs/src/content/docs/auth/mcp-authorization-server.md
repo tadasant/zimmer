@@ -278,10 +278,12 @@ only a plugin key.
 who approved it, when it was last used, its level (**Acts on your behalf** or **Relay only**) with
 when and how that level was set, and a **Revoke** button. A **Make relay only** or **Let it act on my
 behalf** button changes the level. Raising it asks for confirmation first. The change is recorded on
-the grant (`scope_changed_at`, `scope_change_reason`: `consent`, `ui_upgrade`, `ui_downgrade` or
-`backfill`) and logged at WARN. Revoking refuses the access token from the next request on and ends
-the refresh token, so the client has to be approved again. Like the rest of that page, it has no
-REST or MCP sibling, for the same reason the key controls don't.
+the grant (`scope_changed_at`, `scope_change_reason`: `consent`, `ui_upgrade`, `ui_downgrade`,
+`app_upgrade`, `app_downgrade` or `backfill`) and logged at WARN. Revoking refuses the access token
+from the next request on and ends the refresh token, so the client has to be approved again. No API
+key and no MCP tool reaches either, for the same reason the key controls refuse them; the iOS app
+does both through [`/api/v1/oauth_grants`](/extend/rest-api/#the-auth-boundary-who-you-are-connections-and-keys),
+on a connection that acts as you (the `app_*` reasons).
 
 Connections approved before levels existed were raised to **acts on my behalf** by a one-time
 [post-deploy task](/operate/deploying/#one-time-post-deploy-tasks)
