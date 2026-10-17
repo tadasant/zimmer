@@ -123,6 +123,10 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
     /// is named.
     @Published var fixtureCosts: CostScope?
+    /// `-ZimmerFixtureSettings [section]`: More opens Settings, scrolled to that section
+    /// (`defaults`, `experimental`, `mcpApps`) if one is named. `-ZimmerFixtureAccount`:
+    /// Settings, with API keys & connections pushed over it.
+    @Published var fixtureSettings: SettingsOpening?
     /// `-ZimmerFixtureHealth`: More opens on Health.
     @Published var fixtureHealth = false
     /// `-ZimmerFixtureClis`: More opens on CLIs.
@@ -242,6 +246,15 @@ final class AppModel: ObservableObject {
             // The next argument is a root to narrow to, unless it is the next flag.
             let root = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : nil
             fixtureCosts = root.map(CostScope.agentRoot) ?? .fleet
+            tab = .more
+        }
+        if let flag = arguments.firstIndex(of: "-ZimmerFixtureSettings") {
+            let section = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : nil
+            fixtureSettings = SettingsOpening(section: section.flatMap(SettingsSection.init(rawValue:)))
+            tab = .more
+        }
+        if arguments.contains("-ZimmerFixtureAccount") {
+            fixtureSettings = SettingsOpening(section: nil, account: true)
             tab = .more
         }
         if arguments.contains("-ZimmerFixtureHealth") {
