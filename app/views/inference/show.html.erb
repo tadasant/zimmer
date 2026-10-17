@@ -73,6 +73,10 @@
             <h2 class="text-lg font-medium text-gray-900">Accounts</h2>
           </div>
 
+          <% if @rebalance_plan %>
+            <%= render "inference/rebalance", plan: @rebalance_plan %>
+          <% end %>
+
           <% @accounts.each do |account| %>
             <div id="account_card_<%= account.id %>">
               <%= render partial: "inference/account_card", locals: {
