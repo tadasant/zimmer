@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 45 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 47 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -90,11 +90,12 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=settings` | The Settings page's global defaults: read and change the base runtime and model and the Experimental toggles |
 | `/mcp?tool_groups=external_apps` | [Zimmer plugins](/extend/zimmer-plugins/): register one, set the triggers it may invoke, mint and revoke its keys |
 | `/mcp?tool_groups=root_data` | [Root data](/sessions/root-data/): the calling session's agent root's persistent records |
+| `/mcp?tool_groups=live_conversations` | [Live Mode](/sessions/live/): read conversations, start one, type into it, turn voice on or off, end it; read and change the Live settings and guidance |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
 The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions`,
-`work_backlog`, `outcome_analyses`, `settings`, `external_apps` and `root_data` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
+`work_backlog`, `outcome_analyses`, `settings`, `external_apps`, `root_data` and `live_conversations` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
 `_readonly` variant. Omitting `tool_groups` enables the four base groups and nothing else — an
 opt-in group is valid and addressable but never handed out by default, so `/mcp` on its own does
 not carry `record_gate_decision`. An unknown group is dropped with a warning rather than failing
@@ -216,7 +217,7 @@ production.
 
 ## The tool surface
 
-45 tools, ten domains — 27 of them on the unscoped surface.
+47 tools, eleven domains — 27 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
@@ -230,6 +231,29 @@ production.
 | `settings` (opt-in) | `get_app_settings`, `action_app_settings` |
 | `external_apps` (opt-in) | `search_external_apps`, `action_external_app` — register [Zimmer plugins](/extend/zimmer-plugins/) and mint their keys |
 | `root_data` (opt-in) | `list_root_collections`, `search_root_records`, `get_root_record`, `put_root_record`, `append_root_record`, `delete_root_record` — the calling root's [persistent data](/sessions/root-data/) |
+| `live_conversations` (opt-in) | `get_live_conversations`, `action_live_conversation`, `get_live_settings`, `action_live_settings` — [Live Mode](/sessions/live/) |
+
+`get_live_conversations` and `action_live_conversation` read and drive [Live Mode](/sessions/live/)
+conversations: whether Live Mode can start, the current conversation and whether voice is on, a
+conversation's thread with its tool calls, and start / send a typed message / `set_mode` (voice on or
+off) / end. The voice call's audio relay and the OpenAI key are deliberately not tools — the first
+needs a client holding the call, the second is a secret value. `set_mode` to `voice` only says the
+conversation is spoken; a client still has to open the call.
+`get_live_settings` and `action_live_settings` (`update`, `reset`, `restore_guidance`) read and change
+the [Live settings](/sessions/live/#live-settings) and the Live mode guidance, through the same
+checks as the settings page; a change made here is recorded as an agent's. The live model does not
+need them: its own `get_live_settings` / `update_live_settings` functions are always on its bridge.
+
+`live_conversations` is a group of its own, and opt-in, because of what a live conversation can do.
+Its model can switch on any catalog MCP server and call it with the credentials Rails resolves, while
+a session reaches only the servers it was given. `send_message` hands that model an instruction, so
+in `sessions` every session carrying `zimmer-sessions` (or the unscoped `zimmer` server) would reach
+through it to the whole catalog. A connection names `live_conversations` to get all four tools, and
+`live_conversations_readonly` the reads alone. No catalog entry names either, so no root carries them,
+and neither does the live agent's own gateway, which is built from the groups its `zimmer` entries
+name. The usual caveat holds: this decides what a connection is offered, not what the fleet's shared
+API key could compose. The REST routes that start and steer a conversation do not take an API key at
+all; see [the REST API](/extend/rest-api/#live-conversations).
 
 `get_user_view` and `reorder_user_view` are the read and write halves of the dashboard's
 [User view](/sessions/user-view/) — the human's decision board. The read returns the board in the

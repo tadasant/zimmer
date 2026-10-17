@@ -32,9 +32,8 @@ final class SessionParityUITests: XCTestCase {
         // Press and hold a running session to pause it.
         let running = row(app, 1042)
         XCTAssertTrue(running.waitForExistence(timeout: timeout))
-        running.press(forDuration: 1.2)
-        let pause = app.buttons["Pause Session"].firstMatch
-        XCTAssertTrue(pause.waitForExistence(timeout: timeout))
+        let pause = pressForMenu(app, running, offering: "Pause Session")
+        XCTAssertTrue(pause.exists, "the menu offers Pause Session")
         pause.tap()
         XCTAssertTrue(waitForLabelContaining(running, "Needs input"), "a paused session comes to rest waiting on you")
 
@@ -191,8 +190,18 @@ final class BoardViewUITests: XCTestCase {
 
     func test_select_several_and_trash_them_with_refusals_reported() throws {
         let app = launch(["-ZimmerFixtureFilter", "active"])
-        app.buttons["board.menu"].tap()
-        app.buttons["Select Sessions"].firstMatch.tap()
+        XCTAssertTrue(row(app, 1027).waitForExistence(timeout: timeout))
+        // Selecting is a state the board has to reach before a row is tapped: on a loaded
+        // simulator the menu opens late, a tap fired at once misses it, and the menu then
+        // stands over the row. So wait for the item, and for edit mode; once more if needed.
+        let done = app.buttons["select.done"]
+        for _ in 0..<2 where !done.exists {
+            app.buttons["board.menu"].tap()
+            let select = app.buttons["Select Sessions"].firstMatch
+            if select.waitForExistence(timeout: 10) { select.tap() }
+            _ = done.waitForExistence(timeout: 10)
+        }
+        XCTAssertTrue(done.exists, "the board is selecting")
 
         // A failed session goes; one with messages queued for it is refused with the
         // server's reason, as the web UI's bulk Trash refuses it.
@@ -271,7 +280,8 @@ final class BoardViewUITests: XCTestCase {
     }
 }
 
-/// Slice 2b: the Ranked view's Start now and drag-to-reorder.
+/// Slice 2b: the Ranked view's Start now and drag-to-reorder. Every assertion is on state
+/// that stays, never on a toast.
 @MainActor
 final class RankedUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -284,11 +294,11 @@ final class RankedUITests: XCTestCase {
         let app = launch()
         let sweep = app.descendants(matching: .any)["session.row.1031"]
         XCTAssertTrue(sweep.waitForExistence(timeout: timeout))
-        sweep.press(forDuration: 1.2)
-        let start = app.buttons["Start Now"].firstMatch
-        XCTAssertTrue(start.waitForExistence(timeout: timeout))
+        let start = pressForMenu(app, sweep, offering: "Start Now")
+        XCTAssertTrue(start.exists, "the menu offers Start Now")
+        // The toast that confirms it is up for 2.5 seconds, less than a tap and its idle wait
+        // can take on a CI runner; the row reading Running is the proof.
         start.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
         let running = expectation(for: NSPredicate(format: "label CONTAINS 'Running'"), evaluatedWith: sweep)
         XCTAssertEqual(XCTWaiter().wait(for: [running], timeout: timeout), .completed)
     }
@@ -340,14 +350,16 @@ final class RankedUITests: XCTestCase {
         handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.6, thenDragTo: second.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.25)),
                    withVelocity: .slow, thenHoldForDuration: 0.3)
-        // The toast comes after the reload, so the new order is on screen by then.
-        XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
+        // Read the order the rows settle in, not the toast: it is up for less time than the
+        // drag's own idle wait can take. A refused move shows an alert instead, and its reload
+        // puts the row back.
         let deadline = Date().addingTimeInterval(timeout)
         while last.frame.minY >= second.frame.minY, Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         }
         XCTAssertLessThan(first.frame.minY, last.frame.minY, "the sweep still heads the spot queue")
         XCTAssertLessThan(last.frame.minY, second.frame.minY, "the dropped session now sits second")
+        XCTAssertFalse(app.alerts.firstMatch.exists, "the server took the move")
         app.buttons["select.done"].tap()
     }
 

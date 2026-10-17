@@ -10,7 +10,9 @@ import ZimmerKit
 /// every other screen (`QuickRouterButton`, the web's bubble), and this sheet, which the
 /// button and the bar's sparkles open. The sheet is the web bubble's panel: the words, photos
 /// and files, and under *Advanced* the harness, the model and *Run as spot*. Opened from a
-/// session, the new one threads under it.
+/// session, the new one threads under it, and that session's page goes with the words as the
+/// bubble sends the page it was typed on. *Open the session when it starts* off is the
+/// bubble's plain *Submit*: the session starts and this screen stays.
 struct QuickRouterView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -26,6 +28,8 @@ struct QuickRouterView: View {
     @State private var spot = false
     @State private var showingAdvanced = false
     @State private var threadUnderParent = true
+    /// The web bubble's *Submit & Open* (on) or *Submit* (off).
+    @State private var opensSession = true
     /// The board's bar opened this sheet: the words go back to the bar when it closes, emptied
     /// by a start. Held here, not read off `AppModel`, so another opening cannot change it.
     @State private var openedFromBar = false
@@ -67,6 +71,29 @@ struct QuickRouterView: View {
                         .tint(Theme.accent)
                         .accessibilityIdentifier("quickrouter.parent")
                     }
+                    if let page = app.quickRouterPage {
+                        // The web bubble's "Page context is automatically included."
+                        Label {
+                            Text("Page context is included: \(page.title)")
+                        } icon: {
+                            Image(systemName: "doc.text")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(Theme.inkMute)
+                        .lineLimit(2)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("quickrouter.page")
+                    }
+                    Toggle(isOn: $opensSession) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Open the session when it starts").font(.subheadline).foregroundStyle(Theme.ink)
+                            Text("Off, it starts in the background and this screen stays.")
+                                .font(.caption)
+                                .foregroundStyle(Theme.inkSoft)
+                        }
+                    }
+                    .tint(Theme.accent)
+                    .accessibilityIdentifier("quickrouter.open")
                     advanced
                     if let error = app.error { ErrorBanner(error: error) }
                 }
@@ -198,6 +225,10 @@ struct QuickRouterView: View {
     private func start() async {
         isStarting = true
         defer { isStarting = false }
+        // Before the await, and whatever it returns: a start closes the sheet and may push the
+        // session, and the keyboard must not outlive either.
+        focused = false
+        dismissKeyboard()
         // The server validates a model against the harness it was picked for. The app
         // cannot know which root the router is (configs does not say), so a model always
         // travels with the harness the picker listed it under.
@@ -208,11 +239,13 @@ struct QuickRouterView: View {
             model: modelID.isEmpty ? nil : modelID,
             spot: spot,
             parentSessionID: threadUnderParent ? app.quickRouterParent : nil,
-            attachments: attachments
+            attachments: attachments,
+            // The screen, not the thread: it goes whether or not the start threads under the session.
+            page: app.quickRouterPage
         )
         // Read before the await: a start closes the sheet before it returns.
         let fromBar = openedFromBar
-        guard await app.startQuickRouter(request) else { return }
+        guard await app.startQuickRouter(request, open: opensSession) else { return }
         started = true
         if fromBar { app.quickRouterBarHandback = "" }
     }
@@ -221,7 +254,8 @@ struct QuickRouterView: View {
 /// The web UI's prompt box on the board, pinned to the foot of the Sessions screen: the
 /// first thing a thumb reaches, and the most prominent thing on the main screen. Type a
 /// sentence, send it, and the session it starts opens. The sparkles open the sheet with
-/// the words so far, for photos, files and the Advanced choices.
+/// the words so far, for photos, files and the Advanced choices. While it has the keyboard a
+/// Cancel stands beside it, as beside the search box, and empties it.
 ///
 /// It stands aside while the search box has the keyboard — a second field above the
 /// keyboard would take the room the results need — and while rows are being selected,
@@ -242,6 +276,11 @@ struct QuickRouterBar: View {
         HStack(alignment: .bottom, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
                 Button {
+                    // Let go of the keyboard first: UIKit hands first responder back to the
+                    // field that had it when a sheet closes, so a bar still focused here would
+                    // take the keyboard again as the sheet's start closes it.
+                    focused = false
+                    dismissKeyboard()
                     app.openQuickRouter(draft: prompt)
                 } label: {
                     Image(systemName: "sparkles")
@@ -281,7 +320,19 @@ struct QuickRouterBar: View {
             .disabled(!canSend)
             .accessibilityLabel("Start")
             .accessibilityIdentifier("quickrouter.bar.start")
+            if focused {
+                // The search box's Cancel, beside the bar for as long as it has the keyboard:
+                // the words go and the keyboard with them, as Cancel empties the search.
+                Button("Cancel") { cancel() }
+                    .foregroundStyle(Theme.accent)
+                    .fixedSize()
+                    .frame(height: 38)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .accessibilityHint("Clears the words and puts the keyboard away")
+                    .accessibilityIdentifier("quickrouter.bar.cancel")
+            }
         }
+        .animation(.easeOut(duration: 0.2), value: focused)
         .padding(.horizontal, Theme.margin)
         .padding(.top, 8)
         .padding(.bottom, 8)
@@ -309,27 +360,41 @@ struct QuickRouterBar: View {
         !isStarting && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// Back out without sending: the bar returns to rest, empty and without the keyboard.
+    private func cancel() {
+        prompt = ""
+        focused = false
+        dismissKeyboard()
+    }
+
+    /// The keyboard goes as the words are sent, not after the answer: by the time the start
+    /// returns, the session's page is pushed over the board and the bar is off screen, and a
+    /// failed start keeps its words in the bar for another try without holding the keyboard.
     private func start() async {
         isStarting = true
         defer { isStarting = false }
-        if await app.startQuickRouter(prompt) {
-            prompt = ""
-            focused = false
-        }
+        focused = false
+        dismissKeyboard()
+        if await app.startQuickRouter(prompt) { prompt = "" }
     }
 }
 
 /// The web UI's bubble: the Quick Router in the bottom-right corner of every screen that is
 /// not the board (the board has the bar). Indigo, with the mark's gold ring. The one shadow
 /// in the app, because a button floating over content needs the lift; Motet's play button
-/// is the precedent. On a session, `parent` is that session, so the new one threads under it.
+/// is the precedent. On a session, `parent` is that session, so the new one threads under it,
+/// and `page` is its page, sent as the bubble sends the page it was typed on.
 struct QuickRouterButton: View {
     @EnvironmentObject private var app: AppModel
     var parent: Int?
+    var page: QuickRouterPage?
 
     var body: some View {
         Button {
-            app.openQuickRouter(parent: parent)
+            // A composer typing on this screen would get the keyboard back as the sheet closes,
+            // over the session the start opens.
+            dismissKeyboard()
+            app.openQuickRouter(parent: parent, page: page)
         } label: {
             Image(systemName: "sparkles")
                 .font(.system(size: 21, weight: .semibold))
@@ -344,16 +409,24 @@ struct QuickRouterButton: View {
     }
 }
 
+/// Resign whatever holds the keyboard. Clearing a `@FocusState` covers the field SwiftUI
+/// knows is focused; this covers the one UIKit made first responder behind its back, as it
+/// does when a sheet closes and hands focus back to the field that had it.
+@MainActor
+func dismissKeyboard() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+}
+
 extension View {
     /// The Quick Router button in the corner, above whatever the screen keeps at its foot
     /// (a composer, a tab bar) — apply it before a `safeAreaInset` so it sits above the inset.
-    /// `parent` is the session the screen shows, when it shows one.
-    func quickRouterCorner(parent: Int? = nil) -> some View {
+    /// `parent` is the session the screen shows, when it shows one, and `page` its page.
+    func quickRouterCorner(parent: Int? = nil, page: QuickRouterPage? = nil) -> some View {
         // The scroll content keeps room at its foot, so the last row or message can be
         // scrolled clear of the button rather than living under it.
         contentMargins(.bottom, 76, for: .scrollContent)
             .overlay(alignment: .bottomTrailing) {
-                QuickRouterButton(parent: parent)
+                QuickRouterButton(parent: parent, page: page)
                     .padding(.trailing, Theme.margin)
                     .padding(.bottom, 14)
             }

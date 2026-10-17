@@ -96,7 +96,7 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
   end
 
   test "interrupt on running session pauses, terminates process, and dispatches" do
-    @session.update!(status: :running, metadata: { "process_pid" => 999_999, "clone_path" => "/tmp/test-clone" })
+    @session.update!(status: :running, metadata: { "process_pid" => 999_999_999, "clone_path" => "/tmp/test-clone" })
     message = @session.enqueued_messages.create!(content: "Interrupt now", position: 1)
 
     result = nil

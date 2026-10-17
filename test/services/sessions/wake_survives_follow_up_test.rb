@@ -54,7 +54,7 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
     # and a worker's `start` runs it (#1040), so the delivered prompt is what says
     # the session took the turn.
     assert session.reload.waiting?
-    assert_equal "Also check whether the base branch moved", session.metadata["pending_follow_up_prompt"],
+    assert_equal TurnSource.new(surface: "mcp").annotate("Also check whether the base branch moved"), session.metadata["pending_follow_up_prompt"],
       "the follow-up takes the session's next turn"
 
     session.start!

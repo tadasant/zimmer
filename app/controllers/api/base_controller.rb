@@ -47,6 +47,24 @@ class Api::BaseController < ActionController::API
 
   private
 
+  # Where text arriving over the REST API came from, for the turn-source note
+  # (TurnSource). The credential decides the surface: the iOS app's bearer token
+  # is `ios` (its X-Zimmer-Client header may refine that to `carplay`), a call
+  # naming the session acting on it — or a child spawned under a parent — is
+  # `agent`, and anything else on an API key is `api`. A caller that reports no
+  # modality gets `unknown`, never an error. A style hint only: who is speaking is
+  # HumanMessageCapture's question, answered from the same credential.
+  def api_turn_source(spawned_under_parent: false)
+    surface = if native_app_request?
+      "ios"
+    elsif spawned_under_parent || params[:acting_session_id].present?
+      "agent"
+    else
+      "api"
+    end
+    TurnSource.from_request(request, surface: surface)
+  end
+
   # Record the "uncle" lineage edge for a session-initiated queue/interrupt.
   #
   # The acting session is self-declared, via an `acting_session_id` on the
@@ -158,6 +176,37 @@ class Api::BaseController < ActionController::API
       Rails.logger.info("[native_app] #{request.request_method} #{request.path} refused from #{request.remote_ip}: access token #{refusal}")
       render_api_error("Unauthorized", "Invalid or expired access token", status: :unauthorized)
     end
+  end
+
+  # The fence on an action that stands for a person's decision — Merge, answering
+  # an elicitation, the Inference page's writes: only the iOS app's token, on a
+  # grant that acts as its approver. An API key names a key, never a person, and
+  # a relay-only grant was approved to carry messages, not to decide. Wire it
+  # with `before_action :require_a_person_on_the_app, only: [...]`.
+  def require_a_person_on_the_app
+    return if person_on_the_app?
+
+    message = if native_app_request?
+      "This sign-in may not act as you; sign in again and allow acting as you"
+    else
+      "Only a person can do this: it takes the iOS app's sign-in, acting as you, or the web UI"
+    end
+    render_api_error("Forbidden", message, status: :forbidden)
+  end
+
+  # Whether this request is a person: the iOS app's token, on a grant that acts
+  # as its approver. What the fence above checks, and what decides whether a
+  # response may carry something the web shows only to a signed-in person.
+  def person_on_the_app?
+    native_app_request? && native_app_grant.acts_as_human?
+  end
+
+  # Who a person-only write is recorded as: the grant's email, and the surface.
+  # Named on every audit line the web's equivalent writes — a rotation event's
+  # `triggered_by`, AppSetting's policy audit line — so a change made from a
+  # phone is attributable without reading the request log.
+  def native_app_actor
+    "#{native_app_grant.user_email} via the iOS app"
   end
 
   # Where the key lives on the request. Subclasses may widen this — the native

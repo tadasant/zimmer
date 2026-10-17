@@ -110,7 +110,8 @@ class EnqueuedMessagesController < ApplicationController
         position: next_position,
         status: "pending",
         images: attached_images || [],
-        files: attached_files || []
+        files: attached_files || [],
+        source_context: web_turn_source.to_h
       )
 
       # Recorded when the human typed it, not when the processor delivers it.

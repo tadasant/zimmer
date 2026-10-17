@@ -1,0 +1,23 @@
+<%# The live modes' OpenAI key: whether it resolves, and where a human sets it.
+    Zimmer reads the key and never writes it — see SecretPresence.
+
+    Locals: status (SecretPresence::Status) %>
+<div class="bg-white shadow-sm rounded-lg border border-gray-200 p-4 sm:p-6" id="live-openai-key">
+  <div class="flex items-start justify-between gap-4">
+    <div class="min-w-0">
+      <h2 class="text-lg font-medium text-gray-900">OpenAI API key</h2>
+      <p class="mt-1 text-sm text-gray-600">
+        Live Mode runs on OpenAI: typed turns through Chat Completions, voice through the Realtime API.
+        Read as <code class="font-mono break-all"><%= status.variable %></code> — its own name, so it never
+        changes how Codex or Pi sessions authenticate.
+      </p>
+    </div>
+    <% if status.present? %>
+      <span class="shrink-0 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800" data-live-key-state="set" title="<%= status.provider_label %>">Set · <%= status.provider_badge %></span>
+    <% else %>
+      <span class="shrink-0 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700" data-live-key-state="unset">Not set</span>
+    <% end %>
+  </div>
+
+  <%= render "shared/store_console_note", status: status %>
+</div>

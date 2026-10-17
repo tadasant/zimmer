@@ -23,6 +23,11 @@ class Trigger < ApplicationRecord
   # goes to the log and to the alert's snippet).
   MAX_LAST_ERROR_CHARS = 1000
 
+  # Why `enqueue_messages` or `resuscitate_archived` cannot be on: both act only
+  # on the session a trigger re-uses. Read as "Enqueue messages can only be …"
+  # once Rails prefixes the attribute.
+  REUSE_SESSION_REQUIRED_MESSAGE = "can only be enabled when re-use session is enabled"
+
   # --- Burst control -------------------------------------------------------
   #
   # `max_sessions_per_minute` caps how many NEW sessions a trigger may spawn in a
@@ -493,6 +498,22 @@ class Trigger < ApplicationRecord
     end
   end
 
+  # Flip `enqueue_messages` / `resuscitate_archived`, the two switches on the
+  # trigger page. Each only means anything on a trigger that re-uses a session,
+  # and with reuse_session off the clearing callbacks would store false and the
+  # save would still succeed — so the flip is refused instead, with the reason
+  # on `errors`, which is what the web page and the REST API both report.
+  #
+  # @return [Boolean] whether the flag was flipped
+  def toggle_enqueue_messages
+    toggle_reuse_session_flag(:enqueue_messages)
+  end
+
+  # @return [Boolean] whether the flag was flipped
+  def toggle_resuscitate_archived
+    toggle_reuse_session_flag(:resuscitate_archived)
+  end
+
   # Park this trigger with the error that stopped it, instead of destroying it.
   # Named without a bang, and returning a boolean rather than raising, because
   # the caller is already inside a rescue and needs a fallback rather than a
@@ -747,6 +768,23 @@ class Trigger < ApplicationRecord
   # Invoke button, where a human is clicking in the web app — overrules that.
   def session_genesis
     @genesis_override.presence || SessionGenesis.from_condition_types(condition_types)
+  end
+
+  # Where the turns this trigger delivers came from, for the turn-source note:
+  # Slack, email or WhatsApp when a person wrote on one of those and the trigger
+  # relayed it, and `trigger` — machine-written — for everything else. Keyed off
+  # the condition types, not #session_genesis, because an Invoke from the web app
+  # still delivers the trigger's own prompt, not words the person typed.
+  #
+  # nil — no note — for a one-time reuse trigger: that is a wake-up a session set
+  # for itself (or a watch on another session), and its prompt is the session's
+  # own words handed back to it, which Zimmer does not label.
+  #
+  # @return [TurnSource, nil]
+  def turn_source
+    return nil if one_time_reuse_trigger?
+
+    TurnSource.for_genesis(condition_genesis)
   end
 
   # The class this trigger's sessions would carry if it named none — the shipped
@@ -1511,13 +1549,22 @@ class Trigger < ApplicationRecord
     text.truncate(MAX_LAST_ERROR_CHARS)
   end
 
+  def toggle_reuse_session_flag(flag)
+    unless reuse_session
+      errors.add(flag, REUSE_SESSION_REQUIRED_MESSAGE)
+      return false
+    end
+
+    update(flag => !public_send(flag))
+  end
+
   def clear_enqueue_messages_without_reuse_session
     self.enqueue_messages = false unless reuse_session
   end
 
   def validate_enqueue_messages_requires_reuse_session
     if enqueue_messages && !reuse_session
-      errors.add(:enqueue_messages, "can only be enabled when re-use session is enabled")
+      errors.add(:enqueue_messages, REUSE_SESSION_REQUIRED_MESSAGE)
     end
   end
 
@@ -1542,7 +1589,7 @@ class Trigger < ApplicationRecord
 
   def validate_resuscitate_archived_requires_reuse_session
     if resuscitate_archived && !reuse_session
-      errors.add(:resuscitate_archived, "can only be enabled when re-use session is enabled")
+      errors.add(:resuscitate_archived, REUSE_SESSION_REQUIRED_MESSAGE)
     end
   end
 
@@ -1956,7 +2003,8 @@ class Trigger < ApplicationRecord
           session.enqueued_messages.create!(
             content: prompt,
             position: next_position,
-            status: "pending"
+            status: "pending",
+            source_context: turn_source&.to_h
           )
           @last_follow_up_status = :queued
         end
@@ -1970,7 +2018,7 @@ class Trigger < ApplicationRecord
         # See SessionStateMachine#hold_pending_one_time_wakes.
         session.waking_trigger = self if one_time_reuse_trigger?
         begin
-          session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
+          session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS, source: turn_source)
         ensure
           session.waking_trigger = nil
         end
@@ -2615,7 +2663,8 @@ class Trigger < ApplicationRecord
       genesis: session_genesis,
       scheduling_class: session_scheduling_class,
       precedence: session_precedence,
-      metadata: (@fire_session_metadata || {}).merge("trigger_id" => id, "trigger_name" => name)
+      metadata: (@fire_session_metadata || {}).merge("trigger_id" => id, "trigger_name" => name),
+      source: turn_source
     ) do |created|
       @last_fire_created_session = created
       @fire_workflow_run&.update!(session: created)

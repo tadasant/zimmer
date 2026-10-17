@@ -1,0 +1,28 @@
+<%# Locals: turn (LiveConversationTurn) %>
+<div id="live_turn_<%= turn.id %>" data-live-turn-id="<%= turn.id %>" data-live-turn-role="<%= turn.role %>" class="flex <%= turn.user? ? 'justify-end' : 'justify-start' %>">
+  <% if live_settings_change?(turn) %>
+    <%# The live model changed its own settings: shown as a note, never folded away. %>
+    <div class="max-w-full w-full sm:w-auto sm:max-w-[85%] rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-live-settings-change>
+      <p class="font-medium">Live Mode changed its settings · <%= link_to "Live settings", live_settings_path, class: "underline" %></p>
+      <p class="mt-1 whitespace-pre-wrap break-words"><%= turn.tool_output.to_s.delete_prefix("Changed:\n").truncate(2_000) %></p>
+    </div>
+  <% elsif turn.tool? %>
+    <details class="max-w-full w-full sm:w-auto sm:max-w-[85%] rounded-md border <%= turn.tool_error ? 'border-red-200 bg-red-50' : 'border-gray-200 bg-gray-50' %> px-3 py-2 text-xs">
+      <summary class="cursor-pointer text-gray-600 break-all">
+        <span class="font-mono font-medium"><%= live_tool_label(turn) %></span>
+        <% if turn.tool_error %><span class="ml-1 text-red-700">failed</span><% end %>
+      </summary>
+      <div class="mt-2 space-y-2">
+        <pre class="whitespace-pre-wrap break-all font-mono text-[11px] text-gray-700"><%= JSON.pretty_generate(turn.tool_arguments || {}) %></pre>
+        <pre class="whitespace-pre-wrap break-words font-mono text-[11px] text-gray-800 max-h-64 overflow-y-auto border-t border-gray-200 pt-2"><%= live_linkify(turn.tool_output.to_s.truncate(20_000)) %></pre>
+      </div>
+    </details>
+  <% else %>
+    <div class="max-w-[85%] rounded-2xl px-4 py-2 text-sm break-words <%= turn.user? ? 'bg-indigo-600 text-white' : 'bg-white border border-gray-200 text-gray-900' %>">
+      <div class="whitespace-pre-wrap"><%= live_linkify(turn.content.to_s) %></div>
+      <% if turn.source == "spoken" %>
+        <span class="mt-1 block text-[10px] <%= turn.user? ? 'text-indigo-200' : 'text-gray-400' %>">spoken</span>
+      <% end %>
+    </div>
+  <% end %>
+</div>

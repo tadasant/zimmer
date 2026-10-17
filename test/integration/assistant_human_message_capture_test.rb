@@ -82,7 +82,7 @@ class AssistantHumanMessageCaptureTest < ActionDispatch::IntegrationTest
     grant = grant_for(OauthServer::RELAY_ONLY)
 
     assert_no_difference("HumanMessage.count") { follow_up(token_for(grant)) }
-    assert_equal "Merge strad 407.", idle_session.reload.metadata["pending_follow_up_prompt"]
+    assert_equal "Merge strad 407.", TurnSource.strip(idle_session.reload.metadata["pending_follow_up_prompt"])
   end
 
   test "the fleet's API key records nothing, whatever the follow_up says" do

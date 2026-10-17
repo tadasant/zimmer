@@ -122,6 +122,9 @@ class Api::V1::QuickRouterController < Api::BaseController
         scheduling_class: spot ? SessionGenesis::SPOT : (SessionGenesis::PRIORITY if native_app_request?),
         precedence: (Session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT) if spot),
         config: model ? { "model" => model } : nil,
+        # The iOS app on its token; otherwise the browser extension, whose key is a
+        # browser's and opens nothing but this endpoint.
+        source: native_app_request? ? api_turn_source : TurnSource.from_request(request, surface: "browser_extension", default_modality: "text"),
         skip_enqueue: true
       )
 

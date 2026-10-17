@@ -24,6 +24,8 @@ final class VoiceIO: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     func begin() {
+        // A Live Mode voice call owns the audio session while it runs; leave it alone.
+        guard !LiveCall.shared.isActive else { return }
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers, .allowBluetooth, .defaultToSpeaker])
@@ -36,6 +38,7 @@ final class VoiceIO: NSObject, AVSpeechSynthesizerDelegate {
     func end() {
         synthesizer.stopSpeaking(at: .immediate)
         finishSpeaking()
+        guard !LiveCall.shared.isActive else { return }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
