@@ -330,6 +330,57 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   the full ink with a dot. Tap one to open its session (and mark it read), swipe to mark one read or
   dismiss a read one, and mark all read or dismiss all read from its menu. *Triggers* lists each
   trigger with what fires it on one line (two at most), its root, when it last fired and how many
+  sessions it has made; turn one on or off (a trigger that is off reads in the quieter ink), run it now, or open its
+  last session. Tap one for its page (`GET /api/v1/triggers/:id`), which shows what the web
+  page shows: its status and the labels beside it (*Re-uses session*, *Enqueues messages*,
+  missed fires and the rest), why it failed and a *Re-arm* switch if it did, when it last fired
+  and the session it last started, each condition and when it last fired, the agent root
+  (flagged when the catalog has no such root), the re-use settings, *Skip while pending* with
+  the web page's note when it is inert, the coalescing window in force (*(default)* when
+  inherited, and whether it is inert), missed fires and since when, the burst cap, the
+  scheduling class its sessions get and whether it was set on the trigger, its precedence, the
+  MCP servers, skills, hooks and plugins its sessions are configured with (a name the catalog
+  no longer resolves is flagged *not in catalog*), the goal and prompt template, and the ten
+  sessions it made most recently. *Run Now* is the web page's panel: a template that names
+  `{{variables}}` opens a sheet with a field for each, optional, and the run carries what you
+  typed (`variables` on `POST /api/v1/triggers/:id/invoke`); a template without any asks for a
+  confirmation. *Enqueue messages* and *Resuscitate archived* are shown, not switched: the API
+  that would switch them is the trigger update, which the app's token does not open. Creating
+  and editing a trigger, and those two switches, stay in the browser; *Open in browser* on a
+  trigger's page gets you there. *More* holds *Costs* and *Health*, read-only. *Costs* is the
+  web page, section for section, from the whole of `GET /api/v1/costs`: the ledger's coverage
+  (backfilled, running with its progress, queued, or not yet, and what the ledger covers since),
+  the total with the tokens, API calls and ad hoc share beside it, the unpriced-models warning,
+  where the money goes by kind of token, spend by day as a chart (tap a bar for that day's
+  sessions-against-ad-hoc split, tokens, calls, biggest roots and models), by agent root with
+  each root's calls, tokens, per-call cost, share and estimated context-feature split, the
+  context features table with its unattributed line and coverage, the experimental settings'
+  cohorts with their sample sizes and the comparison only when both sides clear the bar, by
+  model, main thread against subagents, by runtime, ad hoc calls by source, the most expensive
+  sessions with their titles, calls and tokens, each a tap away, and the burn rate by harness
+  and model. Its window is one of the web page's horizons (24 hours to a year) or a range of
+  calendar days from the two date fields, both ends included, in the phone's time zone. Tap an
+  agent root to narrow the whole page to it, or, on the page for every root, swipe a session and
+  choose *Only This*, the web page's drilldown; the page then says what it covers, and *All
+  agent roots* widens it again. A narrowed page drops the experiments and burn rates, as the web
+  page does. *Sweep now* stays in the browser. *Health* is the web page's every section, in its
+  order, from `GET /api/v1/health`: the overall status; queue recovery mode (on or off, what it
+  halts, and when on, since when, who entered it, why, and when it resumes); process counts
+  and the orphan list; session totals, failure rate and the status, error-category and
+  failure-reason breakdowns; queue depth, jobs per hour, last finished, the queue statistics and
+  the backlog breakdown by queue and job class with the head of line, workers and the database
+  pool; network egress with its resolver and when it was checked or degraded; agent
+  authentication; the SIGTERM and API-error auto-retry panels with their counts, rate-limit
+  status and quota notes; every retry budget; the post-deploy task table with each task's
+  status, attempts, last run, progress and error; cron freshness with the keys behind, the keys
+  that stopped and recovered, and every key's schedule and ticks; log retention; root data by
+  namespace; the warm clone pool's targets and the warm router process; webhook ingest per
+  source; and the recent failures, errors, SIGTERM events and API-error events, each session a
+  tap away. The two alerts the web layout puts on every page, *Queue recovery mode* and
+  *Network egress degraded*, head the Health screen and the sessions board while they are up;
+  the board re-reads them from the health report at most every five minutes, and a visit to
+  Health refreshes them. Health's operator actions (cleanup, retries, entering recovery mode,
+  re-arming tasks) stay in the browser; their routes refuse the app's token.
   sessions it has made; turn one on or off (a trigger that is off reads in the quieter ink), invoke it now (after a
   confirmation, then open the session it started), or open its last session. Tap one for its page
   (`GET /api/v1/triggers/:id`): its status and the web page's labels beside it (*Re-uses session*,
@@ -394,10 +445,9 @@ where an API key cannot: only a person may give it (see the [REST API](/extend/r
 The web composer's camera button is not in the app yet: taking a photo cannot be exercised in the
 simulator, so it waits on a change verified on a device. Fork from a message and answering an
 elicitation stay in the browser until the app draws them; the API they need is in place. Switching a trigger's *Enqueue messages* and
-*Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update),
+*Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update), and
 saying whether re-arming a failed trigger fires it again (the trigger JSON does not say whether a
-one-time wake was already spent; the web page does), and
-the Costs page's burn rate (not in `GET /api/v1/costs`) come in their own change. So does the rest of the web card's refresh: on the
+one-time wake was already spent; the web page does) come in their own change. So does the rest of the web card's refresh: on the
 web it also resumes a failed session and sends the continue nudge to a stalled waiting one, but
 `POST /api/v1/sessions/:id/refresh` only re-reads the transcript, so the row's refresh is
 *Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
