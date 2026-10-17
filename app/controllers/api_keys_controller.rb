@@ -9,11 +9,13 @@
 # host can mint and revoke keys here, and that includes the fleet's own agent
 # sessions, which run on the host.
 #
-# It is deliberately browser-only, with no REST or MCP sibling. An API
-# key that could mint API keys would make the credential self-issuing, and one
-# that could revoke them would let any session holding a key disconnect every
-# other session from Zimmer by revoking the key they share. That keeps key
-# management out of the tools a session is handed. It is not a wall: a
+# No API key and no MCP tool reaches what this page does. An API key that
+# could mint API keys would make the credential self-issuing, and one that
+# could revoke them would let any session holding a key disconnect every other
+# session from Zimmer by revoking the key they share. That keeps key management
+# out of the tools a session is handed. The one REST sibling,
+# Api::V1::ApiKeysController, writes only for the iOS app's sign-in on a grant
+# that acts as you — a person, which a key is not. It is not a wall: a
 # session's shell can drive this page with `curl`.
 class ApiKeysController < ApplicationController
   before_action :set_api_key, only: [ :revoke, :restore ]
@@ -52,7 +54,8 @@ class ApiKeysController < ApplicationController
   end
 
   # An OAuth connection to /mcp (OauthServer::Grant). Revoked from the same page
-  # as the keys, for the same reason this page has no REST or MCP sibling.
+  # as the keys, for the same reason no key may; the iOS app revokes one through
+  # Api::V1::OauthGrantsController on the same terms as it mints a key.
   def revoke_oauth_grant
     grant = OauthServer::Grant.find(params[:id])
     grant.revoke!("revoked from the settings page, #{request.remote_ip}")
@@ -61,9 +64,10 @@ class ApiKeysController < ApplicationController
   end
 
   # Move an OAuth connection between "acts on my behalf" and "relay only"
-  # (OauthServer::PRIVILEGES). Browser-only, like revoking: this is the switch
-  # that decides whether a client's messages are recorded as the human's, so it
-  # sits behind the same sign-in wall as the consent screen that first set it.
+  # (OauthServer::PRIVILEGES). A person's switch, like revoking: it decides
+  # whether a client's messages are recorded as the human's, so it sits behind the
+  # same sign-in wall as the consent screen that first set it — here, or the
+  # app's sign-in acting as you.
   def set_oauth_grant_privilege
     grant = OauthServer::Grant.find(params[:id])
     privilege = params[:privilege].to_s
