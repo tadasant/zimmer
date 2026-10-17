@@ -4,9 +4,11 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::HealthController < Api::BaseController
-  # Zimmer's iOS app: read-only. Health's operator actions (queue recovery, retries, post-
-  # deploy tasks, queued jobs) stay in the browser.
-  accepts_native_app_tokens only: %i[show]
+  # Zimmer's iOS app: the whole controller. Every operator action here — cleanup,
+  # retries, archiving, queue recovery, the queued-job levers, re-arming the
+  # post-deploy tasks — is a button on the web health page, which any signed-in
+  # person may press; the app is that person's other screen.
+  accepts_native_app_tokens
 
   # Bounds for archive days
   MAX_ARCHIVE_DAYS = 365
@@ -48,7 +50,7 @@ class Api::V1::HealthController < Api::BaseController
     status = QueueRecoveryMode.enter!(
       reason: params[:reason],
       ttl: params[:ttl_minutes].presence&.to_i&.minutes,
-      actor: "REST API"
+      actor: actor_label
     )
 
     render json: status.as_json
@@ -103,7 +105,7 @@ class Api::V1::HealthController < Api::BaseController
       queue_name: params[:queue_name],
       expected_count: params[:expected_count],
       reason: params[:reason],
-      actor: "REST API"
+      actor: actor_label
     ).as_json
   rescue QueuedJobMaintenance::Refused => e
     render_api_error("Refused", e.message, status: :unprocessable_entity)
@@ -122,7 +124,7 @@ class Api::V1::HealthController < Api::BaseController
       queue_name: params[:queue_name],
       expected_count: params[:expected_count],
       scheduled_at: params[:delay_minutes].presence&.to_i&.minutes&.from_now,
-      actor: "REST API"
+      actor: actor_label
     ).as_json
   rescue QueuedJobMaintenance::Refused => e
     render_api_error("Refused", e.message, status: :unprocessable_entity)
@@ -132,7 +134,7 @@ class Api::V1::HealthController < Api::BaseController
   # Resume normal processing. Idempotent, and never gated: the way out of a halt
   # must always be available.
   def exit_queue_recovery_mode
-    render json: QueueRecoveryMode.exit!(actor: "REST API").as_json
+    render json: QueueRecoveryMode.exit!(actor: actor_label).as_json
   end
 
   # POST /api/v1/health/cleanup_processes
@@ -183,10 +185,23 @@ class Api::V1::HealthController < Api::BaseController
 
   private
 
+  # Who an operator action is recorded as: the person behind the phone, by the
+  # grant's email, so #alerts and the discard log read a human's decision as
+  # theirs rather than as a script's; an API key stays "REST API".
+  def actor_label
+    native_app_request? ? "the iOS app (#{native_app_grant.user_email})" : "REST API"
+  end
+
   # The cooldown object is shared with the native MCP server's action_health
-  # tool, so the two surfaces throttle each other for the same caller.
+  # tool, so the two surfaces throttle each other for the same caller. The app's
+  # token presents no key, so its bucket is its grant: HealthActionCooldown says
+  # why a caller with a credential must not fall into the anonymous one.
   def cooldown
-    @cooldown ||= HealthActionCooldown.new(HealthActionCooldown.fingerprint(api_key_from_request))
+    @cooldown ||= HealthActionCooldown.new(HealthActionCooldown.fingerprint(cooldown_credential))
+  end
+
+  def cooldown_credential
+    native_app_request? ? "native_app_grant:#{native_app_grant.id}" : api_key_from_request
   end
 
   def rate_limited?(action)
