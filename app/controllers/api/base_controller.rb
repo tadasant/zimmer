@@ -179,7 +179,7 @@ class Api::BaseController < ActionController::API
   end
 
   # The fence on an action that stands for a person's decision — Merge, answering
-  # an elicitation, the Inference page's writes: only the iOS app's token, on a
+  # an elicitation, the Inference page's writes, minting a key, revoking a connection: only the iOS app's token, on a
   # grant that acts as its approver. An API key names a key, never a person, and
   # a relay-only grant was approved to carry messages, not to decide. Wire it
   # with `before_action :require_a_person_on_the_app, only: [...]`.

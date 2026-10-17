@@ -51,6 +51,7 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | `/api/v1/inference` and its routes | read the Inference page (an in-flight login's link and code only on a grant that acts as you); every write and the login poll — refresh, activate, delete or add an account, drive a CLI login, change the spot, top-up or genesis policy — only on a grant that acts as you (403 otherwise, and for an API key) |
 | `GET /api/v1/sessions/:id/elicitations`, `PATCH /api/v1/elicitations/:id/respond` | list a session's open prompts; answer one only on a grant that acts as you (403 otherwise) — not create or poll |
 | `GET /api/v1/configs`, `/mcp_servers`, `/skills`, `/hooks`, `/plugins`, `/model_catalog_entries` | read the catalogs |
+| `GET /api/v1/me`, `/api/v1/oauth_grants`, `/api/v1/api_keys`, `POST /api/v1/sign_out_everywhere` | read who it is and both lists on any grant; revoke or re-level a connection, mint, revoke or restore a key, and sign out everywhere only on a grant that acts as you — an API key is refused every write ([the auth boundary](#the-auth-boundary-who-you-are-connections-and-keys)) |
 | `/api/v1/app_settings` | read, and write the session defaults and the experimental toggles; the MCP Apps switch and its allowlist only on a grant that acts as you (403 otherwise) |
 
 A token issued to any other OAuth client, the app's token on an action its controller does not name,
@@ -1208,6 +1209,72 @@ registers a phone for push. It is an upsert on the token, and one made with the 
 tied to its grant. Both take the app's token or an API key. `DELETE` reaches only the caller's own
 registrations: those under its grant for the app's token, and grant-less ones for an API key. A token
 outside that scope is left alone and still answers 204.
+
+## The auth boundary: who you are, connections and keys
+
+What the Settings page's Sign-in card, its Deployment Information and **Settings → API keys** show,
+for [the iOS app](/extend/ios-app/). The reads take the app's token on any grant, or an API key.
+Every write takes the app's token **on a grant that acts as you**, and nothing else: an API key is
+the fleet's, not a person's, and one that could mint keys would issue itself credentials. An API key
+or a relay-only grant gets the same 403 as `authorize_merge` (the message says which it was), before
+any lookup.
+
+`GET /me` → `{me, web_sign_in, deployment}`. `me` is the credential the request came in on:
+`authenticated_as` `native_app` with `email`, `privilege` (`act_as_human` or `relay_only`),
+`acts_as_you` and `grant_id` — the caller's own row in `/oauth_grants` — or `api_key` with the key's
+`{id, name, source, grant}` and no person. `web_sign_in` is the Sign-in card for that email:
+`{email, name, last_signed_in_at, totp_required, totp_enrolled_at, recovery_codes_remaining}`, the
+last two nil until an authenticator stands; the whole thing nil when
+[web sign-in](/auth/web-sign-in/) is not configured, when nobody with that email has signed in to
+the web UI, over an API key, or on a relay-only grant, which is not that person's sign-in. `deployment` is `{git: {commit_sha, commit_short, branch,
+commit_date}, environment: {rails_env, ruby_version, rails_version}}`, read once at boot.
+
+`GET /oauth_grants` → `{oauth_grants: [...]}`, the page's **MCP connections**: active first, most
+recently used first, at most 50. Each row is `{id, client_name, client_label, client_id,
+first_party, registration (published|self_registered), publisher_host, user_email, privilege,
+acts_as_you, status (active|revoked), current, created_at, last_used_at, scope_changed_at,
+scope_change_reason, revoked_at, revocation_reason}`. `current` is true on the caller's own
+connection, so the app can say "this phone". The list, and every write in this section, is the
+deployment's — every connection and every key, whoever approved or minted it — as the page is;
+Zimmer is one circle of trust. Only `sign_out_everywhere` is scoped to the caller's email.
+
+`PATCH /oauth_grants/:id` (`privilege`: `act_as_human` | `relay_only`) → `{oauth_grant, message}`.
+The page's **Make relay only** / **Let it act on my behalf**, applied from the connection's next
+request and recorded on the grant as `app_upgrade` / `app_downgrade`. 422 for any other value and
+for a revoked connection. The caller may lower its own connection; its writes here are then refused
+until a person raises it again on the page.
+
+`DELETE /oauth_grants/:id` → `{oauth_grant, signed_out, message}`. Revokes the connection — the
+caller's own included, which is how the app signs out: `signed_out` is true and the next request on
+that token is a 401. A relay-only grant cannot revoke even itself here; it signs out through
+`POST /oauth/revoke`, like any OAuth client. Revoking an already-revoked connection is a 200 that
+changes nothing.
+
+`GET /api_keys` → `{api_keys: [...]}`, every key the page lists — active first, newest first — as
+`{id, name, status (active|revoked|retired), source (env|minted), grant, fingerprint, external_app,
+agent_sessions_use_it, last_used_at, created_at, revoked_at}`. `fingerprint` is the first eight
+characters of the key's SHA-256; the key itself is never in a list. `agent_sessions_use_it` marks the
+key this deployment hands its own agent sessions, which the page warns about before a revoke.
+
+`POST /api_keys` (`name`, `grant` `api` | `quick_router`, default `api`; also as `api_key[name]`,
+`api_key[grant]` as the page's form sends them) → 201 `{api_key, token}`. `token` is the only copy
+of the key there will ever be; the response is `Cache-Control: no-store`. 422 with the page's
+messages (`Name has already been taken`, the 100-character limit, control characters, a grant a
+person may not mint). `DELETE /api_keys/:id` revokes (→ `{api_key, message}`; the row stays) and
+`POST /api_keys/:id/restore` undoes that, the page's **Restore**.
+
+`POST /sign_out_everywhere` → `{signed_out_everywhere, web_sign_ins_ended, this_connection_revoked,
+message}`. What the Sign-in card's **Sign out everywhere** does: every browser signed in to the web
+UI as the caller's email is signed out at its next request, its trusted devices are forgotten, and
+its live-update connections are closed. The web does that to the browser pressing the button too,
+so this **revokes the caller's own connection as well** — `this_connection_revoked` is always true,
+and the app has to sign in again. Other phones signed in as the same person keep their connections;
+revoke those from `/oauth_grants`. With web sign-in off there is no web session to end
+(`web_sign_ins_ended` 0) and the call still revokes the caller.
+
+Every write is logged at WARN naming the actor — the grant's email and that it was the iOS app — the
+way the page's lines name "the settings page". A revoked connection's `revocation_reason` says the
+same.
 
 ## Health
 
