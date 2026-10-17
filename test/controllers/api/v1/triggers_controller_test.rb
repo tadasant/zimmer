@@ -569,6 +569,62 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "enabled", json["trigger"]["status"]
   end
 
+  # Re-use switch toggle tests
+  test "toggle_enqueue_messages flips the flag on a re-use trigger and returns the trigger" do
+    @trigger.update!(reuse_session: true, enqueue_messages: false)
+
+    post toggle_enqueue_messages_api_v1_trigger_path(@trigger), headers: @headers
+    assert_response :success
+    assert JSON.parse(response.body)["trigger"]["enqueue_messages"]
+    assert @trigger.reload.enqueue_messages
+
+    post toggle_enqueue_messages_api_v1_trigger_path(@trigger), headers: @headers
+    assert_response :success
+    assert_not JSON.parse(response.body)["trigger"]["enqueue_messages"]
+    assert_not @trigger.reload.enqueue_messages
+  end
+
+  test "toggle_resuscitate_archived flips the flag on a re-use trigger and returns the trigger" do
+    @trigger.update!(reuse_session: true, resuscitate_archived: false)
+
+    post toggle_resuscitate_archived_api_v1_trigger_path(@trigger), headers: @headers
+    assert_response :success
+    assert JSON.parse(response.body)["trigger"]["resuscitate_archived"]
+    assert @trigger.reload.resuscitate_archived
+
+    post toggle_resuscitate_archived_api_v1_trigger_path(@trigger), headers: @headers
+    assert_response :success
+    assert_not JSON.parse(response.body)["trigger"]["resuscitate_archived"]
+    assert_not @trigger.reload.resuscitate_archived
+  end
+
+  test "the re-use switches are refused with 422 and the web page's wording while reuse_session is off" do
+    @trigger.update!(reuse_session: false)
+
+    post toggle_enqueue_messages_api_v1_trigger_path(@trigger), headers: @headers
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_equal "Validation failed", json["error"]
+    assert_equal [ "Enqueue messages can only be enabled when re-use session is enabled" ], json["messages"]
+    assert_not json["trigger"]["enqueue_messages"]
+
+    post toggle_resuscitate_archived_api_v1_trigger_path(@trigger), headers: @headers
+    assert_response :unprocessable_entity
+    assert_equal [ "Resuscitate archived can only be enabled when re-use session is enabled" ],
+                 JSON.parse(response.body)["messages"]
+
+    @trigger.reload
+    assert_not @trigger.enqueue_messages
+    assert_not @trigger.resuscitate_archived
+  end
+
+  test "the re-use switches return 404 for a nonexistent trigger" do
+    post toggle_enqueue_messages_api_v1_trigger_path(999999), headers: @headers
+    assert_response :not_found
+    post toggle_resuscitate_archived_api_v1_trigger_path(999999), headers: @headers
+    assert_response :not_found
+  end
+
   # Response format tests
   test "should return JSON with correct content type" do
     get api_v1_triggers_path, headers: @headers

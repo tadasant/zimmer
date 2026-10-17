@@ -41,9 +41,10 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
 | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
 | `/api/v1/notifications` | list, show, badge, mark read, dismiss — not `push` |
-| `/api/v1/triggers` | list, show, toggle, invoke — not create, edit or delete |
+| `/api/v1/triggers` | list, show, toggle, toggle the two re-use switches, invoke — not create, edit or delete |
 | `GET /api/v1/costs`, `GET /api/v1/costs/records` | read — not `backfill` |
 | `GET /api/v1/health` | read — none of its operator actions |
+| `/api/v1/inference` and its routes | read the Inference page (an in-flight login's link and code only on a grant that acts as you); every write and the login poll — refresh, activate, delete or add an account, drive a CLI login, change the spot, top-up or genesis policy — only on a grant that acts as you (403 otherwise, and for an API key) |
 | `GET /api/v1/sessions/:id/elicitations`, `PATCH /api/v1/elicitations/:id/respond` | list a session's open prompts; answer one only on a grant that acts as you (403 otherwise) — not create or poll |
 | `GET /api/v1/configs`, `/mcp_servers`, `/skills`, `/hooks`, `/plugins`, `/model_catalog_entries` | read the catalogs |
 | `/api/v1/app_settings` | read, and write the session defaults and the experimental toggles; the MCP Apps switch and its allowlist only on a grant that acts as you (403 otherwise) |
@@ -945,12 +946,20 @@ There is no REST route for managing them.
 
 `GET /triggers` (filters `condition_type`, `status`) · `GET /triggers/:id` (+ `recent_sessions`,
 limit 10) · `POST` · `PATCH` · `DELETE` · `POST /triggers/:id/toggle` ·
+`POST /triggers/:id/toggle_enqueue_messages` · `POST /triggers/:id/toggle_resuscitate_archived` ·
 `POST /triggers/:id/invoke` · `GET /triggers/channels` (Slack; 503 when Slack is unconfigured) ·
 `GET /triggers/whatsapp_chats` (the chats the WhatsApp bridge's account is in, with the `chat_id` a
 [`whatsapp` condition](/sessions/triggers/#whatsapp) takes; 503 when `WHATSAPP_MCP_URL` is unset or
 the bridge cannot be reached).
 
 Conditions are nested via `trigger_conditions_attributes`.
+
+`toggle_enqueue_messages` and `toggle_resuscitate_archived` flip the two switches on the trigger
+page and return `{trigger}`. Both flags act only on the session a trigger re-uses, so while
+`reuse_session` is off the flip is refused with 422 (`error: "Validation failed"`, `message: "Enqueue
+messages can only be enabled when re-use session is enabled"`, and the same for "Resuscitate
+archived"), carrying the unchanged `trigger`. To set either flag outright, or together with
+`reuse_session`, `PATCH` the trigger.
 
 A trigger payload carries **`unresolved_catalog_references`**, read-only: which of the four artifact
 lists name something the catalog can no longer resolve, and when each name was first seen that way
@@ -1245,6 +1254,79 @@ unthrottled. `GET /health` is unaffected. See
 [the limitation](/limitations/#the-only-rate-limit-is-on-the-health-endpoints-and-it-needs-a-real-cache).
 :::
 
+## Inference
+
+The [Inference page](/auth/harness/) as data, for the [iOS app](/extend/ios-app/): the
+account roster with each account's quota windows, the pool's capacity, the rotation log, the Pi
+tab's OpenRouter key state, and the [fleet-scheduling policy](/sessions/spot-and-priority/) the MCP tools `get_spot_policy` /
+`action_spot_policy` read and write. Every figure comes off the objects the page and the tool
+render from (`ClaudeAccountPool`, `SpotGateService`, `SpotHoldExplanation`, `FleetTopUpStatus`,
+`SessionGenesis`), so the three surfaces cannot disagree.
+
+`GET /inference` (`runtime`: `claude_code` (default), `codex` or `pi`, the page's tabs) →
+`{runtime, runtimes, accounts, pool, rotation_log, openrouter_key, spot_policy, fleet_top_up,
+genesis_classes}`. Any key or grant may read. Opening it converges a stale `quota_exceeded`
+column against the reading on file, as opening the page does.
+
+- `accounts` — each account as its card renders it: `email`, `priority`, `is_current`, `status`
+  (the sticky column) and `effective_status` (the badge, which the latest reading can outrank),
+  `quota_hit_count`, `api_key_account`, `credentials` (`state` one of `none`, `unverified`,
+  `verified`, `rejected`; `stored`, `refused`, `rejected_at`, `rejection_reason`, `verified_at`),
+  `quota` (`null` for Codex, which has no probe: `taken_at`, `trigger`, `subscription_type`,
+  `rate_limit_tier`, `five_hour` and `seven_day` each `{utilization, effective_utilization, status,
+  reset_at, reset_passed}` — `status` is dropped once the window has rolled over, as the badge is
+  — and `five_hour_headroom_unusable`), and `login` (`available`, `active_attempt`,
+  `last_attempt`). No OAuth token, refresh token or API key is ever in it, and an in-flight login's
+  `verification_url` and `verification_code` are `null` unless the caller is a person (the app's
+  token on a grant that acts as you): with the device code, a holder of the fleet's key could
+  finish the login with an account of its own and have it captured under your email.
+- `pool` — the Account Pool card: the four counts, `five_hour_utilization` and `weekly_utilization`
+  (the averages the spot gate decides on), the worst account on each, `read_count`,
+  `servable_count`, `weekly_spent_count`, `capacity_now`, `next_capacity_at`, `next_weekly_reset`,
+  the dollar `windows`, and `dry` (`{reasons, breakdown, recovery}`) when no account can serve.
+- `rotation_log` — the runtime's 50 most recent rotations: `at`, `from` and `to` (`{email, deleted}`),
+  `reason`, `source`, `triggered_by`, and `session_id` when a session triggered it.
+- `openrouter_key` — on `runtime=pi` only, where the page shows it, and `null` elsewhere: the key's
+  state and never the key — `present`, `provider_badge`, `fingerprint` (a truncated SHA-256),
+  `path`, `last_write`, `writable`, `deletable`, `write_reason`, `missing_permissions`. There is no
+  write for it here; the key is set on the page.
+- `spot_policy` — the six knobs (`gating_enabled`, `five_hour_reserve_pct`, `weekly_reserve_pct`,
+  `max_concurrent_sessions`, `preemption_enabled`, `starvation_age_ceiling_hours`), `worker_slots`
+  and whether the ceiling is out of its reach, the live `decision` (`allowed`, `reason`, `ceiling`,
+  `detail`, sessions on a worker and awaiting one, burn rates, both windows, `pool_capacity`),
+  `hold` (why it is held and until when, when it is), the four dormant counts (`paused_count`,
+  `preempted_count`, `held_count`, `overdue_hold_count`) with their sentences, and `starvation`.
+- `fleet_top_up` — the four knobs (`max_running_sessions`, `idle_minutes`,
+  `min_fire_interval_minutes`, `quiet_backlog_interval_minutes`), the monitor's `state`, the
+  running / awaiting / asleep split, `headroom`, `under_ceiling_since`, `last_fired_at`,
+  `next_fire_at`, the `cadence` phrases and the card's `sentence`.
+- `genesis_classes` — the `overrides` and every `kind` with its `class`, `default_class`,
+  `overridden`, `settable` (the three kinds no trigger starts; the rest take their class from the
+  trigger) and `live_sessions`.
+
+The writes — the page's buttons and forms — take only the iOS app's token on a grant that acts as
+you; an API key and a relay-only grant get **403** having changed nothing. Each names you on the
+record the web writes: a rotation event's `triggered_by` and `AppSetting`'s policy audit line read
+`<your email> via the iOS app`.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/inference/accounts` | the Add account form: `runtime`, `email` (required, unique per runtime), `priority`, `api_key` (Codex only). → 201 `{account, message}`; the OAuth account is created with no credentials and `status` `needs_reauth` until a login captures them. 422 for a blank or duplicate email |
+| `POST` | `/inference/accounts/:id/refresh` | re-probe one account's quota → `{account, pool}` with the fresh reading; when the probe fails, `account.probe_error` says why and the reading on file stays |
+| `POST` | `/inference/accounts/:id/activate` | the Switch button: make it the current account, through the same activation path an automatic rotation takes → `{account, message}`. 422 with the page's sentence when it cannot be admitted — no credentials, no refresh token, a token the vendor refuses |
+| `DELETE` | `/inference/accounts/:id` | → `{message, current_account}`; deleting the current account activates the next one whose credentials validate, or leaves the runtime with none. Its snapshots, logins and rotations survive it |
+| `POST` | `/inference/logins` | the Authenticate button: `account_id`. Starts the login CLI in the worker, superseding any in-flight attempt → 201 `{login}` in `starting`. 422 for a Codex API-key account, which carries its credential statically |
+| `GET` | `/inference/logins/:id` | poll it → `{login, account}`. `login` carries `status`, `verification_url` and (Codex) the one-time `verification_code` once the CLI prints them, `awaiting_code` when the Claude flow wants the code pasted back, `code_received`, `error_message`, `expires_at` and `terminal`. 404 once the attempt is pruned or its account deleted — stop polling. A person only, like the writes: the link and code are what completes the login |
+| `POST` | `/inference/logins/:id/code` | the Claude flow: `code`, the authorization code the page shows. 422 for a blank code or a finished attempt. The code is handed to the CLI and never echoed |
+| `POST` | `/inference/logins/:id/cancel` | → `{login}`; a finished attempt is left as it finished |
+| `PATCH` | `/inference/spot_policy` | `enabled`, `five_hour_reserve_pct`, `weekly_reserve_pct` (0–100), `max_concurrent_sessions` (1–100), `preemption_enabled`, `starvation_age_ceiling_hours` (0–720; 0 turns the lane off) — the parameters `action_spot_policy set_gating` takes, any subset. → `{changed, spot_policy}`. 422 `Nothing to change` with none, `Invalid spot policy` out of range, nothing persisted |
+| `PATCH` | `/inference/fleet_top_up` | `max_running_sessions` (1–100), `idle_minutes` (1–1440), `min_fire_interval_minutes`, `quiet_backlog_interval_minutes` (1–10080) — `action_spot_policy set_top_up`'s. → `{changed, fleet_top_up}`; the same two 422s |
+| `PATCH` | `/inference/genesis/:genesis` | `priority_class`: `spot` or `priority` — the Make spot / Make priority buttons, `promote_genesis` / `demote_genesis` on the tool. Reclassifies every session deriving its class from that kind → `{message, genesis_classes}`. 422 for an unknown genesis, an unknown class, or a trigger-backed kind, which takes its class from the trigger |
+| `DELETE` | `/inference/genesis` | Reset to defaults → `{message, genesis_classes}` |
+
+Not here: *Refresh All* (the page streams it; the app refreshes accounts one at a time) and the
+OpenRouter key's write and delete, which stay on the page.
+
 ## Costs
 
 `GET /api/v1/costs` → rollups over a window: `totals`, `cost_breakdown` (by kind of token),
@@ -1370,9 +1452,10 @@ than refused, as the page drops it.
 
 The `PATCH` body is `{app_settings: {default_runtime, default_model, experimental: {"<key>": bool},
 mcp_apps_enabled, mcp_apps_allowed_servers: [names]}}`, every key optional. An empty
-`default_runtime` or `default_model` clears that override. A runtime + model pair the catalog does
-not allow is a 422 (`error: "Settings not saved"`), as is an experimental key the registry does not
-list (`error: "Unknown experimental setting"`); nothing changes on either.
+`default_runtime` or `default_model` clears that override; a `null` leaves it alone. A runtime +
+model pair the catalog does not allow is a 422 (`error: "Settings not saved"`), as is an
+`experimental` that is not an object, or an experimental key the registry does not list
+(`error: "Unknown experimental setting"`); nothing changes on any of them.
 
 `mcp_apps_enabled` and `mcp_apps_allowed_servers` are a person's to change, as on the page: the
 iOS app's token on a grant that acts as you. An API key, or a relay-only grant, gets a 403 before
