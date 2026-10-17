@@ -8,10 +8,14 @@ module LiveConversations
   class Start
     class Unavailable < StandardError; end
 
-    def self.call(mode_key = "text") = new(mode_key).call
+    # @param client_surface [String, nil] the TurnSource surface of the client
+    #   starting it (web, ios, carplay, mcp), so a delegation the live model makes
+    #   can say where the person was.
+    def self.call(mode_key = "text", client_surface: nil) = new(mode_key, client_surface:).call
 
-    def initialize(mode_key)
+    def initialize(mode_key, client_surface: nil)
       @mode = LiveConversations.mode(mode_key)
+      @client_surface = LiveConversation.normalize_client_surface(client_surface)
       @availability = Availability.current
     end
 
@@ -30,7 +34,8 @@ module LiveConversations
           model: @mode.model,
           status: LiveConversation::PREPARING,
           mcp_servers: Array(root.default_mcp_servers).map(&:to_s).select { |name| ServersConfig.find(name) }.uniq,
-          last_activity_at: Time.current
+          last_activity_at: Time.current,
+          client_surface: @client_surface
         )
       end
       LiveConversationPrepareJob.perform_later(conversation.id)

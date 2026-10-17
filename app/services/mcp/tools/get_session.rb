@@ -609,6 +609,13 @@ module Mcp
         # well as on every hierarchy node, because the single most common question
         # is about THIS session and reading it off a tree of one is awkward.
         lines << "- **Genesis:** #{session.genesis_key} (#{session.genesis_label})"
+        # Where the turns came from (TurnSource) — a style hint, never authorization.
+        if (source = session.initial_turn_source)
+          lines << "- **Initial prompt source:** #{source.surface} · #{source.modality} (#{source.label})"
+        end
+        if (source = session.last_turn_source)
+          lines << "- **Latest follow-up source:** #{source.surface} · #{source.modality} (#{source.label})"
+        end
         lines << "- **Scheduling class:** #{session.priority_class} (#{session.scheduling_class_source})"
         lines << "- **Precedence:** #{session.precedence}#{' — spot sessions start highest first' if session.spot?}"
         lines.concat(waiting_reason_lines(session))

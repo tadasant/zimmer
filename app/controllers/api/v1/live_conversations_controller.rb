@@ -12,7 +12,7 @@
 #   POST /api/v1/live_conversations/:id/messages   typed: a message (content)
 #   POST /api/v1/live_conversations/:id/client_secret  voice: mint a Realtime client secret
 #   POST /api/v1/live_conversations/:id/tool_calls     voice: run a function call (name, arguments, call_id)
-#   POST /api/v1/live_conversations/:id/turns          voice: record a transcript line (role, content)
+#   POST /api/v1/live_conversations/:id/turns          voice: record a transcript line (role, content) → respond?
 #   POST /api/v1/live_conversations/:id/session_update voice: the `session.update` for the current Live settings
 #
 # The Live settings themselves are Api::V1::LiveSettingsController's.
@@ -61,7 +61,7 @@ class Api::V1::LiveConversationsController < Api::BaseController
       return render_api_error("Unprocessable Entity", "mode must be one of: #{LiveConversations.mode_keys.join(', ')}", status: :unprocessable_entity)
     end
 
-    conversation = LiveConversations::Start.call(mode)
+    conversation = LiveConversations::Start.call(mode, client_surface: api_turn_source.surface)
     render json: conversation.as_api_json, status: :created
   rescue LiveConversations::Start::Unavailable => e
     render_api_error("Service Unavailable", e.message, status: :service_unavailable)
@@ -93,7 +93,8 @@ class Api::V1::LiveConversationsController < Api::BaseController
   end
 
   def turns
-    render json: actions.record_turn(role: params[:role], content: params[:content]).as_api_json, status: :created
+    heard = actions.record_turn(role: params[:role], content: params[:content])
+    render json: heard.as_api_json, status: heard.turn ? :created : :ok
   end
 
   rescue_from LiveConversations::Actions::Refused do |error|
@@ -107,5 +108,8 @@ class Api::V1::LiveConversationsController < Api::BaseController
     render_api_error("Not Found", "Live conversation not found", status: :not_found) unless @conversation
   end
 
-  def actions = LiveConversations::Actions.new(@conversation)
+  # `listening_modes`: the client asks for each reply itself when Listening is
+  # gated (LiveConversations::Listening); an app from before that is answered as
+  # `always`.
+  def actions = LiveConversations::Actions.new(@conversation, client_surface: api_turn_source.surface, listening_modes: params[:listening_modes].present?)
 end

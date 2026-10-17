@@ -105,13 +105,17 @@ final class LiveAPITests: XCTestCase {
         let (api, transport) = client([
             { _ in Fixtures.json(200, ["client_secret": "ek_1", "expires_at": 1, "model": "gpt-realtime-2.1-mini",
                                        "calls_url": "https://api.openai.com/v1/realtime/calls",
-                                       "websocket_url": "wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini", "tools": []]) },
+                                       "websocket_url": "wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini", "tools": [],
+                                       "listening": "wake_word"]) },
             { _ in Fixtures.json(200, ["output": "Enabled demo-clock.", "error": false, "tools_changed": true, "turn_id": 4,
                                        "tools": [["type": "function", "name": "demo-clock__current_time"]]]) },
             { _ in Fixtures.json(201, ["id": 5, "role": "assistant", "source": "spoken", "content": "Done.", "tool_error": false]) },
+            { _ in Fixtures.json(200, ["respond": false, "dropped": true]) },
         ])
         let secret = try await api.liveClientSecret(7)
         XCTAssertEqual(secret.clientSecret, "ek_1")
+        XCTAssertEqual(secret.listening, "wake_word")
+        XCTAssertEqual(try body(transport.sent[0])["listening_modes"] as? String, "1", "the app says it asks for its own replies")
         XCTAssertEqual(secret.websocketURL.absoluteString, "wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini")
 
         let result = try await api.relayLiveToolCall(7, name: "enable_mcp_server", arguments: "{\"name\":\"demo-clock\"}", callID: "call_1")
@@ -122,9 +126,15 @@ final class LiveAPITests: XCTestCase {
         XCTAssertEqual(relay["arguments"] as? String, "{\"name\":\"demo-clock\"}")
         XCTAssertEqual(relay["call_id"] as? String, "call_1")
 
-        _ = try await api.recordLiveTurn(7, role: .assistant, content: "Done.")
-        XCTAssertEqual(transport.sent.map(\.url.path).suffix(2), ["/api/v1/live_conversations/7/tool_calls", "/api/v1/live_conversations/7/turns"])
+        let kept = try await api.recordLiveTurn(7, role: .assistant, content: "Done.", gated: false)
+        XCTAssertEqual(kept, LiveHeard(respond: true), "a turn alone, as a server from before Listening answers, is kept and answered")
+        XCTAssertEqual(transport.sent.map(\.url.path)[1...2], ["/api/v1/live_conversations/7/tool_calls", "/api/v1/live_conversations/7/turns"])
         XCTAssertEqual(try body(transport.sent[2])["role"] as? String, "assistant")
+        XCTAssertNil(try body(transport.sent[2])["listening_modes"])
+
+        let dropped = try await api.recordLiveTurn(7, role: .user, content: "talking to a friend", gated: true)
+        XCTAssertEqual(dropped, LiveHeard(respond: false, dropped: true))
+        XCTAssertEqual(try body(transport.sent[3])["listening_modes"] as? String, "1")
     }
 
     func testAStatusThisVersionDoesNotKnowReadsAsEnded() throws {
@@ -443,5 +453,87 @@ final class RealtimeConductorTests: XCTestCase {
         let append = RealtimeConductor.appendAudio(Data([1, 2]))
         XCTAssertEqual(append["type"]?.string, "input_audio_buffer.append")
         XCTAssertEqual(append["audio"]?.string, "AQI=")
+    }
+
+    func testAMutedMicrophoneSendsSilenceSoTheTurnCanEnd() {
+        let muted = RealtimeConductor.appendAudio(Data([1, 2, 3, 4]), muted: true)
+        XCTAssertEqual(muted["type"]?.string, "input_audio_buffer.append", "still sent: sending nothing leaves the server's turn open")
+        XCTAssertEqual(muted["audio"]?.string.flatMap { Data(base64Encoded: $0) }, Data(count: 4), "as much silence as the microphone gave")
+    }
+
+    func testAGatedCallAsksZimmerAboutEachLineAndAsksForTheReplyItself() {
+        var conductor = RealtimeConductor(listening: "wake_word")
+        XCTAssertTrue(conductor.gated)
+        _ = conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#))
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [],
+                       "speech does not cut the reply off: it may not be meant for the call")
+        XCTAssertEqual(conductor.handle(event(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":" One Banana Republic. "}"#)),
+                       [.hear(itemID: "u1", text: "One Banana Republic.")])
+        XCTAssertEqual(conductor.heard(itemID: "u1", respond: false),
+                       [.send(.object(["type": .string("conversation.item.delete"), "item_id": .string("u1")]))])
+        XCTAssertEqual(conductor.heard(itemID: "u2", respond: true), [.send(.object(["type": .string("response.create")]))])
+        XCTAssertEqual(conductor.heard(itemID: "u3", respond: true), [], "one already asked for and not yet created: a second would be refused")
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        XCTAssertEqual(conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#)),
+                       [.send(.object(["type": .string("response.create")])), .state(.listening)], "then the waiting one goes")
+    }
+
+    func testAGatedLineNobodyCouldReadIsDropped() {
+        var conductor = RealtimeConductor(listening: "dynamic")
+        let delete = { (id: String) in [RealtimeConductor.Effect.send(.object(["type": .string("conversation.item.delete"), "item_id": .string(id)]))] }
+        XCTAssertEqual(conductor.handle(event(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"  "}"#)), delete("u1"))
+        XCTAssertEqual(conductor.handle(event(#"{"type":"conversation.item.input_audio_transcription.failed","item_id":"u2"}"#)), delete("u2"))
+        var always = RealtimeConductor()
+        XCTAssertEqual(always.handle(event(#"{"type":"conversation.item.input_audio_transcription.failed","item_id":"u2"}"#)), [])
+    }
+
+    func testARefusedRequestDoesNotBlockTheNext() {
+        var conductor = RealtimeConductor(listening: "wake_word")
+        _ = conductor.heard(itemID: "u1", respond: true)
+        _ = conductor.handle(event(#"{"type":"error","error":{"message":"Conversation already has an active response"}}"#))
+        XCTAssertEqual(conductor.heard(itemID: "u2", respond: true), [.send(.object(["type": .string("response.create")]))])
+    }
+
+    func testAGatedReplyWaitsForAResponseAlreadyRunning() {
+        var conductor = RealtimeConductor(listening: "dynamic")
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        XCTAssertEqual(conductor.heard(itemID: "u1", respond: true), [], "never on top of a running response")
+        XCTAssertEqual(conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#)),
+                       [.send(.object(["type": .string("response.create")])), .state(.listening)])
+    }
+
+    func testTheSessionOpenAIAppliedSaysWhetherTheCallIsGated() {
+        var conductor = RealtimeConductor(listening: "always")
+        XCTAssertFalse(conductor.gated)
+        XCTAssertEqual(conductor.handle(event(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"hi"}"#)),
+                       [.record(role: .user, text: "hi")])
+        _ = conductor.handle(event(#"{"type":"session.updated","session":{"type":"realtime","audio":{"input":{"turn_detection":{"type":"semantic_vad","create_response":false}}}}}"#))
+        XCTAssertTrue(conductor.gated)
+        _ = conductor.handle(event(#"{"type":"session.updated","session":{"type":"realtime","tools":[]}}"#))
+        XCTAssertTrue(conductor.gated, "a session without turn detection leaves it as it was")
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"f1","name":"update_live_settings","arguments":"{}"}"#))
+        _ = conductor.relayed(callID: "f1", result: LiveToolResult(output: "ok", session: JSONValue.parse(#"{"audio":{"input":{"turn_detection":{"create_response":true}}}}"#)))
+        XCTAssertTrue(conductor.gated, "what was sent changes nothing until OpenAI says it applied it")
+        _ = conductor.handle(event(#"{"type":"session.created","session":{"audio":{"input":{"turn_detection":{"create_response":true}}}}}"#))
+        XCTAssertFalse(conductor.gated)
+    }
+
+    func testMutedIsSaidBesideTheCallsState() {
+        XCTAssertEqual(LiveVoiceState.speaking.label(muted: true), "Speaking · Muted")
+        XCTAssertEqual(LiveVoiceState.listening.label(muted: false), "Listening")
+        XCTAssertEqual(LiveVoiceState.idle.label(muted: true), "Call ended")
+    }
+
+    func testAFailedResponseSaysWhyAndGoesBackToListening() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        XCTAssertEqual(
+            conductor.handle(event(#"{"type":"response.done","response":{"status":"failed","status_details":{"type":"failed","error":{"type":"invalid_request_error","message":"Invalid turn_detection"}},"output":[]}}"#)),
+            [.failure("Invalid turn_detection"), .state(.listening)]
+        )
+        XCTAssertEqual(
+            conductor.handle(event(#"{"type":"response.done","response":{"status":"failed","output":[]}}"#)),
+            [.failure("OpenAI could not answer that."), .state(.listening)]
+        )
     }
 }

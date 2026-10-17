@@ -304,7 +304,8 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
 
     # deliver_follow_up! stamps the prompt into metadata and enqueues the job; it
     # does not write the `prompt` column, so that is what "delivered" looks like.
-    assert_equal "Time to check on that PR", session.reload.metadata["pending_follow_up_prompt"],
+    # The words, past the turn-source note the trigger adds for the agent.
+    assert_equal "Time to check on that PR", TurnSource.strip(session.reload.metadata["pending_follow_up_prompt"]),
                  "the wake-up must still be delivered — only the human-message record is withheld"
   end
 
@@ -464,7 +465,7 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
       post follow_up_session_url(session), params: { follow_up_prompt: "still has to land" }
     end
 
-    assert_equal "still has to land", session.reload.metadata["pending_follow_up_prompt"]
+    assert_equal "still has to land", TurnSource.strip(session.reload.metadata["pending_follow_up_prompt"])
   end
 
   # A REAL database error, not a Ruby-level stub: in PostgreSQL a failed

@@ -163,6 +163,21 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
 
     post "/api/v1/live_conversations/#{conversation.id}/turns", params: { role: "assistant", content: "Clock is on." }, headers: @headers
     assert_response :created
+    assert response.parsed_body["respond"]
+  end
+
+  test "with Listening gated, an app that asks for its own replies has a stray line dropped and a named one answered" do
+    LiveConversations::SettingsUpdate.call({ "voice_listening" => "wake_word" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    conversation = create_live_conversation(mode: "voice")
+
+    post "/api/v1/live_conversations/#{conversation.id}/turns", params: { role: "user", content: "talking to my friend", listening_modes: "1" }, headers: @headers
+    assert_response :ok
+    assert_equal({ "respond" => false, "dropped" => true }, response.parsed_body)
+
+    post "/api/v1/live_conversations/#{conversation.id}/turns", params: { role: "user", content: "Zimmer, is main green?", listening_modes: "1" }, headers: @headers
+    assert_response :created
+    assert_equal [ true, "Zimmer, is main green?" ], response.parsed_body.values_at("respond", "content")
+    assert_equal [ "Zimmer, is main green?" ], conversation.turns.map(&:content)
   end
 
   test "Live settings over the API: a key reads, only a person on the app writes, and a voice call gets its session.update" do

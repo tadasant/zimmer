@@ -170,7 +170,7 @@ module Sessions
       if @session.status_summary_fork? && !SessionStatusSummaryGenerator.fork_prompt?(@prompt)
         return :summary_fork
       end
-      return :already_queued if @session.enqueued_messages.pending.exists?(content: @prompt)
+      return :already_queued if @session.enqueued_messages.pending.exists?(content: EnqueuedMessage.contents_matching(@prompt))
 
       nil
     end
@@ -239,7 +239,7 @@ module Sessions
     def create_at_tail!
       position = (@session.enqueued_messages.maximum(:position) || 0) + 1
       @session.enqueued_messages.create!(
-        content: @prompt,
+        **EnqueuedMessage.attributes_for_prompt(@prompt),
         position: position,
         status: "pending",
         images: Array(Sessions::AttachmentDescriptors.for_the_record(

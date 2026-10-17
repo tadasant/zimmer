@@ -13,7 +13,7 @@ class LiveConversationsController < ApplicationController
   end
 
   def create
-    conversation = LiveConversations::Start.call(params[:mode].presence || "text")
+    conversation = LiveConversations::Start.call(params[:mode].presence || "text", client_surface: "web")
     redirect_to live_conversation_path(conversation)
   rescue LiveConversations::Start::Unavailable => e
     redirect_to current_live_path(start: 1), alert: e.message
@@ -78,8 +78,8 @@ class LiveConversationsController < ApplicationController
   end
 
   def turns
-    turn = actions.record_turn(role: params[:role], content: params[:content])
-    render json: turn.as_api_json, status: :created
+    heard = actions.record_turn(role: params[:role], content: params[:content])
+    render json: heard.as_api_json, status: heard.turn ? :created : :ok
   rescue LiveConversations::Actions::Refused => e
     render json: { error: e.message }, status: e.status
   end
@@ -90,5 +90,6 @@ class LiveConversationsController < ApplicationController
     @conversation = LiveConversation.find(params[:id])
   end
 
-  def actions = LiveConversations::Actions.new(@conversation)
+  # `listening_modes`: the dock asks for each reply itself when Listening is gated.
+  def actions = LiveConversations::Actions.new(@conversation, client_surface: "web", listening_modes: params[:listening_modes].present?)
 end

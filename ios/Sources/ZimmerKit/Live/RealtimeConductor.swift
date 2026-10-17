@@ -14,6 +14,12 @@ public enum LiveVoiceState: String, Sendable, Equatable {
         case .working: return "Working on it…"
         }
     }
+
+    /// The call's status line, on the phone and in the car: muted is said beside the state, not
+    /// instead of it, so a reply under way still shows.
+    public func label(muted: Bool) -> String {
+        muted && self != .idle ? "\(label) · Muted" : label
+    }
 }
 
 /// The Realtime protocol half of a Live Mode voice call, with no I/O: OpenAI's server events go in,
@@ -33,7 +39,12 @@ public enum LiveVoiceState: String, Sendable, Equatable {
 /// - each call runs once, however often its events repeat;
 /// - finished transcript lines are recorded, and the user starting to speak stops the reply
 ///   that is playing and tells OpenAI how much of it was heard (`conversation.item.truncate`,
-///   which a WebSocket client sends itself — over WebRTC the server does it).
+///   which a WebSocket client sends itself — over WebRTC the server does it);
+/// - with Listening gated (wake word, dynamic) turn detection starts no reply and cuts none off:
+///   a finished user line comes out as `hear`, Zimmer says whether to answer it, and `heard`
+///   asks for the reply — or deletes the line from the call;
+/// - OpenAI's `error` events, and a response that ended `failed`, come out as `failure` so the
+///   call can say what went wrong instead of sitting in Listening.
 public struct RealtimeConductor: Sendable {
     public enum Effect: Equatable, Sendable {
         /// Send this client event to OpenAI.
@@ -42,6 +53,9 @@ public struct RealtimeConductor: Sendable {
         case relay(callID: String, name: String, arguments: String)
         /// A finished transcript line, for the thread.
         case record(role: LiveTurn.Role, text: String)
+        /// Gated: record this user line with Zimmer, which says whether to answer it; then call
+        /// `heard(itemID:respond:)`.
+        case hear(itemID: String?, text: String)
         /// Play this reply audio: 16-bit mono PCM at 24 kHz.
         case play(Data)
         /// A new reply item started playing: count its audio from here.
@@ -66,19 +80,56 @@ public struct RealtimeConductor: Sendable {
     /// The calls of a finished response still waiting on their results.
     private var awaiting: Set<String> = []
     private var responseActive = false
+    /// A `response.create` was sent and its `response.created` has not come: a second one now
+    /// would be refused for the response already on its way.
+    private var requested = false
     private var pendingResponse = false
+    /// The call asks for its own replies (Listening is wake word or dynamic).
+    public private(set) var gated = false
 
-    public init() {}
+    public init(listening: String? = nil) {
+        gated = Self.gates(listening)
+    }
+
+    /// Whether a call with this Listening mode asks for its own replies.
+    public static func gates(_ listening: String?) -> Bool {
+        listening == "wake_word" || listening == "dynamic"
+    }
+
+    /// The session OpenAI says the call has (`session.created`, `session.updated`): its turn
+    /// detection says from here on whether the call is gated (`create_response: false`). What
+    /// OpenAI applied, not what was sent, so a refused `session.update` changes nothing.
+    mutating func note(session: JSONValue) {
+        guard case let .bool(creates)? = session["audio"]?["input"]?["turn_detection"]?["create_response"] else { return }
+        gated = !creates
+    }
+
+    /// Zimmer's answer for a line `hear` sent: ask for the reply once nothing else is running, or
+    /// take the line out of the call.
+    public mutating func heard(itemID: String?, respond: Bool) -> [Effect] {
+        if respond {
+            pendingResponse = true
+            return sendPendingResponse()
+        }
+        guard let itemID else { return [] }
+        return [.send(.object(["type": .string("conversation.item.delete"), "item_id": .string(itemID)]))]
+    }
 
     /// One server event.
     public mutating func handle(_ event: JSONValue) -> [Effect] {
         switch event["type"]?.string {
         case "input_audio_buffer.speech_started":
+            // Gated, speech does not cut the reply off: it may not be meant for the call at all.
+            if gated { return playingItem == nil ? [.state(.listening)] : [] }
             defer { playingItem = nil }
             return (playingItem.map { [Effect.interrupt(itemID: $0)] } ?? []) + [.state(.listening)]
         case "response.created":
             responseActive = true
+            requested = false
             return [.state(.thinking)]
+        case "session.created", "session.updated":
+            note(session: event["session"] ?? .null)
+            return []
         case "response.output_audio.delta":
             guard let delta = event["delta"]?.string, let audio = Data(base64Encoded: delta) else { return [] }
             var effects: [Effect] = []
@@ -92,12 +143,26 @@ public struct RealtimeConductor: Sendable {
             return start(callID: callID, name: name, arguments: event["arguments"]?.string ?? "{}")
         case "response.done":
             responseActive = false
+            playingItem = nil
+            if event["response"]?["status"]?.string == "failed" {
+                let message = event["response"]?["status_details"]?["error"]?["message"]?.string
+                return finish(event["response"]) + [.failure(message ?? "OpenAI could not answer that."), .state(.listening)]
+            }
             return finish(event["response"])
         case "conversation.item.input_audio_transcription.completed":
-            return record(.user, event["transcript"]?.string)
+            guard gated else { return record(.user, event["transcript"]?.string) }
+            guard let text = event["transcript"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+                return heard(itemID: event["item_id"]?.string, respond: false)
+            }
+            return [.hear(itemID: event["item_id"]?.string, text: text)]
+        case "conversation.item.input_audio_transcription.failed":
+            // Gated, a line nobody could read is not one to answer.
+            return gated ? heard(itemID: event["item_id"]?.string, respond: false) : []
         case "response.output_audio_transcript.done":
             return record(.assistant, event["transcript"]?.string)
         case "error":
+            // A refused `response.create` never gets its `response.created`.
+            requested = false
             return [.failure(event["error"]?["message"]?.string ?? "OpenAI reported an error.")]
         default:
             return []
@@ -143,9 +208,13 @@ public struct RealtimeConductor: Sendable {
         ])
     }
 
-    /// The microphone's audio, as the event that carries it.
-    public static func appendAudio(_ pcm16: Data) -> JSONValue {
-        .object(["type": .string("input_audio_buffer.append"), "audio": .string(pcm16.base64EncodedString())])
+    /// The microphone's audio, as the event that carries it. Muted, the same length of silence:
+    /// over a WebSocket the server's turn detection hears only what is sent, so a microphone that
+    /// went quiet by sending nothing would leave the turn open forever, stuck in Listening. Silence
+    /// lets it end, the way a disabled WebRTC track does in the browser.
+    public static func appendAudio(_ pcm16: Data, muted: Bool = false) -> JSONValue {
+        let audio = muted ? Data(count: pcm16.count) : pcm16
+        return .object(["type": .string("input_audio_buffer.append"), "audio": .string(audio.base64EncodedString())])
     }
 
     // MARK: - Internals
@@ -187,8 +256,9 @@ public struct RealtimeConductor: Sendable {
     }
 
     private mutating func sendPendingResponse() -> [Effect] {
-        guard pendingResponse, !responseActive else { return [] }
+        guard pendingResponse, !responseActive, !requested else { return [] }
         pendingResponse = false
+        requested = true
         return [.send(.object(["type": .string("response.create")]))]
     }
 

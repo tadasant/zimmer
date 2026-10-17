@@ -297,6 +297,211 @@ final class OperationsTests: XCTestCase {
         XCTAssertNotNil(health.generatedAt)
     }
 
+    func testHealthReadsEverySectionOfTheWebPage() async throws {
+        // The fixture's report is in the server's shape; the parser reads it as it reads the server's.
+        let body = try JSONSerialization.data(withJSONObject: FakeZimmerAPI.sampleHealthJSON(now: Date(), degraded: true))
+        let (api, _) = client([{ _ in HTTPResponse(statusCode: 200, headers: ["content-type": "application/json"], body: body) }])
+
+        let health = try await api.health()
+
+        XCTAssertEqual(health.overall.status, "warning")
+        XCTAssertEqual(health.process?.orphaned, 1)
+        XCTAssertEqual(health.process?.orphans.first?.pid, 48_112)
+        XCTAssertEqual(health.session?.total, 16)
+        XCTAssertEqual(health.session?.byStatus.first, HealthReport.Count("waiting", 5), "largest first")
+        XCTAssertEqual(health.session?.recentFailures.map(\.id), [1027, 1019])
+        XCTAssertEqual(health.session?.recentFailures.first?.failureReason, "api_error_retries_exhausted")
+        XCTAssertEqual(health.system?.queueDepth, 6)
+        XCTAssertEqual(health.system?.jobsPerHour, 412)
+        XCTAssertEqual(health.system?.headOfLine?.jobClass, "SlackTriggerPollerJob")
+        XCTAssertEqual(health.system?.readyByQueue.map(\.name), ["pollers", "triggers"])
+        XCTAssertEqual(health.system?.oldestExecutionByQueue.first?.name, "agents", "oldest first")
+        XCTAssertEqual(health.system?.database?.poolSize, 10)
+        XCTAssertEqual(health.system?.recentErrors.map(\.source), ["session_log", "job"])
+        XCTAssertNil(health.system?.recentErrors.last?.sessionID, "a job error has no session")
+        XCTAssertTrue(health.egress?.degraded ?? false)
+        XCTAssertNotNil(health.egress?.degradedSince)
+        XCTAssertEqual(health.auth?.currentAccount, "tadas@example.com")
+        XCTAssertEqual(health.auth?.serviceableAccounts, 3)
+        XCTAssertEqual(health.sigtermRetry?.recovered, 7)
+        XCTAssertEqual(health.sigtermRetry?.recentSessions.first?.retryCount, 1)
+        XCTAssertNotNil(health.sigtermRetry?.recentSessions.first?.at, "the SIGTERM table's own timestamp key")
+        XCTAssertEqual(health.apiErrorRetry?.delayMode, "escalated")
+        XCTAssertEqual(health.apiErrorRetry?.recentQuotaLimits, 1)
+        XCTAssertEqual(health.retryBudgets.map(\.label), ["SIGTERM", "API error", "Stall nudge"])
+        XCTAssertEqual(health.postDeployTasks?.failed, 1)
+        XCTAssertEqual(health.postDeployTasks?.awaitingFirstTick, 1)
+        XCTAssertEqual(health.postDeployTasks?.tasks.last?.stats, [HealthReport.Count("triggers", 14)])
+        XCTAssertFalse(health.postDeployTasks?.tasks.last?.registered ?? true, "the task file was removed")
+        XCTAssertEqual(health.cron?.overdue, 1)
+        XCTAssertEqual(health.cron?.behind.map(\.key), ["session_health_monitor", "warm_clone_refill", "burn_rate_recompute"])
+        XCTAssertEqual(health.cron?.recovered.map(\.key), ["slack_poll"])
+        XCTAssertEqual(health.logRetention?.retentionDays, 14)
+        XCTAssertEqual(health.rootData?.nearCap.first?.id, "zimmer-orchestrator/decisions")
+        XCTAssertEqual(health.warmClonePool?.targets.map(\.repo), ["zimmer", "motet"], "repo names, without .git")
+        XCTAssertEqual(health.warmClonePool?.targets.first?.roots, ["zimmer", "zimmer-orchestrator"])
+        XCTAssertEqual(health.warmClonePool?.routerClaimed, 38)
+        XCTAssertEqual(health.warmProcessPool?.coldStarts, [HealthReport.Count("model_mismatch", 3), HealthReport.Count("pool_empty", 1)])
+        XCTAssertEqual(health.inboundEvents?.sources.map(\.label), ["GitHub", "Slack"])
+        XCTAssertEqual(health.inboundEvents?.sources.last?.pollClaims, 88)
+        XCTAssertEqual(health.queueRecovery?.haltedQueues.count, 5)
+        XCTAssertEqual(health.queueRecovery?.strayPausedQueues, ["exports"], "paused outside the control")
+        XCTAssertFalse(health.banners.isEmpty)
+        XCTAssertEqual(health.banners.queueRecovery?.reason, "trigger stampede, 900 jobs/hour")
+
+        let quiet = try HealthReport.parse(JSONSerialization.data(withJSONObject: FakeZimmerAPI.sampleHealthJSON(now: Date(), degraded: false)))
+        XCTAssertTrue(quiet.banners.isEmpty, "no banner while the mode is off and egress resolves")
+        XCTAssertFalse(quiet.queueRecovery?.active ?? true)
+    }
+
+    func testAHealthReportMissingSectionsStillReads() throws {
+        let health = try HealthReport.parse(Data(#"{"health_report": {"overall_status": "healthy", "system_health": {"status": "healthy", "queue_stats": {"ready_count": "3"}}}}"#.utf8))
+        XCTAssertEqual(health.system?.queueDepth, 3, "a number sent as a string still counts")
+        XCTAssertNil(health.process)
+        XCTAssertNil(health.queueRecovery)
+        XCTAssertTrue(health.banners.isEmpty)
+        XCTAssertEqual(Format.duration(36_420), "10h 7m")
+        XCTAssertEqual(Format.duration(45), "45s")
+        XCTAssertEqual(Format.duration(3 * 86_400 + 4 * 3600), "3d 4h")
+        XCTAssertEqual(Format.bytes(2_740_000_000), "2.6 GB")
+        XCTAssertEqual(Format.compact(1_240_000), "1.2M")
+        XCTAssertEqual(Format.compact(880_120), "880K")
+    }
+
+    func testCostsReadTheWholePayload() async throws {
+        let (api, _) = client([{ _ in Fixtures.json(200, [
+            "window": ["from": "2026-10-04T00:00:00Z", "to": "2026-10-11T00:00:00Z"],
+            "scope": ["agent_root": NSNull(), "session_id": NSNull()],
+            "ledger_coverage": ["status": "running", "complete": true, "progress_pct": 62, "directories_done": 131, "directories_total": 212,
+                                "files_scanned": 9000, "rows_written": 100, "trigger": "manual", "started_at": "2026-10-11T00:00:00Z",
+                                "finished_at": "2026-10-09T00:00:00Z", "last_ran_at": "2026-10-11T00:00:00Z", "last_error": NSNull(),
+                                "covers_since": "2026-05-01T00:00:00Z", "covers_until": "2026-10-10T23:50:00Z"],
+            "totals": ["cost_usd": 369.6, "session_cost_usd": 355.3, "adhoc_cost_usd": 14.3, "total_tokens": 16_000_000, "api_calls": 2_195,
+                       "input_tokens": 1, "output_tokens": 2],
+            "cost_breakdown": [["component": "cache read", "cost_usd": 170.0, "share": 0.46], ["component": "output", "cost_usd": 70.2, "share": 0.19]],
+            "by_day": [["day": "2026-10-10", "cost_usd": 53.4, "session_cost_usd": 50.0, "adhoc_cost_usd": 3.4, "tokens": 2_300_000, "api_calls": 310,
+                        "roots": [["name": "zimmer", "cost_usd": 30.0, "tokens": 1, "api_calls": 2]], "models": [["name": "claude-opus-4-5", "cost_usd": 50.0, "tokens": 1, "api_calls": 2]]]],
+            "by_agent_root": [["agent_root": "zimmer", "cost_usd": 201.4, "tokens": 9_412_000, "api_calls": 1204,
+                               "features": [["feature": "skills", "cost_usd": 61.2, "tokens": 2_900_000, "api_calls": 0]]],
+                              ["agent_root": "other (3)", "cost_usd": 10.0, "tokens": 5, "api_calls": 1, "features": []]],
+            "by_model": [["model": "claude-opus-4-5", "cost_usd": 330.1, "tokens": 1, "api_calls": 1610]],
+            "by_thread_kind": [["kind": "main", "cost_usd": 301.2, "tokens": 1, "api_calls": 1702], ["kind": "subagent", "cost_usd": 68.4, "tokens": 1, "api_calls": 455]],
+            "by_runtime": [["runtime": "claude_code", "cost_usd": 355.3, "tokens": 1, "api_calls": 2011], ["runtime": "codex", "cost_usd": 0, "tokens": 402_000, "api_calls": 38]],
+            "by_adhoc_source": [["source": "session_title", "cost_usd": 9.1, "tokens": 1, "api_calls": 412]],
+            "by_feature": ["rows": [["feature": "skills", "cost_usd": 61.2, "tokens": 2_900_000, "api_calls": 0]], "attributed_cost_usd": 61.2,
+                           "attributed_tokens": 2_900_000, "total_cost_usd": 355.3, "total_tokens": 15_100_000, "residual_cost_usd": 294.1,
+                           "residual_tokens": 12_200_000, "coverage": 0.192],
+            "by_experiment": [["key": "compact_tool_results", "title": "Compact tool results", "description": "d", "current_value": true,
+                               "landed_at": "2026-10-02T10:00:00Z", "backfilled": true, "tagged_sessions": 83, "tagged_by_source": ["backfilled": 38, "observed": 45],
+                               "cohorts": ["off": ["cost_usd": 212.4, "tokens": 1, "api_calls": 1380, "sessions": 38, "cost_per_call": 0.1539, "cost_per_session": 5.59, "tokens_per_call": 6449.0],
+                                           "on": ["cost_usd": 198.7, "tokens": 1, "api_calls": 1495, "sessions": 41, "cost_per_call": 0.1329, "cost_per_session": 4.85, "tokens_per_call": 6087.0],
+                                           "mixed": ["cost_usd": 0, "tokens": 0, "api_calls": 0, "sessions": 0, "cost_per_call": NSNull(), "cost_per_session": NSNull(), "tokens_per_call": NSNull()],
+                                           "unknown": ["cost_usd": 0, "tokens": 0, "api_calls": 0, "sessions": 0]],
+                               "comparison": ["comparable": true, "reason": NSNull(), "min_sessions": 10, "min_calls": 200, "cost_per_call_change": -0.137,
+                                              "cost_per_session_change": -0.132, "tokens_per_call_change": -0.056],
+                               "paired_roots": [["agent_root": "zimmer", "off": ["cost_usd": 1, "sessions": 3, "cost_per_call": 0.2], "on": ["cost_usd": 1, "sessions": 4, "cost_per_call": 0.1], "cost_per_call_change": -0.5]]]],
+            "top_sessions": [["session_id": 1042, "cost_usd": 23.81, "tokens": 1_204_331, "api_calls": 212, "title": "CarPlay"]],
+            "unpriced_models": ["gpt-5.2-codex"],
+            "burn_rates": [["harness": "claude_code", "model": "claude-opus-4-5", "usd_per_minute": 0.212, "usd_per_hour": 12.72,
+                            "sample_session_count": 20, "sample_minutes": 1840.5, "computed_at": "2026-10-11T00:00:00Z"]],
+            "pricing": ["note": "x"],
+        ]) }])
+
+        let costs = try await api.costs(.days(7), scope: .fleet)
+
+        XCTAssertEqual(costs.totals.apiCalls, 2_195)
+        XCTAssertEqual(costs.totals.tokens, 16_000_000)
+        XCTAssertEqual(costs.totals.adhocShare, 14.3 / 369.6, accuracy: 0.0001)
+        XCTAssertEqual(costs.coverage?.headline, "Re-scanning history — 62%", "a running sweep after a finished one is a re-scan")
+        XCTAssertEqual(costs.coverage?.directoriesTotal, 212)
+        XCTAssertNotNil(costs.coverage?.coversSince)
+        XCTAssertEqual(costs.breakdown.map(\.component), ["cache read", "output"])
+        XCTAssertEqual(costs.days.first?.apiCalls, 310)
+        XCTAssertEqual(costs.days.first?.roots.first?.label, "zimmer")
+        XCTAssertEqual(costs.days.first?.models.first?.costUSD ?? 0, 50.0, accuracy: 0.001)
+        XCTAssertEqual(costs.agentRoots.first?.details.map(\.label), ["skills"], "the root's context-feature split")
+        XCTAssertEqual(costs.agentRoots.first?.perCallUSD ?? 0, 201.4 / 1204, accuracy: 0.0001)
+        XCTAssertEqual(costs.threadKinds.map(\.label), ["main", "subagent"])
+        XCTAssertEqual(costs.runtimes.last?.tokens, 402_000, "codex carries tokens and no dollars")
+        XCTAssertEqual(costs.adhocSources.first?.label, "session_title")
+        XCTAssertEqual(costs.features?.coverage ?? 0, 0.192, accuracy: 0.0001)
+        XCTAssertEqual(costs.features?.residualCostUSD ?? 0, 294.1, accuracy: 0.001)
+        let experiment = try XCTUnwrap(costs.experiments.first)
+        XCTAssertEqual(experiment.currentValue, true)
+        XCTAssertEqual(experiment.off.sessions, 38)
+        XCTAssertNil(experiment.mixed.costPerCall)
+        XCTAssertTrue(experiment.comparison.comparable)
+        XCTAssertEqual(experiment.comparison.costPerCallChange ?? 0, -0.137, accuracy: 0.0001)
+        XCTAssertEqual(experiment.pairedRoots.first?.agentRoot, "zimmer")
+        XCTAssertEqual(experiment.taggedBackfilled, 38)
+        XCTAssertEqual(costs.unpricedModels, ["gpt-5.2-codex"])
+        XCTAssertEqual(costs.burnRates.first?.usdPerHour ?? 0, 12.72, accuracy: 0.001)
+        XCTAssertEqual(costs.burnRates.first?.sampleSessionCount, 20)
+        XCTAssertEqual(costs.totalUSD, 369.6, accuracy: 0.001)
+    }
+
+    func testTheTriggerPageReadsItsClassArtifactsAndWindows() throws {
+        let trigger = try ZimmerJSON.decoder.decode(TriggerSummary.self, from: Data(#"""
+        {"id": 5, "name": "Nightly", "status": "enabled", "scheduling_class": null, "effective_scheduling_class": "spot", "precedence": 40,
+         "coalesce_window_seconds": null, "effective_coalesce_window_seconds": 60, "coalesce_window_inert": true,
+         "skip_if_pending_session": true, "skip_if_pending_session_inert": true, "missed_fire_count": 2, "first_missed_fire_at": "2026-10-10T02:00:00Z",
+         "mcp_servers": ["github", "linear"], "catalog_skills": ["open-pr"], "catalog_hooks": [], "catalog_plugins": ["zimmer-ops"],
+         "unresolved_catalog_references": {"mcp_servers": {"linear": "2026-10-09T00:00:00Z"}},
+         "prompt_template": "Triage {{text|untrusted}} from {{author}} at {{link}} on {{date}}; {{not_a_variable}} stays"}
+        """#.utf8))
+
+        XCTAssertNil(trigger.schedulingClass)
+        XCTAssertEqual(trigger.effectiveSchedulingClass, "spot")
+        XCTAssertEqual(trigger.precedence, 40)
+        XCTAssertEqual(trigger.effectiveCoalesceWindowSeconds, 60)
+        XCTAssertTrue(trigger.coalesceWindowInert)
+        XCTAssertTrue(trigger.skipIfPendingSessionInert)
+        XCTAssertNotNil(trigger.firstMissedFireAt)
+        XCTAssertEqual(trigger.mcpServers, ["github", "linear"])
+        XCTAssertEqual(trigger.catalogPlugins, ["zimmer-ops"])
+        XCTAssertTrue(trigger.catalogReferenceUnresolved("mcp_servers", "linear"))
+        XCTAssertFalse(trigger.catalogReferenceUnresolved("mcp_servers", "github"))
+        XCTAssertEqual(trigger.promptVariables, ["link", "text", "author"], "the form's order; {{date}} fills itself and an unknown name is not a variable")
+        XCTAssertEqual(TriggerSummary.placeholder(for: "repo"), "e.g. tadasant/zimmer")
+        XCTAssertEqual(TriggerSummary(id: 1, name: "x", status: "enabled", promptTemplate: "Sweep on {{date}}").promptVariables, [])
+    }
+
+    func testRunNowSendsTheVariablesItWasGiven() async throws {
+        let (api, transport) = client([
+            { _ in Fixtures.json(201, ["trigger": ["id": 7], "session": ["id": 2002], "message": "Fired"]) },
+            { _ in Fixtures.json(201, ["trigger": ["id": 7], "session": ["id": 2003], "message": "Fired"]) },
+        ])
+
+        _ = try await api.invokeTrigger(7, variables: ["text": "Review PR 42", "link": "", "author": "Jane"])
+        _ = try await api.invokeTrigger(7)
+
+        let first = try XCTUnwrap(JSONSerialization.jsonObject(with: transport.sent[0].body ?? Data()) as? [String: Any])
+        XCTAssertEqual(first["variables"] as? [String: String], ["text": "Review PR 42", "author": "Jane"], "a blank field is left out, as the form's empty input is")
+        let second = try XCTUnwrap(JSONSerialization.jsonObject(with: transport.sent[1].body ?? Data()) as? [String: Any])
+        XCTAssertTrue(second.isEmpty, "nothing to fill in sends the bare request")
+    }
+
+    func testTheFixtureFillsATemplateWithTheVariablesItIsRun() async throws {
+        let fake = FakeZimmerAPI()
+        let invoked = try await fake.invokeTrigger(7, variables: ["text": "Review PR 42", "author": "Jane"])
+        let session = try await fake.session(try XCTUnwrap(invoked.sessionID))
+        let variables = await fake.triggerVariables[7]
+        XCTAssertEqual(variables, ["text": "Review PR 42", "author": "Jane"])
+        XCTAssertTrue(session.session.prompt?.hasPrefix("Triage this thread: Review PR 42 from Jane at . Reply") ?? false, "filled as the server interpolates: a missing variable reads as nothing")
+        XCTAssertFalse(session.session.prompt?.contains("{{") ?? true, "{{date}} filled itself")
+        let degraded = try await FakeZimmerAPI(degraded: true).health()
+        XCTAssertFalse(degraded.banners.isEmpty)
+        let quiet = try await fake.health()
+        XCTAssertTrue(quiet.banners.isEmpty)
+        XCTAssertEqual(quiet.cron?.keys.count, 6)
+        let fleet = try await fake.costs(.days(7), scope: .fleet)
+        XCTAssertFalse(fleet.burnRates.isEmpty)
+        XCTAssertFalse(fleet.experiments.isEmpty)
+        let root = try await fake.costs(.days(7), scope: .agentRoot("zimmer"))
+        XCTAssertTrue(root.burnRates.isEmpty, "burn rates and experiments are the fleet page's only")
+        XCTAssertTrue(root.experiments.isEmpty)
+    }
+
     func testTheFixtureRefusesWhatTheServerRefuses() async throws {
         let fake = FakeZimmerAPI()
         await XCTAssertThrowsAsync(try await fake.dismissNotification(91), "an unread notification is not dismissed")

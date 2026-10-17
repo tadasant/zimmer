@@ -32,9 +32,8 @@ final class SessionParityUITests: XCTestCase {
         // Press and hold a running session to pause it.
         let running = row(app, 1042)
         XCTAssertTrue(running.waitForExistence(timeout: timeout))
-        running.press(forDuration: 1.2)
-        let pause = app.buttons["Pause Session"].firstMatch
-        XCTAssertTrue(pause.waitForExistence(timeout: timeout))
+        let pause = pressForMenu(app, running, offering: "Pause Session")
+        XCTAssertTrue(pause.exists, "the menu offers Pause Session")
         pause.tap()
         XCTAssertTrue(waitForLabelContaining(running, "Needs input"), "a paused session comes to rest waiting on you")
 
@@ -191,8 +190,18 @@ final class BoardViewUITests: XCTestCase {
 
     func test_select_several_and_trash_them_with_refusals_reported() throws {
         let app = launch(["-ZimmerFixtureFilter", "active"])
-        app.buttons["board.menu"].tap()
-        app.buttons["Select Sessions"].firstMatch.tap()
+        XCTAssertTrue(row(app, 1027).waitForExistence(timeout: timeout))
+        // Selecting is a state the board has to reach before a row is tapped: on a loaded
+        // simulator the menu opens late, a tap fired at once misses it, and the menu then
+        // stands over the row. So wait for the item, and for edit mode; once more if needed.
+        let done = app.buttons["select.done"]
+        for _ in 0..<2 where !done.exists {
+            app.buttons["board.menu"].tap()
+            let select = app.buttons["Select Sessions"].firstMatch
+            if select.waitForExistence(timeout: 10) { select.tap() }
+            _ = done.waitForExistence(timeout: 10)
+        }
+        XCTAssertTrue(done.exists, "the board is selecting")
 
         // A failed session goes; one with messages queued for it is refused with the
         // server's reason, as the web UI's bulk Trash refuses it.
@@ -284,9 +293,8 @@ final class RankedUITests: XCTestCase {
         let app = launch()
         let sweep = app.descendants(matching: .any)["session.row.1031"]
         XCTAssertTrue(sweep.waitForExistence(timeout: timeout))
-        sweep.press(forDuration: 1.2)
-        let start = app.buttons["Start Now"].firstMatch
-        XCTAssertTrue(start.waitForExistence(timeout: timeout))
+        let start = pressForMenu(app, sweep, offering: "Start Now")
+        XCTAssertTrue(start.exists, "the menu offers Start Now")
         start.tap()
         XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
         let running = expectation(for: NSPredicate(format: "label CONTAINS 'Running'"), evaluatedWith: sweep)
