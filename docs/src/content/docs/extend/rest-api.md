@@ -929,7 +929,8 @@ prompt, a prompt over the cap, prompt and page together over the cap, or a route
 cannot resolve, and **429** (with `retry_after`, in seconds) past 10 sessions a minute from one
 client address — the ceiling on what a leaked key can spend from one place, not something a person
 dropping pins meets. The `session_url` is built on the instance's configured base URL
-(`ZIMMER_PROD_BASE_URL`), not on the host the request came in on.
+(`ZIMMER_PROD_BASE_URL`), not on the host the request came in on, and is left out while that base
+URL is still the `zimmer.example.com` placeholder.
 
 ## Zimmer plugins
 
