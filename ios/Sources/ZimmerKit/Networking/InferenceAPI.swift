@@ -89,16 +89,8 @@ extension ZimmerHTTPClient {
     }
 
     public func resetGenesisClasses() async throws -> GenesisClassChange {
+        // `delete(_:)` is the client's own, declared beside the account routes.
         try await delete("/api/v1/inference/genesis")
-    }
-
-    private func delete<T: Decodable>(_ path: String) async throws -> T {
-        let response = try await perform(method: "DELETE", path: path, query: [:], body: nil)
-        do {
-            return try ZimmerJSON.decoder.decode(T.self, from: response.body)
-        } catch {
-            throw ZimmerError.decoding("\(path): \(error)")
-        }
     }
 }
 
