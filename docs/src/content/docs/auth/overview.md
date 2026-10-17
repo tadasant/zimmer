@@ -202,10 +202,13 @@ agent's reach. From there you can:
 - **Restore** a revoked key, if you revoked the wrong one. It authenticates again at once.
 
 Like the rest of the web UI, the page has no credential in front of it beyond
-[web sign-in](/auth/web-sign-in/), when that is on. It has no REST or MCP sibling, on purpose. If an API key could mint keys it would issue itself new credentials, and if it
+[web sign-in](/auth/web-sign-in/), when that is on. No API key and no MCP tool reaches what it does, on purpose. If an API key could mint keys it would issue itself new credentials, and if it
 could revoke them any session could cut every other session off by revoking the key they share.
-Keeping the page browser-only keeps key management out of the tools a session is handed. Without web
-sign-in it is not a wall: a session's shell can reach this page like anything else on the host.
+That keeps key management out of the tools a session is handed. The one REST sibling,
+[`/api/v1/api_keys`](/extend/rest-api/#the-auth-boundary-who-you-are-connections-and-keys), writes
+only for the iOS app's sign-in on a connection that acts as you — a person, which a key is not; an
+API key reading it sees fingerprints, never a key, and is refused every write. Without web
+sign-in the page is not a wall: a session's shell can reach it like anything else on the host.
 
 The fingerprint is the first eight characters of the key's SHA-256, so you can match a key you hold
 to its row:

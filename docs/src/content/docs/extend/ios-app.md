@@ -354,7 +354,7 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   form in the server's words, as the web form lists it, with nothing saved. *Delete* on the
   page asks the web page's question first (`DELETE /api/v1/triggers/:id`). *Enqueue messages*
   and *Resuscitate archived* are shown, not switched: they stay on the trigger's web page
-  (#1318), which *Open in browser* gets you to. *More* holds *Costs* and *Health*, read-only. *Costs* is the
+  (#1318), which *Open in browser* gets you to. *More* holds *Costs*, *Health* and *CLIs*. *Costs* is the
   web page, section for section, from the whole of `GET /api/v1/costs`: the ledger's coverage
   (backfilled, running with its progress, queued, or not yet, and what the ledger covers since),
   the total with the tokens, API calls and ad hoc share beside it, the unpriced-models warning,
@@ -370,7 +370,10 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   agent root to narrow the whole page to it, or, on the page for every root, swipe a session and
   choose *Only This*, the web page's drilldown; the page then says what it covers, and *All
   agent roots* widens it again. A narrowed page drops the experiments and burn rates, as the web
-  page does. *Sweep now* stays in the browser. *Health* is the web page's every section, in its
+  page does. *Sweep now* (*Re-scan history* once a sweep has finished) is the web banner's button:
+  it asks `POST /api/v1/costs/backfill` for the sweep, the banner shows the run queued or in
+  flight at once, and the screen reads the ledger again every few seconds until the run is done,
+  so the "swept … ago" line is the one the web page shows after. *Health* is the web page's every section, in its
   order, from `GET /api/v1/health`: the overall status; queue recovery mode (on or off, what it
   halts, and when on, since when, who entered it, why, and when it resumes); process counts
   and the orphan list; session totals, failure rate and the status, error-category and
@@ -386,8 +389,34 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   tap away. The two alerts the web layout puts on every page, *Queue recovery mode* and
   *Network egress degraded*, head the Health screen and the sessions board while they are up;
   the board re-reads them from the health report at most every five minutes, and a visit to
-  Health refreshes them. Health's operator actions (cleanup, retries, entering recovery mode,
-  re-arming tasks) stay in the browser; their routes refuse the app's token.
+  Health refreshes them. Health's operator actions are the web page's buttons, in the sections
+  the page puts them in and with the page's confirmation wording: *Clean Up Orphaned Processes*
+  under the orphan list, *Retry Failed Sessions* under the session breakdown, *Trash Sessions
+  Older Than 7 Days* in Maintenance Actions, *Halt Job Processing* with its reason and auto-resume
+  minutes, and while halted *Resume Job Processing* and *Extend*, *Re-arm and run now* under the
+  post-deploy tasks when one has failed or none has run, and in Queued Job Maintenance a
+  *Reschedule* (with its delay) and a *Discard* per job class with jobs ready. Each answer stays
+  under its button in the server's words (what was terminated, retried, trashed, re-armed,
+  discarded; "Queue recovery mode is on until …"), and the report is read again so the counts
+  move; the page then scrolls to the section that answered, because a halt or a resume re-lays
+  out the whole page (the banner comes or goes, the section grows or shrinks) and the answer would
+  otherwise land out of sight. The thirty-second cooldown on cleanup, retries and trashing is shown in place as the
+  server's "Please wait 30 seconds between actions", not as a failure. Two differences from the
+  web panel: the queued-job rows come from the report's ready-by-job-class breakdown (the API has
+  no listing by class *and* queue), and the count a discard or reschedule carries is read from
+  `GET /api/v1/health/queued_jobs` the moment before the question, so the server's count check
+  refuses an action on a set that moved since. The two dashboard links in Maintenance Actions are
+  web pages. *CLIs*, also under More, is the web page: the banner (all tools ready, or how many
+  need attention, which is also the red count on the More row, as on the web board's CLIs
+  button; the row's count is read each time More comes to the front), when the worker last
+  checked, and per tool its version, Installed and Authenticated badges, the install hint when it
+  is not installed and the sign-in hint (or the environment variable to set) when it is installed
+  and signed out, each with Copy. *Refresh* queues a fresh check and the status line reads
+  *Refresh queued* until a read carries a check newer than the one on screen — the screen reads
+  again every few seconds for a minute, and a pull reads again at any time. *Clear Cache* queues
+  the worker's npm and pip cache clear, without a confirmation, as on the web. The web page's
+  *Connect to Server* card is not in the app: it prints the box's Tailscale address, which the
+  API does not carry, and a copyable `ssh` line that does not connect would be worse than none.
   sessions it has made; turn one on or off (a trigger that is off reads in the quieter ink), invoke it now (after a
   confirmation, then open the session it started), or open its last session. Tap one for its page
   (`GET /api/v1/triggers/:id`): its status and the web page's labels beside it (*Re-uses session*,
@@ -434,25 +463,20 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
-Every action above except answering a prompt is a route on `/api/v1/sessions` that the app's token
-could already reach. Prompts are the one exception: they are listed at
-`/api/v1/sessions/:id/elicitations` and answered at `/api/v1/elicitations/:id/respond`, both opened
-to the app's token for this (see the [REST API](/extend/rest-api/#elicitations)).
-
-### Not in the app yet
-
-*Reprioritize* and *Authorize merge* are not in the app yet, nor is the web composer's camera
-button: taking a photo cannot be exercised in the simulator, so it waits on a change verified on
-a device. Switching a trigger's *Enqueue messages* and
-Every action above is a route on `/api/v1/sessions`. Merge is the one the app's token reaches
-where an API key cannot: only a person may give it (see the [REST API](/extend/rest-api/)).
+Every session action above is a route on `/api/v1/sessions`. Merge is the one the app's token reaches
+where an API key cannot: only a person may give it (see the [REST API](/extend/rest-api/)). Prompts
+are the other exception: they are listed at `/api/v1/sessions/:id/elicitations` and answered at
+`/api/v1/elicitations/:id/respond`, both opened to the app's token for this (see the
+[REST API](/extend/rest-api/#elicitations)). The Health, Costs and CLIs actions are the routes
+`accepts_native_app_tokens` opens for exactly them (`Api::V1::HealthController`,
+`CostsController#backfill`, `ClisController`): each is a button the web page offers any signed-in
+person, and the phone is that person's other screen.
 
 ### Not in the app yet
 
 The web composer's camera button is not in the app yet: taking a photo cannot be exercised in the
-simulator, so it waits on a change verified on a device. Fork from a message and answering an
-elicitation stay in the browser until the app draws them; the API they need is in place. Switching a trigger's *Enqueue messages* and
-*Resuscitate archived* (#1318), and
+simulator, so it waits on a change verified on a device. Switching a trigger's *Enqueue messages* and
+*Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update), and
 saying whether re-arming a failed trigger fires it again (the trigger JSON does not say whether a
 one-time wake was already spent; the web page does) come in their own change. The trigger
 form's schedule *Time* is typed as `HH:MM` rather than picked, and a one-time schedule's date
