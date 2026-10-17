@@ -514,4 +514,43 @@ module InferenceHelper
 
     [ current, target, current != kind.default_class, badge ]
   end
+  # The one sentence that says whether the idle pool is about to move to a
+  # better account, and if not, which of AccountRebalanceService's conditions is
+  # holding it — so "why are we still on the 81% account?" has an answer on the
+  # page rather than in a log.
+  def rebalance_sentence(plan)
+    current = plan.current&.email
+    case plan.state
+    when :disabled
+      "Proactive rebalancing is off (CLAUDE_REBALANCE_ENABLED=false). The pool moves only when an account hits a quota wall."
+    when :no_current_account
+      "No account is current, so there is nothing to rebalance from."
+    when :busy
+      "Holding on #{current}: #{pluralize(plan.turns_in_flight, 'turn')} in flight. " \
+        "The pool switches accounts only when nothing is running, so no session loses its prompt cache."
+    when :inside_idle_window
+      "Holding on #{current}: the last Claude Code activity was #{time_ago_in_words(plan.last_activity_at)} ago. " \
+        "A switch can happen once the pool has been quiet for #{distance_of_time_in_words(plan.idle_window)} " \
+        "(the prompt-cache lifetime) — in #{distance_of_time_in_words(plan.now, plan.idle_until)}, if nothing runs before then."
+    when :no_current_reading
+      "Holding on #{current}: it has no quota reading from the last #{distance_of_time_in_words(ClaudeAccountScore::FRESHNESS)} to compare against."
+    when :no_candidate
+      "Staying on #{current}: no other account is eligible — each needs to be active, credentialed, " \
+        "read in the last #{distance_of_time_in_words(ClaudeAccountScore::FRESHNESS)}, and have room in both windows."
+    when :current_is_best
+      if plan.best_score <= plan.current_score
+        "Staying on #{current}: it scores highest (#{rebalance_score(plan.current_score)})."
+      else
+        "Staying on #{current} (#{rebalance_score(plan.current_score)}): the best alternative, #{plan.best.email}, " \
+          "scores #{rebalance_score(plan.best_score)} — under the #{rebalance_score(plan.min_gain)} lead a switch needs."
+      end
+    when :due
+      "Switching at the next check: the pool is idle and #{plan.best.email} (#{rebalance_score(plan.best_score)}) " \
+        "beats #{current} (#{rebalance_score(plan.current_score)}) by #{rebalance_score(plan.gain)}."
+    end
+  end
+
+  def rebalance_score(value)
+    format("%.2f", value)
+  end
 end

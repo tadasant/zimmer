@@ -574,9 +574,15 @@ class ClaudeAccount < ApplicationRecord
   # Mark this account as the current one for its runtime. Scoped to the same
   # runtime so activating (e.g.) a Codex account doesn't clear the Claude
   # pool's current flag — each runtime keeps an independent current account.
+  #
+  # One transaction, so a spawn reading `current_account` mid-switch sees the
+  # old account or the new one and never neither — a moment with no current
+  # account would send it down the bootstrap path and race the switch.
   def mark_current!
-    self.class.for_runtime(runtime).where.not(id: id).update_all(is_current: false)
-    update!(is_current: true, last_rotated_to_at: Time.current)
+    self.class.transaction do
+      self.class.for_runtime(runtime).where.not(id: id).update_all(is_current: false)
+      update!(is_current: true, last_rotated_to_at: Time.current)
+    end
   end
 
   # Returns the token expiration time derived from oauth_config, or nil when the
