@@ -108,11 +108,21 @@ async function submit(payload) {
     return { ok: false, error: `${baseUrl} answered, but not as Zimmer: no session came back. Is the URL right?` };
   }
 
-  // Linked on the URL this browser just reached, not the one Zimmer reports:
-  // the instance's configured base URL may be a name this browser cannot
-  // resolve, while `baseUrl` demonstrably works from here.
-  const sessionUrl = body.session_id ? `${baseUrl}/sessions/${body.session_id}` : body.session_url;
-  return { ok: true, sessionId: body.session_id, sessionUrl };
+  return { ok: true, sessionId: body.session_id, sessionUrl: sessionLink(body, baseUrl) };
+}
+
+// Linked on the web UI URL Zimmer reports, not on `baseUrl`: the URL the
+// extension sends to can be a host that serves the API and nothing else.
+// Without a usable `session_url`, the session is linked on `baseUrl`. Only an
+// http(s) URL becomes a link, since the toast puts it in an href.
+function sessionLink(body, baseUrl) {
+  try {
+    const url = new URL(body.session_url);
+    if (url.protocol === "https:" || url.protocol === "http:") return url.href;
+  } catch {
+    // Missing or not a URL.
+  }
+  return body.session_id ? `${baseUrl}/sessions/${body.session_id}` : null;
 }
 
 // What to tell the human when something in front of Zimmer answered instead of

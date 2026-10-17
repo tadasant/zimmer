@@ -47,8 +47,8 @@ itself refused it:
 - **An Access 403** means the browser is signed in with an account the policy does not admit. Sign in
   with the right account.
 
-On `zimmer-app.tadasant.com` the toast's session link does not open: that host serves the API only.
-Open the session from Zimmer itself.
+The toast links to the session on the web UI URL Zimmer reports (its configured base URL), not on
+the URL the extension sends to, because that can be a host that serves the API only.
 
 Nothing needs provisioning on the Zimmer side. The key is minted on a page that already exists,
 the endpoint ships with the deploy, and there is no environment variable to set.
@@ -63,7 +63,7 @@ the endpoint ships with the deploy, and there is no environment variable to set.
   (`<p> Closes #98.`) — **Move pin** re-arms. <kbd>Enter</kbd> instead of a click skips the pin;
   <kbd>Esc</kbd> cancels at any step and keeps what you typed for the next time you open it.
 - Type, then <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> or **Send to Zimmer**. A toast says it
-  was sent and links to the session on the URL you configured; it goes away on its own.
+  was sent and links to the session in Zimmer's web UI; it goes away on its own.
 
 Both shortcuts can be changed on `chrome://extensions/shortcuts`. Chrome applies an extension's
 suggested shortcuts when it is installed, so a copy loaded before <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd>

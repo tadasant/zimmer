@@ -42,6 +42,9 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
   // How the edge answers: 'login' (redirects without a sign-in), 'service-only'
   // (Access's 401, signed in or not), 'forbidden', or 'not-zimmer'.
   let mode = 'login';
+  // The session_url the ingest reports: the web UI on its own host, as Zimmer's
+  // AppUrl.base_url is when the extension sends to an API-only host.
+  let reportedSessionUrl = 'https://zimmer-web.example/sessions/4242';
   const edge = http.createServer((req, res) => {
     const signedIn = /(?:^|;\s*)CF_Authorization=signed-in(?:;|$)/.test(req.headers.cookie || '');
     if (req.method === 'GET' && req.url === '/') {
@@ -75,7 +78,7 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
         }
         received.push({ key: req.headers['x-api-key'], body: JSON.parse(body) });
         res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ session_id: 4242, session_url: 'http://unreachable.example/sessions/4242' }));
+        res.end(JSON.stringify({ session_id: 4242, session_url: reportedSessionUrl }));
       });
       return;
     }
@@ -140,11 +143,22 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
     await send('after signing in');
     await host.locator('.toast').waitFor({ timeout: 30000 });
     const link = await host.locator('.toast a').getAttribute('href');
-    assert(link === `${BASE_URL}/sessions/4242`, `the toast links to the session on the URL the browser reached (${link})`);
+    assert(link === 'https://zimmer-web.example/sessions/4242', `the toast links to the session on the web UI URL Zimmer reports, not the API host (${link})`);
     assert(received.length === 1, `the ingest received one request (${received.length})`);
     assert(received[0]?.key === 'zmr_quick_router_key', 'with the key in X-API-Key');
     assert(received[0]?.body?.prompt === 'after signing in', 'and the message as the prompt');
     await host.locator('.toast button').click();
+
+    console.log('Step 2b: without a usable session_url, the link falls back to the URL the browser reached...');
+    for (const [reported, label] of [[undefined, 'missing'], ['javascript:alert(1)', 'not http(s)']]) {
+      reportedSessionUrl = reported;
+      await send(`session_url ${label}`);
+      await host.locator('.toast').waitFor({ timeout: 30000 });
+      const fallback = await host.locator('.toast a').getAttribute('href');
+      assert(fallback === `${BASE_URL}/sessions/4242`, `session_url ${label}: the toast links on the URL the browser reached (${fallback})`);
+      await host.locator('.toast button').click();
+    }
+    reportedSessionUrl = 'https://zimmer-web.example/sessions/4242';
 
     console.log('Step 3: past the edge, a wrong key is still blamed on the key...');
     await worker.evaluate(() => chrome.storage.local.set({ apiKey: 'zmr_not_the_key' }));
@@ -155,6 +169,8 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
     await page.keyboard.press('Escape');
     await worker.evaluate((k) => chrome.storage.local.set({ apiKey: k }), KEY);
 
+    const delivered = received.length;
+
     console.log('Step 4: an edge that admits service tokens only refuses a signed-in browser...');
     mode = 'service-only';
     await send('service tokens only');
@@ -163,7 +179,7 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
     assert(serviceOnly.includes('service tokens only') && serviceOnly.includes('will not help') && serviceOnly.includes('/api'), `the composer says signing in will not help (${serviceOnly})`);
     assert(!serviceOnly.includes('Quick Router key'), 'it does not blame the key');
     assert((await host.locator('textarea').inputValue()) === 'service tokens only', 'the text is kept for a retry');
-    assert(received.length === 1, 'nothing more reached the ingest');
+    assert(received.length === delivered, 'nothing more reached the ingest');
     await page.keyboard.press('Escape');
 
     console.log('Step 5: a 403 from the edge is about the account, not a missing sign-in...');
@@ -180,7 +196,7 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
     await host.locator('.error').waitFor({ timeout: 30000 });
     const notZimmer = await host.locator('.error').innerText();
     assert(notZimmer.includes('not as Zimmer') && (await host.locator('.toast').count()) === 0, `no toast, and the composer says so (${notZimmer})`);
-    assert(received.length === 1, 'nothing more reached the ingest');
+    assert(received.length === delivered, 'nothing more reached the ingest');
   } finally {
     edge.close();
     fixtureServer.close();

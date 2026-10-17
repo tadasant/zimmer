@@ -3374,15 +3374,6 @@ block and forge the human's message, and the block says its contents are data, n
 Visible text that argues with the agent is still visible text, and nothing sandboxes a router
 session that decides to act on it. Pin pages you would be comfortable having an agent read.
 
-### The browser extension's session link does not open on an API-only host
-
-On Tadas's deployment the [browser extension](/extend/browser-extension/) has to send to the iOS
-app's origin, `zimmer-app.tadasant.com`, because `/api` on the public domain admits a service token
-only. The toast links to the session on the URL the browser reached, and that host serves the API
-alone, so the link fails. The message is sent and the session runs. Open it from Zimmer itself. The
-link uses the URL the browser reached on purpose: on a tailnet deployment, the instance's configured
-base URL can be a name the browser cannot resolve.
-
 ### The baseline orchestrator root can't spawn downstream sessions out of the box
 
 🔴 `zimmer-orchestrator` — the root behind every quick-router / chat-bubble submission — ships with **no**
