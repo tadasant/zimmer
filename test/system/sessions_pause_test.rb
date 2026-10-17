@@ -85,7 +85,7 @@ class SessionsPauseTest < ApplicationSystemTestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      metadata: { "process_pid" => 999999 } # Fake PID that doesn't exist
+      metadata: { "process_pid" => 999_999_999 } # Above PID_MAX_LIMIT (2^22): never a live process
     )
 
     visit session_path(session)
@@ -134,7 +134,7 @@ class SessionsPauseTest < ApplicationSystemTestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      metadata: { "process_pid" => 999999 } # Fake PID that doesn't exist
+      metadata: { "process_pid" => 999_999_999 } # Above PID_MAX_LIMIT (2^22): never a live process
     )
 
     visit session_path(session)

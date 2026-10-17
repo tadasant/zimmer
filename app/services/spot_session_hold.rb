@@ -1348,7 +1348,7 @@ class SpotSessionHold
     def queue_behind_scheduled_turn(session, prompt, scheduled_at, images:, files:, log_buffer:)
       position = (session.enqueued_messages.maximum(:position) || 0) + 1
       session.enqueued_messages.create!(
-        content: prompt,
+        **EnqueuedMessage.attributes_for_prompt(prompt),
         position: position,
         # A jsonb column, so the record shape — the same round trip the hold
         # record takes, and the one EnqueuedMessageProcessorService reads back.

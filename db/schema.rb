@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_15_170000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_16_220000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -297,6 +297,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_15_170000) do
     t.string "origin", default: "caller", null: false
     t.integer "position", null: false
     t.bigint "session_id", null: false
+    t.jsonb "source_context"
     t.string "status", default: "pending", null: false
     t.datetime "updated_at", null: false
     t.index ["session_id", "status"], name: "index_enqueued_messages_on_session_id_and_status"
@@ -495,6 +496,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_15_170000) do
 
   create_table "live_conversations", force: :cascade do |t|
     t.string "agent_root", null: false
+    t.string "client_surface"
     t.datetime "created_at", null: false
     t.datetime "ended_at"
     t.text "error_message"
@@ -504,14 +506,49 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_15_170000) do
     t.jsonb "mcp_servers", default: [], null: false
     t.jsonb "mcp_tool_cache", default: {}, null: false
     t.string "mode", null: false
+    t.jsonb "mode_instructions", default: {}, null: false
     t.string "model", null: false
     t.datetime "responding_since"
     t.string "status", default: "preparing", null: false
     t.string "title"
     t.datetime "updated_at", null: false
+    t.index "(true)", name: "index_live_conversations_one_open", unique: true, where: "(((status)::text = 'preparing'::text) OR ((status)::text = 'active'::text))"
     t.index ["mode", "status"], name: "index_live_conversations_on_mode_and_status"
-    t.index ["mode"], name: "index_live_conversations_one_open_per_mode", unique: true, where: "(((status)::text = 'preparing'::text) OR ((status)::text = 'active'::text))"
     t.index ["updated_at"], name: "index_live_conversations_on_updated_at"
+  end
+
+  create_table "live_setting_changes", force: :cascade do |t|
+    t.string "actor", null: false
+    t.string "actor_kind", null: false
+    t.jsonb "changeset", default: {}, null: false
+    t.datetime "created_at", null: false
+    t.bigint "live_conversation_id"
+    t.index ["created_at"], name: "index_live_setting_changes_on_created_at"
+    t.index ["live_conversation_id"], name: "index_live_setting_changes_on_live_conversation_id"
+  end
+
+  create_table "live_settings", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.text "guidance"
+    t.integer "text_max_output_tokens"
+    t.string "text_model"
+    t.float "text_temperature"
+    t.datetime "updated_at", null: false
+    t.string "updated_by"
+    t.string "voice_listening"
+    t.integer "voice_max_output_tokens"
+    t.string "voice_model"
+    t.string "voice_name"
+    t.string "voice_noise_reduction"
+    t.string "voice_reasoning_effort"
+    t.float "voice_speed"
+    t.string "voice_transcription_model"
+    t.string "voice_turn_detection"
+    t.string "voice_vad_eagerness"
+    t.integer "voice_vad_prefix_padding_ms"
+    t.integer "voice_vad_silence_duration_ms"
+    t.float "voice_vad_threshold"
+    t.index "(true)", name: "index_live_settings_singleton", unique: true
   end
 
   create_table "logs", force: :cascade do |t|
@@ -926,6 +963,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_15_170000) do
     t.string "slug"
     t.datetime "snoozed_until"
     t.integer "sort_order", default: 0, null: false
+    t.jsonb "source_context"
     t.integer "status", default: 1
     t.string "subdirectory"
     t.string "title"
@@ -1267,6 +1305,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_15_170000) do
   add_foreign_key "gate_decisions", "sessions", column: "writing_session_id", on_delete: :nullify
   add_foreign_key "human_messages", "sessions", on_delete: :cascade
   add_foreign_key "live_conversation_turns", "live_conversations", on_delete: :cascade
+  add_foreign_key "live_setting_changes", "live_conversations", on_delete: :nullify
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
   add_foreign_key "notifications", "sessions", on_delete: :cascade

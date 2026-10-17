@@ -488,7 +488,8 @@ module Mcp
           # `active_follow_up_prompt` when it spawns, and
           # Sessions::RequeueSkippedPrompt drops it when it takes custody of the
           # same text into the durable queue.
-          session.merge_metadata!("pending_follow_up_prompt" => prompt)
+          delivered_prompt, source_updates = session.tag_turn(prompt, context.turn_source)
+          session.merge_metadata!(source_updates.merge("pending_follow_up_prompt" => delivered_prompt))
           # Before the enqueue, and in the same transaction: the job this line
           # creates builds the next prompt, and it must see the edge. Rolling
           # back takes the edge with it, so a failed send still records nothing.
@@ -497,7 +498,7 @@ module Mcp
           # builds already sees this turn as the human's, and inside the
           # transaction, so a failed send records nothing.
           context.capture_assistant_message(session, prompt, "oauth.follow_up")
-          job = AgentSessionJob.enqueue_with_prompt(session.id, prompt)
+          job = AgentSessionJob.enqueue_with_prompt(session.id, delivered_prompt)
           session.update!(running_job_id: job.job_id)
         end
 
@@ -519,7 +520,8 @@ module Mcp
             content: prompt,
             goal: goal,
             position: max_position + 1,
-            status: "pending"
+            status: "pending",
+            source_context: context.turn_source.to_h
           )
         end
         @queued_follow_up = enqueued_message
@@ -557,7 +559,8 @@ module Mcp
           content: prompt,
           goal: goal,
           position: max_position + 1,
-          status: "pending"
+          status: "pending",
+          source_context: context.turn_source.to_h
         )
         @queued_follow_up = enqueued_message
         session.logs.create!(
@@ -1076,6 +1079,9 @@ module Mcp
       # Where this session sits in the spot queue. Answered for every session,
       # priority included: the value is carried on the row either way, and a
       # priority session that is later demoted lands on the rank it is holding.
+      #
+      # Argument parsing and presentation ONLY — the write and its log row are
+      # Sessions::UpdatePrecedence, shared with the web rank editor.
       def change_precedence(session, args)
         unless precedence_named?(args)
           raise ToolError, "The \"precedence\" parameter is required for the \"change_precedence\" action. " \
@@ -1083,19 +1089,16 @@ module Mcp
                            "to put this session at the head of the spot queue."
         end
 
-        previous = session.precedence
-        session.update!(precedence: resolved_precedence(args, exclude: session))
-
-        if previous != session.precedence
-          session.logs.create!(content: "Precedence set via MCP to #{session.precedence} (was #{previous})", level: "info")
-        end
+        result = Sessions::UpdatePrecedence.call(
+          session: session, precedence: resolved_precedence(args, exclude: session), actor: :mcp
+        )
 
         [
           "## Precedence Updated",
           "",
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
-          "- **Precedence:** #{session.precedence} (was #{previous})",
+          "- **Precedence:** #{session.precedence} (was #{result.previous})",
           "- **Scheduling class:** #{session.priority_class}",
           ("- Note: this session is priority, so precedence does not affect when it starts — " \
            "it applies if the session is later demoted to spot." if session.priority?)

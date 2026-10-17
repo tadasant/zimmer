@@ -106,6 +106,15 @@ module CronSchedule
       description: "Poll GitHub PR status, CI, merge conflicts and comments for sessions with PR URLs",
       environments: %i[production staging development]
     },
+    # The pass above covers live sessions only. This one watches the open PRs of
+    # producers that archived or failed, and brings the producer back when one
+    # conflicts. Per-session cadence lives in Github::OrphanedPrConflictSweep.
+    github_orphaned_pr_conflict_sweep: {
+      cron: "*/2 * * * *", # Every 2 minutes
+      class: "GithubOrphanedPrConflictSweepJob",
+      description: "Revive archived or failed sessions whose open PR has a merge conflict",
+      environments: %i[production staging development]
+    },
     stale_clone_cleanup: {
       cron: "0 * * * *", # Every hour at minute 0
       class: "StaleCloneCleanupJob",
@@ -420,6 +429,12 @@ module CronSchedule
       cron: "*/15 * * * *", # Every 15 minutes, matching the cadence quota snapshots land at
       class: "QuotaCapacityCalibrationJob",
       description: "Re-estimate what each Claude quota window is worth in Opus dollars, from spend over that window",
+      environments: %i[production staging]
+    },
+    account_rebalance: {
+      cron: "*/5 * * * *", # Every 5 minutes — the idle window is an hour, so this is not the bound
+      class: "AccountRebalanceJob",
+      description: "Move an idle Claude Code pool onto its best-scoring account once the prompt cache has expired",
       environments: %i[production staging]
     },
     claude_usage_sampler: {

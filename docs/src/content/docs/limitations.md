@@ -4478,6 +4478,55 @@ that confirming reading still clears the marker, and the session drops back to i
 ceiling until another conflicting reading starts a fresh suspicion. A genuinely conflicting PR that
 GitHub keeps misreading as mergeable can still go un-reported for as long as it keeps doing so.
 
+### The conflict question costs a second GitHub call, and why the first was not enough
+
+The pass's one `gh pr view` reads GraphQL's `mergeable`, and that reading answers PR status, goal
+facts and comments. The conflict question re-reads it from REST (`gh api repos/O/R/pulls/N --jq
+.mergeable`) for every open PR, on the merge-conflict gate only — at most every two minutes per open
+PR. The poller before [#711](https://github.com/tadasant/zimmer/issues/711) read REST for this, with a
+comment saying GraphQL was the less reliable of the two. Fusing the pollers dropped it.
+
+The case that brought it back: on 2026-10-15 tadasant/zimmer#1284 conflicted with `main` after its
+stack parent squash-merged. Session 24237 held the PR and had been told about earlier conflicts on it
+three times, but this time it was never told. Hours of polling followed, three of them with the
+session idle in `needs_input`, where a confirmed conflict is delivered at once. A human typed "Merge
+conflicts". Which reading GraphQL gave in that window is not on record. So this restores the reading
+that was known to work, plus a head-commit re-arm of the "already notified" marker, rather than
+claiming a diagnosis. If REST cannot be read, GraphQL's answer stands.
+
+### Conflicts on PRs nobody recorded, and on producers long gone, still go unnoticed
+
+Three populations are still outside every conflict check:
+
+- **A PR Zimmer never recorded.** The pollers know a session's PRs only from
+  `github_pull_request_urls`, which `TranscriptHooks::GithubPrUrlHook` fills from the session's own
+  `gh pr create`. A PR opened by a subagent, through `gh api`, by a wrapper script, or in a
+  stack the session pushed without creating, is invisible. Session 24237's own
+  tadasant/zimmer#1282 was one: it conflicted alongside #1284 and nothing could have noticed.
+- **A producer that ended more than 7 days ago, or before 2026-10-16.** `GithubOrphanedPrConflictSweepJob`
+  watches the open PRs of archived and failed producers, but only within
+  `Github::OrphanedPrConflictSweep::WATCH_WINDOW`, and never one that ended before `WATCHED_SINCE`,
+  the cutover that keeps the first deploy from reviving a week of producers at once. Past either, nothing
+  watches the PR, and the merge gate is the first to find the conflict. The window counts from
+  `archived_at`. A failed session has no failure timestamp, so it counts from the session's last human
+  activity, which falls back to `created_at` and which opening the session's page moves. Opening a
+  long-failed session can therefore put it back on watch for a week, and a failed session that ran
+  unattended for over a week is never watched.
+- **A live session idle for more than 7 days.** `Github::PrPollPass` stops holding such a session at
+  its 30-minute ceiling and lets it fall to `PollBackoff`'s daily floor, so a conflict there is
+  noticed up to a day late.
+
+Reviving a producer has edges of its own. A human who archived a session to abandon its PR, but
+left the PR open, gets that session back once per conflict episode. The message tells it to say so
+and archive, and the confirmed marker keeps it from coming back for the same conflict. A clean
+reading, or a conflict on a new head commit, starts a new episode. Each PR is
+capped at `MAX_REVIVALS_PER_PR` (3) revivals per session, ever. A replaced session
+(`replaces_session`) is never revived, and neither is one when a newer session tracks the same PR.
+That rule picks a single owner, but it trusts that the newer session is the one working the PR.
+A revived child session is an ordinary live session again, so whatever it reports to its parent
+reaches the parent, which may wake it. At most 2 sessions are revived per run, and the rest wait
+for the next run, two minutes later.
+
 ---
 
 ### The merged message reports what the merge fired, and it cannot tell a deploy from any other push job
@@ -4539,6 +4588,74 @@ still not elastic. The `starved_lane` page — `maintenance`, 100 ready, 60 minu
 signal that it has fallen behind, and it is an accurate one.
 
 ---
+
+## Turn sources
+
+The [turn-source note](/sessions/turn-sources/) is a style hint. These are the places where it is
+missing, coarse, or wrong. None of them reaches authorization, because nothing reads the source for
+that (`test/services/turn_source_test.rb`).
+
+### The modality is whatever the client says
+
+`X-Zimmer-Input-Modality` is the client's own claim, and nothing checks it. An API-key caller can
+claim `voice_dictation` and get a dictation hint. That is by design, and it is the reason the value
+is never an authorization signal. The Live modalities cannot be claimed this way. They come only from
+the Live conversation a delegation ran in.
+
+### Keyboard dictation on the phone is invisible
+
+The phone's composers are plain text fields. iOS keyboard dictation fills them like typing and the
+app cannot see it, so a phone message is tagged `ios` with an `unknown` modality. Only CarPlay's own
+speech loop (`VoiceIO`) is tagged `voice_dictation`.
+
+### A Live call from CarPlay is tagged as the phone
+
+CarPlay's Live call is the phone's `LiveCall`, using the same client, so its delegations are tagged
+`ios · live_voice` rather than `carplay`. `live_conversations.client_surface` is last-writer-wins: if
+the web app and the phone both drive one conversation, the next delegation names whichever spoke
+last.
+
+### An API key is `api`, even when an agent holds it
+
+The REST API's full key belongs to the whole fleet. A call is tagged `agent` only when it names
+`acting_session_id` or spawns under a parent. Otherwise an agent calling the REST API by hand is
+tagged `api`. The MCP surface does not have this gap, because the connection is stamped with its
+session.
+
+### Some turns arrive with no note
+
+These turns arrive with no note:
+
+- A replayed prompt: a nudge to a never-started session replays `sent_message`, `prompt` or
+  `original_prompt` (`AgentSessionJob#replayable_prompt`).
+- A follow-up folded into a never-started session's `prompt`. Its note comes off the column, and its
+  source becomes the session's initial source only when the session had none recorded.
+- A message Zimmer writes itself.
+- A prompt within 1,000 characters of `PROMPT_MAX_LENGTH`. The note is left off so a requeue never
+  fails the queue's length validation. The source is still recorded in `last_turn_source`.
+
+### A whole turn replayed verbatim keeps its note
+
+The signature covers the note's fields and the exact text in front of it. It does not cover the
+session or the moment. An untagged path that delivers byte-for-byte the same text and note that an
+earlier turn carried keeps that note as genuine. For example, a session could copy one of its own
+past turns into a `wake_me_up_later` prompt. The note then still describes how those words were
+first produced, so the lift gains nothing. Binding the signature to a session id would close this,
+at the cost of threading the session through every comparison.
+
+### Lookalikes the neutralizer does not match
+
+`TurnSource.neutralize` defuses `<zimmer-turn-source`, with optional whitespace and `/`,
+case-insensitively and line by line. It does not catch HTML-escaped (`&lt;…`), fullwidth (`＜`) or
+zero-width-split spellings, which a model might still read as the tag. The agent-facing explanation
+names only the intact element as Zimmer's.
+
+### Changing the note's wording defuses notes already in flight
+
+`finalize` keeps a note only if it re-renders byte for byte. A deploy that changes a label or a hint
+therefore defuses notes signed before it but not yet delivered (`‹zimmer-turn-source›`), for example
+on a prompt sitting in `pending_follow_up_prompt` or the queue. The turn is still delivered, just
+without a usable note. Rotating `secret_key_base` has the same effect.
 
 ## Triggers
 
@@ -6031,24 +6148,24 @@ field ([#999](https://github.com/tadasant/zimmer/issues/999)), so a value seeded
 resolves correctly whatever bytes it carries, and the fake now models a console-written parameter
 so the round trip is covered. Three things still are not:
 
-1. **`ParameterStore::WriteClient` writes literal bytes and declares no encoding**, so the Inference
-   page's Pi tab and `SecretsLocation#envelope_json` both still create the parameter this section
-   describes. A value carrying JSON structure written that way still 400s every `:render`, and
-   `ManagedSecret#write` reports the failed verify as *"the store refused the write"* — which is
-   false: the write landed, and nothing rolls it back.
+1. **`ParameterStore::WriteClient` writes literal bytes and declares no encoding**, and so does the
+   envelope `SecretsLocation#envelope_json` renders on the Connectors page for a human to store. Both
+   create the parameter this section describes, and a value carrying JSON structure stored either
+   way 400s every `:render`. The namespace migration is the only caller of `WriteClient`; its verify
+   reads back through the chain, so it catches the 400 and removes the canonical pair it created.
+   Set such a value in the Secrets Console instead.
 2. **`NamespaceMigration` refuses rather than mis-copying.** It reads decoded values and can only
    write literal ones, so a variable whose pre-rename envelope declares an encoding is reported as
    `:unsupported_encoding` and left in place; re-seed it at the canonical path through the console.
    The migration therefore cannot finish on its own for console-written values.
 3. **The fake still does not model `:render`'s validation**, so the blind spot above is unchanged
    for anything that reaches `:render` with structural bytes.
-4. **Rotating a console-written value from Zimmer breaks it.** `WriteClient#upsert` adds a
-   literal-bytes Secret Manager version and writes an envelope only when the parameter has none, so
-   the console's `"encoding":"base64url"` envelope stays in place over bytes that are not base64url.
-   The resolver then refuses the value (or, for bytes that happen to be valid base64url, decodes
-   them to the wrong value), and `ManagedSecret#write`'s read-back verify reports the write as
-   failed. Rotate a value through the same surface that created it: if it was written in the
-   Secrets Console, rotate it there.
+
+Rotate a value through the same surface that created it. A `gcloud secrets versions add` of literal
+bytes under a console-written `"encoding":"base64url"` envelope leaves bytes that are not
+base64url behind that envelope, and the resolver refuses the value (or, for bytes that happen to be
+valid base64url, decodes them to the wrong value). If it was written in the Secrets Console, rotate
+it there.
 
 ## A store value that is not valid UTF-8 is refused
 
@@ -6166,6 +6283,27 @@ attributed to a fleet size tomorrow — so it remains available as history for a
 dead weight until then.
 
 ---
+
+## Rebalancing is tuned by environment variable, not from /inference
+
+`AccountRebalanceJob`'s idle window, its score margin and its on/off switch are
+`CLAUDE_REBALANCE_IDLE_MINUTES`, `CLAUDE_REBALANCE_MIN_SCORE_GAIN` and `CLAUDE_REBALANCE_ENABLED`.
+They pass through `config/deploy.yml`, so changing one takes a deploy; there is no form field or MCP
+action for them, and /inference prints the idle window and the margin only in the states they decide. See [Proactive rebalancing](/auth/harness/#proactive-rebalancing).
+
+## Rebalancing measures idleness from transcript activity
+
+The idle window is measured from the newest `last_timeline_entry_at` across Claude Code sessions,
+which the transcript poller moves as a session's transcript grows. A request that writes no
+transcript entry on a session (a quota probe, for one) does not count as activity, so a switch an
+hour after the last transcript entry can still throw away a cache that some side request warmed.
+
+## A quota wall rewrites every Claude Code account's priority
+
+Each quota rotation and each rebalance re-ranks `priority` by `ClaudeAccountScore`, so a priority
+set by hand lasts only until the next one. There is no way to pin an account's position. A manual
+**Switch** on /inference holds off rebalancing for 24 hours (`AccountRebalanceService::MANUAL_HOLD`);
+after that the pool may move again.
 
 ## A held spot session has exactly one thread back to life
 
@@ -7921,11 +8059,10 @@ value is read only from the secret chain.
 
 ## The CarPlay scene has never connected to a car
 
-The CarPlay scene is built and its conversation logic (`DrivingFlow`) is unit-tested. But CarPlay
-connects an app only when its signed build carries a granted CarPlay entitlement, and Apple has not
-granted one, so no head unit or CarPlay Simulator has shown it. Speech recognition in a moving car,
-the voice-control template's states, and whether iOS 26.4 starts the conversation the way the
-category expects are all unobserved. Recognition is on-device only, so on a phone without an on-device
+The CarPlay scene is built, its conversation logic (`DrivingFlow`) is unit-tested, and every
+TestFlight build signs in the granted entitlement. But no head unit or CarPlay Simulator has shown
+it yet. Speech recognition in a moving car, the voice-control template's states, and whether iOS
+26.4 starts the conversation the way the category expects are all unobserved. Recognition is on-device only, so on a phone without an on-device
 model for its language, the car can talk but can't listen.
 
 ## No iOS push has been sent to a real phone
@@ -7973,6 +8110,26 @@ reasons that are not activity, so ageing on it would mislead. The app is also no
 the web UI: queued messages, attachments, the new-session form, catalog and model changes,
 notifications, triggers, costs and health are still browser-only — see
 [Not in the app yet](/extend/ios-app/#not-in-the-app-yet).
+
+A session created from the app is priority by a rule on the create (`POST /api/v1/sessions` writes
+`scheduling_class: priority` when the app sends none), not by a genesis of its own: it is recorded
+as `api`. So *Derive it* on a phone-created session resolves its class from the `api` genesis — spot,
+unless Settings says otherwise — where *Derive it* on a web-created session resolves to priority from
+`web_ui`. The two look the same on the page and go different ways.
+
+The Quick Router's page context from the app is five facts off the session's header — id and title,
+status, agent root, class, goal — where the web bubble sends the whole page, its DOM reduced to
+markdown, up to 20,000 characters. The router sees less of a session from the phone than from the
+browser.
+
+## A Zimmer link in the iOS app opens the browser
+
+The web's Status panel rewrites a summary's link to one of the session's own transcript messages
+into an in-page `#message-N` anchor (`SessionStatusSummary#summary_markdown`), so a tap scrolls the
+transcript. The API sends the stored text, and the app has no handler for Zimmer's own URLs. So in
+the app's *Where things stand* and its transcript, a link to a message, or to another session,
+opens the web page in the browser rather than in the app. A pull request, issue or CI run link
+opens the same either way.
 
 ## The transcript archive's deadline cannot stop a run that is stuck
 
@@ -8124,9 +8281,9 @@ More edges, all deliberate for now:
   `Sessions::TurnSignal`, which `Session#broadcast_status_change` sends after commit. A write that
   skips callbacks is picked up by the 5-second backstop re-read instead.
 
-## Live Mode and Live Voice have not talked to OpenAI yet
+## Live Mode has not talked to OpenAI yet
 
-Every Zimmer-side path of [the live modes](/sessions/live/) has run: the reply loop, the tool bridge,
+Every Zimmer-side path of [Live Mode](/sessions/live/), typed and spoken, has run: the reply loop, the tool bridge,
 in-process delegation, self-enabling a stdio server, the client-secret mint, and the browser's
 data-channel relay. But they ran against a stand-in that speaks OpenAI's documented wire format,
 because no deployment had `LIVE_OPENAI_API_KEY` when they were built. So nothing has shown that
@@ -8134,6 +8291,15 @@ because no deployment had `LIVE_OPENAI_API_KEY` when they were built. So nothing
 accepts the session config Zimmer mints, or that the browser's WebRTC offer is answered. Those are
 what the first conversation after the key is set will prove. The model names were current in
 OpenAI's docs on 2026-10-15; `LIVE_MODE_MODEL` and `LIVE_VOICE_MODEL` change them without a deploy.
+
+## The phone's voice call has not run on a device
+
+The iOS app's voice call builds in CI's Xcode job, and its protocol rules run in ZimmerKit's tests. Its screens
+run in the simulator against the fixture. The audio half has not run at all: `LiveAudioEngine`
+(microphone, voice processing, reply playback) and `LiveCall`'s WebSocket to OpenAI. A simulator
+has no microphone worth testing echo cancellation on, and no deployment has the OpenAI key yet.
+It is built the way Motet's device-tested Play Live audio is, and that is the extent of the
+evidence. CarPlay's Live Voice entry has not run in a car either.
 
 ## A live conversation's stdio servers start from scratch on every call
 
@@ -8143,7 +8309,7 @@ state between calls — a browser, a logged-in session — keeps none across a c
 (`streamable-http`) servers hold no such cost. A pooled process per conversation would fix both,
 and needs a home that outlives a Puma request, which nothing provides yet.
 
-## A Live Voice tool call holds a web thread for as long as it runs
+## A voice call's tool call holds a web thread for as long as it runs
 
 The browser relays each function call to `POST /live_conversations/:id/tool_calls`, and Rails runs it
 inside that request. That includes a delegated Zimmer tool, a remote server's call (20-second read
@@ -8153,7 +8319,7 @@ to a background session, which keeps most calls short, but nothing enforces it.
 
 ## A spoken question can land in the thread after its answer
 
-Live Voice records a line when OpenAI reports it finished: the human's words on
+A voice call records a line when OpenAI reports it finished: the human's words on
 `conversation.item.input_audio_transcription.completed`, the model's on
 `response.output_audio_transcript.done`. Transcription can finish after the model has already
 answered, so the thread, which is ordered by when lines were recorded, can show an answer above
@@ -8166,18 +8332,91 @@ reads. That includes a Zimmer tool's output, such as a session's details or a sl
 transcript. Background sessions are no different in kind (their model is a vendor's too), but this
 is a second vendor, and nothing redacts a tool result before it goes.
 
-## Live Mode replies share a two-thread lane
+## Typed Live Mode replies share a two-thread lane
 
 `LiveConversationReplyJob` runs on the `inference` queue beside title and status-summary
 generation, which has two threads. A burst of those can delay a typed reply by a job's length. A lane
 of its own would need a `ConnectionBudget` change, and the measured need for one does not exist yet.
 
-## A Live Voice call lives in one browser tab
+## A voice call lives in one browser tab
 
 The call survives Turbo navigation, because the dock that owns it is permanent in the layout. It
 does not survive closing the tab, a full reload, or a deploy that changes the JavaScript bundle
 (Turbo reloads the page when its tracked assets change). Tool calls also relay through that tab, so
 a tab the browser has frozen stops running them.
+
+## Most Live settings choices have not been tried against OpenAI
+
+The [Live settings](/sessions/live/#live-settings) offer what OpenAI's docs listed on 2026-10-16:
+`gpt-6-sol`, `gpt-realtime-2.1` and `gpt-realtime-2`, the voices, reasoning efforts, VAD knobs and
+transcription models. Zimmer's tests prove the settings reach the request. They do not prove OpenAI
+accepts each combination; `gpt-realtime-2.1-mini` taking `xhigh`, for example, is unverified. A
+refused combination does not take Live Mode down: the reply or the call retries once on the defaults
+and says so on the page. The list is fixed in `LiveSetting`, not read from OpenAI, so a new model is
+a deploy. Only models that take function tools on the path that uses them are offered.
+
+## Live Mode's typed path cannot use the strongest GPT-6 models
+
+Typed turns go through Chat Completions with function tools. There, OpenAI's GPT-6 family takes
+tools only from `gpt-6-luna` and `gpt-6-sol`, and only at `reasoning_effort: "none"`. `gpt-6-astra`
+and `gpt-6.1-sol` take tools only through the Responses API. So the strongest text choice is
+`gpt-6-sol` with no reasoning, and there is no text reasoning-effort setting. Moving `TextReply` to
+the Responses API would open both up.
+
+## The live agent can rewrite its own guidance, including when talked into it
+
+The Live mode guidance is appended to every live turn, and the live model can replace it with
+`update_live_settings`, as it was asked to be able to. That also means text the model reads (a tool
+result, a session's output) could talk it into rewriting its standing instructions for every later
+conversation. Nothing prevents that. What bounds it is that it is visible: every agent write is in
+the settings history with its conversation, shows in the thread as a settings-change note, and can
+be undone with **Restore the guidance from before this edit**.
+
+## A settings change reaches an open voice call only through the client holding it
+
+An open call takes a mid-call change (speed, turn detection, the guidance) as a `session.update`, and
+only the client holding the call can send one. It does when the live model changes a setting itself,
+because the tool-call response carries the update. It also does when a person saves `/live/settings`
+in the same browser as the call dock. Any other change waits for the next call: a save in another
+tab or on another device, the phone's settings screen during a browser call, or an MCP agent. The
+phone's call sends one when its own Live settings screen saves.
+
+## Voice on a typed AGENTS.md, until the catalog ships mode files
+
+Typing and voice share one agent root, `live-mode`, and how each answers is meant to come from the
+root's `modes/text.md` and `modes/voice.md`. Until the catalog ships them, the voice style is
+Zimmer's short default (`LiveConversations::MODES`), and the `live-mode` AGENTS.md it follows was
+written for a typed thread. Its "How you sound" section asks for chat-style replies. The default
+says it outranks style guidance above it, and comes after AGENTS.md. Nothing has measured how well a realtime
+model honours that against a longer contrary section. The conversation header says when the
+default is in use.
+
+## Voice stays on when a call ends without Type instead
+
+Voice on is a fact about the conversation, not about a call. Closing the tab, a dropped call or a
+hang-up from the dock leaves the conversation in voice, and typing is refused until someone presses
+**Type instead** (or `set_mode`). The page says voice is on and offers both. A call that is still
+connected when another device turns voice off keeps its spoken instructions until it hangs up.
+
+## Listening gates the answer, not the microphone
+
+Wake word and Dynamic decide which lines get an answer. They do not decide what OpenAI hears: in
+every mode the microphone streams to OpenAI and every line is transcribed there. A dropped line is
+kept out of the thread and deleted from the call, but it was heard. Truly private listening would
+need the wake word spotted on the device. The phone's on-device speech recognition could do that;
+nothing here does.
+
+Gating has costs:
+
+- Talking over a reply doesn't cut it off, because ambient speech would too.
+- Every answered line waits for a round trip to Zimmer. Under Dynamic it also waits for a text
+  model's yes or no, up to about eight seconds before the line is answered anyway.
+- The wake word is the transcript containing "Zimmer". A transcription that hears "Simmer" drops
+  the line.
+- The ten-second follow-up window answers anything said in it, including the next line of a
+  conversation that isn't for Zimmer.
+- A dropped line sits in the call until Zimmer has decided. A reply that starts in that moment can
+  hear it.
 
 ## Open questions
 

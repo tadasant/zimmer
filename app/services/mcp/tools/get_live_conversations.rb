@@ -2,9 +2,9 @@
 
 module Mcp
   module Tools
-    # The read side of Live Mode and Live Voice: what /live and GET
-    # /api/v1/live_conversations show — whether each mode can start, the recent
-    # conversations, and one conversation's thread.
+    # The read side of Live Mode: what /live and GET /api/v1/live_conversations
+    # show — whether it can start, the current and recent conversations, and one
+    # conversation's thread.
     class GetLiveConversations < Tool
       DEFAULT_TURNS = 40
       MAX_TURNS = 200
@@ -13,9 +13,9 @@ module Mcp
       tool_name "get_live_conversations"
 
       description <<~DESC
-        Read Live Mode (typed) and Live Voice (spoken) conversations: one continuous thread per mode between the human and a fast OpenAI model that hands slow work to background sessions.
+        Read Live Mode conversations: one continuous thread between the human and a fast OpenAI model that hands slow work to background sessions. A conversation is typed or spoken (voice on) at any moment and can switch mid-thread.
 
-        - No "id": whether each mode can start (and why not), the current conversation per mode, and the most recent conversations.
+        - No "id": whether Live Mode can start (and why not), the current conversation, and the most recent conversations.
         - With "id": that conversation's details and its newest turns — what was said, and every tool call it made with its output. Pass "after_turn_id" to read only turns newer than one you have seen.
       DESC
 
@@ -23,34 +23,34 @@ module Mcp
         type: "object",
         properties: {
           id: { type: "number", description: "A live conversation's id. Omit to list." },
-          mode: { type: "string", enum: LiveConversations::MODES.keys, description: "When listing, only this mode." },
           after_turn_id: { type: "number", description: "With id: only turns newer than this one." },
           turns: { type: "number", description: "With id: how many of the newest turns to return (default #{DEFAULT_TURNS}, max #{MAX_TURNS})." }
         }
       })
 
       def call(args)
-        args["id"].present? ? show(args) : list(args["mode"])
+        args["id"].present? ? show(args) : list
       end
 
       private
 
-      def list(mode)
-        lines = [ "## Live modes", "" ]
-        LiveConversations.mode_keys.each do |key|
-          availability = LiveConversations::Availability.for(key)
-          current = LiveConversation.current(key)
-          state = availability.available? ? "available" : "off — #{availability.reasons.join(' ')}"
-          lines << "- **#{availability.mode.label}** (`#{key}`, root `#{availability.mode.agent_root}`, model `#{availability.mode.model}`): #{state}" \
-                   "#{current ? "; current conversation ##{current.id} (#{current.status})" : ''}"
-        end
+      def list
+        availability = LiveConversations::Availability.current
+        current = LiveConversation.current
+        lines = [
+          "## #{LiveConversations::LABEL}",
+          "",
+          "- **State:** #{availability.available? ? 'available' : "off — #{availability.reasons.join(' ')}"}",
+          "- **Agent root:** `#{LiveConversations::AGENT_ROOT}`",
+          "- **Models:** #{LiveConversations::MODES.values.map { |mode| "#{mode.key} `#{mode.model}`" }.join(', ')}",
+          "- **Current conversation:** #{current ? "##{current.id} (#{current.status}, #{current.live_mode.label.downcase})" : 'none'}"
+        ]
 
         scope = LiveConversation.recent_first.limit(LIST_LIMIT)
-        scope = scope.for_mode(mode) if mode.present?
         lines += [ "", "## Recent conversations", "" ]
         lines << "None yet." if scope.empty?
         scope.each do |conversation|
-          lines << "- ##{conversation.id} #{conversation.live_mode.label} — #{conversation.status}, #{conversation.turns.size} turns, " \
+          lines << "- ##{conversation.id} #{conversation.display_title} (#{conversation.live_mode.label.downcase}) — #{conversation.status}, #{conversation.turns.size} turns, " \
                    "last activity #{conversation.last_activity_at&.iso8601 || 'never'} — #{context.base_url}/live_conversations/#{conversation.id}"
         end
         lines.join("\n")
@@ -66,11 +66,12 @@ module Mcp
         lines = [
           "## Live conversation ##{conversation.id}",
           "",
-          "- **Mode:** #{conversation.live_mode.label}",
+          "- **Mode:** #{conversation.live_mode.label.downcase}#{conversation.voice? ? ' (voice on)' : ''}",
           "- **Status:** #{conversation.status}",
           "- **Agent root:** #{conversation.agent_root}",
           "- **Model:** #{conversation.model}",
           "- **Instructions:** #{conversation.instructions_source || '(not read yet)'}",
+          "- **Mode styles:** #{LiveConversations.mode_keys.map { |key| "#{key} from #{conversation.style_for(key) ? 'the agent root' : "Zimmer's default"}" }.join(', ')}",
           "- **MCP servers:** #{conversation.enabled_mcp_servers.join(', ').presence || 'none'}",
           "- **URL:** #{context.base_url}/live_conversations/#{conversation.id}"
         ]

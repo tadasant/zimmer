@@ -20,6 +20,11 @@
       "class": "GithubPrPollPassJob",
       "description": "Poll GitHub PR status, CI, merge conflicts and comments for sessions with PR URLs"
     },
+    "github_orphaned_pr_conflict_sweep": {
+      "cron": "*/2 * * * *",
+      "class": "GithubOrphanedPrConflictSweepJob",
+      "description": "Revive archived or failed sessions whose open PR has a merge conflict"
+    },
     "stale_clone_cleanup": {
       "cron": "0 * * * *",
       "class": "StaleCloneCleanupJob",
@@ -229,6 +234,11 @@
       "cron": "*/15 * * * *",
       "class": "QuotaCapacityCalibrationJob",
       "description": "Re-estimate what each Claude quota window is worth in Opus dollars, from spend over that window"
+    },
+    "account_rebalance": {
+      "cron": "*/5 * * * *",
+      "class": "AccountRebalanceJob",
+      "description": "Move an idle Claude Code pool onto its best-scoring account once the prompt cache has expired"
     },
     "claude_usage_sampler": {
       "cron": "*/15 * * * *",
@@ -312,6 +322,11 @@
       "class": "GithubPrPollPassJob",
       "description": "Poll GitHub PR status, CI, merge conflicts and comments for sessions with PR URLs"
     },
+    "github_orphaned_pr_conflict_sweep": {
+      "cron": "*/2 * * * *",
+      "class": "GithubOrphanedPrConflictSweepJob",
+      "description": "Revive archived or failed sessions whose open PR has a merge conflict"
+    },
     "stale_clone_cleanup": {
       "cron": "0 * * * *",
       "class": "StaleCloneCleanupJob",
@@ -522,6 +537,11 @@
       "class": "QuotaCapacityCalibrationJob",
       "description": "Re-estimate what each Claude quota window is worth in Opus dollars, from spend over that window"
     },
+    "account_rebalance": {
+      "cron": "*/5 * * * *",
+      "class": "AccountRebalanceJob",
+      "description": "Move an idle Claude Code pool onto its best-scoring account once the prompt cache has expired"
+    },
     "claude_usage_sampler": {
       "cron": "*/15 * * * *",
       "class": "ClaudeUsageSamplerJob",
@@ -603,6 +623,11 @@
       "cron": "*/30 * * * * *",
       "class": "GithubPrPollPassJob",
       "description": "Poll GitHub PR status, CI, merge conflicts and comments for sessions with PR URLs"
+    },
+    "github_orphaned_pr_conflict_sweep": {
+      "cron": "*/2 * * * *",
+      "class": "GithubOrphanedPrConflictSweepJob",
+      "description": "Revive archived or failed sessions whose open PR has a merge conflict"
     },
     "stale_clone_cleanup": {
       "cron": "0 * * * *",

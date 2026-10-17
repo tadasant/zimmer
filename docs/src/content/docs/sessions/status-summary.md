@@ -78,6 +78,10 @@ second sanitizer pass on top. No raw HTML or `javascript:` link survives either 
 row uses the stored text, not `summary_markdown`, so a transcript-message link stays a full
 `/sessions/:id#message-N` URL. Its `#message-N` shorthand only works on the session's own page.
 
+The [iOS app](/extend/ios-app/) reads the stored text too. Its session page draws it with the
+transcript's markdown renderer, a board row draws it as inline markdown, and CarPlay, which shows
+and speaks it, reads only its words: a link is its text, without the URL.
+
 ## A description of state, never a plan
 
 The blurb says where a session stands. It is not allowed to say what the session is going to do

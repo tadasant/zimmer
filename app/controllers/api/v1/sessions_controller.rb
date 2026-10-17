@@ -160,6 +160,9 @@ class Api::V1::SessionsController < Api::BaseController
   #   - agent_root: Agent root name (resolves git_root, branch, subdirectory, mcp_servers, catalog_skills from catalog)
   #   - agent_runtime: Agent runtime override (default: the agent_root's default_runtime, falling back to "claude_code"). Must be a registered runtime.
   #   - prompt: Initial prompt for the agent (optional for clone-only sessions)
+  #   - clone_only: true to set the clone up and run no turn — the web form's Clone Only. The
+  #     session is created needs_input with the clone-only job queued, and the first prompt
+  #     arrives through follow_up. A prompt alongside it is refused: the words would be dropped.
   #   - git_root: Repository URL or local path (overrides agent_root's URL if both provided)
   #   - branch: Git branch (default: "main")
   #   - subdirectory: Subdirectory within repo
@@ -176,7 +179,8 @@ class Api::V1::SessionsController < Api::BaseController
   #     `runtime_models` in GET /api/v1/configs). Omit `effort` for the model's default.
   #   - custom_metadata: Custom user metadata (JSON)
   #   - scheduling_class: "spot" or "priority" for this session, overriding the class its
-  #     genesis would give it. Omit to derive (inheriting a parent's explicit class if it has one).
+  #     genesis would give it. Omit to derive (inheriting a parent's explicit class if it has one)
+  #     — except from the native app, where an omitted class is priority (see create).
   #   - precedence: where this session sits in the spot queue — higher is handled sooner, on an
   #     absolute scale. Omit to land one point above the parent, or at the default with no parent.
   #   - place: a symbolic placement (SessionPrecedence::PLACES, "top_of_spot" today) the server
@@ -200,12 +204,26 @@ class Api::V1::SessionsController < Api::BaseController
     # keep on a create, so this is the plain class-method resolution.
     placement = resolved_placement(session_params)
 
-    @session = Session.new(session_params.except(:agent_root, :place))
+    clone_only = ActiveModel::Type::Boolean.new.cast(session_params[:clone_only])
+    if clone_only && session_params[:prompt].present?
+      return render_api_error("Unprocessable Entity", "clone_only takes no prompt; send the first prompt through follow_up",
+        status: :unprocessable_entity)
+    end
+
+    @session = Session.new(session_params.except(:agent_root, :place, :clone_only))
     @session.precedence = placement unless placement.nil?
+    # The web form's Clone Only: straight to needs_input, ready for the first follow-up, as
+    # SessionsController#create sets it.
+    @session.status = :needs_input if clone_only
     # Machine-created. When the caller passed a parent_session_id this is an agent
     # continuing an existing line of work, so assign_genesis inherits that parent's
     # genesis and leaves `api` alone; `api` is only what a parentless call gets.
     @session.genesis = SessionGenesis::API if @session.parent_session_id.blank?
+    @session.source_context = api_turn_source(spawned_under_parent: @session.parent_session_id.present?).to_h
+    # A person at the app, not a script: `api` genesis derives to spot, but someone is waiting
+    # on this session as they are on the web form's (`web_ui`, priority). One rule for any app
+    # client, as the Quick Router ingest classes a native start; a class the app sent stands.
+    @session.scheduling_class = SessionGenesis::PRIORITY if native_app_request? && session_params[:scheduling_class].blank?
 
     # Recorded before save so the job starting moments later can tell a
     # deliberate "no MCP servers" from a column that landed empty by accident.
@@ -227,8 +245,11 @@ class Api::V1::SessionsController < Api::BaseController
     elsif result.reused?
       render json: { session: session_json(result.session), idempotent_replay: true }, status: :ok
     else
-      # Queue the agent job if a prompt was provided
-      if @session.prompt.present?
+      if clone_only
+        # Nothing a person said yet, so nothing is recorded: the clone is set up and the
+        # first thing they type arrives through #follow_up, as the web's Clone Only does.
+        AgentSessionJob.enqueue_for_clone_only(@session.id)
+      elsif @session.prompt.present?
         # Before the enqueue, as the Quick Router records: the person's words are on
         # record whether or not the job is.
         record_native_app_new_session
@@ -468,6 +489,7 @@ class Api::V1::SessionsController < Api::BaseController
           goal: goal,
           position: max_position + 1,
           status: "pending",
+          source_context: api_turn_source.to_h,
           **attachments_for_the_record(attachments)
         )
       end
@@ -521,6 +543,7 @@ class Api::V1::SessionsController < Api::BaseController
         goal: goal,
         position: max_position + 1,
         status: "pending",
+        source_context: api_turn_source.to_h,
         **attachments_for_the_record(attachments)
       )
       @session.logs.create!(
@@ -574,14 +597,15 @@ class Api::V1::SessionsController < Api::BaseController
       # worker shutdown discards: the session was then resumed on a SYSTEM_RECOVERY
       # nudge and the caller, already answered "Follow-up prompt sent", had no way
       # to tell that from delivery.
-      @session.merge_metadata!("pending_follow_up_prompt" => prompt)
+      delivered_prompt, source_updates = @session.tag_turn(prompt, api_turn_source)
+      @session.merge_metadata!(source_updates.merge("pending_follow_up_prompt" => delivered_prompt))
       # Before the enqueue, and in the same transaction: the job this line
       # creates builds the next prompt for the session, and it must see the edge
       # — a job that starts first renders a hierarchy missing exactly the human
       # context the edge exists to carry. A rollback takes the edge with it, so a
       # failed send still records nothing.
       record_uncle_edge(@session, "api_v1:sessions.follow_up")
-      job = AgentSessionJob.enqueue_with_prompt(@session.id, prompt, images: attachments[:images], files: attachments[:files])
+      job = AgentSessionJob.enqueue_with_prompt(@session.id, delivered_prompt, images: attachments[:images], files: attachments[:files])
       @session.update!(running_job_id: job.job_id)
       log_follow_up_attachments(attachments)
     end
@@ -1741,14 +1765,15 @@ class Api::V1::SessionsController < Api::BaseController
   # it is not a Session column — it names a catalog entry that
   # resolve_agent_root_defaults! expands into git_root, branch, subdirectory and
   # the catalog defaults. `place` is not a column either; it resolves to a
-  # `precedence` before the record is built. Hence `.except(:agent_root, :place)`
-  # at the Session.new call.
+  # `precedence` before the record is built, and `clone_only` is an instruction,
+  # not an attribute. Hence `.except(:agent_root, :place, :clone_only)` at the
+  # Session.new call.
   def session_params
     params.permit(
       :agent_root, :agent_runtime, :prompt, :git_root, :branch, :subdirectory,
       :title, :slug, :goal, :is_autonomous,
       :parent_session_id, :auto_compact_window, :scheduling_class, :precedence, :place,
-      :idempotency_key,
+      :idempotency_key, :clone_only,
       mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [], config: {}, custom_metadata: {}
     )
   end

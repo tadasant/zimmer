@@ -17,11 +17,19 @@ public protocol OperationsAPI: Sendable {
     func trigger(_ id: Int) async throws -> TriggerDetail
     /// Turn a trigger on or off — the web UI's toggle.
     func toggleTrigger(_ id: Int) async throws -> TriggerSummary
-    /// Fire a trigger now, as the web UI's Invoke button does.
-    func invokeTrigger(_ id: Int) async throws -> TriggerInvocation
+    /// Fire a trigger now, as the web UI's Run Now does, with values for the `{{variables}}`
+    /// its template names (`variables` in the request; a variable left out interpolates empty).
+    func invokeTrigger(_ id: Int, variables: [String: String]) async throws -> TriggerInvocation
     /// The Costs page over `window`, narrowed to `scope`.
     func costs(_ window: CostWindow, scope: CostScope) async throws -> CostSnapshot
     func health() async throws -> HealthReport
+}
+
+extension OperationsAPI {
+    /// A run with nothing to fill in: a template with no variables, or every one left blank.
+    public func invokeTrigger(_ id: Int) async throws -> TriggerInvocation {
+        try await invokeTrigger(id, variables: [:])
+    }
 }
 
 // `ZimmerHTTPClient: ZimmerAPI`, which refines `OperationsAPI`.
@@ -67,10 +75,14 @@ extension ZimmerHTTPClient {
         return response.trigger
     }
 
-    public func invokeTrigger(_ id: Int) async throws -> TriggerInvocation {
+    public func invokeTrigger(_ id: Int, variables: [String: String]) async throws -> TriggerInvocation {
+        // Blank fields are left out, as the web form's empty inputs amount to: the server fills
+        // an omitted variable with an empty string either way.
+        let filled = variables.filter { !$0.value.isEmpty }
+        let body = try JSONSerialization.data(withJSONObject: filled.isEmpty ? [:] : ["variables": filled])
         // 409 and 422 name the session in the way, which the person wants to open; a 429 (burst
         // suppressed) is an error like any other.
-        let raw = try await perform(method: "POST", path: "/api/v1/triggers/\(id)/invoke", query: [:], body: Data("{}".utf8), accepting: [409, 422])
+        let raw = try await perform(method: "POST", path: "/api/v1/triggers/\(id)/invoke", query: [:], body: body, accepting: [409, 422])
         let response = try? ZimmerJSON.decoder.decode(TriggerInvokeResponse.self, from: raw.body)
         let message = response?.message ?? "Invoked"
         switch raw.statusCode {
@@ -86,11 +98,21 @@ extension ZimmerHTTPClient {
     }
 
     public func costs(_ window: CostWindow, scope: CostScope) async throws -> CostSnapshot {
-        try await get("/api/v1/costs", query: window.query().merging(scope.query) { _, scoped in scoped })
+        let response = try await perform(method: "GET", path: "/api/v1/costs", query: window.query().merging(scope.query) { _, scoped in scoped }, body: nil)
+        return try CostSnapshot.parse(response.body)
     }
 
     public func health() async throws -> HealthReport {
         let response = try await perform(method: "GET", path: "/api/v1/health", query: [:], body: nil)
         return try HealthReport.parse(response.body)
+    }
+}
+
+extension OperationsAPI {
+    /// What one session has spent, in dollars at list price, as the web page's header shows
+    /// beside the id (`GET /api/v1/costs?session_id=`, over the session's whole life). Zero
+    /// when the ledger has nothing for it yet, which the web draws as nothing at all.
+    public func sessionCost(_ id: Int, createdAt: Date?, now: Date = Date()) async throws -> Double {
+        try await costs(CostWindow.lifetime(from: createdAt, now: now), scope: .session(id)).totalUSD
     }
 }

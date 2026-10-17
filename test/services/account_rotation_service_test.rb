@@ -104,6 +104,82 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     )
   end
 
+  # A 5-hour wall re-ranks the pool by ClaudeAccountScore before the successor is
+  # picked: the account with the most weekly usage sinks to the bottom, and the
+  # reactive rotation falls through to the one with the most headroom rather than
+  # whichever had the lowest hand-set priority.
+  test "a quota rotation re-ranks priorities so the most weekly usage goes last" do
+    primary = claude_accounts(:primary)
+    secondary = claude_accounts(:secondary)
+    tertiary = claude_accounts(:tertiary)
+    ClaudeAccountQuotaSnapshot.where(claude_account: ClaudeAccount.for_runtime("claude_code")).delete_all
+    { secondary => 0.9, tertiary => 0.1 }.each do |account, u7|
+      account.quota_snapshots.create!(
+        utilization_5h: 0.0, utilization_7d: u7, status_5h: "allowed", status_7d: "allowed",
+        reset_7d: 5.days.from_now, trigger: "usage_sample"
+      )
+    end
+
+    result = @service.rotate!(reason: "quota_exceeded")
+
+    assert_equal tertiary, result[:account], "the account with the most weekly headroom is picked first"
+    priorities = [ tertiary, primary, secondary ].map { |account| account.reload.priority }
+    assert_equal priorities.sort, priorities, "tertiary (10% weekly) < primary (30%) < secondary (90%)"
+    assert_equal 0, tertiary.priority
+  end
+
+  # Relief scores a 5-hour-spent account with a fresh week near the top, and
+  # activate_next_account only refuses a spent week — so the ranking has to.
+  test "an account with a spent window ranks last, whatever its score" do
+    ClaudeAccountQuotaSnapshot.where(claude_account: ClaudeAccount.for_runtime("claude_code")).delete_all
+    spent = claude_accounts(:secondary)
+    spent.quota_snapshots.create!(
+      utilization_5h: 1.0, utilization_7d: 0.0, status_5h: "rejected", status_7d: "allowed",
+      reset_5h: 30.minutes.from_now, reset_7d: 6.days.from_now, trigger: "usage_sample"
+    )
+    claude_accounts(:tertiary).quota_snapshots.create!(
+      utilization_5h: 0.0, utilization_7d: 0.6, status_5h: "allowed", status_7d: "allowed",
+      reset_7d: 5.days.from_now, trigger: "usage_sample"
+    )
+
+    ranked = AccountRotationService.reprioritize!
+
+    assert_equal claude_accounts(:tertiary), ranked.first
+    assert_equal spent, ranked.last
+  end
+
+  test "an unscored account keeps its place behind the scored ones" do
+    ClaudeAccountQuotaSnapshot.where(claude_account: ClaudeAccount.for_runtime("claude_code")).delete_all
+    claude_accounts(:tertiary).quota_snapshots.create!(
+      utilization_5h: 0.0, utilization_7d: 0.2, status_5h: "allowed", status_7d: "allowed",
+      reset_7d: 5.days.from_now, trigger: "usage_sample"
+    )
+
+    ranked = AccountRotationService.reprioritize!
+
+    assert_equal claude_accounts(:tertiary), ranked.first
+    expected = %i[primary secondary exceeded unconfigured expired_token].map { |name| claude_accounts(name).email }
+    assert_equal expected, ranked.drop(1).map(&:email), "unscored accounts keep their old relative order"
+    assert_equal [ 0, 1, 2, 3, 4, 5 ], ranked.map { |account| account.reload.priority }
+  end
+
+  test "re-ranking does not touch updated_at, so a quota label keeps outranking older readings" do
+    account = claude_accounts(:exceeded)
+    before = account.updated_at
+
+    AccountRotationService.reprioritize!
+
+    assert_equal before.to_i, account.reload.updated_at.to_i
+  end
+
+  test "a non-quota rotation leaves priorities alone" do
+    before = ClaudeAccount.for_runtime("claude_code").order(:id).pluck(:priority)
+
+    @service.rotate!(reason: "auth_recovery")
+
+    assert_equal before, ClaudeAccount.for_runtime("claude_code").order(:id).pluck(:priority)
+  end
+
   test "rotate! marks current account as quota_exceeded and switches to next" do
     primary = claude_accounts(:primary)
     secondary = claude_accounts(:secondary)
