@@ -109,6 +109,12 @@ class AccountRotationService
       mark_outgoing!(current, reason, snapshot)
     end
 
+    # A quota wall is the moment the pool's ranking is most out of date, so it
+    # is re-ranked before the successor is chosen — and activate_next_account
+    # walks `available` in priority order, so the reactive path falls through to
+    # the account the proactive one would have picked.
+    self.class.reprioritize! if QUOTA_ROTATION_REASONS.include?(reason)
+
     result = activate_next_account(exclude_ids: [ current&.id ].compact)
 
     # Log the rotation event (non-bang to avoid disrupting the rotation on logging failure)
@@ -246,6 +252,42 @@ class AccountRotationService
   def activate!(account, snapshot_trigger:)
     account.mark_current!
     take_snapshot(account, trigger: snapshot_trigger)
+  end
+
+  # Rewrite every Claude Code account's `priority` from its ClaudeAccountScore,
+  # best first: 0, 1, 2, … in descending score. Since the score is mostly weekly
+  # headroom, the accounts with the most 7-day usage sink to the bottom.
+  #
+  # Ranked on each account's latest reading whatever its age — freshness is the
+  # bar for switching the pool onto an account, not for ordering the fallback
+  # list. An account with no reading at all ranks after every scored one,
+  # keeping its old relative position. Ties keep their old order too, so a
+  # reshuffle over identical readings is a no-op.
+  #
+  # `update_columns` deliberately: it leaves `updated_at` alone, and
+  # ClaudeAccount.serviceable_for weighs a quota label against readings by
+  # comparing their timestamps to `updated_at`. A reorder is not a new claim
+  # about any account's quota, and touching the stamp would make it read as one.
+  #
+  # Called with the pool lock held, from a quota rotation and from a rebalance.
+  #
+  # @return [Array<ClaudeAccount>] the accounts in their new order
+  def self.reprioritize!(now: Time.current)
+    accounts = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).order(:priority, :id).to_a
+    scores = ClaudeAccountScore.for_accounts(accounts, now: now)
+
+    ranked = accounts.each_with_index.sort_by do |account, index|
+      value = scores[account.id].value
+      [ value.nil? ? 1 : 0, -(value || 0), index ]
+    end.map(&:first)
+
+    ranked.each_with_index do |account, priority|
+      account.update_columns(priority: priority) unless account.priority == priority
+    end
+
+    Rails.logger.info "[AccountRotationService] Re-ranked the pool by score: " +
+      ranked.map { |account| "#{account.email}=#{scores[account.id].value.inspect}" }.join(", ")
+    ranked
   end
 
   # Parse quota reset time from the error message.
