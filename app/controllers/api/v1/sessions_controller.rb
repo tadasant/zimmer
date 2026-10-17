@@ -1554,21 +1554,6 @@ class Api::V1::SessionsController < Api::BaseController
     }
   end
 
-  # The one REST action that stands for a person's decision, Merge: only the iOS
-  # app's token, on a grant that acts as its approver. An API key names a key,
-  # never a person, and a relay-only grant was approved to carry messages, not to
-  # decide.
-  def require_a_person_on_the_app
-    return if native_app_request? && native_app_grant.acts_as_human?
-
-    message = if native_app_request?
-      "This sign-in may not act as you; sign in again and allow acting as you"
-    else
-      "Only a person can do this: it takes the iOS app's sign-in, acting as you, or the web UI"
-    end
-    render_api_error("Forbidden", message, status: :forbidden)
-  end
-
   # A person opened the session in the app: read and touched, as the dashboard's page
   # does. Best effort — a failure here must never fail the read it rides on.
   def record_a_view
