@@ -128,6 +128,26 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     assert_equal 0, tertiary.priority
   end
 
+  # Relief scores a 5-hour-spent account with a fresh week near the top, and
+  # activate_next_account only refuses a spent week — so the ranking has to.
+  test "an account with a spent window ranks last, whatever its score" do
+    ClaudeAccountQuotaSnapshot.where(claude_account: ClaudeAccount.for_runtime("claude_code")).delete_all
+    spent = claude_accounts(:secondary)
+    spent.quota_snapshots.create!(
+      utilization_5h: 1.0, utilization_7d: 0.0, status_5h: "rejected", status_7d: "allowed",
+      reset_5h: 30.minutes.from_now, reset_7d: 6.days.from_now, trigger: "usage_sample"
+    )
+    claude_accounts(:tertiary).quota_snapshots.create!(
+      utilization_5h: 0.0, utilization_7d: 0.6, status_5h: "allowed", status_7d: "allowed",
+      reset_7d: 5.days.from_now, trigger: "usage_sample"
+    )
+
+    ranked = AccountRotationService.reprioritize!
+
+    assert_equal claude_accounts(:tertiary), ranked.first
+    assert_equal spent, ranked.last
+  end
+
   test "an unscored account keeps its place behind the scored ones" do
     ClaudeAccountQuotaSnapshot.where(claude_account: ClaudeAccount.for_runtime("claude_code")).delete_all
     claude_accounts(:tertiary).quota_snapshots.create!(

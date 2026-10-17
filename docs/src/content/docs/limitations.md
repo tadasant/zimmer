@@ -6289,8 +6289,7 @@ dead weight until then.
 `AccountRebalanceJob`'s idle window, its score margin and its on/off switch are
 `CLAUDE_REBALANCE_IDLE_MINUTES`, `CLAUDE_REBALANCE_MIN_SCORE_GAIN` and `CLAUDE_REBALANCE_ENABLED`.
 They pass through `config/deploy.yml`, so changing one takes a deploy; there is no form field or MCP
-action for them. /inference shows the
-values in force in its Rebalancing sentence. See [Proactive rebalancing](/auth/harness/#proactive-rebalancing).
+action for them, and /inference prints the idle window and the margin only in the states they decide. See [Proactive rebalancing](/auth/harness/#proactive-rebalancing).
 
 ## Rebalancing measures idleness from transcript activity
 
@@ -6301,8 +6300,10 @@ hour after the last transcript entry can still throw away a cache that some side
 
 ## A quota wall rewrites every Claude Code account's priority
 
-Each quota rotation re-ranks `priority` by `ClaudeAccountScore`, so a priority set by hand lasts
-only until the next quota wall. There is no way to pin an account's position.
+Each quota rotation and each rebalance re-ranks `priority` by `ClaudeAccountScore`, so a priority
+set by hand lasts only until the next one. There is no way to pin an account's position. A manual
+**Switch** on /inference holds off rebalancing for 24 hours (`AccountRebalanceService::MANUAL_HOLD`);
+after that the pool may move again.
 
 ## A held spot session has exactly one thread back to life
 

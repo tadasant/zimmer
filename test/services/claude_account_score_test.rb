@@ -48,6 +48,20 @@ class ClaudeAccountScoreTest < ActiveSupport::TestCase
     assert_operator soon, :>, far
   end
 
+  test "the score does not jump across the weekly reset" do
+    snapshot = reading(u7: 0.81, reset_7d: 1.minute.from_now)
+    before = ClaudeAccountScore.new(@account, snapshot).value
+    after = ClaudeAccountScore.new(@account, snapshot, now: 2.minutes.from_now).value
+
+    assert_in_delta after, before, 0.001
+  end
+
+  test "an account above 90% of either window is not eligible, whatever its relief" do
+    assert_match(/7-day window above 90%/, score(reading(u7: 0.95, reset_7d: 1.hour.from_now)).ineligible_reason)
+    assert_match(/5-hour window above 90%/, score(reading(u5: 0.95)).ineligible_reason)
+    assert score(reading(u7: 0.9)).eligible?
+  end
+
   test "a window with no reset time gets no relief" do
     assert_in_delta 0.6, score(reading(u7: 0.5, reset_7d: nil)).value, 0.0001
   end

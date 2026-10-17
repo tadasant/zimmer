@@ -17,18 +17,24 @@
 #    /inference prints as sessions on a worker — plus the turns queued for one.
 #    Switching under a running turn would not break that turn (it keeps the
 #    token it was spawned with), but its next turn would land on a cold cache.
+#    A fleet that cannot be read holds too.
 # 2. **The pool has been quiet for the prompt-cache TTL** (an hour by default)
 #    since the last transcript activity of any Claude Code session. Anthropic's
 #    prompt cache is per account and lives an hour; a switch inside that window
 #    throws away every session's cache, and one after it throws away nothing,
 #    because the cache is already gone.
-# 3. **The current account has a fresh reading**, so the comparison is between
+# 3. **No human switched the pool in the last MANUAL_HOLD.**
+# 4. **The current account has a fresh reading**, so the comparison is between
 #    two numbers rather than a number and a guess.
-# 4. **Some other account is eligible** — active, credentialed, freshly read,
-#    neither window spent (ClaudeAccountScore#eligible?).
-# 5. **The best of those beats the current account by MIN_GAIN or more.**
+# 5. **Some other account is eligible** — active, credentialed, freshly read,
+#    neither window spent or above 90% (ClaudeAccountScore#eligible?).
+# 6. **The best of those beats the current account by MIN_GAIN or more.**
 #    Hysteresis: two near-equal accounts would otherwise swap every hour as each
 #    one's usage ticks past the other's.
+#
+# A current account that cannot serve at all (not active, or its credential
+# refused) scores 0 and skips conditions 3 and 4: there is nothing to protect
+# by staying on it.
 #
 # == Racing a session start
 #
@@ -56,14 +62,19 @@ class AccountRebalanceService
   # Off switch, for an operator who wants the pool to move only on quota walls.
   ENABLED = ENV.fetch("CLAUDE_REBALANCE_ENABLED", "true") != "false"
 
+  # How long a human's Switch on /inference holds the pool against a rebalance.
+  # Someone who picked an account by hand had a reason the score cannot see, and
+  # undoing it an hour later without a word would be the sweep overruling them.
+  MANUAL_HOLD = 24.hours
+
   # Ordered the way #plan reaches them.
-  STATES = %i[disabled no_current_account busy inside_idle_window no_current_reading
-    no_candidate current_is_best due].freeze
+  STATES = %i[disabled no_current_account busy fleet_unreadable inside_idle_window manual_hold
+    no_current_reading no_candidate current_is_best due].freeze
 
   # One reading of everything the decision rests on. Read-only: /inference
   # renders it, and #rebalance! acts on it.
   Plan = Data.define(:state, :now, :current, :current_score, :best, :best_score,
-    :turns_in_flight, :last_activity_at, :idle_window, :min_gain, :candidate_count, :ranking) do
+    :turns_in_flight, :last_activity_at, :idle_window, :min_gain, :manual_until, :ranking) do
     def due? = state == :due
 
     # When the idle window ends, or nil when there has been no activity at all.
@@ -90,26 +101,41 @@ class AccountRebalanceService
 
   # @return [Plan]
   def plan(now: Time.current)
+    unless @enabled
+      return Plan.new(state: :disabled, now: now, current: nil, current_score: nil, best: nil, best_score: nil,
+        turns_in_flight: nil, last_activity_at: nil, idle_window: @idle_window, min_gain: @min_gain,
+        manual_until: nil, ranking: [])
+    end
+
     accounts = ClaudeAccount.for_runtime(RUNTIME).order(:priority, :id).to_a
     current = accounts.find(&:is_current?)
     scores = ClaudeAccountScore.for_accounts(accounts, now: now)
-    current_score = current && scores[current.id]
-    candidates = accounts
+    best = accounts
       .reject { |account| account == current }
       .map { |account| scores[account.id] }
       .select(&:eligible?)
-    best = candidates.min_by { |score| [ -score.value, score.account.priority, score.account.id ] }
+      .min_by { |score| [ -score.value, score.account.priority, score.account.id ] }
+
+    # A current account that cannot serve at all — benched, refused, or labelled
+    # out of quota — is worth nothing to stay on, whatever its last reading says,
+    # and the sampler stops reading a needs_reauth one, so waiting for a fresh
+    # reading would wait forever. It also outranks a human's manual pick: the
+    # pick has stopped working.
+    unusable = current.present? && (!current.active? || current.credential_rejected?)
+    current_value = unusable ? 0.0 : current && scores[current.id].value
     in_flight = turns_in_flight
     activity_at = last_activity_at
+    manual_until = manual_hold_until(now) unless unusable
 
     state =
-      if !@enabled then :disabled
-      elsif current.nil? then :no_current_account
+      if current.nil? then :no_current_account
+      elsif in_flight.nil? then :fleet_unreadable
       elsif in_flight.positive? then :busy
       elsif activity_at && now - activity_at < @idle_window then :inside_idle_window
-      elsif !current_score.fresh? then :no_current_reading
+      elsif manual_until then :manual_hold
+      elsif !unusable && !scores[current.id].fresh? then :no_current_reading
       elsif best.nil? then :no_candidate
-      elsif best.value - current_score.value < @min_gain then :current_is_best
+      elsif best.value - current_value < @min_gain then :current_is_best
       else :due
       end
 
@@ -119,10 +145,10 @@ class AccountRebalanceService
       .sort_by { |score| [ -score.value, score.account.priority, score.account.id ] }
 
     Plan.new(
-      state: state, now: now, current: current, current_score: current_score&.value,
+      state: state, now: now, current: current, current_score: current_value,
       best: best&.account, best_score: best&.value, turns_in_flight: in_flight,
       last_activity_at: activity_at, idle_window: @idle_window, min_gain: @min_gain,
-      candidate_count: candidates.size, ranking: ranking
+      manual_until: manual_until, ranking: ranking
     )
   end
 
@@ -152,7 +178,7 @@ class AccountRebalanceService
     end
 
     fresh = ClaudeAccountScore.new(candidate.reload, snapshot, now: now)
-    current_score = ClaudeAccountScore.new(plan.current, plan.current.latest_snapshot, now: now).value
+    current_score = plan.current_score
     unless fresh.eligible? && fresh.value - current_score >= @min_gain
       @logger.info("Rebalance candidate's fresh reading no longer clears the bar, staying put",
         email: candidate.email, score: fresh.value, current_score: current_score,
@@ -161,7 +187,8 @@ class AccountRebalanceService
     end
 
     # A session may have started while the probe was in flight.
-    if turns_in_flight.positive?
+    in_flight = turns_in_flight
+    if in_flight.nil? || in_flight.positive?
       @logger.info("A turn started while the rebalance was probing, staying put")
       return { rebalanced: false, state: :busy }
     end
@@ -184,14 +211,24 @@ class AccountRebalanceService
   end
 
   # Turns on a worker or queued for one, across every runtime — the population
-  # /inference counts. Unreadable reads as busy: a monitoring gap must never be
-  # mistaken for an idle fleet.
+  # /inference counts — or nil when the fleet could not be read. Nil never
+  # switches: a monitoring gap must not be mistaken for an idle fleet.
   def turns_in_flight
     turns = Session.running_turns
     turns.on_a_worker + turns.awaiting_a_worker
   rescue StandardError => e
-    @logger.warn("Could not read turns in flight, treating the fleet as busy", error: e.message)
-    1
+    @logger.warn("Could not read turns in flight, holding", error: e.message)
+    nil
+  end
+
+  # When a human's most recent Switch stops holding the pool, or nil when the
+  # pool's last move was not a human's or the hold has run out.
+  def manual_hold_until(now)
+    latest = AccountRotationEvent.for_runtime(RUNTIME).order(created_at: :desc).first
+    return nil unless latest&.source == "manual"
+
+    until_at = latest.created_at + MANUAL_HOLD
+    until_at if until_at > now
   end
 
   # The last moment any Claude Code session showed transcript activity — the
@@ -201,22 +238,12 @@ class AccountRebalanceService
   end
 
   # A fresh reading for `account`, or nil when Anthropic would not give one.
-  # A refused token gets one refresh first, the way ClaudeUsageSamplerJob does.
+  # QuotaSnapshotService.probe owns the refresh-once-on-refusal guard (#242).
   def probe(account)
     token = account.claude_access_token
     return nil if token.blank?
 
-    result = QuotaCheckService.check_with_token(token)
-    if result.credential_refused? && account.can_refresh_token? && !account.credential_rejected? && account.refresh_token!
-      account.reload
-      token = account.claude_access_token
-      result = QuotaCheckService.check_with_token(token) if token.present?
-    end
-
-    account.record_credential_probe!(result, probed_token: token)
-    return nil unless result.success?
-
-    QuotaSnapshotService.save_snapshot(account, result, trigger: "rebalance")
+    QuotaSnapshotService.probe(account, token: token, trigger: "rebalance").first
   rescue StandardError => e
     @logger.warn("Rebalance probe failed", email: account.email, error: e.message)
     nil
