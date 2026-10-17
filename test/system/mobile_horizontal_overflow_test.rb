@@ -1388,6 +1388,10 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # id and a duration (tadasant/zimmer#693).
     assert_selector "#app_setting_spot_starvation_age_ceiling_hours"
     assert_selector "#spot-gate-starvation-decision"
+    # The rebalancing sentence names accounts by email, and the ranking line
+    # beside it lists every one of them — long unbroken tokens, signature 4.
+    assert_selector "#account-rebalance-sentence"
+    assert_selector "#account-rebalance-ranking", text: /a-rather-long-account-address-0/
 
     assert_no_horizontal_overflow("inference")
 

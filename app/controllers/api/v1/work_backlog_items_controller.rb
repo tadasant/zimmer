@@ -21,6 +21,15 @@
 # boundary is "not offered to an agent's MCP surface", not "a person typed it" —
 # the same caveat GateDecisionsController states, for the same reason.
 class Api::V1::WorkBacklogItemsController < Api::BaseController
+  # Zimmer's iOS app: what the Issues page offers a signed-in person — the queue,
+  # one row, and the five writes behind its forms. Not `create` or `pull`: those
+  # are the gate's and the groomer's, with no form on the page.
+  accepts_native_app_tokens only: %i[index show start_now pin unpin remove hold]
+
+  # The four human-only levers take the app's token only on a grant that acts as
+  # its approver — each one records that a person decided. `hold` is not one of
+  # them: an agent may hold a row too, so a relay-only grant may.
+  before_action :require_the_app_to_act_as_a_person, only: [ :start_now, :pin, :unpin, :remove ]
   before_action :set_item, only: [ :show, :start_now, :pin, :unpin, :remove, :hold ]
 
   # GET /api/v1/work_backlog_items

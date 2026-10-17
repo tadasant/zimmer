@@ -10,6 +10,8 @@ require "ostruct"
 # app's token with the same 401 a bad key gets.
 class NativeAppAccessTest < ActionDispatch::IntegrationTest
   include WebAuthTestHelpers
+  include WorkBacklogHelpers
+  include ActiveJob::TestHelper
 
   ISSUER = "http://www.example.com"
   RESOURCE = "#{ISSUER}/mcp".freeze
@@ -158,23 +160,211 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "each controller's operator and authoring actions stay closed to the app" do
+  test "the app's token flips a trigger's re-use switches, and is refused as an API key is while reuse_session is off" do
     headers = bearer(token)
-    # The token is refused before the record is looked up, so no trigger needs to exist:
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(reuse_session: true, enqueue_messages: false, resuscitate_archived: false)
+
+    post "/api/v1/triggers/#{trigger.id}/toggle_enqueue_messages", headers: headers
+    assert_response :success
+    assert JSON.parse(response.body)["trigger"]["enqueue_messages"]
+    post "/api/v1/triggers/#{trigger.id}/toggle_resuscitate_archived", headers: headers
+    assert_response :success
+    assert JSON.parse(response.body)["trigger"]["resuscitate_archived"]
+
+    trigger.update!(reuse_session: false)
+    post "/api/v1/triggers/#{trigger.id}/toggle_enqueue_messages", headers: headers
+    assert_response :unprocessable_entity
+    assert_equal "Enqueue messages can only be enabled when re-use session is enabled",
+                 JSON.parse(response.body)["message"]
+  end
+
+  test "what the web offers no person stays closed to the app" do
+    headers = bearer(token)
+    # The token is refused before the record is looked up, so no row needs to exist:
     # a 401 here, rather than the 404 an API key would get, is the boundary.
 
     post "/api/v1/notifications/push", params: { title: "t", body: "b" }, headers: headers
     assert_response :unauthorized
-    delete "/api/v1/triggers/0", headers: headers
-    assert_response :unauthorized
-    post "/api/v1/triggers", params: { name: "x" }, headers: headers
-    assert_response :unauthorized
-    post "/api/v1/health/enter_queue_recovery_mode", headers: headers
-    assert_response :unauthorized
-    post "/api/v1/costs/backfill", headers: headers
-    assert_response :unauthorized
     post "/api/v1/model_catalog_entries", params: { runtime: "claude_code", model: "x" }, headers: headers
     assert_response :unauthorized
+    # A gate's, a groomer's and an analyzer's writes: no form on any page offers them.
+    post "/api/v1/gate_decisions", params: { gate: "pr_merge", surface: "zimmer", entry: {} }, headers: headers
+    assert_response :unauthorized
+    post "/api/v1/work_backlog_items", params: { key: "zimmer#1" }, headers: headers
+    assert_response :unauthorized
+    post "/api/v1/work_backlog_items/pull", params: { count: 1 }, headers: headers
+    assert_response :unauthorized
+    post "/api/v1/outcome_analyses", params: { session_id: 0 }, headers: headers
+    assert_response :unauthorized
+  end
+
+  test "the app creates, edits and deletes a trigger and fetches the form's pickers, as the web form does" do
+    headers = bearer(token)
+    condition = { condition_type: "slack", configuration: { channel_id: "C1", channel_name: "alerts", event_type: "new_message" } }
+
+    post "/api/v1/triggers", params: { name: "From the phone", agent_root_name: "zimmer", prompt_template: "Look at {{link}}",
+      trigger_conditions_attributes: [ condition ] }, headers: headers, as: :json
+    assert_response :created
+    trigger = Trigger.find(JSON.parse(response.body)["trigger"]["id"])
+
+    patch "/api/v1/triggers/#{trigger.id}", params: { name: "Renamed on the phone" }, headers: headers, as: :json
+    assert_response :success
+    assert_equal "Renamed on the phone", trigger.reload.name
+
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:list_channels).returns([ OpenStruct.new(id: "C1", name: "alerts", is_private: false, num_members: 2) ])
+    get "/api/v1/triggers/channels", headers: headers
+    assert_response :success
+    assert_equal [ "C1" ], JSON.parse(response.body)["channels"].map { |c| c["id"] }
+
+    WhatsappService.stubs(:configured?).returns(true)
+    WhatsappService.any_instance.stubs(:list_chats).returns([ { "id" => "1@g.us", "name" => "Family", "is_group" => true } ])
+    get "/api/v1/triggers/whatsapp_chats", headers: headers
+    assert_response :success
+    assert_equal [ "1@g.us" ], JSON.parse(response.body)["chats"].map { |c| c["id"] }
+
+    delete "/api/v1/triggers/#{trigger.id}", headers: headers
+    assert_response :no_content
+    assert_not Trigger.exists?(trigger.id)
+  end
+
+  test "the app asks for the ledger sweep the Costs page's Sweep now button asks for" do
+    post "/api/v1/costs/backfill", headers: bearer(token)
+    assert_response :success
+    assert_equal true, JSON.parse(response.body)["queued"]
+  end
+
+  test "the app runs every operator action on the health page, in a cooldown bucket apart from the API key's, recorded as the person" do
+    ErrorReporter.stubs(:report_message)
+    original_cache = Rails.cache
+    headers = bearer(token)
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    GoodJob::Job.delete_all
+
+    post "/api/v1/health/cleanup_processes", headers: headers
+    assert_response :success
+    post "/api/v1/health/retry_sessions", headers: headers
+    assert_response :success
+    post "/api/v1/health/archive_old", params: { days: 365 }, headers: headers
+    assert_response :success
+
+    # The cooldown is per caller. The app's token presents no key, and it must not
+    # share the web dashboard's anonymous bucket or the API key's.
+    post "/api/v1/health/cleanup_processes", headers: headers
+    assert_response :too_many_requests
+    post "/api/v1/health/cleanup_processes", headers: { "X-API-Key" => API_KEY }
+    assert_response :success
+
+    post "/api/v1/health/enter_queue_recovery_mode", params: { reason: "from the phone", ttl_minutes: 5 }, headers: headers
+    assert_response :success
+    assert JSON.parse(response.body)["active"]
+    get "/api/v1/health/queue_recovery_mode", headers: headers
+    assert_response :success
+    post "/api/v1/health/exit_queue_recovery_mode", headers: headers
+    assert_response :success
+    assert_equal false, JSON.parse(response.body)["active"]
+
+    post "/api/v1/health/run_post_deploy_tasks", headers: headers
+    assert_response :success
+
+    2.times { enqueue_good_job }
+    get "/api/v1/health/queued_jobs", params: { queue_name: "pollers" }, headers: headers
+    assert_response :success
+    assert_equal 2, JSON.parse(response.body)["matched"]
+    post "/api/v1/health/reschedule_queued_jobs", params: { queue_name: "pollers", expected_count: 2, delay_minutes: 5 }, headers: headers
+    assert_response :success
+    post "/api/v1/health/discard_queued_jobs", params: { queue_name: "pollers", expected_count: 2, reason: "stale" }, headers: headers
+    assert_response :success
+    assert_equal 2, JSON.parse(response.body)["affected"]
+  ensure
+    Rails.cache = original_cache
+    GoodJob::Job.delete_all
+    GoodJob::Setting.delete_all
+    AppSetting.delete_all
+  end
+
+  test "the app reads the work backlog and holds a stranded row, and the human-only levers take a grant that acts as you" do
+    relay = bearer(token)
+    as_you = bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
+    to_pin = backlog_item(key: "zimmer#1")
+    to_start = backlog_item(key: "zimmer#2")
+    to_remove = backlog_item(key: "zimmer#3")
+
+    get "/api/v1/work_backlog_items", headers: relay
+    assert_response :success
+    get "/api/v1/work_backlog_items/#{to_pin.id}", headers: relay
+    assert_response :success
+
+    # A relay-only grant is refused before the lookup — so with the sentence the
+    # app shows, not a 404 — and nothing moves.
+    post "/api/v1/work_backlog_items/0/start_now", headers: relay
+    assert_response :forbidden
+    assert_equal "This sign-in may not act as you; sign in again and allow acting as you", JSON.parse(response.body)["message"]
+    patch "/api/v1/work_backlog_items/0/pin", params: { precedence: 10 }, headers: relay
+    assert_response :forbidden
+    patch "/api/v1/work_backlog_items/0/unpin", headers: relay
+    assert_response :forbidden
+    post "/api/v1/work_backlog_items/#{to_remove.id}/remove", params: { reason: "no" }, headers: relay
+    assert_response :forbidden
+    assert to_remove.reload.queued?
+
+    patch "/api/v1/work_backlog_items/#{to_pin.id}/pin", params: { precedence: 10 }, headers: as_you
+    assert_response :success
+    assert to_pin.reload.pinned?
+    patch "/api/v1/work_backlog_items/#{to_pin.id}/unpin", headers: as_you
+    assert_response :success
+    assert_not to_pin.reload.pinned?
+    post "/api/v1/work_backlog_items/#{to_start.id}/start_now", headers: as_you
+    assert_response :created
+    post "/api/v1/work_backlog_items/#{to_remove.id}/remove", params: { reason: "already fixed upstream" }, headers: as_you
+    assert_response :success
+    assert_equal "removed", to_remove.reload.status
+
+    # `hold` is not a human-only lever — an agent may hold a row too — so a
+    # relay-only grant may.
+    sessions(:archived).update!(archived_at: 3.days.ago)
+    stranded = backlog_item(key: "zimmer#4")
+    stranded.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    stranded.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    post "/api/v1/work_backlog_items/#{stranded.id}/hold", params: { reason: "pick one" }, headers: relay
+    assert_response :success
+    assert stranded.reload.held_until.present?
+  end
+
+  test "the app reads the gate decision ledger, the outcome analyses and the goal checks" do
+    headers = bearer(token)
+    decision = GateDecision.create!(gate: GateDecision::PR_MERGE, surface: "zimmer", recorded_via: GateDecision::IMPORT,
+      artifact_url: "https://github.com/tadasant/zimmer/pull/1", decided_at: Date.new(2026, 8, 15), decision: "auto-merge",
+      payload: { "title" => "A change", "reason" => "It was fine." })
+    analyzed = sessions(:archived)
+    root = { id: "S0", trigger: { kind: "New", source: "user" }, goal: { text: "Ship it", kind: "Action" },
+             outcome: { kind: "Success", explanation: "It shipped." }, meta: {}, children: [] }
+    post "/api/v1/outcome_analyses", params: { session_id: analyzed.id, root: root }, headers: { "X-API-Key" => API_KEY }, as: :json
+    assert_response :created
+
+    get "/api/v1/gate_decisions", headers: headers
+    assert_response :success
+    get "/api/v1/gate_decisions/#{decision.id}", headers: headers
+    assert_response :success
+    get "/api/v1/outcome_analyses", headers: headers
+    assert_response :success
+    get "/api/v1/outcome_analyses/#{analyzed.id}", headers: headers
+    assert_response :success
+    assert_equal "S0", JSON.parse(response.body).dig("outcome_analysis", "root", "id")
+    get "/api/v1/goal_checks", headers: headers
+    assert_response :success
+  end
+
+  test "the app reads the CLI status and asks for a refresh or a cache clear, as the /clis page does" do
+    headers = bearer(token)
+
+    get "/api/v1/clis/status", headers: headers
+    assert_response :success
+    assert_enqueued_with(job: CliStatusRefreshJob) { post "/api/v1/clis/refresh", headers: headers }
+    assert_response :success
+    assert_enqueued_with(job: CacheClearJob) { post "/api/v1/clis/clear_cache", headers: headers }
+    assert_response :success
   end
 
   test "the hook and plugin catalogs answer an API key with the catalog's entries" do
@@ -243,7 +433,7 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
   end
 
   test "a controller the app does not use refuses its token outright" do
-    get "/api/v1/gate_decisions", headers: bearer(token)
+    get "/api/v1/external_app/triggers", headers: bearer(token)
     assert_response :unauthorized
   end
 
@@ -265,7 +455,7 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_equal RuntimeRegistry::DEFAULT_RUNTIME, body.dig("session_defaults", "runtime")
     assert_equal false, body.dig("session_defaults", "runtime_overridden")
     assert body["runtimes"].any? { |r| r["id"] == "claude_code" && r["models"].any? }
-    first = ExperimentalSettingsRegistry.all.first
+    first = ExperimentalSettingsRegistry.find("mcp_tool_search")
     entry = body["experimental"].find { |e| e["key"] == first.key }
     assert_equal first.current_value, entry["enabled"]
     assert_equal ExperimentalSettingsRegistry.default_on?(first), entry["default_enabled"]
@@ -287,6 +477,17 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_equal !was, first.current_value
     entry = JSON.parse(response.body).fetch("app_settings")["experimental"].find { |e| e["key"] == first.key }
     assert_equal first.current_value, entry["enabled"]
+
+    # "" clears a half; null leaves it alone.
+    patch "/api/v1/app_settings", params: { app_settings: { default_model: "", default_runtime: nil } },
+      headers: headers, as: :json
+    assert_response :success
+    assert_nil AppSetting.current.default_model
+    assert_equal "claude_code", AppSetting.current.default_runtime
+
+    get "/api/v1/app_settings", headers: { "X-API-Key" => API_KEY }
+    assert_response :success
+    assert_equal false, JSON.parse(response.body).dig("app_settings", "session_defaults", "model_overridden")
   end
 
   test "a bad runtime and model pair, or an unknown experimental key, is a 422 and changes nothing" do
@@ -296,21 +497,28 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert_nil AppSetting.current.default_model
 
-    first = ExperimentalSettingsRegistry.all.first
+    first = ExperimentalSettingsRegistry.find("mcp_tool_search")
     before = first.current_value
     patch "/api/v1/app_settings", params: { app_settings: { experimental: { "no_such_setting" => true, first.key => !before } } },
       headers: headers, as: :json
     assert_response :unprocessable_entity
     assert_equal "Unknown experimental setting", JSON.parse(response.body)["error"]
     assert_equal before, first.current_value
+
+    patch "/api/v1/app_settings", params: { app_settings: { experimental: [ first.key ] } }, headers: headers, as: :json
+    assert_response :unprocessable_entity
+    assert_equal before, first.current_value
   end
 
   test "MCP Apps change only on a grant that acts as you, never over an API key" do
-    patch "/api/v1/app_settings", params: { app_settings: { mcp_apps_enabled: true } },
+    # A legal change in the same body is refused with it: the guard runs before anything is read.
+    model = ModelCatalog.model_ids_for("claude_code").last
+    patch "/api/v1/app_settings", params: { app_settings: { default_model: model, mcp_apps_enabled: true } },
       headers: bearer(token), as: :json
     assert_response :forbidden
     assert_match(/sign in again/, JSON.parse(response.body)["message"])
     assert_equal false, AppSetting.current.mcp_apps_enabled?
+    assert_nil AppSetting.current.default_model
 
     patch "/api/v1/app_settings", params: { app_settings: { mcp_apps_allowed_servers: [ "anything" ] } },
       headers: { "X-API-Key" => API_KEY }, as: :json
@@ -340,6 +548,15 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
   end
 
   def bearer(access_token) = { "Authorization" => "Bearer #{access_token}" }
+
+  def enqueue_good_job(job_class: "CanaryJob", queue_name: "pollers")
+    id = SecureRandom.uuid
+    GoodJob::Job.create!(
+      id: id, active_job_id: id, job_class: job_class, queue_name: queue_name, priority: 0, scheduled_at: Time.current,
+      serialized_params: { "job_class" => job_class, "job_id" => id, "queue_name" => queue_name, "priority" => 0,
+                           "arguments" => [], "executions" => 0, "locale" => "en" }
+    )
+  end
 
   def create_elicitation(session, message:, expires_at: 10.minutes.from_now)
     Elicitation.create!(session: session, request_id: "req-#{SecureRandom.hex(6)}", mode: "form", message: message,
