@@ -22,6 +22,37 @@ class QuotaSnapshotService
   # @param result [QuotaCheckService::Result] the quota check result
   # @param trigger [String] why the snapshot was taken ("rotation", "page_view", "scheduled")
   # @return [ClaudeAccountQuotaSnapshot] the created snapshot
+  # Probe `account` with `token`, record what Anthropic said about the
+  # credential, and store the reading when there is one.
+  #
+  # One repair per refused token: a server-side-invalidated access token is the
+  # refusal a refresh can fix. Bounded by the verdict rather than by the caller —
+  # a token already recorded as refused is not refreshed again, so a dead
+  # subscription with a live refresh endpoint costs one single-use token per
+  # token death, not one per probe (#242). It is also what makes
+  # AccountRotationService#usable_candidate?'s own guard true: a refusal on
+  # record is one whose repair has already been tried.
+  #
+  # The verdict is recorded on every answer (ClaudeAccount#record_credential_probe!);
+  # an unreachable Anthropic records nothing.
+  #
+  # @return [Array(ClaudeAccountQuotaSnapshot, QuotaCheckService::Result)] the
+  #   snapshot is nil when the probe did not succeed
+  def self.probe(account, token:, trigger:)
+    result = QuotaCheckService.check_with_token(token)
+
+    if result.credential_refused? && account.can_refresh_token? && !account.credential_rejected? && account.refresh_token!
+      account.reload
+      token = account.claude_access_token
+      result = QuotaCheckService.check_with_token(token) if token.present?
+    end
+
+    account.record_credential_probe!(result, probed_token: token)
+    return [ nil, result ] unless result.success?
+
+    [ save_snapshot(account, result, trigger: trigger), result ]
+  end
+
   def self.save_snapshot(account, result, trigger:)
     snapshot = create_snapshot(account, result, trigger)
     mark_capped(account, snapshot)

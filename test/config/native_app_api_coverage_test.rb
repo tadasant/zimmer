@@ -63,6 +63,8 @@ class NativeAppApiCoverageTest < ActiveSupport::TestCase
 
   test "an action its controller did not name stays closed to the token" do
     refute Api::V1::LogsController.native_app_tokens_accepted_for?(:create)
+    assert Api::V1::TriggersController.native_app_tokens_accepted_for?(:toggle_enqueue_messages)
+    assert Api::V1::TriggersController.native_app_tokens_accepted_for?(:toggle_resuscitate_archived)
     refute Api::V1::NotificationsController.native_app_tokens_accepted_for?(:push)
     assert Api::V1::CostsController.native_app_tokens_accepted_for?(:backfill), "the Costs page's Sweep now"
     refute Api::V1::GateDecisionsController.native_app_tokens_accepted_for?(:create)

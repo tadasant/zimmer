@@ -280,7 +280,8 @@ final class BoardViewUITests: XCTestCase {
     }
 }
 
-/// Slice 2b: the Ranked view's Start now and drag-to-reorder.
+/// Slice 2b: the Ranked view's Start now and drag-to-reorder. Every assertion is on state
+/// that stays, never on a toast.
 @MainActor
 final class RankedUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -295,8 +296,9 @@ final class RankedUITests: XCTestCase {
         XCTAssertTrue(sweep.waitForExistence(timeout: timeout))
         let start = pressForMenu(app, sweep, offering: "Start Now")
         XCTAssertTrue(start.exists, "the menu offers Start Now")
+        // The toast that confirms it is up for 2.5 seconds, less than a tap and its idle wait
+        // can take on a CI runner; the row reading Running is the proof.
         start.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
         let running = expectation(for: NSPredicate(format: "label CONTAINS 'Running'"), evaluatedWith: sweep)
         XCTAssertEqual(XCTWaiter().wait(for: [running], timeout: timeout), .completed)
     }
@@ -348,14 +350,16 @@ final class RankedUITests: XCTestCase {
         handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.6, thenDragTo: second.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.25)),
                    withVelocity: .slow, thenHoldForDuration: 0.3)
-        // The toast comes after the reload, so the new order is on screen by then.
-        XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
+        // Read the order the rows settle in, not the toast: it is up for less time than the
+        // drag's own idle wait can take. A refused move shows an alert instead, and its reload
+        // puts the row back.
         let deadline = Date().addingTimeInterval(timeout)
         while last.frame.minY >= second.frame.minY, Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         }
         XCTAssertLessThan(first.frame.minY, last.frame.minY, "the sweep still heads the spot queue")
         XCTAssertLessThan(last.frame.minY, second.frame.minY, "the dropped session now sits second")
+        XCTAssertFalse(app.alerts.firstMatch.exists, "the server took the move")
         app.buttons["select.done"].tap()
     }
 

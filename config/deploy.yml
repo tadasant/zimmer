@@ -201,6 +201,13 @@ env:
     # arithmetic both ways.
     CLAUDE_SPARE_SAMPLE_MAX_STALENESS_MINUTES: "<%= ENV.fetch("CLAUDE_SPARE_SAMPLE_MAX_STALENESS_MINUTES", "60") %>"
     CLAUDE_SPARE_SAMPLE_MAX_PROBES_PER_TICK: "<%= ENV.fetch("CLAUDE_SPARE_SAMPLE_MAX_PROBES_PER_TICK", "2") %>"
+    # AccountRebalanceJob's knobs: how long the Claude Code pool must be quiet
+    # before a proactive switch (the prompt-cache lifetime), how much better the
+    # best account must score, and an off switch. Here for the same reason as the
+    # sampler's -- there is no box shell to export them from.
+    CLAUDE_REBALANCE_IDLE_MINUTES: "<%= ENV.fetch("CLAUDE_REBALANCE_IDLE_MINUTES", "60") %>"
+    CLAUDE_REBALANCE_MIN_SCORE_GAIN: "<%= ENV.fetch("CLAUDE_REBALANCE_MIN_SCORE_GAIN", "0.15") %>"
+    CLAUDE_REBALANCE_ENABLED: "<%= ENV.fetch("CLAUDE_REBALANCE_ENABLED", "true") %>"
 
 aliases:
   console: app exec --interactive --reuse "bin/rails console"
