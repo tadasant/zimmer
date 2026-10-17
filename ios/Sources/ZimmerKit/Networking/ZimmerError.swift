@@ -62,4 +62,6 @@ public enum ZimmerError: Error, Equatable, Sendable {
 struct APIErrorEnvelope: Decodable {
     let error: String?
     let message: String?
+    /// The reasons one by one, where `message` joins them with commas a reason may itself contain.
+    let messages: [String]?
 }

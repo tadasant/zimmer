@@ -125,6 +125,9 @@ final class AppModel: ObservableObject {
     @Published var fixtureCosts: CostScope?
     /// `-ZimmerFixtureHealth`: More opens on Health.
     @Published var fixtureHealth = false
+    /// `-ZimmerFixtureTriggerForm`: the opened trigger's edit form starts open — or, with no
+    /// trigger opened, the Triggers tab's new-trigger form — so a screenshot can show it.
+    var fixtureOpensTriggerForm = false
     /// `-ZimmerFixtureRunNow`: the opened trigger's Run Now sheet starts open, so
     /// `ios/bin/ui-test` can photograph its variable fields.
     var fixtureOpensRunNow = false
@@ -244,6 +247,7 @@ final class AppModel: ObservableObject {
             tab = .more
         }
         fixtureOpensRunNow = arguments.contains("-ZimmerFixtureRunNow")
+        fixtureOpensTriggerForm = arguments.contains("-ZimmerFixtureTriggerForm")
         // Trash a session as a swipe would: the Undo toast, or for one with messages queued,
         // the question before they are discarded.
         if let id = value("-ZimmerFixtureTrash").flatMap(Int.init) {
