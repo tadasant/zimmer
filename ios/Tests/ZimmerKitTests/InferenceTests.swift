@@ -293,13 +293,16 @@ final class InferenceTests: XCTestCase {
         XCTAssertEqual(first.login.status, "awaiting_user")
         XCTAssertEqual(first.login.verificationCode, "WXYZ-7K2Q")
         XCTAssertNotNil(first.login.verificationURL)
-        _ = try await fake.inferenceLogin(attempt.id)
-        let third = try await fake.inferenceLogin(attempt.id)
-        XCTAssertEqual(third.login.status, "completing")
-        let fourth = try await fake.inferenceLogin(attempt.id)
-        XCTAssertTrue(fourth.login.succeeded)
-        XCTAssertTrue(fourth.account?.credentials.stored ?? false, "the login captured credentials")
-        XCTAssertEqual(fourth.account?.status, "active")
+        // The code stays up for five polls — ten seconds at the sheet's cadence.
+        for _ in 2...5 {
+            XCTAssertEqual(try await fake.inferenceLogin(attempt.id).login.status, "awaiting_user")
+        }
+        let sixth = try await fake.inferenceLogin(attempt.id)
+        XCTAssertEqual(sixth.login.status, "completing")
+        let seventh = try await fake.inferenceLogin(attempt.id)
+        XCTAssertTrue(seventh.login.succeeded)
+        XCTAssertTrue(seventh.account?.credentials.stored ?? false, "the login captured credentials")
+        XCTAssertEqual(seventh.account?.status, "active")
         await XCTAssertThrowsAsync(try await fake.startInferenceLogin(accountID: 14), "an API-key account has no login flow")
     }
 
