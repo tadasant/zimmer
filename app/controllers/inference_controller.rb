@@ -50,6 +50,11 @@ class InferenceController < ApplicationController
     @app_setting = AppSetting.current
 
     load_spot_gate if current_runtime == ClaudeAuthProvider::RUNTIME
+
+    # Read-only: the plan is the sweep's decision as of now, and rendering it
+    # never probes or switches anything. Claude-only — the score is built from
+    # Anthropic quota readings, which the Codex pool does not have.
+    @rebalance_plan = AccountRebalanceService.plan if current_runtime == ClaudeAuthProvider::RUNTIME
   end
 
   # POST: Refresh all accounts sequentially, streaming each card update.
