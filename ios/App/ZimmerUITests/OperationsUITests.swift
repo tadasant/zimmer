@@ -241,7 +241,7 @@ final class OperationsUITests: XCTestCase {
     }
 
     /// Bring the element named `identifier` onto the screen — below the navigation bar, above
-    /// the tab bar, and whole when it is about to be tapped — by dragging under half a screen
+    /// the tab bar, and whole when it is about to be tapped — by dragging less than a screen
     /// at a time and holding, so there is no fling: on a loaded simulator a fling carries a
     /// short section past the screen in one go, and a lazy List never lays it out. Twenty steps
     /// in `searching`'s direction, then twenty back — a caller at the foot of the page looking
