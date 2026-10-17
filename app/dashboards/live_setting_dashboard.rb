@@ -22,6 +22,7 @@ class LiveSettingDashboard < Administrate::BaseDashboard
     voice_vad_silence_duration_ms: Field::Number,
     voice_noise_reduction: Field::String,
     voice_transcription_model: Field::String,
+    voice_listening: Field::String,
     guidance: Field::Text,
     updated_by: Field::String,
     created_at: Field::DateTime,
@@ -31,7 +32,7 @@ class LiveSettingDashboard < Administrate::BaseDashboard
   COLLECTION_ATTRIBUTES = %i[id text_model voice_model voice_speed updated_by updated_at].freeze
 
   SHOW_PAGE_ATTRIBUTES = %i[
-    id text_model text_temperature text_max_output_tokens voice_model voice_reasoning_effort voice_name voice_speed voice_max_output_tokens voice_turn_detection voice_vad_eagerness voice_vad_threshold voice_vad_prefix_padding_ms voice_vad_silence_duration_ms voice_noise_reduction voice_transcription_model
+    id text_model text_temperature text_max_output_tokens voice_model voice_reasoning_effort voice_name voice_speed voice_max_output_tokens voice_turn_detection voice_vad_eagerness voice_vad_threshold voice_vad_prefix_padding_ms voice_vad_silence_duration_ms voice_noise_reduction voice_transcription_model voice_listening
     guidance updated_by created_at updated_at
   ].freeze
 

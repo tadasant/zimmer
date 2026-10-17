@@ -1,8 +1,10 @@
 # frozen_string_literal: true
 
-# A Live Mode or Live Voice conversation: one continuous thread with a fast
-# OpenAI model whose system prompt is an agent root's AGENTS.md, which answers
-# quick things itself and hands anything slow to Zimmer's own MCP surface.
+# A Live Mode conversation: one continuous thread with a fast OpenAI model whose
+# system prompt is the `live-mode` agent root's AGENTS.md, which answers quick
+# things itself and hands anything slow to Zimmer's own MCP surface. `mode` is
+# how it runs right now, typed or spoken; it switches mid-thread (switch_mode!)
+# and the thread carries both.
 #
 # Not a Session. A Session is an agent process — spawned, heartbeated, swept when
 # its start stalls, reaped with its clone — and a live conversation has no
@@ -11,7 +13,7 @@
 # them. See docs/sessions/live.md.
 #
 # Lifecycle: preparing (AGENTS.md being fetched) → active → ended, or failed
-# when it could not be prepared. At most one open conversation per mode.
+# when it could not be prepared. At most one open conversation at a time.
 class LiveConversation < ApplicationRecord
   include BroadcastsThroughService
 
@@ -34,15 +36,23 @@ class LiveConversation < ApplicationRecord
   validates :status, inclusion: { in: STATUSES }
   validates :agent_root, :model, presence: true
   validate :mcp_servers_is_a_list_of_names
+  validate :mode_instructions_is_a_map_of_modes
 
   scope :unfinished, -> { where(status: OPEN_STATUSES) }
-  scope :for_mode, ->(mode) { where(mode: mode.to_s) }
   scope :recent_first, -> { order(updated_at: :desc, id: :desc) }
 
-  after_update_commit :broadcast_header, if: -> { saved_change_to_status? || saved_change_to_responding_since? || saved_change_to_mcp_servers? || saved_change_to_title? }
+  after_update_commit :broadcast_header, if: -> { saved_change_to_status? || saved_change_to_mode? || saved_change_to_responding_since? || saved_change_to_mcp_servers? || saved_change_to_title? }
 
-  def self.current(mode)
-    unfinished.for_mode(mode).order(id: :desc).first
+  # The TurnSource surfaces a client driving a conversation can be.
+  CLIENT_SURFACES = %w[web ios carplay mcp].freeze
+
+  # @return [String, nil] the surface, or nil for anything not on the list
+  def self.normalize_client_surface(value)
+    CLIENT_SURFACES.include?(value.to_s) ? value.to_s : nil
+  end
+
+  def self.current
+    unfinished.order(id: :desc).first
   end
 
   def live_mode = LiveConversations.mode(mode)
@@ -60,7 +70,18 @@ class LiveConversation < ApplicationRecord
   end
 
   def display_title
-    title.presence || "#{live_mode.label} · #{created_at&.strftime('%b %-d, %H:%M')}"
+    title.presence || "#{LiveConversations::LABEL} · #{created_at&.strftime('%b %-d, %H:%M')}"
+  end
+
+  # The style text the agent root ships for this mode, or nil when it ships none.
+  def style_for(mode_key) = mode_instructions.is_a?(Hash) ? mode_instructions[mode_key.to_s].presence : nil
+
+  # Typed ⇄ spoken. The model follows the mode, because each path has its own.
+  def switch_mode!(mode_key)
+    target = LiveConversations.mode(mode_key)
+    return if mode == target.key
+
+    update!(mode: target.key, model: target.model, last_activity_at: Time.current)
   end
 
   def enabled_mcp_servers = Array(mcp_servers)
@@ -87,12 +108,15 @@ class LiveConversation < ApplicationRecord
     json = {
       id: id,
       mode: mode,
-      label: live_mode.label,
+      voice: voice?,
+      label: LiveConversations::LABEL,
+      mode_label: live_mode.label,
       status: status,
       title: display_title,
       agent_root: agent_root,
       model: model,
       instructions_source: instructions_source,
+      mode_styles: LiveConversations.mode_keys.index_with { |key| style_for(key) ? "agent_root" : "zimmer_default" },
       mcp_servers: enabled_mcp_servers,
       responding: responding?,
       error_message: error_message,
@@ -111,6 +135,12 @@ class LiveConversation < ApplicationRecord
     return if mcp_servers.is_a?(Array) && mcp_servers.all? { |name| name.is_a?(String) && name.present? }
 
     errors.add(:mcp_servers, "must be a list of catalog server names")
+  end
+
+  def mode_instructions_is_a_map_of_modes
+    return if mode_instructions.is_a?(Hash) && mode_instructions.all? { |key, text| LiveConversations.mode_keys.include?(key) && text.is_a?(String) }
+
+    errors.add(:mode_instructions, "must map text/voice to the agent root's style text")
   end
 
   def broadcast_header

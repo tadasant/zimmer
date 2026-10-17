@@ -66,7 +66,8 @@ not jitter. The colours come from the Zimmer web UI instead of Motet's:
 
 The Quick Router is placed as the web UI places it: a bar pinned to the foot of the Sessions
 screen, and a round button in the bottom-right corner of every other screen (`quickRouterCorner()`),
-which opens the sheet. The button carries the app's one shadow — a thing floating over content
+which opens the sheet. While the bar has the keyboard a Cancel stands beside it, as beside the
+search box, and empties it. The button carries the app's one shadow — a thing floating over content
 needs the lift, as Motet's play button does.
 [`PARITY_AUDIT.md`](PARITY_AUDIT.md) is the running comparison against the web UI and against
 Motet, grouped into the slices that land it.
@@ -89,7 +90,7 @@ nothing is impossible.
 | `ios/bin/ci-swift` | `swift build && swift test` on the package | Swift (Linux or Mac) |
 | `ios/bin/install-swift-toolchain [dir]` | Swift 6.2 for Linux into `dir` (default `~/.zimmer-ios/swift`), once; prints the shim path | Linux |
 | `ios/bin/build-app [--configuration …] [--api-base-url https://…]` | Simulator build, unsigned | Xcode |
-| `ios/bin/testflight check` | Unsigned Release archive + assertions on the archived app, and the entitlements guard | Xcode |
+| `ios/bin/testflight check` | Ad hoc signed Release archive + assertions on the archived app, its signed entitlements, and the entitlements guard | Xcode |
 | `ios/bin/testflight upload` | The same archive, signed at export, uploaded, processing awaited | Xcode + ASC key |
 | `ios/bin/ui-test [--configuration Debug\|Staging] [--api-base-url …] [--artifacts dir]` | Runs `ZimmerUITests` on a simulator it picks by `simctl` JSON, records video, photographs every key screen in both appearances | Xcode + simulator |
 | `ios/bin/ui-test --smoke [--also ios/App/ZimmerUITests/X.swift …]` | The per-PR subset: the session list, the build's server, a session started from a sentence and opened, plus every class in each `--also` file. No photographs | Xcode + simulator |
@@ -204,12 +205,13 @@ control templates, with a depth of three, and requires voice as the primary moda
   replies never go to Apple's servers. The tap and the
   recognition handler are built in a `nonisolated` helper, because a closure formed on the main
   actor and called from an audio thread is a Swift 6 runtime crash.
-- **Inert until the grant**, as Motet's scene is. `App/Zimmer/CarPlay.entitlements` holds the key
-  and is in the project's exception set, wired into nothing. `ios/bin/testflight` signs in only
-  `Push.entitlements`. When Apple grants the entitlement: tick CarPlay on the App ID, merge the key
-  into the signed entitlements, admit it in the guard, and check the first signed build's
-  entitlements with codesign. Cloud signing may drop a managed entitlement; if it does, use a
-  manually made App Store profile.
+- **Signed into every TestFlight build.** Apple granted the entitlement to the team as a managed
+  capability, and it is ticked on the App ID. `App/Zimmer/CarPlay.entitlements` holds the key and
+  is in the project's exception set; `ios/bin/testflight` signs it in, merged with
+  `Push.entitlements` when push is on. Apple documents that its managed-capability workflow puts it
+  in the profile cloud signing creates at export, so no profile is made by hand; the first signed
+  build is what confirms it. Simulator builds stay
+  unsigned and carry no entitlements.
 
 ## Distribution
 
@@ -219,19 +221,23 @@ touches the app, and on dispatch. It is fenced the way Motet's is: (1) only `pus
 the key is a `testflight` **environment** secret behind a `main`-only branch policy; (4) a
 GitHub-hosted ephemeral runner. The checkout is pinned by SHA.
 
-The archive is unsigned; `-exportArchive -allowProvisioningUpdates` with the App Store Connect
-API key (Admin role) signs it with Apple's cloud-managed certificate at export. One key is the
+The archive is signed ad hoc, which needs no certificate and exists only so the archived binary
+carries its entitlements: export signs in what it finds there, and an archive built with signing
+off has none. `-exportArchive -allowProvisioningUpdates` with the App Store Connect API key (Admin
+role) then signs it with Apple's cloud-managed certificate. After the upload, the run checks
+export's `DistributionSummary.plist` and fails if an admitted key is missing. One key is the
 whole credential. `ZIMMER_SIGNING=archive` (dispatch input `signing=archive`) is the fallback.
 `CFBundleVersion` is `run_number.run_attempt`; re-upload with a fresh dispatch, never "Re-run".
 
 **Until the `testflight` environment has its key, the workflow skips the upload with a notice and
 stays green.**
 
-`testflight check` refuses any `CODE_SIGN_ENTITLEMENTS`: nothing is admitted yet. Each
-entitlements file the app grows is admitted there by name, with the keys it may ask for, only
+`testflight` admits two entitlements files, each by name and with the one key it may ask for:
+`CarPlay.entitlements` (`com.apple.developer.carplay-voice-based-conversation`, always) and
+`Push.entitlements` (`aps-environment`, when `ZIMMER_IOS_PUSH_ENABLED=1`). A file is admitted only
 once its capability exists on the App ID — an ungranted entitlement fails signing, not just the
-feature. After the first signed build, check what Apple materialised:
-`codesign -d --entitlements :- Zimmer.app`.
+feature. `check` asserts that the archived app's ad hoc signature carries every admitted key, so a
+PR proves it before an upload does.
 
 ## What a human does, once
 
@@ -258,7 +264,7 @@ Each unblocks the next:
   factor. The UI test drives an in-memory fixture, because an agent cannot complete a Google
   sign-in.
 - **In Xcode**: the project has only ever been read by `xcodebuild` in CI.
-- **Live Voice's audio**: `App/Zimmer/Live/LiveAudioEngine.swift` and `LiveCall`'s WebSocket to
+- **Live Mode's voice audio**: `App/Zimmer/Live/LiveAudioEngine.swift` and `LiveCall`'s WebSocket to
   OpenAI have not run. A simulator has no microphone worth testing echo cancellation on, and no
   deployment has the OpenAI key yet. The Realtime sequencing they drive (`RealtimeConductor`) and
   the PCM conversion (`RealtimeAudio`) are covered by ZimmerKit's tests, and the screens by

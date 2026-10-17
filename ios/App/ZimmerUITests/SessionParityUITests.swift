@@ -32,9 +32,8 @@ final class SessionParityUITests: XCTestCase {
         // Press and hold a running session to pause it.
         let running = row(app, 1042)
         XCTAssertTrue(running.waitForExistence(timeout: timeout))
-        running.press(forDuration: 1.2)
-        let pause = app.buttons["Pause Session"].firstMatch
-        XCTAssertTrue(pause.waitForExistence(timeout: timeout))
+        let pause = pressForMenu(app, running, offering: "Pause Session")
+        XCTAssertTrue(pause.exists, "the menu offers Pause Session")
         pause.tap()
         XCTAssertTrue(waitForLabelContaining(running, "Needs input"), "a paused session comes to rest waiting on you")
 
@@ -294,9 +293,8 @@ final class RankedUITests: XCTestCase {
         let app = launch()
         let sweep = app.descendants(matching: .any)["session.row.1031"]
         XCTAssertTrue(sweep.waitForExistence(timeout: timeout))
-        sweep.press(forDuration: 1.2)
-        let start = app.buttons["Start Now"].firstMatch
-        XCTAssertTrue(start.waitForExistence(timeout: timeout))
+        let start = pressForMenu(app, sweep, offering: "Start Now")
+        XCTAssertTrue(start.exists, "the menu offers Start Now")
         start.tap()
         XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
         let running = expectation(for: NSPredicate(format: "label CONTAINS 'Running'"), evaluatedWith: sweep)

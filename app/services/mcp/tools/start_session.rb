@@ -246,6 +246,7 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         # inherits it. Only a parentless spawn, which nothing connects to a human,
         # is classified `api`.
         session.genesis = SessionGenesis::API if session.parent_session_id.blank?
+        session.source_context = context.turn_source.to_h
         # Recorded before save so the job starting moments later can tell a
         # deliberate "no MCP servers" from a column that landed empty by accident
         # and would otherwise be healed back to the root's defaults.

@@ -322,6 +322,7 @@ module Sessions
         content: content,
         position: max_position + 1,
         status: "pending",
+        source_context: TurnSource.agent.to_h,
         # `caller` and not a new origin: this IS a message queued on somebody's
         # behalf, and the `automated_*` origins mean "Zimmer wrote this to the
         # session itself". Keeping it here is also what puts the report inside
@@ -341,7 +342,7 @@ module Sessions
     # never learns is the one asleep on a wake that will not fire.
     def send_now
       log_both("delivered to parent session ##{parent.id} (#{parent.status})")
-      parent.deliver_follow_up!(content, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
+      parent.deliver_follow_up!(content, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS, source: TurnSource.agent)
     end
 
     # Staged, then interrupted outside the transaction: Sessions::InterruptService
@@ -361,7 +362,8 @@ module Sessions
         ActiveRecord::Base.transaction do
           max_position = parent.enqueued_messages.maximum(:position) || 0
           enqueued = parent.enqueued_messages.create!(
-            content: content, position: max_position + 1, status: "pending", origin: "caller"
+            content: content, position: max_position + 1, status: "pending", origin: "caller",
+            source_context: TurnSource.agent.to_h
           )
         end
       rescue ActiveRecord::RecordNotUnique

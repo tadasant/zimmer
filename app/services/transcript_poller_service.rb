@@ -1049,6 +1049,9 @@ class TranscriptPollerService
     # instead; in that case active_follow_up_prompt is the exact prompt sent to
     # the runtime, and it must still contain the raw follow-up we are clearing.
     return true if message_text == sent_message
+    # The turn as delivered carries Zimmer's turn-source note after the words;
+    # `sent_message` is the words alone.
+    return true if TurnSource.strip(message_text).strip == sent_message
 
     active_follow_up_prompt = @session.metadata&.dig("active_follow_up_prompt").to_s.strip
     active_follow_up_prompt.present? &&

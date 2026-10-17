@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
-# Shared setup for the Live Mode / Live Voice tests: a catalog that carries the
-# two live roots, an OpenAI key, a scripted OpenAI client, and a real stdio MCP
+# Shared setup for the Live Mode tests: a catalog that carries the live root, an OpenAI key, a scripted OpenAI client, and a real stdio MCP
 # server (test/fixtures/files/live/clock_mcp_server.rb) for the self-enable path.
 module LiveConversationHelpers
   CLOCK_SERVER = "test-clock"
@@ -57,10 +56,10 @@ module LiveConversationHelpers
     })
   end
 
-  # The catalog under test has no live roots, and Mocha cannot call through to
+  # The catalog under test has no live root, and Mocha cannot call through to
   # the real lookup for every other root a page resolves (the Quick Router's,
-  # say) — so the two live names are answered by an override, and everything
-  # else reaches the real catalog. Cleared after every test.
+  # say) — so the live name is answered by an override, and everything else
+  # reaches the real catalog. Cleared after every test.
   module RootOverride
     def find(name)
       overrides = LiveConversationHelpers.root_overrides
@@ -74,11 +73,9 @@ module LiveConversationHelpers
     attr_accessor :root_overrides
   end
 
-  def stub_live_roots(**overrides)
-    LiveConversationHelpers.root_overrides = {
-      "live-mode" => overrides.fetch(:text) { live_root("live-mode") },
-      "live-voice" => overrides.fetch(:voice) { live_root("live-voice") }
-    }
+  # `root: nil` is a catalog without the live root.
+  def stub_live_root(root: live_root(LiveConversations::AGENT_ROOT))
+    LiveConversationHelpers.root_overrides = { LiveConversations::AGENT_ROOT => root }
   end
 
   def stub_live_key(value = "sk-test-live")
@@ -105,7 +102,7 @@ module LiveConversationHelpers
 
   def create_live_conversation(mode: "text", status: LiveConversation::ACTIVE, mcp_servers: [ "zimmer" ], **attrs)
     LiveConversation.create!(
-      mode: mode, status: status, agent_root: LiveConversations.mode(mode).agent_root,
+      mode: mode, status: status, agent_root: LiveConversations::AGENT_ROOT,
       model: LiveConversations.mode(mode).model, instructions: "# Live\nBe brief.",
       mcp_servers: mcp_servers, **attrs
     )

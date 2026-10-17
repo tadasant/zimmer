@@ -80,7 +80,7 @@ module Mcp
       # more" under two bullets would be a worse answer than a smaller number.
       shown = scope.limit(MAX_SUMMARIZED).to_a
       shown.each do |message|
-        lines << "- **Position #{message.position}** (ID #{message.id}, origin `#{message.origin}`, queued #{message.created_at.utc.iso8601}): " \
+        lines << "- **Position #{message.position}** (ID #{message.id}, origin `#{message.origin}`#{", source `#{message.turn_source.surface}·#{message.turn_source.modality}`" if message.turn_source}, queued #{message.created_at.utc.iso8601}): " \
                  "#{compact_preview(message.content)}"
       end
 

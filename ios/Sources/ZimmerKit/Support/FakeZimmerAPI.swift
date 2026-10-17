@@ -54,7 +54,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// The class each session's genesis gives it: what *Derive it* goes back to. The samples
     /// choose no class of their own, so it is the class each starts with.
     private var derivedClasses: [Int: String]
-    /// Live Mode / Live Voice: see FakeZimmerAPI+Live.swift.
+    /// Live Mode: see FakeZimmerAPI+Live.swift.
     var liveState = FakeLiveState.sample()
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
