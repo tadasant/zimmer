@@ -446,8 +446,8 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   the monitor's clocks, and the genesis kinds no trigger starts with *Make spot* / *Make priority*
   and *Reset to defaults* — each saving the whole form and showing the server's refusal in place
   ("Spot max concurrent sessions must be less than or equal to 100"). The Pi tab shows the
-  OpenRouter key's state (set or not, provider, fingerprint, last write) and never the key; setting
-  or deleting it, and *Refresh All*, stay on the web page. Every write takes the app's sign-in on a
+  OpenRouter key's state (set or not, and where it resolves from) and never the key; the key is set
+  in the secrets console, not in Zimmer, and *Refresh All* stays on the web page. Every write takes the app's sign-in on a
   grant that acts as you; a relay-only grant sees the server's 403 under the control it tapped, and
   the login sheet stops polling on it and shows the same sentence.
 - **Talks to Zimmer, live** ([Live Mode](/sessions/live/)). The waveform button on the session
