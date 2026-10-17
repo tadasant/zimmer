@@ -82,8 +82,17 @@ final class AppModel: ObservableObject {
     @Published var quickRouterBarHandback: String?
     /// The full new-session form (the pencil in the Sessions toolbar).
     @Published var showingNewSession = false
-    /// Live Mode / Live Voice (LiveHomeView), from the session list's waveform button.
+    /// Live Mode (LiveHomeView), from the session list's waveform button.
     @Published var showingLive = false
+    /// The waveform button opened Live: LiveHomeView goes straight into the open conversation with
+    /// voice on, or a new one with voice on when none is open, instead of stopping on its list.
+    var liveLandsInVoice = false
+    /// The waveform button: Live, landing in the open conversation with voice on.
+    func openLive() {
+        liveLandsInVoice = true
+        showingLive = true
+    }
+
     /// Debug fixture: the live conversation LiveHomeView opens straight into.
     var fixtureLiveConversation: Int?
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,

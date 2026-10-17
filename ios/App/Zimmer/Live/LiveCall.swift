@@ -2,8 +2,12 @@ import Foundation
 import ZimmerKit
 import os
 
-/// The one Live Voice call the app can have, shared by the phone's screens and the CarPlay
-/// scene — a call started in one carries on in the other.
+/// The one voice call the app can have, shared by the phone's screens and the CarPlay scene — a
+/// call started in one carries on in the other.
+///
+/// Starting a call turns voice on for its conversation first (`POST …/mode`), so Enable voice on
+/// a typed thread, Talk on a spoken one and CarPlay's Resume all take the same path: Zimmer
+/// mints a secret only for a conversation in voice, with instructions written for speech.
 ///
 /// The audio never touches Zimmer. Zimmer mints a short-lived OpenAI Realtime secret whose
 /// session config it chose (`POST /live_conversations/:id/client_secret`); the phone opens a
@@ -35,7 +39,9 @@ final class LiveCall: ObservableObject {
 
     func isActive(for conversation: Int) -> Bool { isActive && conversationID == conversation }
 
-    func start(_ conversation: Int) async {
+    /// `voiceIsOn`: the caller has just turned voice on, so a second `POST …/mode` is not raced
+    /// against a Type instead pressed while the call connects.
+    func start(_ conversation: Int, voiceIsOn: Bool = false) async {
         if isActive(for: conversation) { return }
         hangUp()
         generation += 1
@@ -46,8 +52,11 @@ final class LiveCall: ObservableObject {
         muted = false
         state = .connecting
         do {
+            if !voiceIsOn { try await turnVoiceOn(conversation) }
+            guard mine == generation else { return }
             let secret = try await mintSecret(conversation)
             guard mine == generation else { return }
+            conductor = RealtimeConductor(listening: secret.listening)
             var request = URLRequest(url: secret.websocketURL)
             request.setValue("Bearer \(secret.clientSecret)", forHTTPHeaderField: "Authorization")
             let task = URLSession.shared.webSocketTask(with: request)
@@ -78,6 +87,7 @@ final class LiveCall: ObservableObject {
         muted = false
     }
 
+    /// Muted, the microphone sends silence rather than nothing (`RealtimeConductor.appendAudio`).
     func toggleMute() {
         muted.toggle()
     }
@@ -95,10 +105,22 @@ final class LiveCall: ObservableObject {
         } catch {
             let message = Self.describe(error)
             log.error("live session update failed: \(message, privacy: .public)")
+            guard mine == generation else { return }
+            lastError = "The new Live settings did not reach this call: \(message)"
         }
     }
 
     // MARK: - Internals
+
+    /// A no-op when it is on already. A server from before voice folded into Live Mode has no
+    /// such route (404), and there a voice conversation needs nothing switched.
+    private func turnVoiceOn(_ conversation: Int) async throws {
+        do {
+            _ = try await api.setLiveMode(conversation, mode: .voice)
+        } catch let ZimmerError.http(status, _) where status == 404 {
+            return
+        }
+    }
 
     /// The conversation may still be reading its AGENTS.md (409); give it a moment.
     private func mintSecret(_ conversation: Int) async throws -> LiveClientSecret {
@@ -113,8 +135,8 @@ final class LiveCall: ObservableObject {
     }
 
     private func sendAudio(_ pcm: Data, generation: Int) {
-        guard generation == self.generation, !muted, !pcm.isEmpty else { return }
-        send(RealtimeConductor.appendAudio(pcm))
+        guard generation == self.generation, !pcm.isEmpty else { return }
+        send(RealtimeConductor.appendAudio(pcm, muted: muted))
     }
 
     private func send(_ event: JSONValue) {
@@ -157,9 +179,11 @@ final class LiveCall: ObservableObject {
             case let .record(role, text):
                 guard let conversation = conversationID else { continue }
                 Task {
-                    _ = try? await api.recordLiveTurn(conversation, role: role, content: text)
+                    _ = try? await api.recordLiveTurn(conversation, role: role, content: text, gated: false)
                     activity += 1
                 }
+            case let .hear(itemID, text):
+                hear(itemID: itemID, text: text, generation: generation)
             case let .play(pcm):
                 audio.play(pcm)
             case .replyStarted:
@@ -168,10 +192,25 @@ final class LiveCall: ObservableObject {
                 let heard = audio.stopPlayback()
                 send(RealtimeConductor.truncate(itemID: itemID, audioEndMs: heard))
             case let .state(next):
+                // A reply coming through means the call recovered from whatever went wrong.
+                if next == .speaking { lastError = nil }
                 state = next
             case let .failure(message):
+                log.error("realtime error: \(message, privacy: .public)")
                 lastError = message
             }
+        }
+    }
+
+    /// Gated: Zimmer decides whether the call answers this line. Unreachable, it is answered — a
+    /// stray reply beats a call gone quiet.
+    private func hear(itemID: String?, text: String, generation: Int) {
+        guard let conversation = conversationID else { return }
+        Task {
+            let heard = try? await api.recordLiveTurn(conversation, role: .user, content: text, gated: true)
+            guard generation == self.generation else { return }
+            if heard?.dropped != true { activity += 1 }
+            apply(conductor.heard(itemID: itemID, respond: heard?.respond ?? true), generation: generation)
         }
     }
 

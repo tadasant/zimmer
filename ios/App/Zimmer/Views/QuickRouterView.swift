@@ -254,7 +254,8 @@ struct QuickRouterView: View {
 /// The web UI's prompt box on the board, pinned to the foot of the Sessions screen: the
 /// first thing a thumb reaches, and the most prominent thing on the main screen. Type a
 /// sentence, send it, and the session it starts opens. The sparkles open the sheet with
-/// the words so far, for photos, files and the Advanced choices.
+/// the words so far, for photos, files and the Advanced choices. While it has the keyboard a
+/// Cancel stands beside it, as beside the search box, and empties it.
 ///
 /// It stands aside while the search box has the keyboard — a second field above the
 /// keyboard would take the room the results need — and while rows are being selected,
@@ -319,7 +320,19 @@ struct QuickRouterBar: View {
             .disabled(!canSend)
             .accessibilityLabel("Start")
             .accessibilityIdentifier("quickrouter.bar.start")
+            if focused {
+                // The search box's Cancel, beside the bar for as long as it has the keyboard:
+                // the words go and the keyboard with them, as Cancel empties the search.
+                Button("Cancel") { cancel() }
+                    .foregroundStyle(Theme.accent)
+                    .fixedSize()
+                    .frame(height: 38)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .accessibilityHint("Clears the words and puts the keyboard away")
+                    .accessibilityIdentifier("quickrouter.bar.cancel")
+            }
         }
+        .animation(.easeOut(duration: 0.2), value: focused)
         .padding(.horizontal, Theme.margin)
         .padding(.top, 8)
         .padding(.bottom, 8)
@@ -345,6 +358,13 @@ struct QuickRouterBar: View {
 
     private var canSend: Bool {
         !isStarting && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Back out without sending: the bar returns to rest, empty and without the keyboard.
+    private func cancel() {
+        prompt = ""
+        focused = false
+        dismissKeyboard()
     }
 
     /// The keyboard goes as the words are sent, not after the answer: by the time the start

@@ -332,7 +332,7 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
       )
     end
 
-    assert_equal "Actually, do it now", session.reload.metadata["pending_follow_up_prompt"],
+    assert_equal "Actually, do it now", TurnSource.strip(session.reload.metadata["pending_follow_up_prompt"]),
       "a direct follow-up must not be refused, got #{session.status}"
     assert_nil trigger.reload.trigger_conditions.sole.last_triggered_at,
       "the follow-up added a turn to the session's wait; it must not consume the wake"

@@ -4,21 +4,32 @@
     session will accept. The buttons live on the page around it.
 
     Locals: conversation %>
-<div id="<%= conversation.header_dom_id %>" data-live-conversation-status="<%= conversation.status %>" class="bg-white shadow-sm rounded-lg border border-gray-200 p-4">
+<div id="<%= conversation.header_dom_id %>" data-live-conversation-status="<%= conversation.status %>" data-live-conversation-mode="<%= conversation.mode %>" class="bg-white shadow-sm rounded-lg border border-gray-200 p-4">
   <div class="flex items-start justify-between gap-3">
     <div class="min-w-0">
       <div class="flex items-center gap-2">
-        <%= render "live/mode_icon", mode: conversation.live_mode, css: "h-5 w-5 text-indigo-600 shrink-0" %>
+        <%= render "live/mode_icon", mode: LiveConversations.mode("text"), css: "h-5 w-5 text-indigo-600 shrink-0" %>
         <h1 class="text-lg sm:text-xl font-semibold text-gray-900 truncate"><%= conversation.display_title %></h1>
       </div>
       <p class="mt-1 text-xs text-gray-500 break-words">
         <code class="font-mono"><%= conversation.agent_root %></code> · <code class="font-mono break-all"><%= conversation.model %></code>
+        <% if conversation.active? && !conversation.style_for(conversation.mode) %>
+          · <%= conversation.live_mode.label.downcase %> style from Zimmer's default
+        <% end %>
         <% if conversation.instructions_source.present? %>
           · instructions from <code class="font-mono break-all"><%= conversation.instructions_source %></code>
         <% end %>
       </p>
     </div>
-    <%= render "live_conversations/status_badge", conversation: conversation %>
+    <div class="flex items-center gap-1.5 shrink-0">
+      <% if conversation.open? %>
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium <%= conversation.voice? ? 'bg-indigo-100 text-indigo-800' : 'bg-gray-100 text-gray-700' %>" data-live-mode="<%= conversation.mode %>">
+          <%= render "live/mode_icon", mode: conversation.live_mode, css: "h-3 w-3" %>
+          <%= conversation.voice? ? "Voice on" : "Typing" %>
+        </span>
+      <% end %>
+      <%= render "live_conversations/status_badge", conversation: conversation %>
+    </div>
   </div>
 
   <div class="mt-3 flex flex-wrap gap-1.5" data-live-servers>

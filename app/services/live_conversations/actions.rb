@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 module LiveConversations
-  # Everything a client does to a live conversation, behind both the web
-  # controller and the REST API (and so the iOS app), with one set of rules.
+  # Everything a client does to a live conversation, behind the web controller,
+  # the REST API (and so the iOS app) and the MCP tool, with one set of rules.
   class Actions
     # A refusal a client should show as-is.
     class Refused < StandardError
@@ -16,73 +16,119 @@ module LiveConversations
 
     MESSAGE_MAX_LENGTH = 8_000
 
-    def initialize(conversation)
+    # @param client_surface [String, nil] the TurnSource surface of the client
+    #   making this call. Each action a client takes on the conversation records it
+    #   as the one driving it now, so a delegation the live model makes next is
+    #   tagged with where the person actually is. nil leaves it alone.
+    # @param listening_modes [Boolean] whether the client asks for each reply
+    #   itself when the Listening setting is gated (Listening). One that does
+    #   not is always answered as `always`.
+    def initialize(conversation, client_surface: nil, listening_modes: false)
       @conversation = conversation
+      @client_surface = LiveConversation.normalize_client_surface(client_surface)
+      @listening_modes = listening_modes
     end
 
-    # A typed message (Live Mode). Answered by LiveConversationReplyJob — or,
-    # when it arrives while the conversation is still preparing, by the reply
+    # A typed message. Answered by LiveConversationReplyJob — or, when it
+    # arrives while the conversation is still preparing, by the reply
     # LiveConversationPrepareJob starts once it is active.
+    #
+    # Refused while voice is on: the Realtime call holds the conversation then,
+    # and a reply written behind its back is one the call never hears.
     def post_message(text)
       require_open!
-      raise Refused, "#{@conversation.live_mode.label} takes spoken turns, not typed messages." unless @conversation.text?
+      raise Refused, "Voice is on for this conversation. Turn it off to type." if @conversation.voice?
 
       text = text.to_s.strip
       raise Refused, "Message can't be blank." if text.empty?
       raise Refused, "Message is too long (maximum #{MESSAGE_MAX_LENGTH} characters)." if text.length > MESSAGE_MAX_LENGTH
 
+      note_client!
       turn = @conversation.turns.create!(role: "user", source: "typed", content: text)
       @conversation.touch_activity!
       LiveConversationReplyJob.perform_later(@conversation.id)
       turn
     end
 
-    # Live Voice: a short-lived secret the client opens its audio connection with.
+    # Typed ⇄ spoken, mid-conversation. Turning voice on is what lets a client
+    # mint a Realtime secret, whose instructions are built for speech; turning
+    # it off makes the next typed reply's instructions the typed ones.
+    def switch_mode(mode_key)
+      require_open!
+      raise Refused, "mode must be one of: #{LiveConversations.mode_keys.join(', ')}" unless LiveConversations.mode_keys.include?(mode_key.to_s)
+
+      was_voice = @conversation.voice?
+      note_client!
+      @conversation.switch_mode!(mode_key)
+      # A message typed before voice went on was never answered: the typed
+      # path answers it now.
+      LiveConversationReplyJob.perform_later(@conversation.id) if was_voice && @conversation.text? && @conversation.active? && TextReply.awaiting_reply?(@conversation)
+      @conversation
+    end
+
+    # Voice: a short-lived secret the client opens its audio connection with.
     def client_secret
       require_voice!
-      RealtimeSession.mint(@conversation)
+      RealtimeSession.mint(@conversation, listening_modes: @listening_modes)
     rescue OpenaiClient::NotConfiguredError => e
       raise Refused.new(e.message, status: :service_unavailable)
     rescue OpenaiClient::Error => e
       raise Refused.new("OpenAI: #{e.message}", status: :bad_gateway)
     end
 
-    # Live Voice: run a function call the model made, return what to send back.
+    # Voice: run a function call the model made, return what to send back.
+    #
+    # This and record_turn need an active conversation, not voice mode: a call
+    # already connected when voice is turned off elsewhere still finishes what
+    # it was saying, and the thread should still carry it.
     def tool_call(name:, arguments:, call_id:)
-      require_voice!
+      require_active!
       raise Refused, "name is required." if name.blank?
       raise Refused, "call_id is required." if call_id.blank?
 
+      note_client!
       bridge = ToolBridge.new(@conversation)
       result = bridge.execute(name, arguments, call_id: call_id)
       response = { output: result.output, error: result.error, tools_changed: result.tools_changed, turn_id: result.turn.id }
       response[:tools] = ToolBridge.new(@conversation.reload).realtime_tools if result.tools_changed
       # The live model changed its own settings: hand the client the
       # `session.update` that applies them to the call it is on.
-      response[:session] = RealtimeSession.new(@conversation.reload).session_update if result.session_changed
+      response[:session] = realtime_session(@conversation.reload).session_update if result.session_changed
       response
     end
 
-    # Live Voice: the `session.update` that brings an open call up to the current
+    # Voice: the `session.update` that brings an open call up to the current
     # settings and guidance — what a client sends after a person changed them on
-    # the settings page or in the app mid-call.
+    # the settings page or in the app mid-call. Active, not voice, for the same
+    # reason as tool_call below.
     def session_update
-      require_voice!
-      RealtimeSession.new(@conversation).session_update
+      require_active!
+      realtime_session(@conversation).session_update
     end
 
-    # Live Voice: a finished transcript line, so the thread on the page and in
-    # the API carries what was said.
+    # What record_turn answers: the line it kept (nil when it dropped one), and
+    # whether the call should answer it.
+    Heard = Data.define(:turn, :respond) do
+      def as_api_json = (turn ? turn.as_api_json : {}).merge(respond: respond, dropped: turn.nil?)
+    end
+
+    # Voice: a finished transcript line, so the thread on the page and in the
+    # API carries what was said. A user line is also where Listening decides
+    # whether the call answers it; in a gated mode a line it will not answer is
+    # dropped rather than kept.
     def record_turn(role:, content:)
-      require_voice!
+      require_active!
       raise Refused, "role must be user or assistant." unless %w[user assistant].include?(role.to_s)
 
       content = content.to_s.strip
       raise Refused, "content can't be blank." if content.empty?
 
+      respond = role.to_s != "user" || listening.respond?(content)
+      return Heard.new(turn: nil, respond: false) unless respond
+
       turn = @conversation.turns.create!(role: role.to_s, source: "spoken", content: content.truncate(MESSAGE_MAX_LENGTH))
       @conversation.touch_activity!
-      turn
+      Heard.new(turn: turn, respond: true)
     end
 
     def finish
@@ -91,6 +137,21 @@ module LiveConversations
     end
 
     private
+
+    def listening
+      setting = LiveSetting.current
+      Listening.new(@conversation, mode: Listening.mode(setting, capable: @listening_modes), setting: setting)
+    end
+
+    def realtime_session(conversation) = RealtimeSession.new(conversation, listening_modes: @listening_modes)
+
+    # A single column write, and not through callbacks: which client last spoke is
+    # bookkeeping for the turn-source note, not a change the page re-renders for.
+    def note_client!
+      return if @client_surface.nil? || @conversation.client_surface == @client_surface
+
+      @conversation.update_column(:client_surface, @client_surface)
+    end
 
     def require_open!
       return if @conversation.open?
@@ -111,7 +172,7 @@ module LiveConversations
 
     def require_voice!
       require_active!
-      raise Refused, "This is a #{@conversation.live_mode.label} conversation, not Live Voice." unless @conversation.voice?
+      raise Refused.new("Voice is off for this conversation. Turn it on first.", status: :conflict) unless @conversation.voice?
     end
   end
 end

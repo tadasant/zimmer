@@ -14,9 +14,8 @@ final class DecisionsUITests: XCTestCase {
         let app = launch()
         let row = app.descendants(matching: .any)["session.row.1038"]
         XCTAssertTrue(row.waitForExistence(timeout: timeout))
-        row.press(forDuration: 1.0)
-        let merge = app.buttons["Merge #1261"].firstMatch
-        XCTAssertTrue(merge.waitForExistence(timeout: timeout))
+        let merge = pressForMenu(app, row, offering: "Merge #1261")
+        XCTAssertTrue(merge.exists, "the menu offers Merge #1261")
         merge.tap()
 
         // The confirmation names the PR; the tap is the sign-off.

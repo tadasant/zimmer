@@ -296,8 +296,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   screen (the web's bubble), which opens the sheet. The sheet is the web bubble's panel: the
   words, photos and files from the paperclip, and under *Advanced* the harness, the model and
   *Run as spot* (wait for quota room, at the top of the spot queue), each picker leading with
-  the default rather than preselecting it. The sparkles in the bar open the sheet with the words
-  typed so far. A start from the sheet empties the bar too; closing the sheet without starting
+  the default rather than preselecting it. While the field has the keyboard, a *Cancel* beside it
+  empties it and puts the keyboard away, as the search box's *Cancel* does. The sparkles in the bar
+  open the sheet with the words typed so far. A start from the sheet empties the bar too; closing the sheet without starting
   (*Cancel*, or a swipe down) gives the bar the sheet's words, edits included. The sheet cannot
   be closed while a start is in flight, and a failed start keeps the words where they were
   typed. Opened from a session, the new one threads under it (*Thread under #id*, the bubble's
@@ -428,18 +429,30 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   page then says what it covers, and *All agent roots* widens it again. The burn rate by harness
   and model is on the web page only: `GET /api/v1/costs` does not return it. *Health* is the
   overall status and each section's; its operator actions stay in the browser.
-- **Talks to Zimmer, live** ([Live Mode and Live Voice](/sessions/live/)). The waveform button
-  on the session list opens Live: each mode with whether it can start (and why not), *Resume
-  conversation* for its open one, *New conversation*, and the recent ones. A conversation is one
-  thread: typed and spoken lines, each tool call as a line that opens to its output (`zimmer →
-  quick_router`), read again every two seconds. Live Mode has a composer. Live Voice has *Talk*:
-  the phone asks Zimmer for a short-lived OpenAI Realtime secret, opens a WebSocket to OpenAI with
+- **Talks to Zimmer, live** ([Live Mode](/sessions/live/)). The waveform button on the session
+  list lands in the current conversation with voice on and the call starting, or a new
+  conversation with voice on when none is open. Leaving the thread before that call connects hangs
+  it up. The microphone prompt appears the first time; if
+  it is refused, the call controls say so and *Type instead* still works. One tap on *Type
+  instead* turns voice off in the same thread. *New conversation* on the thread's toolbar, then
+  its confirmation, starts a fresh one in the thread's mode. Back leads to the Live list: whether
+  Live Mode can start (and why not), *Resume conversation* for the open one, *New conversation*,
+  and the recent ones. When Live Mode cannot start and nothing is open, the button stops on that
+  list, where the reason shows. A conversation is one thread: typed and spoken
+  lines, each tool call as a line that opens to its output (`zimmer → quick_router`), read again
+  every two seconds. Typed, it has a composer with *Enable voice* beside it. With voice on, it has
+  *Talk* and *Type instead*. Starting a call turns voice on for the conversation (`POST …/mode`),
+  then the phone asks Zimmer for a short-lived OpenAI Realtime secret, opens a WebSocket to OpenAI with
   it, and streams the microphone up and the reply down through one `AVAudioEngine` with voice
   processing on, so the model does not hear itself. Function calls go to Zimmer and back, and
   finished lines are recorded in the thread. What to do with each Realtime event is
   `RealtimeConductor` (ZimmerKit), the same sequencing as the web's call dock and unit-tested on
-  Linux. The call keeps going with the screen locked (`UIBackgroundModes` `audio`), and the car
-  shares it.
+  Linux. *Mute* sends silence rather than nothing: over a WebSocket OpenAI's turn detection hears
+  only what the phone sends, so a microphone that went quiet would leave the turn open, stuck in
+  Listening. An error during the call (an OpenAI `error` event, a response that ended `failed`, new
+  settings Zimmer could not send) shows under the call's status, and in CarPlay's status row, while
+  the call is still up, until a reply comes through.
+  The call keeps going with the screen locked (`UIBackgroundModes` `audio`), and the car shares it.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
@@ -584,6 +597,10 @@ The build signs in the `aps-environment` entitlement only when the `testflight` 
 
 ## CarPlay
 
+Every request the app makes carries `X-Zimmer-Client: ios/<version>`. A follow-up spoken in CarPlay's
+voice loop says `carplay/<version>` and `voice_dictation`, so the session receiving it is told it
+was dictated in the car ([turn sources](/sessions/turn-sources/)).
+
 Zimmer's CarPlay scene is a **voice-based conversational app**, Apple's category for apps whose
 primary way in is talking (`com.apple.developer.carplay-voice-based-conversation`, iOS 26.4+). None of
 the other categories fit: Zimmer isn't audio, navigation, messaging, or a driving task. When the
@@ -608,15 +625,18 @@ recognise its language on the device says so instead of asking for an answer, an
 Archive on the screen without Reply by voice. The audio session is held only while
 the conversation runs. The rules live in `DrivingFlow`, which the unit tests cover.
 
-**Live Voice in the car.** Under the list, a *Live Voice* section starts a *New conversation* or
-resumes the open one (*Resume conversation*). It then shows a call screen whose status row
+**Live Mode in the car, voice on.** Under the list, a *Live Mode* section starts a *New
+conversation* or resumes the open one (*Resume conversation*), turning voice on in it whether it was
+typed until then or not. It then shows a call screen whose status row
 follows the call (Connecting, Listening, Thinking, Speaking, Working on it) and has *Mute* and
 *Hang up*. It is the same call as the phone's (`LiveCall.shared`), so a call started at the desk
 carries on in the car. While a call runs, the section offers *Back to the call*.
 
-**The scene is inert until Apple grants the entitlement.** The entitlement lives in
-`App/Zimmer/CarPlay.entitlements`, which is wired into nothing, and `testflight` refuses to sign
-CarPlay in. This is the same arrangement as Motet's.
+Apple granted the entitlement as a managed capability, and it is enabled on the App ID. It lives
+in `App/Zimmer/CarPlay.entitlements`, which `testflight` signs into every TestFlight build. The
+archive is signed ad hoc so it carries the key into export. `check` fails if the archived app lacks
+it, and `upload` fails afterwards if export's summary shows it was dropped. To use it, the phone needs iOS 26.4 or later; add Zimmer under Settings → General
+→ CarPlay → your car → Customize if it isn't on the car's home screen.
 
 ## How it is built and shipped
 
@@ -624,10 +644,10 @@ CarPlay in. This is the same arrangement as Motet's.
 | --- | --- | --- |
 | `ios/bin/ci-swift` | `ios_swift_linux` (self-hosted Linux) and `ios` (macOS) | The `ZimmerKit` logic: sign-in protocol, token refresh, edge-refusal handling, list ordering |
 | `ios/bin/build-app` | By hand; in `ios`, `ios/bin/ui-test` builds the same app (Staging is Debug plus its environment) for the simulator it runs on | The app compiles and links for the simulator |
-| `ios/bin/testflight check` | `ios` | An unsigned Release archive is uploadable in shape (bundle keys, icon, privacy manifest, no entitlements) |
+| `ios/bin/testflight check` | `ios` | An ad hoc signed Release archive is uploadable in shape (bundle keys, icon, privacy manifest) and its signature carries the admitted entitlements (CarPlay) |
 | `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and starts a session from a sentence in the Quick Router bar and opens it. Every class in a UI test file the pull request changed runs too |
 | `ios/bin/ui-test` | `ios-ui-tests.yml`, on push to `main` and on dispatch | Every UI test, and a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>` artifact (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
-| `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, and waits for processing |
+| `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, checks export signed the entitlements in, and waits for processing |
 
 The full UI suite does not gate pull requests. It is some 70 tests driven one at a time plus some 70
 photographs, up to an hour on a loaded runner, which is too long to gate every iOS pull request on. A UI test that
