@@ -41,7 +41,7 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
 | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
 | `/api/v1/notifications` | list, show, badge, mark read, dismiss — not `push` |
-| `/api/v1/triggers` | list, show, toggle, invoke — not create, edit or delete |
+| `/api/v1/triggers` | list, show, toggle, toggle the two re-use switches, invoke — not create, edit or delete |
 | `GET /api/v1/costs`, `GET /api/v1/costs/records` | read — not `backfill` |
 | `GET /api/v1/health` | read — none of its operator actions |
 | `GET /api/v1/sessions/:id/elicitations`, `PATCH /api/v1/elicitations/:id/respond` | list a session's open prompts; answer one only on a grant that acts as you (403 otherwise) — not create or poll |
@@ -944,12 +944,20 @@ There is no REST route for managing them.
 
 `GET /triggers` (filters `condition_type`, `status`) · `GET /triggers/:id` (+ `recent_sessions`,
 limit 10) · `POST` · `PATCH` · `DELETE` · `POST /triggers/:id/toggle` ·
+`POST /triggers/:id/toggle_enqueue_messages` · `POST /triggers/:id/toggle_resuscitate_archived` ·
 `POST /triggers/:id/invoke` · `GET /triggers/channels` (Slack; 503 when Slack is unconfigured) ·
 `GET /triggers/whatsapp_chats` (the chats the WhatsApp bridge's account is in, with the `chat_id` a
 [`whatsapp` condition](/sessions/triggers/#whatsapp) takes; 503 when `WHATSAPP_MCP_URL` is unset or
 the bridge cannot be reached).
 
 Conditions are nested via `trigger_conditions_attributes`.
+
+`toggle_enqueue_messages` and `toggle_resuscitate_archived` flip the two switches on the trigger
+page and return `{trigger}`. Both flags act only on the session a trigger re-uses, so while
+`reuse_session` is off the flip is refused with 422 (`error: "Validation failed"`, `message: "Enqueue
+messages can only be enabled when re-use session is enabled"`, and the same for "Resuscitate
+archived"), carrying the unchanged `trigger`. To set either flag outright, or together with
+`reuse_session`, `PATCH` the trigger.
 
 A trigger payload carries **`unresolved_catalog_references`**, read-only: which of the four artifact
 lists name something the catalog can no longer resolve, and when each name was first seen that way
