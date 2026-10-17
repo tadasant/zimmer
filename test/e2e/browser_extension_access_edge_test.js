@@ -18,8 +18,10 @@
 //
 // What it proves: a browser that has signed in to the edge sends the Quick
 // Router message through it, one that has not is not told it was sent, a
-// service-token-only edge is not answered with "sign in" (#1269's advice, which
-// cannot work there), and a wrong key is still blamed on the key.
+// service-token-only edge is not answered with "sign in", which cannot get
+// through it, and a wrong key is still blamed on the key. The edge is plain
+// http, so the redirect's https wording ("sign in") is the one branch this
+// does not reach.
 const { chromium } = require('playwright');
 const fs = require('fs');
 const http = require('http');
@@ -158,7 +160,7 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
     await send('service tokens only');
     await host.locator('.error').waitFor({ timeout: 30000 });
     const serviceOnly = await host.locator('.error').innerText();
-    assert(serviceOnly.includes('service tokens only') && serviceOnly.includes('will not help') && serviceOnly.includes(BASE_URL), `the composer says signing in will not help (${serviceOnly})`);
+    assert(serviceOnly.includes('service tokens only') && serviceOnly.includes('will not help') && serviceOnly.includes('/api'), `the composer says signing in will not help (${serviceOnly})`);
     assert(!serviceOnly.includes('Quick Router key'), 'it does not blame the key');
     assert((await host.locator('textarea').inputValue()) === 'service tokens only', 'the text is kept for a retry');
     assert(received.length === 1, 'nothing more reached the ingest');

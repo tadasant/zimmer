@@ -121,9 +121,10 @@ async function submit(payload) {
 // answers a request without a valid sign-in by redirecting it to the login page
 // (`redirect: "manual"` makes that an opaque response with status 0), and a
 // signed-in account its policy does not admit with a 403. A 401 comes from an
-// app that admits service tokens only and never offers a login, so it refuses a
-// signed-in browser too: signing in cannot get the request through, only a URL
-// whose access proxy admits a browser sign-in on /api can. A redirect on an
+// app that admits service tokens only and answers with a 401 instead of a login
+// (`service_auth_401_redirect`), so it refuses a signed-in browser too: signing
+// in cannot get the request through, only a URL whose access proxy admits a
+// browser sign-in on /api can. A redirect on an
 // http URL is more likely the server sending it to https.
 function accessProxyRefusal(response, baseUrl) {
   if (response.type === "opaqueredirect") {
@@ -134,7 +135,7 @@ function accessProxyRefusal(response, baseUrl) {
   }
   if (!response.headers.has("cf-access-domain")) return null;
   if (response.status === 401) {
-    return `The access proxy in front of ${baseUrl} stopped it before Zimmer saw it. On Zimmer's API it admits service tokens only, not a browser's sign-in, so signing in will not help. In the extension's options, use a Zimmer URL whose access proxy lets a signed-in browser reach /api.`;
+    return `The access proxy in front of Zimmer stopped it before Zimmer saw it. It most likely admits service tokens only on Zimmer's API, so signing in will not help. Set the URL in the extension's options to a host whose access proxy admits a browser sign-in on /api.`;
   }
   if (response.status === 403) {
     return `The access proxy in front of Zimmer refused the account this browser is signed in with. Open ${baseUrl} in a tab and sign in with the account the deployment admits.`;
