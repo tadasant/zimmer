@@ -365,6 +365,8 @@ if [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot health -ZimmerFixture -ZimmerFixtureHealth
   shoot health-degraded -ZimmerFixture -ZimmerFixtureHealth -ZimmerFixtureDegraded
   shoot sessions-degraded -ZimmerFixture -ZimmerFixtureDegraded
+  # The CLIs page: the attention banner, a tool signed out, one not installed.
+  shoot clis -ZimmerFixture -ZimmerFixtureClis
   # Dark mode: the app draws its own (on the PWA manifest's navy), so every main screen is
   # photographed in it too.
   xcrun simctl ui "$udid" appearance dark >/dev/null 2>&1 || true
@@ -398,6 +400,7 @@ if [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot trigger-run-now-dark -ZimmerFixture -ZimmerFixtureTrigger 7 -ZimmerFixtureRunNow
   shoot costs-dark -ZimmerFixture -ZimmerFixtureCosts
   shoot health-degraded-dark -ZimmerFixture -ZimmerFixtureHealth -ZimmerFixtureDegraded
+  shoot clis-dark -ZimmerFixture -ZimmerFixtureClis
   xcrun simctl ui "$udid" appearance light >/dev/null 2>&1 || true
 fi
 

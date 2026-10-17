@@ -404,7 +404,7 @@ public struct CostSnapshot: Hashable, Sendable {
         }
     }
 
-    private static func coverage(_ json: JSONObject) -> Coverage {
+    static func coverage(_ json: JSONObject) -> Coverage {
         Coverage(status: json.string("status") ?? "never_run", complete: json.bool("complete") ?? false, progressPct: json.int("progress_pct"),
                  directoriesDone: json.int("directories_done"), directoriesTotal: json.int("directories_total"), filesScanned: json.int("files_scanned"),
                  finishedAt: json.date("finished_at"), lastRanAt: json.date("last_ran_at"), lastError: json.string("last_error"),

@@ -325,7 +325,7 @@ private struct TriggerRow: View {
     }
 }
 
-/// Costs and Health, the web UI's other top-navigation pages, plus Settings.
+/// Costs, Health and CLIs, the web UI's other top-navigation pages, plus Settings.
 struct MoreView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showingSettings = false
@@ -334,14 +334,19 @@ struct MoreView: View {
     /// Settings opened by a fixture launch, at the section it asked for.
     @State private var openedSettings: SettingsOpening?
     @State private var openedHealth = false
+    @State private var openedClis = false
 
     var body: some View {
         List {
             Section {
                 NavigationLink { CostsView() } label: { row("Costs", "dollarsign.circle", "Coverage, spend by day, root, feature, model and session, burn rates") }
                     .accessibilityIdentifier("more.costs")
-                NavigationLink { HealthView() } label: { row("Health", "heart.text.square", "Every section of the health page, read-only") }
+                NavigationLink { HealthView() } label: { row("Health", "heart.text.square", "Every section of the health page, and its operator actions") }
                     .accessibilityIdentifier("more.health")
+                NavigationLink { CliToolsView() } label: {
+                    row("CLIs", "terminal", "Which command-line tools are installed and signed in", badge: app.cliIssues)
+                }
+                .accessibilityIdentifier("more.clis")
             }
             .themeRows()
             Section {
@@ -357,6 +362,8 @@ struct MoreView: View {
         .sheet(item: $openedSettings) { opening in SettingsView(opensAt: opening.section, opensAccount: opening.account) }
         .navigationDestination(item: $openedCosts) { scope in CostsView(scope: scope) }
         .navigationDestination(isPresented: $openedHealth) { HealthView() }
+        .navigationDestination(isPresented: $openedClis) { CliToolsView() }
+        .task { await app.refreshCliIssues() }
         .onChange(of: app.fixtureCosts, initial: true) { _, scope in
             guard let scope else { return }
             openedCosts = scope
@@ -372,10 +379,16 @@ struct MoreView: View {
             openedHealth = true
             app.fixtureHealth = false
         }
+        .onChange(of: app.fixtureClis, initial: true) { _, open in
+            guard open else { return }
+            openedClis = true
+            app.fixtureClis = false
+        }
     }
 
-    /// A row with a glyph, a name and a line of what is behind it.
-    private func row(_ title: String, _ symbol: String, _ detail: String) -> some View {
+    /// A row with a glyph, a name and a line of what is behind it; `badge` is the web board's
+    /// red count on its CLIs button, the tools that need attention.
+    private func row(_ title: String, _ symbol: String, _ detail: String, badge: Int = 0) -> some View {
         HStack(spacing: 12) {
             Image(systemName: symbol)
                 .font(.system(size: 17, weight: .medium))
@@ -384,6 +397,17 @@ struct MoreView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.system(.subheadline, weight: .medium)).foregroundStyle(Theme.ink)
                 Text(detail).font(.caption).foregroundStyle(Theme.inkSoft)
+            }
+            if badge > 0 {
+                Spacer()
+                Text(verbatim: "\(badge)")
+                    .font(.caption2.weight(.bold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2.5)
+                    .background(Theme.danger, in: Capsule())
+                    .accessibilityLabel("\(badge) CLI tools need attention")
+                    .accessibilityIdentifier("more.clis.badge")
             }
         }
         .padding(.vertical, 2)
