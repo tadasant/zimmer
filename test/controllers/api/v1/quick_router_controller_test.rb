@@ -84,6 +84,14 @@ class Api::V1::QuickRouterControllerTest < ActionDispatch::IntegrationTest
     assert_equal %w[session_id session_url], JSON.parse(response.body).keys.sort
   end
 
+  test "no session_url while the base URL is the unconfigured placeholder" do
+    AppUrl.stubs(:base_url).returns(AppUrl::PLACEHOLDER_PROD_BASE_URL)
+    post api_v1_quick_router_path, params: payload, headers: @headers, as: :json
+    assert_response :created
+
+    assert_equal({ "session_id" => Session.order(:id).last.id }, JSON.parse(response.body))
+  end
+
   test "the human's words are recorded as a HumanMessage, without the page block" do
     assert_difference("HumanMessage.count", 1) do
       post api_v1_quick_router_path, params: payload, headers: @headers, as: :json
