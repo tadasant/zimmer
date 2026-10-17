@@ -267,20 +267,24 @@ final class OperationsUITests: XCTestCase {
         for step in 0..<40 {
             if onScreen() { return true }
             let down = (step < 20) == (searching == .down)
-            // The start alternates between two heights, a quarter screen apart: a control
-            // that takes a drag for itself — the spend-by-day chart, whose selection follows
-            // the finger — would otherwise take every step, and the page would never move.
-            // The far end is a fifth of the way down, under the navigation bar and the Staging
-            // banner (a press on the bar moves nothing, and an upward walk starts there), so a
-            // drag is most of a screen: a step is seconds whatever its length, and the Costs
-            // page is a dozen screens.
+            // Where a drag starts alternates between two heights, a quarter screen apart, and
+            // where it ends does not: a control that takes a drag for itself — the spend-by-day
+            // chart, whose selection follows the finger — would otherwise take every step, and
+            // the page would never move. That holds whichever way the walk goes: an upward walk
+            // that always started a fifth of the way down, with the chart parked there, selected
+            // a bar forty times over and never scrolled. The chart is shorter than the quarter
+            // screen between the two starts, so it can take at most every other step.
+            // The top of a drag is at least a fifth of the way down, under the navigation bar
+            // and the Staging banner (a press on the bar moves nothing), so a drag is most of a
+            // screen and never under two fifths of one: a step is seconds whatever its length,
+            // and the Costs page is a dozen screens.
             // No section can pass the screen unseen — that would take more than a screen of
             // travel — and the hold at the end keeps it from flinging. And left of centre,
             // clear of the Quick Router button at the bottom right.
-            let near = step.isMultiple(of: 2) ? 0.88 : 0.63
-            let far = 0.2
-            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: down ? near : far))
-            let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: down ? far : near))
+            let low = 0.88, high = 0.2
+            let start = down ? (step.isMultiple(of: 2) ? low : 0.63) : (step.isMultiple(of: 2) ? high : 0.45)
+            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: start))
+            let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: down ? high : low))
             from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
         }
         return onScreen()
