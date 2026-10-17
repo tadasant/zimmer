@@ -112,6 +112,9 @@ class EnqueuedMessageProcessorService
         # This ensures we have the content even if something goes wrong later
         message_content = message.content
         message_position = message.position
+        # The message's turn-source note goes on the text the agent receives; the
+        # row keeps the caller's words as they wrote them.
+        message_content, source_updates = session.tag_turn(message_content, message.turn_source)
         # Capture attachments before deletion. Both columns default to [].
         message_images = Sessions::AttachmentDescriptors.for_a_job(
           message.images, keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
@@ -275,6 +278,7 @@ class EnqueuedMessageProcessorService
         # `message_content` has just been destroyed, so it would be gone. See
         # #displace_pending_follow_up_prompt.
         displace_pending_follow_up_prompt(message_content)
+        session.merge_metadata!(source_updates) if source_updates.any?
 
         # Enqueue job to continue the session with the captured message content.
         # Attachments stored on the EnqueuedMessage ride along so queued messages
@@ -357,10 +361,10 @@ class EnqueuedMessageProcessorService
 
     ActiveRecord::Base.transaction(requires_new: true) do
       if held != message_content && !AutomatedPrompts.nudge?(held) &&
-         !session.enqueued_messages.pending.exists?(content: held)
+         !session.enqueued_messages.pending.exists?(content: EnqueuedMessage.contents_matching(held))
         position = (session.enqueued_messages.maximum(:position) || 0) + 1
         session.enqueued_messages.create!(
-          content: held,
+          **EnqueuedMessage.attributes_for_prompt(held),
           position: position,
           status: "pending",
           origin: EnqueuedMessage.origin_for_prompt(held)

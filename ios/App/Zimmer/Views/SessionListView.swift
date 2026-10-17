@@ -130,6 +130,15 @@ struct SessionListView: View {
                     }
                 }
             }
+            if !model.systemBanners.isEmpty {
+                Section {
+                    // Where the web banner's Manage link goes: Health, under More.
+                    SystemBannerRows(banners: model.systemBanners) { model.fixtureHealth = true; model.tab = .more }
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            }
             if let error = model.error {
                 Section {
                     ErrorBanner(error: error)
@@ -325,8 +334,8 @@ struct SessionListView: View {
             }
             .accessibilityLabel("View options")
             .accessibilityIdentifier("board.menu")
-            // Live Mode: one continuous conversation with Zimmer, typed or spoken.
-            Button { model.showingLive = true } label: { Image(systemName: "waveform") }
+            // Live Mode: one continuous conversation with Zimmer. Lands in it with voice on.
+            Button { model.openLive() } label: { Image(systemName: "waveform") }
                 .accessibilityLabel("Live")
                 .accessibilityIdentifier("live.open")
             // The full form. The Quick Router is the bar at the foot of the screen.

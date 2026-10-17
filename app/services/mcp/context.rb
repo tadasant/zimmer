@@ -60,7 +60,7 @@ module Mcp
     #   delivers into a session a HumanMessage (see #capture_assistant_message).
     # @param oauth_grant [OauthServer::Grant, nil] the grant itself, when the caller already loaded it
     def initialize(tool_groups: nil, allowed_agent_roots: nil, base_url: nil, caller_fingerprint: nil,
-                   session_id: nil, oauth_grant_id: nil, oauth_grant: nil)
+                   session_id: nil, oauth_grant_id: nil, oauth_grant: nil, turn_source: nil)
       @tool_groups = Registry.parse_groups(tool_groups)
       @allowed_agent_roots = parse_list(allowed_agent_roots).presence
       @base_url = base_url.presence || SelfSessionInjector.new.self_target[:base_url]
@@ -68,6 +68,24 @@ module Mcp
       @self_session_id = normalize_session_id(session_id)
       @oauth_grant_id = oauth_grant&.id || oauth_grant_id
       @oauth_grant = oauth_grant
+      @turn_source = turn_source
+    end
+
+    # Where the words this connection delivers into a session came from, for the
+    # turn-source note (TurnSource). A caller that knows better passes it — Live
+    # Mode's tool bridge says which conversation and mode the delegation came out
+    # of. Otherwise it follows the credential: a connection stamped with the
+    # session it was written for is that agent session, and anything else — an
+    # OAuth connector, an unstamped API key — is an MCP client whose modality
+    # Zimmer cannot see. A style hint only; it grants and scopes nothing.
+    #
+    # @return [TurnSource]
+    def turn_source
+      @turn_source ||= if !oauth? && @self_session_id
+        TurnSource.agent
+      else
+        TurnSource.new(surface: "mcp")
+      end
     end
 
     def tools

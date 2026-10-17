@@ -67,7 +67,8 @@ class FollowUpSurvivesRecoveryResumeTest < ActiveJob::TestCase
       tool.call("action" => "follow_up", "session_id" => @session.id, "prompt" => PROMPT)
     end
 
-    assert_equal PROMPT, @session.reload.metadata["pending_follow_up_prompt"],
+    # As delivered: the caller's words, then the turn-source note.
+    assert_equal TurnSource.new(surface: "mcp").annotate(PROMPT), @session.reload.metadata["pending_follow_up_prompt"],
       "the prompt must exist somewhere a resume path can read it, not only as a job argument"
     assert_equal "waiting", @session.status,
       "a reader who sees the marker must also see the state the resume left behind — " \
