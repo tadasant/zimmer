@@ -47,8 +47,9 @@ itself refused it:
 - **An Access 403** means the browser is signed in with an account the policy does not admit. Sign in
   with the right account.
 
-The toast links to the session on the web UI URL Zimmer reports (its configured base URL), not on
-the URL the extension sends to, because that can be a host that serves the API only.
+The toast links to the session on the web UI URL Zimmer reports (`ZIMMER_PROD_BASE_URL`), not on
+the URL the extension sends to, because that can be a host that serves the API only. When Zimmer
+reports none, which happens while that base URL is unset, the link uses the URL the extension sends to.
 
 Nothing needs provisioning on the Zimmer side. The key is minted on a page that already exists,
 the endpoint ships with the deploy, and there is no environment variable to set.
