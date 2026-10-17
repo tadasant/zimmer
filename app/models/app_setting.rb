@@ -170,7 +170,8 @@ class AppSetting < ApplicationRecord
   # The MCP Apps pair is here for the opposite reason — no MCP tool can write it,
   # deliberately (McpApps::Policy) — but it is the one Settings change that opts a
   # third party into running HTML in an operator's browser, so "when did this open,
-  # and from where" has to be answerable. Only `/settings` ever moves it.
+  # and from where" has to be answerable. Only a person moves it: `/settings`, or
+  # the iOS app's sign-in acting as you through `PATCH /api/v1/app_settings`.
   SESSION_SETTING_ATTRIBUTES = %w[
     default_runtime
     default_model

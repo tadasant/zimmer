@@ -41,12 +41,13 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
 | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
 | `/api/v1/notifications` | list, show, badge, mark read, dismiss — not `push` |
-| `/api/v1/triggers` | list, show, toggle, invoke — not create, edit or delete |
+| `/api/v1/triggers` | list, show, toggle, toggle the two re-use switches, invoke — not create, edit or delete |
 | `GET /api/v1/costs`, `GET /api/v1/costs/records` | read — not `backfill` |
 | `GET /api/v1/health` | read — none of its operator actions |
 | `/api/v1/inference` and its routes | read the Inference page (an in-flight login's link and code only on a grant that acts as you); every write and the login poll — refresh, activate, delete or add an account, drive a CLI login, change the spot, top-up or genesis policy — only on a grant that acts as you (403 otherwise, and for an API key) |
 | `GET /api/v1/sessions/:id/elicitations`, `PATCH /api/v1/elicitations/:id/respond` | list a session's open prompts; answer one only on a grant that acts as you (403 otherwise) — not create or poll |
 | `GET /api/v1/configs`, `/mcp_servers`, `/skills`, `/hooks`, `/plugins`, `/model_catalog_entries` | read the catalogs |
+| `/api/v1/app_settings` | read, and write the session defaults and the experimental toggles; the MCP Apps switch and its allowlist only on a grant that acts as you (403 otherwise) |
 
 A token issued to any other OAuth client, the app's token on an action its controller does not name,
 or on any other controller, gets the same 401 as a bad key. The
@@ -945,12 +946,20 @@ There is no REST route for managing them.
 
 `GET /triggers` (filters `condition_type`, `status`) · `GET /triggers/:id` (+ `recent_sessions`,
 limit 10) · `POST` · `PATCH` · `DELETE` · `POST /triggers/:id/toggle` ·
+`POST /triggers/:id/toggle_enqueue_messages` · `POST /triggers/:id/toggle_resuscitate_archived` ·
 `POST /triggers/:id/invoke` · `GET /triggers/channels` (Slack; 503 when Slack is unconfigured) ·
 `GET /triggers/whatsapp_chats` (the chats the WhatsApp bridge's account is in, with the `chat_id` a
 [`whatsapp` condition](/sessions/triggers/#whatsapp) takes; 503 when `WHATSAPP_MCP_URL` is unset or
 the bridge cannot be reached).
 
 Conditions are nested via `trigger_conditions_attributes`.
+
+`toggle_enqueue_messages` and `toggle_resuscitate_archived` flip the two switches on the trigger
+page and return `{trigger}`. Both flags act only on the session a trigger re-uses, so while
+`reuse_session` is off the flip is refused with 422 (`error: "Validation failed"`, `message: "Enqueue
+messages can only be enabled when re-use session is enabled"`, and the same for "Resuscitate
+archived"), carrying the unchanged `trigger`. To set either flag outright, or together with
+`reuse_session`, `PATCH` the trigger.
 
 A trigger payload carries **`unresolved_catalog_references`**, read-only: which of the four artifact
 lists name something the catalog can no longer resolve, and when each name was first seen that way
@@ -1419,6 +1428,45 @@ script or agent resolve the request, which unblocks the owning session (`needs_i
 It answers 200 with the poll response — `action`, `content`, and a `_meta` carrying
 `com.pulsemcp/request-id` and `com.pulsemcp/responded-at` — or 404 when nothing matches the
 identifier, 422 when the elicitation is already resolved or `action_type` is not one of the three.
+
+## App settings
+
+The Settings page's row: the global session defaults, every Settings → Experimental toggle, and
+the MCP Apps switch with its per-server allowlist. The page's forms, the `get_app_settings` and
+`action_app_settings` MCP tools and these two endpoints all write the same `AppSetting`; a change
+applies to sessions created or spawned from then on. The spot gate and the backlog top-up share the
+row but are the fleet's quota posture, read with `get_spot_policy`.
+
+| Endpoint | |
+| --- | --- |
+| `GET /app_settings` | `{app_settings: {session_defaults, runtimes, experimental, mcp_apps}}` |
+| `PATCH /app_settings` | Change any subset; only the keys sent are touched. Answers as `GET` does, after the save |
+
+`session_defaults` is `{runtime, model, runtime_overridden, model_overridden, built_in: {runtime,
+model}}`: the effective pair, whether each half is an operator override, and the shipped pair an
+empty value falls back to. `runtimes` lists each runtime with `label`, `default_model` and its
+`models`. `experimental` is one `{key, title, description, enabled, default_enabled, extension}` per
+toggle, in the page's order. `mcp_apps` is `{enabled, allowed_servers, eligible_servers: [{name,
+title}]}`; the allowlist can only name an eligible server, and anything else sent is dropped rather
+than refused, as the page drops it.
+
+The `PATCH` body is `{app_settings: {default_runtime, default_model, experimental: {"<key>": bool},
+mcp_apps_enabled, mcp_apps_allowed_servers: [names]}}`, every key optional. An empty
+`default_runtime` or `default_model` clears that override; a `null` leaves it alone. A runtime +
+model pair the catalog does not allow is a 422 (`error: "Settings not saved"`), as is an
+`experimental` that is not an object, or an experimental key the registry does not list
+(`error: "Unknown experimental setting"`); nothing changes on any of them.
+
+`mcp_apps_enabled` and `mcp_apps_allowed_servers` are a person's to change, as on the page: the
+iOS app's token on a grant that acts as you. An API key, or a relay-only grant, gets a 403 before
+anything is read. The audit line names the writer: `ios-app:/settings` or `api:/app_settings`,
+beside the page's `web:/settings`.
+
+```bash
+curl -X PATCH "$BASE_URL/app_settings" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"app_settings": {"experimental": {"mcp_tool_search": false}}}'
+```
 
 ## Models
 
