@@ -5,11 +5,13 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::TriggersController < Api::BaseController
-  # Zimmer's iOS app: list, turn on or off, and invoke. Creating and editing a trigger stays
-  # in the browser.
-  accepts_native_app_tokens only: %i[index show toggle invoke]
+  # Zimmer's iOS app: everything the triggers pages offer a signed-in person — list,
+  # read, create, edit, delete, turn on or off, flip the trigger page's two re-use
+  # switches, invoke, and the Slack channel and WhatsApp chat pickers the form fetches.
+  accepts_native_app_tokens only: %i[index show create update destroy toggle toggle_enqueue_messages toggle_resuscitate_archived invoke channels whatsapp_chats]
 
-  before_action :set_trigger, only: [ :show, :update, :destroy, :toggle, :invoke ]
+  before_action :set_trigger, only: [ :show, :update, :destroy, :toggle, :toggle_enqueue_messages,
+                                      :toggle_resuscitate_archived, :invoke ]
 
   # The AIR-catalog lists a trigger stamps onto the sessions it spawns. Every id
   # is validated against the catalog by the Trigger model, so an unknown one
@@ -172,6 +174,21 @@ class Api::V1::TriggersController < Api::BaseController
     render json: { trigger: trigger_json(@trigger) }
   end
 
+  # POST /api/v1/triggers/:id/toggle_enqueue_messages
+  # Flip enqueue_messages — the trigger page's "Enqueue messages" switch. Refused
+  # with 422 while reuse_session is off, because the flag only acts on the
+  # session a trigger re-uses.
+  def toggle_enqueue_messages
+    render_reuse_session_flag_toggle(@trigger.toggle_enqueue_messages)
+  end
+
+  # POST /api/v1/triggers/:id/toggle_resuscitate_archived
+  # Flip resuscitate_archived — the trigger page's "Resuscitate archived" switch.
+  # Same 422 while reuse_session is off.
+  def toggle_resuscitate_archived
+    render_reuse_session_flag_toggle(@trigger.toggle_resuscitate_archived)
+  end
+
   # POST /api/v1/triggers/:id/invoke
   # Fire a trigger by hand, right now, without waiting for one of its conditions
   # to match. The same thing the Invoke button on the trigger page does: the
@@ -284,6 +301,15 @@ class Api::V1::TriggersController < Api::BaseController
 
   private
 
+  def render_reuse_session_flag_toggle(toggled)
+    if toggled
+      render json: { trigger: trigger_json(@trigger) }
+    else
+      render_api_error("Validation failed", @trigger.errors.full_messages, status: :unprocessable_entity,
+                       trigger: trigger_json(@trigger))
+    end
+  end
+
   def set_trigger
     @trigger = Trigger.includes(:trigger_conditions).find(params[:id])
   end
@@ -333,7 +359,7 @@ class Api::V1::TriggersController < Api::BaseController
 
   # `catalog_root_names` comes from the caller wherever one response answers for
   # more than one read of it — #index has a row per trigger, #create and #update
-  # pair this with `warnings`. Omitted (#show, #toggle, #invoke) the default
+  # pair this with `warnings`. Omitted (#show, the toggles, #invoke) the default
   # reads the catalog once, here, which is the same cost.
   def trigger_json(trigger, catalog_root_names: Trigger.catalog_agent_root_names)
     {

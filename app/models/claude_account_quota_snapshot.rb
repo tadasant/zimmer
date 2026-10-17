@@ -14,7 +14,8 @@
 #   what QuotaResetCheckerJob restores a Codex account on
 #
 # The trigger field records why the snapshot was taken: "rotation", "bootstrap",
-# "manual_refresh", "page_view", "scheduled", "usage_sample", or "usage_limit".
+# "manual_refresh", "page_view", "scheduled", "usage_sample", "usage_limit", or
+# "rebalance" (AccountRebalanceService re-reading its candidate before a switch).
 #
 # A snapshot outlives the account it was taken for: deleting a ClaudeAccount
 # nullifies `claude_account_id` rather than destroying the reading, so the

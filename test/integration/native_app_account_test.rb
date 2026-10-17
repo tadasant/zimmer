@@ -158,7 +158,7 @@ class NativeAppAccountTest < ActionDispatch::IntegrationTest
     assert_equal false, body["signed_out"]
     assert_equal "revoked", body.dig("oauth_grant", "status")
     assert other.reload.revoked?
-    assert_match(/the iOS app \(#{Regexp.escape(EMAIL)}\)/, other.revocation_reason)
+    assert_match(/#{Regexp.escape(EMAIL)} via the iOS app/, other.revocation_reason)
 
     patch "/api/v1/oauth_grants/#{other.id}", params: { privilege: OauthServer::RELAY_ONLY }, headers: headers
     assert_response :unprocessable_entity, "a revoked connection has to be approved again"

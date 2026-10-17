@@ -10,6 +10,11 @@ require "test_helper"
 # The list of endpoints is read from the app's own source: every `"/api/v1/..."`
 # string literal under ios/Sources, with Swift interpolations filled in. A new
 # call in a later PR is covered the moment it is written.
+#
+# Only that direction is enforced. An action open to the token that the app
+# does not call yet is allowed — the allowlist follows what the web offers a
+# signed-in person, and a screen may come after its route — so this test says
+# nothing about an action being open "too early".
 class NativeAppApiCoverageTest < ActiveSupport::TestCase
   SOURCES = Rails.root.join("ios/Sources")
   METHODS = %w[GET POST PATCH PUT DELETE].freeze
@@ -53,13 +58,18 @@ class NativeAppApiCoverageTest < ActiveSupport::TestCase
 
   test "a controller the app does not call stays closed to its token" do
     refute Api::V1::ExternalAppTriggersController.native_app_tokens_accepted
-    refute Api::V1::GateDecisionsController.native_app_tokens_accepted
+    refute Api::V1::TranscriptArchivesController.native_app_tokens_accepted
   end
 
   test "an action its controller did not name stays closed to the token" do
     refute Api::V1::LogsController.native_app_tokens_accepted_for?(:create)
-    refute Api::V1::TriggersController.native_app_tokens_accepted_for?(:destroy)
-    refute Api::V1::HealthController.native_app_tokens_accepted_for?(:enter_queue_recovery_mode)
+    assert Api::V1::TriggersController.native_app_tokens_accepted_for?(:toggle_enqueue_messages)
+    assert Api::V1::TriggersController.native_app_tokens_accepted_for?(:toggle_resuscitate_archived)
+    refute Api::V1::NotificationsController.native_app_tokens_accepted_for?(:push)
+    assert Api::V1::CostsController.native_app_tokens_accepted_for?(:backfill), "the Costs page's Sweep now"
+    refute Api::V1::GateDecisionsController.native_app_tokens_accepted_for?(:create)
+    refute Api::V1::WorkBacklogItemsController.native_app_tokens_accepted_for?(:pull)
     assert Api::V1::SessionsController.native_app_tokens_accepted_for?(:create), "no `only:` opens every action"
+    assert Api::V1::HealthController.native_app_tokens_accepted_for?(:enter_queue_recovery_mode), "no `only:` opens every action"
   end
 end
