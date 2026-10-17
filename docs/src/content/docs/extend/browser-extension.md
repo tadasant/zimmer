@@ -29,13 +29,27 @@ in the repo — Chrome, Manifest V3, no build step — and is loaded unpacked. (
 
 The browser has to reach Zimmer. On a tailnet-only deployment that means a browser on the tailnet,
 using the tailnet address as the URL. On a deployment behind the [Cloudflare
-edge](/operate/deploying/#optional-cloudflare-edge), as Tadas's is, the URL is the public domain, and
-Cloudflare Access checks every request before Zimmer sees it, the extension's included. The extension
-sends the browser's own cookies, so it passes Access when this browser is signed in at that URL: open
-Zimmer in a tab once and sign in. When the Access sign-in lapses, Access refuses the message itself.
-The composer then tells you to sign in at the Zimmer URL. It does not blame the key, because Zimmer
-never saw the request. If the browser is signed in with an account the Access policy does not admit,
-Access answers 403, and the composer tells you to sign in with the right account.
+edge](/operate/deploying/#optional-cloudflare-edge), as Tadas's is, Cloudflare Access checks every
+request before Zimmer sees it, the extension's included, and the URL is the one host whose Access app
+lets a signed-in browser reach `/api`. On Tadas's deployment that is the iOS app's origin,
+`https://zimmer-app.tadasant.com`, not `https://zimmer.tadasant.com`: on the public domain `/api`
+admits the laptop's service token only, so a browser is refused there however it is signed in.
+
+The extension sends the browser's own cookies, so it passes Access when this browser is signed in at
+that URL. Sign in once by opening `https://zimmer-app.tadasant.com/api/v1/health` in a tab: Access
+runs the Google login and the tab lands on a short JSON answer. The extension cannot run that login
+itself. The composer says who refused a message, and it blames the key only when Zimmer
+itself refused it:
+
+- **A redirect** is Access sending the request to its login page: sign in as above, then send again.
+- **An Access 401** comes from an Access app that admits service tokens only, and signing in will not
+  get past it. Change the URL in the options to one whose Access app admits a browser sign-in.
+- **An Access 403** means the browser is signed in with an account the policy does not admit. Sign in
+  with the right account.
+
+The toast links to the session on the web UI URL Zimmer reports (`ZIMMER_PROD_BASE_URL`), not on
+the URL the extension sends to, because that can be a host that serves the API only. When Zimmer
+reports none, which happens while that base URL is unset, the link uses the URL the extension sends to.
 
 Nothing needs provisioning on the Zimmer side. The key is minted on a page that already exists,
 the endpoint ships with the deploy, and there is no environment variable to set.
@@ -50,7 +64,7 @@ the endpoint ships with the deploy, and there is no environment variable to set.
   (`<p> Closes #98.`) — **Move pin** re-arms. <kbd>Enter</kbd> instead of a click skips the pin;
   <kbd>Esc</kbd> cancels at any step and keeps what you typed for the next time you open it.
 - Type, then <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> or **Send to Zimmer**. A toast says it
-  was sent and links to the session on the URL you configured; it goes away on its own.
+  was sent and links to the session in Zimmer's web UI; it goes away on its own.
 
 Both shortcuts can be changed on `chrome://extensions/shortcuts`. Chrome applies an extension's
 suggested shortcuts when it is installed, so a copy loaded before <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd>

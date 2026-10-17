@@ -3374,6 +3374,15 @@ block and forge the human's message, and the block says its contents are data, n
 Visible text that argues with the agent is still visible text, and nothing sandboxes a router
 session that decides to act on it. Pin pages you would be comfortable having an agent read.
 
+### The browser extension's session link uses Zimmer's base URL, which the browser may not reach
+
+The [browser extension](/extend/browser-extension/)'s toast links to the session on the URL Zimmer
+reports, built on `ZIMMER_PROD_BASE_URL`, because the URL the extension sends to can serve the API
+only (on Tadas's deployment it is `zimmer-app.tadasant.com`). On a deployment whose base URL is a
+name this browser cannot resolve, such as a tailnet address set for a different machine, the message
+is still sent and the session still runs, but the link does not open. Open the session from Zimmer
+itself, or set the base URL to the address people actually use.
+
 ### The baseline orchestrator root can't spawn downstream sessions out of the box
 
 🔴 `zimmer-orchestrator` — the root behind every quick-router / chat-bubble submission — ships with **no**
