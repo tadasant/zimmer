@@ -331,6 +331,8 @@ struct MoreView: View {
     @State private var showingSettings = false
     /// Costs opened by a fixture launch, narrowed as it asked.
     @State private var openedCosts: CostScope?
+    /// Settings opened by a fixture launch, at the section it asked for.
+    @State private var openedSettings: SettingsOpening?
     @State private var openedHealth = false
 
     var body: some View {
@@ -343,7 +345,8 @@ struct MoreView: View {
             }
             .themeRows()
             Section {
-                Button { showingSettings = true } label: { row("Settings", "gearshape", "Sign-in, notifications, this build") }
+                Button { showingSettings = true } label: { row("Settings", "gearshape", "Sign-in, API keys, session defaults, experimental, MCP Apps, notifications") }
+                    .accessibilityIdentifier("more.settings")
             }
             .themeRows()
         }
@@ -351,12 +354,18 @@ struct MoreView: View {
         .themeGround()
         .navigationTitle("More")
         .sheet(isPresented: $showingSettings) { SettingsView() }
+        .sheet(item: $openedSettings) { opening in SettingsView(opensAt: opening.section, opensAccount: opening.account) }
         .navigationDestination(item: $openedCosts) { scope in CostsView(scope: scope) }
         .navigationDestination(isPresented: $openedHealth) { HealthView() }
         .onChange(of: app.fixtureCosts, initial: true) { _, scope in
             guard let scope else { return }
             openedCosts = scope
             app.fixtureCosts = nil
+        }
+        .onChange(of: app.fixtureSettings, initial: true) { _, opening in
+            guard let opening else { return }
+            openedSettings = opening
+            app.fixtureSettings = nil
         }
         .onChange(of: app.fixtureHealth, initial: true) { _, open in
             guard open else { return }

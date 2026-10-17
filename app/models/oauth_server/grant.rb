@@ -30,8 +30,12 @@ module OauthServer
 
     TokenPair = Data.define(:access_token, :refresh_token, :expires_in)
 
-    # Why a grant's scope last changed, recorded in `scope_change_reason`.
-    SCOPE_CHANGE_REASONS = %w[consent ui_downgrade ui_upgrade backfill].freeze
+    # Why a grant's scope last changed, recorded in `scope_change_reason`: chosen
+    # at consent, moved on the settings page (`ui_*`), moved from the iOS app's
+    # connections list (`app_*`), or raised by the one-time backfill.
+    APP_UPGRADE = "app_upgrade"
+    APP_DOWNGRADE = "app_downgrade"
+    SCOPE_CHANGE_REASONS = %w[consent ui_downgrade ui_upgrade app_downgrade app_upgrade backfill].freeze
 
     validates :scope_change_reason, inclusion: { in: SCOPE_CHANGE_REASONS }, allow_nil: true
 
