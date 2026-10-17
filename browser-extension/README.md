@@ -18,9 +18,11 @@ Chrome, Manifest V3, no build step. The docs page is
    key, and save. Saving asks Chrome for permission to talk to that one origin; grant it.
 
 The browser has to be able to reach Zimmer. On a tailnet-scoped instance that means the browser
-is on the tailnet. Behind Cloudflare Access, it means this browser is signed in at the Zimmer URL:
-the extension sends the browser's cookies, and when the Access sign-in has lapsed the composer says
-so instead of blaming the key.
+is on the tailnet. Behind Cloudflare Access, the URL has to be a host whose Access app lets a
+signed-in browser reach `/api`, and this browser has to be signed in there. The extension sends the
+browser's cookies. On Tadas's deployment that host is `https://zimmer-app.tadasant.com`: on
+`zimmer.tadasant.com`, `/api` admits a service token only. When Access refuses a message, the
+composer says why instead of blaming the key.
 
 ## Use
 

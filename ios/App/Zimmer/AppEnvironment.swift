@@ -37,7 +37,8 @@ final class AppEnvironment {
         if arguments.contains("-ZimmerFixture") {
             // Screens with no server and no sign-in, for the UI test and screenshots: an
             // agent cannot complete a Google sign-in. `-ZimmerFixtureSignedOut` shows the
-            // sign-in screen instead of the list.
+            // sign-in screen instead of the list; `-ZimmerFixtureRelayOnly` is a sign-in that
+            // does not act as you, so Settings → MCP Apps is refused.
             let origins = AppConfiguration.buildDefaultOrigins ?? ServerOrigins(web: URL(string: "https://fixture.invalid")!)
             let signedIn = arguments.contains("-ZimmerFixtureSignedOut")
                 ? nil

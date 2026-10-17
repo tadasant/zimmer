@@ -108,19 +108,34 @@ async function submit(payload) {
     return { ok: false, error: `${baseUrl} answered, but not as Zimmer: no session came back. Is the URL right?` };
   }
 
-  // Linked on the URL this browser just reached, not the one Zimmer reports:
-  // the instance's configured base URL may be a name this browser cannot
-  // resolve, while `baseUrl` demonstrably works from here.
-  const sessionUrl = body.session_id ? `${baseUrl}/sessions/${body.session_id}` : body.session_url;
-  return { ok: true, sessionId: body.session_id, sessionUrl };
+  return { ok: true, sessionId: body.session_id, sessionUrl: sessionLink(body, baseUrl) };
+}
+
+// Linked on the web UI URL Zimmer reports, not on `baseUrl`: the URL the
+// extension sends to can be a host that serves the API and nothing else.
+// Without a usable `session_url`, the session is linked on `baseUrl`. Only an
+// http(s) URL becomes a link, since the toast puts it in an href.
+function sessionLink(body, baseUrl) {
+  try {
+    const url = new URL(body.session_url);
+    if (url.protocol === "https:" || url.protocol === "http:") return url.href;
+  } catch {
+    // Missing or not a URL.
+  }
+  return body.session_id ? `${baseUrl}/sessions/${body.session_id}` : null;
 }
 
 // What to tell the human when something in front of Zimmer answered instead of
 // Zimmer, or null when Zimmer answered. Cloudflare Access marks its own
-// refusals with `cf-access-domain`: a 401 when the browser has no valid sign-in
-// there, a 403 when it has one that the policy does not admit. A redirect —
-// `redirect: "manual"` makes it an opaque response with status 0 — is Access
-// sending the request to its login page, or an http URL being sent to https.
+// refusals with `cf-access-domain`. An Access app that takes a browser login
+// answers a request without a valid sign-in by redirecting it to the login page
+// (`redirect: "manual"` makes that an opaque response with status 0), and a
+// signed-in account its policy does not admit with a 403. A 401 comes from an
+// app that admits service tokens only and answers with a 401 instead of a login
+// (`service_auth_401_redirect`), so it refuses a signed-in browser too: signing
+// in cannot get the request through, only a URL whose access proxy admits a
+// browser sign-in on /api can. A redirect on an
+// http URL is more likely the server sending it to https.
 function accessProxyRefusal(response, baseUrl) {
   if (response.type === "opaqueredirect") {
     if (baseUrl.startsWith("http:")) {
@@ -130,7 +145,7 @@ function accessProxyRefusal(response, baseUrl) {
   }
   if (!response.headers.has("cf-access-domain")) return null;
   if (response.status === 401) {
-    return `The access proxy in front of Zimmer stopped it before Zimmer saw it. This browser is not signed in there: open ${baseUrl} in a tab, sign in, then send again.`;
+    return `The access proxy in front of Zimmer stopped it before Zimmer saw it. It most likely admits service tokens only on Zimmer's API, so signing in will not help. Set the URL in the extension's options to a host whose access proxy admits a browser sign-in on /api.`;
   }
   if (response.status === 403) {
     return `The access proxy in front of Zimmer refused the account this browser is signed in with. Open ${baseUrl} in a tab and sign in with the account the deployment admits.`;

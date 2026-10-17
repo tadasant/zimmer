@@ -144,7 +144,13 @@ class Api::V1::QuickRouterController < Api::BaseController
 
     AgentSessionJob.enqueue_new_session(session.id, images: staged[:images], files: staged[:files])
 
-    render json: { session_id: session.id, session_url: "#{AppUrl.base_url}#{session_path(session)}" }, status: :created
+    # No session_url while the base URL is the unconfigured placeholder: a link to
+    # zimmer.example.com is worse than none, and the extension then links on the
+    # URL it sent to.
+    base_url = AppUrl.base_url
+    body = { session_id: session.id }
+    body[:session_url] = "#{base_url}#{session_path(session)}" unless AppUrl.placeholder?(base_url)
+    render json: body, status: :created
   rescue InlineAttachments::Invalid => e
     render_api_error(e.title, e.message, status: :unprocessable_entity)
   rescue AgentRootsConfig::AgentRootNotFoundError => e

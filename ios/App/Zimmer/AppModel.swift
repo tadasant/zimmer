@@ -132,6 +132,10 @@ final class AppModel: ObservableObject {
         var runtime: String
         var login: Bool
     }
+    /// `-ZimmerFixtureSettings [section]`: More opens Settings, scrolled to that section
+    /// (`defaults`, `experimental`, `mcpApps`) if one is named. `-ZimmerFixtureAccount`:
+    /// Settings, with API keys & connections pushed over it.
+    @Published var fixtureSettings: SettingsOpening?
     /// `-ZimmerFixtureHealth`: More opens on Health.
     @Published var fixtureHealth = false
     /// `-ZimmerFixtureClis`: More opens on CLIs.
@@ -256,6 +260,13 @@ final class AppModel: ObservableObject {
         if let flag = arguments.firstIndex(of: "-ZimmerFixtureInference") {
             let runtime = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : InferenceReport.claudeCode
             fixtureInference = InferenceOpening(runtime: runtime, login: arguments.contains("-ZimmerFixtureInferenceLogin"))
+        if let flag = arguments.firstIndex(of: "-ZimmerFixtureSettings") {
+            let section = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : nil
+            fixtureSettings = SettingsOpening(section: section.flatMap(SettingsSection.init(rawValue:)))
+            tab = .more
+        }
+        if arguments.contains("-ZimmerFixtureAccount") {
+            fixtureSettings = SettingsOpening(section: nil, account: true)
             tab = .more
         }
         if arguments.contains("-ZimmerFixtureHealth") {
