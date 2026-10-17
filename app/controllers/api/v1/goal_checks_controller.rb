@@ -8,6 +8,9 @@
 # session's created_at; a missing `from` is 7 days before `to`, or before today), agent_root,
 # agent_runtime, model.
 class Api::V1::GoalChecksController < Api::BaseController
+  # Zimmer's iOS app: /outcomes/goal_checks is a page any signed-in person reads.
+  accepts_native_app_tokens
+
   def index
     filters = OutcomeAnalyses::LedgerFilters.from_params(params)
     tally = GoalCheckTally.new(filters: filters)
