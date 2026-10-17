@@ -5,6 +5,11 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::ClisController < Api::BaseController
+  # Zimmer's iOS app: the whole controller. The /clis page offers a signed-in
+  # person the status, a refresh and the cache clear, and each only enqueues a
+  # job the worker runs.
+  accepts_native_app_tokens
+
   # GET /api/v1/clis/status
   # Get cached CLI tools status report.
   def status

@@ -15,8 +15,9 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::CostsController < Api::BaseController
-  # Zimmer's iOS app: read-only. Not `backfill`, an operator action.
-  accepts_native_app_tokens only: %i[index records]
+  # Zimmer's iOS app: the reads, and `backfill`, which the Costs page offers any
+  # signed-in person as its "Sweep now" button; the phone gets the same.
+  accepts_native_app_tokens
 
   MAX_DAYS = 365
   DEFAULT_DAYS = 7

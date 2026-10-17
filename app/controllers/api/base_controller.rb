@@ -14,9 +14,11 @@
 # access token whose grant belongs to the built-in first-party client
 # (OauthServer::NativeApp). It is opt-in per controller, and optionally per
 # action (`accepts_native_app_tokens only: %i[index show]`), so the phone's
-# credential opens the surfaces the app drives and nothing else; a token any
-# other OAuth client holds is refused here exactly as a bad key is, and so is
-# the app's own token on an action its controller did not name.
+# credential opens the surfaces a signed-in person has on the web UI and
+# nothing else — a controller may open an action before the app reads it, never
+# one the web offers no person; a token any other OAuth client holds is refused
+# here exactly as a bad key is, and so is the app's own token on an action its
+# controller did not name.
 class Api::BaseController < ActionController::API
   include ControllerDatabaseRetry
 
@@ -134,6 +136,22 @@ class Api::BaseController < ActionController::API
     self.class.native_app_tokens_accepted_for?(action_name) && native_app_bearer_token.present?
   end
 
+  # For an action that records a person's judgement — hand-placing a backlog
+  # item, taking one off the queue, promoting one — the app's token opens it
+  # only on a grant that acts as its approver: a relay-only grant was approved to
+  # carry messages, not to decide. An API key is not refused here. The key
+  # reached these actions before the app did, and what it establishes (a caller,
+  # not a person) is the controller's own caveat; Api::V1::SessionsController's
+  # `require_a_person_on_the_app` is the stricter gate, for the one action nothing
+  # but a person may take.
+  def require_the_app_to_act_as_a_person
+    return unless native_app_request?
+    return if native_app_grant.acts_as_human?
+
+    render_api_error("Forbidden", "This sign-in may not act as you; sign in again and allow acting as you",
+                     status: :forbidden)
+  end
+
   def native_app_bearer_token
     token = request.headers["Authorization"].to_s[/\ABearer\s+(.+)\z/i, 1]&.strip
     token if token&.start_with?(OauthServer::ACCESS_TOKEN_PREFIX)
@@ -161,7 +179,7 @@ class Api::BaseController < ActionController::API
   end
 
   # The fence on an action that stands for a person's decision — Merge, answering
-  # an elicitation, the Inference page's writes: only the iOS app's token, on a
+  # an elicitation, the Inference page's writes, minting a key, revoking a connection: only the iOS app's token, on a
   # grant that acts as its approver. An API key names a key, never a person, and
   # a relay-only grant was approved to carry messages, not to decide. Wire it
   # with `before_action :require_a_person_on_the_app, only: [...]`.

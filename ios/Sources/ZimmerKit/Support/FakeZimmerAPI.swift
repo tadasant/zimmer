@@ -10,7 +10,7 @@ import Foundation
 /// `waiting` session whose turn is handed over but not yet started; the fake delivers to
 /// every `waiting` session.
 public actor FakeZimmerAPI: ZimmerAPI {
-    public private(set) var all: [SessionSummary]
+    public internal(set) var all: [SessionSummary]
     private var summaries: [Int: StatusSummary]
     private var conversations: [Int: [ConversationMessage]]
     private var nextID: Int
@@ -24,6 +24,14 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// The variables each trigger was last run by hand with, for a test to read back.
     public private(set) var triggerVariables: [Int: [String: String]] = [:]
     private let degraded: Bool
+    /// What the Health page's actions change, read back through the report.
+    var healthState: HealthState
+    /// The CLI tools as the worker last checked them; a refresh re-stamps the check.
+    var cliReport: [String: Any]
+    var cliCheckedAt: Date
+    /// The ledger sweep *Sweep now* asks for: in flight after the ask, complete on the read after.
+    var sweepInFlight = false
+    var sweptAt: Date
     /// What each follow-up carried, newest last, so a test can see attachments arrive.
     public private(set) var sentAttachments: [Int: [[MessageAttachment]]] = [:]
     /// Every Quick Router start, in order, so a test can see what went with the words.
@@ -73,6 +81,10 @@ public actor FakeZimmerAPI: ZimmerAPI {
         self.degraded = degraded
         self.relayOnly = relayOnly
         self.inference = FakeInference(now: now)
+        self.healthState = HealthState(degraded: degraded, now: now)
+        self.cliReport = FakeZimmerAPI.sampleCliTools()
+        self.cliCheckedAt = now.addingTimeInterval(-2 * 60)
+        self.sweptAt = now.addingTimeInterval(-3 * 3600)
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
@@ -1218,9 +1230,7 @@ extension FakeZimmerAPI {
         return CostSnapshot(
             from: bounds.0, to: bounds.1, scope: scope,
             totals: .init(costUSD: total, sessionCostUSD: total - adhocCost, adhocCostUSD: adhocCost, tokens: Int(total * 44_000), apiCalls: Int(total * 5.8)),
-            coverage: .init(status: "complete", complete: true, progressPct: 100, directoriesDone: 212, directoriesTotal: 212, filesScanned: 18_440,
-                            finishedAt: now.addingTimeInterval(-3 * 3600), lastRanAt: now.addingTimeInterval(-3 * 3600),
-                            coversSince: now.addingTimeInterval(-140 * 86_400), coversUntil: now.addingTimeInterval(-7 * 60)),
+            coverage: ledgerCoverage(now: now),
             breakdown: [
                 .init(component: "cache read", costUSD: total * 0.46, share: 0.46), .init(component: "cache write (5m)", costUSD: total * 0.27, share: 0.27),
                 .init(component: "output", costUSD: total * 0.19, share: 0.19), .init(component: "fresh input", costUSD: total * 0.07, share: 0.07),
@@ -1255,7 +1265,8 @@ extension FakeZimmerAPI {
     /// The health report in the server's own JSON, read through the same parser the client
     /// uses, so the fixture can only show what the real report would.
     public func health() async throws -> HealthReport {
-        try HealthReport.parse(JSONSerialization.data(withJSONObject: Self.sampleHealthJSON(now: Date(), degraded: degraded)))
+        expireRecovery()
+        return try HealthReport.parse(JSONSerialization.data(withJSONObject: Self.sampleHealthJSON(now: Date(), state: healthState)))
     }
 
     static func sampleNotifications(now: Date = Date()) -> [InboxNotification] {
