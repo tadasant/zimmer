@@ -123,6 +123,15 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
     /// is named.
     @Published var fixtureCosts: CostScope?
+    /// `-ZimmerFixtureInference [runtime]`: More opens on Inference, on that runtime's tab;
+    /// with `-ZimmerFixtureInferenceLogin`, the first account that needs a login starts one,
+    /// so `ios/bin/ui-test` can photograph the login sheet.
+    @Published var fixtureInference: InferenceOpening?
+
+    struct InferenceOpening: Hashable {
+        var runtime: String
+        var login: Bool
+    }
     /// `-ZimmerFixtureHealth`: More opens on Health.
     @Published var fixtureHealth = false
     /// `-ZimmerFixtureRunNow`: the opened trigger's Run Now sheet starts open, so
@@ -237,6 +246,11 @@ final class AppModel: ObservableObject {
             // The next argument is a root to narrow to, unless it is the next flag.
             let root = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : nil
             fixtureCosts = root.map(CostScope.agentRoot) ?? .fleet
+            tab = .more
+        }
+        if let flag = arguments.firstIndex(of: "-ZimmerFixtureInference") {
+            let runtime = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : InferenceReport.claudeCode
+            fixtureInference = InferenceOpening(runtime: runtime, login: arguments.contains("-ZimmerFixtureInferenceLogin"))
             tab = .more
         }
         if arguments.contains("-ZimmerFixtureHealth") {

@@ -358,6 +358,8 @@ if [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot trigger-run-now -ZimmerFixture -ZimmerFixtureTrigger 7 -ZimmerFixtureRunNow
   shoot costs -ZimmerFixture -ZimmerFixtureCosts
   shoot costs-root -ZimmerFixture -ZimmerFixtureCosts zimmer
+  shoot inference -ZimmerFixture -ZimmerFixtureInference
+  shoot inference-login -ZimmerFixture -ZimmerFixtureInference codex -ZimmerFixtureInferenceLogin
   shoot health -ZimmerFixture -ZimmerFixtureHealth
   shoot health-degraded -ZimmerFixture -ZimmerFixtureHealth -ZimmerFixtureDegraded
   shoot sessions-degraded -ZimmerFixture -ZimmerFixtureDegraded
@@ -390,6 +392,7 @@ if [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot trigger-detail-dark -ZimmerFixture -ZimmerFixtureTrigger 5
   shoot trigger-run-now-dark -ZimmerFixture -ZimmerFixtureTrigger 7 -ZimmerFixtureRunNow
   shoot costs-dark -ZimmerFixture -ZimmerFixtureCosts
+  shoot inference-dark -ZimmerFixture -ZimmerFixtureInference
   shoot health-degraded-dark -ZimmerFixture -ZimmerFixtureHealth -ZimmerFixtureDegraded
   xcrun simctl ui "$udid" appearance light >/dev/null 2>&1 || true
 fi
