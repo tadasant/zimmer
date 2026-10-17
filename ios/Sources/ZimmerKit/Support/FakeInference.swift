@@ -434,12 +434,15 @@ extension FakeZimmerAPI {
     private func advanced(_ attempt: LoginAttempt, polls: Int) -> LoginAttempt {
         var next = attempt
         if attempt.runtime == InferenceReport.codex {
+            // The code stays up for five polls — ten seconds at the sheet's cadence — so a test
+            // on a loaded simulator reads and copies it, and the photograph's six-second settle
+            // lands on it, before the CLI moves on.
             switch polls {
-            case 1, 2:
+            case 1...5:
                 next = moved(attempt, to: "awaiting_user")
                 next.verificationURL = "https://auth.openai.com/codex/device"
                 next.verificationCode = "WXYZ-7K2Q"
-            case 3: next = moved(attempt, to: "completing")
+            case 6: next = moved(attempt, to: "completing")
             default: next = moved(attempt, to: "succeeded")
             }
         } else {

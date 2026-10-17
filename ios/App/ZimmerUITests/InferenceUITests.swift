@@ -81,10 +81,12 @@ final class InferenceUITests: XCTestCase {
         XCTAssertTrue(code.waitForExistence(timeout: timeout), "the device code arrived on a poll")
         XCTAssertEqual(code.label, "WXYZ-7K2Q")
         XCTAssertTrue(app.buttons["inference.login.url"].exists, "the verification link is offered")
-        attachScreenshot(app, named: "inference-login-code")
+        // Copy first: the code is up for ten seconds of the fake's polls, and a screenshot on a
+        // loaded simulator can take a few of them.
         app.buttons["inference.login.copy"].tap()
         XCTAssertEqual(app.buttons["inference.login.copy"].label, "Copied")
         XCTAssertTrue(app.buttons["inference.login.cancel"].exists)
+        attachScreenshot(app, named: "inference-login-code")
 
         XCTAssertTrue(waitForLabelContaining(status, "Signed in", timeout: 40), "the fake's later polls finish the login")
         XCTAssertFalse(app.buttons["inference.login.cancel"].exists, "a finished login has nothing to cancel")
