@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "rake"
+require "mocha/minitest"
 
 class MaintenanceTasksTest < ActiveSupport::TestCase
   setup do
@@ -12,6 +13,14 @@ class MaintenanceTasksTest < ActiveSupport::TestCase
     McpOauthPendingFlow.delete_all
     Notification.delete_all
     Session.destroy_all
+
+    # The task reaps every Claude CLI process its host scan finds that no session
+    # in the database tracks, and the test database tracks no real pid — so a scan
+    # of the real host from here would SIGTERM every live agent on the machine
+    # (#1368). The task must get the blind discovery under test; the cases that
+    # exercise the reaping hand it a fake one instead.
+    assert_instance_of HostProcessDiscovery::None,
+      HostProcessDiscovery.configured(process_manager: SystemProcessManager.new, logger: Rails.logger)
   end
 
   teardown do
@@ -264,5 +273,88 @@ class MaintenanceTasksTest < ActiveSupport::TestCase
 
     # Existing metadata should be preserved
     assert_equal "some_value", session.metadata["some_key"]
+  end
+
+  test "active mode terminates an untracked Claude process and leaves a tracked one alone" do
+    tracked = Session.create!(
+      prompt: "Tracked",
+      status: "running",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      metadata: { "process_pid" => Process.pid }
+    )
+    untracked_pid = 424_242
+    use_fake_host_processes([
+      { pid: Process.pid, command: "claude -p tracked" },
+      { pid: untracked_pid, command: "claude -p untracked" }
+    ])
+
+    # Matching on the pid makes a termination of any other pid — the tracked one
+    # included — an unexpected invocation.
+    terminated = ProcessTerminationService::TerminationResult.new(status: :terminated, message: "Process #{untracked_pid} terminated")
+    ProcessTerminationService.expects(:new)
+      .with(has_entries(process_pid: untracked_pid))
+      .once
+      .returns(stub(terminate: terminated))
+
+    output = capture_io do
+      Rake::Task["maintenance:cleanup:orphaned_processes"].execute
+    end.first
+
+    assert_equal "running", tracked.reload.status
+    assert_match(/Found 2 running Claude CLI process\(es\)/, output)
+    assert_match(/Found 1 untracked Claude process\(es\):/, output)
+    assert_match(/PID #{untracked_pid}: claude -p untracked/, output)
+    assert_match(/Sessions cleaned up: 1/, output)
+    assert_match(/Errors: 0/, output)
+  end
+
+  test "dry run mode reports an untracked Claude process without terminating it" do
+    Session.create!(
+      prompt: "Tracked",
+      status: "running",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      metadata: { "process_pid" => Process.pid }
+    )
+    use_fake_host_processes([ { pid: 424_242, command: "claude -p untracked" } ])
+    ProcessTerminationService.expects(:new).never
+
+    ENV["DRY_RUN"] = "true"
+    output = capture_io do
+      Rake::Task["maintenance:cleanup:orphaned_processes"].execute
+    end.first
+
+    assert_match(/Found 1 untracked Claude process\(es\):/, output)
+    assert_match(/\[DRY RUN\] Would attempt to terminate this process/, output)
+  end
+
+  test "a failed process scan is reported, not treated as an empty host" do
+    Session.create!(
+      prompt: "Tracked",
+      status: "running",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      metadata: { "process_pid" => Process.pid }
+    )
+    discovery = HostProcessDiscovery::None.new
+    discovery.stubs(:claude_cli_processes).raises(HostProcessDiscovery::ScanFailed, "ps failed")
+    HostProcessDiscovery.stubs(:configured).returns(discovery)
+    ProcessTerminationService.expects(:new).never
+
+    output = capture_io do
+      Rake::Task["maintenance:cleanup:orphaned_processes"].execute
+    end.first
+
+    assert_match(/Could not retrieve process list \(ps command failed\)/, output)
+  end
+
+  private
+
+  # The host as the task sees it: these processes and no others.
+  def use_fake_host_processes(processes)
+    discovery = HostProcessDiscovery::None.new
+    discovery.stubs(:claude_cli_processes).returns(processes)
+    HostProcessDiscovery.stubs(:configured).returns(discovery)
   end
 end

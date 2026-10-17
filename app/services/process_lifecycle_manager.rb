@@ -1478,10 +1478,14 @@ class ProcessLifecycleManager
   # lose its recovery prompt after Codex rejects `thread/resume` with "no rollout
   # found", parking the session in needs_input with unfinished side effects.
   def recovery_prompt
-    session.metadata&.dig("active_follow_up_prompt").presence ||
-      session.metadata&.dig("sent_message").presence ||
-      session.metadata&.dig("pending_follow_up_prompt").presence ||
-      session.prompt
+    # Finalized because this delivers without passing AgentSessionJob's prompt
+    # builder: a lookalike turn-source note in the raw fallbacks is defused here.
+    TurnSource.finalize(
+      session.metadata&.dig("active_follow_up_prompt").presence ||
+        session.metadata&.dig("sent_message").presence ||
+        session.metadata&.dig("pending_follow_up_prompt").presence ||
+        session.initial_prompt_for_delivery
+    )
   end
 
   # Whether a normal-looking exit should be answered by restarting the turn
