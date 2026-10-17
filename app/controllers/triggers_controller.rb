@@ -94,12 +94,10 @@ class TriggersController < ApplicationController
 
   # Toggle enqueue_messages setting (only when reuse_session is enabled)
   def toggle_enqueue_messages
-    unless @trigger.reuse_session
-      redirect_to @trigger, alert: "Enqueue messages can only be enabled when re-use session is enabled."
+    unless @trigger.toggle_enqueue_messages
+      redirect_to @trigger, alert: "#{@trigger.errors.full_messages.to_sentence}."
       return
     end
-
-    @trigger.update!(enqueue_messages: !@trigger.enqueue_messages)
 
     respond_to do |format|
       format.html { redirect_to @trigger, notice: "Enqueue messages #{@trigger.enqueue_messages ? 'enabled' : 'disabled'}." }
@@ -115,12 +113,10 @@ class TriggersController < ApplicationController
 
   # Toggle resuscitate_archived setting (only when reuse_session is enabled)
   def toggle_resuscitate_archived
-    unless @trigger.reuse_session
-      redirect_to @trigger, alert: "Resuscitate archived can only be enabled when re-use session is enabled."
+    unless @trigger.toggle_resuscitate_archived
+      redirect_to @trigger, alert: "#{@trigger.errors.full_messages.to_sentence}."
       return
     end
-
-    @trigger.update!(resuscitate_archived: !@trigger.resuscitate_archived)
 
     respond_to do |format|
       format.html { redirect_to @trigger, notice: "Resuscitate archived #{@trigger.resuscitate_archived ? 'enabled' : 'disabled'}." }

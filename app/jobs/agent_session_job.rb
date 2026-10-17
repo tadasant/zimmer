@@ -791,8 +791,15 @@ class AgentSessionJob < ApplicationJob
           level: "warning"
         )
 
-        fresh_prompt = fresh_start_prompt(session, follow_up_prompt, log_buffer)
-        session.update!(prompt: fresh_prompt) if fresh_prompt != session.prompt
+        # The column holds words, never a signed turn-source note: the follow-up's
+        # note comes off here, and its source becomes the initial prompt's when the
+        # session had none, so the fresh start is still tagged where it came from.
+        message_words, message_source = TurnSource.extract(follow_up_prompt)
+        fresh_prompt = fresh_start_prompt(session, message_words, log_buffer)
+        updates = {}
+        updates[:prompt] = fresh_prompt if fresh_prompt != session.prompt
+        updates[:source_context] = message_source.to_h if message_source && session.source_context.blank?
+        session.update!(updates) if updates.any?
 
         follow_up_prompt = nil
 
@@ -1755,8 +1762,9 @@ class AgentSessionJob < ApplicationJob
           # Fresh initial spawn. This includes the post-OAuth-retry case where we
           # reuse the existing clone (reusing_existing_clone=true) but the runtime CLI
           # never actually started (runtime_started=false). An initial spawn REQUIRES
-          # the positional prompt, so supply the session's initial prompt.
-          prompt_with_goal = build_prompt_with_goal(session.prompt, session)
+          # the positional prompt, so supply the session's initial prompt, with the
+          # note saying where it came from when the creating boundary recorded one.
+          prompt_with_goal = build_prompt_with_goal(session.initial_prompt_for_delivery, session)
         end
 
         # Append a structured note about attached files so the agent knows
@@ -3513,7 +3521,10 @@ class AgentSessionJob < ApplicationJob
     metadata = session.metadata || {}
 
     active = metadata["active_follow_up_prompt"].to_s
-    return :already_delivered if active.present? && active.start_with?(prompt)
+    # Against the prompt as delivered: #build_prompt_with_goal runs it through
+    # TurnSource.finalize, which leaves a tagged prompt alone but rewrites a
+    # lookalike in an untagged one.
+    return :already_delivered if active.present? && active.start_with?(TurnSource.finalize(prompt))
 
     held = metadata["pending_follow_up_prompt"]
     if held.present?
@@ -3524,7 +3535,7 @@ class AgentSessionJob < ApplicationJob
     if session.status_summary_fork? && !SessionStatusSummaryGenerator.fork_prompt?(prompt)
       return refuse_prompt_preservation(session, :summary_fork, prompt)
     end
-    if session.enqueued_messages.pending.exists?(content: prompt)
+    if session.enqueued_messages.pending.exists?(content: EnqueuedMessage.contents_matching(prompt))
       return refuse_prompt_preservation(session, :already_queued, prompt)
     end
 
@@ -6375,7 +6386,15 @@ class AgentSessionJob < ApplicationJob
     dropped_block = build_dropped_catalog_ids_block(session)
     prompt += "\n\n#{dropped_block}" if dropped_block.present?
 
-    prompt
+    # Over the whole prompt, last, so text appended above — a free-text goal,
+    # session notes — is covered too: this is where a lookalike of Zimmer's
+    # turn-source note is defused, whichever path the text took. A note a boundary
+    # signed is left exactly as it is (TurnSource.finalize), so for any prompt not
+    # carrying a lookalike this method's output still starts with its input — the
+    # prefix property the replay guards rely on. The two recovery paths that
+    # deliver without coming here (SigtermRetryService,
+    # ProcessLifecycleManager#recovery_prompt) call finalize themselves.
+    TurnSource.finalize(prompt)
   end
 
   # The standing notice that this session was configured with catalog artifacts

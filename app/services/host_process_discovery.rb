@@ -18,8 +18,15 @@ require "open3"
 # `HostProcessDiscovery::None`; `config/environments/test.rb` sets `:none`, and a
 # test that genuinely wants the scanner constructs one and injects it.
 #
-# Security: `-u` restricts the scan to the current user's processes.
+# The `maintenance:cleanup:orphaned_processes` rake task reaps untracked agent
+# processes from a host scan too (#1368), so it asks the same factory,
+# `HostProcessDiscovery.configured`, and gets the same blind answer under test.
+#
+# Security: `-u` restricts the `pgrep` scan to the current user's processes.
 class HostProcessDiscovery
+  # The `ps` behind #claude_cli_processes exited non-zero.
+  class ScanFailed < StandardError; end
+
   # The discovery that sees nothing. HealthMonitorService#process_health already
   # copes with an empty scan: whenever a session records an agent process this
   # process cannot probe, it reports the count as not observable from here rather
@@ -27,6 +34,20 @@ class HostProcessDiscovery
   class None
     def claude_processes
       []
+    end
+
+    def claude_cli_processes
+      []
+    end
+  end
+
+  # The discovery `config.x.host_process_discovery` names: `:none` is the blind
+  # one, anything else (including unset) is the real host scanner.
+  def self.configured(process_manager:, logger:)
+    if Rails.configuration.x.host_process_discovery == :none
+      None.new
+    else
+      new(process_manager: process_manager, logger: logger)
     end
   end
 
@@ -59,7 +80,32 @@ class HostProcessDiscovery
     []
   end
 
+  # The scan `maintenance:cleanup:orphaned_processes` reaps from: every process on
+  # the host, of any user, whose command line is a Claude CLI invocation
+  # (`claude ... -p ...` or a path ending in `/claude`). Unlike #claude_processes
+  # it needs full command lines, which `pgrep -fl` does not print on Linux.
+  #
+  # @return [Array<Hash>] one `{ pid:, command: }` per matching process
+  # @raise [ScanFailed] when `ps` exits non-zero
+  def claude_cli_processes
+    output, status = ps_capture
+    raise ScanFailed, "ps failed: #{SubprocessStatus.describe_failure(status)}" unless SubprocessStatus.success?(status)
+
+    output.each_line.filter_map do |line|
+      next unless line.match?(/\bclaude\b.*-p\s/) || line.match?(/\/claude\s/)
+
+      parts = line.strip.split(nil, 2)
+      { pid: parts[0].to_i, command: parts[1] }
+    end
+  end
+
   private
+
+  # The host call behind #claude_cli_processes, on its own for the same reason as
+  # #pgrep_output.
+  def ps_capture
+    Open3.capture2("ps", "ax", "-o", "pid,command")
+  end
 
   # The host call itself, on its own so a test of the parser above can stub this
   # one instance rather than `Open3` for the whole process.

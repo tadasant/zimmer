@@ -114,6 +114,29 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_empty from_key.human_messages
   end
 
+  test "a session the app creates without a class is priority; a key's is left to its genesis" do
+    AgentSessionJob.stubs(:enqueue_new_session).returns(OpenStruct.new(job_id: "job-1"))
+    headers = bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
+
+    post "/api/v1/sessions", params: { agent_root: "zimmer", prompt: "Rotate the staging deploy key" }, headers: headers
+    assert_response :created
+    from_phone = Session.find(JSON.parse(response.body)["session"]["id"])
+    assert_equal SessionGenesis::API, from_phone.genesis
+    assert_equal SessionGenesis::PRIORITY, from_phone.scheduling_class, "a person is waiting on it, as on the web form's"
+    assert from_phone.priority?
+
+    post "/api/v1/sessions", params: { agent_root: "zimmer", prompt: "Long unattended sweep", scheduling_class: "spot" }, headers: headers
+    assert_response :created
+    chosen = Session.find(JSON.parse(response.body)["session"]["id"])
+    assert_equal SessionGenesis::SPOT, chosen.scheduling_class, "a class the app sent stands"
+
+    post "/api/v1/sessions", params: { agent_root: "zimmer", prompt: "From a script" }, headers: { "X-API-Key" => API_KEY }
+    assert_response :created
+    from_key = Session.find(JSON.parse(response.body)["session"]["id"])
+    assert_nil from_key.scheduling_class, "a key's create derives from its genesis, as before"
+    assert_equal SessionGenesis::API, from_key.genesis
+  end
+
   test "a relay-only app's edit records nothing" do
     session = build_zimmer_session(status: :running)
     queued = session.enqueued_messages.create!(content: "deploy", position: 1, status: "pending")
@@ -135,6 +158,25 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "the app's token flips a trigger's re-use switches, and is refused as an API key is while reuse_session is off" do
+    headers = bearer(token)
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(reuse_session: true, enqueue_messages: false, resuscitate_archived: false)
+
+    post "/api/v1/triggers/#{trigger.id}/toggle_enqueue_messages", headers: headers
+    assert_response :success
+    assert JSON.parse(response.body)["trigger"]["enqueue_messages"]
+    post "/api/v1/triggers/#{trigger.id}/toggle_resuscitate_archived", headers: headers
+    assert_response :success
+    assert JSON.parse(response.body)["trigger"]["resuscitate_archived"]
+
+    trigger.update!(reuse_session: false)
+    post "/api/v1/triggers/#{trigger.id}/toggle_enqueue_messages", headers: headers
+    assert_response :unprocessable_entity
+    assert_equal "Enqueue messages can only be enabled when re-use session is enabled",
+                 JSON.parse(response.body)["message"]
+  end
+
   test "each controller's operator and authoring actions stay closed to the app" do
     headers = bearer(token)
     # The token is refused before the record is looked up, so no trigger needs to exist:
@@ -143,6 +185,9 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     post "/api/v1/notifications/push", params: { title: "t", body: "b" }, headers: headers
     assert_response :unauthorized
     delete "/api/v1/triggers/0", headers: headers
+    assert_response :unauthorized
+    # Editing a trigger stays in the browser: only its two re-use switches open.
+    patch "/api/v1/triggers/0", params: { enqueue_messages: true }, headers: headers
     assert_response :unauthorized
     post "/api/v1/triggers", params: { name: "x" }, headers: headers
     assert_response :unauthorized
@@ -229,6 +274,96 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
   def pkce
     verifier = SecureRandom.urlsafe_base64(48)
     [ verifier, Base64.urlsafe_encode64(Digest::SHA256.digest(verifier), padding: false) ]
+  end
+
+  # The Settings page's row over REST: the app reads it on any grant, writes the
+  # session defaults and the experimental toggles on any grant (an agent may too,
+  # through action_app_settings), and changes MCP Apps only acting as you.
+  test "the app reads the settings and writes the defaults and experimental toggles" do
+    headers = bearer(token)
+    get "/api/v1/app_settings", headers: headers
+    assert_response :success
+    body = JSON.parse(response.body).fetch("app_settings")
+    assert_equal RuntimeRegistry::DEFAULT_RUNTIME, body.dig("session_defaults", "runtime")
+    assert_equal false, body.dig("session_defaults", "runtime_overridden")
+    assert body["runtimes"].any? { |r| r["id"] == "claude_code" && r["models"].any? }
+    first = ExperimentalSettingsRegistry.find("mcp_tool_search")
+    entry = body["experimental"].find { |e| e["key"] == first.key }
+    assert_equal first.current_value, entry["enabled"]
+    assert_equal ExperimentalSettingsRegistry.default_on?(first), entry["default_enabled"]
+    assert_equal false, body.dig("mcp_apps", "enabled")
+    assert_kind_of Array, body.dig("mcp_apps", "eligible_servers")
+
+    model = ModelCatalog.model_ids_for("claude_code").last
+    patch "/api/v1/app_settings", params: { app_settings: { default_runtime: "claude_code", default_model: model } },
+      headers: headers, as: :json
+    assert_response :success
+    assert_equal model, JSON.parse(response.body).dig("app_settings", "session_defaults", "model")
+    assert_equal true, JSON.parse(response.body).dig("app_settings", "session_defaults", "model_overridden")
+    assert_equal model, AppSetting.current.default_model
+
+    was = first.current_value
+    patch "/api/v1/app_settings", params: { app_settings: { experimental: { first.key => !was } } },
+      headers: headers, as: :json
+    assert_response :success
+    assert_equal !was, first.current_value
+    entry = JSON.parse(response.body).fetch("app_settings")["experimental"].find { |e| e["key"] == first.key }
+    assert_equal first.current_value, entry["enabled"]
+
+    # "" clears a half; null leaves it alone.
+    patch "/api/v1/app_settings", params: { app_settings: { default_model: "", default_runtime: nil } },
+      headers: headers, as: :json
+    assert_response :success
+    assert_nil AppSetting.current.default_model
+    assert_equal "claude_code", AppSetting.current.default_runtime
+
+    get "/api/v1/app_settings", headers: { "X-API-Key" => API_KEY }
+    assert_response :success
+    assert_equal false, JSON.parse(response.body).dig("app_settings", "session_defaults", "model_overridden")
+  end
+
+  test "a bad runtime and model pair, or an unknown experimental key, is a 422 and changes nothing" do
+    headers = bearer(token)
+    patch "/api/v1/app_settings", params: { app_settings: { default_runtime: "claude_code", default_model: "not-a-model" } },
+      headers: headers, as: :json
+    assert_response :unprocessable_entity
+    assert_nil AppSetting.current.default_model
+
+    first = ExperimentalSettingsRegistry.find("mcp_tool_search")
+    before = first.current_value
+    patch "/api/v1/app_settings", params: { app_settings: { experimental: { "no_such_setting" => true, first.key => !before } } },
+      headers: headers, as: :json
+    assert_response :unprocessable_entity
+    assert_equal "Unknown experimental setting", JSON.parse(response.body)["error"]
+    assert_equal before, first.current_value
+
+    patch "/api/v1/app_settings", params: { app_settings: { experimental: [ first.key ] } }, headers: headers, as: :json
+    assert_response :unprocessable_entity
+    assert_equal before, first.current_value
+  end
+
+  test "MCP Apps change only on a grant that acts as you, never over an API key" do
+    # A legal change in the same body is refused with it: the guard runs before anything is read.
+    model = ModelCatalog.model_ids_for("claude_code").last
+    patch "/api/v1/app_settings", params: { app_settings: { default_model: model, mcp_apps_enabled: true } },
+      headers: bearer(token), as: :json
+    assert_response :forbidden
+    assert_match(/sign in again/, JSON.parse(response.body)["message"])
+    assert_equal false, AppSetting.current.mcp_apps_enabled?
+    assert_nil AppSetting.current.default_model
+
+    patch "/api/v1/app_settings", params: { app_settings: { mcp_apps_allowed_servers: [ "anything" ] } },
+      headers: { "X-API-Key" => API_KEY }, as: :json
+    assert_response :forbidden
+    assert_match(/Only a person/, JSON.parse(response.body)["message"])
+
+    patch "/api/v1/app_settings", params: { app_settings: { mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "not-in-the-catalog" ] } },
+      headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN)), as: :json
+    assert_response :success
+    body = JSON.parse(response.body).fetch("app_settings")
+    assert_equal true, body.dig("mcp_apps", "enabled")
+    assert_equal [], body.dig("mcp_apps", "allowed_servers"), "a server the catalog does not offer is dropped, as the page drops it"
+    assert_equal true, AppSetting.current.mcp_apps_enabled?
   end
 
   def token(privilege: OauthServer::RELAY_ONLY)

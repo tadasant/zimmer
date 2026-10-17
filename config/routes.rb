@@ -60,14 +60,14 @@ Rails.application.routes.draw do
     # session.
     resources :workflow_runs, only: [ :index, :show ]
     resources :logs
-    # Read-only, like the gate ledger above: rows are append-only facts about
-    # what Zimmer wrote to the Parameter Store, and an editable audit log is not
-    # an audit log. The dashboard's FORM_ATTRIBUTES is empty for the same reason.
-    resources :managed_secret_writes, only: [ :index, :show ]
     # Read-only: live conversations are driven from /live and the API, whose
     # rules (one open per mode, the tool bridge) an edit form would bypass.
     resources :live_conversations, only: [ :index, :show ]
     resources :live_conversation_turns, only: [ :index, :show ]
+    # Read-only too: the Live settings are written through SettingsUpdate, which
+    # validates and records every change, on /live/settings, REST and MCP.
+    resources :live_settings, only: [ :index, :show ]
+    resources :live_setting_changes, only: [ :index, :show ]
     # Read-only, both of them. A delivery row is what Webhooks::SlackController verified and
     # accepted, and a claim is a Slack firing path's record that a message has fired. Nothing here
     # is hand-authored, and an edited or deleted claim would re-fire a message the other path
@@ -211,17 +211,42 @@ Rails.application.routes.draw do
       # page. Write-only by shape — one action, one response — and opened by an
       # ApiKey with the `quick_router` grant, which nothing else here accepts.
       post "quick_router", to: "quick_router#create"
-      # Live Mode and Live Voice, for the iOS app; an API key may only read. The same
-      # verbs as the web routes; see Api::V1::LiveConversationsController.
+      # Live Mode, for the iOS app; an API key may only read. The same verbs as
+      # the web routes; see Api::V1::LiveConversationsController.
       get "live", to: "live_conversations#modes"
+      get "live/settings", to: "live_settings#show"
+      patch "live/settings", to: "live_settings#update"
+      post "live/settings/reset", to: "live_settings#reset"
+      post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance"
       resources :live_conversations, only: [ :index, :show, :create ] do
         member do
           post :finish
+          post :mode
           post :messages
           post :client_secret
           post :tool_calls
           post :turns
+          post :session_update
         end
+      end
+      # The Inference page for the iOS app: the account roster with its quota
+      # windows, the rotation log, the OpenRouter key's state, and the spot /
+      # top-up / genesis policy. Reads take a key; every write takes only the
+      # app's sign-in acting as you. See Api::V1::InferenceController.
+      get "inference", to: "inference#show"
+      scope "inference", controller: :inference, as: :inference do
+        post "accounts", action: :create_account, as: :accounts
+        post "accounts/:id/refresh", action: :refresh_account, as: :refresh_account
+        post "accounts/:id/activate", action: :activate_account, as: :activate_account
+        delete "accounts/:id", action: :destroy_account, as: :account
+        post "logins", action: :start_login, as: :logins
+        get "logins/:id", action: :login_status, as: :login
+        post "logins/:id/code", action: :submit_login_code, as: :login_code
+        post "logins/:id/cancel", action: :cancel_login, as: :cancel_login
+        patch "spot_policy", action: :update_spot_policy, as: :spot_policy
+        patch "fleet_top_up", action: :update_fleet_top_up, as: :fleet_top_up
+        patch "genesis/:genesis", action: :update_genesis_class, as: :genesis_class
+        delete "genesis", action: :reset_genesis_classes, as: :genesis_classes
       end
 
       # A Zimmer plugin's REST surface (ExternalApp): its allowlisted triggers and
@@ -233,6 +258,8 @@ Rails.application.routes.draw do
       end
 
       resources :configs, only: [ :index ]
+      # The Settings page's row: session defaults, the experimental toggles, MCP Apps.
+      resource :app_settings, only: [ :show, :update ]
       # Models added to a runtime's catalog at runtime (#85). The built-in ones
       # are read-only and listed under `runtime_models` in GET /configs.
       resources :model_catalog_entries, only: [ :index, :create, :destroy ]
@@ -383,6 +410,8 @@ Rails.application.routes.draw do
       resources :triggers do
         member do
           post :toggle
+          post :toggle_enqueue_messages
+          post :toggle_resuscitate_archived
           post :invoke
         end
         collection do
@@ -533,11 +562,6 @@ Rails.application.routes.draw do
   get "inference/login/:attempt_id", to: "inference#login_status", as: :login_status_inference
   post "inference/login/:attempt_id/code", to: "inference#submit_login_code", as: :submit_login_code_inference
   post "inference/login/:attempt_id/cancel", to: "inference#cancel_login", as: :cancel_login_inference
-  # The Pi tab's OpenRouter API key. Create/update and delete only: there is
-  # deliberately no route that reads the value back out — see
-  # ManagedSecret::OpenrouterKey.
-  put "inference/pi/openrouter_key", to: "inference#update_openrouter_key", as: :openrouter_key_inference
-  delete "inference/pi/openrouter_key", to: "inference#destroy_openrouter_key", as: :destroy_openrouter_key_inference
   # The spot gate card, which lives on this page because it reads the quota
   # windows this page reports: the policy form, then one click per genesis kind.
   patch "inference/spot_policy", to: "spot_policies#update", as: :spot_policy
@@ -545,23 +569,32 @@ Rails.application.routes.draw do
   patch "inference/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class
   delete "inference/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
 
-  # Live Mode and Live Voice: one continuous conversation per mode, entered from
-  # the main screen. /live is the overview and the OpenAI key; /live/:mode
-  # resumes the mode's current conversation or offers to start one. The member
-  # routes are the shared thread (messages) and Live Voice's client relay
-  # (client_secret, tool_calls, turns). The key has a write and a delete and no
-  # read, for the reason the OpenRouter key above has none.
+  # Live Mode: one continuous conversation, typed or spoken, entered from the
+  # main screen. /live is the overview and the OpenAI key's status;
+  # /live/current resumes the current conversation or offers to start one. The
+  # member routes are the thread (messages), the typed ⇄ spoken switch (mode)
+  # and the voice client's relay (client_secret, tool_calls, turns).
   get "live", to: "live#index", as: :live
-  get "live/:mode", to: "live#show", as: :live_mode
-  put "live/openai_key", to: "live#update_openai_key", as: :live_openai_key
-  delete "live/openai_key", to: "live#destroy_openai_key", as: :destroy_live_openai_key
+  # Live settings: the models, voice, speed and turn detection, and the Live
+  # mode guidance appended to the live model's instructions — one global row
+  # (LiveSetting), with its edit history. Above the /live/:mode redirect so
+  # "settings" is never read as a mode.
+  get "live/settings", to: "live_settings#show", as: :live_settings
+  patch "live/settings", to: "live_settings#update"
+  post "live/settings/reset", to: "live_settings#reset", as: :reset_live_settings
+  post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance", as: :restore_live_settings_guidance
+  get "live/current", to: "live#show", as: :current_live
+  # The two-mode URLs from before voice folded into Live Mode, for bookmarks.
+  get "live/:mode", to: redirect("/live/current"), constraints: { mode: /text|voice/ }
   resources :live_conversations, only: [ :show, :create ] do
     member do
       post :finish
+      post :mode
       post :messages
       post :client_secret
       post :tool_calls
       post :turns
+      post :session_update
     end
   end
 

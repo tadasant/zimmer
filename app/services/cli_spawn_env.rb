@@ -96,13 +96,11 @@ module CliSpawnEnv
   #   Its two non-secret companions (ZIMMER_PARAMS_PROJECT_ID / _LOCATION) are
   #   deliberately left alone: an address is not a credential.
   # - ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON: the same argument with more
-  #   force. The writer credential exists so the Inference page's Pi tab can
-  #   create and delete one managed secret (ParameterStore::Writer), and it holds
-  #   the write roles the resolver deliberately does not. Inheriting it would hand
-  #   every agent session the ability to REWRITE or DELETE every production
-  #   secret, which is precisely the blast radius the separate identity exists to
-  #   avoid — the web tier holds it, and nothing spawned from the web tier needs
-  #   it.
+  #   force. The writer credential holds the write roles the resolver
+  #   deliberately does not (ParameterStore::Writer, used only by the
+  #   namespace-migration rake task). No deploy hands it to Zimmer, but a process
+  #   that somehow has it must not pass it on: an agent session holding it could
+  #   REWRITE or DELETE every production secret.
   #
   # Production telemetry cleared (issue #176):
   # - SENTRY_DSN_BACKEND: the write DSN of the *production* GlitchTip project, the

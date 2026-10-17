@@ -1986,7 +1986,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "should queue follow up on running session instead of sending immediately" do
     session = sessions(:running)
     # Add a fake PID (not used anymore since we queue instead of pausing)
-    session.update!(metadata: { "process_pid" => 999999 })
+    session.update!(metadata: { "process_pid" => 999_999_999 })
 
     post follow_up_session_url(session), params: {
       follow_up_prompt: "This should be queued"
@@ -2009,7 +2009,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   # actions are the ones that redirect rather than answering with a Turbo Stream.
   test "follow_up on a running session redirects the drawer frame to the drawer url" do
     session = sessions(:running)
-    session.update!(metadata: { "process_pid" => 999999 })
+    session.update!(metadata: { "process_pid" => 999_999_999 })
 
     post follow_up_session_url(session),
       params: { follow_up_prompt: "Queued from the drawer" },
@@ -2037,7 +2037,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   # exists to prevent, arrived at by a different door.
   test "a queued follow-up from the drawer redirects to the drawer, not the frameless page" do
     session = sessions(:running)
-    session.update!(metadata: { "process_pid" => 999999 })
+    session.update!(metadata: { "process_pid" => 999_999_999 })
 
     post follow_up_session_url(session),
       params: { follow_up_prompt: "Queued from the drawer" },
@@ -2444,7 +2444,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     session.reload
     # Verify the pending follow-up prompt was stored in metadata
-    assert_equal "Please fix the bug", session.metadata["pending_follow_up_prompt"]
+    assert_equal TurnSource.new(surface: "web", modality: "text").annotate("Please fix the bug"),
+      session.metadata["pending_follow_up_prompt"]
     assert_equal "waiting", session.status
     assert_redirected_to session_path(session)
   end
@@ -3388,8 +3389,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   # Test pause action
   test "should pause running session" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", status: :running)
-    # Use a fake PID that won't exist
-    fake_pid = 999999
+    # A fake PID above Linux's PID_MAX_LIMIT (2^22), so it can never name a live process
+    fake_pid = 999_999_999
     session.update!(metadata: { "process_pid" => fake_pid })
 
     post pause_session_url(session)
@@ -3402,7 +3403,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "pause stamps last_user_activity_at to reset poll backoff" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", status: :running)
-    session.update!(metadata: { "process_pid" => 999999, "last_user_activity_at" => 25.hours.ago.iso8601 })
+    session.update!(metadata: { "process_pid" => 999_999_999, "last_user_activity_at" => 25.hours.ago.iso8601 })
 
     post pause_session_url(session)
 
@@ -3432,8 +3433,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "should create log entries on pause" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", status: :running)
-    # Use a fake PID that won't exist
-    fake_pid = 999999
+    # A fake PID above Linux's PID_MAX_LIMIT (2^22), so it can never name a live process
+    fake_pid = 999_999_999
     session.update!(metadata: { "process_pid" => fake_pid })
 
     initial_log_count = session.logs.count
@@ -3449,7 +3450,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "should succeed pause even when EPERM is raised from process kill" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", status: :running)
-    fake_pid = 999999
+    fake_pid = 999_999_999
     session.update!(metadata: { "process_pid" => fake_pid })
 
     # Mock Process.kill to raise EPERM (permission denied)

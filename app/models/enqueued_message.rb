@@ -169,6 +169,38 @@ class EnqueuedMessage < ApplicationRecord
     end
   end
 
+  # Where the message came from, as the boundary that queued it recorded it.
+  # Rendered into the turn when the queue drains (EnqueuedMessageProcessorService);
+  # nil for a row queued before sources were recorded, or by Zimmer itself.
+  #
+  # @return [TurnSource, nil]
+  def turn_source
+    TurnSource.from_h(source_context)
+  end
+
+  # A delivered prompt as the queue stores it, for the paths that put a prompt
+  # BACK into the queue (a spot-gate refusal, a skipped job, a displaced stamp):
+  # the caller's words as `content`, and the trailing turn-source note, if the
+  # prompt carries a genuine one, moved to `source_context` — the same shape
+  # every boundary writes, so the panel shows words and the drain re-renders the
+  # note.
+  #
+  # @return [Hash] `content:` and `source_context:`
+  def self.attributes_for_prompt(prompt)
+    body, source = TurnSource.extract(prompt)
+    { content: body, source_context: source&.to_h }
+  end
+
+  # The `content` values a pending row holding `prompt` could carry: the prompt
+  # as given, and its words without a trailing note. A delivered prompt is tagged
+  # and a queued row is not, so a duplicate check comparing only one form would
+  # never match.
+  #
+  # @return [Array<String>]
+  def self.contents_matching(prompt)
+    [ prompt, TurnSource.extract(prompt).first ].uniq
+  end
+
   # Mark message as sent
   def mark_as_sent!
     update!(status: "sent")

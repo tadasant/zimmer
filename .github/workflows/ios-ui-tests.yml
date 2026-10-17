@@ -1,12 +1,20 @@
 name: iOS UI tests
 
-# Run the app on a simulator, on demand, against whichever server it is told to.
+# Run the whole UI suite on a simulator and photograph every key screen: on every merge to
+# `main` that touches `ios/**`, and on demand against whichever server it is told to.
 #
-# THE ENTRY POINT AN AGENT CAN START. Everything else that touches the iOS app is bound to
-# a pull request or to a push: `ci.yml`'s `ios` job runs this same script on every change
-# under `ios/**`, and `testflight.yml` uploads on a merge. Neither of those helps somebody
-# on a Linux box who wants to point a build at a *different* server and watch it run —
-# which is what this is for, and why its trigger is `workflow_dispatch`:
+# THE FULL RUN. `ci.yml`'s `ios` job gates every pull request on `ios/bin/ui-test --smoke`:
+# a few tests, plus the classes the pull request's own changed UI test files declare, and no
+# photographs. Every other UI test and every screenshot runs here, after the merge, because
+# the whole of it — some 70 tests driven one at a time and some 70 photographs — takes up to
+# an hour on a loaded runner, which is too long to gate every iOS pull request on.
+# A failure on `main` reaches `#alerts` through `alert-ci-failure.yml`, like any other.
+#
+# THE ENTRY POINT AN AGENT CAN START. A branch's full run and screenshots, before it merges:
+#
+#   gh workflow run ios-ui-tests.yml --ref <branch>
+#
+# and a build pointed at a *different* server, watched as it runs:
 #
 #   gh workflow run ios-ui-tests.yml --ref main \
 #     -f configuration=Staging -f api_base_url_variable=ZIMMER_IOS_STAGING_API_BASE_URL
@@ -20,10 +28,11 @@ name: iOS UI tests
 # THE GUARD, and why it is not the one `ci.yml` uses. This repository is public and the
 # guard on every job there —
 # `github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository`
-# — is about fork PULL REQUESTS reaching a runner. There are none here: `workflow_dispatch`
-# is the only trigger, and only somebody with write access to this repository can dispatch,
-# so that expression would be false forever and the job would never run. What this needs
-# instead is the second half of the same idea, and it is the job's `if:` below: refuse any
+# — is about fork PULL REQUESTS reaching a runner. There are none here: a push to `main` and
+# `workflow_dispatch` are the only triggers, and only somebody with write access to this
+# repository can do either. That expression is also false on every dispatch, so it would
+# stop the on-demand run from ever starting. What this needs instead is the other half of
+# the same idea, and it is the job's `if:` below: refuse any
 # repository but this one, so a fork that copies this file runs nothing. NEVER add
 # `pull_request` or `pull_request_target` here — a fork PR would then execute fork code,
 # and the `ci.yml` fork guard would have to come with it.
@@ -36,12 +45,21 @@ name: iOS UI tests
 #
 # THE COST. It runs on a GitHub-hosted macOS runner, which GitHub bills at roughly ten
 # times the Linux multiplier — free on a public repository, which this is, and not free on
-# a private one. A run is about 10 to 15 minutes: a simulator boot, one Xcode build, and a
-# two-test suite. It is expected to run rarely — by hand, when somebody wants a build
-# pointed somewhere new. The every-change coverage is the `ios` job in `ci.yml`, which runs
-# the same script on a runner it was already paying for.
+# a private one. A run is about an hour: one Xcode build, then the UI tests and photographs,
+# which took 62 minutes on a loaded runner once the suite passed seventy tests.
 
 on:
+  # A push carries no inputs: it runs Staging against the reserved-by-RFC-2606
+  # `https://ui-test.invalid`, as `ci.yml`'s smoke run does, and uploads everything.
+  # `ios/App/ZimmerUITests/**` is deliberately NOT excluded, unlike in `testflight.yml`:
+  # a merged UI test is exactly what this runs.
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - "!ios/README.md"
+      - "!ios/Tests/**"
+      - ".github/workflows/ios-ui-tests.yml"
   workflow_dispatch:
     inputs:
       configuration:
@@ -62,18 +80,25 @@ on:
 permissions:
   contents: read
 
-# One run at a time. Two concurrent runs would each want a simulator and the same
-# artifact name; `cancel-in-progress: true` because a newer dispatch supersedes an older
-# one and neither uploads anything anybody is waiting on mid-run.
+# One run at a time per trigger. A dispatch cancels an older dispatch, which nobody is
+# waiting on mid-run. A push run is never cancelled: it is the post-merge gate for every UI
+# test the pull request's smoke run skipped, and `alert-ci-failure.yml` is silent on a
+# cancelled run, so a merge landing inside the previous run's hour would otherwise
+# hide a red suite on `main` for good. Pushes queue instead; GitHub keeps only the newest
+# pending one, so the queue is never more than one deep.
 concurrency:
-  group: ios-ui-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: ios-ui-tests-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   ui-test:
     if: ${{ github.repository == 'tadasant/zimmer' }}
     runs-on: macos-latest
-    timeout-minutes: 45
+    # The budget `ci.yml`'s `ios` job had while it ran this suite: a 62-minute simulator step
+    # on a loaded runner, an artifact upload of most of a gigabyte, and room to grow. A run cut
+    # off reads as "cancelled", which `alert-ci-failure.yml` does not report. Splitting the
+    # suite across two simulators is the real fix for the next growth.
+    timeout-minutes: 100
 
     steps:
       - uses: actions/checkout@v4
@@ -91,8 +116,14 @@ jobs:
           # expression has no `vars[input]` indirection.
           ALL_VARS: ${{ toJSON(vars) }}
           WANTED: ${{ inputs.api_base_url_variable }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
+          if [ "${EVENT}" = "push" ]; then
+            echo "url=https://ui-test.invalid" >> "$GITHUB_OUTPUT"
+            echo "A push: building against the reserved ui-test.invalid, as ci.yml's smoke run does."
+            exit 0
+          fi
           if [ -z "${WANTED}" ]; then
             echo "url=" >> "$GITHUB_OUTPUT"
             echo "Building with no default server."
@@ -126,14 +157,14 @@ jobs:
           echo "Resolved ${WANTED}."
 
       - name: Run the app on a simulator
-        # The same line `ci.yml`'s `ios` job runs. A check that exists only in a workflow
-        # cannot be run by hand and will rot, so the workflow's whole body is a call to a
-        # script anybody with a Mac runs unchanged.
+        # The same script `ci.yml`'s `ios` job runs, without `--smoke`. A check that exists
+        # only in a workflow cannot be run by hand and will rot, so the workflow's whole body
+        # is a call to a script anybody with a Mac runs unchanged.
         #
         # Both inputs arrive through `env:` rather than through `${{ }}` inside the
         # command, so nothing a dispatcher typed is ever pasted into a shell line.
         env:
-          ZIMMER_UI_TEST_CONFIGURATION: ${{ inputs.configuration }}
+          ZIMMER_UI_TEST_CONFIGURATION: ${{ inputs.configuration || 'Staging' }}
           ZIMMER_IOS_API_BASE_URL: ${{ steps.server.outputs.url }}
         run: |
           set -euo pipefail
@@ -146,13 +177,13 @@ jobs:
       # user, and `::add-mask::` does nothing to file contents — while the run's video and
       # screenshot show the app's own build-target line, and the result bundle carries the
       # built `Info.plist`. So a run pointed at a real deployment keeps its evidence in the
-      # log (masked) and uploads nothing; `ci.yml`'s run, which builds against a
-      # reserved-by-RFC-2606 name that can never resolve, uploads everything.
+      # log (masked) and uploads nothing; a push run, like `ci.yml`'s, builds against a
+      # reserved-by-RFC-2606 name that can never resolve and uploads everything.
       - name: Keep what the run produced
         if: ${{ always() && inputs.api_base_url_variable == '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: ios-ui-test-${{ inputs.configuration }}
+          name: ios-ui-test-${{ inputs.configuration || 'Staging' }}
           path: ${{ runner.temp }}/ui-test
           retention-days: 14
           if-no-files-found: warn

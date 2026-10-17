@@ -569,6 +569,9 @@ jobs:
       pull-requests: read
     outputs:
       ios: ${{ steps.filter.outputs.ios }}
+      # The UI test files this change touches, space-separated, so the `ios` job's smoke run
+      # also runs the classes they declare. Empty whenever the answer above was a guess.
+      ui_tests: ${{ steps.filter.outputs.ui_tests }}
     steps:
       - name: Look for changes under ios/
         id: filter
@@ -608,6 +611,8 @@ jobs:
           fi
 
           printf '%s\n' "$files" | sed 's/^/  /'
+          ui_tests="$(printf '%s\n' "$files" | grep -E '^ios/App/ZimmerUITests/[A-Za-z0-9_]+\.swift$' | tr '\n' ' ' || true)"
+          echo "ui_tests=${ui_tests% }" >> "$GITHUB_OUTPUT"
           if printf '%s\n' "$files" | grep -qE '^(ios/|\.github/workflows/(ci|testflight|ios-ui-tests)\.yml$)'; then
             echo "ios=true" >> "$GITHUB_OUTPUT"
           else
@@ -621,22 +626,21 @@ jobs:
   # public repo, which is what makes an unproven-until-now app buildable in CI with nobody
   # having to own a Mac.
   #
-  # NOTHING HERE SIGNS ANYTHING, and that is the property to preserve. A simulator build
-  # and an unsigned device archive need no identity, no certificate, no provisioning profile
+  # NOTHING HERE SIGNS WITH AN IDENTITY, and that is the property to preserve. A simulator
+  # build and an ad hoc signed device archive need no certificate, no provisioning profile
   # and no App Store Connect key, so this job holds no credential and needs no human in the
-  # loop — which is the only reason it can run on every PR. Signing and the TestFlight upload
-  # live in `testflight.yml`, behind a `main`-only environment; do not add them here, and do
-  # not add `CODE_SIGN_ENTITLEMENTS`: an entitlement Apple has not granted (CarPlay) makes a
-  # build fail to sign rather than merely lack the feature.
+  # loop — which is the only reason it can run on every PR. Real signing and the TestFlight
+  # upload live in `testflight.yml`, behind a `main`-only environment; do not add them here.
+  # Which entitlements are signed in is decided by `ios/bin/testflight`'s guard, not here.
   ios:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
     runs-on: macos-latest
-    # Raised from 45 when the simulator run joined the job, then from 60 when the suite and the
-    # photographs grew to fill it: a full run is about 30 minutes of UI tests and 10 of
-    # photographs after two app builds and an archive, then an artifact upload of most of a
-    # gigabyte, and the upload is what ran past 60.
-    timeout-minutes: 75
+    # About 12 minutes: an archive, the ZimmerKit tests, one simulator build and the smoke
+    # run. The headroom is for a pull request that touches several UI test files, whose
+    # classes the smoke run adds at roughly 35 seconds a test, and for a loaded runner. The
+    # full UI suite, up to an hour on its own, is `ios-ui-tests.yml`.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -649,17 +653,18 @@ jobs:
           swift --version
           ls /Applications | grep -i '^Xcode' || true
 
-      - name: Build the app for the simulator
-        # A script, not an inlined command, for the reason `bin/build-images` is a script:
-        # a check that exists only in YAML cannot be run by hand and will rot. Anyone with
-        # a Mac runs exactly this.
-        run: ios/bin/build-app
-
-      - name: Archive the app for a device, unsigned, and check it is uploadable in shape
+      - name: Archive the app for a device, signed ad hoc, and check it is uploadable in shape
         # The credential-free half of `testflight.yml`, run by the same script: the Release
         # configuration, the device SDK, the app icon and the Info.plist keys App Store
         # Connect reads. Without it the first place any of those is checked is an upload,
         # which needs the Apple key and a human to notice it failed.
+        run: ios/bin/testflight check
+
+      - name: Archive it again with push on, and check both entitlements are signed in
+        # The merged Push + CarPlay entitlements path, which no TestFlight run takes until
+        # `ZIMMER_IOS_PUSH_ENABLED` is set. Proven here first, so setting it is not the test.
+        env:
+          ZIMMER_IOS_PUSH_ENABLED: "1"
         run: ios/bin/testflight check
 
       - name: Run the ZimmerKit tests against Apple's toolchain
@@ -670,21 +675,40 @@ jobs:
         # a compiler is pointed at the AVFoundation half.
         run: ios/bin/ci-swift
 
-      - name: Run the app on a simulator and photograph it
-        # THE ONLY STEP THAT RUNS THE APP. It drives the Debug-only fixture (an in-memory
-        # Zimmer: an agent cannot complete a Google sign-in) through the session list and its
-        # filters, checks the build reports the environment and server it was built with,
-        # and records a video and screenshots of the key screens.
+      - name: Build the app for the simulator and smoke-test it
+        # THE ONLY STEP THAT RUNS THE APP, and the simulator build of record: there is no
+        # separate `ios/bin/build-app` step, because this builds the same app for the same
+        # SDK on the way to running it. It drives the Debug-only fixture (an in-memory
+        # Zimmer: an agent cannot complete a Google sign-in) through `--smoke`: the session
+        # list, the build reporting the environment and server it was built with, and a
+        # session started from a sentence and opened — plus every class in a UI test file this
+        # change touches, so a new or edited UI test is proven before it merges. It records
+        # a video and a picture of the last screen; there is no photograph pass.
+        #
+        # The other UI tests and the photographs of every key screen are
+        # `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**`: some 70 tests
+        # driven one at a time, up to an hour — too long to gate every pull request on.
+        # To get them for a branch before it merges:
+        #   gh workflow run ios-ui-tests.yml --ref <branch>
         #
         # `Staging` with a base URL is deliberate: one run proves the staging build variant
         # resolves the server it was given as well as the screens. The host is a
         # reserved-by-RFC-2606 name that can never resolve — the fixture makes no request —
         # because this repository names no deployment, not even in a workflow file.
-        run: >
-          ios/bin/ui-test
-          --configuration Staging
-          --api-base-url https://ui-test.invalid
-          --artifacts "$RUNNER_TEMP/ui-test"
+        #
+        # The file list arrives through `env:`, never pasted into the shell line, and the
+        # script only reads class names out of files under ios/App/ZimmerUITests.
+        env:
+          UI_TEST_FILES: ${{ needs.ios-changes.outputs.ui_tests }}
+        run: |
+          set -euo pipefail
+          also=()
+          for f in $UI_TEST_FILES; do also+=(--also "$f"); done
+          ios/bin/ui-test --smoke \
+            --configuration Staging \
+            --api-base-url https://ui-test.invalid \
+            --artifacts "$RUNNER_TEMP/ui-test" \
+            ${also[@]+"${also[@]}"}
 
       - name: Keep what the run produced
         # `always()`: a red run is the one whose video, screenshot and result bundle
