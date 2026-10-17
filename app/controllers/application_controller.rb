@@ -61,6 +61,14 @@ class ApplicationController < ActionController::Base
 
   private
 
+  # Where text typed into the web app came from, for the turn-source note
+  # (TurnSource). The web composer has no voice input of its own, so a request
+  # that does not say otherwise was typed. A style hint only: it says nothing
+  # about who typed it, which is HumanMessageCapture's question.
+  def web_turn_source
+    @web_turn_source ||= TurnSource.from_request(request, surface: "web", default_modality: "text")
+  end
+
   # What the Quick Router's Advanced accordion offers, and what it will accept
   # back. Lives here rather than on SessionsController because the chat bubble
   # renders that accordion from the application layout — on every page, and so

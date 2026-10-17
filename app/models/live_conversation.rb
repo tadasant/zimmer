@@ -43,6 +43,14 @@ class LiveConversation < ApplicationRecord
 
   after_update_commit :broadcast_header, if: -> { saved_change_to_status? || saved_change_to_mode? || saved_change_to_responding_since? || saved_change_to_mcp_servers? || saved_change_to_title? }
 
+  # The TurnSource surfaces a client driving a conversation can be.
+  CLIENT_SURFACES = %w[web ios carplay mcp].freeze
+
+  # @return [String, nil] the surface, or nil for anything not on the list
+  def self.normalize_client_surface(value)
+    CLIENT_SURFACES.include?(value.to_s) ? value.to_s : nil
+  end
+
   def self.current
     unfinished.order(id: :desc).first
   end

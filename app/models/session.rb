@@ -1846,8 +1846,14 @@ class Session < ApplicationRecord
   #   after a SIGTERM would deliver a beat for a moment that has already passed.
   # @param images [Array, nil] image paths forwarded to the job
   # @param files [Array, nil] file paths forwarded to the job
+  # @param source [TurnSource, nil] where the prompt came from. Appended to the
+  #   prompt as Zimmer's signed turn-source note, and stamped as
+  #   metadata["last_turn_source"]. nil for Zimmer's own notices, which carry none.
   # @return [ActiveJob::Base] the enqueued job
-  def deliver_follow_up!(prompt, clear_metadata_keys: [], metadata_updates: {}, stamp_pending_prompt: true, images: nil, files: nil)
+  def deliver_follow_up!(prompt, clear_metadata_keys: [], metadata_updates: {}, stamp_pending_prompt: true, images: nil, files: nil, source: nil)
+    prompt, source_updates = tag_turn(prompt, source)
+    metadata_updates = metadata_updates.to_h.merge(source_updates)
+
     # Clear the whole set once any member of it is present, rather than clearing only
     # the present members. That is what the five call sites did, and the difference is
     # real: a key held as `false`, `""` or `[]` is not `present?`, so per-key filtering
@@ -1896,6 +1902,53 @@ class Session < ApplicationRecord
     end
 
     job
+  end
+
+  # The key the most recent tagged turn's TurnSource is stamped under.
+  LAST_TURN_SOURCE_KEY = "last_turn_source"
+  # Room left under PROMPT_MAX_LENGTH for a turn-source note.
+  TURN_SOURCE_NOTE_ALLOWANCE = 1_000
+
+  # Where the initial prompt came from, as the creating boundary recorded it.
+  # nil for a session created before sources were recorded, or by a path that
+  # records none.
+  #
+  # @return [TurnSource, nil]
+  def initial_turn_source
+    TurnSource.from_h(source_context)
+  end
+
+  # Where the most recent tagged follow-up came from.
+  #
+  # @return [TurnSource, nil]
+  def last_turn_source
+    TurnSource.from_h(metadata&.dig(LAST_TURN_SOURCE_KEY))
+  end
+
+  # `prompt` as an initial spawn delivers it: with its turn-source note when the
+  # creating boundary recorded a source.
+  def initial_prompt_for_delivery
+    tag_turn(prompt, initial_turn_source).first
+  end
+
+  # A follow-up as it should be delivered, and the metadata that records its
+  # source. The two direct-delivery paths that do not go through
+  # #deliver_follow_up! (REST and MCP `follow_up`) call this too, so every path
+  # tags the same way.
+  #
+  # @param prompt [String]
+  # @param source [TurnSource, nil]
+  # @return [Array(String, Hash)] the prompt to deliver, and metadata to merge
+  def tag_turn(prompt, source)
+    return [ prompt, {} ] if source.nil? || prompt.blank?
+
+    # A prompt at the length limit stays untagged rather than growing past it: a
+    # spot-gate requeue writes the delivered text back to the queue, whose
+    # validation would then refuse it. The source is still recorded.
+    updates = { LAST_TURN_SOURCE_KEY => source.to_h }
+    return [ prompt, updates ] if prompt.length > PROMPT_MAX_LENGTH - TURN_SOURCE_NOTE_ALLOWANCE
+
+    [ source.annotate(prompt), updates ]
   end
 
   # A person opened this session: its unread notifications are read now. The dashboard's
@@ -2460,7 +2513,7 @@ class Session < ApplicationRecord
   #   transaction and consumes an event on this signal has to account for that; no
   #   caller does today.
   # @return [Session] the created and enqueued session
-  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, config: nil, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil, idempotency_key: nil, &on_created)
+  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, config: nil, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil, idempotency_key: nil, source: nil, &on_created)
     # An explicit override is normalized through RuntimeRegistry here, so an
     # unknown runtime fails loudly at the registry (KeyError) rather than tripping
     # the agent_runtime inclusion validation with a vaguer error.
@@ -2519,7 +2572,10 @@ class Session < ApplicationRecord
       config: config.presence,
       # Lets a caller that may retry a lost response name the attempt — see
       # Sessions::IdempotentCreate. nil for every surface that does not.
-      idempotency_key: idempotency_key.presence
+      idempotency_key: idempotency_key.presence,
+      # Where the initial prompt came from (TurnSource), rendered as a note on the
+      # first turn. nil records none.
+      source_context: source&.to_h
     )
 
     # Repository fields, runtime → model, the artifact lists and the

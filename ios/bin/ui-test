@@ -357,8 +357,12 @@ if [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot settings -ZimmerFixture -ZimmerFixtureSettings defaults
   shoot settings-experimental -ZimmerFixture -ZimmerFixtureSettings experimental
   shoot trigger-detail -ZimmerFixture -ZimmerFixtureTrigger 5
+  shoot trigger-run-now -ZimmerFixture -ZimmerFixtureTrigger 7 -ZimmerFixtureRunNow
   shoot costs -ZimmerFixture -ZimmerFixtureCosts
   shoot costs-root -ZimmerFixture -ZimmerFixtureCosts zimmer
+  shoot health -ZimmerFixture -ZimmerFixtureHealth
+  shoot health-degraded -ZimmerFixture -ZimmerFixtureHealth -ZimmerFixtureDegraded
+  shoot sessions-degraded -ZimmerFixture -ZimmerFixtureDegraded
   # Dark mode: the app draws its own (on the PWA manifest's navy), so every main screen is
   # photographed in it too.
   xcrun simctl ui "$udid" appearance dark >/dev/null 2>&1 || true
@@ -387,7 +391,9 @@ if [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot more-dark -ZimmerFixture -ZimmerFixtureTab more
   shoot settings-experimental-dark -ZimmerFixture -ZimmerFixtureSettings experimental
   shoot trigger-detail-dark -ZimmerFixture -ZimmerFixtureTrigger 5
+  shoot trigger-run-now-dark -ZimmerFixture -ZimmerFixtureTrigger 7 -ZimmerFixtureRunNow
   shoot costs-dark -ZimmerFixture -ZimmerFixtureCosts
+  shoot health-degraded-dark -ZimmerFixture -ZimmerFixtureHealth -ZimmerFixtureDegraded
   xcrun simctl ui "$udid" appearance light >/dev/null 2>&1 || true
 fi
 

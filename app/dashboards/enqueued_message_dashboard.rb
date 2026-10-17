@@ -16,6 +16,8 @@ class EnqueuedMessageDashboard < Administrate::BaseDashboard
     # Where the message came from — "caller" for an enqueue by whoever holds the
     # session, and the other origins the queue distinguishes when it drains.
     origin: Field::String,
+    # Where the message came from (TurnSource), as JSON.
+    source_context: Field::String.with_options(searchable: false),
     # Attachments, as the JSONB arrays the queue stores them in.
     images: Field::String.with_options(searchable: false),
     files: Field::String.with_options(searchable: false),

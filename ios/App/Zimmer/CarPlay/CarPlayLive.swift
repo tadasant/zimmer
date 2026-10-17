@@ -8,9 +8,8 @@ import ZimmerKit
 /// that follows the call's state and hangs it up.
 ///
 /// The call is `LiveCall.shared` — the same one the phone's Live screen drives — so a call
-/// started at the desk carries on in the car and the other way round. Inert, like the rest of
-/// the scene, until Apple grants the voice-based conversational entitlement
-/// (tadasant/zimmer#1273).
+/// started at the desk carries on in the car and the other way round. Reachable, like the rest
+/// of the scene, in a build that signs in the voice-based conversational entitlement.
 @MainActor
 final class CarPlayLive {
     weak var interfaceController: CPInterfaceController?
@@ -96,9 +95,10 @@ final class CarPlayLive {
         }
         let template = CPListTemplate(title: "Live Mode", sections: [CPListSection(items: [status, mute, hangUp])])
         // LiveCall is main-actor and publishes from there.
-        watching = call.$state.combineLatest(call.$lastError).sink { state, error in
+        watching = call.$state.combineLatest(call.$lastError, call.$muted).sink { state, error, muted in
             MainActor.assumeIsolated {
-                status.setDetailText(state == .idle ? (error ?? state.label) : state.label)
+                let label = state.label(muted: muted)
+                status.setDetailText(error.map { state == .idle ? $0 : "\(label) · \($0)" } ?? label)
             }
         }
         interfaceController?.pushTemplate(template, animated: true, completion: nil)

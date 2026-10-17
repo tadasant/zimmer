@@ -16,19 +16,29 @@ module LiveConversations
   # #session_update is the subset an open call can change, which the client
   # sends whenever the settings or the guidance change mid-call.
   #
+  # Which lines the call answers is Listening's: in a gated mode turn detection
+  # neither starts a reply nor cuts one off, and the client asks for each reply
+  # itself. `listening_modes` is whether this client can do that; a client that
+  # cannot gets `always`, whatever the setting says.
+  #
   # The instructions are SystemPrompt's for the spoken mode, with a recap of the
   # thread: the conversation may have been typed until a moment ago, and a new
   # Realtime session remembers nothing.
   class RealtimeSession
     SECRET_TTL_SECONDS = 600
 
-    def self.mint(conversation, client: OpenaiClient.new) = new(conversation, client: client).mint
+    def self.mint(conversation, client: OpenaiClient.new, listening_modes: false)
+      new(conversation, client: client, listening_modes: listening_modes).mint
+    end
 
-    def initialize(conversation, client: nil, setting: LiveSetting.current)
+    def initialize(conversation, client: nil, setting: LiveSetting.current, listening_modes: false)
       @conversation = conversation
       @client = client
       @setting = setting
+      @listening_modes = listening_modes
     end
+
+    def listening = Listening.mode(@setting, capable: @listening_modes)
 
     # @return [Hash] what the client is handed
     def mint
@@ -44,7 +54,8 @@ module LiveConversations
         # than not at all, and say why.
         warning = "OpenAI refused the Live settings (#{e.message.truncate(200)}), so this call runs on the defaults. Change them on the Live settings page."
         Rails.logger.warn("[LiveConversations::RealtimeSession] #{warning}")
-        @setting = LiveSetting.new(guidance: @setting.guidance)
+        # Listening is Zimmer's, not OpenAI's: it stays as set.
+        @setting = LiveSetting.new(guidance: @setting.guidance, voice_listening: @setting.voice_listening)
         config = session_config
         create_secret(config)
       end
@@ -60,6 +71,7 @@ module LiveConversations
         calls_url: "#{OpenaiClient.base_url}/realtime/calls",
         websocket_url: "#{OpenaiClient.base_url.sub(/\Ahttp/, 'ws')}/realtime?model=#{ERB::Util.url_encode(model)}",
         tools: tools,
+        listening: listening,
         settings_warning: warning
       }.compact
     end
@@ -110,16 +122,17 @@ module LiveConversations
     end
 
     def turn_detection
+      answers_itself = !Listening.gated?(listening)
       if @setting.effective(:voice_turn_detection) == "server_vad"
         {
           type: "server_vad",
           threshold: @setting.effective(:voice_vad_threshold),
           prefix_padding_ms: @setting.effective(:voice_vad_prefix_padding_ms),
           silence_duration_ms: @setting.effective(:voice_vad_silence_duration_ms),
-          create_response: true, interrupt_response: true
+          create_response: answers_itself, interrupt_response: answers_itself
         }
       else
-        { type: "semantic_vad", eagerness: @setting.effective(:voice_vad_eagerness), create_response: true, interrupt_response: true }
+        { type: "semantic_vad", eagerness: @setting.effective(:voice_vad_eagerness), create_response: answers_itself, interrupt_response: answers_itself }
       end
     end
 

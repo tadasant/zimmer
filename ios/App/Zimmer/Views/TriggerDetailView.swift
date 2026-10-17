@@ -1,11 +1,12 @@
 import SwiftUI
 import ZimmerKit
 
-/// The web UI's trigger page, in the parts that matter on a phone: its status and the labels
-/// beside its name, why it failed if it did, when it last fired and the session it last
-/// started, what fires it, the root and settings its sessions get, its prompt, and the
-/// sessions it made. Turn it on or off (or re-arm it), or invoke it now. Editing it, and its
-/// two re-use switches, stay on the page in the browser.
+/// The web UI's trigger page: its status and the labels beside its name, why it failed if it
+/// did, when it last fired and the session it last started, what fires it, the root and every
+/// setting its sessions get (re-use, pending, coalescing, missed fires, burst cap, scheduling
+/// class, precedence, the catalog artifacts), its goal and prompt, and the sessions it made.
+/// Turn it on or off (or re-arm it), or run it now, filling the template's variables as the
+/// web page's Run Now panel does. Editing it, and its two re-use switches, stay in the browser.
 struct TriggerDetailView: View {
     let id: Int
     @EnvironmentObject private var app: AppModel
@@ -14,6 +15,8 @@ struct TriggerDetailView: View {
     @State private var error: ZimmerError?
     @State private var notice: String?
     @State private var confirmingInvoke = false
+    /// The Run Now sheet, for a template with variables to fill.
+    @State private var runningWithVariables = false
     /// A toggle in flight: a second tap waits for the first.
     @State private var toggling = false
 
@@ -35,6 +38,11 @@ struct TriggerDetailView: View {
                 .accessibilityIdentifier("trigger.invoke.confirm")
         } message: { _ in
             Text("It fires as if its condition had matched, as the web UI's Invoke does.")
+        }
+        .sheet(isPresented: $runningWithVariables) {
+            if let trigger = detail?.trigger {
+                TriggerRunSheet(trigger: trigger) { variables in await invoke(variables: variables) }
+            }
         }
         .refreshable { await load() }
         .task { await load() }
@@ -165,9 +173,82 @@ struct TriggerDetailView: View {
                 .accessibilityIdentifier("trigger.detail.enqueue")
             reuseOption("Resuscitate archived", on: trigger.resuscitateArchived, reuse: trigger.reuseSession)
                 .accessibilityIdentifier("trigger.detail.resuscitate")
-            row("Max sessions / minute") {
-                if let max = trigger.maxSessionsPerMinute { Text(verbatim: "\(max)").monospacedDigit() } else { Text("No limit") }
+            VStack(alignment: .leading, spacing: 3) {
+                row("Skip while pending") { onOff(trigger.skipIfPendingSession) }
+                if trigger.skipIfPendingSessionInert {
+                    Text("Inert while this trigger has a live session to re-use — those fires never reach the spawn path this setting guards. It applies again on a fire that has to spawn.")
+                        .font(.caption).foregroundStyle(Theme.inkMute)
+                } else if trigger.skipIfPendingSession {
+                    Text("A fire spawns nothing while a session it started is still pending.").font(.caption).foregroundStyle(Theme.inkMute)
+                }
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("trigger.detail.skipPending")
+            VStack(alignment: .leading, spacing: 3) {
+                row("Coalescing window") {
+                    HStack(spacing: 4) {
+                        if let seconds = trigger.effectiveCoalesceWindowSeconds, seconds > 0 {
+                            Text(verbatim: "\(seconds)s").monospacedDigit()
+                        } else {
+                            Text("Off")
+                        }
+                        if trigger.coalesceWindowSeconds == nil { Text("(default)").foregroundStyle(Theme.inkMute) }
+                    }
+                }
+                Text(coalescingNote(trigger)).font(.caption).foregroundStyle(Theme.inkMute)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("trigger.detail.coalescing")
+            if trigger.missedFireCount > 0 {
+                VStack(alignment: .leading, spacing: 3) {
+                    row("Missed fires") {
+                        Text(verbatim: "\(trigger.missedFireCount) consecutive fire\(trigger.missedFireCount == 1 ? "" : "s") coalesced"
+                             + (trigger.firstMissedFireAt.map { " since \($0.formatted(date: .abbreviated, time: .shortened))" } ?? ""))
+                            .foregroundStyle(Theme.danger)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    Text("The re-used session is still holding an undelivered prompt, so the scheduled work has not run. It resumes on its own once that session takes a turn.")
+                        .font(.caption).foregroundStyle(Theme.inkMute)
+                }
+                .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("trigger.detail.missedFires")
+            }
+            row("Max sessions / minute") {
+                HStack(spacing: 6) {
+                    if let max = trigger.maxSessionsPerMinute { Text(verbatim: "\(max)").monospacedDigit() } else { Text("No limit") }
+                    if trigger.bursting { Text("Bursting — spawns suppressed").font(.caption).foregroundStyle(Theme.danger) }
+                }
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                row("Scheduling class") {
+                    HStack(spacing: 6) {
+                        Text(trigger.effectiveSchedulingClass ?? "default")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 7).padding(.vertical, 2.5)
+                            .foregroundStyle(trigger.effectiveSchedulingClass == "priority" ? Theme.accent : Theme.inkSoft)
+                            .background((trigger.effectiveSchedulingClass == "priority" ? Theme.accent : Theme.inkSoft).opacity(0.14), in: Capsule())
+                        Text(trigger.schedulingClass == nil ? "default for its conditions" : "set on this trigger").font(.caption).foregroundStyle(Theme.inkMute)
+                    }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("trigger.detail.schedulingClass")
+            row("Precedence") {
+                if let precedence = trigger.precedence {
+                    HStack(spacing: 6) {
+                        Text(verbatim: "\(precedence)").monospacedDigit()
+                        Text("stamped on the sessions it spawns — higher is worked first").font(.caption).foregroundStyle(Theme.inkMute)
+                    }
+                } else {
+                    Text("none predefined").foregroundStyle(Theme.inkMute)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("trigger.detail.precedence")
+            chips("MCP servers", trigger.mcpServers, list: "mcp_servers", trigger: trigger, tone: Theme.accent)
+            chips("Skills", trigger.catalogSkills, list: "catalog_skills", trigger: trigger, tone: Theme.success)
+            chips("Hooks", trigger.catalogHooks, list: "catalog_hooks", trigger: trigger, tone: Theme.warning)
+            chips("Plugins", trigger.catalogPlugins, list: "catalog_plugins", trigger: trigger, tone: Theme.snooze)
             if let goal = trigger.goal, !goal.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Goal").font(.subheadline).foregroundStyle(Theme.inkSoft)
@@ -177,7 +258,7 @@ struct TriggerDetailView: View {
         } header: {
             Text("Sessions it starts").themeLabel()
         } footer: {
-            Text("Enqueue messages and Resuscitate archived are switched on the trigger's page in the browser, with the rest of its settings.")
+            Text("Enqueue messages and Resuscitate archived are switched on the trigger's page in the browser, with the rest of its settings. An empty artifact list means the trigger says nothing about that kind, so its sessions take the agent root's defaults.")
                 .font(.caption)
                 .foregroundStyle(Theme.inkMute)
         }
@@ -192,6 +273,11 @@ struct TriggerDetailView: View {
                     .padding(.vertical, 2)
             } header: {
                 Text("Prompt template").themeLabel()
+            } footer: {
+                Text("Sent to the agent when the trigger fires. Variables: {{link}}, {{text}}, {{author}}, {{channel}}, {{time}}, {{date}}, {{event}}" +
+                     (trigger.promptVariables.isEmpty ? "." : "; Run Now asks for \(trigger.promptVariables.map { "{{\($0)}}" }.joined(separator: ", "))."))
+                    .font(.caption)
+                    .foregroundStyle(Theme.inkMute)
             }
             .themeRows()
         }
@@ -236,7 +322,7 @@ struct TriggerDetailView: View {
     private var actions: some View {
         Menu {
             if let trigger = detail?.trigger {
-                Button { confirmingInvoke = true } label: { Label("Invoke Now", systemImage: "play.fill") }
+                Button { runNow(trigger) } label: { Label("Run Now", systemImage: "play.fill") }
                 Button {
                     Task { await toggle() }
                 } label: {
@@ -278,6 +364,45 @@ struct TriggerDetailView: View {
         }
     }
 
+    /// The web page's sentence beside the coalescing window.
+    private func coalescingNote(_ trigger: TriggerSummary) -> String {
+        if trigger.coalesceWindowInert { return "Inert — only Slack conditions coalesce, and this trigger has none." }
+        if let seconds = trigger.effectiveCoalesceWindowSeconds, seconds > 0 {
+            return "Slack messages in one channel within this window are one event and spawn one session; the rest are folded into its prompt."
+        }
+        return "Every message spawns its own session."
+    }
+
+    /// The catalog artifacts its sessions get, as the web page's chips: a name the catalog no
+    /// longer resolves is kept on the trigger and flagged, since its sessions run without it.
+    @ViewBuilder
+    private func chips(_ title: String, _ names: [String], list: String, trigger: TriggerSummary, tone: Color) -> some View {
+        if !names.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.subheadline).foregroundStyle(Theme.inkSoft)
+                FlowLayout(spacing: 6, rowSpacing: 6) {
+                    ForEach(names, id: \.self) { name in
+                        let unresolved = trigger.catalogReferenceUnresolved(list, name)
+                        Text(verbatim: unresolved ? "\(name) (not in catalog)" : name)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2.5)
+                            .foregroundStyle(unresolved ? Theme.danger : tone)
+                            .background((unresolved ? Theme.danger : tone).opacity(0.14), in: Capsule())
+                    }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("trigger.detail.\(list)")
+        }
+    }
+
+    /// Run Now: a template with variables opens the sheet to fill them; one without asks
+    /// for a confirmation, as the web panel's bare Run does.
+    private func runNow(_ trigger: TriggerSummary) {
+        if trigger.promptVariables.isEmpty { confirmingInvoke = true } else { runningWithVariables = true }
+    }
+
     private func failedHeadline(_ trigger: TriggerSummary) -> String {
         guard let at = trigger.failedAt else { return "This trigger failed to fire" }
         let age = Format.age(at)
@@ -288,6 +413,10 @@ struct TriggerDetailView: View {
         do {
             detail = try await app.api.trigger(id)
             error = nil
+            if app.fixtureOpensRunNow {
+                app.fixtureOpensRunNow = false
+                runningWithVariables = true
+            }
         } catch {
             self.error = error as? ZimmerError ?? .transport(error)
             app.noteError(self.error!)
@@ -309,9 +438,9 @@ struct TriggerDetailView: View {
         }
     }
 
-    private func invoke() async {
+    private func invoke(variables: [String: String] = [:]) async {
         do {
-            let result = try await app.api.invokeTrigger(id)
+            let result = try await app.api.invokeTrigger(id, variables: variables)
             notice = result.notice
             if result.started { Haptics.success() } else { Haptics.failure() }
             await load()
