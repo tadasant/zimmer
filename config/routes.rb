@@ -229,6 +229,25 @@ Rails.application.routes.draw do
           post :session_update
         end
       end
+      # The Inference page for the iOS app: the account roster with its quota
+      # windows, the rotation log, the OpenRouter key's state, and the spot /
+      # top-up / genesis policy. Reads take a key; every write takes only the
+      # app's sign-in acting as you. See Api::V1::InferenceController.
+      get "inference", to: "inference#show"
+      scope "inference", controller: :inference, as: :inference do
+        post "accounts", action: :create_account, as: :accounts
+        post "accounts/:id/refresh", action: :refresh_account, as: :refresh_account
+        post "accounts/:id/activate", action: :activate_account, as: :activate_account
+        delete "accounts/:id", action: :destroy_account, as: :account
+        post "logins", action: :start_login, as: :logins
+        get "logins/:id", action: :login_status, as: :login
+        post "logins/:id/code", action: :submit_login_code, as: :login_code
+        post "logins/:id/cancel", action: :cancel_login, as: :cancel_login
+        patch "spot_policy", action: :update_spot_policy, as: :spot_policy
+        patch "fleet_top_up", action: :update_fleet_top_up, as: :fleet_top_up
+        patch "genesis/:genesis", action: :update_genesis_class, as: :genesis_class
+        delete "genesis", action: :reset_genesis_classes, as: :genesis_classes
+      end
 
       # A Zimmer plugin's REST surface (ExternalApp): its allowlisted triggers and
       # invoking one. Opened only by an `external_app` key, which every other
@@ -239,6 +258,8 @@ Rails.application.routes.draw do
       end
 
       resources :configs, only: [ :index ]
+      # The Settings page's row: session defaults, the experimental toggles, MCP Apps.
+      resource :app_settings, only: [ :show, :update ]
       # Models added to a runtime's catalog at runtime (#85). The built-in ones
       # are read-only and listed under `runtime_models` in GET /configs.
       resources :model_catalog_entries, only: [ :index, :create, :destroy ]
@@ -378,6 +399,8 @@ Rails.application.routes.draw do
       resources :triggers do
         member do
           post :toggle
+          post :toggle_enqueue_messages
+          post :toggle_resuscitate_archived
           post :invoke
         end
         collection do
