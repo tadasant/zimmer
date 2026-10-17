@@ -16,8 +16,8 @@
 #   headroom(window) = (1 − u) + u × relief
 #   relief           = clamp(1 − time_to_reset / horizon, 0, 1)
 #
-# where `u` is the window's effective utilization (0 once its reset has passed;
-# ClaudeAccountQuotaSnapshot.effective_utilization) and the horizon is 24 hours
+# where `u` is the window's effective utilization (0 once its reset has passed,
+# the rule of ClaudeAccountQuotaSnapshot.effective_utilization) and the horizon is 24 hours
 # for the 7-day window and 5 hours for the 5-hour one.
 #
 # * **Headroom, not usage.** An account is worth serving from in proportion to
@@ -37,8 +37,8 @@
 #   it yet) gets no relief, and usually has no usage either.
 #
 # A spent window is not special-cased: utilization at or past the cap is
-# headroom 0 on that window. Whether an account can serve at all is #eligible?'s
-# question, not this one's — a 5h-spent account still has a meaningful score,
+# headroom 0 on that window. Whether the pool may move onto an account is
+# #eligible?'s question, not this one's — a 5h-spent account still has a meaningful score,
 # which is exactly what the priority reshuffle needs to rank it by.
 class ClaudeAccountScore
   WEIGHT_7D = 0.8
@@ -53,6 +53,14 @@ class ClaudeAccountScore
   # account every 15 minutes, so twice the spare cadence tolerates one missed
   # sample without ever switching on a reading from yesterday.
   FRESHNESS = 2.hours
+
+  # The most of either window an account may have used and still be switched
+  # onto. Relief makes an account about to reset rank well, which is right for
+  # ordering — but an account with 2% of its week left for twelve more hours
+  # would hit its wall in the next busy stretch, mid-turn, costing exactly the
+  # cache the switch was timed to protect. So the bar for moving the pool onto an
+  # account is headroom it has NOW, not headroom it is about to get back.
+  SWITCH_ONTO_MAX_UTILIZATION = 0.9
 
   attr_reader :account, :snapshot, :now
 
@@ -84,10 +92,18 @@ class ClaudeAccountScore
 
   # Whether a proactive switch may move the pool ONTO this account: it is
   # active, holds a credential Anthropic has not refused, carries a fresh
-  # reading, and neither window of that reading is spent. Every condition is a
+  # reading, and neither window of that reading is spent or above
+  # SWITCH_ONTO_MAX_UTILIZATION. Every condition is a
   # way an account could be handed to the next session and fail it.
   def eligible?
     ineligible_reason.nil?
+  end
+
+  # Whether the latest reading says a window is spent and has not reset yet —
+  # an account the pool cannot serve from right now, whatever its score says
+  # about how much it will have once it resets.
+  def spent?
+    snapshot.present? && (snapshot.seven_day_window_spent? || snapshot.five_hour_window_spent?)
   end
 
   # Why #eligible? said no, in words /inference can print, or nil.
@@ -99,6 +115,8 @@ class ClaudeAccountScore
     return "quota reading is older than #{FRESHNESS.inspect}" unless fresh?
     return "7-day window spent" if snapshot.seven_day_window_spent?
     return "5-hour window spent" if snapshot.five_hour_window_spent?
+    return "7-day window above #{(SWITCH_ONTO_MAX_UTILIZATION * 100).round}%" if used(snapshot.utilization_7d, snapshot.reset_7d) > SWITCH_ONTO_MAX_UTILIZATION
+    return "5-hour window above #{(SWITCH_ONTO_MAX_UTILIZATION * 100).round}%" if used(snapshot.utilization_5h, snapshot.reset_5h) > SWITCH_ONTO_MAX_UTILIZATION
 
     nil
   end
@@ -106,8 +124,16 @@ class ClaudeAccountScore
   private
 
   def headroom(utilization, reset_at, horizon)
-    used = ClaudeAccountQuotaSnapshot.effective_utilization(utilization, reset_at).to_f.clamp(0.0, 1.0)
-    (1.0 - used) + used * relief(reset_at, horizon)
+    u = used(utilization, reset_at)
+    (1.0 - u) + u * relief(reset_at, horizon)
+  end
+
+  # ClaudeAccountQuotaSnapshot.effective_utilization's rule, judged at `now`
+  # rather than the wall clock so a plan for any moment is self-consistent.
+  def used(utilization, reset_at)
+    return 0.0 if reset_at && reset_at <= now
+
+    utilization.to_f.clamp(0.0, 1.0)
   end
 
   def relief(reset_at, horizon)

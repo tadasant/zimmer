@@ -514,6 +514,7 @@ module InferenceHelper
 
     [ current, target, current != kind.default_class, badge ]
   end
+
   # The one sentence that says whether the idle pool is about to move to a
   # better account, and if not, which of AccountRebalanceService's conditions is
   # holding it — so "why are we still on the 81% account?" has an answer on the
@@ -528,6 +529,11 @@ module InferenceHelper
     when :busy
       "Holding on #{current}: #{pluralize(plan.turns_in_flight, 'turn')} in flight. " \
         "The pool switches accounts only when nothing is running, so no session loses its prompt cache."
+    when :fleet_unreadable
+      "Holding on #{current}: the fleet's running turns could not be read, and the pool never switches on a guess that nothing is running."
+    when :manual_hold
+      "Holding on #{current}: someone switched to it by hand, so rebalancing leaves it alone for another " \
+        "#{distance_of_time_in_words(plan.now, plan.manual_until)}."
     when :inside_idle_window
       "Holding on #{current}: the last Claude Code activity was #{time_ago_in_words(plan.last_activity_at)} ago. " \
         "A switch can happen once the pool has been quiet for #{distance_of_time_in_words(plan.idle_window)} " \
@@ -536,7 +542,8 @@ module InferenceHelper
       "Holding on #{current}: it has no quota reading from the last #{distance_of_time_in_words(ClaudeAccountScore::FRESHNESS)} to compare against."
     when :no_candidate
       "Staying on #{current}: no other account is eligible — each needs to be active, credentialed, " \
-        "read in the last #{distance_of_time_in_words(ClaudeAccountScore::FRESHNESS)}, and have room in both windows."
+        "read in the last #{distance_of_time_in_words(ClaudeAccountScore::FRESHNESS)}, and under " \
+        "#{(ClaudeAccountScore::SWITCH_ONTO_MAX_UTILIZATION * 100).round}% of both windows."
     when :current_is_best
       if plan.best_score <= plan.current_score
         "Staying on #{current}: it scores highest (#{rebalance_score(plan.current_score)})."

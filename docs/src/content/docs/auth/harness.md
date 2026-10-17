@@ -364,17 +364,18 @@ When an account hits its rate limit, Zimmer rotates to the next one by priority:
 
 1. Snapshot the outgoing account's quota state.
 2. Label the outgoing account **on evidence** — see [A rotation is not evidence about quota](#a-rotation-is-not-evidence-about-quota).
-   On a quota rotation, re-rank every account's `priority` by its `ClaudeAccountScore`, best first
+3. On a quota rotation, re-rank every account's `priority` by its `ClaudeAccountScore`, best first
    (see [Proactive rebalancing](#proactive-rebalancing)), so the accounts with the most weekly usage
-   sink to the bottom before a successor is chosen.
-3. `activate_next_account` — which skips a candidate whose latest snapshot says its weekly window is
+   sink to the bottom before a successor is chosen. An account with a spent window that has not reset
+   ranks last whatever its score.
+4. `activate_next_account` — which skips a candidate whose latest snapshot says its weekly window is
    spent, then validates the survivor by calling `refresh_token!` before activating it. A broken or
    capped account is skipped before it can be handed to a session.
-4. Mark the new account current. Nothing is written to disk — the next spawn reads its token out of
+5. Mark the new account current. Nothing is written to disk — the next spawn reads its token out of
    the row.
-5. Record an `AccountRotationEvent`.
+6. Record an `AccountRotationEvent`.
 
-Steps 1–5 run under the per-runtime pool lock (`ClaudeAccount.with_pool_lock`), and the caller
+Steps 1–6 run under the per-runtime pool lock (`ClaudeAccount.with_pool_lock`), and the caller
 passes the identity its session was running as. A stampede — N sessions hitting the same account's
 quota within seconds — therefore produces **one** rotation: the first racer moves the pool, and
 every racer behind it finds the pool already off the account it was complaining about and returns
@@ -415,9 +416,13 @@ one that does not:
 | --- | --- |
 | no turn is on a worker or queued for one (`Session.running_turns`, any runtime) | a switch must not land between two turns of a live session |
 | no Claude Code session has shown transcript activity for 60 minutes (`CLAUDE_REBALANCE_IDLE_MINUTES`) | Anthropic's prompt cache is per account and lives an hour; after that a switch throws nothing away |
+| nobody pressed **Switch** on /inference in the last 24 hours | a human's pick had a reason the score cannot see |
 | the current account has a reading less than two hours old | the comparison needs two numbers |
-| another account is eligible: active, credentialed, read in the last two hours, neither window spent | anything else could fail the next session |
+| another account is eligible: active, credentialed, read in the last two hours, under 90% of both windows | anything else could wall the next busy stretch mid-turn |
 | the best one beats the current account by at least 0.15 (`CLAUDE_REBALANCE_MIN_SCORE_GAIN`) | hysteresis, so near-equal accounts do not swap every hour |
+
+A current account that cannot serve at all (not `active`, or its credential refused) scores 0 and
+skips the manual hold and the freshness check. A fleet whose running turns cannot be read holds.
 
 `CLAUDE_REBALANCE_ENABLED=false` turns it off. The switch holds the pool lock, probes the candidate once
 (which also proves its credential), re-checks for a turn in flight, and records an
@@ -429,7 +434,7 @@ transaction, so a spawn reading `current_account` sees the old account or the ne
 and never neither. A session that reads the old one just before the commit runs on it; the next spawn
 gets the new one.
 
-Each quota rotation re-ranks `priority` by the same score, so the reactive path falls back to the
+Each quota rotation and each rebalance re-ranks `priority` by the same score, so the reactive path falls back to the
 account the proactive path would have chosen. A priority typed into the add-account form is therefore
 only a starting position.
 

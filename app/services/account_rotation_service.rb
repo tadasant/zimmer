@@ -258,10 +258,16 @@ class AccountRotationService
   # best first: 0, 1, 2, … in descending score. Since the score is mostly weekly
   # headroom, the accounts with the most 7-day usage sink to the bottom.
   #
+  # An account whose reading says a window is spent and not yet reset ranks
+  # after every account that can serve now, whatever its score. Relief can score
+  # a 5-hour-spent account with a fresh week near the top, and
+  # activate_next_account only refuses a spent WEEK — so ranking it first would
+  # hand the very next rotation an account that walls on its first request.
+  #
   # Ranked on each account's latest reading whatever its age — freshness is the
   # bar for switching the pool onto an account, not for ordering the fallback
-  # list. An account with no reading at all ranks after every scored one,
-  # keeping its old relative position. Ties keep their old order too, so a
+  # list. An account with no reading at all ranks after every scored one that
+  # can serve now, keeping its old relative position. Ties keep their old order too, so a
   # reshuffle over identical readings is a no-op.
   #
   # `update_columns` deliberately: it leaves `updated_at` alone, and
@@ -277,12 +283,22 @@ class AccountRotationService
     scores = ClaudeAccountScore.for_accounts(accounts, now: now)
 
     ranked = accounts.each_with_index.sort_by do |account, index|
-      value = scores[account.id].value
-      [ value.nil? ? 1 : 0, -(value || 0), index ]
+      score = scores[account.id]
+      value = score.value
+      [ score.spent? ? 1 : 0, value.nil? ? 1 : 0, -(value || 0), index ]
     end.map(&:first)
 
     ranked.each_with_index do |account, priority|
       account.update_columns(priority: priority) unless account.priority == priority
+    end
+
+    # Ranking a weekly-capped account last means rotation no longer walks past
+    # it, and walking past it is where activate_next_account labels it (#248).
+    # Label it here on the same evidence instead, so `available` and every
+    # pool-dry surface stop counting it until QuotaResetCheckerJob restores it.
+    ranked.each do |account|
+      snapshot = scores[account.id].snapshot
+      account.mark_quota_exceeded! if account.active? && snapshot&.seven_day_window_spent?
     end
 
     Rails.logger.info "[AccountRotationService] Re-ranked the pool by score: " +

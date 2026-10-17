@@ -178,6 +178,85 @@ class AccountRebalanceServiceTest < ActiveSupport::TestCase
     assert_equal [ @secondary, @tertiary, @primary ], plan.ranking.map(&:account)
   end
 
+  test "does not switch onto an account nearly out of its week, however soon it resets" do
+    @secondary.quota_snapshots.delete_all
+    read(@secondary, u7: 0.98, reset_7d: 12.hours.from_now)
+    @tertiary.update_columns(status: ClaudeAccount.statuses[:needs_reauth])
+
+    assert_stayed_on(@primary) { assert_equal :no_candidate, @service.rebalance![:state] }
+  end
+
+  test "does not switch onto an account nearly out of its 5-hour window" do
+    @secondary.quota_snapshots.delete_all
+    read(@secondary, u5: 0.95, u7: 0.0)
+    @tertiary.update_columns(status: ClaudeAccount.statuses[:needs_reauth])
+
+    assert_stayed_on(@primary) { assert_equal :no_candidate, @service.rebalance![:state] }
+  end
+
+  test "a human's Switch holds the pool for a day" do
+    AccountRotationEvent.create!(rotated_from: @secondary, rotated_to: @primary, source: "manual",
+      reason: "manual", created_at: 3.hours.ago)
+
+    assert_stayed_on(@primary) { assert_equal :manual_hold, @service.rebalance![:state] }
+
+    travel 22.hours do
+      quiet_since(2.hours.ago)
+      read(@primary, u5: 0.05, u7: 0.81, reset_7d: 14.hours.from_now)
+      read(@secondary)
+      assert @service.rebalance![:rebalanced]
+    end
+  end
+
+  test "a current account that cannot serve is left even without a fresh reading or past a manual switch" do
+    @primary.quota_snapshots.delete_all
+    @primary.update_columns(status: ClaudeAccount.statuses[:needs_reauth])
+    AccountRotationEvent.create!(rotated_from: @secondary, rotated_to: @primary, source: "manual", created_at: 1.hour.ago)
+
+    assert @service.rebalance![:rebalanced]
+    assert @secondary.reload.is_current?
+  end
+
+  test "a fleet that cannot be read holds" do
+    Session.stubs(:running_turns).raises(ActiveRecord::StatementInvalid, "boom")
+
+    assert_stayed_on(@primary) { assert_equal :fleet_unreadable, @service.rebalance![:state] }
+  end
+
+  test "a pool with no Claude Code activity ever counts as idle" do
+    Session.update_all(last_timeline_entry_at: nil)
+
+    assert @service.rebalance![:rebalanced]
+  end
+
+  test "stays put when the candidate cannot be probed" do
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, unreachable: true, error_message: "connection refused")
+    )
+
+    assert_stayed_on(@primary) { assert_equal :candidate_unprobeable, @service.rebalance![:state] }
+  end
+
+  test "stays put when another rotation holds the pool lock" do
+    ClaudeAccount.stubs(:with_pool_lock).returns(nil)
+
+    assert_stayed_on(@primary) { assert_equal :rotation_in_flight, @service.rebalance![:state] }
+  end
+
+  test "a rebalance re-ranks priorities by score" do
+    @service.rebalance!
+
+    assert_equal 0, @secondary.reload.priority
+    assert_operator @tertiary.reload.priority, :<, @primary.reload.priority,
+      "the 36% account outranks the 81% one"
+  end
+
+  test "the job swallows an error rather than failing the cron" do
+    AccountRebalanceService.any_instance.stubs(:rebalance!).raises(StandardError, "boom")
+
+    assert_nil AccountRebalanceJob.perform_now
+  end
+
   test "the job runs the rebalance" do
     AccountRebalanceJob.perform_now
 
