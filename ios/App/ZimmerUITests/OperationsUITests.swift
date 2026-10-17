@@ -140,9 +140,11 @@ final class OperationsUITests: XCTestCase {
             XCTAssertTrue(reach(app, identifier), "\(identifier) is on the page")
             if let text { XCTAssertTrue(app.staticTexts[text].firstMatch.exists, "\(identifier) names \(text)") }
         }
-        // A recent failure opens its session.
+        // A recent failure opens its session. Recent Failures is above Recent Errors, where
+        // the walk ended: searching down from the foot of the page spent twenty steps, two
+        // minutes and more, before turning back, and took the test past its five minutes.
         let failure = app.buttons["health.recentFailures.1027"]
-        XCTAssertTrue(reach(app, "health.recentFailures.1027", whole: true))
+        XCTAssertTrue(reach(app, "health.recentFailures.1027", whole: true, searching: .up))
         failure.tap()
         XCTAssertTrue(app.navigationBars["#1027"].waitForExistence(timeout: timeout))
 
