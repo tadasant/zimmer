@@ -877,6 +877,44 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert secondary.reload.is_current?
   end
 
+  test "the Claude tab says what is holding the next rebalance" do
+    Session.stubs(:running_turns).returns(RunningTurns::Reading.new(on_a_worker: 2, awaiting_a_worker: 0, asleep: 0))
+
+    get inference_path
+
+    assert_response :success
+    assert_select "#account-rebalance h3", text: "Rebalancing"
+    assert_select "#account-rebalance-sentence", text: /2 turns in flight/
+  end
+
+  test "the Claude tab names the idle window when the pool was active recently" do
+    Session.stubs(:running_turns).returns(RunningTurns::EMPTY)
+    Session.where(agent_runtime: "claude_code").update_all(last_timeline_entry_at: 10.minutes.ago)
+
+    get inference_path
+
+    assert_select "#account-rebalance-sentence", text: /quiet for about 1 hour/
+  end
+
+  test "the Codex tab has no rebalancing line" do
+    get inference_path(runtime: "codex")
+
+    assert_response :success
+    assert_select "#account-rebalance", count: 0
+  end
+
+  test "the rotation log shows a rebalance" do
+    AccountRotationEvent.create!(
+      rotated_from: claude_accounts(:primary), rotated_to: claude_accounts(:secondary),
+      reason: "rebalance", source: "automatic", triggered_by: "score 0.34 → 1.00"
+    )
+
+    get inference_path
+
+    assert_match(/rebalance/, response.body)
+    assert_match(/score 0\.34 → 1\.00/, response.body)
+  end
+
   # Issue #618's acceptance criterion, stated as a test: with the DB as the sole
   # owner there is no second store to disagree with, so nothing on this page may
   # ask an operator to reconcile, adopt, sync, or choose between stores.
@@ -1737,6 +1775,9 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
   end
 
   # --- The Pi tab -----------------------------------------------------------
+  #
+  # Zimmer reads the key and never writes it. The tab says whether it resolves
+  # and links the console that sets it.
 
   test "Pi is a tab beside Claude Code and Codex" do
     get inference_url
@@ -1747,7 +1788,7 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "the Pi tab renders with the key absent" do
-    ManagedSecret.stub(:openrouter_key, unwritable_secret) do
+    with_pi_chain do
       get inference_url(runtime: "pi")
     end
 
@@ -1757,19 +1798,19 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_match "OPENROUTER_API_KEY", response.body
   end
 
-  test "the Pi tab renders with the key set, showing a digest and never the key" do
-    ManagedSecret.stub(:openrouter_key, writable_secret(value: PI_KEY)) do
+  test "the Pi tab renders with the key set, never showing the key or a digest of it" do
+    with_pi_chain(value: PI_KEY) do
       get inference_url(runtime: "pi")
     end
 
     assert_response :success
     assert_select "[data-openrouter-key-state=set]"
-    assert_select "[data-openrouter-fingerprint]", text: Digest::SHA256.hexdigest(PI_KEY)[0, 12]
     assert_no_match(/#{Regexp.escape(PI_KEY)}/, response.body)
+    assert_no_match(/#{Digest::SHA256.hexdigest(PI_KEY)[0, 12]}/, response.body)
   end
 
   test "the Pi tab has no account-pool machinery on it" do
-    ManagedSecret.stub(:openrouter_key, unwritable_secret) do
+    with_pi_chain do
       get inference_url(runtime: "pi")
     end
 
@@ -1778,107 +1819,65 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "the Pi tab lists only OpenRouter-routed models as the ones this deployment feeds" do
-    ManagedSecret.stub(:openrouter_key, unwritable_secret) do
+    with_pi_chain do
       get inference_url(runtime: "pi")
     end
 
     assert_match "openrouter/anthropic/claude-opus-4.6", response.body
   end
 
-  test "a closed write path names the missing permissions rather than offering a form" do
-    ManagedSecret.stub(:openrouter_key, unwritable_secret) do
-      get inference_url(runtime: "pi")
+  test "the Pi tab offers no form for the key, and links the configured console with the path to use" do
+    with_store_console(url: "https://console.example/ui/secrets", store_name: "Zimmer test") do
+      with_pi_chain do
+        get inference_url(runtime: "pi")
+      end
     end
 
-    assert_select "[data-openrouter-write-blocked]"
-    assert_select "form[action=?]", openrouter_key_inference_path, count: 0
-    assert_match ParameterStore::Capabilities::CREATE_SECRET, response.body
-    assert_match "ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON", response.body
+    assert_select "#pi_panel input[type=password]", count: 0
+    assert_select "#pi_panel [data-store-console-note] a[data-store-console-link][href=?]", "https://console.example/ui/secrets"
+    assert_select "#pi_panel [data-store-console-note]", text: /Zimmer test/
+    assert_select "#pi_panel [data-store-console-note] code", text: "/zimmer/test/secrets/static/OPENROUTER_API_KEY"
   end
 
-  # --- The property: the key cannot be read back out -------------------------
-
-  test "no HTTP surface returns the stored key" do
-    secret = writable_secret
-    ManagedSecret.stub(:openrouter_key, secret) do
-      put openrouter_key_inference_path, params: { openrouter_api_key: PI_KEY }
-      assert_redirected_to inference_path(runtime: "pi")
-      assert_equal PI_KEY, pi_chain.get(ManagedSecret::OPENROUTER_API_KEY),
-        "precondition: the key really is in the store, so the assertions below mean something"
-
-      # The redirect response, the flash it carries, and the page it lands on.
-      assert_no_match(/#{Regexp.escape(PI_KEY)}/, response.body)
-      assert_no_match(/#{Regexp.escape(PI_KEY)}/, flash.to_hash.values.join(" "))
-
-      follow_redirect!
-      assert_response :success
-      assert_no_match(/#{Regexp.escape(PI_KEY)}/, response.body)
-
-      # And a fresh render, which is the state a later visitor sees.
-      get inference_url(runtime: "pi")
-      assert_no_match(/#{Regexp.escape(PI_KEY)}/, response.body)
+  test "with no console configured, the Pi tab names the path and links nowhere" do
+    with_store_console(url: nil) do
+      with_pi_chain do
+        get inference_url(runtime: "pi")
+      end
     end
+
+    assert_select "#pi_panel [data-store-console-link]", count: 0
+    assert_select "#pi_panel [data-store-console-note] code", text: "/zimmer/test/secrets/static/OPENROUTER_API_KEY"
+    assert_match "ZIMMER_STORE_CONSOLE_URL", response.body
   end
 
-  test "no route reads the key back" do
-    # There is deliberately no GET on the key. If one is ever added, this fails.
+  test "a key that resolves from ENV is not offered as one the console can rotate or delete" do
+    env_chain = SecretProviders::Chain.new([ pi_fake.provider, SecretProviders::Env.new({ PiAuthProvider::OPENROUTER_API_KEY => PI_KEY }) ])
+    with_store_console(url: "https://console.example/ui/secrets") do
+      SecretProviders.stub(:chain, env_chain) { get inference_url(runtime: "pi") }
+    end
+
+    assert_select "[data-openrouter-key-state=set]"
+    assert_select "#pi_panel [data-store-console-verb]", text: /resolves from ENV/
+    assert_select "#pi_panel [data-store-console-verb]", text: /Rotate or delete/, count: 0
+    assert_no_match(/#{Regexp.escape(PI_KEY)}/, response.body)
+  end
+
+  test "a key in the store is offered as one to rotate or delete in the console" do
+    with_store_console(url: "https://console.example/ui/secrets") do
+      with_pi_chain(value: PI_KEY) { get inference_url(runtime: "pi") }
+    end
+
+    assert_select "#pi_panel [data-store-console-verb]", text: /Rotate or delete it/
+  end
+
+  test "no route writes, deletes or reads the key" do
     key_routes = Rails.application.routes.routes.select do |route|
-      route.path.spec.to_s.include?("openrouter_key")
+      route.path.spec.to_s.match?(/openrouter_key|openai_key/)
     end
 
-    assert key_routes.any?, "precondition: the key routes exist"
-    assert_equal [ "DELETE", "PUT" ], key_routes.map(&:verb).sort,
-      "the key is create/update/delete only — a GET here would be a read-back surface"
+    assert_empty key_routes, "Zimmer does not manage its secret store — set keys in the secrets console"
   end
-
-  test "the key is filtered out of the parameter log" do
-    filter = ActiveSupport::ParameterFilter.new(Rails.application.config.filter_parameters)
-
-    assert_equal "[FILTERED]", filter.filter("openrouter_api_key" => PI_KEY)["openrouter_api_key"]
-  end
-
-  test "a successful save reports a digest and not the key" do
-    secret = writable_secret
-    ManagedSecret.stub(:openrouter_key, secret) do
-      put openrouter_key_inference_path, params: { openrouter_api_key: PI_KEY }
-    end
-
-    assert_match Digest::SHA256.hexdigest(PI_KEY)[0, 12], flash[:notice]
-    assert_no_match(/#{Regexp.escape(PI_KEY)}/, flash[:notice])
-  end
-
-  test "a blank save is refused and nothing reaches the store" do
-    secret = writable_secret
-    ManagedSecret.stub(:openrouter_key, secret) do
-      put openrouter_key_inference_path, params: { openrouter_api_key: "" }
-    end
-
-    assert_redirected_to inference_path(runtime: "pi")
-    assert_match(/Paste a key first/, flash[:alert])
-    assert_empty pi_fake.secrets
-  end
-
-  test "a refused write says so instead of claiming a save" do
-    ManagedSecret.stub(:openrouter_key, unwritable_secret) do
-      put openrouter_key_inference_path, params: { openrouter_api_key: PI_KEY }
-    end
-
-    assert_nil flash[:notice]
-    assert_match(/cannot write/, flash[:alert])
-  end
-
-  test "delete removes the key" do
-    secret = writable_secret(value: PI_KEY)
-    ManagedSecret.stub(:openrouter_key, secret) do
-      delete destroy_openrouter_key_inference_path
-    end
-
-    assert_redirected_to inference_path(runtime: "pi")
-    assert_match(/deleted/, flash[:notice])
-    assert_nil pi_chain.get(ManagedSecret::OPENROUTER_API_KEY)
-  end
-
-  private
 
   PI_KEY = "sk-or-v1-controller-fixture-value"
 
@@ -1886,31 +1885,21 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     @pi_fake ||= FakeParameterStore.new
   end
 
-  def pi_chain
-    @pi_chain ||= pi_fake.chain
+  def with_pi_chain(value: nil, &block)
+    pi_fake.seed_secret(PiAuthProvider::OPENROUTER_API_KEY, value) if value
+    SecretProviders.stub(:chain, pi_fake.chain, &block)
   end
 
-  def writable_secret(value: nil)
-    pi_fake.held_permissions = ParameterStore::Capabilities::PROBED_PERMISSIONS
-    pi_fake.seed_secret(ManagedSecret::OPENROUTER_API_KEY, value) if value
-    ManagedSecret.new(ManagedSecret::OPENROUTER_API_KEY, chain: pi_chain,
-      writer: ParameterStore::Writer::Configuration.new(
-        client: pi_fake.write_client, identity: :writer, reason: nil
-      ))
+  def with_store_console(url:, store_name: nil)
+    keys = [ SecretsLocation::ENV_STORE_CONSOLE_URL, SecretsLocation::ENV_STORE_CONSOLE_STORE_NAME ]
+    original = keys.to_h { |key| [ key, ENV[key] ] }
+    ENV[keys[0]] = url
+    ENV[keys[1]] = store_name
+    yield
+  ensure
+    original.each { |key, value| ENV[key] = value }
   end
 
-  # The shape every deployment is in until the IAM grant lands: a store Zimmer
-  # can read and cannot write.
-  def unwritable_secret
-    pi_fake.held_permissions = [
-      ParameterStore::Capabilities::RENDER_PARAMETER,
-      ParameterStore::Capabilities::READ_SECRET_VALUE
-    ]
-    ManagedSecret.new(ManagedSecret::OPENROUTER_API_KEY, chain: pi_chain,
-      writer: ParameterStore::Writer::Configuration.new(
-        client: pi_fake.write_client, identity: :resolver, reason: nil
-      ))
-  end
   # The third dormant population on the spot card. Printing it inside the paused
   # figure would report the concurrency limit's cost under the budget ceiling's
   # label — the same conflation SpotHoldExplanation exists to undo.

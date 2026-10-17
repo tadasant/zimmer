@@ -15,10 +15,9 @@ import os
 /// conversation. Every template used — list, action sheet, voice control — is one the
 /// category allows, and the stack never goes deeper than three.
 ///
-/// **Inert until Apple grants the entitlement**, as Motet's CarPlay scene is: the scene is
-/// declared in Info.plist, but without the entitlement signed in, CarPlay never connects
-/// it. `App/Zimmer/CarPlay.entitlements` holds the key and is wired into nothing; see
-/// ios/README.md, "CarPlay".
+/// CarPlay connects the scene declared in Info.plist only in a build that signs in the
+/// entitlement: `App/Zimmer/CarPlay.entitlements`, which `ios/bin/testflight` signs into every
+/// TestFlight build. A simulator build carries none; see ios/README.md, "CarPlay".
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private var interfaceController: CPInterfaceController?
     private var sessions: [SessionSummary] = []
@@ -29,6 +28,12 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     private var refreshTask: Task<Void, Never>?
     private var conversation: Task<Void, Never>?
     private let voice = VoiceIO()
+    /// Live Mode, voice on: start or resume a conversation from the list (CarPlayLive).
+    private let live = CarPlayLive()
+    /// The root list, kept so the Live Mode section can be redrawn in place as a call starts
+    /// and ends without resetting the template stack.
+    private var listTemplate: CPListTemplate?
+    private var sessionsSection = CPListSection(items: [])
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay")
 
     private enum VoiceState {
@@ -41,13 +46,18 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         didConnect interfaceController: CPInterfaceController
     ) {
         self.interfaceController = interfaceController
+        live.interfaceController = interfaceController
+        live.onChange = { [weak self] in self?.redrawLiveSection() }
         let loading = CPListTemplate(title: "Zimmer", sections: [])
         loading.emptyViewSubtitleVariants = ["Checking your sessions…"]
         interfaceController.setRootTemplate(loading, animated: false, completion: nil)
         refreshTask = Task {
             await refresh()
             // Voice first, as the category requires. The scene only ever connects on
-            // iOS 26.4+, where the voice-based conversational entitlement exists.
+            // iOS 26.4+, where the voice-based conversational entitlement exists. A Live Mode voice
+            // call already running is the conversation: it carries on, and the screen offers
+            // Back to the call.
+            guard !LiveCall.shared.isActive else { return }
             startConversation()
         }
     }
@@ -71,12 +81,15 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             showMessage(refreshFailure!)
             return
         }
+        await live.refresh()
         do {
             sessions = try await connection.api.sessions(.needsInput)
             summaries = [:]
             for session in sessions.prefix(DrivingFlow.limit) {
                 if let summary = try? await connection.api.session(session.id).statusSummary?.summary {
-                    summaries[session.id] = summary
+                    // The summary is markdown; a list row and a voice read its words, so a
+                    // link is its text without the brackets and the URL.
+                    summaries[session.id] = String(MarkdownInline.attributed(summary).characters)
                 }
             }
             refreshFailure = nil
@@ -97,12 +110,21 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             }
             return item
         }
-        let template = CPListTemplate(title: "Needs you", sections: [CPListSection(items: items)])
-        template.emptyViewSubtitleVariants = ["Nothing needs you right now."]
+        // The Live Mode section is always there, so the list is never empty and its empty view
+        // would never show: an empty queue says so in a row instead.
+        let rows = items.isEmpty ? [CPListItem(text: "Nothing needs you right now.", detailText: nil)] : items
+        sessionsSection = CPListSection(items: rows)
+        let template = CPListTemplate(title: "Needs you", sections: [sessionsSection, live.section()])
+        listTemplate = template
         template.trailingNavigationBarButtons = [
             CPBarButton(title: "Talk") { [weak self] _ in self?.startConversation() },
         ]
         interfaceController?.setRootTemplate(template, animated: true, completion: nil)
+    }
+
+    /// A call started or ended: redraw the Live Mode section where it is.
+    private func redrawLiveSection() {
+        listTemplate?.updateSections([sessionsSection, live.section()])
     }
 
     private func showMessage(_ text: String) {
@@ -115,7 +137,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         var actions: [CPAlertAction] = [
             CPAlertAction(title: "Approve", style: .default) { [weak self] _ in
                 self?.dismissThen {
-                    if await self?.perform(.followUp(sessionID: session.id, text: VoiceCommand.approvalText)) == true {
+                    if await self?.perform(.followUp(sessionID: session.id, text: VoiceCommand.approvalText), spoken: false) == true {
                         await self?.refresh()
                     }
                 }
@@ -129,7 +151,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         }
         actions.append(CPAlertAction(title: "Archive", style: .destructive) { [weak self] _ in
             self?.dismissThen {
-                if await self?.perform(.archive(sessionID: session.id)) == true {
+                if await self?.perform(.archive(sessionID: session.id), spoken: false) == true {
                     await self?.refresh()
                 }
             }
@@ -150,6 +172,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     // MARK: - The conversation
 
     private func startConversation(focusing sessionID: Int? = nil) {
+        // One conversation with the car at a time: a voice call is it until hung up.
+        guard !LiveCall.shared.isActive else { return }
         conversation?.cancel()
         var ordered = sessions
         if let sessionID, let index = ordered.firstIndex(where: { $0.id == sessionID }) {
@@ -201,7 +225,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
                         template.activateVoiceControlState(withIdentifier: VoiceState.speaking)
                         await self.voice.speak(line)
                     case .followUp, .archive:
-                        if await self.perform(effect) { acted = true } else { skipNextLine = true }
+                        if await self.perform(effect, spoken: true) { acted = true } else { skipNextLine = true }
                     }
                 }
                 // Refresh after the confirmation is spoken, not before it: a driver should
@@ -222,12 +246,16 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
     /// The effects that touch Zimmer; true when they worked. A failure is spoken here.
     /// Speech and the end of the conversation are handled by the loop above.
-    private func perform(_ effect: DrivingFlow.Effect) async -> Bool {
+    /// `spoken`: the driver said it, so the session is told it was dictated in the car;
+    /// a tapped button is still the car, but says nothing about how.
+    private func perform(_ effect: DrivingFlow.Effect, spoken: Bool) async -> Bool {
         let api = AppEnvironment.shared.connection.api
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        let source = ClientSource.app(version: version).onCarPlay(modality: spoken ? .voiceDictation : nil)
         do {
             switch effect {
             case let .followUp(sessionID, text):
-                _ = try await api.followUp(sessionID, prompt: text)
+                _ = try await api.followUp(sessionID, prompt: text, from: source)
             case let .archive(sessionID):
                 _ = try await api.archive(sessionID)
             case .speak, .end:

@@ -36,19 +36,22 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | --- | --- |
 | `/api/v1/sessions` and its member routes (not the nested resources below) | everything an API key may, plus `authorize_merge`, which only the app may call, and only on a grant that acts as you |
 | `POST /api/v1/quick_router`, `/api/v1/apns_devices` | everything |
+| `GET /api/v1/live`, `/api/v1/live/settings`, `/api/v1/live_conversations` and its member routes | everything, and only the app may start, message, finish or relay for a conversation, or change the Live settings, on a grant that acts as you |
 | `/api/v1/sessions/:id/enqueued_messages` | list, show, edit, delete, reorder, interrupt — not create: the app queues through `follow_up` |
 | `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
 | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
 | `/api/v1/notifications` | list, show, badge, mark read, dismiss — not `push` |
-| `/api/v1/triggers` | everything the triggers pages offer: list, show, create, edit, delete, toggle, invoke, and the Slack channel and WhatsApp chat pickers the form fetches — except the two re-use switches, which have no API route until #1318 |
+| `/api/v1/triggers` | everything the triggers pages offer: list, show, create, edit, delete, toggle, the two re-use switches, invoke, and the Slack channel and WhatsApp chat pickers the form fetches — except the two re-use switches, which have no API route until #1318 |
 | `GET /api/v1/costs`, `GET /api/v1/costs/records` | read — not `backfill`, the one action there that costs the box a sweep of every transcript; the cron runs it on its own |
 | `/api/v1/health` and its actions | the read and every operator action the web health page offers: cleanup, retries, archiving, queue recovery, the queued-job levers, re-arming the post-deploy tasks |
 | `/api/v1/work_backlog_items` | list, show, hold; `start_now`, `pin`, `unpin` and `remove` — the human-only levers — only on a grant that acts as you (403 otherwise) — not `create` or `pull`, which are the gate's and the groomer's |
 | `GET /api/v1/gate_decisions`, `GET /api/v1/gate_decisions/:id` | read the ledger — not `create`, a gate's write |
 | `GET /api/v1/outcome_analyses`, `GET /api/v1/outcome_analyses/:id`, `GET /api/v1/goal_checks` | read the Outcomes ledger, one analysis with its tree, and the goal-check tally — not `create`, an analyzer session's write |
 | `/api/v1/clis/status`, `/clis/refresh`, `/clis/clear_cache` | everything the /clis page offers |
+| `/api/v1/inference` and its routes | read the Inference page (an in-flight login's link and code only on a grant that acts as you); every write and the login poll — refresh, activate, delete or add an account, drive a CLI login, change the spot, top-up or genesis policy — only on a grant that acts as you (403 otherwise, and for an API key) |
 | `GET /api/v1/sessions/:id/elicitations`, `PATCH /api/v1/elicitations/:id/respond` | list a session's open prompts; answer one only on a grant that acts as you (403 otherwise) — not create or poll |
 | `GET /api/v1/configs`, `/mcp_servers`, `/skills`, `/hooks`, `/plugins`, `/model_catalog_entries` | read the catalogs |
+| `/api/v1/app_settings` | read, and write the session defaults and the experimental toggles; the MCP Apps switch and its allowlist only on a grant that acts as you (403 otherwise) |
 
 A token issued to any other OAuth client, the app's token on an action its controller does not name,
 or on any other controller, gets the same 401 as a bad key. The
@@ -63,6 +66,13 @@ way, as `ios_app.enqueued_message_edited`, the counterpart of the web UI's
 `web_ui.enqueued_message_edited`, and so is the prompt of a session the app creates with
 `POST /sessions`, as `ios_app.new_session` (the web UI's `web_ui.new_session`). A relay-only connection, an approver with no roster row, or a
 follow-up over an API key records nothing.
+
+The app also sends `X-Zimmer-Client: ios/<version>` on every request, and CarPlay's voice loop sends
+`carplay/<version>` with `X-Zimmer-Input-Modality: voice_dictation`. Any REST caller may send
+`X-Zimmer-Input-Modality: text` or `voice_dictation`. These headers only shape the
+[turn-source note](/sessions/turn-sources/) the agent sees. They can narrow `ios` to `carplay` but
+cannot turn an API key into the app. They record no human and authorize nothing. A missing or
+off-list value becomes `unknown`, and the request is never refused because of it.
 
 On a deployment that serves the app from its own hostname behind an access proxy, the app also sends
 `cf-access-token`, the edge's credential, which Rails ignores. It gets that credential from
@@ -386,6 +396,12 @@ Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`,
 `branch` defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents`
 default to false wherever they appear.
 
+`clone_only: true` is the web form's *Clone Only*: the session is created `needs_input` with the
+clone-only job queued (`AgentSessionJob.enqueue_for_clone_only`, a clone and no turn), and the
+first prompt arrives through `follow_up`. Nothing is recorded as a human message, since nobody has
+said anything yet. A `prompt` alongside it is a 422 rather than dropped. Without it, a create with
+no `prompt` makes a session that queues nothing and stays `waiting` — a row, not a clone.
+
 `goal` is a goal id from `GET /configs` or a free-text sentence. A single word that is not a known
 id is refused with a 422 that lists the known ids. The same rule applies on `PATCH`, on
 `follow_up` and on enqueued messages. See [where a goal comes from](/sessions/goals/#where-a-goal-comes-from).
@@ -403,7 +419,10 @@ classifies **spot**.
 
 `scheduling_class` **is** caller-supplied, and takes precedence over whatever the genesis would give
 the session. Send `spot` or `priority`; omit it and the session inherits its parent's explicit class
-if it has one, and otherwise derives from its genesis. An unknown value is a `422` (unlike the
+if it has one, and otherwise derives from its genesis — except from the iOS app's token, where an
+omitted class is written as `priority`: a person is waiting on that session as they are on the web
+form's, whose `web_ui` genesis is priority, and the app's `api` genesis would make it wait for quota.
+The Quick Router ingest classes a native start the same way. A class the app sends stands. An unknown value is a `422` (unlike the
 `priority_class`/`genesis` *filters* above, which ignore what they do not recognise — a filter that
 matches nothing is not the same kind of mistake as a session created in the wrong class). It is also
 permitted on `PATCH /sessions/:id`, which is how a spot session already held behind the quota gate is
@@ -591,6 +610,11 @@ prompt gone and nothing to say so — see [a follow-up the session is still
 holding](/sessions/lifecycle/#and-a-follow-up-the-session-is-still-holding-outranks-it-too). Nothing
 about the request or the response shape changes; the record is internal.
 
+Each path adds a one-line [turn-source note](/sessions/turn-sources/) to the turn the agent receives.
+The note says where the prompt came from. The direct path adds it before the prompt is stamped and
+enqueued. The queued and interrupted paths record it on the `EnqueuedMessage` (`source_context`, also
+in the `enqueued_message` JSON) and add it when the message is delivered.
+
 `goal` behaves identically on all three: **a non-blank goal is applied to the session, a blank or
 omitted one leaves the session's existing goal alone.** The queued and interrupted paths carry it on
 the `EnqueuedMessage` and `EnqueuedMessageProcessorService` applies it when it claims the message;
@@ -726,9 +750,14 @@ semantics.
 `goal`, `goal_check`, `mcp_servers`, `all_mcp_servers`, `injected_mcp_servers`, `catalog_skills`, `catalog_hooks`,
 `catalog_plugins`, `config`, `metadata`, `custom_metadata`,
 `is_autonomous`, `heartbeat_enabled`, `heartbeat_interval_seconds`, `auto_compact_window`,
-`genesis`, `scheduling_class`, `priority_class`, `session_id`, `job_id`,
+`genesis`, `source_context`, `last_turn_source`, `scheduling_class`, `priority_class`, `session_id`, `job_id`,
 `running_job_id`, `archived_at`, `trash_after`, `created_at`, `updated_at`, `session_notes`,
 `session_notes_updated_at`, `favorited`, `visibility`, `effective_visibility`, `snoozed_until`.
+
+`source_context` and `last_turn_source` give the [turn source](/sessions/turn-sources/) of the
+initial prompt and of the latest tagged follow-up, as `{surface, modality, client_version?,
+live_conversation_id?, label}`. Each is `null` when none was recorded. They are style hints, not
+authorization.
 
 `goal_check` is `null` for a free-text goal or no goal. For a catalog goal with checks it is the
 [goal check](/sessions/goals/#how-a-goal-is-checked):
@@ -921,12 +950,20 @@ There is no REST route for managing them.
 
 `GET /triggers` (filters `condition_type`, `status`) · `GET /triggers/:id` (+ `recent_sessions`,
 limit 10) · `POST` · `PATCH` · `DELETE` · `POST /triggers/:id/toggle` ·
+`POST /triggers/:id/toggle_enqueue_messages` · `POST /triggers/:id/toggle_resuscitate_archived` ·
 `POST /triggers/:id/invoke` · `GET /triggers/channels` (Slack; 503 when Slack is unconfigured) ·
 `GET /triggers/whatsapp_chats` (the chats the WhatsApp bridge's account is in, with the `chat_id` a
 [`whatsapp` condition](/sessions/triggers/#whatsapp) takes; 503 when `WHATSAPP_MCP_URL` is unset or
 the bridge cannot be reached).
 
 Conditions are nested via `trigger_conditions_attributes`.
+
+`toggle_enqueue_messages` and `toggle_resuscitate_archived` flip the two switches on the trigger
+page and return `{trigger}`. Both flags act only on the session a trigger re-uses, so while
+`reuse_session` is off the flip is refused with 422 (`error: "Validation failed"`, `message: "Enqueue
+messages can only be enabled when re-use session is enabled"`, and the same for "Resuscitate
+archived"), carrying the unchanged `trigger`. To set either flag outright, or together with
+`reuse_session`, `PATCH` the trigger.
 
 A trigger payload carries **`unresolved_catalog_references`**, read-only: which of the four artifact
 lists name something the catalog can no longer resolve, and when each name was first seen that way
@@ -1068,6 +1105,96 @@ schedule or a [session-scoped `ao_event` wake](/sessions/triggers/#when-an-ao_ev
 `failed_at` and `last_error` alongside it, both `null` on a healthy trigger — any write that moves
 the status off `failed`, including `POST /triggers/:id/toggle`, clears them.
 
+## Live conversations
+
+[Live Mode](/sessions/live/): one continuous conversation with a fast OpenAI model, typed or with
+voice on, switching between the two mid-thread. The same rules as the `/live` pages
+(`LiveConversations::Actions`).
+
+An API key may read: `GET /live`, `GET /live_conversations` and `GET /live_conversations/:id`.
+Every `POST` below — start, switch, message, finish, and the voice relay — is **403 for an API key
+and for a relay-only app grant**, like `authorize_merge`. It takes the [iOS app](/extend/ios-app/)'s
+sign-in acting as you. A live model can enable any catalog MCP server, and `tool_calls` runs one
+directly, so an API key, which is the fleet's, must not reach the whole catalog through here. The web
+pages are the other way in, behind the sign-in wall.
+
+`GET /live` → `{label, agent_root, available, key_configured, root_present, reasons, modes: [{mode,
+label, model, agent_root, available, key_configured, root_present, reasons}]}` — whether Live Mode
+can start, and in words why not (no `LIVE_OPENAI_API_KEY`, or no `live-mode` root in the catalog),
+with each mode's model. Typing and voice share the prerequisites, so every `modes` entry repeats them.
+
+`GET /live_conversations` → `{live_conversations: [...], current_id, current: {<mode>: id}}`, the
+newest 20 and the open conversation's id (or null). `current` is the same conversation keyed by the
+mode it is in right now, empty when there is none ·
+`POST /live_conversations` (`mode`, `text` by default or `voice`) → 201, a `preparing` conversation
+that ends the open one; 503 with the reasons when Live Mode is off, 422 on an unknown mode ·
+`GET /live_conversations/:id` (`after_turn_id` for only newer turns) → the conversation with `turns` ·
+`POST /live_conversations/:id/mode` (`mode` text|voice) → the conversation, switched. A no-op when it
+is in that mode already; 409 once it has ended, 422 on an unknown mode ·
+`POST /live_conversations/:id/finish` → the ended conversation.
+
+A conversation is `{id, mode (text|voice — right now), voice, label, mode_label, status
+(preparing|active|ended|failed), title, agent_root, model, instructions_source, mode_styles: {text,
+voice: agent_root|zimmer_default}, mcp_servers, responding, error_message, created_at, updated_at,
+last_activity_at, ended_at}`. `model` follows `mode`. A turn is `{id, role (user|assistant|tool),
+source (typed|spoken), content, tool_name, call_id, tool_arguments, tool_output, tool_error,
+created_at}`.
+
+Typed: `POST /live_conversations/:id/messages` (`content`, at most 8,000 characters) → 201, the
+user turn. The reply is written by a job; poll `GET /live_conversations/:id?after_turn_id=`. A message
+sent while the conversation is still `preparing` is accepted and answered once it is active. 422
+while voice is on.
+
+Voice — the relay a client holding the audio connection makes:
+
+- `POST /live_conversations/:id/client_secret` → `{client_secret, expires_at, model, calls_url,
+  websocket_url, tools}`, plus `settings_warning` when OpenAI refused the Live settings and the call
+  runs on the defaults. A ten-minute OpenAI Realtime secret whose session config (instructions for
+  the spoken mode with a recap of the thread, tools, and the [Live settings](/sessions/live/#live-settings))
+  Zimmer chose. Open WebRTC by posting an SDP offer to `calls_url`, or a WebSocket to `websocket_url`,
+  with `Authorization: Bearer <client_secret>`. 409 while the conversation is still `preparing` or
+  voice is off; 502 when OpenAI refuses.
+- `POST /live_conversations/:id/tool_calls` (`name`, `arguments` as the model's JSON string,
+  `call_id`) → `{output, error, tools_changed, turn_id}`, plus `tools` when `tools_changed`, and
+  `session` when the call changed a Live setting an open call can take. Send `session` as a
+  `session.update` when it is there, otherwise send `tools` in one. Send `output` back as a
+  `function_call_output` item.
+- `POST /live_conversations/:id/session_update` → `{session}`: the `session.update` payload that
+  brings an open call up to the current Live settings and guidance. Send it after the settings
+  changed somewhere else, such as the app's own settings screen.
+- `POST /live_conversations/:id/turns` (`role` user|assistant, `content`) → 201 with the turn and
+  `respond: true`. A finished transcript line, so the thread carries what was said. With
+  `listening_modes` on a call whose [Listening](/sessions/live/#listening-which-lines-get-an-answer)
+  is gated, a user line is also where Zimmer decides whether the call answers it. Kept, it is 201
+  with `respond: true`: send `response.create`. Dropped, it is 200 `{respond: false, dropped: true}`
+  and nothing is written: send `conversation.item.delete` for the line's item.
+
+`client_secret`, `session_update` and `tool_calls` take `listening_modes` too. It says the client
+asks for its own replies when Listening is gated, and `client_secret` then answers `listening`
+(`always`, `wake_word` or `dynamic`). Without it, the call is built to answer everything.
+
+Every one answers 409 on a conversation that is not active. `tool_calls`, `session_update` and `turns` do not need
+voice to be on, so a call still connected when it is switched off elsewhere finishes cleanly.
+
+### Live settings
+
+The [Live settings](/sessions/live/#live-settings) and the Live mode guidance. An API key may read
+them. The writes take the app's sign-in acting as you, and are recorded as a person's; an agent
+changes them through MCP (`action_live_settings`), where the change is recorded as an agent's.
+
+- `GET /live/settings` → `{settings: {key: value in force}, overrides: [keys set away from their
+  default], guidance, updated_at, updated_by, fields: [{key, path (text|voice), type
+  (enum|float|integer), label, help, options: [{value, label}], min, max, default, mid_call}],
+  guidance_max_length, history: [{id, actor_kind (human|agent), actor, live_conversation_id,
+  changes: {key: {before, after}}, created_at}]}`, the newest 30 changes.
+- `PATCH /live/settings` (any setting key, `guidance` to replace it, `append_guidance` to add a
+  line) → the same, plus `{changed, summary}`. Blank or `"default"` puts a setting back. 422 with
+  every problem, and nothing saved, on an unknown key or a value not among its `options`. A number
+  outside `min`–`max` is clamped, and `summary` says so.
+- `POST /live/settings/reset` → every setting back to its default; the guidance is kept.
+- `POST /live/settings/changes/:id/restore_guidance` → the guidance as it was before that change.
+  422 when the change did not touch the guidance.
+
 ## Notifications
 
 `GET /notifications` (`status=read|unread`) · `GET /notifications/:id` ·
@@ -1130,6 +1257,79 @@ the three `POST`s return `503 {"error": "Rate limiting unavailable"}` rather tha
 unthrottled. `GET /health` is unaffected. See
 [the limitation](/limitations/#the-only-rate-limit-is-on-the-health-endpoints-and-it-needs-a-real-cache).
 :::
+
+## Inference
+
+The [Inference page](/auth/harness/) as data, for the [iOS app](/extend/ios-app/): the
+account roster with each account's quota windows, the pool's capacity, the rotation log, the Pi
+tab's OpenRouter key state, and the [fleet-scheduling policy](/sessions/spot-and-priority/) the MCP tools `get_spot_policy` /
+`action_spot_policy` read and write. Every figure comes off the objects the page and the tool
+render from (`ClaudeAccountPool`, `SpotGateService`, `SpotHoldExplanation`, `FleetTopUpStatus`,
+`SessionGenesis`), so the three surfaces cannot disagree.
+
+`GET /inference` (`runtime`: `claude_code` (default), `codex` or `pi`, the page's tabs) →
+`{runtime, runtimes, accounts, pool, rotation_log, openrouter_key, spot_policy, fleet_top_up,
+genesis_classes}`. Any key or grant may read. Opening it converges a stale `quota_exceeded`
+column against the reading on file, as opening the page does.
+
+- `accounts` — each account as its card renders it: `email`, `priority`, `is_current`, `status`
+  (the sticky column) and `effective_status` (the badge, which the latest reading can outrank),
+  `quota_hit_count`, `api_key_account`, `credentials` (`state` one of `none`, `unverified`,
+  `verified`, `rejected`; `stored`, `refused`, `rejected_at`, `rejection_reason`, `verified_at`),
+  `quota` (`null` for Codex, which has no probe: `taken_at`, `trigger`, `subscription_type`,
+  `rate_limit_tier`, `five_hour` and `seven_day` each `{utilization, effective_utilization, status,
+  reset_at, reset_passed}` — `status` is dropped once the window has rolled over, as the badge is
+  — and `five_hour_headroom_unusable`), and `login` (`available`, `active_attempt`,
+  `last_attempt`). No OAuth token, refresh token or API key is ever in it, and an in-flight login's
+  `verification_url` and `verification_code` are `null` unless the caller is a person (the app's
+  token on a grant that acts as you): with the device code, a holder of the fleet's key could
+  finish the login with an account of its own and have it captured under your email.
+- `pool` — the Account Pool card: the four counts, `five_hour_utilization` and `weekly_utilization`
+  (the averages the spot gate decides on), the worst account on each, `read_count`,
+  `servable_count`, `weekly_spent_count`, `capacity_now`, `next_capacity_at`, `next_weekly_reset`,
+  the dollar `windows`, and `dry` (`{reasons, breakdown, recovery}`) when no account can serve.
+- `rotation_log` — the runtime's 50 most recent rotations: `at`, `from` and `to` (`{email, deleted}`),
+  `reason`, `source`, `triggered_by`, and `session_id` when a session triggered it.
+- `openrouter_key` — on `runtime=pi` only, where the page shows it, and `null` elsewhere: the key's
+  state and never the key — `present`, `provider_badge`, `fingerprint` (a truncated SHA-256),
+  `path`, `last_write`, `writable`, `deletable`, `write_reason`, `missing_permissions`. There is no
+  write for it here; the key is set on the page.
+- `spot_policy` — the six knobs (`gating_enabled`, `five_hour_reserve_pct`, `weekly_reserve_pct`,
+  `max_concurrent_sessions`, `preemption_enabled`, `starvation_age_ceiling_hours`), `worker_slots`
+  and whether the ceiling is out of its reach, the live `decision` (`allowed`, `reason`, `ceiling`,
+  `detail`, sessions on a worker and awaiting one, burn rates, both windows, `pool_capacity`),
+  `hold` (why it is held and until when, when it is), the four dormant counts (`paused_count`,
+  `preempted_count`, `held_count`, `overdue_hold_count`) with their sentences, and `starvation`.
+- `fleet_top_up` — the four knobs (`max_running_sessions`, `idle_minutes`,
+  `min_fire_interval_minutes`, `quiet_backlog_interval_minutes`), the monitor's `state`, the
+  running / awaiting / asleep split, `headroom`, `under_ceiling_since`, `last_fired_at`,
+  `next_fire_at`, the `cadence` phrases and the card's `sentence`.
+- `genesis_classes` — the `overrides` and every `kind` with its `class`, `default_class`,
+  `overridden`, `settable` (the three kinds no trigger starts; the rest take their class from the
+  trigger) and `live_sessions`.
+
+The writes — the page's buttons and forms — take only the iOS app's token on a grant that acts as
+you; an API key and a relay-only grant get **403** having changed nothing. Each names you on the
+record the web writes: a rotation event's `triggered_by` and `AppSetting`'s policy audit line read
+`<your email> via the iOS app`.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/inference/accounts` | the Add account form: `runtime`, `email` (required, unique per runtime), `priority`, `api_key` (Codex only). → 201 `{account, message}`; the OAuth account is created with no credentials and `status` `needs_reauth` until a login captures them. 422 for a blank or duplicate email |
+| `POST` | `/inference/accounts/:id/refresh` | re-probe one account's quota → `{account, pool}` with the fresh reading; when the probe fails, `account.probe_error` says why and the reading on file stays |
+| `POST` | `/inference/accounts/:id/activate` | the Switch button: make it the current account, through the same activation path an automatic rotation takes → `{account, message}`. 422 with the page's sentence when it cannot be admitted — no credentials, no refresh token, a token the vendor refuses |
+| `DELETE` | `/inference/accounts/:id` | → `{message, current_account}`; deleting the current account activates the next one whose credentials validate, or leaves the runtime with none. Its snapshots, logins and rotations survive it |
+| `POST` | `/inference/logins` | the Authenticate button: `account_id`. Starts the login CLI in the worker, superseding any in-flight attempt → 201 `{login}` in `starting`. 422 for a Codex API-key account, which carries its credential statically |
+| `GET` | `/inference/logins/:id` | poll it → `{login, account}`. `login` carries `status`, `verification_url` and (Codex) the one-time `verification_code` once the CLI prints them, `awaiting_code` when the Claude flow wants the code pasted back, `code_received`, `error_message`, `expires_at` and `terminal`. 404 once the attempt is pruned or its account deleted — stop polling. A person only, like the writes: the link and code are what completes the login |
+| `POST` | `/inference/logins/:id/code` | the Claude flow: `code`, the authorization code the page shows. 422 for a blank code or a finished attempt. The code is handed to the CLI and never echoed |
+| `POST` | `/inference/logins/:id/cancel` | → `{login}`; a finished attempt is left as it finished |
+| `PATCH` | `/inference/spot_policy` | `enabled`, `five_hour_reserve_pct`, `weekly_reserve_pct` (0–100), `max_concurrent_sessions` (1–100), `preemption_enabled`, `starvation_age_ceiling_hours` (0–720; 0 turns the lane off) — the parameters `action_spot_policy set_gating` takes, any subset. → `{changed, spot_policy}`. 422 `Nothing to change` with none, `Invalid spot policy` out of range, nothing persisted |
+| `PATCH` | `/inference/fleet_top_up` | `max_running_sessions` (1–100), `idle_minutes` (1–1440), `min_fire_interval_minutes`, `quiet_backlog_interval_minutes` (1–10080) — `action_spot_policy set_top_up`'s. → `{changed, fleet_top_up}`; the same two 422s |
+| `PATCH` | `/inference/genesis/:genesis` | `priority_class`: `spot` or `priority` — the Make spot / Make priority buttons, `promote_genesis` / `demote_genesis` on the tool. Reclassifies every session deriving its class from that kind → `{message, genesis_classes}`. 422 for an unknown genesis, an unknown class, or a trigger-backed kind, which takes its class from the trigger |
+| `DELETE` | `/inference/genesis` | Reset to defaults → `{message, genesis_classes}` |
+
+Not here: *Refresh All* (the page streams it; the app refreshes accounts one at a time) and the
+OpenRouter key's write and delete, which stay on the page.
 
 ## Costs
 
@@ -1232,6 +1432,45 @@ script or agent resolve the request, which unblocks the owning session (`needs_i
 It answers 200 with the poll response — `action`, `content`, and a `_meta` carrying
 `com.pulsemcp/request-id` and `com.pulsemcp/responded-at` — or 404 when nothing matches the
 identifier, 422 when the elicitation is already resolved or `action_type` is not one of the three.
+
+## App settings
+
+The Settings page's row: the global session defaults, every Settings → Experimental toggle, and
+the MCP Apps switch with its per-server allowlist. The page's forms, the `get_app_settings` and
+`action_app_settings` MCP tools and these two endpoints all write the same `AppSetting`; a change
+applies to sessions created or spawned from then on. The spot gate and the backlog top-up share the
+row but are the fleet's quota posture, read with `get_spot_policy`.
+
+| Endpoint | |
+| --- | --- |
+| `GET /app_settings` | `{app_settings: {session_defaults, runtimes, experimental, mcp_apps}}` |
+| `PATCH /app_settings` | Change any subset; only the keys sent are touched. Answers as `GET` does, after the save |
+
+`session_defaults` is `{runtime, model, runtime_overridden, model_overridden, built_in: {runtime,
+model}}`: the effective pair, whether each half is an operator override, and the shipped pair an
+empty value falls back to. `runtimes` lists each runtime with `label`, `default_model` and its
+`models`. `experimental` is one `{key, title, description, enabled, default_enabled, extension}` per
+toggle, in the page's order. `mcp_apps` is `{enabled, allowed_servers, eligible_servers: [{name,
+title}]}`; the allowlist can only name an eligible server, and anything else sent is dropped rather
+than refused, as the page drops it.
+
+The `PATCH` body is `{app_settings: {default_runtime, default_model, experimental: {"<key>": bool},
+mcp_apps_enabled, mcp_apps_allowed_servers: [names]}}`, every key optional. An empty
+`default_runtime` or `default_model` clears that override; a `null` leaves it alone. A runtime +
+model pair the catalog does not allow is a 422 (`error: "Settings not saved"`), as is an
+`experimental` that is not an object, or an experimental key the registry does not list
+(`error: "Unknown experimental setting"`); nothing changes on any of them.
+
+`mcp_apps_enabled` and `mcp_apps_allowed_servers` are a person's to change, as on the page: the
+iOS app's token on a grant that acts as you. An API key, or a relay-only grant, gets a 403 before
+anything is read. The audit line names the writer: `ios-app:/settings` or `api:/app_settings`,
+beside the page's `web:/settings`.
+
+```bash
+curl -X PATCH "$BASE_URL/app_settings" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"app_settings": {"experimental": {"mcp_tool_search": false}}}'
+```
 
 ## Models
 
@@ -1466,9 +1705,10 @@ One shape, everywhere:
 of responses carry an extra top-level key alongside these — `retry_after` on the health 429.
 
 **Status codes in use:** 200 · 201 · 202 (follow-up queued) · 204 · 400 (search only) · 401 · 404 ·
-409 (follow-up position collision, interrupt races) · 422 · 429 (health cooldown; the Quick Router
-ingest's per-address limit) · 500 · 503 (Slack unconfigured; health maintenance refused because no
-usable cache store is configured).
+409 (follow-up position collision, interrupt races; a live conversation that has ended or is still
+preparing) · 422 · 429 (health cooldown; the Quick Router ingest's per-address limit) · 500 · 502 (OpenAI
+refused a live conversation's client secret) · 503 (Slack unconfigured; health maintenance refused
+because no usable cache store is configured; a live mode that is off).
 
 :::note[Missing required params return 422]
 `follow_up` without a prompt, `fork` without `message_index`, `bulk_archive` without `session_ids`,

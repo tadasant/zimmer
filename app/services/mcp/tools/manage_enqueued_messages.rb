@@ -143,6 +143,7 @@ module Mcp
           "- **Content:** #{message.content}"
         ]
         lines << "- **Goal:** #{message.goal}" if message.goal.present?
+        lines << "- **Source:** #{message.turn_source.surface} · #{message.turn_source.modality} (#{message.turn_source.label})" if message.turn_source
         lines << "- **Created:** #{message.created_at.iso8601}"
         lines.join("\n")
       end
@@ -156,7 +157,8 @@ module Mcp
           content: content,
           goal: args["goal"].to_s.strip.presence,
           position: max_position + 1,
-          status: "pending"
+          status: "pending",
+          source_context: context.turn_source.to_h
         )
 
         raise ToolError, "Validation failed: #{message.errors.full_messages.join(', ')}" unless message.save

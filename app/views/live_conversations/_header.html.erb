@@ -1,0 +1,53 @@
+<%# Broadcast-replaced when the conversation's status, servers or "thinking"
+    state change (LiveConversation#broadcast_header), so it holds no forms: a
+    form rendered outside a request carries an authenticity token no browser
+    session will accept. The buttons live on the page around it.
+
+    Locals: conversation %>
+<div id="<%= conversation.header_dom_id %>" data-live-conversation-status="<%= conversation.status %>" data-live-conversation-mode="<%= conversation.mode %>" class="bg-white shadow-sm rounded-lg border border-gray-200 p-4">
+  <div class="flex items-start justify-between gap-3">
+    <div class="min-w-0">
+      <div class="flex items-center gap-2">
+        <%= render "live/mode_icon", mode: LiveConversations.mode("text"), css: "h-5 w-5 text-indigo-600 shrink-0" %>
+        <h1 class="text-lg sm:text-xl font-semibold text-gray-900 truncate"><%= conversation.display_title %></h1>
+      </div>
+      <p class="mt-1 text-xs text-gray-500 break-words">
+        <code class="font-mono"><%= conversation.agent_root %></code> · <code class="font-mono break-all"><%= conversation.model %></code>
+        <% if conversation.active? && !conversation.style_for(conversation.mode) %>
+          · <%= conversation.live_mode.label.downcase %> style from Zimmer's default
+        <% end %>
+        <% if conversation.instructions_source.present? %>
+          · instructions from <code class="font-mono break-all"><%= conversation.instructions_source %></code>
+        <% end %>
+      </p>
+    </div>
+    <div class="flex items-center gap-1.5 shrink-0">
+      <% if conversation.open? %>
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium <%= conversation.voice? ? 'bg-indigo-100 text-indigo-800' : 'bg-gray-100 text-gray-700' %>" data-live-mode="<%= conversation.mode %>">
+          <%= render "live/mode_icon", mode: conversation.live_mode, css: "h-3 w-3" %>
+          <%= conversation.voice? ? "Voice on" : "Typing" %>
+        </span>
+      <% end %>
+      <%= render "live_conversations/status_badge", conversation: conversation %>
+    </div>
+  </div>
+
+  <div class="mt-3 flex flex-wrap gap-1.5" data-live-servers>
+    <% if conversation.enabled_mcp_servers.empty? %>
+      <span class="text-xs text-gray-400">No MCP servers enabled</span>
+    <% end %>
+    <% conversation.enabled_mcp_servers.each do |name| %>
+      <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700 font-mono break-all" title="<%= SelfSessionInjector.zimmer_server_name?(name) ? "Zimmer's own MCP surface — the delegation path" : "Enabled on this conversation; its tools are called directly" %>"><%= name %></span>
+    <% end %>
+  </div>
+
+  <% if conversation.preparing? %>
+    <p class="mt-3 text-sm text-yellow-800" data-live-preparing>Reading <code class="font-mono"><%= conversation.agent_root %></code>'s AGENTS.md…</p>
+  <% end %>
+  <% if conversation.error_message.present? %>
+    <p class="mt-3 text-sm <%= conversation.failed? ? 'text-red-700' : 'text-orange-700' %> break-words" data-live-error><%= conversation.error_message %></p>
+  <% end %>
+  <% if conversation.text? && conversation.responding? %>
+    <p class="mt-3 text-sm text-gray-500 animate-pulse" data-live-responding>Thinking…</p>
+  <% end %>
+</div>

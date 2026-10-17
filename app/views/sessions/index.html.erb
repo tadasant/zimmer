@@ -43,6 +43,9 @@
 
           <!-- Mobile: Hamburger menu button + New Session -->
           <div class="flex items-center gap-2 md:hidden">
+            <%= link_to current_live_path, class: "inline-flex items-center justify-center w-10 h-10 border border-gray-300 rounded-md shadow-sm text-indigo-600 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500", title: LiveConversations::LABEL, "aria-label" => LiveConversations::LABEL, data: { live_entry: "mobile" } do %>
+              <%= render "live/mode_icon", mode: LiveConversations.mode("text"), css: "h-5 w-5" %>
+            <% end %>
             <%= link_to new_session_path, class: "inline-flex items-center justify-center w-10 h-10 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500", title: "New Session", "aria-label" => "New Session" do %>
               <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
@@ -69,6 +72,11 @@
           <!-- Mobile: Dropdown menu -->
           <div id="index-mobile-menu-dropdown" data-mobile-menu-target="menu" class="hidden absolute top-16 right-4 left-4 bg-white border border-gray-200 rounded-lg shadow-lg z-50 md:hidden">
             <div class="p-2 space-y-1">
+              <%= link_to current_live_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <%= render "live/mode_icon", mode: LiveConversations.mode("text"), css: "mr-3 h-5 w-5 text-indigo-500" %>
+                <%= LiveConversations::LABEL %>
+              <% end %>
+              <div class="border-t border-gray-100 my-1"></div>
               <%= link_to supervisor_root_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
                 <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                   <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
@@ -167,6 +175,10 @@
             <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
           </svg>
           New Session
+        <% end %>
+        <%= link_to current_live_path, class: "inline-flex items-center px-4 py-2 border border-indigo-200 text-sm font-medium rounded-md shadow-sm text-indigo-700 bg-indigo-50 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full 2xl:justify-center", data: { live_entry: "live" } do %>
+          <%= render "live/mode_icon", mode: LiveConversations.mode("text"), css: "-ml-1 mr-2 h-5 w-5" %>
+          <%= LiveConversations::LABEL %>
         <% end %>
         <%= link_to supervisor_root_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
           <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">

@@ -111,6 +111,9 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     /// before the runtime launches. Blank on a session whose agent never launched.
     public var runtimeSessionID: String?
     public var precedence: Int?
+    /// Claude Code's context-compaction threshold in tokens (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`),
+    /// a per-session override of the column default; only a Claude Code session honours it.
+    public var autoCompactWindow: Int?
     public var effort: EffortSummary?
     public var config: SessionConfig?
     public var metadata: SessionMetadata?
@@ -145,6 +148,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         case heartbeatEnabled = "heartbeat_enabled"
         case heartbeatIntervalSeconds = "heartbeat_interval_seconds"
         case runtimeSessionID = "session_id"
+        case autoCompactWindow = "auto_compact_window"
         case customMetadata = "custom_metadata"
         case mcpServers = "mcp_servers"
         case catalogSkills = "catalog_skills"
@@ -162,7 +166,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         visibility: SessionVisibility? = nil, snoozedUntil: Date? = nil,
         priorityClass: String? = nil, precedence: Int? = nil, effort: EffortSummary? = nil, model: String? = nil,
         agentRoot: String? = nil, lastUserActivityAt: Date? = nil, pullRequests: [PullRequestLink] = [],
-        genesis: String? = nil
+        genesis: String? = nil, autoCompactWindow: Int? = nil
     ) {
         self.id = id
         self.slug = slug
@@ -182,6 +186,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         self.priorityClass = priorityClass
         self.genesis = genesis
         self.precedence = precedence
+        self.autoCompactWindow = autoCompactWindow
         self.effort = effort
         self.config = model.map { SessionConfig(model: $0) }
         self.metadata = (agentRoot != nil || lastUserActivityAt != nil)
@@ -206,6 +211,13 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     /// which falls back to when the session was created.
     public var lastTouchedAt: Date? { metadata?.lastUserActivityAt ?? createdAt }
     public var pullRequests: [PullRequestLink] { customMetadata?.pullRequests ?? [] }
+
+    /// The PR the web UI's Merge button is offered for: the newest one, open, with CI green
+    /// (`Sessions::PrSummary#mergeable?`). Nothing else counts as green.
+    public var mergeablePullRequest: PullRequestLink? {
+        guard let latest = pullRequests.last, latest.state == "open", latest.ci == "pass" else { return nil }
+        return latest
+    }
 
     /// What the board shows for this session's visibility, with an expired snooze read as visible.
     public var boardVisibility: SessionVisibility { effectiveVisibility ?? visibility ?? .visible }

@@ -2,7 +2,7 @@ import Foundation
 
 /// What the app asks of Zimmer. A protocol so screens and tests can run against
 /// `FakeZimmerAPI` with no server and no sign-in.
-public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI, OperationsAPI, AttachmentsAPI {
+public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI, OperationsAPI, AttachmentsAPI, InteractionAPI, DecisionsAPI, LiveAPI {
     func sessions(_ filter: SessionFilter) async throws -> [SessionSummary]
     func session(_ id: Int) async throws -> SessionDetail
     /// The newest `limit` messages (the server caps it at 200), whole, and how many there are.
@@ -13,6 +13,9 @@ public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI
     /// touched as last touched, as the dashboard's page does (`viewed=true`).
     func openSession(_ id: Int) async throws -> SessionDetail
     func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult
+    /// A follow-up that says where it came from — CarPlay's voice loop, which knows the
+    /// words were spoken. See `ClientSource`.
+    func followUp(_ id: Int, prompt: String, from source: ClientSource) async throws -> FollowUpResult
     func archive(_ id: Int) async throws -> SessionSummary
     /// Start a Quick Router session from a plain-language request, with what the web
     /// bubble's Advanced accordion and attach buttons add; returns its id.
@@ -24,6 +27,11 @@ public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI
 }
 
 extension ZimmerAPI {
+    /// A client that cannot say where a message came from sends it as any other.
+    public func followUp(_ id: Int, prompt: String, from source: ClientSource) async throws -> FollowUpResult {
+        try await followUp(id, prompt: prompt)
+    }
+
     /// The page's first read: the newest hundred.
     public func conversation(_ id: Int) async throws -> Conversation {
         try await conversation(id, limit: Conversation.pageSize)
@@ -39,11 +47,16 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     private let auth: AuthSession
     private let transport: HTTPTransport
     private let edge: EdgeCredential
+    private let source: ClientSource
 
-    public init(auth: AuthSession, transport: HTTPTransport, edge: EdgeCredential = NoEdgeCredential()) {
+    /// - Parameter source: what every request says about where it comes from (see
+    ///   `ClientSource`); the app passes its version.
+    public init(auth: AuthSession, transport: HTTPTransport, edge: EdgeCredential = NoEdgeCredential(),
+                source: ClientSource = .app(version: nil)) {
         self.auth = auth
         self.transport = transport
         self.edge = edge
+        self.source = source
     }
 
     public func sessions(_ filter: SessionFilter) async throws -> [SessionSummary] {
@@ -77,8 +90,12 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     }
 
     public func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult {
+        try await followUp(id, prompt: prompt, from: source)
+    }
+
+    public func followUp(_ id: Int, prompt: String, from source: ClientSource) async throws -> FollowUpResult {
         let segment = ZimmerPathComponent(String(id))
-        let response: FollowUpResponse = try await post("/api/v1/sessions/\(segment)/follow_up", json: ["prompt": prompt])
+        let response: FollowUpResponse = try await post("/api/v1/sessions/\(segment)/follow_up", json: ["prompt": prompt], source: source)
         let queued = response.enqueued_message != nil
         return FollowUpResult(queued: queued, message: response.message ?? (queued ? "Queued" : "Sent"))
     }
@@ -112,13 +129,14 @@ public struct ZimmerHTTPClient: ZimmerAPI {
         try await send(method: "GET", path: path, query: query, body: nil)
     }
 
-    func post<T: Decodable>(_ path: String, json: [String: Any]) async throws -> T {
+    func post<T: Decodable>(_ path: String, json: [String: Any], source: ClientSource? = nil) async throws -> T {
         let body = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
-        return try await send(method: "POST", path: path, query: [:], body: body)
+        return try await send(method: "POST", path: path, query: [:], body: body, source: source)
     }
 
-    private func send<T: Decodable>(method: String, path: String, query: [String: String], body: Data?) async throws -> T {
-        let response = try await perform(method: method, path: path, query: query, body: body)
+    private func send<T: Decodable>(method: String, path: String, query: [String: String], body: Data?,
+                                    source: ClientSource? = nil) async throws -> T {
+        let response = try await perform(method: method, path: path, query: query, body: body, source: source)
         do {
             return try ZimmerJSON.decoder.decode(T.self, from: response.body)
         } catch {
@@ -132,7 +150,9 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     /// Only the token endpoint can end the sign-in; a 401 here never does.
     /// `accepting` names non-2xx statuses whose body the caller reads itself (an invoke's 409
     /// carries the pending session) rather than having them thrown.
-    func perform(method: String, path: String, query: [String: String], body: Data?, accepting: Set<Int> = []) async throws -> HTTPResponse {
+    /// `source` overrides the client's own `ClientSource` for this one call.
+    func perform(method: String, path: String, query: [String: String], body: Data?, accepting: Set<Int> = [],
+                 source: ClientSource? = nil) async throws -> HTTPResponse {
         guard let baseURL = await auth.signIn?.origins.api else { throw ZimmerError.unauthorized }
         guard let url = HTTPEndpoint(method: method, path: path, query: query).url(relativeTo: baseURL) else {
             throw ZimmerError.notConfigured
@@ -142,6 +162,7 @@ public struct ZimmerHTTPClient: ZimmerAPI {
         while true {
             var request = HTTPRequest(url: url, method: method, headers: ["Accept": "application/json"], body: body)
             if body != nil { request.headers["Content-Type"] = "application/json" }
+            request.headers.merge((source ?? self.source).headers) { _, new in new }
             request.headers["Authorization"] = "Bearer \(try await auth.accessToken())"
             await request.apply(edge)
 

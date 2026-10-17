@@ -115,7 +115,7 @@ class ModelCatalog
     # it reads `OPENROUTER_API_KEY`. Pi still honours ANTHROPIC_API_KEY and
     # OPENAI_API_KEY for `anthropic/*` and `openai/*` ids if either is set; those
     # paths are not removed, they are simply not what this deployment feeds. The
-    # key is managed from the Inference page's Pi tab (ManagedSecret).
+    # key lives in the secret store; the Inference page's Pi tab says whether it is set.
     #
     # Every id below is present in the model catalog bundled with the pinned Pi
     # CLI (see Dockerfile.base), which is the authority for what `--model`

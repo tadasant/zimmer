@@ -1,0 +1,143 @@
+<% setting = @setting %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <%= render "live/back_header", title: "Live settings", back_path: live_path,
+        subtitle: "How Live Mode thinks, sounds and listens, and the guidance it follows. One set for the whole deployment. Changes apply from the next turn, and an open voice call is updated as soon as you save. Live Mode can change these itself when you ask it, and every change is in the history below." %>
+
+    <% if flash[:live_settings_saved] %>
+      <%# Asks the call dock to push the change into an open voice call. %>
+      <div data-controller="live-settings-saved" hidden></div>
+    <% end %>
+
+    <%= form_with url: live_settings_path, method: :patch, scope: :live_setting, html: { id: "live-settings-form" } do |form| %>
+      <%# What the page showed, so a save writes only what was edited here and does
+          not undo a change Live Mode made itself while the page was open. %>
+      <% LiveSetting::KEYS.each do |key| %>
+        <input type="hidden" name="loaded[<%= key %>]" value="<%= setting[key] %>">
+      <% end %>
+      <input type="hidden" name="loaded[guidance]" value="<%= setting.guidance_text %>">
+      <% [ [ :text, "Typed turns", "Chat Completions, with Zimmer's tools. OpenAI accepts tools here only at reasoning effort “none”, so there is no effort setting for this path; the stronger GPT-6 models take tools only through the Responses API, which Live Mode does not use yet." ],
+           [ :voice, "Voice", "The Realtime API. Speed, turn detection, noise reduction, transcription and the output cap change mid-call; the model, voice and reasoning effort apply from the next call." ] ].each do |path, heading, note| %>
+        <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" data-live-settings-section="<%= path %>">
+          <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
+            <h2 class="text-lg font-medium text-gray-900"><%= heading %></h2>
+            <p class="mt-1 text-sm text-gray-500"><%= note %></p>
+          </div>
+          <div class="px-4 py-5 sm:px-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <% LiveSetting::FIELDS.select { |field| field.path == path }.each do |field| %>
+              <% id = "live_setting_#{field.key}" %>
+              <div data-live-setting-field="<%= field.key %>">
+                <label for="<%= id %>" class="block text-sm font-medium text-gray-700">
+                  <%= field.label %>
+                  <% if setting.overridden?(field.key) %><span class="ml-1 text-xs font-normal text-indigo-600">changed</span><% end %>
+                </label>
+                <% default_label = field.default.nil? ? "not set" : field.default.to_s %>
+                <% if field.enum? %>
+                  <select name="live_setting[<%= field.key %>]" id="<%= id %>"
+                          class="mt-1 block w-full min-w-0 rounded-md border-gray-300 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500 px-3 py-2">
+                    <option value="" <%= "selected" unless setting.overridden?(field.key) %>>Default (<%= default_label %>)</option>
+                    <% LiveSetting.options_for(field).each do |value, text| %>
+                      <option value="<%= value %>" <%= "selected" if setting[field.key] == value %>><%= text %></option>
+                    <% end %>
+                  </select>
+                <% else %>
+                  <input type="number" name="live_setting[<%= field.key %>]" id="<%= id %>"
+                         value="<%= setting[field.key] %>" min="<%= field.min %>" max="<%= field.max %>"
+                         step="<%= field.type == :integer ? 1 : "any" %>" inputmode="decimal"
+                         placeholder="Default (<%= default_label %>)"
+                         class="mt-1 block w-full min-w-0 rounded-md border-gray-300 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500 px-3 py-2">
+                <% end %>
+                <p class="mt-1 text-xs text-gray-500"><%= field.help %><% if field.numeric? %> Range <%= field.min %>–<%= field.max %>.<% end %></p>
+              </div>
+            <% end %>
+          </div>
+        </section>
+      <% end %>
+
+      <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" data-live-settings-section="guidance" data-controller="clipboard">
+        <div class="px-4 py-4 sm:px-6 border-b border-gray-200 flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h2 class="text-lg font-medium text-gray-900">Live mode guidance</h2>
+            <p class="mt-1 text-sm text-gray-500">
+              Added to the end of Live Mode's instructions on every turn, typed and spoken, after the agent root's AGENTS.md
+              and Zimmer's own section. Use it to tune quickly; lift what works into the root's AGENTS.md.
+            </p>
+          </div>
+          <button type="button" data-action="clipboard#copy" data-clipboard-value="<%= setting.guidance_text %>"
+                  class="shrink-0 inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+            Copy<span data-clipboard-target="feedback" class="hidden ml-1 text-green-600">✓</span>
+          </button>
+        </div>
+        <div class="px-4 py-5 sm:px-6">
+          <%= form.text_area :guidance, value: setting.guidance_text, rows: 10, maxlength: LiveSetting::GUIDANCE_MAX_LENGTH,
+              placeholder: "e.g. Keep answers under two sentences. When I say “ship it”, open the PR.",
+              class: "block w-full min-w-0 rounded-md border-gray-300 shadow-sm text-sm font-mono focus:border-indigo-500 focus:ring-indigo-500 px-3 py-2" %>
+          <p class="mt-1 text-xs text-gray-500">
+            Up to <%= number_with_delimiter(LiveSetting::GUIDANCE_MAX_LENGTH) %> characters.
+            <% if setting.persisted? && setting.updated_by.present? %>Last changed <%= time_ago_in_words(setting.updated_at) %> ago by <%= setting.updated_by %>.<% end %>
+          </p>
+        </div>
+      </section>
+
+      <div class="flex flex-col sm:flex-row gap-3 mb-8">
+        <%= form.submit "Save", class: "w-full sm:w-auto inline-flex justify-center items-center px-5 py-2.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700" %>
+      </div>
+    <% end %>
+
+    <%= button_to "Reset settings to defaults", reset_live_settings_path, method: :post,
+        form: { data: { turbo_confirm: "Put every Live setting back on its default? The guidance is kept." }, class: "mb-8" },
+        class: "w-full sm:w-auto inline-flex justify-center items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
+
+    <section class="bg-white shadow-sm rounded-lg border border-gray-200" data-live-settings-history>
+      <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
+        <h2 class="text-lg font-medium text-gray-900">History</h2>
+        <p class="mt-1 text-sm text-gray-500">Every change, newest first, and who made it. A guidance edit can be undone from here.</p>
+      </div>
+      <% if @changes.empty? %>
+        <p class="px-4 py-5 sm:px-6 text-sm text-gray-400">No changes yet — everything is on its default.</p>
+      <% else %>
+        <ul class="divide-y divide-gray-200">
+          <% @changes.each do |change| %>
+            <li class="px-4 py-3 sm:px-6" data-live-setting-change="<%= change.id %>">
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
+                <span class="inline-flex items-center px-1.5 py-0.5 rounded font-medium <%= change.agent? ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700' %>"><%= change.agent? ? "agent" : "person" %></span>
+                <% if change.live_conversation %>
+                  <%= link_to change.actor, live_conversation_path(change.live_conversation), class: "text-indigo-600 hover:text-indigo-500 break-all" %>
+                <% else %>
+                  <span class="break-all"><%= change.actor %></span>
+                <% end %>
+                <span>· <%= time_ago_in_words(change.created_at) %> ago</span>
+              </div>
+              <ul class="mt-1 space-y-1 text-sm text-gray-800">
+                <% change.changeset.each do |key, (before, after)| %>
+                  <% if key == "guidance" %>
+                    <li>
+                      <details>
+                        <summary class="cursor-pointer"><%= LiveConversations::SettingsUpdate.describe_guidance_change(before, after) %></summary>
+                        <div class="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <pre class="whitespace-pre-wrap break-words text-xs font-mono bg-gray-50 border border-gray-200 rounded p-2"><span class="block text-gray-400">Before</span><%= before.presence || "(empty)" %></pre>
+                          <pre class="whitespace-pre-wrap break-words text-xs font-mono bg-gray-50 border border-gray-200 rounded p-2"><span class="block text-gray-400">After</span><%= after.presence || "(empty)" %></pre>
+                        </div>
+                        <%= button_to "Restore the guidance from before this edit", restore_live_settings_guidance_path(change), method: :post,
+                            form: { data: { turbo_confirm: "Replace the current guidance with the text from before this edit?" }, class: "mt-2" },
+                            class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
+                      </details>
+                    </li>
+                  <% else %>
+                    <% field = LiveSetting::FIELDS_BY_KEY[key.to_sym] %>
+                    <li class="break-words">
+                      <%= field&.label || key %>:
+                      <span class="font-mono text-xs"><%= field ? LiveConversations::SettingsUpdate.describe_value(field, before) : before.inspect %></span>
+                      →
+                      <span class="font-mono text-xs"><%= field ? LiveConversations::SettingsUpdate.describe_value(field, after) : after.inspect %></span>
+                    </li>
+                  <% end %>
+                <% end %>
+              </ul>
+            </li>
+          <% end %>
+        </ul>
+      <% end %>
+    </section>
+  </div>
+</div>
