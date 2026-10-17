@@ -295,7 +295,8 @@ final class InferenceTests: XCTestCase {
         XCTAssertNotNil(first.login.verificationURL)
         // The code stays up for five polls — ten seconds at the sheet's cadence.
         for _ in 2...5 {
-            XCTAssertEqual(try await fake.inferenceLogin(attempt.id).login.status, "awaiting_user")
+            let polled = try await fake.inferenceLogin(attempt.id)
+            XCTAssertEqual(polled.login.status, "awaiting_user")
         }
         let sixth = try await fake.inferenceLogin(attempt.id)
         XCTAssertEqual(sixth.login.status, "completing")
