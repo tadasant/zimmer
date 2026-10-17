@@ -260,6 +260,8 @@ final class AppModel: ObservableObject {
         if let flag = arguments.firstIndex(of: "-ZimmerFixtureInference") {
             let runtime = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : InferenceReport.claudeCode
             fixtureInference = InferenceOpening(runtime: runtime, login: arguments.contains("-ZimmerFixtureInferenceLogin"))
+            tab = .more
+        }
         if let flag = arguments.firstIndex(of: "-ZimmerFixtureSettings") {
             let section = arguments.indices.contains(flag + 1) && !arguments[flag + 1].hasPrefix("-") ? arguments[flag + 1] : nil
             fixtureSettings = SettingsOpening(section: section.flatMap(SettingsSection.init(rawValue:)))
