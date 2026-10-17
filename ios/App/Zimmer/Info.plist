@@ -21,9 +21,9 @@
   * `ZimmerBuildEnvironment` — which deployment this build was made for (`production`,
     `staging`, `development`), from `ZIMMER_BUILD_ENVIRONMENT`. A label, never a hostname;
     empty or unrecognised reads as production.
-  * The CarPlay scene (`CPTemplateApplicationSceneSessionRoleApplication`). Declared, and
-    inert: CarPlay connects it only once the voice-based conversational entitlement is
-    granted by Apple and signed in (App/Zimmer/CarPlay.entitlements, wired into nothing).
+  * The CarPlay scene (`CPTemplateApplicationSceneSessionRoleApplication`). CarPlay connects
+    it only in a build that signs in the voice-based conversational entitlement
+    (App/Zimmer/CarPlay.entitlements, which `ios/bin/testflight` signs into every build).
   * `NSMicrophoneUsageDescription` / `NSSpeechRecognitionUsageDescription` — Live Mode's voice
     call, and the CarPlay conversation listening for the driver's answer. Without the keys
     iOS terminates the app the first time it asks, rather than showing the permission prompt.

@@ -1158,14 +1158,8 @@ class HealthMonitorService
     @process_discovery.claude_processes
   end
 
-  # The discovery `config.x.host_process_discovery` names: `:none` is the blind
-  # one, anything else (including unset) is the real host scanner.
   def configured_process_discovery
-    if Rails.configuration.x.host_process_discovery == :none
-      HostProcessDiscovery::None.new
-    else
-      HostProcessDiscovery.new(process_manager: @process_manager, logger: @logger)
-    end
+    HostProcessDiscovery.configured(process_manager: @process_manager, logger: @logger)
   end
 
   # Find orphaned processes (running but no matching session)

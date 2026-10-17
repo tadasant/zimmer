@@ -218,17 +218,42 @@ public struct LiveClientSecret: Decodable, Sendable, Equatable {
     public let model: String
     /// `wss://…/v1/realtime?model=…` — what the phone connects to, with the secret as bearer.
     public let websocketURL: URL
+    /// Which lines the call answers: `always`, `wake_word` or `dynamic`. Absent from a server
+    /// from before Listening, whose calls answer everything.
+    public let listening: String?
 
-    public init(clientSecret: String, model: String, websocketURL: URL) {
+    public init(clientSecret: String, model: String, websocketURL: URL, listening: String? = nil) {
         self.clientSecret = clientSecret
         self.model = model
         self.websocketURL = websocketURL
+        self.listening = listening
     }
 
     enum CodingKeys: String, CodingKey {
-        case model
+        case model, listening
         case clientSecret = "client_secret"
         case websocketURL = "websocket_url"
+    }
+}
+
+/// What Zimmer answered for a recorded transcript line: whether the call should answer it, and
+/// whether it was dropped instead of written to the thread.
+public struct LiveHeard: Decodable, Sendable, Equatable {
+    public let respond: Bool
+    public let dropped: Bool
+
+    public init(respond: Bool, dropped: Bool = false) {
+        self.respond = respond
+        self.dropped = dropped
+    }
+
+    enum CodingKeys: String, CodingKey { case respond, dropped }
+
+    /// A server from before Listening answers with the turn alone: kept, and answered.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        respond = try container.decodeIfPresent(Bool.self, forKey: .respond) ?? true
+        dropped = try container.decodeIfPresent(Bool.self, forKey: .dropped) ?? false
     }
 }
 

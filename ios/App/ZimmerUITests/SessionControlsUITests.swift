@@ -78,8 +78,7 @@ final class SessionControlsUITests: XCTestCase {
 
         let postgres = row(app, 1035)
         XCTAssertTrue(postgres.waitForExistence(timeout: timeout))
-        postgres.press(forDuration: 1.2)
-        tapMenuItem(app, "Rename")
+        openRowMenu(app, postgres, "Rename")
         let field = app.alerts.textFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: timeout))
         // The field opens focused with the cursor after the current title: delete it and type
@@ -90,17 +89,13 @@ final class SessionControlsUITests: XCTestCase {
 
         // Refresh, as the card's button beside its status pill: the transcript is read again.
         let merge = row(app, 1038)
-        merge.press(forDuration: 1.2)
-        tapMenuItem(app, "Refresh Transcript")
+        openRowMenu(app, merge, "Refresh Transcript")
         // By its words: the "Renamed" toast can still be on screen.
         XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["toast"], "Transcript refreshed"))
 
         // A running session is live already, so the card offers no refresh.
         let running = row(app, 1042)
-        running.press(forDuration: 1.2)
-        // A press that lands while the last menu is still closing opens nothing; once more.
-        if !app.buttons["Rename"].firstMatch.waitForExistence(timeout: 5) { running.press(forDuration: 1.2) }
-        XCTAssertTrue(app.buttons["Rename"].firstMatch.waitForExistence(timeout: timeout))
+        XCTAssertTrue(pressForMenu(app, running, offering: "Rename").exists, "the menu opens")
         XCTAssertFalse(app.buttons["Refresh Transcript"].firstMatch.exists)
     }
 
@@ -124,8 +119,7 @@ final class SessionControlsUITests: XCTestCase {
         // Waiting on you: the web UI's takeover confirmation, in its words.
         let postgres = row(app, 1035)
         XCTAssertTrue(postgres.waitForExistence(timeout: timeout))
-        postgres.press(forDuration: 1.2)
-        tapMenuItem(app, "Restart Session")
+        openRowMenu(app, postgres, "Restart Session")
         let confirm = app.sheets.buttons["Restart"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "This session is paused, not failed.")).firstMatch.exists)
@@ -136,8 +130,7 @@ final class SessionControlsUITests: XCTestCase {
         // Failed: restarted at once, as the web's button does.
         let failed = row(app, 1027)
         XCTAssertTrue(failed.waitForExistence(timeout: timeout))
-        failed.press(forDuration: 1.2)
-        tapMenuItem(app, "Restart Session")
+        openRowMenu(app, failed, "Restart Session")
         XCTAssertTrue(waitForLabelContaining(failed, "Waiting"))
         XCTAssertFalse(app.sheets.buttons["Restart"].exists, "no confirmation for a failed session")
     }
@@ -205,6 +198,13 @@ final class SessionControlsUITests: XCTestCase {
         XCTAssertTrue(menu.waitForExistence(timeout: timeout))
         menu.tap()
         tapMenuItem(app, item)
+    }
+
+    /// A row's long press, then `item` in its menu.
+    private func openRowMenu(_ app: XCUIApplication, _ row: XCUIElement, _ item: String) {
+        let button = pressForMenu(app, row, offering: item)
+        XCTAssertTrue(button.exists, "the menu offers \(item)")
+        button.tap()
     }
 
     private func tapMenuItem(_ app: XCUIApplication, _ item: String) {

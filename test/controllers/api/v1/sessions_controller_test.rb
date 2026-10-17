@@ -1536,7 +1536,9 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     session.reload
-    assert_equal "Rebase the branch and finish the PR", session.metadata["pending_follow_up_prompt"]
+    # Stamped as delivered: the caller's words, then Zimmer's turn-source note.
+    assert_equal TurnSource.new(surface: "api").annotate("Rebase the branch and finish the PR"),
+      session.metadata["pending_follow_up_prompt"]
     assert_equal "waiting", session.status,
       "a reader who sees the marker must be guaranteed to also see running"
   end
@@ -1896,7 +1898,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     original_prompt = session.prompt
 
     assert_no_difference "EnqueuedMessage.count" do
-      assert_enqueued_with(job: AgentSessionJob, args: [ session.id, "Urgent message" ]) do
+      assert_enqueued_with(job: AgentSessionJob, args: [ session.id, TurnSource.new(surface: "api").annotate("Urgent message") ]) do
         post follow_up_api_v1_session_path(session.id), params: {
           prompt: "Urgent message",
           force_immediate: true
