@@ -6,17 +6,20 @@
 //
 // A stand-in for the edge answers on http://localhost:<port>, the way Access
 // does: `/` signs the browser in by setting `CF_Authorization` (SameSite=Lax,
-// HttpOnly — the strictest cookie Access sets), and `POST /api/v1/quick_router`
-// without that cookie gets Access's own 401, an HTML page with a
-// `cf-access-domain` header that never reaches Zimmer. Later steps switch it
-// to Access's other answers: a redirect to its login page, and a 403 for a
-// signed-in account the policy does not admit — and to an origin that is not
-// Zimmer at all. With the cookie it answers the way Zimmer's
-// ingest does, including Zimmer's own JSON 401 for a key it does not know.
+// HttpOnly — the strictest cookie Access sets). By default it is an Access app
+// that takes a browser login, as on zimmer-app.tadasant.com: `POST
+// /api/v1/quick_router` without that cookie is redirected to the login page,
+// and with it answers the way Zimmer's ingest does, including Zimmer's own JSON
+// 401 for a key it does not know. Later steps switch it to an app that admits
+// service tokens only, as zimmer.tadasant.com/api is, which answers Access's
+// own 401 (an HTML page with a `cf-access-domain` header) even to a signed-in
+// browser; to a 403 for a signed-in account the policy does not admit; and to
+// an origin that is not Zimmer at all.
 //
 // What it proves: a browser that has signed in to the edge sends the Quick
-// Router message through it, one that has not is told to sign in rather than
-// that its key is wrong, and a wrong key is still blamed on the key.
+// Router message through it, one that has not is not told it was sent, a
+// service-token-only edge is not answered with "sign in" (#1269's advice, which
+// cannot work there), and a wrong key is still blamed on the key.
 const { chromium } = require('playwright');
 const fs = require('fs');
 const http = require('http');
@@ -34,8 +37,9 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
 
   const KEY = 'zmr_quick_router_key';
   const received = [];
-  // How the edge answers: 'access' (the 401), 'redirect', 'forbidden', or 'not-zimmer'.
-  let mode = 'access';
+  // How the edge answers: 'login' (redirects without a sign-in), 'service-only'
+  // (Access's 401, signed in or not), 'forbidden', or 'not-zimmer'.
+  let mode = 'login';
   const edge = http.createServer((req, res) => {
     const signedIn = /(?:^|;\s*)CF_Authorization=signed-in(?:;|$)/.test(req.headers.cookie || '');
     if (req.method === 'GET' && req.url === '/') {
@@ -52,13 +56,13 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
         res.writeHead(403, { 'Content-Type': 'text/html', 'cf-access-domain': req.headers.host });
         return res.end('<!doctype html><title>Forbidden ・ Cloudflare Access</title>');
       }
-      if (!signedIn && mode === 'redirect') {
-        res.writeHead(302, { Location: '/cdn-cgi/access/login' });
-        return res.end();
-      }
-      if (!signedIn) {
+      if (mode === 'service-only') {
         res.writeHead(401, { 'Content-Type': 'text/html', 'cf-access-domain': req.headers.host });
         return res.end('<!doctype html><title>Error ・ Cloudflare Access</title>');
+      }
+      if (!signedIn) {
+        res.writeHead(302, { Location: '/cdn-cgi/access/login' });
+        return res.end();
       }
       let body = '';
       req.on('data', (chunk) => { body += chunk; });
@@ -116,11 +120,12 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
       await host.locator('.send').click();
     };
 
-    console.log('Step 1: a browser not signed in to the edge is told to sign in...');
+    console.log('Step 1: a browser not signed in to the edge is not told the message was sent...');
     await send('before signing in');
     await host.locator('.error').waitFor({ timeout: 30000 });
     const refusal = await host.locator('.error').innerText();
-    assert(refusal.includes('sign in') && refusal.includes(BASE_URL), `the composer says to sign in at the Zimmer URL (${refusal})`);
+    // BASE_URL is http://, so the advice is the https URL; on https it is to sign in.
+    assert(refusal.includes('redirected') && refusal.includes('https://'), `the redirect to the login page is reported (${refusal})`);
     assert(!refusal.includes('Quick Router key'), 'it does not blame the key');
     assert((await host.locator('textarea').inputValue()) === 'before signing in', 'the text is kept for a retry');
     assert(received.length === 0, 'nothing reached the ingest');
@@ -148,14 +153,15 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
     await page.keyboard.press('Escape');
     await worker.evaluate((k) => chrome.storage.local.set({ apiKey: k }), KEY);
 
-    console.log('Step 4: an edge that redirects to its login page is not taken for a success...');
-    await context.clearCookies();
-    mode = 'redirect';
-    await send('redirected to sign in');
+    console.log('Step 4: an edge that admits service tokens only refuses a signed-in browser...');
+    mode = 'service-only';
+    await send('service tokens only');
     await host.locator('.error').waitFor({ timeout: 30000 });
-    const redirected = await host.locator('.error').innerText();
-    // BASE_URL is http://, so the advice is the https URL; on https it is to sign in.
-    assert(redirected.includes('redirected') && redirected.includes('https://'), `the redirect is reported, not taken for a sent message (${redirected})`);
+    const serviceOnly = await host.locator('.error').innerText();
+    assert(serviceOnly.includes('service tokens only') && serviceOnly.includes('will not help') && serviceOnly.includes(BASE_URL), `the composer says signing in will not help (${serviceOnly})`);
+    assert(!serviceOnly.includes('Quick Router key'), 'it does not blame the key');
+    assert((await host.locator('textarea').inputValue()) === 'service tokens only', 'the text is kept for a retry');
+    assert(received.length === 1, 'nothing more reached the ingest');
     await page.keyboard.press('Escape');
 
     console.log('Step 5: a 403 from the edge is about the account, not a missing sign-in...');

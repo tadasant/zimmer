@@ -29,13 +29,25 @@ in the repo — Chrome, Manifest V3, no build step — and is loaded unpacked. (
 
 The browser has to reach Zimmer. On a tailnet-only deployment that means a browser on the tailnet,
 using the tailnet address as the URL. On a deployment behind the [Cloudflare
-edge](/operate/deploying/#optional-cloudflare-edge), as Tadas's is, the URL is the public domain, and
-Cloudflare Access checks every request before Zimmer sees it, the extension's included. The extension
-sends the browser's own cookies, so it passes Access when this browser is signed in at that URL: open
-Zimmer in a tab once and sign in. When the Access sign-in lapses, Access refuses the message itself.
-The composer then tells you to sign in at the Zimmer URL. It does not blame the key, because Zimmer
-never saw the request. If the browser is signed in with an account the Access policy does not admit,
-Access answers 403, and the composer tells you to sign in with the right account.
+edge](/operate/deploying/#optional-cloudflare-edge), as Tadas's is, Cloudflare Access checks every
+request before Zimmer sees it, the extension's included, and the URL is the one host whose Access app
+lets a signed-in browser reach `/api`. On Tadas's deployment that is the iOS app's origin,
+`https://zimmer-app.tadasant.com`, not `https://zimmer.tadasant.com`: on the public domain `/api`
+admits the laptop's service token only, so a browser is refused there however it is signed in.
+
+The extension sends the browser's own cookies, so it passes Access when this browser is signed in at
+that URL. Chrome usually already is, through the Google sign-in. If it is not, open the URL in a tab
+once and sign in. The composer says who refused a message, and it blames the key only when Zimmer
+itself refused it:
+
+- **A redirect** is Access sending the request to its login page: sign in at the URL, then send again.
+- **An Access 401** comes from an Access app that admits service tokens only, and signing in will not
+  get past it. Change the URL in the options to one whose Access app admits a browser sign-in.
+- **An Access 403** means the browser is signed in with an account the policy does not admit. Sign in
+  with the right account.
+
+On `zimmer-app.tadasant.com` the toast's session link does not open: that host serves the API only.
+Open the session from Zimmer itself.
 
 Nothing needs provisioning on the Zimmer side. The key is minted on a page that already exists,
 the endpoint ships with the deploy, and there is no environment variable to set.
