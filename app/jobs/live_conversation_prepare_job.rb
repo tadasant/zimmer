@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 # preparing → active: read the agent root's AGENTS.md (the system prompt) and
+# its per-mode style files (typed, spoken), and
 # list the tools of every catalog server the root enables by default, so
 # building the function list later never has to spawn a server. A server that
 # cannot be listed is dropped from the conversation rather than failing it; a
@@ -25,6 +26,7 @@ class LiveConversationPrepareJob < ApplicationJob
       status: LiveConversation::ACTIVE,
       instructions: instructions.text,
       instructions_source: instructions.source,
+      mode_instructions: instructions.modes,
       mcp_servers: servers,
       mcp_tool_cache: cache,
       error_message: dropped.any? ? "Could not enable #{dropped.join('; ')}" : nil,

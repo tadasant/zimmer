@@ -47,6 +47,24 @@ class Api::BaseController < ActionController::API
 
   private
 
+  # Where text arriving over the REST API came from, for the turn-source note
+  # (TurnSource). The credential decides the surface: the iOS app's bearer token
+  # is `ios` (its X-Zimmer-Client header may refine that to `carplay`), a call
+  # naming the session acting on it — or a child spawned under a parent — is
+  # `agent`, and anything else on an API key is `api`. A caller that reports no
+  # modality gets `unknown`, never an error. A style hint only: who is speaking is
+  # HumanMessageCapture's question, answered from the same credential.
+  def api_turn_source(spawned_under_parent: false)
+    surface = if native_app_request?
+      "ios"
+    elsif spawned_under_parent || params[:acting_session_id].present?
+      "agent"
+    else
+      "api"
+    end
+    TurnSource.from_request(request, surface: surface)
+  end
+
   # Record the "uncle" lineage edge for a session-initiated queue/interrupt.
   #
   # The acting session is self-declared, via an `acting_session_id` on the

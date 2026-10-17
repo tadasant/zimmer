@@ -26,9 +26,25 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
     assert_equal "gpt-4o-mini-transcribe", session.dig("audio", "input", "transcription", "model")
     assert_equal "semantic_vad", session.dig("audio", "input", "turn_detection", "type")
     assert session["instructions"].start_with?("# Live\nBe brief.")
-    assert_includes session["instructions"], "Answer out loud"
-    # A reconnecting call is reminded of what was already said.
+    assert_includes session["instructions"], "## Right now: spoken"
+    assert_includes session["instructions"], "you are heard, not read"
+    # A new call is reminded of what was already said.
     assert_includes session["instructions"], "Them: Start the docs fix.\nYou: Started it."
+  end
+
+  test "a conversation that was typed until now goes into the call with its typed turns and the spoken style" do
+    conversation = create_live_conversation(mode: "text")
+    conversation.turns.create!(role: "user", source: "typed", content: "What's on the board?")
+    conversation.turns.create!(role: "assistant", content: "- #12 docs fix\n- #13 flaky test")
+    conversation.switch_mode!("voice")
+    client = LiveConversationHelpers::FakeOpenai.new
+
+    LiveConversations::RealtimeSession.mint(conversation, client: client)
+
+    instructions = client.secret_requests.sole.dig("session", "instructions")
+    assert_includes instructions, "Them: What's on the board?"
+    assert_includes instructions, "## Right now: spoken"
+    assert_not_includes instructions, "## Right now: typed"
   end
 
   test "a response with no secret is an error, not a blank token" do

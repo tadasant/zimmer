@@ -51,6 +51,12 @@ module ApiSessionSerialization
       # counts — that choice when there is one, otherwise derived from the genesis
       # on read, so moving a genesis in Settings changes existing sessions too.
       genesis: session.genesis_key,
+      # Where the initial prompt and the latest tagged follow-up came from
+      # (TurnSource): surface, modality, and a label. null when none was
+      # recorded — a session older than the feature, or a turn Zimmer wrote.
+      # A style hint, not an authorization signal.
+      source_context: session.initial_turn_source&.as_json,
+      last_turn_source: session.last_turn_source&.as_json,
       scheduling_class: session.scheduling_class,
       priority_class: session.priority_class(genesis_class_overrides),
       # Rank within the spot queue: higher is handled sooner, absolute scale.

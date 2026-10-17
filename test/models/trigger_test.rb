@@ -797,7 +797,7 @@ class TriggerTest < ActiveSupport::TestCase
     session.update_column(:status, Session.statuses[:needs_input])
 
     # Verify enqueue_with_prompt is called with the correct session and prompt
-    AgentSessionJob.expects(:enqueue_with_prompt).with(session.id, "Follow-up prompt", images: nil, files: nil).once
+    AgentSessionJob.expects(:enqueue_with_prompt).with(session.id, @trigger.turn_source.annotate("Follow-up prompt"), images: nil, files: nil).once
 
     @trigger.create_session!(prompt: "Follow-up prompt")
   end
@@ -1268,7 +1268,7 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.create_session!(prompt: "Follow-up prompt")
 
     session.reload
-    assert_equal "Follow-up prompt", session.metadata["pending_follow_up_prompt"]
+    assert_equal @trigger.turn_source.annotate("Follow-up prompt"), session.metadata["pending_follow_up_prompt"]
   end
 
   # MCP server validations. `mcp_servers` is checked at save exactly as
@@ -2511,7 +2511,7 @@ class TriggerTest < ActiveSupport::TestCase
     # a handed-over turn queues for a worker rather than flipping to `running`.
     assert_equal :delivered, @trigger.last_follow_up_status,
       "Expected the follow-up to be delivered from waiting, got #{@trigger.last_follow_up_status.inspect}"
-    assert_equal "Follow-up prompt", session.metadata["pending_follow_up_prompt"]
+    assert_equal @trigger.turn_source.annotate("Follow-up prompt"), session.metadata["pending_follow_up_prompt"]
   end
 
   # === Tests for one_time_reuse_trigger? ===

@@ -5,7 +5,7 @@ require "net/http"
 # The two OpenAI calls the live modes make, over plain Net::HTTP:
 #
 # - Chat Completions, for Live Mode's typed turns (run server-side, in a job).
-# - Realtime client secrets, for Live Voice: Rails mints a short-lived `ek_…`
+# - Realtime client secrets, for Live Mode's voice: Rails mints a short-lived `ek_…`
 #   secret carrying the whole session config, and the browser or phone opens the
 #   audio connection to OpenAI with it. Audio never passes through Puma, and the
 #   long-lived key never leaves the server.
@@ -47,11 +47,13 @@ class OpenaiClient
 
   def self.base_url = ENV.fetch("LIVE_OPENAI_BASE_URL", "").presence || DEFAULT_BASE_URL
 
-  def initialize(api_key: self.class.api_key, base_url: self.class.base_url)
+  def initialize(api_key: self.class.api_key, base_url: self.class.base_url, open_timeout: OPEN_TIMEOUT_SECONDS, read_timeout: READ_TIMEOUT_SECONDS)
     raise NotConfiguredError, "#{API_KEY_VARIABLE} is not set" if api_key.blank?
 
     @api_key = api_key
     @base_url = base_url.chomp("/")
+    @open_timeout = open_timeout
+    @read_timeout = read_timeout
   end
 
   # @return [Hash] the parsed completion
@@ -74,7 +76,7 @@ class OpenaiClient
     request.body = JSON.generate(body)
 
     response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https",
-      open_timeout: OPEN_TIMEOUT_SECONDS, read_timeout: READ_TIMEOUT_SECONDS) do |http|
+      open_timeout: @open_timeout, read_timeout: @read_timeout) do |http|
       http.request(request)
     end
 

@@ -21,13 +21,13 @@
   * `ZimmerBuildEnvironment` — which deployment this build was made for (`production`,
     `staging`, `development`), from `ZIMMER_BUILD_ENVIRONMENT`. A label, never a hostname;
     empty or unrecognised reads as production.
-  * The CarPlay scene (`CPTemplateApplicationSceneSessionRoleApplication`). Declared, and
-    inert: CarPlay connects it only once the voice-based conversational entitlement is
-    granted by Apple and signed in (App/Zimmer/CarPlay.entitlements, wired into nothing).
-  * `NSMicrophoneUsageDescription` / `NSSpeechRecognitionUsageDescription` — Live Voice's
+  * The CarPlay scene (`CPTemplateApplicationSceneSessionRoleApplication`). CarPlay connects
+    it only in a build that signs in the voice-based conversational entitlement
+    (App/Zimmer/CarPlay.entitlements, which `ios/bin/testflight` signs into every build).
+  * `NSMicrophoneUsageDescription` / `NSSpeechRecognitionUsageDescription` — Live Mode's voice
     call, and the CarPlay conversation listening for the driver's answer. Without the keys
     iOS terminates the app the first time it asks, rather than showing the permission prompt.
-  * `UIBackgroundModes` `audio` — a Live Voice call carries on with the screen locked or the
+  * `UIBackgroundModes` `audio` — a Live Mode voice call carries on with the screen locked or the
     app in the background (in the car, mostly). It holds audio only while a call runs.
 -->
 <plist version="1.0">
@@ -67,7 +67,7 @@
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Live Voice listens while you talk to Zimmer, and in the car Zimmer listens for your answer to a session that needs you.</string>
+	<string>Live Mode listens while you talk to Zimmer, and in the car Zimmer listens for your answer to a session that needs you.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

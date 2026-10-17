@@ -6,7 +6,8 @@
   on the App ID `com.tadasant.zimmer`; an entitlement the App ID lacks fails signing.
   `development` here; export for App Store Connect rewrites it to `production` (check the
   first signed build with codesign (dump the entitlements of Zimmer.app)). The guard in
-  `ios/bin/testflight` refuses this file if it ever asks for anything but aps-environment.
+  `ios/bin/testflight` refuses this file if it ever asks for anything but aps-environment; with
+  push on it is merged with CarPlay.entitlements, which every build signs in.
 -->
 <plist version="1.0">
 <dict>
