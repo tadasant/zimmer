@@ -117,10 +117,14 @@ async function submit(payload) {
 
 // What to tell the human when something in front of Zimmer answered instead of
 // Zimmer, or null when Zimmer answered. Cloudflare Access marks its own
-// refusals with `cf-access-domain`: a 401 when the browser has no valid sign-in
-// there, a 403 when it has one that the policy does not admit. A redirect —
-// `redirect: "manual"` makes it an opaque response with status 0 — is Access
-// sending the request to its login page, or an http URL being sent to https.
+// refusals with `cf-access-domain`. An Access app that takes a browser login
+// answers a request without a valid sign-in by redirecting it to the login page
+// (`redirect: "manual"` makes that an opaque response with status 0), and a
+// signed-in account its policy does not admit with a 403. A 401 comes from an
+// app that admits service tokens only and never offers a login, so it refuses a
+// signed-in browser too: signing in cannot get the request through, only a URL
+// whose access proxy admits a browser sign-in on /api can. A redirect on an
+// http URL is more likely the server sending it to https.
 function accessProxyRefusal(response, baseUrl) {
   if (response.type === "opaqueredirect") {
     if (baseUrl.startsWith("http:")) {
@@ -130,7 +134,7 @@ function accessProxyRefusal(response, baseUrl) {
   }
   if (!response.headers.has("cf-access-domain")) return null;
   if (response.status === 401) {
-    return `The access proxy in front of Zimmer stopped it before Zimmer saw it. This browser is not signed in there: open ${baseUrl} in a tab, sign in, then send again.`;
+    return `The access proxy in front of ${baseUrl} stopped it before Zimmer saw it. On Zimmer's API it admits service tokens only, not a browser's sign-in, so signing in will not help. In the extension's options, use a Zimmer URL whose access proxy lets a signed-in browser reach /api.`;
   }
   if (response.status === 403) {
     return `The access proxy in front of Zimmer refused the account this browser is signed in with. Open ${baseUrl} in a tab and sign in with the account the deployment admits.`;
