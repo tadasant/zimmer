@@ -52,7 +52,12 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// The class each session's genesis gives it: what *Derive it* goes back to. The samples
     /// choose no class of their own, so it is the class each starts with.
     private var derivedClasses: [Int: String]
-    /// Live Mode: see FakeZimmerAPI+Live.swift.
+    /// The Settings page's row, as `GET /api/v1/app_settings` answers it.
+    private var appSettingsRow: AppSettings = FakeZimmerAPI.sampleAppSettings()
+    /// The sign-in is a relay-only grant: the MCP Apps keys are refused, as the server
+    /// refuses them before reading anything else.
+    private let relayOnly: Bool
+        /// Live Mode: see FakeZimmerAPI+Live.swift.
     var liveState = FakeLiveState.sample()
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
@@ -60,11 +65,13 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// conversation runs to a hundred messages, so its details card is far above the newest.
     /// `degraded`: queue recovery mode is on and network egress is degraded, so the two
     /// site-wide banners show.
+    /// `relayOnly`: the sign-in does not act as you, so a change to MCP Apps is a 403.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
-                longTranscript: Bool = false, degraded: Bool = false, trashedElsewhere: Int? = nil) {
+                longTranscript: Bool = false, relayOnly: Bool = false, degraded: Bool = false, trashedElsewhere: Int? = nil) {
         self.live = live
         self.trashedElsewhere = trashedElsewhere
         self.degraded = degraded
+        self.relayOnly = relayOnly
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
         self.conversations = FakeZimmerAPI.sampleConversations(now: now)
@@ -1471,5 +1478,83 @@ extension FakeZimmerAPI {
             ))
         }
         return WaitingExplanation(reasons: reasons, banners: banners)
+    }
+}
+
+// MARK: - The Settings page's row
+//
+// As the server: only the keys sent are touched, an empty default clears that override, a
+// model must be one its runtime lists (422 "Settings not saved"), an experimental key must be
+// registered (422 "Unknown experimental setting"), the allowlist keeps only eligible servers,
+// and the MCP Apps pair takes a sign-in acting as you (403 on a relay-only grant).
+extension FakeZimmerAPI {
+    public static let relayOnlyRefusal = "This sign-in may not act as you; sign in again and allow acting as you to change MCP Apps"
+
+    public func appSettings() async throws -> AppSettings {
+        appSettingsRow
+    }
+
+    public func updateAppSettings(_ change: AppSettingsChange) async throws -> AppSettings {
+        if change.touchesMcpApps, relayOnly {
+            throw ZimmerError.http(status: 403, message: Self.relayOnlyRefusal)
+        }
+        var next = appSettingsRow
+        if change.defaultRuntime != nil || change.defaultModel != nil {
+            let current = appSettingsRow.sessionDefaults
+            var runtimeOverride: String? = current.runtimeOverridden ? current.runtime : nil
+            var modelOverride: String? = current.modelOverridden ? current.model : nil
+            if let value = change.defaultRuntime { runtimeOverride = value.isEmpty ? nil : value }
+            if let value = change.defaultModel { modelOverride = value.isEmpty ? nil : value }
+            let runtime = runtimeOverride ?? current.builtIn.runtime
+            guard let entry = appSettingsRow.runtime(runtime) else {
+                throw ZimmerError.http(status: 422, message: "Default runtime \(runtime) is not a registered runtime")
+            }
+            let model = modelOverride ?? entry.defaultModel
+            guard entry.models.contains(model) else {
+                throw ZimmerError.http(status: 422, message: "Default model \(model) is not available for \(entry.label)")
+            }
+            next.sessionDefaults = AppSettings.SessionDefaults(runtime: runtime, model: model, runtimeOverridden: runtimeOverride != nil,
+                                                               modelOverridden: modelOverride != nil, builtIn: current.builtIn)
+        }
+        for (key, enabled) in change.experimental.sorted(by: { $0.key < $1.key }) {
+            guard let index = next.experimental.firstIndex(where: { $0.key == key }) else {
+                let valid = appSettingsRow.experimental.map(\.key).joined(separator: ", ")
+                throw ZimmerError.http(status: 422, message: "\(key) is not a setting; valid: \(valid)")
+            }
+            next.experimental[index].enabled = enabled
+        }
+        if let enabled = change.mcpAppsEnabled { next.mcpApps.enabled = enabled }
+        if let names = change.mcpAppsAllowedServers {
+            let eligible = Set(appSettingsRow.mcpApps.eligibleServers.map(\.name))
+            // Sorted as McpApps::Policy.sanitize_allowlist stores it: the server's order, not the catalog's.
+            next.mcpApps.allowedServers = Array(Set(names.filter(eligible.contains))).sorted()
+        }
+        appSettingsRow = next
+        return next
+    }
+
+    /// The shipped row: no override, the three built-in toggles at their defaults, MCP Apps
+    /// off with two remote servers it could name.
+    public static func sampleAppSettings() -> AppSettings {
+        AppSettings(
+            sessionDefaults: .init(runtime: "claude_code", model: "opus", runtimeOverridden: false, modelOverridden: false,
+                                   builtIn: .init(runtime: "claude_code", model: "opus")),
+            runtimes: [
+                .init(id: "claude_code", label: "Claude Code", defaultModel: "opus", models: ["opus", "sonnet"]),
+                .init(id: "codex", label: "Codex", defaultModel: "gpt-5.6-sol", models: ["gpt-5.6-sol"]),
+            ],
+            experimental: [
+                .init(key: "mcp_tool_search", title: "MCP tool search",
+                      description: "Spawn Claude Code sessions with ENABLE_TOOL_SEARCH=true so the agent searches MCP tools on demand instead of loading every attached server's tool schemas up front. Claude Code only — Codex ignores it.",
+                      enabled: true, defaultEnabled: true),
+                .init(key: "warm_clone_pool_active_roots", title: "Warm clones for every active root",
+                      description: "Keep ready-made git clones for the repositories of every agent root that started sessions in the last week, not only the router's, so those sessions skip the `git clone` too. Off, the pool serves Quick Router sessions alone. See /health → Warm clone pool for what is pooled and how often a start claimed a clone.",
+                      enabled: false, defaultEnabled: false),
+                .init(key: "warm_router_process", title: "Warm Quick Router process",
+                      description: "Keep one idle Claude Code process booted for the Quick Router, with its MCP servers connected, so a request skips process start and CLI boot. It makes no API call and spends no quota while idle, and the request is its first turn. Costs about 250 MB of RAM. See /health → Warm router process for how often a request claimed it.",
+                      enabled: false, defaultEnabled: false),
+            ],
+            mcpApps: .init(enabled: false, allowedServers: [], eligibleServers: [.init(name: "linear", title: "Linear"), .init(name: "github", title: "GitHub")])
+        )
     }
 }
