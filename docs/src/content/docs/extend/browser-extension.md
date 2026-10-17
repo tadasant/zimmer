@@ -36,11 +36,12 @@ lets a signed-in browser reach `/api`. On Tadas's deployment that is the iOS app
 admits the laptop's service token only, so a browser is refused there however it is signed in.
 
 The extension sends the browser's own cookies, so it passes Access when this browser is signed in at
-that URL. Chrome usually already is, through the Google sign-in. If it is not, open the URL in a tab
-once and sign in. The composer says who refused a message, and it blames the key only when Zimmer
+that URL. Sign in once by opening `https://zimmer-app.tadasant.com/api/v1/health` in a tab: Access
+runs the Google login and the tab lands on a short JSON answer. The extension cannot run that login
+itself. The composer says who refused a message, and it blames the key only when Zimmer
 itself refused it:
 
-- **A redirect** is Access sending the request to its login page: sign in at the URL, then send again.
+- **A redirect** is Access sending the request to its login page: sign in as above, then send again.
 - **An Access 401** comes from an Access app that admits service tokens only, and signing in will not
   get past it. Change the URL in the options to one whose Access app admits a browser sign-in.
 - **An Access 403** means the browser is signed in with an account the policy does not admit. Sign in
