@@ -20,6 +20,12 @@
 # There is also no update and no destroy, on either surface. A GateDecision is
 # append-only; a correction is a new row.
 class Api::V1::GateDecisionsController < Api::BaseController
+  # Zimmer's iOS app: the ledger as the /gate_decisions pages show it. Not
+  # `create` — a decision is a gate's to record, and the page offers a person no
+  # way to write one. Feedback has no route here at all (see above), so the app
+  # has nothing to open for it.
+  accepts_native_app_tokens only: %i[index show]
+
   # GET /api/v1/gate_decisions
   #
   # Filters: gate, surface, decision, artifact_url, artifact_query, from, to,
