@@ -58,7 +58,12 @@ struct LiveHomeView: View {
                 NavigationStack { LiveSettingsView(api: model.api) }
             }
             .navigationDestination(for: LiveDestination.self) { destination in
+                // Its own state for each conversation. New conversation replaces the path's only
+                // entry, and SwiftUI would otherwise keep the one view and its turns: a read of the
+                // old thread still in flight lands after the new thread's first read, and the
+                // fresh conversation shows the old one's turns from then on.
                 LiveConversationView(id: destination.id, api: model.api, startsVoice: destination.voice) { replacement in path = [replacement] }
+                    .id(destination.id)
             }
             .task {
                 await load()
