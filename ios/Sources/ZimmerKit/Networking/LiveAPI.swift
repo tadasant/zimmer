@@ -21,8 +21,10 @@ public protocol LiveAPI: Sendable {
     func liveClientSecret(_ id: Int) async throws -> LiveClientSecret
     /// Voice: run a function call the model made; send back what this returns.
     func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult
-    /// Voice: a finished transcript line, so the thread carries what was said.
-    func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String) async throws -> LiveTurn
+    /// Voice: a finished transcript line, so the thread carries what was said. `gated`: the call
+    /// asks for its own replies (Listening is wake word or dynamic), so Zimmer decides whether this
+    /// line is answered — and drops, unwritten, one it is not.
+    func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String, gated: Bool) async throws -> LiveHeard
     /// Voice: the `session` of a `session.update` that brings an open call up to the current
     /// Live settings and guidance — sent after they changed somewhere else, such as the settings
     /// screen.
@@ -87,21 +89,26 @@ extension ZimmerHTTPClient {
         try await post("/api/v1/live_conversations/\(id)/messages", json: ["content": content])
     }
 
+    /// Says this app asks for each reply itself when Listening is gated; without it Zimmer builds
+    /// the call to answer everything, the way an app from before Listening expects.
+    static let listeningModes: [String: String] = ["listening_modes": "1"]
+
     public func liveClientSecret(_ id: Int) async throws -> LiveClientSecret {
-        try await post("/api/v1/live_conversations/\(id)/client_secret", json: [:])
+        try await post("/api/v1/live_conversations/\(id)/client_secret", json: Self.listeningModes)
     }
 
     public func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult {
         try await post("/api/v1/live_conversations/\(id)/tool_calls",
-                       json: ["name": name, "arguments": arguments, "call_id": callID])
+                       json: ["name": name, "arguments": arguments, "call_id": callID].merging(Self.listeningModes) { $1 })
     }
 
-    public func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String) async throws -> LiveTurn {
-        try await post("/api/v1/live_conversations/\(id)/turns", json: ["role": role.rawValue, "content": content])
+    public func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String, gated: Bool) async throws -> LiveHeard {
+        let line: [String: Any] = ["role": role.rawValue, "content": content]
+        return try await post("/api/v1/live_conversations/\(id)/turns", json: gated ? line.merging(Self.listeningModes) { $1 } : line)
     }
 
     public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
-        let response: LiveSessionUpdateResponse = try await post("/api/v1/live_conversations/\(id)/session_update", json: [:])
+        let response: LiveSessionUpdateResponse = try await post("/api/v1/live_conversations/\(id)/session_update", json: Self.listeningModes)
         return response.session
     }
 

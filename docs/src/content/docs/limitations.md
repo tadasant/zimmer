@@ -4589,6 +4589,74 @@ signal that it has fallen behind, and it is an accurate one.
 
 ---
 
+## Turn sources
+
+The [turn-source note](/sessions/turn-sources/) is a style hint. These are the places where it is
+missing, coarse, or wrong. None of them reaches authorization, because nothing reads the source for
+that (`test/services/turn_source_test.rb`).
+
+### The modality is whatever the client says
+
+`X-Zimmer-Input-Modality` is the client's own claim, and nothing checks it. An API-key caller can
+claim `voice_dictation` and get a dictation hint. That is by design, and it is the reason the value
+is never an authorization signal. The Live modalities cannot be claimed this way. They come only from
+the Live conversation a delegation ran in.
+
+### Keyboard dictation on the phone is invisible
+
+The phone's composers are plain text fields. iOS keyboard dictation fills them like typing and the
+app cannot see it, so a phone message is tagged `ios` with an `unknown` modality. Only CarPlay's own
+speech loop (`VoiceIO`) is tagged `voice_dictation`.
+
+### A Live call from CarPlay is tagged as the phone
+
+CarPlay's Live call is the phone's `LiveCall`, using the same client, so its delegations are tagged
+`ios · live_voice` rather than `carplay`. `live_conversations.client_surface` is last-writer-wins: if
+the web app and the phone both drive one conversation, the next delegation names whichever spoke
+last.
+
+### An API key is `api`, even when an agent holds it
+
+The REST API's full key belongs to the whole fleet. A call is tagged `agent` only when it names
+`acting_session_id` or spawns under a parent. Otherwise an agent calling the REST API by hand is
+tagged `api`. The MCP surface does not have this gap, because the connection is stamped with its
+session.
+
+### Some turns arrive with no note
+
+These turns arrive with no note:
+
+- A replayed prompt: a nudge to a never-started session replays `sent_message`, `prompt` or
+  `original_prompt` (`AgentSessionJob#replayable_prompt`).
+- A follow-up folded into a never-started session's `prompt`. Its note comes off the column, and its
+  source becomes the session's initial source only when the session had none recorded.
+- A message Zimmer writes itself.
+- A prompt within 1,000 characters of `PROMPT_MAX_LENGTH`. The note is left off so a requeue never
+  fails the queue's length validation. The source is still recorded in `last_turn_source`.
+
+### A whole turn replayed verbatim keeps its note
+
+The signature covers the note's fields and the exact text in front of it. It does not cover the
+session or the moment. An untagged path that delivers byte-for-byte the same text and note that an
+earlier turn carried keeps that note as genuine. For example, a session could copy one of its own
+past turns into a `wake_me_up_later` prompt. The note then still describes how those words were
+first produced, so the lift gains nothing. Binding the signature to a session id would close this,
+at the cost of threading the session through every comparison.
+
+### Lookalikes the neutralizer does not match
+
+`TurnSource.neutralize` defuses `<zimmer-turn-source`, with optional whitespace and `/`,
+case-insensitively and line by line. It does not catch HTML-escaped (`&lt;…`), fullwidth (`＜`) or
+zero-width-split spellings, which a model might still read as the tag. The agent-facing explanation
+names only the intact element as Zimmer's.
+
+### Changing the note's wording defuses notes already in flight
+
+`finalize` keeps a note only if it re-renders byte for byte. A deploy that changes a label or a hint
+therefore defuses notes signed before it but not yet delivered (`‹zimmer-turn-source›`), for example
+on a prompt sitting in `pending_follow_up_prompt` or the queue. The turn is still delivered, just
+without a usable note. Rotating `secret_key_base` has the same effect.
+
 ## Triggers
 
 ### Workflow triggers exist, and nothing fires one
@@ -7970,11 +8038,10 @@ value is read only from the secret chain.
 
 ## The CarPlay scene has never connected to a car
 
-The CarPlay scene is built and its conversation logic (`DrivingFlow`) is unit-tested. But CarPlay
-connects an app only when its signed build carries a granted CarPlay entitlement, and Apple has not
-granted one, so no head unit or CarPlay Simulator has shown it. Speech recognition in a moving car,
-the voice-control template's states, and whether iOS 26.4 starts the conversation the way the
-category expects are all unobserved. Recognition is on-device only, so on a phone without an on-device
+The CarPlay scene is built, its conversation logic (`DrivingFlow`) is unit-tested, and every
+TestFlight build signs in the granted entitlement. But no head unit or CarPlay Simulator has shown
+it yet. Speech recognition in a moving car, the voice-control template's states, and whether iOS
+26.4 starts the conversation the way the category expects are all unobserved. Recognition is on-device only, so on a phone without an on-device
 model for its language, the car can talk but can't listen.
 
 ## No iOS push has been sent to a real phone
@@ -8211,8 +8278,7 @@ run in the simulator against the fixture. The audio half has not run at all: `Li
 (microphone, voice processing, reply playback) and `LiveCall`'s WebSocket to OpenAI. A simulator
 has no microphone worth testing echo cancellation on, and no deployment has the OpenAI key yet.
 It is built the way Motet's device-tested Play Live audio is, and that is the extent of the
-evidence. The CarPlay entry is inert with the rest of the scene
-([#1273](https://github.com/tadasant/zimmer/issues/1273)).
+evidence. CarPlay's Live Voice entry has not run in a car either.
 
 ## A live conversation's stdio servers start from scratch on every call
 
@@ -8310,6 +8376,26 @@ Voice on is a fact about the conversation, not about a call. Closing the tab, a 
 hang-up from the dock leaves the conversation in voice, and typing is refused until someone presses
 **Type instead** (or `set_mode`). The page says voice is on and offers both. A call that is still
 connected when another device turns voice off keeps its spoken instructions until it hangs up.
+
+## Listening gates the answer, not the microphone
+
+Wake word and Dynamic decide which lines get an answer. They do not decide what OpenAI hears: in
+every mode the microphone streams to OpenAI and every line is transcribed there. A dropped line is
+kept out of the thread and deleted from the call, but it was heard. Truly private listening would
+need the wake word spotted on the device. The phone's on-device speech recognition could do that;
+nothing here does.
+
+Gating has costs:
+
+- Talking over a reply doesn't cut it off, because ambient speech would too.
+- Every answered line waits for a round trip to Zimmer. Under Dynamic it also waits for a text
+  model's yes or no, up to about eight seconds before the line is answered anyway.
+- The wake word is the transcript containing "Zimmer". A transcription that hears "Simmer" drops
+  the line.
+- The ten-second follow-up window answers anything said in it, including the next line of a
+  conversation that isn't for Zimmer.
+- A dropped line sits in the call until Zimmer has decided. A reply that starts in that moment can
+  hear it.
 
 ## Open questions
 

@@ -296,8 +296,9 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   screen (the web's bubble), which opens the sheet. The sheet is the web bubble's panel: the
   words, photos and files from the paperclip, and under *Advanced* the harness, the model and
   *Run as spot* (wait for quota room, at the top of the spot queue), each picker leading with
-  the default rather than preselecting it. The sparkles in the bar open the sheet with the words
-  typed so far. A start from the sheet empties the bar too; closing the sheet without starting
+  the default rather than preselecting it. While the field has the keyboard, a *Cancel* beside it
+  empties it and puts the keyboard away, as the search box's *Cancel* does. The sparkles in the bar
+  open the sheet with the words typed so far. A start from the sheet empties the bar too; closing the sheet without starting
   (*Cancel*, or a swipe down) gives the bar the sheet's words, edits included. The sheet cannot
   be closed while a start is in flight, and a failed start keeps the words where they were
   typed. Opened from a session, the new one threads under it (*Thread under #id*, the bubble's
@@ -329,6 +330,57 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   the full ink with a dot. Tap one to open its session (and mark it read), swipe to mark one read or
   dismiss a read one, and mark all read or dismiss all read from its menu. *Triggers* lists each
   trigger with what fires it on one line (two at most), its root, when it last fired and how many
+  sessions it has made; turn one on or off (a trigger that is off reads in the quieter ink), run it now, or open its
+  last session. Tap one for its page (`GET /api/v1/triggers/:id`), which shows what the web
+  page shows: its status and the labels beside it (*Re-uses session*, *Enqueues messages*,
+  missed fires and the rest), why it failed and a *Re-arm* switch if it did, when it last fired
+  and the session it last started, each condition and when it last fired, the agent root
+  (flagged when the catalog has no such root), the re-use settings, *Skip while pending* with
+  the web page's note when it is inert, the coalescing window in force (*(default)* when
+  inherited, and whether it is inert), missed fires and since when, the burst cap, the
+  scheduling class its sessions get and whether it was set on the trigger, its precedence, the
+  MCP servers, skills, hooks and plugins its sessions are configured with (a name the catalog
+  no longer resolves is flagged *not in catalog*), the goal and prompt template, and the ten
+  sessions it made most recently. *Run Now* is the web page's panel: a template that names
+  `{{variables}}` opens a sheet with a field for each, optional, and the run carries what you
+  typed (`variables` on `POST /api/v1/triggers/:id/invoke`); a template without any asks for a
+  confirmation. *Enqueue messages* and *Resuscitate archived* are shown, not switched: the API
+  that would switch them is the trigger update, which the app's token does not open. Creating
+  and editing a trigger, and those two switches, stay in the browser; *Open in browser* on a
+  trigger's page gets you there. *More* holds *Costs* and *Health*, read-only. *Costs* is the
+  web page, section for section, from the whole of `GET /api/v1/costs`: the ledger's coverage
+  (backfilled, running with its progress, queued, or not yet, and what the ledger covers since),
+  the total with the tokens, API calls and ad hoc share beside it, the unpriced-models warning,
+  where the money goes by kind of token, spend by day as a chart (tap a bar for that day's
+  sessions-against-ad-hoc split, tokens, calls, biggest roots and models), by agent root with
+  each root's calls, tokens, per-call cost, share and estimated context-feature split, the
+  context features table with its unattributed line and coverage, the experimental settings'
+  cohorts with their sample sizes and the comparison only when both sides clear the bar, by
+  model, main thread against subagents, by runtime, ad hoc calls by source, the most expensive
+  sessions with their titles, calls and tokens, each a tap away, and the burn rate by harness
+  and model. Its window is one of the web page's horizons (24 hours to a year) or a range of
+  calendar days from the two date fields, both ends included, in the phone's time zone. Tap an
+  agent root to narrow the whole page to it, or, on the page for every root, swipe a session and
+  choose *Only This*, the web page's drilldown; the page then says what it covers, and *All
+  agent roots* widens it again. A narrowed page drops the experiments and burn rates, as the web
+  page does. *Sweep now* stays in the browser. *Health* is the web page's every section, in its
+  order, from `GET /api/v1/health`: the overall status; queue recovery mode (on or off, what it
+  halts, and when on, since when, who entered it, why, and when it resumes); process counts
+  and the orphan list; session totals, failure rate and the status, error-category and
+  failure-reason breakdowns; queue depth, jobs per hour, last finished, the queue statistics and
+  the backlog breakdown by queue and job class with the head of line, workers and the database
+  pool; network egress with its resolver and when it was checked or degraded; agent
+  authentication; the SIGTERM and API-error auto-retry panels with their counts, rate-limit
+  status and quota notes; every retry budget; the post-deploy task table with each task's
+  status, attempts, last run, progress and error; cron freshness with the keys behind, the keys
+  that stopped and recovered, and every key's schedule and ticks; log retention; root data by
+  namespace; the warm clone pool's targets and the warm router process; webhook ingest per
+  source; and the recent failures, errors, SIGTERM events and API-error events, each session a
+  tap away. The two alerts the web layout puts on every page, *Queue recovery mode* and
+  *Network egress degraded*, head the Health screen and the sessions board while they are up;
+  the board re-reads them from the health report at most every five minutes, and a visit to
+  Health refreshes them. Health's operator actions (cleanup, retries, entering recovery mode,
+  re-arming tasks) stay in the browser; their routes refuse the app's token.
   sessions it has made; turn one on or off (a trigger that is off reads in the quieter ink), invoke it now (after a
   confirmation, then open the session it started), or open its last session. Tap one for its page
   (`GET /api/v1/triggers/:id`): its status and the web page's labels beside it (*Re-uses session*,
@@ -382,8 +434,15 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   plugins, Catalog Pins — are not in the app yet; the parity audit (`ios/PARITY_AUDIT.md`) lists
   each.
 - **Talks to Zimmer, live** ([Live Mode](/sessions/live/)). The waveform button on the session
-  list opens Live: whether Live Mode can start (and why not), *Resume conversation* for the open
-  one, *New conversation*, and the recent ones. A conversation is one thread: typed and spoken
+  list lands in the current conversation with voice on and the call starting, or a new
+  conversation with voice on when none is open. Leaving the thread before that call connects hangs
+  it up. The microphone prompt appears the first time; if
+  it is refused, the call controls say so and *Type instead* still works. One tap on *Type
+  instead* turns voice off in the same thread. *New conversation* on the thread's toolbar, then
+  its confirmation, starts a fresh one in the thread's mode. Back leads to the Live list: whether
+  Live Mode can start (and why not), *Resume conversation* for the open one, *New conversation*,
+  and the recent ones. When Live Mode cannot start and nothing is open, the button stops on that
+  list, where the reason shows. A conversation is one thread: typed and spoken
   lines, each tool call as a line that opens to its output (`zimmer → quick_router`), read again
   every two seconds. Typed, it has a composer with *Enable voice* beside it. With voice on, it has
   *Talk* and *Type instead*. Starting a call turns voice on for the conversation (`POST …/mode`),
@@ -392,8 +451,12 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   processing on, so the model does not hear itself. Function calls go to Zimmer and back, and
   finished lines are recorded in the thread. What to do with each Realtime event is
   `RealtimeConductor` (ZimmerKit), the same sequencing as the web's call dock and unit-tested on
-  Linux. The call keeps going with the screen locked (`UIBackgroundModes` `audio`), and the car
-  shares it.
+  Linux. *Mute* sends silence rather than nothing: over a WebSocket OpenAI's turn detection hears
+  only what the phone sends, so a microphone that went quiet would leave the turn open, stuck in
+  Listening. An error during the call (an OpenAI `error` event, a response that ended `failed`, new
+  settings Zimmer could not send) shows under the call's status, and in CarPlay's status row, while
+  the call is still up, until a reply comes through.
+  The call keeps going with the screen locked (`UIBackgroundModes` `audio`), and the car shares it.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 
@@ -415,10 +478,9 @@ where an API key cannot: only a person may give it (see the [REST API](/extend/r
 The web composer's camera button is not in the app yet: taking a photo cannot be exercised in the
 simulator, so it waits on a change verified on a device. Fork from a message and answering an
 elicitation stay in the browser until the app draws them; the API they need is in place. Switching a trigger's *Enqueue messages* and
-*Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update),
+*Resuscitate archived* (the app's token reaches a trigger's toggle and invoke, not its update), and
 saying whether re-arming a failed trigger fires it again (the trigger JSON does not say whether a
-one-time wake was already spent; the web page does), and
-the Costs page's burn rate (not in `GET /api/v1/costs`) come in their own change. So does the rest of the web card's refresh: on the
+one-time wake was already spent; the web page does) come in their own change. So does the rest of the web card's refresh: on the
 web it also resumes a failed session and sends the continue nudge to a stalled waiting one, but
 `POST /api/v1/sessions/:id/refresh` only re-reads the transcript, so the row's refresh is
 *Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
@@ -547,6 +609,10 @@ The build signs in the `aps-environment` entitlement only when the `testflight` 
 
 ## CarPlay
 
+Every request the app makes carries `X-Zimmer-Client: ios/<version>`. A follow-up spoken in CarPlay's
+voice loop says `carplay/<version>` and `voice_dictation`, so the session receiving it is told it
+was dictated in the car ([turn sources](/sessions/turn-sources/)).
+
 Zimmer's CarPlay scene is a **voice-based conversational app**, Apple's category for apps whose
 primary way in is talking (`com.apple.developer.carplay-voice-based-conversation`, iOS 26.4+). None of
 the other categories fit: Zimmer isn't audio, navigation, messaging, or a driving task. When the
@@ -578,9 +644,11 @@ follows the call (Connecting, Listening, Thinking, Speaking, Working on it) and 
 *Hang up*. It is the same call as the phone's (`LiveCall.shared`), so a call started at the desk
 carries on in the car. While a call runs, the section offers *Back to the call*.
 
-**The scene is inert until Apple grants the entitlement.** The entitlement lives in
-`App/Zimmer/CarPlay.entitlements`, which is wired into nothing, and `testflight` refuses to sign
-CarPlay in. This is the same arrangement as Motet's.
+Apple granted the entitlement as a managed capability, and it is enabled on the App ID. It lives
+in `App/Zimmer/CarPlay.entitlements`, which `testflight` signs into every TestFlight build. The
+archive is signed ad hoc so it carries the key into export. `check` fails if the archived app lacks
+it, and `upload` fails afterwards if export's summary shows it was dropped. To use it, the phone needs iOS 26.4 or later; add Zimmer under Settings → General
+→ CarPlay → your car → Customize if it isn't on the car's home screen.
 
 ## How it is built and shipped
 
@@ -588,10 +656,10 @@ CarPlay in. This is the same arrangement as Motet's.
 | --- | --- | --- |
 | `ios/bin/ci-swift` | `ios_swift_linux` (self-hosted Linux) and `ios` (macOS) | The `ZimmerKit` logic: sign-in protocol, token refresh, edge-refusal handling, list ordering |
 | `ios/bin/build-app` | By hand; in `ios`, `ios/bin/ui-test` builds the same app (Staging is Debug plus its environment) for the simulator it runs on | The app compiles and links for the simulator |
-| `ios/bin/testflight check` | `ios` | An unsigned Release archive is uploadable in shape (bundle keys, icon, privacy manifest, no entitlements) |
+| `ios/bin/testflight check` | `ios` | An ad hoc signed Release archive is uploadable in shape (bundle keys, icon, privacy manifest) and its signature carries the admitted entitlements (CarPlay) |
 | `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and starts a session from a sentence in the Quick Router bar and opens it. Every class in a UI test file the pull request changed runs too |
 | `ios/bin/ui-test` | `ios-ui-tests.yml`, on push to `main` and on dispatch | Every UI test, and a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>` artifact (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
-| `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, and waits for processing |
+| `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, checks export signed the entitlements in, and waits for processing |
 
 The full UI suite does not gate pull requests. It is some 70 tests driven one at a time plus some 70
 photographs, up to an hour on a loaded runner, which is too long to gate every iOS pull request on. A UI test that
