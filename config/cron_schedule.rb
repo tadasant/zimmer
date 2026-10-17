@@ -431,6 +431,12 @@ module CronSchedule
       description: "Re-estimate what each Claude quota window is worth in Opus dollars, from spend over that window",
       environments: %i[production staging]
     },
+    account_rebalance: {
+      cron: "*/5 * * * *", # Every 5 minutes — the idle window is an hour, so this is not the bound
+      class: "AccountRebalanceJob",
+      description: "Move an idle Claude Code pool onto its best-scoring account once the prompt cache has expired",
+      environments: %i[production staging]
+    },
     claude_usage_sampler: {
       cron: "*/15 * * * *", # Every 15 minutes
       class: "ClaudeUsageSamplerJob",

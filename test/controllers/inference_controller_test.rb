@@ -877,6 +877,44 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert secondary.reload.is_current?
   end
 
+  test "the Claude tab says what is holding the next rebalance" do
+    Session.stubs(:running_turns).returns(RunningTurns::Reading.new(on_a_worker: 2, awaiting_a_worker: 0, asleep: 0))
+
+    get inference_path
+
+    assert_response :success
+    assert_select "#account-rebalance h3", text: "Rebalancing"
+    assert_select "#account-rebalance-sentence", text: /2 turns in flight/
+  end
+
+  test "the Claude tab names the idle window when the pool was active recently" do
+    Session.stubs(:running_turns).returns(RunningTurns::EMPTY)
+    Session.where(agent_runtime: "claude_code").update_all(last_timeline_entry_at: 10.minutes.ago)
+
+    get inference_path
+
+    assert_select "#account-rebalance-sentence", text: /quiet for about 1 hour/
+  end
+
+  test "the Codex tab has no rebalancing line" do
+    get inference_path(runtime: "codex")
+
+    assert_response :success
+    assert_select "#account-rebalance", count: 0
+  end
+
+  test "the rotation log shows a rebalance" do
+    AccountRotationEvent.create!(
+      rotated_from: claude_accounts(:primary), rotated_to: claude_accounts(:secondary),
+      reason: "rebalance", source: "automatic", triggered_by: "score 0.34 → 1.00"
+    )
+
+    get inference_path
+
+    assert_match(/rebalance/, response.body)
+    assert_match(/score 0\.34 → 1\.00/, response.body)
+  end
+
   # Issue #618's acceptance criterion, stated as a test: with the DB as the sole
   # owner there is no second store to disagree with, so nothing on this page may
   # ask an operator to reconcile, adopt, sync, or choose between stores.
