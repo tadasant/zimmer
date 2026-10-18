@@ -106,7 +106,7 @@ final class InteractionUITests: XCTestCase {
     /// Drags the page until `element` sits in the middle of what is open: below the bar and the
     /// section strip, above the quick replies and the composer. Either way, since the card can
     /// be under the strip or below the composer depending on where the page opened. The drag
-    /// holds at its end, so the page does not coast on, and never runs past the top into a
+    /// holds at its end, so the page does not coast on, and rarely reaches past the top into a
     /// pull-to-refresh, which a blind swipe down did.
     private func bringIntoOpen(_ app: XCUIApplication, _ element: XCUIElement) {
         let bar = app.navigationBars.firstMatch
@@ -121,11 +121,14 @@ final class InteractionUITests: XCTestCase {
         for _ in 0..<4 {
             guard element.exists, !element.frame.isEmpty else { return }
             let frame = element.frame
-            if frame.minY >= top, frame.maxY <= bottom, element.isHittable { return }
+            if frame.minY >= top, frame.maxY <= bottom { return }
             // How far the card's middle is from the open part's middle, a drag at most the open
             // part's height long, started where the drag will stay inside it.
             let span = bottom - top - 40
+            guard span > 0 else { return }
             let shift = max(-span, min(span, (top + bottom) / 2 - frame.midY))
+            // Under the touch slop a drag lands as a tap, on whatever is under its start.
+            guard abs(shift) >= 24 else { return }
             let fromY = shift > 0 ? top + 20 : bottom - 20
             let from = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: app.frame.midX, dy: fromY))
             let to = from.withOffset(CGVector(dx: 0, dy: shift))
