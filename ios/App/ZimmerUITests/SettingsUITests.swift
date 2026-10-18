@@ -193,7 +193,7 @@ final class SettingsUITests: XCTestCase {
             return
         }
         for attempt in 1...3 {
-            if attempt > 1 { toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap() } // TEMP: drop the first tap
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
             let flipped = expectation(for: NSPredicate(format: "value != %@", before), evaluatedWith: toggle)
             if XCTWaiter().wait(for: [flipped], timeout: attempt == 3 ? timeout : 5) == .completed { return }
         }
