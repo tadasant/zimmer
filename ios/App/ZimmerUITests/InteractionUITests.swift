@@ -15,6 +15,9 @@ final class InteractionUITests: XCTestCase {
         let app = launch(1035)
         let card = app.buttons["prompt.71"]
         let accept = app.buttons["prompt.accept"]
+        // TEMPORARY (proof run, reverted before merge): scroll to the top, card low on the page.
+        XCTAssertTrue(card.waitForExistence(timeout: timeout))
+        app.swipeDown(); app.swipeDown()
         XCTAssertTrue(openPrompt(app, card, showing: accept))
         accept.tap()
         let refusal = app.descendants(matching: .any)["prompt.refusal"]
@@ -37,6 +40,9 @@ final class InteractionUITests: XCTestCase {
         let app = launch(1035)
         let card = app.buttons["prompt.71"]
         let dismiss = app.buttons["prompt.dismiss"]
+        // TEMPORARY (proof run, reverted before merge): push the card above the open part.
+        XCTAssertTrue(card.waitForExistence(timeout: timeout))
+        app.swipeUp(); app.swipeUp()
         XCTAssertTrue(openPrompt(app, card, showing: dismiss))
         dismiss.tap()
         XCTAssertTrue(waitForDisappearance(card))
