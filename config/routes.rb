@@ -289,7 +289,10 @@ Rails.application.routes.draw do
       # Push notifications
       post "notifications/push", to: "notifications#push"
       # The iOS app's push registration (ApnsDevice). The token is hex.
-      resources :apns_devices, only: [ :create, :destroy ], param: :token
+      resources :apns_devices, only: [ :create, :destroy ], param: :token do
+        # What stopped the phone short of a registration, logged at WARN.
+        post :failure, on: :collection
+      end
 
       resources :sessions do
         collection do

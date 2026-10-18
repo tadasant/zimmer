@@ -24,6 +24,10 @@ public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI
     func registerDevice(token: String, environment: APNsEnvironment, deviceName: String?, appVersion: String?) async throws
     /// Unregister it, on sign-out.
     func unregisterDevice(token: String) async throws
+    /// Tell Zimmer what stopped this phone short of a registration, so it lands in the
+    /// server's logs at WARN rather than only in the phone's.
+    func reportPushFailure(stage: PushFailureStage, error: String?, environment: APNsEnvironment,
+                           deviceName: String?, appVersion: String?) async throws
 }
 
 extension ZimmerAPI {
@@ -121,6 +125,16 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     public func unregisterDevice(token: String) async throws {
         let segment = ZimmerPathComponent(token)
         _ = try await perform(method: "DELETE", path: "/api/v1/apns_devices/\(segment)", query: [:], body: nil)
+    }
+
+    public func reportPushFailure(stage: PushFailureStage, error: String?, environment: APNsEnvironment,
+                                  deviceName: String?, appVersion: String?) async throws {
+        var json: [String: Any] = ["stage": stage.rawValue, "environment": environment.rawValue]
+        if let error { json["error"] = error }
+        if let deviceName { json["device_name"] = deviceName }
+        if let appVersion { json["app_version"] = appVersion }
+        let body = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+        _ = try await perform(method: "POST", path: "/api/v1/apns_devices/failure", query: [:], body: body)
     }
 
     // MARK: - Plumbing

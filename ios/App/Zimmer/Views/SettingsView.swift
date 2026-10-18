@@ -30,6 +30,7 @@ struct SettingsView: View {
     var opensAccount = false
 
     @State private var notificationStatus = "…"
+    @ObservedObject private var push = PushCoordinator.shared
     /// Who the token is, the Sign-in card and the deployment; nil until read.
     @State private var account: Account?
     @State private var accountError: ZimmerError?
@@ -91,6 +92,10 @@ struct SettingsView: View {
                         Section {
                             LabeledContent("Status", value: notificationStatus)
                                 .accessibilityIdentifier("settings.notifications")
+                            if let registration = push.registration {
+                                LabeledContent("This phone", value: registration)
+                                    .accessibilityIdentifier("settings.notifications.registration")
+                            }
                             if notificationStatus == "Not asked yet" {
                                 Button("Turn on notifications") {
                                     Task {
@@ -98,6 +103,11 @@ struct SettingsView: View {
                                         await loadNotificationStatus()
                                     }
                                 }
+                            } else if notificationStatus == "On" {
+                                Button("Register this phone again") {
+                                    Task { await PushCoordinator.shared.enable() }
+                                }
+                                .accessibilityIdentifier("settings.notifications.reregister")
                             }
                         } header: {
                             Text("Notifications")
