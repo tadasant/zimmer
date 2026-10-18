@@ -61,8 +61,9 @@ final class PushCoordinator: ObservableObject {
                 // Once per decline, not on every launch: it is the person's choice, and the
                 // server only needs to know why this phone has no registration.
                 if !UserDefaults.standard.bool(forKey: reportedDeclineKey) {
-                    UserDefaults.standard.set(true, forKey: reportedDeclineKey)
-                    report(.declined, "notification permission not granted")
+                    report(.declined, "notification permission not granted") { [key = reportedDeclineKey] in
+                        UserDefaults.standard.set(true, forKey: key)
+                    }
                 }
                 return
             }
@@ -70,7 +71,7 @@ final class PushCoordinator: ObservableObject {
             UIApplication.shared.registerForRemoteNotifications()
         } catch {
             log.error("notification authorization failed: \(String(describing: error), privacy: .public)")
-            record("Failed to ask for permission: \(error.localizedDescription)")
+            record("Failed to ask for permission: \(Self.describe(error))")
             report(.declined, "authorization request failed: \(String(describing: error))")
         }
     }
@@ -97,7 +98,7 @@ final class PushCoordinator: ObservableObject {
                 record("Registered (\(environment.rawValue))")
             } catch {
                 log.error("push registration failed: \(String(describing: error), privacy: .public)")
-                record("Zimmer refused the registration: \(error.localizedDescription)")
+                record("Could not register with Zimmer: \(Self.describe(error))")
                 report(.register, String(describing: error))
             }
         }
@@ -105,12 +106,18 @@ final class PushCoordinator: ObservableObject {
 
     func didFailToRegister(_ error: Error) {
         log.error("APNs registration failed: \(String(describing: error), privacy: .public)")
-        record("APNs refused a token: \(error.localizedDescription)")
+        record("APNs refused a token: \(Self.describe(error))")
         report(.apns, String(describing: error))
     }
 
     /// On sign-out, before the credential goes: this phone should stop getting pushes.
     func unregister() async {
+        // Cleared whether or not this phone ever registered: the next sign-in may be to
+        // another deployment, which has heard none of this.
+        UserDefaults.standard.removeObject(forKey: registrationKey)
+        UserDefaults.standard.removeObject(forKey: reportedDeclineKey)
+        registration = nil
+        pendingToken = nil
         guard let token = UserDefaults.standard.string(forKey: tokenKey), let api = model?.api else { return }
         do {
             try await api.unregisterDevice(token: token)
@@ -118,8 +125,6 @@ final class PushCoordinator: ObservableObject {
             log.error("push unregistration failed: \(String(describing: error), privacy: .public)")
         }
         UserDefaults.standard.removeObject(forKey: tokenKey)
-        UserDefaults.standard.removeObject(forKey: registrationKey)
-        registration = nil
     }
 
     /// A tapped notification opens its session.
@@ -138,7 +143,8 @@ final class PushCoordinator: ObservableObject {
     }
 
     /// Best-effort: a report that cannot reach Zimmer either is already in the phone's log.
-    private func report(_ stage: PushFailureStage, _ detail: String) {
+    /// `delivered` runs only once Zimmer has taken it.
+    private func report(_ stage: PushFailureStage, _ detail: String, delivered: (@MainActor @Sendable () -> Void)? = nil) {
         guard let api = model?.api else { return }
         let environment = Self.environment
         let version = Self.appVersion
@@ -146,10 +152,16 @@ final class PushCoordinator: ObservableObject {
             do {
                 try await api.reportPushFailure(stage: stage, error: detail, environment: environment,
                                                 deviceName: UIDevice.current.name, appVersion: version)
+                delivered?()
             } catch {
                 self.log.error("push failure report failed: \(String(describing: error), privacy: .public)")
             }
         }
+    }
+
+    /// What Settings shows: ZimmerKit's own wording for its errors, iOS's for the rest.
+    private static func describe(_ error: Error) -> String {
+        (error as? ZimmerError)?.userMessage ?? error.localizedDescription
     }
 
     private static var appVersion: String {

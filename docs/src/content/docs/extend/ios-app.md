@@ -617,11 +617,12 @@ even if it never signs out.
 
 A phone that ends up with no registration has stopped somewhere the server cannot see, so the app
 says where. Settings → Notifications shows how the last attempt went under *This phone*: registered,
-notifications off, APNs refused a token (the build lacks `aps-environment`, say), or Zimmer refused
-the token. *Register this phone again* retries. The app also reports each failure to
+notifications off, APNs refused a token (the build lacks `aps-environment`, say), or the token could
+not be registered with Zimmer. *Register this phone again* retries. The app also reports each failure to
 `POST /api/v1/apns_devices/failure`, which logs it at WARN as
 `[apns] registration failed on the phone at <declined|apns|register>`, and every request that
-endpoint or the registration itself refuses (a 401, a bad token) is a WARN under `[apns]` too.
+endpoint or the registration itself refuses to a caller that presented a credential (a 401 on the
+app's token, a bad token) is a WARN under `[apns]` too; an anonymous request stays INFO.
 Request lines are INFO and are not shipped to the log store, so without these a missing phone
 leaves no trace. A decline is reported once, not on every launch.
 
