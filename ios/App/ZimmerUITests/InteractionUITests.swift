@@ -82,10 +82,11 @@ final class InteractionUITests: XCTestCase {
     /// The card sits above the conversation, and the page opens at the newest message on a
     /// later turn than the one that lays the conversation out. A tap that lands as that scroll
     /// moves the page opens nothing — run 39091739178's recording shows the page jumping to the
-    /// transcript under the tap and no sheet. So the conversation is waited for first, the page
-    /// is scrolled back until the card is clear of the bar and the section strip (XCUITest taps
-    /// where the card is, without scrolling to it), and a tap that brought no sheet taps again;
-    /// never while the sheet is up, where the card's point is somewhere in the form.
+    /// transcript under the tap and no sheet. So the conversation is waited for (the scroll
+    /// follows on the next turn), the page is scrolled back until the card is clear of the bar,
+    /// the section strip and the composer (that run's log shows XCUITest tapping where the card
+    /// was, without scrolling to it), and a tap that brought no sheet taps again; never while
+    /// the sheet is up, where the card's point is somewhere in the form.
     private func openPrompt(_ app: XCUIApplication, _ card: XCUIElement, showing control: XCUIElement) -> Bool {
         XCTAssertTrue(card.waitForExistence(timeout: timeout))
         let message = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'detail.message.'")).firstMatch
@@ -94,7 +95,7 @@ final class InteractionUITests: XCTestCase {
         let attempts = 3
         for attempt in 0..<attempts {
             if !sheet.exists {
-                for _ in 0..<4 where !clear(app, card) { app.swipeDown() }
+                for _ in 0..<4 where !clear(app, card) { app.swipeDown(velocity: .slow) }
                 card.tap()
             }
             if control.waitForExistence(timeout: attempt == attempts - 1 ? timeout : 5) { return true }
@@ -102,14 +103,16 @@ final class InteractionUITests: XCTestCase {
         return false
     }
 
-    /// On screen, and below what covers the top of the page.
+    /// On screen, between what covers the top of the page and the composer at its foot.
     private func clear(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
         guard element.exists, element.isHittable else { return false }
         let bar = app.navigationBars.firstMatch
         let strip = app.descendants(matching: .any)["detail.sections"]
         var top = bar.exists ? bar.frame.maxY : 0
         if strip.exists { top = max(top, strip.frame.maxY) }
-        return element.frame.minY >= top - 1 && element.frame.maxY <= app.frame.maxY
+        let field = app.descendants(matching: .any)["followup.field"]
+        let bottom = field.exists ? field.frame.minY : app.frame.maxY
+        return element.frame.minY >= top - 1 && element.frame.maxY <= bottom
     }
 
     private func waitForDisappearance(_ element: XCUIElement) -> Bool {
